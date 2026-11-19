@@ -33,6 +33,7 @@ import {
   logActivity,
 } from "../services/index.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
+import { skillAccessService } from "../services/skill-access.js";
 import {
   reportVersionOf,
   responsibilityAgentChangeService,
@@ -60,13 +61,14 @@ function fileTarget(item: { kind: ResponsibilityFileItemKind; id: string }): Res
   return { kind: item.kind === "task" ? "issue" : item.kind, id: item.id };
 }
 
-function linkTargetType(link: { projectId: string | null; issueId: string | null }) {
-  return link.projectId ? "project" : link.issueId ? "issue" : "routine";
+function linkTargetType(link: { projectId: string | null; issueId: string | null; routineId: string | null }) {
+  return link.projectId ? "project" : link.issueId ? "issue" : link.routineId ? "routine" : "skill";
 }
 
 function linkTarget(body: LinkResponsibility | ResponsibilityLinkLookupQuery): ResponsibilityLinkTarget {
   if (body.projectId) return { kind: "project", id: body.projectId };
   if (body.issueId) return { kind: "issue", id: body.issueId };
+  if (body.skillId) return { kind: "skill", id: body.skillId };
   return { kind: "routine", id: body.routineId! };
 }
 
@@ -141,12 +143,14 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     await assertAgentCompanyScope(req, companyId);
   }
 
-  async function readScope(req: Request): Promise<ResponsibilityReadScope> {
-    const [issueReadCondition, projectReadCondition] = await Promise.all([
+  /** The reader's visibility in `companyId`, including which of its skills they may see. */
+  async function readScope(req: Request, companyId: string): Promise<ResponsibilityReadScope> {
+    const [issueReadCondition, projectReadCondition, skillReadCondition] = await Promise.all([
       issueReadSqlCondition(db, req.actor),
       projectReadSqlCondition(db, req.actor),
+      skillAccessService(db, req.actor).condition(companyId),
     ]);
-    return { issueReadCondition, projectReadCondition };
+    return { issueReadCondition, projectReadCondition, skillReadCondition };
   }
 
   const boardCanManageOwner = boardCanManageResponsibilityOwner;
@@ -298,7 +302,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     }
     res.json(await svc.overview(companyId, ownerUserId, {
       includeLetGo: query.includeLetGo,
-      scope: await readScope(req),
+      scope: await readScope(req, companyId),
     }));
   });
 
@@ -352,7 +356,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     });
     if (newArea) await logAreaCreated(req, newArea);
     if (!isNew) {
-      res.json(await svc.withRollup(created, await readScope(req)));
+      res.json(await svc.withRollup(created, await readScope(req, companyId)));
       return;
     }
     await logMutation(req, companyId, "responsibility.created", created.id, {
@@ -363,21 +367,21 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       areaId: created.areaId,
     });
     await logAreaActivated(req, activatedArea, created.id);
-    res.status(201).json(await svc.withRollup(created, await readScope(req)));
+    res.status(201).json(await svc.withRollup(created, await readScope(req, companyId)));
   });
 
   router.get("/responsibilities/:id", async (req, res) => {
     await assertResponsibilitiesEnabled();
     const row = await loadForRead(req, res);
     if (!row) return;
-    res.json(await svc.detail(row, await readScope(req), { actor: req.actor }));
+    res.json(await svc.detail(row, await readScope(req, row.companyId), { actor: req.actor }));
   });
 
   router.patch("/responsibilities/:id", validate(updateResponsibilitySchema), async (req, res) => {
     await assertResponsibilitiesEnabled();
     const row = await loadForWrite(req, res);
     if (!row) return;
-    const scope = await readScope(req);
+    const scope = await readScope(req, row.companyId);
     const actsFor = req.actor.type === "agent" ? await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId) : null;
     const { areaTitle, ...patch } = req.body as typeof req.body & { areaTitle?: string };
     if (areaTitle && patch.areaId !== undefined) throw unprocessable("Send areaId or areaTitle, not both");
@@ -458,7 +462,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     await assertAgentMayFileUnder(req, row);
     const target = linkTarget(req.body);
     const actsFor = req.actor.type === "agent" ? await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId) : null;
-    const scope = await readScope(req);
+    const scope = await readScope(req, row.companyId);
     const result = await inChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
       ({ svc: scoped }) => scoped.link(row, target, scope));
     if (result.created) {
@@ -488,11 +492,11 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       res.status(404).json({ error: "Link not found" });
       return;
     }
-    const targetType = removed.projectId ? "project" : removed.issueId ? "issue" : "routine";
+    const targetType = linkTargetType(removed);
     await logMutation(req, row.companyId, "responsibility.unlinked", row.id, {
       linkId: removed.id,
       targetType,
-      targetId: removed.projectId ?? removed.issueId ?? removed.routineId,
+      targetId: removed.projectId ?? removed.issueId ?? removed.routineId ?? removed.skillId,
     });
     res.json(removed);
   });
@@ -524,7 +528,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       moveFromIds = [source.id];
       owners.add(source.ownerUserId);
     }
-    const scope = await readScope(req);
+    const scope = await readScope(req, row.companyId);
     const result = await inChange(req, res, { companyId: row.companyId, ownerUserIds: req.actor.type === "agent" && !actsFor ? [] : [...owners] },
       ({ svc: scoped }) => scoped.fileItems(row, targets, scope, { moveFromIds }));
     for (const entry of result.filed.filter((item) => item.created)) {
@@ -538,7 +542,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       await logMutation(req, row.companyId, "responsibility.unlinked", link.responsibilityId, {
         linkId: link.id,
         targetType: linkTargetType(link),
-        targetId: link.projectId ?? link.issueId ?? link.routineId,
+        targetId: link.projectId ?? link.issueId ?? link.routineId ?? link.skillId,
         movedToResponsibilityId: row.id,
       });
     }
@@ -561,7 +565,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       await logMutation(req, row.companyId, "responsibility.unlinked", row.id, {
         linkId: link.id,
         targetType: linkTargetType(link),
-        targetId: link.projectId ?? link.issueId ?? link.routineId,
+        targetId: link.projectId ?? link.issueId ?? link.routineId ?? link.skillId,
       });
     }
     res.json({ unfiled: removed });
@@ -596,7 +600,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       runId: actor.runId,
       identityContextId: req.actor.identityContextId ?? null,
       authorizationActor: req.actor,
-    }, await readScope(req));
+    }, await readScope(req, row.companyId));
     await references.syncIssue(issue.id);
     await logActivity(db, {
       companyId: row.companyId,
@@ -635,7 +639,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = responsibilityLinkLookupQuerySchema.parse(req.query);
-    const responsibilities = await svc.lookup(companyId, linkTarget(query), await readScope(req));
+    const responsibilities = await svc.lookup(companyId, linkTarget(query), await readScope(req, companyId));
     res.json({ responsibilities });
   });
 

@@ -1508,10 +1508,10 @@ A person's responsibilities are saved records, each optionally filed under an ar
 | GET    | `/api/companies/:companyId/responsibilities` | One person's areas, responsibilities (with health and counts), proposals, totals and the company's work filed under no responsibility (`loose`). `ownerUserId` defaults to the person your run works for; `includeLetGo=true` adds let-go ones |
 | GET    | `/api/companies/:companyId/responsibility-areas` | The company's areas; `includeArchived=true` adds archived ones |
 | GET    | `/api/responsibilities/:responsibilityId` | One responsibility with its projects, tasks and routines (`linkId` set when filed directly) and the skills of the agents doing its work |
-| GET    | `/api/companies/:companyId/responsibility-links/lookup` | The responsibilities one item is under; send exactly one of `issueId`, `projectId` or `routineId` |
+| GET    | `/api/companies/:companyId/responsibility-links/lookup` | The responsibilities one item is under; send exactly one of `issueId`, `projectId`, `routineId` or `skillId` |
 | POST   | `/api/companies/:companyId/responsibilities` | Create one. Acting for the person your run works for (who may manage the owner, and who directed the run: their own chat or task, or their message woke it), a title is enough and it is active; otherwise it is a proposal with its whole bar |
 | PATCH  | `/api/responsibilities/:responsibilityId` | Change any field, as the person could; otherwise only a proposal, or `metricCurrent` on one you work under |
-| POST   | `/api/responsibilities/:responsibilityId/file` | `{ items: [{ kind: "project" \| "task" \| "routine", id }], moveFrom?: responsibilityId \| "all" }`: file items, optionally moving them |
+| POST   | `/api/responsibilities/:responsibilityId/file` | `{ items: [{ kind: "project" \| "task" \| "routine" \| "skill", id }], moveFrom?: responsibilityId \| "all" }`: file items, optionally moving them |
 | POST   | `/api/responsibilities/:responsibilityId/unfile` | `{ items }`: unfile items by kind and id |
 | DELETE | `/api/responsibilities/:responsibilityId?confirmationId=` | Permanent. An agent sends the id of an accepted `request_confirmation` card it posted, with target `{ type: "custom", key: "responsibility-delete:<id>" }` |
 | POST   | `/api/companies/:companyId/responsibility-areas` | Create an area (or get the live one with that title) |

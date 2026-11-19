@@ -7,7 +7,7 @@
     "src/scenarios/scenario-plan.ts"
   ],
   "counts": {
-    "actions": 82,
+    "actions": 83,
     "legacyRequirements": 106
   },
   "actions": [
@@ -561,6 +561,25 @@
       "legacyRequirementCases": [],
       "deterministicOwners": [
         "src/catalog/protocol-action-contracts.test.ts::update_routine has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "update_skill_details",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:update_skill_details",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::update_skill_details has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:update_skill_details"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::update_skill_details has a schema-valid canonical example and every declared projection",
         "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
       ]
     },

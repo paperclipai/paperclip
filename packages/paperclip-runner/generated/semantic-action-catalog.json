@@ -2931,7 +2931,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Read one responsibility in full: its bar and health, area, the projects, tasks and routines under it (with link IDs for items filed directly, and items under it through a filed project), the skills of the agents doing its work, and its latest status report.",
+    "description": "Read one responsibility in full: its bar and health, area, the projects, tasks and routines under it (with link IDs for items filed directly, and items under it through a filed project), its skills (filed by hand, with a link ID, and computed from the agents doing its work), and its latest status report.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -2965,7 +2965,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "List the proposed and active responsibilities a project, task or routine is filed under, directly or through its project. An empty list means it is uncovered.",
+    "description": "List the proposed and active responsibilities a project, task, routine or company skill is filed under, directly or (for a task or routine) through its project. An empty list means it is uncovered.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -2981,7 +2981,8 @@
           "enum": [
             "project",
             "task",
-            "routine"
+            "routine",
+            "skill"
           ],
           "type": "string"
         }
@@ -3242,7 +3243,7 @@
           ]
         },
         "fileItems": {
-          "description": "What to file: each a project, task or routine by ID. A task can also be an identifier such as PAP-12.",
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
           "items": {
             "additionalProperties": false,
             "properties": {
@@ -3255,7 +3256,8 @@
                 "enum": [
                   "project",
                   "task",
-                  "routine"
+                  "routine",
+                  "skill"
                 ],
                 "type": "string"
               }
@@ -3534,13 +3536,13 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "File projects, tasks and routines under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "description": "File projects, tasks, routines and company skills under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "items": {
-          "description": "What to file: each a project, task or routine by ID. A task can also be an identifier such as PAP-12.",
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
           "items": {
             "additionalProperties": false,
             "properties": {
@@ -3553,7 +3555,8 @@
                 "enum": [
                   "project",
                   "task",
-                  "routine"
+                  "routine",
+                  "skill"
                 ],
                 "type": "string"
               }
@@ -3599,13 +3602,13 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Unfile projects, tasks and routines from a responsibility by what they are; no link IDs needed. The items themselves are not changed. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "description": "Unfile projects, tasks, routines and skills from a responsibility by what they are; no link IDs needed. The items themselves are not changed. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "items": {
-          "description": "What to file: each a project, task or routine by ID. A task can also be an identifier such as PAP-12.",
+          "description": "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
           "items": {
             "additionalProperties": false,
             "properties": {
@@ -3618,7 +3621,8 @@
                 "enum": [
                   "project",
                   "task",
-                  "routine"
+                  "routine",
+                  "skill"
                 ],
                 "type": "string"
               }
@@ -3861,6 +3865,54 @@
     "requiredClaims": [],
     "schema": "paperclip.semantic-action.v1",
     "title": "Update routine",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a company skill's catalog details outside SKILL.md: its tagline (one line) and categories; send tagline, categories or both. Its name and description are SKILL.md frontmatter; change those with update_skill. Uses the skill page's edit policy.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "categories": {
+          "description": "Replaces its categories.",
+          "items": {
+            "maxLength": 60,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "type": "array"
+        },
+        "skillId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "tagline": {
+          "description": "One line shown with the skill; null clears it.",
+          "maxLength": 120,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "skillId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_skill_details",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update skill details",
     "version": 1
   },
   {

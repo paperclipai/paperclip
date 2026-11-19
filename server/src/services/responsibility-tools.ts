@@ -47,7 +47,7 @@ export const listResponsibilitiesToolInput = z.object({
 export const getResponsibilityToolInput = z.object({ responsibilityId: uuid }).strict();
 
 export const findResponsibilitiesForToolInput = z.object({
-  kind: z.enum(["project", "task", "routine"]),
+  kind: z.enum(["project", "task", "routine", "skill"]),
   /** A UUID; for a task, an identifier such as PAP-123 also works. */
   id: z.string().trim().min(1).max(200),
 }).strict();
@@ -219,10 +219,12 @@ async function getResponsibility(call: ApiCall, args: unknown, prefix: string | 
       linkId: routine.linkId, membership: routine.membership, id: routine.id, title: routine.title, status: routine.status,
       assigneeAgentId: routine.assigneeAgentId, projectId: routine.projectId, lastRun: routine.lastRun,
     })),
-    skills: detail.skills.map((skill) => ({ id: skill.id, key: skill.key, name: skill.name, agentIds: skill.agentIds })),
+    skills: detail.skills.map((skill) => ({
+      id: skill.id, key: skill.key, name: skill.name, linkId: skill.linkId, computed: skill.computed, agentIds: skill.agentIds,
+    })),
     artifactsTotal: detail.artifactsTotal,
     statusReport: report ? { current: report.current, reporterAgentId: report.reporterAgentId, updateRequested: report.updateRequested } : null,
-    membershipNote: "membership direct means the item is filed under it (linkId set); project means it is under it through a filed project.",
+    membershipNote: "membership direct means the item is filed under it (linkId set); project means it is under it through a filed project. A skill with linkId is filed here; computed means an agent doing the work holds it.",
   };
 }
 
@@ -267,7 +269,7 @@ function undoNote(meta: ApiMeta) {
     ? { undo: UNDO_NOTE, dashboardVersionId: meta.version, dashboardOwnerUserId: meta.owner ?? null }
     : { undo: NOT_IN_HISTORY_NOTE };
 }
-const itemKind = z.enum(["project", "task", "routine"]);
+const itemKind = z.enum(["project", "task", "routine", "skill"]);
 const toolItem = z.object({ kind: itemKind, id: z.string().trim().min(1).max(200) }).strict();
 const nullableText = z.string().trim().max(10_000).nullable();
 const barInput = z.object({

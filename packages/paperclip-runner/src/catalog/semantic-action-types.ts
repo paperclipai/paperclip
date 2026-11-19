@@ -50,6 +50,7 @@ export type PaperclipSemanticActionId =
   | "remove_from_responsibility"
   | "list_routines"
   | "update_routine"
+  | "update_skill_details"
   | "create_task"
   | "handoff_case"
   | "read_case"

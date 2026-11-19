@@ -169,9 +169,11 @@ export const linkResponsibilitySchema = z.object({
   projectId: z.string().uuid().optional(),
   issueId: z.string().uuid().optional(),
   routineId: z.string().uuid().optional(),
+  /** A company skill in the same company. */
+  skillId: z.string().uuid().optional(),
 }).strict().refine(
-  (value) => [value.projectId, value.issueId, value.routineId].filter((id) => id !== undefined).length === 1,
-  { message: "Provide exactly one of projectId, issueId or routineId" },
+  (value) => [value.projectId, value.issueId, value.routineId, value.skillId].filter((id) => id !== undefined).length === 1,
+  { message: "Provide exactly one of projectId, issueId, routineId or skillId" },
 );
 
 export type LinkResponsibility = z.infer<typeof linkResponsibilitySchema>;
@@ -229,15 +231,16 @@ export const responsibilityLinkLookupQuerySchema = z.object({
   issueId: z.string().uuid().optional(),
   projectId: z.string().uuid().optional(),
   routineId: z.string().uuid().optional(),
+  skillId: z.string().uuid().optional(),
 }).refine(
-  (value) => [value.projectId, value.issueId, value.routineId].filter((id) => id !== undefined).length === 1,
-  { message: "Provide exactly one of issueId, projectId or routineId" },
+  (value) => [value.projectId, value.issueId, value.routineId, value.skillId].filter((id) => id !== undefined).length === 1,
+  { message: "Provide exactly one of issueId, projectId, routineId or skillId" },
 );
 
 export type ResponsibilityLinkLookupQuery = z.infer<typeof responsibilityLinkLookupQuerySchema>;
 
 /** What can be filed under a responsibility by kind and id. */
-export const RESPONSIBILITY_FILE_ITEM_KINDS = ["project", "task", "routine"] as const;
+export const RESPONSIBILITY_FILE_ITEM_KINDS = ["project", "task", "routine", "skill"] as const;
 export type ResponsibilityFileItemKind = (typeof RESPONSIBILITY_FILE_ITEM_KINDS)[number];
 
 const fileItem = z.object({

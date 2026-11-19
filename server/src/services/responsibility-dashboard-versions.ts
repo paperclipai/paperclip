@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, issues, projects, responsibilities, responsibilityAreas, responsibilityDashboardVersions, responsibilityLinks, routines } from "@paperclipai/db";
+import { agents, companySkills, issues, projects, responsibilities, responsibilityAreas, responsibilityDashboardVersions, responsibilityLinks, routines } from "@paperclipai/db";
 import {
   RESPONSIBILITY_DASHBOARD_UNDO_HOURS,
   RESPONSIBILITY_DASHBOARD_VERSION_LIMIT,
@@ -15,6 +15,7 @@ import {
   type ResponsibilityDashboardVersionSummary,
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { skillAccessService } from "./skill-access.js";
 
 /**
  * Versions of a person's Dashboard (experimental `enableResponsibilities`).
@@ -76,7 +77,9 @@ export function dashboardSnapshotHash(snapshot: ResponsibilityDashboardSnapshot,
     .map((item) => {
       const base: unknown[] = [item.id, item.title, item.standard, item.areaId, item.status, item.sortOrder];
       if (opts.legacy || !item.links) return base;
-      return [...base, item.links, item.description ?? null, item.runByAgentId ?? null,
+      // No filed skills hashes like a version saved before skills could be filed.
+      const links = { ...item.links, skillIds: item.links.skillIds?.length ? item.links.skillIds : undefined };
+      return [...base, links, item.description ?? null, item.runByAgentId ?? null,
         item.evidence ?? null, item.healthOverride ?? null, item.healthNote ?? null];
     });
   return createHash("sha256").update(JSON.stringify({ areas, items })).digest("hex");
@@ -85,6 +88,11 @@ export function dashboardSnapshotHash(snapshot: ResponsibilityDashboardSnapshot,
 /** True for a version saved before snapshots held filed items. */
 function isLegacySnapshot(snapshot: ResponsibilityDashboardSnapshot) {
   return snapshot.responsibilities.some((item) => item.links === undefined);
+}
+
+/** True for a version saved before snapshots held filed skills: restoring it would leave filed skills alone. */
+function lacksFiledSkills(snapshot: ResponsibilityDashboardSnapshot) {
+  return snapshot.responsibilities.some((item) => item.links !== undefined && item.links.skillIds === undefined);
 }
 
 /** Serialize all dashboard writes for one person inside `tx`. */
@@ -136,6 +144,7 @@ export function responsibilityDashboardVersionService(db: Db) {
         projectId: responsibilityLinks.projectId,
         issueId: responsibilityLinks.issueId,
         routineId: responsibilityLinks.routineId,
+        skillId: responsibilityLinks.skillId,
       }).from(responsibilityLinks)
         .innerJoin(responsibilities, eq(responsibilities.id, responsibilityLinks.responsibilityId))
         .where(and(
@@ -152,15 +161,19 @@ export function responsibilityDashboardVersionService(db: Db) {
     ]);
     const linksBy = new Map<string, ResponsibilityDashboardSnapshotLinks>();
     for (const link of linkRows) {
-      const entry = linksBy.get(link.responsibilityId) ?? { projectIds: [], issueIds: [], routineIds: [] };
+      const entry = linksBy.get(link.responsibilityId) ?? { projectIds: [], issueIds: [], routineIds: [], skillIds: [] };
       if (link.projectId) entry.projectIds.push(link.projectId);
       if (link.issueId) entry.issueIds.push(link.issueId);
       if (link.routineId) entry.routineIds.push(link.routineId);
+      if (link.skillId) entry.skillIds!.push(link.skillId);
       linksBy.set(link.responsibilityId, entry);
     }
     const sortedLinks = (id: string): ResponsibilityDashboardSnapshotLinks => {
-      const entry = linksBy.get(id) ?? { projectIds: [], issueIds: [], routineIds: [] };
-      return { projectIds: [...entry.projectIds].sort(), issueIds: [...entry.issueIds].sort(), routineIds: [...entry.routineIds].sort() };
+      const entry = linksBy.get(id) ?? { projectIds: [], issueIds: [], routineIds: [], skillIds: [] };
+      return {
+        projectIds: [...entry.projectIds].sort(), issueIds: [...entry.issueIds].sort(),
+        routineIds: [...entry.routineIds].sort(), skillIds: [...(entry.skillIds ?? [])].sort(),
+      };
     };
     const items = rows.map(({ description, runByAgentId, evidence, healthOverride, healthNote, ...item }) => ({
       ...item, links: sortedLinks(item.id), description, runByAgentId, evidence, healthOverride, healthNote,
@@ -229,14 +242,16 @@ export function responsibilityDashboardVersionService(db: Db) {
     restoredFromVersionId?: string | null;
   }): Promise<{ row: VersionRow; created: boolean }> {
     const previous = await latestRow(tx, input.companyId, input.ownerUserId);
+    const previousSnapshot = previous ? parseDashboardSnapshot(previous.snapshot) : null;
     const hash = dashboardSnapshotHash(input.snapshot);
     // A version saved before snapshots held filed items is compared on what it holds.
-    const legacy = previous ? isLegacySnapshot(parseDashboardSnapshot(previous.snapshot)) : false;
+    const legacy = previousSnapshot ? isLegacySnapshot(previousSnapshot) : false;
     const comparable = legacy ? dashboardSnapshotHash(input.snapshot, { legacy: true }) : hash;
     if (previous && previous.snapshotHash === comparable) {
-      if (!legacy) return { row: previous, created: false };
-      // The same dashboard as an older version that held no filed items or
-      // details: it now holds them, so the next change compares, and undoes, in full.
+      // One saved before skills could be filed hashes the same (no filed skills) but must hold the empty list too.
+      if (!legacy && !lacksFiledSkills(previousSnapshot!)) return { row: previous, created: false };
+      // The same dashboard as an older version that held no filed items,
+      // details or skills: it now holds them, so the next change compares, and undoes, in full.
       const [upgraded] = await tx.update(responsibilityDashboardVersions)
         .set({ snapshot: input.snapshot as unknown as Record<string, unknown>, snapshotHash: hash })
         .where(eq(responsibilityDashboardVersions.id, previous.id))
@@ -533,14 +548,27 @@ export function responsibilityDashboardVersionService(db: Db) {
       });
     }
     if (!want.links) return events;
-    const current = await tx.select().from(responsibilityLinks).where(eq(responsibilityLinks.responsibilityId, row.id));
+    // A version saved before skills could be filed leaves filed skills as they are.
+    const withSkills = want.links.skillIds !== undefined;
+    const linked = await tx.select().from(responsibilityLinks).where(eq(responsibilityLinks.responsibilityId, row.id));
+    // Skills the person restoring cannot see (the request's actor) are left as they are: not filed again, not removed.
+    const skillIds = [...new Set([...linked.flatMap((link) => (link.skillId ? [link.skillId] : [])), ...(want.links.skillIds ?? [])])];
+    const visibleSkills = !withSkills || skillIds.length === 0 ? new Set<string>() : new Set(
+      (await tx.select({ id: companySkills.id }).from(companySkills).where(and(
+        eq(companySkills.companyId, companyId), inArray(companySkills.id, skillIds),
+        await skillAccessService(tx as unknown as Db).condition(companyId),
+      ))).map((skill) => skill.id),
+    );
+    const current = linked.filter((link) => !link.skillId || visibleSkills.has(link.skillId));
     const wanted = new Set([
       ...want.links.projectIds.map((id) => `project:${id}`),
       ...want.links.issueIds.map((id) => `issue:${id}`),
       ...want.links.routineIds.map((id) => `routine:${id}`),
+      ...(want.links.skillIds ?? []).filter((id) => visibleSkills.has(id)).map((id) => `skill:${id}`),
     ]);
     const keyOf = (link: typeof responsibilityLinks.$inferSelect) =>
-      link.projectId ? `project:${link.projectId}` : link.issueId ? `issue:${link.issueId}` : `routine:${link.routineId}`;
+      link.projectId ? `project:${link.projectId}` : link.issueId ? `issue:${link.issueId}`
+        : link.routineId ? `routine:${link.routineId}` : `skill:${link.skillId}`;
     const have = new Set(current.map(keyOf));
     for (const link of current) {
       if (wanted.has(keyOf(link))) continue;
@@ -551,18 +579,21 @@ export function responsibilityDashboardVersionService(db: Db) {
     const missing = [...wanted].filter((key) => !have.has(key)).map((key) => key.split(":") as [string, string]);
     const idsOf = (kind: string) => missing.filter(([type]) => type === kind).map(([, id]) => id);
     // Only items that still exist in the company can be filed again.
-    const [liveProjects, liveIssues, liveRoutines] = await Promise.all([
+    const [liveProjects, liveIssues, liveRoutines, liveSkills] = await Promise.all([
       idsOf("project").length === 0 ? [] : tx.select({ id: projects.id }).from(projects)
         .where(and(eq(projects.companyId, companyId), inArray(projects.id, idsOf("project")))),
       idsOf("issue").length === 0 ? [] : tx.select({ id: issues.id }).from(issues)
         .where(and(eq(issues.companyId, companyId), inArray(issues.id, idsOf("issue")))),
       idsOf("routine").length === 0 ? [] : tx.select({ id: routines.id }).from(routines)
         .where(and(eq(routines.companyId, companyId), inArray(routines.id, idsOf("routine")))),
+      idsOf("skill").length === 0 ? [] : tx.select({ id: companySkills.id }).from(companySkills)
+        .where(and(eq(companySkills.companyId, companyId), inArray(companySkills.id, idsOf("skill")))),
     ]);
     const live = new Set([
       ...liveProjects.map((item) => `project:${item.id}`),
       ...liveIssues.map((item) => `issue:${item.id}`),
       ...liveRoutines.map((item) => `routine:${item.id}`),
+      ...liveSkills.map((item) => `skill:${item.id}`),
     ]);
     for (const [kind, id] of missing) {
       if (!live.has(`${kind}:${id}`)) continue;
@@ -572,6 +603,7 @@ export function responsibilityDashboardVersionService(db: Db) {
         projectId: kind === "project" ? id : null,
         issueId: kind === "issue" ? id : null,
         routineId: kind === "routine" ? id : null,
+        skillId: kind === "skill" ? id : null,
       }).onConflictDoNothing().returning();
       if (inserted) events.push({ action: "responsibility.linked", entityType: "responsibility", entityId: row.id, details: { linkId: inserted.id, targetType: kind, targetId: id, ...source } });
     }

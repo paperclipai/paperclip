@@ -404,11 +404,13 @@ export interface ResponsibilityDashboardSnapshotArea {
   description?: string | null;
 }
 
-/** The projects, tasks and routines filed directly under a responsibility, each sorted. */
+/** The projects, tasks, routines and skills filed directly under a responsibility, each sorted. */
 export interface ResponsibilityDashboardSnapshotLinks {
   projectIds: string[];
   issueIds: string[];
   routineIds: string[];
+  /** Absent in versions saved before skills could be filed; restoring one leaves filed skills as they are. */
+  skillIds?: string[];
 }
 
 /**
@@ -466,6 +468,7 @@ export const responsibilityDashboardSnapshotSchema = z.object({
       projectIds: z.array(z.string()),
       issueIds: z.array(z.string()),
       routineIds: z.array(z.string()),
+      skillIds: z.array(z.string()).optional(),
     }).optional(),
     description: z.string().nullable().optional(),
     runByAgentId: z.string().nullable().optional(),
@@ -564,6 +567,7 @@ export function snapshotLinkKeys(links: ResponsibilityDashboardSnapshotLinks): s
     ...links.projectIds.map((id) => `project:${id}`),
     ...links.issueIds.map((id) => `issue:${id}`),
     ...links.routineIds.map((id) => `routine:${id}`),
+    ...(links.skillIds ?? []).map((id) => `skill:${id}`),
   ];
 }
 
@@ -623,8 +627,10 @@ export function responsibilityDashboardChangeSummary(
     if (was.areaId !== item.areaId) moved += 1;
     // Only versions that both hold these can be compared; an older version holds none.
     if (was.links && item.links) {
-      const before = new Set(snapshotLinkKeys(was.links));
-      const after = new Set(snapshotLinkKeys(item.links));
+      // Skills compare only when both versions hold them.
+      const skills = was.links.skillIds !== undefined && item.links.skillIds !== undefined;
+      const before = new Set(snapshotLinkKeys(skills ? was.links : { ...was.links, skillIds: undefined }));
+      const after = new Set(snapshotLinkKeys(skills ? item.links : { ...item.links, skillIds: undefined }));
       for (const key of after) if (!before.has(key)) filed += 1;
       for (const key of before) if (!after.has(key)) unfiled += 1;
     }

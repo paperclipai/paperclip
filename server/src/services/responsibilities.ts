@@ -4,6 +4,7 @@ import {
   agents,
   authUsers,
   companyMemberships,
+  companySkills,
   issues,
   projects,
   responsibilities,
@@ -95,12 +96,28 @@ export type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export interface ResponsibilityReadScope {
   issueReadCondition: SQL<boolean>;
   projectReadCondition: SQL<boolean>;
+  /** Company skills the reader may see. Left out, no filed skill is visible: visibility is never dropped by omission. */
+  skillReadCondition?: SQL;
+}
+
+/** The skill visibility condition of a scope; none means no skill is visible. */
+function skillsVisible(scope: ResponsibilityReadScope): SQL {
+  return scope.skillReadCondition ?? sql`false`;
 }
 
 export type ResponsibilityLinkTarget =
   | { kind: "project"; id: string }
   | { kind: "issue"; id: string }
-  | { kind: "routine"; id: string };
+  | { kind: "routine"; id: string }
+  | { kind: "skill"; id: string };
+
+/** The link column that holds a target of this kind. */
+function linkColumn(kind: ResponsibilityLinkTarget["kind"]) {
+  return kind === "project" ? responsibilityLinks.projectId
+    : kind === "issue" ? responsibilityLinks.issueId
+      : kind === "routine" ? responsibilityLinks.routineId
+        : responsibilityLinks.skillId;
+}
 
 /**
  * `board` with `viaAgentId`: an agent acting for the person `userId` (the
@@ -946,6 +963,13 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
       if (!row) throw notFound("Task not found");
       return row;
     }
+    if (target.kind === "skill") {
+      const [row] = await db.select({ id: companySkills.id }).from(companySkills)
+        .where(and(eq(companySkills.id, target.id), eq(companySkills.companyId, companyId), skillsVisible(scope)))
+        .limit(1);
+      if (!row) throw notFound("Skill not found");
+      return row;
+    }
     const [row] = await db.select({ id: routines.id, projectId: routines.projectId }).from(routines)
       .where(and(eq(routines.id, target.id), eq(routines.companyId, companyId)))
       .limit(1);
@@ -979,12 +1003,11 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
       projectId: target.kind === "project" ? target.id : null,
       issueId: target.kind === "issue" ? target.id : null,
       routineId: target.kind === "routine" ? target.id : null,
+      skillId: target.kind === "skill" ? target.id : null,
     };
     const [inserted] = await tx.insert(responsibilityLinks).values(values).onConflictDoNothing().returning();
     if (inserted) return { link: toLink(inserted), created: true };
-    const column = target.kind === "project" ? responsibilityLinks.projectId
-      : target.kind === "issue" ? responsibilityLinks.issueId
-        : responsibilityLinks.routineId;
+    const column = linkColumn(target.kind);
     const [existing] = await tx.select().from(responsibilityLinks)
       .where(and(eq(responsibilityLinks.responsibilityId, row.id), eq(column, target.id)));
     if (!existing) throw new Error("Responsibility link insert conflicted but no link exists");
@@ -1031,11 +1054,29 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
     const agentIds = new Set<string>();
     if (row.runByAgentId) agentIds.add(row.runByAgentId);
     for (const entry of [...taskAgents, ...routineAgents, ...leadAgents]) if (entry.agentId) agentIds.add(entry.agentId);
-    if (agentIds.size === 0) return [];
-    const assigned = await companySkillService(db, { actor }).listAssignedToAgents(row.companyId, [...agentIds]);
-    return assigned
-      .filter((entry) => !PLUMBING_SKILL_KEYS.has(entry.skill.key))
-      .map(({ skill, agentIds: holders }): ResponsibilitySkillSummary => ({
+    const [assigned, filed] = await Promise.all([
+      agentIds.size === 0 ? Promise.resolve([]) : companySkillService(db, { actor }).listAssignedToAgents(row.companyId, [...agentIds]),
+      // Skills filed here by hand, as far as the reader may see them.
+      db.select({
+        linkId: responsibilityLinks.id,
+        id: companySkills.id,
+        key: companySkills.key,
+        slug: companySkills.slug,
+        name: companySkills.name,
+        description: companySkills.description,
+        tagline: companySkills.tagline,
+        iconUrl: companySkills.iconUrl,
+        color: companySkills.color,
+      }).from(responsibilityLinks)
+        .innerJoin(companySkills, and(eq(companySkills.id, responsibilityLinks.skillId), eq(companySkills.companyId, responsibilityLinks.companyId)))
+        .where(and(eq(responsibilityLinks.responsibilityId, row.id), skillsVisible(scope))),
+    ]);
+    const byId = new Map<string, ResponsibilitySkillSummary>();
+    for (const { skill, agentIds: holders } of assigned) {
+      if (PLUMBING_SKILL_KEYS.has(skill.key)) continue;
+      byId.set(skill.id, {
+        linkId: null,
+        computed: true,
         id: skill.id,
         key: skill.key,
         slug: skill.slug,
@@ -1045,8 +1086,13 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
         iconUrl: skill.iconUrl,
         color: skill.color,
         agentIds: holders,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
+      });
+    }
+    for (const { linkId, ...skill } of filed) {
+      const computed = byId.get(skill.id);
+      byId.set(skill.id, computed ? { ...computed, linkId } : { ...skill, linkId, computed: false, agentIds: [] });
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
   }
 
   async function artifactsFor(row: ResponsibilityRow, scope: ResponsibilityReadScope) {
@@ -1637,9 +1683,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
         const unfiled: ResponsibilityLink[] = [];
         if (moveFrom.length > 0) {
           for (const target of targets) {
-            const column = target.kind === "project" ? responsibilityLinks.projectId
-              : target.kind === "issue" ? responsibilityLinks.issueId
-                : responsibilityLinks.routineId;
+            const column = linkColumn(target.kind);
             const removed = await tx.delete(responsibilityLinks).where(and(
               eq(responsibilityLinks.companyId, row.companyId),
               inArray(responsibilityLinks.responsibilityId, moveFrom),
@@ -1657,9 +1701,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
       return db.transaction(async (tx) => {
         const removed: ResponsibilityLink[] = [];
         for (const target of targets) {
-          const column = target.kind === "project" ? responsibilityLinks.projectId
-            : target.kind === "issue" ? responsibilityLinks.issueId
-              : responsibilityLinks.routineId;
+          const column = linkColumn(target.kind);
           const rows = await tx.delete(responsibilityLinks)
             .where(and(eq(responsibilityLinks.responsibilityId, row.id), eq(column, target.id)))
             .returning();
@@ -1699,9 +1741,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
     ): Promise<ResponsibilityLinkLookupEntry[]> {
       const found: { id: string; projectId?: string | null } = await assertTargetInCompany(companyId, target, scope);
       const projectId: string | null = target.kind === "project" ? null : found.projectId ?? null;
-      const column = target.kind === "project" ? responsibilityLinks.projectId
-        : target.kind === "issue" ? responsibilityLinks.issueId
-          : responsibilityLinks.routineId;
+      const column = linkColumn(target.kind);
       const rows = await db.select({
         id: responsibilities.id,
         title: responsibilities.title,
