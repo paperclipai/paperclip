@@ -128,7 +128,9 @@ describe("AwsRoleSetup", () => {
     // A role this template made is updated by deploying the same stack again.
     const own = awsAgentSetupPrompt({ ...READY, savedRoleArn: ROLE_ARN } as Ready);
     expect(own).toContain("creates the stack, or updates it if it already exists");
-    expect(own).toContain("If the stack paperclip-conn-1 already exists, keep its current value");
+    // A stack that owns its provider keeps it; one that reused a provider rechecks the current address.
+    expect(own).toContain("already exists and its value is true");
+    expect(own).toContain("keep true so the stack keeps owning its provider. Otherwise run `aws iam list-open-id-connect-providers`");
     expect(own).not.toContain("Do not deploy the template.");
   });
 

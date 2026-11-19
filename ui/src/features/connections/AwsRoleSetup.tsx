@@ -159,7 +159,7 @@ export function AwsRoleSetup({
                 onChange={(event) => setRoleArn(event.target.value)}
                 placeholder={`arn:aws:iam::<account ID>:role/${ready.roleName}`}
                 aria-invalid={arnInvalid || undefined}
-                className="font-mono text-xs"
+                className="font-mono text-base md:text-xs"
                 autoComplete="off"
                 spellCheck={false}
               />
@@ -303,7 +303,7 @@ export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { availab
     "",
     "Steps:",
     "1. Run `aws sts get-caller-identity` and tell me which account and identity it shows. If the CLI is not signed in, or I may want a different account, stop and ask me which profile to use.",
-    `2. Choose CreateIdentityProvider. If the stack ${stack} already exists, keep its current value (from \`aws cloudformation describe-stacks --stack-name ${stack}\`). Otherwise run \`aws iam list-open-id-connect-providers\`: if one already ends with ${setup.providerHost}, pass false; otherwise pass true.`,
+    `2. Choose CreateIdentityProvider. If the stack ${stack} already exists and its value is true (see \`aws cloudformation describe-stacks --stack-name ${stack}\`), keep true so the stack keeps owning its provider. Otherwise run \`aws iam list-open-id-connect-providers\`: if one already ends with ${setup.providerHost}, pass false; otherwise pass true.`,
     `3. ${policyStep}`,
     ...(setup.savedRoleArn && setupRoleName(setup) !== setup.roleName
       ? [`4. The role ${setup.savedRoleArn} already exists and was not made by this template. Update its trust policy with \`aws iam update-assume-role-policy\` to the one in the template (with this account's ID and the identity provider's ARN, creating the provider first if step 2 found none), and make sure AWSMCPSignInOAuthAccessPolicy and the access policy are attached. Do not deploy the template.`]
