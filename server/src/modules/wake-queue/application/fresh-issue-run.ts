@@ -103,7 +103,7 @@ function isOrdinaryBoardComment(wake: DeferredCommentCandidate): boolean {
     queuedCommentIdsFromWakePayload(payload).length > 0;
 }
 
-/** Admit one new run and its saved inputs using the caller's existing issue lock. */
+/** Admit one new run and its saved inputs under the issue admission lock. */
 export function createFreshIssueRunAdmission<Run extends { id: string }>(store: FreshIssueRunStore<Run>) {
   return async function admitFreshIssueRun(input: FreshIssueRunInput): Promise<Run | undefined> {
     const { receipt, durableReceipt, durableChatReceiptId, executionWaitRequestId, issue, contextSnapshot } = input;

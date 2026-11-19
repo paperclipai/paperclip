@@ -12,7 +12,7 @@ import { createChatPublicationResolution } from "../services/chat-channels/publi
 import { createChatPublicationTaskControl } from "../services/chat-channels/publications/task-control.js";
 import { chatCredentialMutationLease } from "../services/chat-credential-mutation-lease.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "../services/heartbeat/run-lifecycle.js";
-import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { applyRunnerGoalPrpEvent } from "../services/runner-goals.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -205,7 +205,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const key = `issue-monitor-recovery:${f.issueId}:${issue!.monitorNextCheckAt!.toISOString()}`;
     await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
     await db.transaction(async tx => {
-      await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
+      await createWakeAdmissionWriter(tx, f.companyId).coalesceIntoActiveExecutionRun({
         companyId: f.companyId, agentId: f.agentId, activeExecutionRunId: f.runId, activeExecutionRunStatus: "running",
         mergedContextSnapshot: { issueId: f.issueId }, source: "automation", triggerDetail: "system",
         payload: { issueId: f.issueId }, requestedByActorType: "system", requestedByActorId: null,

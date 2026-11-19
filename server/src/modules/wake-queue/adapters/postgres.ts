@@ -42,7 +42,10 @@ import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../service
 import {
   authorizeFailedChatRunRetryWake,
   FailedChatRunRetryAuthorizationError,
+  withDurableChatAdmission,
+  type DurableChatWakeupRequest,
 } from "../../../services/durable-chat-wakeup.js";
+import { isExternalChatWaitAuthorizationContention } from "../../../services/native-runtime/chat-attachment-reuse.js";
 import { isRetiredExternalChatQuestionSource } from "../../../services/question-response-delivery.js";
 import { HttpError } from "../../../errors.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
@@ -73,7 +76,6 @@ import {
   parseObject,
   readNonEmptyString,
 } from "../domain/values.js";
-import { requireTransactionScopeTx, TransactionScope } from "../application/ports.js";
 import type {
   DeferredWakeCandidate,
   InvokableAgentSnapshot,
@@ -88,6 +90,7 @@ import type {
   WakeQueueTransaction,
 } from "../application/ports.js";
 import type { FreshIssueRunStore } from "../application/fresh-issue-run.js";
+import type { IssueWakeAdmissionOutcome } from "../application/issue-wake-admission.js";
 import type { RunSummary } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
@@ -97,6 +100,12 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
+export type IssueAdmissionDbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type IssueAdmissionTarget = {
+  companyId: string;
+  issueId: string;
+  durableChatRequest?: DurableChatWakeupRequest;
+};
 
 function normalizeAgentNameKey(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
@@ -971,23 +980,17 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
   return true;
 }
 
-/**
- * Builds the temporary transaction-scope handle the admission port needs.
- * `heartbeat.ts` calls this through `createWakeQueue`'s own wrapper; it
- * never builds a `TransactionScope` itself.
- */
-export function createAdmissionTransactionScope(companyId: string, tx: Db): TransactionScope {
-  return TransactionScope.create(companyId, tx);
+function assertAdmissionCompany(admittedCompanyId: string, companyId: string) {
+  if (companyId !== admittedCompanyId) {
+    throw new Error("wake-queue: admission is locked for a different company");
+  }
 }
 
-function requireAdmissionTx(scope: TransactionScope | null | undefined, companyId: string): Db {
-  return requireTransactionScopeTx(scope, companyId) as Db;
-}
-
-export function createWakeAdmissionReader(): WakeAdmissionReader {
+export function createWakeAdmissionReader(rawTx: IssueAdmissionDbTransaction, admittedCompanyId: string): WakeAdmissionReader {
+  const tx = rawTx as unknown as Db;
   return {
-    async matchesActiveWakeActor(scope, input) {
-      const tx = requireAdmissionTx(scope, input.companyId);
+    async matchesActiveWakeActor(input) {
+      assertAdmissionCompany(admittedCompanyId, input.companyId);
       if (!input.wakeupRequestId) return false;
       const actor = await tx
         .select({
@@ -1010,7 +1013,6 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
       );
     },
     async isSameExecutionAgent(
-      scope,
       {
         companyId,
         activeExecutionRunAgentId,
@@ -1018,7 +1020,7 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
         agentNameKey,
       },
     ) {
-      const tx = requireAdmissionTx(scope, companyId);
+      assertAdmissionCompany(admittedCompanyId, companyId);
       const executionAgent = await tx
         .select({ name: agents.name })
         .from(agents)
@@ -1038,10 +1040,9 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
     },
 
     async findExistingDeferredWake(
-      scope,
       { companyId, agentId, issueId, chatConversationId, durableActor },
     ) {
-      const tx = requireAdmissionTx(scope, companyId);
+      assertAdmissionCompany(admittedCompanyId, companyId);
       const row = await tx
         .select()
         .from(agentWakeupRequests)
@@ -1098,10 +1099,11 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
   };
 }
 
-export function createWakeAdmissionWriter(): WakeAdmissionWriter {
+export function createWakeAdmissionWriter(rawTx: IssueAdmissionDbTransaction, admittedCompanyId: string): WakeAdmissionWriter {
+  const tx = rawTx as unknown as Db;
   return {
-    async coalesceIntoActiveExecutionRun(scope, input) {
-      const tx = requireAdmissionTx(scope, input.companyId);
+    async coalesceIntoActiveExecutionRun(input) {
+      assertAdmissionCompany(admittedCompanyId, input.companyId);
       const now = new Date();
       const [candidate] = await tx.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, input.activeExecutionRunId), eq(heartbeatRuns.companyId, input.companyId),
@@ -1173,8 +1175,8 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       return mergedRun as unknown as Record<string, unknown>;
     },
 
-    async mergeIntoExistingDeferredWake(scope, input) {
-      const tx = requireAdmissionTx(scope, input.companyId);
+    async mergeIntoExistingDeferredWake(input) {
+      assertAdmissionCompany(admittedCompanyId, input.companyId);
       if (input.manualUserWakeActorId) await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
       const [prior] = await tx.select().from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.existingDeferredWakeId),
@@ -1256,8 +1258,8 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       }
     },
 
-    async insertNewDeferredWake(scope, input) {
-      const tx = requireAdmissionTx(scope, input.companyId);
+    async insertNewDeferredWake(input) {
+      assertAdmissionCompany(admittedCompanyId, input.companyId);
       await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
       await tx.insert(agentWakeupRequests).values({
         ...input.durableReceipt,
@@ -1273,6 +1275,32 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         idempotencyKey: input.idempotencyKey,
       });
     },
+  };
+}
+
+export function createPostgresIssueWakeAdmission(db: Db) {
+  return async function withIssueAdmission(
+    { companyId, issueId, durableChatRequest }: IssueAdmissionTarget,
+    evaluate: (tx: IssueAdmissionDbTransaction, stores: {
+      reader: WakeAdmissionReader;
+      writer: WakeAdmissionWriter;
+      fresh: FreshIssueRunStore<HeartbeatRunRow>;
+    }) => Promise<IssueWakeAdmissionOutcome<HeartbeatRunRow>>,
+  ): Promise<IssueWakeAdmissionOutcome<HeartbeatRunRow> | null> {
+    try {
+      return await db.transaction(withDurableChatAdmission(durableChatRequest, async (tx) => {
+        // Mentions may target another agent, but every admission must share the issue lock.
+        await tx.execute(sql`select id from issues where id = ${issueId} and company_id = ${companyId} for update`);
+        return evaluate(tx, {
+          reader: createWakeAdmissionReader(tx, companyId),
+          writer: createWakeAdmissionWriter(tx, companyId),
+          fresh: createFreshIssueRunStore(tx, companyId),
+        });
+      }));
+    } catch (error) {
+      if (isExternalChatWaitAuthorizationContention(error)) return null;
+      throw error;
+    }
   };
 }
 
@@ -1539,10 +1567,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 }
 
 export function createFreshIssueRunStore(
-  scope: TransactionScope,
+  rawTx: IssueAdmissionDbTransaction,
   companyId: string,
 ): FreshIssueRunStore<HeartbeatRunRow> {
-  const tx = requireAdmissionTx(scope, companyId);
+  const tx = rawTx as unknown as Db;
   return {
     async saveReceipt(input) {
       if (input.kind === "insert") {
