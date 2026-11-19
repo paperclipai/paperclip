@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations } from "@paperclipai/db";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { readRunCancellation } from "./run-cancellation.js";
@@ -58,14 +58,25 @@ export function settledRetryPredecessorPredicate() {
       and exists (select 1 from heartbeat_runs predecessor
         where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}
           and predecessor.agent_id = ${heartbeatRuns.agentId} and predecessor.finished_at is not null)
-      and not exists (select 1 from issue_recovery_actions predecessor_hold
-        where predecessor_hold.company_id = ${heartbeatRuns.companyId}
-          and predecessor_hold.cause in (${sql.join(EXECUTION_RECONCILIATION_CAUSES.map(cause => sql`${cause}`), sql`, `)})
-          and coalesce(predecessor_hold.evidence->>'runId', predecessor_hold.evidence->>'sourceRunId') = ${heartbeatRuns.retryOfRunId}::text
-          and (predecessor_hold.status in ('active', 'escalated')
-            or predecessor_hold.evidence->'automaticRecovery'->>'replay' = 'blocked'
-            or (predecessor_hold.status = 'cancelled' and predecessor_hold.outcome = 'cancelled')))
+      and not exists (select 1 from ${issueRecoveryActions}
+        where ${issueRecoveryActions.companyId} = ${heartbeatRuns.companyId}
+          and coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
+            = ${heartbeatRuns.retryOfRunId}::text
+          and (${effectiveReconciliationHoldPredicate()}
+            -- A newer hold superseded this one; the predecessor's obligation was not settled.
+            or (${inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES])}
+              and ${issueRecoveryActions.status} = 'cancelled' and ${issueRecoveryActions.outcome} = 'cancelled')))
     end)`;
+}
+
+/** A reconciliation hold that still blocks execution: open, or resolved with
+ * automatic replay blocked. Shared by the task blocker and the retry-chain proof. */
+export function effectiveReconciliationHoldPredicate() {
+  return and(
+    inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+    or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
+  )!;
 }
 
 /** SQL proof for `isUnclaimedControlPlaneCancellationCandidate`. Callers add

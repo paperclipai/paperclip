@@ -142,16 +142,19 @@ const support = await getEmbeddedPostgresTestSupport();
       .toMatchObject({ status: "resolved", outcome: "blocked" });
   });
 
-  it.each(["started", "process", "stage", "execution_event", "unexpected_cancellation", "predecessor_held", "predecessor_deleted"] as const)(
+  it.each(["started", "process", "stage", "execution_event", "unexpected_cancellation", "predecessor_superseded", "predecessor_blocked", "predecessor_deleted"] as const)(
     "keeps the hold when the cancelled retry shows it may have run: %s", async evidence => {
       const f = await seed();
       await moveToBacklog(f);
       // The retry continues its chain: a predecessor with its own unknown
       // outcome, or one that is gone, keeps the hold on the retry too.
-      if (evidence === "predecessor_held") await db.insert(issueRecoveryActions).values({ companyId: f.companyId,
-        sourceIssueId: f.issueId, kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation",
-        fingerprint: `legacy-execution:${f.sourceRunId}`, status: "cancelled", outcome: "cancelled", ownerType: "board",
-        nextAction: "Superseded by the retry's hold.", evidence: { runId: f.sourceRunId } });
+      if (evidence === "predecessor_superseded" || evidence === "predecessor_blocked") await db.insert(issueRecoveryActions).values({
+        companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+        cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${f.sourceRunId}`, ownerType: "board",
+        ...(evidence === "predecessor_superseded"
+          ? { status: "cancelled", outcome: "cancelled", nextAction: "Superseded by a newer hold.", evidence: { runId: f.sourceRunId } }
+          : { status: "resolved", outcome: "blocked", nextAction: "Automatic recovery stopped.",
+            evidence: { runId: f.sourceRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } }) });
       else if (evidence === "predecessor_deleted") await db.update(heartbeatRuns).set({ retryOfRunId: null })
         .where(eq(heartbeatRuns.id, f.retryRunId));
       else if (evidence === "execution_event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
@@ -171,7 +174,10 @@ const support = await getEmbeddedPostgresTestSupport();
         fingerprint: `legacy-execution:${f.retryRunId}`, status: "resolved", outcome: "blocked", ownerType: "board",
         nextAction: "Automatic recovery stopped.",
         evidence: { runId: f.retryRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } }).returning();
-      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: hold.id });
+      // The task stays held (by the retry's hold, or by the predecessor's own one).
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId))
+        .toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
+      expect(await holds(f.issueId)).toContainEqual(expect.objectContaining({ id: hold.id }));
       await db.delete(issueRecoveryActions).where(inArray(issueRecoveryActions.id, [hold.id]));
     });
 });
