@@ -9,7 +9,9 @@ A routine has:
 - A catch-up policy (what to do with missed scheduled runs)
 - An activity gate policy (whether quiet scheduled ticks should be skipped)
 
-**Authorization:** Agents can read all routines in their company but can only create or manage routines assigned to themselves. Board operators have full access, including reassignment.
+**Authorization:** Agents can read all routines in their company. They can create routines assigned to themselves, and manage routines assigned to themselves or routines the person their run works for is responsible for. Handing a routine to another agent needs that person to be allowed to assign work. Board operators have full access, including reassignment.
+
+**Dedicated tools:** prefer `list_routines` (filter by words, status, agent, project, responsible person, a responsibility, or `unfiled`) and `update_routine` (title, instructions, agent, project, status, priority, a plain `schedule` such as `{ frequency: "weekly", dayOfWeek: "monday", time: "09:00", timezone }` or `null` to turn it off, and `fileUnder` a responsibility). Each change is a routine revision the person can restore from the routine's history; say so when you report it. The routes below remain for everything else.
 
 ---
 

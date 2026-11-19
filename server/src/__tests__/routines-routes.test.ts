@@ -568,6 +568,35 @@ describe("routine routes", () => {
     expect(res.body).not.toHaveProperty("previousResponsibleUserId");
   });
 
+  it("lets an agent change a routine the person it works for is responsible for", async () => {
+    const personsRoutine = { ...routine, assigneeAgentId: otherAgentId, responsibleUserId: "person-1" };
+    mockRoutineService.get.mockResolvedValue(personsRoutine);
+    mockRoutineService.update.mockResolvedValue({ ...personsRoutine, title: "Weekly digest" });
+    const forPerson = await createApp({
+      type: "agent", agentId, companyId, onBehalfOfUserId: "person-1",
+      onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }],
+    });
+    const res = await request(forPerson).patch(`/api/routines/${routineId}`).send({ title: "Weekly digest" });
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "routine.updated", details: expect.objectContaining({ onBehalfOfUserId: "person-1" }),
+    }));
+
+    // Handing it to another agent is an assignment the person must be allowed to make.
+    const handOff = await request(forPerson).patch(`/api/routines/${routineId}`).send({ assigneeAgentId: projectId });
+    expect(handOff.status).toBe(403);
+    mockAccessService.canUser.mockResolvedValue(true);
+    expect((await request(forPerson).patch(`/api/routines/${routineId}`).send({ assigneeAgentId: projectId })).status).toBe(200);
+    expect(mockAccessService.canUser).toHaveBeenCalledWith(companyId, "person-1", "tasks:assign");
+
+    // An agent working for someone else may not.
+    const forOther = await createApp({
+      type: "agent", agentId, companyId, onBehalfOfUserId: "person-2",
+      onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active" }],
+    });
+    expect((await request(forOther).patch(`/api/routines/${routineId}`).send({ title: "x" })).status).toBe(403);
+  });
+
   it("prevents even the assigned agent from transferring routine responsibility", async () => {
     const app = await createApp({ type: "agent", agentId, companyId });
     mockRoutineService.getDetail.mockResolvedValue(routine);
