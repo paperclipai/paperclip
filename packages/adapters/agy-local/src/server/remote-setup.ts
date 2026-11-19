@@ -110,8 +110,16 @@ export function buildRemoteMcpHomeSetupCommand(input: RemoteMcpHomeSetupCommandI
  * read and written to the host. Best-effort: a missing brain/ dir, a failed
  * command, or any read/write error only loses the resume (the status quo),
  * never the run.
+ *
+ * Each manifest record carries the file's declared size
+ * ("<bytes>\t<relative-path>"), and the manifest itself is capped with
+ * `head -c` (maxFiles records at 512 bytes each), so the byte limits are
+ * enforced BEFORE any download: a large artifact under brain/ cannot
+ * exhaust server memory despite the advertised limits.
  */
 const AGY_BRAIN_MANIFEST_NAME = ".paperclip-brain-manifest";
+/** Generous per-record bound for the manifest cap (a brain/ path is short). */
+const AGY_BRAIN_MANIFEST_BYTES_PER_RECORD = 512;
 
 export interface CopyBackAgyConversationStateInput {
   /** Remote staged CLI home dir (posix path inside the sandbox). */
@@ -134,8 +142,13 @@ export async function copyBackAgyConversationState(
   try {
     const brainRemote = path.posix.join(assetDir, "brain");
     const manifestRemote = path.posix.join(assetDir, AGY_BRAIN_MANIFEST_NAME);
+    const manifestMaxBytes = limits.maxFiles * AGY_BRAIN_MANIFEST_BYTES_PER_RECORD;
     await runRemoteCommand(
-      `if [ -d ${shellQuote(brainRemote)} ]; then (cd ${shellQuote(brainRemote)} && find . -type f -print0 > ${shellQuote(manifestRemote)}); fi`,
+      // POSIX sh only (the remote runs `sh -c`): the sizes come from `wc -c`
+      // inside a `find -exec sh -c` loop, so paths with spaces or newlines
+      // stay intact as separate argv entries, and the manifest is capped
+      // with `head -c` before it is ever loaded.
+      `if [ -d ${shellQuote(brainRemote)} ]; then (cd ${shellQuote(brainRemote)} && find . -type f -exec sh -c 'for f; do printf "%s\\t%s\\0" "$(wc -c < "$f" | tr -d " ")" "$f"; done' sh {} + | head -c ${manifestMaxBytes} > ${shellQuote(manifestRemote)}); fi`,
     );
     let manifest: Buffer;
     try {
@@ -146,31 +159,53 @@ export async function copyBackAgyConversationState(
       if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return;
       throw error;
     }
-    const entries = manifest
+    // Records are "<declared-bytes>\t<relative-path>", NUL-separated. A
+    // record without a usable size is skipped: sizes are enforced before
+    // any download, so a large artifact cannot exhaust server memory.
+    const records = manifest
       .toString("utf8")
       .split("\0")
-      .map((entry) => (entry.startsWith("./") ? entry.slice(2) : entry))
-      .filter((entry) => entry.length > 0);
-    if (entries.length > limits.maxFiles) {
+      .map((record) => {
+        const tab = record.indexOf("\t");
+        if (tab <= 0) return null;
+        const size = Number(record.slice(0, tab).trim());
+        if (!Number.isInteger(size) || size < 0) return null;
+        const entry = record.slice(tab + 1);
+        return { size, entry: entry.startsWith("./") ? entry.slice(2) : entry };
+      })
+      .filter(
+        (record): record is { size: number; entry: string } =>
+          record !== null && record.entry.length > 0,
+      );
+    if (records.length > limits.maxFiles) {
       await log(
-        `[paperclip] Antigravity conversation copy-back: ${entries.length} brain files, keeping the first ${limits.maxFiles}.`,
+        `[paperclip] Antigravity conversation copy-back: ${records.length} brain files, keeping the first ${limits.maxFiles}.`,
       );
     }
     const hostBrainDir = path.join(hostCliHomeDir, "brain");
     let totalBytes = 0;
-    for (const entry of entries.slice(0, limits.maxFiles)) {
+    for (const { size, entry } of records.slice(0, limits.maxFiles)) {
       // Confine every entry to brain/: no absolute paths, no `..` segments,
       // and the resolved host path must stay under the host brain dir.
       if (path.posix.isAbsolute(entry) || entry.split("/").includes("..")) continue;
       const remotePath = path.posix.join(brainRemote, entry);
       const hostPath = path.join(hostBrainDir, ...entry.split("/"));
       if (!hostPath.startsWith(hostBrainDir + path.sep)) continue;
+      // Enforce the byte limits on the DECLARED size, before downloading:
+      // the read below is the allocation the limits are meant to bound.
+      if (size > limits.maxFileBytes) continue;
+      if (totalBytes + size > limits.maxTotalBytes) {
+        await log("[paperclip] Antigravity conversation copy-back: hit the total size limit, stopping.");
+        break;
+      }
       let content: Buffer;
       try {
         content = await readFile(remotePath);
       } catch {
         continue;
       }
+      // The file may have grown between the manifest and the read; enforce
+      // the limits on the bytes actually received as well.
       if (content.byteLength > limits.maxFileBytes) continue;
       if (totalBytes + content.byteLength > limits.maxTotalBytes) {
         await log("[paperclip] Antigravity conversation copy-back: hit the total size limit, stopping.");

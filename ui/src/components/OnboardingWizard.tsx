@@ -728,9 +728,15 @@ function OnboardingWizardInner({
     createdCompanyId,
     apiKeyEnvKeyFor(adapterType),
     effectiveOnboardingOpen && step === 4,
-    // agy_local reads its key from GEMINI_API_KEY, but its saved accounts
-    // are provider "antigravity", not "google".
-    adapterType === "agy_local" ? "antigravity" : undefined,
+    // The provider whose accounts to list follows the adapter, not the
+    // environment key: agy_local reads its key from GEMINI_API_KEY but its
+    // accounts are provider "antigravity", and pi_local reads its key from
+    // ANTHROPIC_API_KEY but its accounts are provider "openrouter".
+    // aiProviderForAdapter returns the right provider for both, agrees
+    // with the env-key derivation for every other adapter, and is
+    // undefined where there is no managed provider (so the derivation
+    // still applies there).
+    aiProviderForAdapter(adapterType),
   );
   // The chooser is absent in onboarding. Prefer the user's explicit default;
   // otherwise only reuse an unambiguous account, regardless of list ordering.

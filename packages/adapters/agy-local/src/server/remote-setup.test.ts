@@ -96,10 +96,10 @@ describe("copyBackAgyConversationState", () => {
     };
     const runRemoteCommand = async (command: string) => {
       commands.push(command);
-      // Simulate `find brain -type f -print0 > manifest`: walk the fake
-      // remote brain dir and write NUL-joined ./relative entries.
+      // Simulate the real remote command: walk the fake remote brain dir
+      // and write NUL-joined "<size>\t./relative" records.
       const brainDir = path.join(remoteAssetDir, "brain");
-      const entries: string[] = [];
+      const records: string[] = [];
       const walk = async (dir: string, rel: string): Promise<void> => {
         let names: string[] = [];
         try {
@@ -110,14 +110,15 @@ describe("copyBackAgyConversationState", () => {
         for (const name of names) {
           const full = path.join(dir, name);
           const relPath = rel ? `${rel}/${name}` : name;
-          if ((await fs.promises.stat(full)).isDirectory()) await walk(full, relPath);
-          else entries.push(`./${relPath}`);
+          const stat = await fs.promises.stat(full);
+          if (stat.isDirectory()) await walk(full, relPath);
+          else records.push(`${stat.size}\t./${relPath}`);
         }
       };
       await walk(brainDir, "");
       await fs.promises.writeFile(
         path.join(remoteAssetDir, ".paperclip-brain-manifest"),
-        entries.join("\0"),
+        records.join("\0"),
       );
       return { exitCode: 0 as number | null };
     };
@@ -150,7 +151,9 @@ describe("copyBackAgyConversationState", () => {
     );
     expect(fs.readFileSync(path.join(hostCliHome, "brain", "conv-2", "notes.txt"), "utf8")).toBe("hello");
     expect(fake.commands).toHaveLength(1);
-    expect(fake.commands[0]).toContain("find . -type f -print0");
+    expect(fake.commands[0]).toContain("find . -type f -exec sh -c");
+    expect(fake.commands[0]).toContain("wc -c");
+    expect(fake.commands[0]).toContain("head -c");
     expect(fake.commands[0]).toContain("'/remote/asset/brain'");
   });
 
@@ -194,7 +197,7 @@ describe("copyBackAgyConversationState", () => {
         fake.commands.push(command);
         await fs.promises.writeFile(
           path.join(remoteAssetDir, ".paperclip-brain-manifest"),
-          ["./conv-1/session.json", "../evil.txt", "/abs/path.txt", "./../escape.txt", ""].join("\0"),
+          ["2\t./conv-1/session.json", "9\t../evil.txt", "9\t/abs/path.txt", "9\t./../escape.txt", ""].join("\0"),
         );
         return { exitCode: 0 as number | null };
       },
@@ -258,5 +261,140 @@ describe("copyBackAgyConversationState", () => {
       .readdirSync(path.join(hostCliHome, "brain"))
       .sort();
     expect(copied).toHaveLength(2);
+  });
+
+  // The manifest carries each file's declared size, so the copy-back can
+  // enforce the byte limits BEFORE downloading anything. The fake remote
+  // below writes the sized manifest the real remote command produces.
+  function makeFakeRemoteWithSizes(remoteAssetDir: string) {
+    const commands: string[] = [];
+    const readCalls: string[] = [];
+    const base = makeFakeRemote(remoteAssetDir);
+    const runRemoteCommand = async (command: string) => {
+      commands.push(command);
+      const brainDir = path.join(remoteAssetDir, "brain");
+      const records: string[] = [];
+      const walk = async (dir: string, rel: string): Promise<void> => {
+        let names: string[] = [];
+        try {
+          names = await fs.promises.readdir(dir);
+        } catch {
+          return;
+        }
+        for (const name of names) {
+          const full = path.join(dir, name);
+          const relPath = rel ? `${rel}/${name}` : name;
+          const stat = await fs.promises.stat(full);
+          if (stat.isDirectory()) await walk(full, relPath);
+          else records.push(`${stat.size}\t./${relPath}`);
+        }
+      };
+      await walk(brainDir, "");
+      await fs.promises.writeFile(
+        path.join(remoteAssetDir, ".paperclip-brain-manifest"),
+        records.join("\0"),
+      );
+      return { exitCode: 0 as number | null };
+    };
+    const readFile = async (remotePath: string): Promise<Buffer> => {
+      readCalls.push(remotePath);
+      return base.readFile(remotePath);
+    };
+    return { commands, readCalls, readFile, runRemoteCommand };
+  }
+
+  it("skips a remote file whose declared size exceeds maxFileBytes without downloading it", async () => {
+    const remoteAssetDir = makeTmpDir();
+    const hostCliHome = makeTmpDir();
+    const dir = path.join(remoteAssetDir, "brain", "conv-1");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "big.bin"), "x".repeat(100));
+    fs.writeFileSync(path.join(dir, "small.txt"), "ok");
+    const fake = makeFakeRemoteWithSizes(remoteAssetDir);
+
+    await copyBackAgyConversationState({
+      assetDir: "/remote/asset",
+      hostCliHomeDir: hostCliHome,
+      runRemoteCommand: fake.runRemoteCommand,
+      readFile: fake.readFile,
+      log: () => {},
+      limits: { maxFileBytes: 10 },
+    });
+
+    expect(fs.readFileSync(path.join(hostCliHome, "brain", "conv-1", "small.txt"), "utf8")).toBe("ok");
+    expect(fs.existsSync(path.join(hostCliHome, "brain", "conv-1", "big.bin"))).toBe(false);
+    expect(fake.readCalls.filter((call) => call.endsWith("big.bin"))).toHaveLength(0);
+  });
+
+  it("stops at the total size limit using declared sizes, without downloading the rest", async () => {
+    const remoteAssetDir = makeTmpDir();
+    const hostCliHome = makeTmpDir();
+    for (const [conv, file] of [["conv-1", "a.json"], ["conv-2", "b.json"]] as const) {
+      const dir = path.join(remoteAssetDir, "brain", conv);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, file), "x".repeat(60));
+    }
+    const fake = makeFakeRemoteWithSizes(remoteAssetDir);
+
+    await copyBackAgyConversationState({
+      assetDir: "/remote/asset",
+      hostCliHomeDir: hostCliHome,
+      runRemoteCommand: fake.runRemoteCommand,
+      readFile: fake.readFile,
+      log: () => {},
+      limits: { maxFileBytes: 1000, maxTotalBytes: 100 },
+    });
+
+    expect(fs.existsSync(path.join(hostCliHome, "brain", "conv-1", "a.json"))).toBe(true);
+    expect(fs.existsSync(path.join(hostCliHome, "brain", "conv-2", "b.json"))).toBe(false);
+    expect(fake.readCalls.filter((call) => call.endsWith("b.json"))).toHaveLength(0);
+  });
+
+  it("ignores a manifest record with no usable size", async () => {
+    const remoteAssetDir = makeTmpDir();
+    const hostCliHome = makeTmpDir();
+    const dir = path.join(remoteAssetDir, "brain", "conv-1");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "session.json"), "ok");
+    const fake = makeFakeRemoteWithSizes(remoteAssetDir);
+    const malformed = {
+      ...fake,
+      runRemoteCommand: async (command: string) => {
+        fake.commands.push(command);
+        await fs.promises.writeFile(
+          path.join(remoteAssetDir, ".paperclip-brain-manifest"),
+          ["not-a-size\t./conv-1/session.json", "2\t./conv-1/session.json"].join("\0"),
+        );
+        return { exitCode: 0 as number | null };
+      },
+    };
+
+    await copyBackAgyConversationState({
+      assetDir: "/remote/asset",
+      hostCliHomeDir: hostCliHome,
+      runRemoteCommand: malformed.runRemoteCommand,
+      readFile: fake.readFile,
+      log: () => {},
+    });
+
+    expect(fs.readFileSync(path.join(hostCliHome, "brain", "conv-1", "session.json"), "utf8")).toBe("ok");
+  });
+
+  it("bounds the remote manifest with head -c", async () => {
+    const remoteAssetDir = makeTmpDir();
+    const hostCliHome = makeTmpDir();
+    const fake = makeFakeRemoteWithSizes(remoteAssetDir);
+
+    await copyBackAgyConversationState({
+      assetDir: "/remote/asset",
+      hostCliHomeDir: hostCliHome,
+      runRemoteCommand: fake.runRemoteCommand,
+      readFile: fake.readFile,
+      log: () => {},
+      limits: { maxFiles: 2 },
+    });
+
+    expect(fake.commands).toHaveLength(1);
+    expect(fake.commands[0]).toContain("head -c 1024");
   });
 });
