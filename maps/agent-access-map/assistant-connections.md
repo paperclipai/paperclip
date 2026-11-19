@@ -20,7 +20,7 @@ API: `present` — GET /api/mcp/setup for authenticated setup metadata; GET /mcp
 
 Agent access: `restricted` — an external assistant can read enabled public setup instructions, but authenticated setup management requires a signed-in human session/cloud_tenant source. A Paperclip agent, personal MCP bearer, local implicit board, or human board bearer does not supply that browser identity.
 
-Policy: The instance enablePublicMcp gate and configured MCP/authorization origin govern public setup and transport. Authenticated management requires an actual board user from session or cloud_tenant. The copied company hint does not grant membership, scopes, or execution authority. HTTPS is required apart from the defined loopback development exception.
+Policy: The configured MCP/authorization origin governs public setup and transport. Authenticated management requires an actual board user from session or cloud_tenant. The copied company hint does not grant membership, scopes, or execution authority. HTTPS is required apart from the defined loopback development exception.
 
 Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [Apps setup](../../ui/src/pages/apps/AssistantConnection.tsx), [public MCP routes](../../server/src/routes/public-mcp.ts), and [origin/gate policy](../../server/src/services/public-mcp/oauth.ts).
 

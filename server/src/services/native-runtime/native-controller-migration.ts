@@ -409,7 +409,7 @@ function onlineControllerSourceDeferral(error: unknown): string | null {
   return null;
 }
 
-export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal; storage?: StorageService }) {
+export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal; storage?: StorageService; onOutcome?: (outcome: string) => void }) {
   const counts = { inspected: 0, imported: 0, unchanged: 0, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} as Record<string, number> };
   const defer = (reason: string) => { counts.deferred[reason] = (counts.deferred[reason] ?? 0) + 1; };
   for await (const { selected, source } of retainedSources(db, input.signal)) {
@@ -478,6 +478,7 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
         throw error;
       });
     }
+    input.onOutcome?.(outcome);
     if (outcome === "archived_failed") counts.archivedFailed++;
     else if (outcome === "imported" || outcome === "unchanged") counts[outcome]++;
     else if (outcome === "source_already_absent") counts.sourceAlreadyAbsent++;

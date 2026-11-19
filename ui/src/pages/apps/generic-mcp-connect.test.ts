@@ -73,6 +73,11 @@ describe("defaultGenericMcpName", () => {
     expect(defaultGenericMcpName("https://www.example.test/mcp?token=secret"))
       .toBe("example.test/mcp");
   });
+
+  it("names another Paperclip after the instance it reaches, distinctive part first", () => {
+    expect(defaultGenericMcpName("https://acme.paperclip.app/mcp/paperclip")).toBe("acme Paperclip");
+    expect(defaultGenericMcpName("http://localhost:3101/mcp/paperclip")).toBe("localhost-3101 Paperclip");
+  });
 });
 
 describe("genericConnectGuidance", () => {

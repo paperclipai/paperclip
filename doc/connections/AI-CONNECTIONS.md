@@ -164,11 +164,22 @@ denying profile access; in that case the screen explains that Anthropic did not
 permit reading the account email. A profile denial does not mark a connected
 credential as disconnected.
 
+OpenAI subscription connections also show the selected **ChatGPT workspace**.
+The lookup uses OpenAI's Codex accounts endpoint and matches the workspace ID
+saved with that connection. It does not select the first or default workspace,
+or infer a workspace from an email or Paperclip access. A personal workspace
+without a provider name shows **Personal workspace** only when OpenAI reports
+its type. Missing names, ambiguous matches, and denied lookups show an unavailable
+state while keeping the saved email and connection controls. API keys and routed
+connections do not use this lookup.
+The endpoint and response formats follow OpenAI's [Codex backend client](https://github.com/openai/codex/blob/58627e6feac9f69cbbb405d85f4f7343eca75a35/codex-rs/backend-client/src/client.rs#L525)
+and [account response types](https://github.com/openai/codex/blob/58627e6feac9f69cbbb405d85f4f7343eca75a35/codex-rs/backend-client/src/types.rs#L130).
+
 `GET /api/companies/:companyId/ai-connections/:connectionId/identity?grantId=...`
 checks company membership, connection-management authority, and the selected
 credential's human audience before opening the credential. The response contains
-only safe account labels and bounded status messages. The Anthropic profile read
-has a 15-second headers/body deadline and no redirects. It runs separately from
+only safe account labels and bounded status messages. The provider profile reads
+have a 15-second headers/body deadline and no redirects. Each runs separately from
 the account/grants reads, so profile loading or failure cannot block account
 maintenance. The UI reuses an observation for five minutes, scoped to the company,
 connection, grant, and grant update time. Reconnect requires a new observation.

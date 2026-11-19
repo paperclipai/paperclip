@@ -772,6 +772,7 @@ export const ruLabels: Record<string, string> = {
   " then come back and enter authorization code": ", затем вернитесь и введите код авторизации",
   " by providing the authorization code below": " и введите код авторизации ниже",
   "Preparing browser sign-in…": "Готовим вход через браузер…",
+  "Finishing sign-in…": "Завершаем вход…",
   "Start sign-in again": "Начать вход заново",
   "Check again": "Проверить снова",
   "Submit code": "Отправить код",

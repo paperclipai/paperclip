@@ -35,6 +35,7 @@ import {
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   recordWorkspaceConfigFreshnessOperation,
   prepareProjectRepositoryWorkspaces,
+  WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY,
 } from "./workspaces.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import fs from "node:fs/promises";
@@ -284,6 +285,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   });
   if (!providerApiPlacement) assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
     adapterType: agent.adapterType,
+    environmentDriver: selectedEnvironmentForConfig?.driver,
     pluginTaskWorkspace, remoteAuthority });
   const assertRemotePreparationOwned = run.runtimeMode === "native" ? () => assertNativeSessionPreparationAuthority({
     db, companyId: agent.companyId, runId: run.id,
@@ -369,7 +371,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           // Source resolution can retain a configured host folder. Check the
           // resolved authority before materializing it or acquiring a sandbox.
           if (!providerApiPlacement) assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
-            adapterType: agent.adapterType, pluginTaskWorkspace, remoteAuthority });
+            adapterType: agent.adapterType, environmentDriver: selectedEnvironmentForConfig?.driver, pluginTaskWorkspace, remoteAuthority });
         }
         else {
           remoteSourceState.value = sourceState;
@@ -863,6 +865,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         reusableExistingExecutionWorkspace?.metadata ?? null,
       inferredMetadata: inferredExistingWorkspaceConfigMetadata,
       nextMetadata: latestWorkspaceConfigMetadata,
+      providerOwnedStorage: Boolean(pluginPrepared),
     },
   );
   const workspaceReuseProvisioningPolicy =
@@ -1182,9 +1185,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       );
     }
   }
+  const coreConfigFingerprint = baseExecutionWorkspaceMetadata?.[WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY];
   const nextExecutionWorkspaceMetadata = {
     ...baseExecutionWorkspaceMetadata,
     ...(pluginPrepared?.metadata ?? {}),
+    ...(pluginPrepared && coreConfigFingerprint !== undefined
+      ? { [WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY]: coreConfigFingerprint }
+      : {}),
     ...(taskWorkspaceOwner && !pluginPrepared ? { runnerTaskWorkspaceOwner: taskWorkspaceOwner } : {}),
     ...(providerFresh && pluginTaskWorkspace && !pluginPrepared ? { runnerTaskFreshWorkspace: providerFresh } : {}),
     ...(copyOnlyProvisioning ? { [CONTROLLER_PROVISION_COPY_ONLY]: true } : {}),

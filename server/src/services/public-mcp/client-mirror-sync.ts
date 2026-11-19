@@ -7,7 +7,6 @@ import { installMcpDeviceCutover } from "./device-cutover.js";
 import { prepareMcpClientMirrorPolicy } from "./client-mirror-mutations.js";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { mcpOauthClients as clients,mcpOauthDeviceRequests as devices, mcpOauthClientMirrorState as state, mcpOauthClientChanges as changes, type Db } from "@paperclipai/db";
-import { instanceSettingsService } from "../instance-settings.js";
 import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } from "../paperclip-cloud-connector.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -39,7 +38,7 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
       if (!origin || !instanceId || !publish) return;
       let enabled=false,publicationAttempted=false;
       try {
-        enabled=(await instanceSettingsService(db).getExperimentalReadOnly()).enablePublicMcp;
+        enabled=true;
         const assertCurrentAuthority=()=>{
           const identity=getCloudRuntimeIdentity(),currentConfig=paperclipCloudConnectorConfigFromEnv();
           if(!identity||identity.stackId!==managedIdentity.stackId||boundStackId!==undefined&&identity.stackId!==boundStackId

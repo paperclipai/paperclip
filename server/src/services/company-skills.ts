@@ -3442,6 +3442,41 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     return rows.map((row) => toCompanySkill(row));
   }
 
+  /**
+   * The company skills in the given agents' desired (assigned) skill sets, each
+   * with the ids of the agents that hold it. Resolves references the same way
+   * `list` counts attached agents; terminated agents are ignored. Reads only:
+   * it does not refresh the skill inventory.
+   */
+  async function listAssignedToAgents(
+    companyId: string,
+    agentIds: readonly string[],
+  ): Promise<Array<{ skill: CompanySkill; agentIds: string[] }>> {
+    if (agentIds.length === 0 || !visibility().canReadCompany(companyId)) return [];
+    const [agentRows, targets] = await Promise.all([
+      db.select({
+        id: agentsTable.id,
+        desiredSkills: sql<unknown>`${agentsTable.adapterConfig}->'paperclipSkillSync'->'desiredSkills'`,
+      }).from(agentsTable).where(and(
+        eq(agentsTable.companyId, companyId),
+        inArray(agentsTable.id, [...new Set(agentIds)]),
+        ne(agentsTable.status, "terminated"),
+      )),
+      listReferenceTargets(companyId),
+    ]);
+    const holders = new Map<string, string[]>();
+    for (const agent of agentRows) {
+      for (const key of resolveDesiredSkillKeys(targets, { paperclipSkillSync: { desiredSkills: agent.desiredSkills } })) {
+        const list = holders.get(key) ?? [];
+        if (!list.includes(agent.id)) list.push(agent.id);
+        holders.set(key, list);
+      }
+    }
+    if (holders.size === 0) return [];
+    const skills = await readFullSkillRows(companyId, new Set(holders.keys()));
+    return skills.map((skill) => ({ skill, agentIds: [...(holders.get(skill.key) ?? [])].sort() }));
+  }
+
   async function categoryCounts(companyId: string): Promise<CompanySkillCategoryCount[]> {
     const rows = await listFull(companyId);
     const counts = new Map<string, number>();
@@ -7504,6 +7539,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   return {
     list,
     listFull,
+    listAssignedToAgents,
     getById,
     getByKey,
     getByRouteRef,

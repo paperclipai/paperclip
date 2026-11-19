@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { composerPlaceholder, turnOutcomeLabel } from "./task-chat-copy";
 
-const english = "Message Переводчик — describe what you want done…";
-const russian = "Сообщение для Переводчик — опишите, что нужно сделать…";
+const english = "Work with Переводчик";
+const russian = "Работать с Переводчик";
 
 describe("composerPlaceholder", () => {
   it("keeps the English composer hint", () => {
@@ -16,7 +16,7 @@ describe("composerPlaceholder", () => {
   });
 
   it("translates the short mobile hint", () => {
-    expect(composerPlaceholder("ru", "standard", "Переводчик", true)).toBe("Сообщение для Переводчик…");
+    expect(composerPlaceholder("ru", "standard", "Переводчик", true)).toBe("Работать с Переводчик");
   });
 });
 
