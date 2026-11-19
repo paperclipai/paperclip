@@ -2127,6 +2127,37 @@ describe("IssueDetail", () => {
     expect(loadDraft(legacyKey)).toBe("Existing default draft");
   });
 
+  it("uses task breadcrumbs for a conversation's unnumbered backing task", async () => {
+    coordinatorPreference.enabled = true;
+    const agent = createAgent();
+    const task = createIssue({
+      id: "12345678-1234-4abc-8abc-0123456789ab",
+      identifier: null,
+      issueNumber: null,
+      title: "Chat with Demo Planner",
+      status: "in_review",
+      conversationAgentId: agent.id,
+      conversationUserId: "user-1",
+    });
+    mockRouteParams.issueId = task.id;
+    mockLocation.pathname = `/PAP/issues/${task.id}`;
+    mockIssuesApi.get.mockResolvedValue(task);
+    mockAgentsApi.list.mockResolvedValue([agent]);
+
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(queryClient.getQueryData(queryKeys.agents.list(task.companyId))).toEqual([agent]));
+    await flushReact();
+
+    expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
+      { label: "Tasks", href: "/issues" },
+      expect.objectContaining({
+        label: task.title,
+        identifier: "12345678",
+        leading: expect.objectContaining({ props: expect.objectContaining({ status: "in_review" }) }),
+      }),
+    ]);
+  });
+
   it.each(["message", "attachment", "plain HTTP message"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
     if (kind === "plain HTTP message") vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
     mockIssuesApi.markRead.mockClear();
@@ -3417,6 +3448,46 @@ describe("IssueDetail", () => {
       state: { from: "inbox", taskDocumentScrollEntry: { key: "task-entry", hash: "", pathname: "/PAP/issues/PAP-1" } },
     });
     expect(mockIssuesApi.get).toHaveBeenCalledTimes(getCalls);
+  });
+
+  it.each([
+    ["issue-1", "#document-plan&revision=saved-revision"],
+    ["PAP-2", "#document-plan&revision=saved-revision&documentIssue=PAP-2"],
+  ])("opens the saved plan from %s in the current agent chat", async (sourceTask, hash) => {
+    const pathname = "/PAP/chats/codex";
+    mockLocation.pathname = pathname;
+    mockPanelState.panelVisible = false;
+    coordinatorPreference.enabled = true;
+    const agent = createAgent();
+    const issue = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    const conversation = { agent, issue, ensureIssue: async () => issue };
+    const renderChat = () => renderIssueView(<TaskDetailSurface conversation={conversation} />);
+    await act(async () => renderChat());
+    await waitForAssertion(() => expect(mockOpenPanel).toHaveBeenCalled());
+
+    const link = document.createElement("a");
+    link.href = `/PAP/issues/${sourceTask}#document-plan&revision=saved-revision`;
+    link.dataset.sidebarDocumentLink = "true";
+    container.appendChild(link);
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    link.addEventListener("click", (click) => click.preventDefault(), { once: true });
+    await act(async () => { link.dispatchEvent(event); });
+    expect(mockNavigate).toHaveBeenCalledWith(`${pathname}${hash}`, {
+      preventScrollReset: true,
+      state: { taskDocumentScrollEntry: { key: "task-entry", hash: "", pathname } },
+    });
+
+    mockLocation.hash = hash;
+    await act(async () => renderChat());
+    await waitForAssertion(() => {
+      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+      expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children.props).toMatchObject({
+        documentDeepLink: { documentKey: "plan", tab: "document" },
+        showDocumentSourceTask: true,
+      });
+    });
+    expect(mockLocation.pathname).toBe(pathname);
   });
 
   it.each(["modifier", "new-tab", "download"])("preserves native document-link behavior for %s", async (kind) => {

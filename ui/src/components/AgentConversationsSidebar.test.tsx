@@ -41,8 +41,10 @@ let container: HTMLDivElement;
 let client: QueryClient;
 const roster = ["alice", "bob"].map(id => ({ id, companyId: "company-a", name: id, urlKey: id, role: "general", title: "Teammate", status: "idle" } as Agent));
 const chat = (id: string) => ({ id: `chat-${id}`, companyId: "company-a", conversationAgentId: id, conversationUserId: "user-a", updatedAt: id === "bob" ? "2026-09-02T00:00:00Z" : "2026-09-01T00:00:00Z" });
-async function render(onConversationOpened?: () => void) {
-  await act(async () => { root.render(<QueryClientProvider client={client}><AgentConversationsSidebar onConversationOpened={onConversationOpened} /></QueryClientProvider>); });
+async function render(option?: boolean | (() => void)) {
+  const compact = option === true;
+  const onConversationOpened = typeof option === "function" ? option : undefined;
+  await act(async () => { root.render(<QueryClientProvider client={client}><AgentConversationsSidebar compact={compact} onConversationOpened={onConversationOpened} /></QueryClientProvider>); });
 }
 async function addChat() { await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Add chat"]')!.click()); }
 async function choose(name: string) { await act(async () => [...document.querySelectorAll<HTMLElement>("[role=option]")].find(option => option.textContent?.startsWith(name))!.click()); }
@@ -493,6 +495,22 @@ it("does not let a dismissed selection override a newer chat", async () => {
   await act(async () => finishAlice(chat("alice")));
   expect(state.navigate).toHaveBeenCalledTimes(1);
   expect(client.getQueryData(queryKeys.agentChats.list("company-a", "user-a"))).toHaveLength(2);
+});
+
+it("opens a terminated agent's saved chat from Browse chats", async () => {
+  const retired = { ...roster[0], id: "retired-id", name: "Retired", status: "terminated", urlKey: "alice" };
+  client.setQueryData(queryKeys.agents.detail(retired.id), retired);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat(retired.id), chat("alice")]);
+  await render(true);
+
+  const browse = container.querySelector<HTMLButtonElement>('button[aria-label="Browse chats"]');
+  expect(browse).not.toBeNull();
+  await act(async () => browse!.click());
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(row => row.textContent?.includes("Retired"));
+  expect(option?.textContent).toContain("Open chat");
+  await act(async () => option!.click());
+  expect(state.navigate).toHaveBeenLastCalledWith("/chats/retired-id");
+  expect(state.ensure).not.toHaveBeenCalled();
 });
 
 it("keeps healthy chats usable while a historical lookup fails and retries", async () => {

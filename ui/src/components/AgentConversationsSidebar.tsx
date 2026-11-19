@@ -14,7 +14,7 @@ import { useDialogActions } from "@/context/DialogContext";
 import { AgentChatPin, agentChatPinKey, useAgentChatPins } from "./AgentChatPin";
 
 /** Account- and company-scoped data for the secondary chat navigation. */
-export function AgentConversationsSidebar({ onConversationOpened }: { onConversationOpened?: () => void } = {}) {
+export function AgentConversationsSidebar({ onConversationOpened, compact = false }: { onConversationOpened?: () => void; compact?: boolean } = {}) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const queryClient = useQueryClient();
   const agentChatPins = useAgentChatPins();
@@ -35,6 +35,7 @@ export function AgentConversationsSidebar({ onConversationOpened }: { onConversa
   const { pathname } = useLocation();
   const activeRef = pathname.split("/chats/")[1]?.split("/")[0];
   const roster = agents.data ?? [];
+  const byId = new Map(roster.map(agent => [agent.id, agent]));
   // The active roster excludes terminated agents, but their history remains readable.
   const rosterIds = new Set(roster.map(agent => agent.id));
   const missingIds = agents.isSuccess ? [...new Set((chats.data ?? [])
@@ -42,7 +43,6 @@ export function AgentConversationsSidebar({ onConversationOpened }: { onConversa
   const historyAgents = useQueries({ queries: missingIds.map(id => ({
     queryKey: queryKeys.agents.detail(id), queryFn: () => agentsApi.get(id, companyId!),
   })) });
-  const byId = new Map(roster.map(agent => [agent.id, agent]));
   for (const result of historyAgents) if (result.data) byId.set(result.data.id, result.data);
   const active = [...byId.values()].find(agent => agent.id === activeRef || (agent.status !== "terminated" && encodeURIComponent(agentRouteRef(agent)) === activeRef));
   const activeId = active?.id;
@@ -82,6 +82,7 @@ export function AgentConversationsSidebar({ onConversationOpened }: { onConversa
       await issuesApi.update(chat.id, { title });
       await queryClient.invalidateQueries({ queryKey: queryKeys.agentChats.list(companyId, userId) });
     }}
+    compact={compact}
     existingChatAgentIds={existingChatAgentIds}
     activeId={active?.id} previews={previews}
     unreadAgentIds={unreadAgentIds}
@@ -98,7 +99,7 @@ export function AgentConversationsSidebar({ onConversationOpened }: { onConversa
     historyLoading={historyAgents.some(result => result.isPending)}
     historyError={historyAgents.find(result => queryViewKind(result) === "error")?.error}
     onRetryHistory={() => { historyAgents.filter(result => result.isError).forEach(result => { void result.refetch(); }); }}
-    onAddChat={async (agent, signal) => {
+    onAddChat={compact ? undefined : async (agent, signal) => {
       // A confirmed new chat opens even after its picker was dismissed, so close the history with it.
       if (await openChat(agent, signal)) onConversationOpened?.();
     }}

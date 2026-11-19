@@ -1,5 +1,5 @@
 import { useId, useMemo, useRef, useState, type ReactNode } from "react";
-import { Pencil, Plus, Search, Users, X } from "lucide-react";
+import { PanelLeftOpen, Pencil, Plus, Search, Users, X } from "lucide-react";
 import { SortablePinnedList, SortablePinnedRow } from "./PinnedNavigationList";
 import { Badge } from "./ui/badge";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -16,6 +16,7 @@ export interface AgentConversationSidebarProps {
   onSelectHistory?: () => void;
   /** Renames a chat; a manual title stops the agent from naming it. */
   onRenameChat?: (chat: Issue, title: string) => Promise<void>;
+  compact?: boolean;
   /** Agents with a saved conversation; defaults to every listed agent. */
   existingChatAgentIds?: readonly string[];
   availableAgents?: Agent[];
@@ -43,7 +44,7 @@ const NO_PINNED_AGENTS: readonly string[] = [];
 const contactRowClassName = "agent-pin-row agent-contact-pin-row group/agent-pin relative rounded-md";
 
 /** Searchable navigation for conversations and available agents. */
-export function AgentConversationSidebar({ agents, chats, onSelectHistory, onRenameChat, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction, pinnedAgentIds = NO_PINNED_AGENTS, onReorderPins }: AgentConversationSidebarProps) {
+export function AgentConversationSidebar({ agents, compact = false, chats, onSelectHistory, onRenameChat, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction, pinnedAgentIds = NO_PINNED_AGENTS, onReorderPins }: AgentConversationSidebarProps) {
   const navigate = useNavigate();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState(initialSearch);
@@ -51,6 +52,20 @@ export function AgentConversationSidebar({ agents, chats, onSelectHistory, onRen
   const headingId = useId();
   const unreadIds = useMemo(() => new Set(unreadAgentIds), [unreadAgentIds]);
   const pinnedIds = useMemo(() => new Set(pinnedAgentIds), [pinnedAgentIds]);
+  const picker = <AgentChatPicker agents={compact ? agents : availableAgents} open={pickerOpen} onOpenChange={setPickerOpen}
+    trigger={compact ? <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Browse chats" title="Browse chats">
+      <PanelLeftOpen className="size-4" aria-hidden />
+    </Button> : undefined}
+    unreadMessageCounts={unreadMessageCounts}
+    existingChatAgentIds={onAddChat ? [] : existingChatAgentIds ?? agents.map(agent => agent.id)} loading={loading} error={error} onRetry={onRetry}
+    renderAgentIcon={agent => <AgentAvatar agent={agent} size={32} />}
+    onSelect={async (agent, signal) => {
+      if (onAddChat) await onAddChat(agent, signal);
+      else if (onSelect) await onSelect(agent, signal);
+      else navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}`);
+      if (!signal?.aborted) setSearch("");
+    }} />;
+  if (compact) return picker;
   const query = search.trim().toLocaleLowerCase();
   const matching = agents.filter(agent => `${agent.name} ${agent.title ?? ""} ${agent.role}`.toLocaleLowerCase().includes(query));
   const byId = new Map(matching.map(agent => [agent.id, agent]));
@@ -137,16 +152,7 @@ export function AgentConversationSidebar({ agents, chats, onSelectHistory, onRen
         <Users className="size-4" />Browse all agents
       </Button>
     </div>}
-    <AgentChatPicker agents={availableAgents} open={pickerOpen} onOpenChange={setPickerOpen}
-      unreadMessageCounts={unreadMessageCounts}
-      existingChatAgentIds={onAddChat ? [] : existingChatAgentIds ?? agents.map(agent => agent.id)} loading={loading} error={error} onRetry={onRetry}
-      renderAgentIcon={agent => <AgentAvatar agent={agent} size={32} />}
-      onSelect={async (agent, signal) => {
-        if (onAddChat) await onAddChat(agent, signal);
-        else if (onSelect) await onSelect(agent, signal);
-        else navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}`);
-        if (!signal?.aborted) setSearch("");
-      }} />
+    {picker}
   </aside>;
 }
 
