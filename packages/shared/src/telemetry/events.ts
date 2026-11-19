@@ -148,6 +148,7 @@ export function trackAgentTaskRun(
     outputTokens?: number;
     cachedTokens?: number;
     taskId?: string;
+    failureCause?: RawDimension<EventDimensionsMap["agent.task_run"]["failure_cause"]>;
   },
 ): void {
   client.track("agent.task_run", {
@@ -161,6 +162,106 @@ export function trackAgentTaskRun(
     ...(dims.outputTokens === undefined ? {} : { output_tokens: dims.outputTokens }),
     ...(dims.cachedTokens === undefined ? {} : { cached_tokens: dims.cachedTokens }),
     ...(dims.taskId ? { task_id: emitPrivateRef(client, dims.taskId) } : {}),
+    ...(dims.failureCause ? { failure_cause: asEventDimension(dims.failureCause) } : {}),
+  });
+}
+
+export function trackModelConnected(
+  client: TelemetryClient,
+  dims: {
+    provider: RawDimension<EventDimensionsMap["model.connected"]["provider"]>;
+    connectionMethod: RawDimension<EventDimensionsMap["model.connected"]["connection_method"]>;
+    ownership: RawDimension<EventDimensionsMap["model.connected"]["ownership"]>;
+    routingKind?: RawDimension<EventDimensionsMap["model.connected"]["routing_kind"]> | null;
+    firstForCompany: boolean;
+  },
+): void {
+  client.track("model.connected", {
+    provider: asEventDimension(dims.provider),
+    connection_method: asEventDimension(dims.connectionMethod),
+    ownership: asEventDimension(dims.ownership),
+    ...(dims.routingKind ? { routing_kind: asEventDimension(dims.routingKind) } : {}),
+    first_for_company: dims.firstForCompany,
+  });
+}
+
+export function trackTaskCreated(
+  client: TelemetryClient,
+  dims: {
+    createdByKind: RawDimension<EventDimensionsMap["task.created"]["created_by_kind"]>;
+    isSubtask: boolean;
+  },
+): void {
+  client.track("task.created", {
+    created_by_kind: asEventDimension(dims.createdByKind),
+    is_subtask: dims.isSubtask,
+  });
+}
+
+export function trackTaskCompleted(
+  client: TelemetryClient,
+  dims: {
+    completedByKind: RawDimension<EventDimensionsMap["task.completed"]["completed_by_kind"]>;
+    isSubtask: boolean;
+  },
+): void {
+  client.track("task.completed", {
+    completed_by_kind: asEventDimension(dims.completedByKind),
+    is_subtask: dims.isSubtask,
+  });
+}
+
+export function trackTaskBlocked(
+  client: TelemetryClient,
+  dims: {
+    blockedReason: RawDimension<EventDimensionsMap["task.blocked"]["blocked_reason"]>;
+    blockedByKind: RawDimension<EventDimensionsMap["task.blocked"]["blocked_by_kind"]>;
+  },
+): void {
+  client.track("task.blocked", {
+    blocked_reason: asEventDimension(dims.blockedReason),
+    blocked_by_kind: asEventDimension(dims.blockedByKind),
+  });
+}
+
+export function trackPlanCreated(
+  client: TelemetryClient,
+  dims: {
+    createdByKind: RawDimension<EventDimensionsMap["plan.created"]["created_by_kind"]>;
+    atTaskCreation: boolean;
+  },
+): void {
+  client.track("plan.created", {
+    created_by_kind: asEventDimension(dims.createdByKind),
+    at_task_creation: dims.atTaskCreation,
+  });
+}
+
+export function trackPlanApproved(
+  client: TelemetryClient,
+  dims: {
+    approvedByKind: RawDimension<EventDimensionsMap["plan.approved"]["approved_by_kind"]>;
+    startsExecution: boolean;
+  },
+): void {
+  client.track("plan.approved", {
+    approved_by_kind: asEventDimension(dims.approvedByKind),
+    starts_execution: dims.startsExecution,
+  });
+}
+
+export function trackArtifactCreated(
+  client: TelemetryClient,
+  dims: {
+    artifactType: RawDimension<EventDimensionsMap["artifact.created"]["artifact_type"]>;
+    provider: RawDimension<EventDimensionsMap["artifact.created"]["provider"]>;
+    creationFlow: RawDimension<EventDimensionsMap["artifact.created"]["creation_flow"]>;
+  },
+): void {
+  client.track("artifact.created", {
+    artifact_type: asEventDimension(dims.artifactType),
+    provider: asEventDimension(dims.provider),
+    creation_flow: asEventDimension(dims.creationFlow),
   });
 }
 

@@ -71,7 +71,7 @@ const createResponsibilityFields = z.object({
   /** An agent in the same company that runs the work. */
   runByAgentId: z.string().uuid().optional().nullable(),
   evidence: optionalText,
-  /** Board: defaults to the acting user. Agent: required. */
+  /** Board: defaults to the acting user. Agent: defaults to the person its run works for. */
   ownerUserId: z.string().trim().min(1).optional(),
   /** Board only; agents always create `proposed`. Board default: `active`. */
   status: z.enum(RESPONSIBILITY_STATUSES).optional(),
@@ -184,7 +184,7 @@ const booleanQuery = z
   .transform((value) => value === true || value === "true" || value === "1");
 
 export const listResponsibilitiesQuerySchema = z.object({
-  /** Board: defaults to the acting user. Agent: required. */
+  /** Board: defaults to the acting user. Agent: defaults to the person its run works for. */
   ownerUserId: z.string().trim().min(1).optional(),
   includeLetGo: booleanQuery.optional().default(false),
 });

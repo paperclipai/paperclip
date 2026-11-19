@@ -612,7 +612,7 @@ describeEmbeddedPostgres("durable native provider backups", () => {
   it("defers failed history without treating pre-copy as offline authority", async () => {
     const [f] = await offlineFixtures(1);
     expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
-      .toEqual({ inspected: 1, published: 0, current: 0, deferred: { source_not_successful: 1 } });
+      .toEqual({ inspected: 1, published: 0, current: 0, deferred: { source_session_not_selected: 1 } });
     expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
   });
   it("defers a source being replaced online while offline migration still refuses it", async () => {

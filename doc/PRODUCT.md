@@ -93,6 +93,11 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+Canceling a task with active subtasks opens a modal headed “Cancel N active subtasks?”
+The modal lists each readable active descendant's status icon and title, without task IDs or links.
+Done and canceled tasks are excluded. The person can cancel only the parent,
+cancel the parent and listed subtasks, or dismiss the modal to leave them unchanged.
+
 When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list and shows each task once. Project
@@ -109,6 +114,9 @@ Coordinator Recents lets you pin tasks, agent chats, and projects above More.
 The pin button appears on the current row or when a row is hovered or focused
 with the keyboard. Shortcuts share the saved order with pinned pages and stay
 available as Recents changes.
+Project links in Recents and pinned navigation open the project's Tasks tab.
+Both locations have a chevron that shows up to 12 recently updated project tasks.
+The task list loads when expanded and keeps the task status and unread markers.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery

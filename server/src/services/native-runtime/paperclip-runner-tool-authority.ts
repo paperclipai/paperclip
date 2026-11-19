@@ -50,6 +50,7 @@ import { buildLowTrustSourceTrust, isLowTrustQuarantined, LOW_TRUST_QUARANTINED_
 import { handoffPlanContext } from "./handoff-plan-context.js";
 import { callCreateSkillTool, callUpdateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
+import { callResponsibilityTool, isResponsibilityTool, RESPONSIBILITY_TOOL_NAMES, responsibilityToolsDisabledError } from "../responsibility-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -159,6 +160,7 @@ const IMPLEMENTED_OPERATIONS = new Set([
   "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "create_skill", "update_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_agents", "get_agent", "list_approvals", "get_approval", "get_approval_context",
+  ...RESPONSIBILITY_TOOL_NAMES,
 ]);
 
 /** Closed first-party native Muse profile. No connector, generic API, credential or workspace grants. */
@@ -238,6 +240,8 @@ type Binding = {
   apiToolsEnabled?: boolean;
   workMode?: "standard" | "planning" | "ask" | "skill_test";
   casesEnabled?: boolean;
+  /** Instance `enableResponsibilities`, pinned when the turn opens; the routes still enforce it. */
+  responsibilitiesEnabled?: boolean;
   workspaceRoot?: string;
   workspaceBridge?: boolean;
   /** Pinned provider identity; configuration edits cannot remove API file guards. */
@@ -414,6 +418,7 @@ export class PaperclipRunnerToolAuthority {
         (descriptor) =>
           IMPLEMENTED_OPERATIONS.has(descriptor.operationId) &&
           (!(descriptor.operationId === "handoff_case" || NATIVE_CASE_OPERATIONS.has(descriptor.operationId)) || this.binding.casesEnabled === true) &&
+          (!isResponsibilityTool(descriptor.operationId) || this.binding.responsibilitiesEnabled === true) &&
           (!this.binding.firstPartyOnly || !EXTERNAL_WORKSPACE_OPERATIONS.has(descriptor.operationId)) &&
           (runnerApiToolsEnabled(
             this.binding.companyId,
@@ -956,6 +961,17 @@ export class PaperclipRunnerToolAuthority {
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
           conversation: Boolean(context.issue.conversationAgentId),
           companyPrefix: call.tool === "list_projects" ? await this.#companyPagePrefix() : null });
+      }
+      case "list_responsibilities":
+      case "get_responsibility":
+      case "find_responsibilities_for": {
+        // Hidden tools stay refused when called by name; the routes also re-check the live setting.
+        if (this.binding.responsibilitiesEnabled !== true) throw responsibilityToolsDisabledError();
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = this.#apiToken(context);
+        if (!apiUrl || !token) throw new Error("Responsibility tool authentication is unavailable");
+        return callResponsibilityTool({ name: call.tool, arguments: input, apiUrl, token,
+          companyId: this.binding.companyId, companyPrefix: await this.#companyPagePrefix() });
       }
       case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());
       case "hire_agent": {

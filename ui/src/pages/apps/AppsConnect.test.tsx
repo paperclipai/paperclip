@@ -55,6 +55,7 @@ const mockCompany = vi.hoisted(() => ({
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
 const GITHUB = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "github")!;
+const GITHUB_COPILOT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "github-copilot")!;
 const GITHUB_MANAGED = {
   ...GITHUB,
   ownershipAvailability: {
@@ -1233,8 +1234,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it.each([false, true])("opens Copilot with visible personal defaults and shares only by explicit choice (%s)", async (share) => {
-    mockSearch.value = "source=github&method=copilot-token";
-    listGalleryMock.mockResolvedValue({ apps: [GITHUB] });
+    mockSearch.value = "source=github-copilot";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB, GITHUB_COPILOT] });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     client.setQueryData(queryKeys.environments.list("company-1"), [
       { id: "local-env", name: "Local", driver: "local", status: "active", config: {} },
@@ -1273,6 +1274,16 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       environmentId: "local-env",
     }));
     expect(mockNavigate).toHaveBeenCalledWith("/apps/copilot-ai-account/permissions");
+  });
+
+  it("redirects older GitHub Copilot setup links to the GitHub Copilot connector", async () => {
+    mockSearch.value = "source=github&method=copilot-token&agentId=agent-1";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB, GITHUB_COPILOT] });
+    await render();
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/apps/connect?source=github-copilot&method=copilot-token&agentId=agent-1",
+      { replace: true },
+    );
   });
 
   it("states the GitHub identity default and keeps its controls one click away", async () => {
