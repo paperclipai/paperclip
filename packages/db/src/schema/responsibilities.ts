@@ -13,6 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
+import { companySkills } from "./company_skills.js";
 import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { routines } from "./routines.js";
@@ -123,10 +124,10 @@ export const responsibilities = pgTable(
 );
 
 /**
- * What lives under a responsibility: exactly one project, task or routine per
- * row. A target can sit under several responsibilities, once each. The
- * responsibilities module owns these links so the issues, projects and
- * routines tables stay unchanged.
+ * What lives under a responsibility: exactly one project, task, routine or
+ * company skill per row. A target can sit under several responsibilities,
+ * once each. The responsibilities module owns these links so the issues,
+ * projects, routines and skills tables stay unchanged.
  */
 export const responsibilityLinks = pgTable(
   "responsibility_links",
@@ -139,6 +140,8 @@ export const responsibilityLinks = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "cascade" }),
     routineId: uuid("routine_id").references(() => routines.id, { onDelete: "cascade" }),
+    /** A company skill filed here by hand, beside the skills of the agents doing the work. */
+    skillId: uuid("skill_id").references(() => companySkills.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
@@ -152,12 +155,16 @@ export const responsibilityLinks = pgTable(
     routineUq: uniqueIndex("responsibility_links_responsibility_routine_uq")
       .on(table.responsibilityId, table.routineId)
       .where(sql`${table.routineId} is not null`),
+    skillUq: uniqueIndex("responsibility_links_responsibility_skill_uq")
+      .on(table.responsibilityId, table.skillId)
+      .where(sql`${table.skillId} is not null`),
     projectIdx: index("responsibility_links_project_idx").on(table.projectId),
     issueIdx: index("responsibility_links_issue_idx").on(table.issueId),
     routineIdx: index("responsibility_links_routine_idx").on(table.routineId),
+    skillIdx: index("responsibility_links_skill_idx").on(table.skillId),
     singleTargetCheck: check(
       "responsibility_links_single_target_check",
-      sql`(${table.projectId} is not null)::int + (${table.issueId} is not null)::int + (${table.routineId} is not null)::int = 1`,
+      sql`(${table.projectId} is not null)::int + (${table.issueId} is not null)::int + (${table.routineId} is not null)::int + (${table.skillId} is not null)::int = 1`,
     ),
   }),
 );
