@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { materializePaperclipSkillCopy } from '@paperclipai/adapter-utils/server-utils';
-import { repositorySkillProjection } from '../services/skill-repository-package.js';
+import { repositorySkillFolderFiles, repositorySkillProjection } from '../services/skill-repository-package.js';
 import { skillPackageManifest } from '../services/skill-package-files.js';
 import { snapshotFile, skillFileBytes } from '../services/skill-snapshot.js';
 
@@ -50,5 +50,29 @@ describe('repository skill delivery', () => {
   it('rejects escaped and absent entrypoints', () => {
     expect(() => repositorySkillProjection([], '../SKILL.md')).toThrow(/Invalid/);
     expect(() => repositorySkillProjection([], 'missing/SKILL.md')).toThrow(/missing/);
+  });
+});
+
+describe('repository skill folder for agents', () => {
+  const files = [snapshotFile('skills/main/SKILL.md', 'skill', Buffer.from(md)),
+    snapshotFile('skills/main/agents/openai.yaml', 'other', Buffer.from('policy: {}\n')),
+    snapshotFile('skills/main/scripts/run.sh', 'script', Buffer.from('#!/bin/sh\n'), true),
+    snapshotFile('skills/mainline/SKILL.md', 'skill', Buffer.from('Similar prefix, other skill')),
+    snapshotFile('skills/runtime/SKILL.md', 'skill', Buffer.from('Runtime instructions')),
+    snapshotFile('NOTICE.md', 'markdown', Buffer.from('Credits'))];
+  it('delivers only the skill folder with original bytes and source paths', () => {
+    const folder = repositorySkillFolderFiles(files, 'skills/main/SKILL.md');
+    expect(folder.map(file => [file.path, file.sourcePath]).sort()).toEqual([
+      ['SKILL.md', 'skills/main/SKILL.md'], ['agents/openai.yaml', 'skills/main/agents/openai.yaml'], ['scripts/run.sh', 'skills/main/scripts/run.sh'],
+    ]);
+    expect(skillFileBytes(folder.find(file => file.path === 'SKILL.md')!)).toEqual(Buffer.from(md));
+  });
+  it('delivers the whole repository when its SKILL.md is at the root', () => {
+    expect(repositorySkillFolderFiles([snapshotFile('SKILL.md', 'skill', Buffer.from(md)), snapshotFile('x/y.md', 'markdown', Buffer.from('y'))], 'SKILL.md')
+      .map(file => file.path).sort()).toEqual(['SKILL.md', 'x/y.md']);
+  });
+  it('rejects escaped and absent entrypoints', () => {
+    expect(() => repositorySkillFolderFiles(files, '../SKILL.md')).toThrow(/Invalid/);
+    expect(() => repositorySkillFolderFiles(files, 'missing/SKILL.md')).toThrow(/missing/);
   });
 });

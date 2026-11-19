@@ -587,7 +587,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
 
   it('versions repository dependencies together, retains pinned copies offline and publishes shared updates with warnings', async () => {
     files = { 'skills/main/SKILL.md': md('main') + '\nRead ../helper/SKILL.md and ../../agents/worker.md.',
-      'skills/helper/SKILL.md': md('helper'), 'agents/worker.md': 'Worker v1', 'NOTICE.md': 'Credits',
+      'skills/helper/SKILL.md': md('helper'), 'skills/main/notes.md': 'Notes v1', 'agents/worker.md': 'Worker v1', 'NOTICE.md': 'Credits',
       'shared/check.sh': '#!/bin/sh\necho check', 'assets/data.bin': Buffer.from([0, 255, 128]) };
     commit = sha;
     const sources = skillSourceService(db), skills = companySkillService(db);
@@ -612,8 +612,8 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect(audit?.verdict).not.toBe('fail');
     expect(audit?.codes).not.toContain('inventory_mismatch');
     expect(audit?.codes).not.toContain('non_text_file');
-    expect(audit?.findings.some(finding => finding.path === '.paperclip-repository/assets/data.bin' && finding.code === 'asset_trust')).toBe(true);
-    expect(audit?.findings.some(finding => finding.path === '.paperclip-repository/shared/check.sh' && finding.code === 'script_trust')).toBe(true);
+    // The audit covers what agents get: only the skill folder, not the shared repository files.
+    expect(audit?.findings.some(finding => finding.path.includes('assets/data.bin') || finding.path.includes('shared/check.sh'))).toBe(false);
     const v1 = (await skills.getVersion(companyId, main.id, main.currentVersionId!))!;
     const helper = installed.imported.find(skill => skill.name === 'helper')!;
     expect((await skills.getVersion(companyId, helper.id, helper.currentVersionId!))?.repositorySnapshotId).toBe(v1.repositorySnapshotId);
@@ -622,16 +622,18 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect((await sources.refresh(companyId, installed.source.id, context)).unchanged).toBe(2);
     expect((await skills.getById(companyId, main.id))?.trustLevel).toBe('scripts_executables');
     expect((await skills.getById(companyId, main.id))?.currentVersionId).toBe(v1.id);
-    files = { ...files, 'agents/worker.md': 'Worker v2' }; commit = 'b'.repeat(40);
+    files = { ...files, 'agents/worker.md': 'Worker v2', 'skills/main/notes.md': 'Notes v2' }; commit = 'b'.repeat(40);
     const changed = await sources.refresh(companyId, installed.source.id, context);
     expect(changed.updated).toHaveLength(2);
     const newest = changed.updated.find(skill => skill.id === main.id)!;
     expect(newest.currentVersionId).not.toBe(v1.id);
     const latest = (await skills.listRuntimeSkillEntries(companyId)).find(entry => entry.key === main.key)!;
-    expect(await fs.readFile(path.join(latest.source, '.paperclip-repository/agents/worker.md'), 'utf8')).toBe('Worker v2');
+    // Agents get the skill folder only (Agent Skills standard), at the selected version.
+    expect(await fs.readFile(path.join(latest.source, 'notes.md'), 'utf8')).toBe('Notes v2');
+    expect(await fs.readFile(path.join(latest.source, 'SKILL.md'), 'utf8')).toBe(files['skills/main/SKILL.md']);
+    await expect(fs.stat(path.join(latest.source, '.paperclip-repository'))).rejects.toMatchObject({ code: 'ENOENT' });
     const pinned = (await skills.listRuntimeSkillEntries(companyId, { versionSelections: new Map([[main.key, v1.id]]) })).find(entry => entry.key === main.key)!;
-    expect(await fs.readFile(path.join(pinned.source, '.paperclip-repository/agents/worker.md'), 'utf8')).toBe('Worker v1');
-    expect(await fs.readFile(path.join(pinned.source, '.paperclip-repository/NOTICE.md'), 'utf8')).toBe('Credits');
+    expect(await fs.readFile(path.join(pinned.source, 'notes.md'), 'utf8')).toBe('Notes v1');
     const copy = await skills.forkSkill(companyId, main.id, { slug: 'repository-copy' });
     expect((await skills.readFile(companyId, copy.skill.id, '.paperclip-repository/agents/worker.md'))?.content).toBe('Worker v2');
     expect((await skills.auditSkill(companyId, copy.skill.id))?.verdict).not.toBe('fail');
@@ -686,9 +688,9 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect(source.entries.find(entry => entry.path === 'broken/SKILL.md')?.selection).toBe('selected');
     expect((await skills.readFile(companyId, result.imported[0]!.id, '.paperclip-repository/broken/SKILL.md'))?.content).toBe(files['broken/SKILL.md']);
     const runtime = (await skills.listRuntimeSkillEntries(companyId)).find(entry => entry.key === result.imported[0]!.key)!;
-    expect(await fs.readFile(path.join(runtime.source, '.paperclip-repository/shared/guide.md'), 'utf8')).toBe('Shared instructions');
-    expect(await fs.readFile(path.join(runtime.source, '.paperclip-repository/broken/SKILL.md'), 'utf8')).toBe(files['broken/SKILL.md']);
-    await expect(fs.stat(path.join(runtime.source, '.paperclip-repository/shared/tools'))).rejects.toMatchObject({ code: 'ENOENT' });
+    // Agents get only the skill folder: the original SKILL.md, no shared or sibling files.
+    expect(await fs.readFile(path.join(runtime.source, 'SKILL.md'), 'utf8')).toBe(files['skills/main/SKILL.md']);
+    await expect(fs.stat(path.join(runtime.source, '.paperclip-repository'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it.each([false, true])('updates bounded dependencies after repository growth and retains versions when dependencies cannot fit (scheduled: %s)', async scheduled => {

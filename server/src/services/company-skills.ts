@@ -3637,8 +3637,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           ...skill,
           sourceType: "local_path",
           sourceLocator,
+          // Audit what agents get: a repository skill delivers only its own folder.
           fileInventory: version.repositorySnapshotId || version.packageSnapshotId
-            ? await packageRuntime.inventory(version) : await packages.versionFiles(version),
+            ? await packageRuntime.agentInventory(version) : await packages.versionFiles(version),
         });
       });
     }

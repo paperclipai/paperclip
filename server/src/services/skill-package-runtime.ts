@@ -5,7 +5,7 @@ import type { Db } from "@paperclipai/db";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { skillPackageStore, type StoredSkillVersion } from "./skill-package-store.js";
 import { assertSkillPackageFileSize, packageSha256, verifySkillPackageDirectory, relocateSkillPackageVerification, type SkillPackageFile, type SkillPackageManifest } from "./skill-package-files.js";
-import { REPOSITORY_CONTENT_DIR, repositorySkillProjection } from "./skill-repository-package.js";
+import { REPOSITORY_CONTENT_DIR, repositorySkillFolderFiles, repositorySkillProjection } from "./skill-repository-package.js";
 import { assertSkillSnapshotPath, skillFileBytes } from "./skill-snapshot.js";
 import { ensureSkillCacheDirectory } from "./skill-version-cache.js";
 
@@ -91,8 +91,15 @@ export function skillPackageRuntime(db: Db) {
     if (generatedFiles.length && bytes <= MAX_PROJECTION_BYTES) { projections.set(key, { files: generatedFiles, bytes }); projectionBytes += bytes; }
     return [...files, ...generatedFiles];
   }
+  /** What an agent gets: a repository skill's own folder; other skills as stored. */
+  async function agentFiles(version: StoredSkillVersion): Promise<ProjectedFile[]> {
+    if (!version.repositorySnapshotId) return projection(version);
+    if (!version.repositorySkillPath) throw new Error("Repository skill entrypoint is missing");
+    const manifest = await store.manifest(version.companyId, version.repositorySnapshotId);
+    return repositorySkillFolderFiles(manifest.files, version.repositorySkillPath);
+  }
   async function materialize(version: StoredSkillVersion, directory: string) {
-    const files = await measureRunPhase("skills.repository.read", () => projection(version));
+    const files = await measureRunPhase("skills.repository.read", () => agentFiles(version));
     const parent = path.dirname(directory);
     await ensureSkillCacheDirectory(parent, true);
     if (await measureRunPhase("skills.version.verify", () => verifySkillPackageDirectory(directory, files), { fileCount: files.length })) return directory;
@@ -126,5 +133,9 @@ export function skillPackageRuntime(db: Db) {
     if (content === undefined) return null;
     return { path: file.path, kind: file.kind, content, encoding: file.encoding, executable: file.executable };
   }
-  return { inventory, materialize, readFile };
+  /** The file list of what an agent gets (see `agentFiles`), for audits of the delivered copy. */
+  async function agentInventory(version: StoredSkillVersion) {
+    return (await agentFiles(version)).map(({ path, kind }) => ({ path, kind }));
+  }
+  return { inventory, agentInventory, materialize, readFile };
 }

@@ -564,14 +564,16 @@ describe.skipIf(!support.supported)("external skill packages", () => {
   it("repairs a same-size cached edit and restores old versions without upstream access", async () => {
     const f = await fixture();
     const entries = await f.resolve();
-    const target = path.join(entries[0]!.source, ".paperclip-repository/shared/run.sh");
+    // Agents get the skill folder itself; edit its entrypoint without changing its size.
+    const target = path.join(entries[0]!.source, "SKILL.md");
+    const original = await fs.readFile(target, "utf8");
     const stat = await fs.stat(target);
-    await fs.chmod(target, 0o755);
-    await fs.writeFile(target, "#!/bin/sh\necho modified\n");
+    await fs.chmod(target, 0o644);
+    await fs.writeFile(target, original.replace("description: Test", "description: Tset"));
     await fs.utimes(target, stat.atime, stat.mtime);
     const read = vi.spyOn(storage, "getObject");
     await f.resolve();
-    expect(await fs.readFile(target, "utf8")).toBe(files[2]!.content);
+    expect(await fs.readFile(target, "utf8")).toBe(original);
     expect(read).not.toHaveBeenCalled();
     const upstream = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     for (const entry of entries) await fs.rm(entry.source, { recursive: true });
