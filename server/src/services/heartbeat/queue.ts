@@ -15,6 +15,7 @@ import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, isPersonRequestedRun, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
 import { reserveAutomaticRunStart } from "../recovery/automatic-run-brake.js";
 import { queuedRunDispatchFacts } from "./queued-run-line.js";
+import { QUEUED_RUN_ORDER_CONTEXT_KEYS } from "./queued-run-provenance.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { assignmentWakePayloadSql, isAssignmentWakePayload, notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -2738,17 +2739,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
-      issueId: contextText("issueId"),
-      wakeReason: contextText("wakeReason"),
-      previousRunId: contextText("previousRunId"),
+      orderContext: sql<Record<string, string | null>>`jsonb_build_object(${sql.join(QUEUED_RUN_ORDER_CONTEXT_KEYS.map(key =>
+        sql`${key}::text, ${contextText(key)}`), sql`, `)})`,
     }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.agentId, agentId),
       eq(heartbeatRuns.status, "queued"),
       cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
     )).orderBy(asc(heartbeatRuns.createdAt));
-    return rows.map(({ issueId, wakeReason, previousRunId, ...run }) => ({
+    return rows.map(({ orderContext, ...run }) => ({
       ...run,
-      contextSnapshot: Object.fromEntries(Object.entries({ issueId, wakeReason, previousRunId }).filter(([, value]) => value !== null)),
+      contextSnapshot: Object.fromEntries(Object.entries(orderContext ?? {}).filter(([, value]) => value !== null)),
     }));
   }
 

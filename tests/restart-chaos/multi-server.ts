@@ -173,7 +173,7 @@ export interface CrossServerRun {
   ownerPid: number | null;
 }
 
-export interface RunIdentityEvent { runId: string; kind: "recorded" | "stopped"; pid: number; at: number }
+export interface RunIdentityEvent { runId: string; kind: "recorded" | "stopped"; pid: number; at: number; targetKind?: "local" | "remote" }
 
 export interface CrossServerViolation {
   rule: "MS_foreign_failure" | "MS_double_executor";
@@ -228,6 +228,7 @@ export function checkCrossServer(input: { runs: readonly CrossServerRun[]; event
   }
   const byRun = new Map<string, RunIdentityEvent[]>();
   for (const event of input.events) {
+    if (event.targetKind === "remote") continue;
     const list = byRun.get(event.runId) ?? [];
     list.push(event);
     byRun.set(event.runId, list);
@@ -268,7 +269,7 @@ export async function readCrossServerEvidence(db: Db, companyId: string): Promis
     [companyId]) as Row[];
   const events = await client.unsafe(
     `select e.run_id::text as "runId", e.event_type as "eventType", e.payload->>'processPid' as pid,
-            floor(extract(epoch from e.created_at) * 1000) as at
+            e.payload->>'targetKind' as "targetKind", floor(extract(epoch from e.created_at) * 1000) as at
        from heartbeat_run_events e join heartbeat_runs r on r.id = e.run_id
       where r.company_id::text = $1 and e.event_type in ('native.process_identity_recorded', 'native.local_process_stopped')`, [companyId]) as Row[];
   return {
@@ -279,7 +280,8 @@ export async function readCrossServerEvidence(db: Db, companyId: string): Promis
       const pid = num(row.pid);
       const at = num(row.at);
       if (pid === null || at === null || !Number.isSafeInteger(pid)) return [];
-      return [{ runId: String(row.runId), kind: row.eventType === "native.local_process_stopped" ? "stopped" as const : "recorded" as const, pid, at }];
+      return [{ runId: String(row.runId), kind: row.eventType === "native.local_process_stopped" ? "stopped" as const : "recorded" as const, pid, at,
+        ...(row.targetKind === "remote" ? { targetKind: "remote" as const } : {}) }];
     }),
   };
 }
