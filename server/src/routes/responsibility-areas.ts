@@ -14,7 +14,7 @@ import { accessService, instanceSettingsService, logActivity } from "../services
 import { responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
 import { responsibilityAreaService } from "../services/responsibility-areas.js";
 import { assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { agentPersonInCompany } from "./responsibilities.js";
+import { agentPersonInCompany, DASHBOARD_VERSION_HEADER } from "./responsibilities.js";
 
 const NOT_FOUND = "Area not found";
 
@@ -109,6 +109,7 @@ export function responsibilityAreaRoutes(db: Db) {
     const { area, created } = person
       ? await agentChanges.record({
         companyId, ownerUserIds: [person.userId], agentId: actor.actorId,
+        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
         createdAreaIds: (result) => (result.created ? [result.area.id] : []),
       }, create)
       : await create();
@@ -131,7 +132,8 @@ export function responsibilityAreaRoutes(db: Db) {
     if (!row) return;
     const writer = await assertAreaWriter(req, row.companyId);
     const updated = writer
-      ? await agentChanges.record({ companyId: row.companyId, ownerUserIds: [writer.personUserId], agentId: writer.agentId, touchedAreaIds: [row.id] },
+      ? await agentChanges.record({ companyId: row.companyId, ownerUserIds: [writer.personUserId], agentId: writer.agentId, touchedAreaIds: [row.id],
+        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId) },
         () => svc.update(row, req.body))
       : await svc.update(row, req.body);
     await logAreaMutation(req, row.companyId, "responsibility_area.updated", row.id, {
@@ -162,7 +164,8 @@ export function responsibilityAreaRoutes(db: Db) {
     }
     const remove = () => svc.remove(row, { moveTo: query.moveResponsibilitiesTo ?? null });
     const removed = writer
-      ? await agentChanges.record({ companyId: row.companyId, ownerUserIds: [writer.personUserId], agentId: writer.agentId, touchedAreaIds: [row.id] }, remove)
+      ? await agentChanges.record({ companyId: row.companyId, ownerUserIds: [writer.personUserId], agentId: writer.agentId, touchedAreaIds: [row.id],
+        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId) }, remove)
       : await remove();
     if (!removed) {
       res.status(404).json({ error: NOT_FOUND });

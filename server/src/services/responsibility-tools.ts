@@ -58,11 +58,13 @@ export function responsibilityToolsDisabledError() {
   return new HttpError(404, RESPONSIBILITIES_TURNED_OFF_MESSAGE, { code: RESPONSIBILITIES_DISABLED_CODE });
 }
 
-type ApiCall = (method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown) => Promise<unknown>;
+/** What a write reports beside its body: the Dashboard version it saved, if any. */
+type ApiMeta = { version?: string | null };
+type ApiCall = (method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, meta?: ApiMeta) => Promise<unknown>;
 
 function apiCaller(input: { apiUrl: string; token: string }, fetcher: typeof fetch): ApiCall {
   const base = `${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api`;
-  return async (method, path, body) => {
+  return async (method, path, body, meta) => {
     const response = await fetcher(`${base}${path}`, {
       method,
       headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
@@ -70,6 +72,7 @@ function apiCaller(input: { apiUrl: string; token: string }, fetcher: typeof fet
       signal: AbortSignal.timeout(60_000),
     });
     const result = await response.json().catch(() => ({}));
+    if (meta) meta.version = response.headers.get("x-paperclip-dashboard-version") ?? meta.version ?? null;
     if (!response.ok) {
       if (result?.code === RESPONSIBILITIES_DISABLED_CODE) {
         throw responsibilityToolsDisabledError();
@@ -247,6 +250,12 @@ async function findResponsibilitiesFor(call: ApiCall, companyId: string, args: u
 // ---------------------------------------------------------------------------
 
 const UNDO_NOTE = "Saved as a version in the person's Dashboard history, where they can undo it.";
+const NOT_IN_HISTORY_NOTE = "This change is not in the person's Dashboard history (it holds only active responsibilities and their areas), so it cannot be undone from there.";
+const BAR_NOTE = "Undo from the Dashboard history does not put an old bar or metric back; the earlier readings stay in the metric's history.";
+
+function undoNote(meta: ApiMeta) {
+  return meta.version ? { undo: UNDO_NOTE, dashboardVersionId: meta.version } : { undo: NOT_IN_HISTORY_NOTE };
+}
 const itemKind = z.enum(["project", "task", "routine"]);
 const toolItem = z.object({ kind: itemKind, id: z.string().trim().min(1).max(200) }).strict();
 const nullableText = z.string().trim().max(10_000).nullable();
@@ -368,17 +377,19 @@ function areaResult(area: ResponsibilityArea) {
 
 async function createArea(call: ApiCall, companyId: string, args: unknown) {
   const input = createAreaToolInput.parse(args);
-  const area = await call("POST", `/companies/${encodeURIComponent(companyId)}/responsibility-areas`, input) as ResponsibilityArea;
+  const meta: ApiMeta = {};
+  const area = await call("POST", `/companies/${encodeURIComponent(companyId)}/responsibility-areas`, input, meta) as ResponsibilityArea;
   return {
     area: areaResult(area),
-    ...(area.status === "proposed" ? { note: "Saved as a proposal: this run works for no member of the company, so a person must confirm it." } : { undo: UNDO_NOTE }),
+    ...(area.status === "proposed" ? { note: "Saved as a proposal: this run works for no member of the company, so a person must confirm it." } : undoNote(meta)),
   };
 }
 
 async function updateArea(call: ApiCall, args: unknown) {
   const { areaId, ...patch } = updateAreaToolInput.parse(args);
-  const area = await call("PATCH", `/responsibility-areas/${encodeURIComponent(areaId)}`, patch) as ResponsibilityArea;
-  return { area: areaResult(area), undo: UNDO_NOTE };
+  const meta: ApiMeta = {};
+  const area = await call("PATCH", `/responsibility-areas/${encodeURIComponent(areaId)}`, patch, meta) as ResponsibilityArea;
+  return { area: areaResult(area), ...undoNote(meta) };
 }
 
 type InteractionRow = {
@@ -386,6 +397,7 @@ type InteractionRow = {
   kind: string;
   status: string;
   createdAt: string;
+  createdByAgentId?: string | null;
   payload?: { target?: { type?: string; key?: string } };
 };
 
@@ -396,6 +408,8 @@ type InteractionRow = {
  */
 async function deletionConfirmation(call: ApiCall, input: {
   issueId: string;
+  /** Only this agent's own cards count: the delete route accepts no other agent's. */
+  agentId: string;
   key: string;
   label: string;
   prompt: string;
@@ -404,7 +418,8 @@ async function deletionConfirmation(call: ApiCall, input: {
 }): Promise<{ state: "accepted" | "pending" | "declined" | "posted"; interactionId: string | null }> {
   const issue = encodeURIComponent(input.issueId);
   const cards = (await call("GET", `/issues/${issue}/interactions`) as InteractionRow[])
-    .filter((card) => card.kind === "request_confirmation" && card.payload?.target?.type === "custom" && card.payload.target.key === input.key)
+    .filter((card) => card.kind === "request_confirmation" && card.createdByAgentId === input.agentId
+      && card.payload?.target?.type === "custom" && card.payload.target.key === input.key)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const latest = cards[0];
   if (latest?.status === "accepted") return { state: "accepted", interactionId: latest.id };
@@ -437,19 +452,25 @@ function awaiting(state: "pending" | "posted" | "declined", interactionId: strin
     next: `A permanent delete needs the person's yes. ${state === "posted" ? "A confirmation card is now" : "The confirmation card is still"} on this task. Tell them, then stop; when they accept, you are woken: call this tool again with the same arguments to delete ${what}.` };
 }
 
-async function deleteArea(call: ApiCall, issueId: string, args: unknown) {
+async function deleteArea(call: ApiCall, companyId: string, issueId: string, agentId: string, args: unknown) {
   const input = deleteAreaToolInput.parse(args);
+  const areas = await call("GET", `/companies/${encodeURIComponent(companyId)}/responsibility-areas?includeArchived=true`) as ResponsibilityArea[];
+  const area = areas.find((entry) => entry.id === input.areaId);
+  if (!area) throw new HttpError(404, "Area not found");
+  const destination = input.moveResponsibilitiesTo ? areas.find((entry) => entry.id === input.moveResponsibilitiesTo) : null;
+  if (input.moveResponsibilitiesTo && !destination) throw new HttpError(404, "Area to move responsibilities to not found");
   const confirmation = await deletionConfirmation(call, {
     issueId,
+    agentId,
     key: `responsibility-area-delete:${input.areaId}`,
-    label: "Delete an area",
-    prompt: "Delete this area permanently?",
-    details: input.moveResponsibilitiesTo
-      ? "The area is deleted. Its responsibilities move to another area. You cannot undo a delete."
+    label: `Delete the area "${area.title}"`.slice(0, 240),
+    prompt: `Delete the area "${area.title}" permanently?`.slice(0, 1000),
+    details: destination
+      ? `The area is deleted. Its responsibilities move to "${destination.title}". You cannot undo a delete.`
       : "The area is deleted. Its responsibilities stay, with no area. You cannot undo a delete; archiving an area can be undone.",
     askAgain: input.askAgain,
   });
-  if (confirmation.state !== "accepted") return awaiting(confirmation.state, confirmation.interactionId, "the area");
+  if (confirmation.state !== "accepted") return awaiting(confirmation.state, confirmation.interactionId, `the area "${area.title}"`);
   const query = new URLSearchParams({ confirmationId: confirmation.interactionId! });
   if (input.moveResponsibilitiesTo) query.set("moveResponsibilitiesTo", input.moveResponsibilitiesTo);
   const removed = await call("DELETE", `/responsibility-areas/${encodeURIComponent(input.areaId)}?${query}`) as ResponsibilityArea & { movedResponsibilities?: number };
@@ -466,10 +487,17 @@ async function createResponsibility(call: ApiCall, companyId: string, args: unkn
   const same = [...overview.responsibilities, ...overview.proposed]
     .find((row) => row.status !== "let_go" && row.title.trim().toLowerCase() === input.title.trim().toLowerCase());
   if (same) {
+    // A retry after a failed filing step files the items it did not reach; filing is idempotent.
+    const meta: ApiMeta = {};
+    const filed = input.fileItems?.length
+      ? await call("POST", `/responsibilities/${encodeURIComponent(same.id)}/file`, { items: await resolveItems(call, input.fileItems) }, meta) as { filed: unknown[] }
+      : null;
     return { created: false, responsibility: summary(same, prefix),
+      ...(filed ? { filedItems: filed.filed.length, ...undoNote(meta) } : {}),
       note: "A responsibility with this title already exists for this person; use update_responsibility to change it." };
   }
   const area = input.areaTitle ? await areaIdForTitle(call, companyId, input.areaTitle) : null;
+  const meta: ApiMeta = {};
   const created = await call("POST", `/companies/${company}/responsibilities`, {
     title: input.title,
     ...(input.ownerUserId ? { ownerUserId: input.ownerUserId } : {}),
@@ -480,9 +508,9 @@ async function createResponsibility(call: ApiCall, companyId: string, args: unkn
     ...(input.runByAgentId ? { runByAgentId: input.runByAgentId } : {}),
     ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
     ...(input.status ? { status: input.status } : {}),
-  }) as ResponsibilityWithRollup;
+  }, meta) as ResponsibilityWithRollup;
   const filed = input.fileItems?.length
-    ? await call("POST", `/responsibilities/${encodeURIComponent(created.id)}/file`, { items: await resolveItems(call, input.fileItems) }) as { filed: unknown[] }
+    ? await call("POST", `/responsibilities/${encodeURIComponent(created.id)}/file`, { items: await resolveItems(call, input.fileItems) }, meta) as { filed: unknown[] }
     : null;
   return {
     created: true,
@@ -491,7 +519,7 @@ async function createResponsibility(call: ApiCall, companyId: string, args: unkn
     ...(filed ? { filedItems: filed.filed.length } : {}),
     ...(created.status === "proposed" && input.status !== "proposed"
       ? { note: "Saved as a proposal: this run does not work for someone who may manage this person's responsibilities, so they must confirm it." }
-      : { undo: UNDO_NOTE }),
+      : undoNote(meta)),
   };
 }
 
@@ -506,15 +534,17 @@ async function updateResponsibility(call: ApiCall, companyId: string, args: unkn
   if (area) patch.areaId = area.id;
   if (input.bar !== undefined) Object.assign(patch, barPatch(input.bar));
   if (Object.keys(patch).length === 0) throw new HttpError(422, "Send at least one field to change");
-  const updated = await call("PATCH", `/responsibilities/${encodeURIComponent(input.responsibilityId)}`, patch) as ResponsibilityWithRollup;
+  const meta: ApiMeta = {};
+  const updated = await call("PATCH", `/responsibilities/${encodeURIComponent(input.responsibilityId)}`, patch, meta) as ResponsibilityWithRollup;
   return {
     responsibility: summary(updated, prefix),
     ...(area?.created ? { createdArea: { id: area.id, title: input.areaTitle } } : {}),
-    undo: UNDO_NOTE,
+    ...undoNote(meta),
+    ...(input.bar !== undefined ? { barNote: BAR_NOTE } : {}),
   };
 }
 
-async function deleteResponsibility(call: ApiCall, issueId: string, args: unknown) {
+async function deleteResponsibility(call: ApiCall, issueId: string, agentId: string, args: unknown) {
   const input = deleteResponsibilityToolInput.parse(args);
   const id = encodeURIComponent(input.responsibilityId);
   const row = await call("GET", `/responsibilities/${id}`) as ResponsibilityDetail;
@@ -522,6 +552,7 @@ async function deleteResponsibility(call: ApiCall, issueId: string, args: unknow
     + row.routines.filter((routine) => routine.membership === "direct").length;
   const confirmation = await deletionConfirmation(call, {
     issueId,
+    agentId,
     key: `responsibility-delete:${input.responsibilityId}`,
     label: `Delete "${row.title}"`.slice(0, 240),
     prompt: `Delete the responsibility "${row.title}" permanently?`.slice(0, 1000),
@@ -540,27 +571,29 @@ async function deleteResponsibility(call: ApiCall, issueId: string, args: unknow
 async function fileUnderResponsibility(call: ApiCall, args: unknown) {
   const input = fileUnderResponsibilityToolInput.parse(args);
   const items = await resolveItems(call, input.items);
+  const meta: ApiMeta = {};
   const result = await call("POST", `/responsibilities/${encodeURIComponent(input.responsibilityId)}/file`, {
     items, ...(input.moveFrom ? { moveFrom: input.moveFrom } : {}),
-  }) as { filed: Array<{ link: { id: string }; created: boolean }>; unfiled: Array<{ responsibilityId: string }> };
+  }, meta) as { filed: Array<{ link: { id: string }; created: boolean }>; unfiled: Array<{ responsibilityId: string }> };
   return {
     responsibilityId: input.responsibilityId,
     filed: result.filed.filter((entry) => entry.created).length,
     alreadyFiled: result.filed.filter((entry) => !entry.created).length,
     movedFrom: [...new Set(result.unfiled.map((link) => link.responsibilityId))],
-    undo: UNDO_NOTE,
+    ...undoNote(meta),
   };
 }
 
 async function removeFromResponsibility(call: ApiCall, args: unknown) {
   const input = removeFromResponsibilityToolInput.parse(args);
   const items = await resolveItems(call, input.items);
-  const result = await call("POST", `/responsibilities/${encodeURIComponent(input.responsibilityId)}/unfile`, { items }) as { unfiled: unknown[] };
+  const meta: ApiMeta = {};
+  const result = await call("POST", `/responsibilities/${encodeURIComponent(input.responsibilityId)}/unfile`, { items }, meta) as { unfiled: unknown[] };
   return {
     responsibilityId: input.responsibilityId,
     unfiled: result.unfiled.length,
     notFiledThere: items.length - result.unfiled.length,
-    undo: UNDO_NOTE,
+    ...undoNote(meta),
   };
 }
 
@@ -573,6 +606,8 @@ export async function callResponsibilityTool(input: {
   companyId: string;
   /** The run's task: confirmation cards for a permanent delete are posted there. */
   issueId: string;
+  /** The run's agent: only its own confirmation cards authorize its deletes. */
+  agentId: string;
   /** The company's issue prefix; results then carry page hrefs. */
   companyPrefix?: string | null;
 }, fetcher: typeof fetch = fetch) {
@@ -583,10 +618,10 @@ export async function callResponsibilityTool(input: {
     case "find_responsibilities_for": return findResponsibilitiesFor(call, input.companyId, input.arguments, input.companyPrefix);
     case "create_area": return createArea(call, input.companyId, input.arguments);
     case "update_area": return updateArea(call, input.arguments);
-    case "delete_area": return deleteArea(call, input.issueId, input.arguments);
+    case "delete_area": return deleteArea(call, input.companyId, input.issueId, input.agentId, input.arguments);
     case "create_responsibility": return createResponsibility(call, input.companyId, input.arguments, input.companyPrefix);
     case "update_responsibility": return updateResponsibility(call, input.companyId, input.arguments, input.companyPrefix);
-    case "delete_responsibility": return deleteResponsibility(call, input.issueId, input.arguments);
+    case "delete_responsibility": return deleteResponsibility(call, input.issueId, input.agentId, input.arguments);
     case "file_under_responsibility": return fileUnderResponsibility(call, input.arguments);
     case "remove_from_responsibility": return removeFromResponsibility(call, input.arguments);
   }

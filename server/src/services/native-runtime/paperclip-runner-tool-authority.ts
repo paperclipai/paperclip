@@ -979,7 +979,8 @@ export class PaperclipRunnerToolAuthority {
         const token = this.#apiToken(context);
         if (!apiUrl || !token) throw new Error("Responsibility tool authentication is unavailable");
         return callResponsibilityTool({ name: call.tool, arguments: input, apiUrl, token,
-          companyId: this.binding.companyId, issueId: this.binding.issueId, companyPrefix: await this.#companyPagePrefix() });
+          companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
+          companyPrefix: await this.#companyPagePrefix() });
       }
       case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());
       case "hire_agent": {

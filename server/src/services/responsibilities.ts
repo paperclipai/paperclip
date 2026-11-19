@@ -1321,7 +1321,13 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
       input: CreateResponsibility,
       actor: ResponsibilityCreateActor,
       ownerUserId: string,
-    ): Promise<{ responsibility: ResponsibilityRow; activatedArea: ResponsibilityArea | null }> {
+      /**
+       * `reuseLiveTitle`: return the owner's proposed or active responsibility
+       * with the same title (any case) instead of making a copy, checked under
+       * a lock so concurrent agent retries cannot both create one.
+       */
+      opts: { reuseLiveTitle?: boolean } = {},
+    ): Promise<{ responsibility: ResponsibilityRow; activatedArea: ResponsibilityArea | null; created: boolean }> {
       if (actor.type === "agent") {
         // The route validates agents against `proposeResponsibilitySchema`; this keeps the rule for any other caller.
         assertCanBeActive({
@@ -1379,6 +1385,17 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
             confirmedAt: (input.status ?? "active") === "active" ? now : null,
           };
       return db.transaction(async (tx) => {
+        if (opts.reuseLiveTitle) {
+          const key = `responsibility-title:${companyId}:${ownerUserId}:${input.title.trim().toLowerCase()}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+          const [existing] = await tx.select().from(responsibilities).where(and(
+            eq(responsibilities.companyId, companyId),
+            eq(responsibilities.ownerUserId, ownerUserId),
+            inArray(responsibilities.status, [...LIVE_STATUSES]),
+            sql`lower(${responsibilities.title}) = lower(${input.title.trim()})`,
+          )).limit(1);
+          if (existing) return { responsibility: existing, activatedArea: null, created: false };
+        }
         const [row] = await tx.insert(responsibilities).values(values).returning();
         // The first reading starts the metric's history.
         if (reading !== null) {
@@ -1389,7 +1406,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
           });
         }
         const activatedArea = await activateAreaFor(tx, row!);
-        return { responsibility: row!, activatedArea };
+        return { responsibility: row!, activatedArea, created: true };
       });
     },
 

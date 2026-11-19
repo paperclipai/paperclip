@@ -1048,6 +1048,82 @@ describeEmbeddedPostgres("responsibility routes", () => {
       expect(removedArea.status).toBe(200);
     });
 
+    it("names the saved version, and undoes a health override and an area description", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const app = actingAgent(company.id, agent.id);
+      const board = createApp(db, localBoardActor());
+      const hiring = await createResponsibility(board, company.id, { title: "Hiring" });
+      const area = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "People", description: "Who we hire" });
+      await request(board).patch(`/api/responsibilities/${hiring.id}`).send({ areaId: area.body.id });
+
+      const flagged = await request(app).patch(`/api/responsibilities/${hiring.id}`).send({ healthOverride: "behind", healthNote: "No offers this month" });
+      expect(flagged.headers["x-paperclip-dashboard-version"]).toEqual(expect.any(String));
+      const described = await request(app).patch(`/api/responsibility-areas/${area.body.id}`).send({ description: "Hiring and onboarding" });
+      expect(described.headers["x-paperclip-dashboard-version"]).toEqual(expect.any(String));
+
+      const versions = responsibilityDashboardVersionService(db);
+      const flagVersion = (await versions.getById(flagged.headers["x-paperclip-dashboard-version"]))!;
+      await versions.restore((await versions.getById(flagVersion.previousVersionId!))!, { userId: OWNER });
+      const [row] = await db.select().from(responsibilities).where(eq(responsibilities.id, hiring.id));
+      expect(row).toMatchObject({ healthOverride: null, healthNote: null });
+      const [areaRow] = await db.select().from(responsibilityAreas).where(eq(responsibilityAreas.id, area.body.id));
+      expect(areaRow?.description).toBe("Who we hire");
+    });
+
+    it("undoes restoring an empty archived area", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const board = createApp(db, localBoardActor());
+      const area = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Old team" });
+      await request(board).patch(`/api/responsibility-areas/${area.body.id}`).send({ status: "archived" });
+      const restored = await request(actingAgent(company.id, agent.id)).patch(`/api/responsibility-areas/${area.body.id}`).send({ status: "active" });
+      expect(restored.body.status).toBe("active");
+      const versions = responsibilityDashboardVersionService(db);
+      const version = (await versions.getById(restored.headers["x-paperclip-dashboard-version"]))!;
+      await versions.restore((await versions.getById(version.previousVersionId!))!, { userId: OWNER });
+      const [areaRow] = await db.select().from(responsibilityAreas).where(eq(responsibilityAreas.id, area.body.id));
+      expect(areaRow?.status).toBe("archived");
+    });
+
+    it("upgrades an older version in place, so the first filing after it is still undoable", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const board = createApp(db, localBoardActor());
+      const hiring = await createResponsibility(board, company.id, { title: "Hiring" });
+      const routine = await db.insert(routines).values({ companyId: company.id, title: "Weekly sourcing" }).returning().then((r) => r[0]!);
+      // A version saved before snapshots held filed items.
+      const versions = responsibilityDashboardVersionService(db);
+      const legacy = { version: 1 as const, areas: [], createdAreaIds: [],
+        responsibilities: [{ id: hiring.id, title: "Hiring", standard: METRIC.standard, areaId: null, status: "active", sortOrder: 0 }] };
+      await db.insert(responsibilityDashboardVersions).values({
+        companyId: company.id, ownerUserId: OWNER, cause: "person", summary: "1 responsibility",
+        snapshot: legacy as unknown as Record<string, unknown>, snapshotHash: (await import("../services/responsibility-dashboard-versions.js")).dashboardSnapshotHash(legacy),
+      });
+      const filed = await request(actingAgent(company.id, agent.id)).post(`/api/responsibilities/${hiring.id}/file`).send({ items: [{ kind: "routine", id: routine.id }] });
+      const version = (await versions.getById(filed.headers["x-paperclip-dashboard-version"]))!;
+      expect(version.summary).toMatch(/filed 1 item/i);
+      await versions.restore((await versions.getById(version.previousVersionId!))!, { userId: OWNER });
+      expect(await db.select().from(responsibilityLinks).where(eq(responsibilityLinks.routineId, routine.id))).toHaveLength(0);
+    });
+
+    it("makes no copy when an agent creates the same title twice at once", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const app = actingAgent(company.id, agent.id);
+      const [first, second] = await Promise.all([
+        request(app).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Payroll" }),
+        request(app).post(`/api/companies/${company.id}/responsibilities`).send({ title: "payroll" }),
+      ]);
+      expect([first.status, second.status].sort()).toEqual([200, 201]);
+      expect(first.body.id).toBe(second.body.id);
+      expect(await db.select().from(responsibilities).where(eq(responsibilities.companyId, company.id))).toHaveLength(1);
+    });
+
     it("moves an area's responsibilities when the area is deleted", async () => {
       await enable();
       const company = await seedCompany();
