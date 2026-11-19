@@ -32,26 +32,8 @@ import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { HttpError } from "../errors.js";
 import { ONBOARDING_CHAT_GREETING_REASON } from "./onboarding-chat-prompt.js";
 
-export type ConversationIdentity = {
-  conversationAgentId?: string | null;
-  conversationUserId?: string | null;
-  conversationState?: string | null;
-  status?: string;
-};
-export function isConversation(
-  issue: ConversationIdentity | null | undefined,
-): boolean {
-  return Boolean(issue?.conversationAgentId && issue.conversationUserId);
-}
-export function isWaitingConversation(
-  issue: ConversationIdentity | null | undefined,
-): boolean {
-  return (
-    isConversation(issue) &&
-    issue?.conversationState === "waiting" &&
-    issue.status === "in_review"
-  );
-}
+import { isConversation, isWaitingConversation, type ConversationIdentity } from "../lib/conversation-wake-policy.js";
+export { isConversation, isWaitingConversation, isConversationExecutionWake, type ConversationIdentity } from "../lib/conversation-wake-policy.js";
 
 /** Recovery for an older turn must not replace a reset or an answered chat. */
 export function isSupersededConversationRun(
@@ -76,18 +58,6 @@ export function isSupersededConversationRun(
  * Apply before enqueue, including while a reply is still running: waiting until
  * finalization is too late to prevent a deferred dependency follow-up.
  */
-export function isConversationExecutionWake(
-  issue: ConversationIdentity | null | undefined,
-  reason: string | null | undefined,
-): boolean {
-  return isConversation(issue) && (
-    reason === "issue_blockers_resolved" ||
-    reason === "issue_children_completed" ||
-    reason === "issue_blocker_stalled" ||
-    reason === "issue_unblock_requested"
-  );
-}
-
 export function isConversationReset(body: string): boolean {
   return body.trim() === "/new";
 }

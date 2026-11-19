@@ -1,5 +1,7 @@
 import type { Db, heartbeatRuns } from "@paperclipai/db";
+import { forbidden } from "../../errors.js";
 import {
+  createIssueWakePreflightReader,
   createPostgresIssueWakeAdmission,
   createPostgresWakeQueueAdapter,
   type IssueAdmissionDbTransaction,
@@ -10,7 +12,7 @@ import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-po
 import { createQueuedCommentSteeringAdapter, lockBoardQueuedComments, readBoardQueuedComments } from "./adapters/queued-comment-board-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 import { createFreshIssueRunAdmission } from "./application/fresh-issue-run.js";
-import { admitIssueWake, type IssueWakeAdmissionEffects, type IssueWakeAdmissionOutcome } from "./application/issue-wake-admission.js";
+import { admitIssueWake, createIssueWakePreflight, type IssueWakeAdmissionEffects, type IssueWakeAdmissionOutcome } from "./application/issue-wake-admission.js";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./application/use-cases.js";
 import {
   createDiscardQueuedComment,
@@ -27,6 +29,7 @@ import type {
 } from "./application/ports.js";
 
 export type {
+  IssueAttributionSnapshot,
   PostCommitEffect,
   ReleaseOutcome,
   RunSummary,
@@ -97,8 +100,16 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
     resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
   });
   const withIssueAdmission = createPostgresIssueWakeAdmission(db);
+  const preflight = createIssueWakePreflight(createIssueWakePreflightReader(db));
 
   return {
+    async preflightIssueWake(input: Parameters<typeof preflight>[0]) {
+      const outcome = await preflight(input);
+      if (outcome.kind === "conversation_owner_required") {
+        throw forbidden(`Only the conversation owner can ${outcome.action} a chat run`);
+      }
+      return outcome;
+    },
     releaseIssueExecution: createReleaseIssueExecution({ issueLock, recovery: deps.recovery }),
     admitIssueWake(
       { companyId, issueId, durableChatRequest }: IssueAdmissionTarget,

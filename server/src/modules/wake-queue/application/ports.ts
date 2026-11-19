@@ -1,6 +1,7 @@
 import type { ReleaseRecoveryBlockedNoticeKind } from "../domain/policy.js";
 import type {
   InvokableAgentSnapshot,
+  IssueAttributionSnapshot,
   IssueSnapshot,
   PostCommitEffect,
   ReleaseOutcome,
@@ -44,7 +45,7 @@ export interface WakeQueueHost {
   resolveResponsibleUserId(input: {
     companyId: string;
     contextSnapshot: Record<string, unknown>;
-    issue: IssueSnapshot;
+    issue: IssueAttributionSnapshot;
     /** From a prior `getRoutineEnv` call against the same issue; pass `{ routineId: null, env: null, responsibleUserId: null }` when the issue is not a routine execution. */
     routineEnvContext: { routineId: string | null; env: unknown; responsibleUserId: string | null };
     requestedByActorType: "user" | "agent" | "system" | null;
@@ -60,7 +61,7 @@ export interface WakeQueueHost {
    */
   getRoutineEnv(input: {
     companyId: string;
-    issue: IssueSnapshot;
+    issue: IssueAttributionSnapshot;
   }): Promise<{ routineId: string | null; env: unknown; responsibleUserId: string | null }>;
   resolveSessionBeforeForWakeup(input: {
     companyId: string;

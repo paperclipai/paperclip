@@ -57,7 +57,6 @@ import { isVerifiedDependencyInteractionResponse, readQueuedInteractionResponse 
 import {
   isConversation,
   isConversationReset,
-  isConversationExecutionWake,
   isWaitingConversation,
 } from "../agent-conversations.js";
 import { onboardingGreetingNeeded } from "../onboarding-chat.js";
@@ -219,7 +218,7 @@ import type { budgetService } from "../budgets.js";
 import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { createRunDispatch } from "../../modules/run-dispatch/index.js";
-import { hasRetainedExternalChatRetry, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
+import { hasRetainedExternalChatRetry, type IssueAttributionSnapshot, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { emitSystemTaskBlockedAfterCommit } from "../product-telemetry.js";
 
@@ -248,7 +247,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   budgets: Pick<ReturnType<typeof budgetService>, "getInvocationBlock">;
   instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "getExperimental">;
   runDispatch: Pick<ReturnType<typeof createRunDispatch>, "cancelStaleQueuedRun">;
-  wakeQueue: Pick<ReturnType<typeof createWakeQueue>, "admitIssueWake">;
+  wakeQueue: Pick<ReturnType<typeof createWakeQueue>, "preflightIssueWake" | "admitIssueWake">;
   activeRunExecutions: Set<string>;
   activeRunExecutionPromises: Set<Promise<void>>;
   activeWakeupPromises: Set<Promise<unknown>>;
@@ -2877,19 +2876,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // a run or deferred request; assignment and review have their own wakes.
     if (reason === "issue_comment_mentioned" || enrichedContextSnapshot.wakeReason === "issue_comment_mentioned") return null;
     if (issueId) {
-      const conversation = await getIssueExecutionContext(agent.companyId, issueId);
-      if (taskRetryActorId && conversation) assertTaskRetryConversationAllowed(conversation, taskRetryActorId);
-      if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
-      if (isConversation(conversation)) {
-        if (reason === "onboarding_chat_greeting" && (conversation?.originKind !== "onboarding_chat"
-          || conversation.conversationUserId !== opts.requestedByActorId)) return null;
-        if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
-          throw new HttpError(403, "Only the conversation owner can start a chat run");
-        }
-        if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
-        if (agent.id !== conversation!.conversationAgentId) return null;
-        if (isWaitingConversation(conversation) && !hasIndependentConversationWakeCause()) return null;
-      }
+      const preflight = await wakeQueue.preflightIssueWake({
+        companyId: agent.companyId,
+        issueId,
+        agentId: agent.id,
+        reason,
+        wakeReason: readNonEmptyString(enrichedContextSnapshot.wakeReason),
+        requestedByActorId: opts.requestedByActorId,
+        manualUserWake: opts.manualUserWake,
+        taskRetryActorId,
+        hasIndependentConversationWakeCause: hasIndependentConversationWakeCause(),
+      });
+      if (preflight.kind === "skipped") return null;
+      if (preflight.onboardingCompletion) enrichedContextSnapshot.onboardingCompletion = true;
     }
     if (agent.adapterType === "paperclip_runner") {
       const oldConfig = parseObject(agent.adapterConfig);
@@ -3350,48 +3349,41 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces
       : false;
     let operatorResponsibleUserId: string | null = opts.manualUserWake ? opts.requestedByActorId! : null;
-    let queuedResponsibleUserIdPromise: Promise<string> | null = null;
-    const resolveQueuedResponsibleUserId = () => {
-      if (operatorResponsibleUserId) return Promise.resolve(operatorResponsibleUserId);
-      queuedResponsibleUserIdPromise ??= (async () => {
-        const queuedIssueContext = issueId
-          ? await getIssueExecutionContext(agent.companyId, issueId)
-          : null;
-        const queuedRoutineEnvContext = await getRoutineEnvForExecutionIssue(
-          agent.companyId,
-          queuedIssueContext,
-        );
-        const queuedResponsibleUserId =
-          await resolveResponsibleUserIdForRunSeed({
+    const resolveQueuedResponsibleUserId = async (issueContext: IssueAttributionSnapshot | null) => {
+      if (operatorResponsibleUserId) return operatorResponsibleUserId;
+      const queuedRoutineEnvContext = await getRoutineEnvForExecutionIssue(
+        agent.companyId,
+        issueContext,
+      );
+      const queuedResponsibleUserId =
+        await resolveResponsibleUserIdForRunSeed({
+          companyId: agent.companyId,
+          contextSnapshot: enrichedContextSnapshot,
+          issueContext,
+          routineEnvContext: queuedRoutineEnvContext,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          source,
+          triggerDetail,
+        });
+      if (!queuedResponsibleUserId) {
+        throw new HttpError(
+          422,
+          "Unable to resolve responsible user for heartbeat run dispatch",
+          {
+            code: "responsible_user_unresolved",
+            agentId,
             companyId: agent.companyId,
-            contextSnapshot: enrichedContextSnapshot,
-            issueContext: queuedIssueContext,
-            routineEnvContext: queuedRoutineEnvContext,
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
+            issueId: issueId ?? null,
             source,
             triggerDetail,
-          });
-        if (!queuedResponsibleUserId) {
-          throw new HttpError(
-            422,
-            "Unable to resolve responsible user for heartbeat run dispatch",
-            {
-              code: "responsible_user_unresolved",
-              agentId,
-              companyId: agent.companyId,
-              issueId: issueId ?? null,
-              source,
-              triggerDetail,
-              wakeReason: readNonEmptyString(
-                enrichedContextSnapshot.wakeReason,
-              ),
-            },
-          );
-        }
-        return queuedResponsibleUserId;
-      })();
-      return queuedResponsibleUserIdPromise;
+            wakeReason: readNonEmptyString(
+              enrichedContextSnapshot.wakeReason,
+            ),
+          },
+        );
+      }
+      return queuedResponsibleUserId;
     };
 
     const budgetBlock = await budgets.getInvocationBlock(
@@ -5068,7 +5060,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             continuationAttempt,
             reconciledSourceRunId,
             reconciledRestoreRetryCount,
-            resolveResponsibleUserId: resolveQueuedResponsibleUserId,
+            resolveResponsibleUserId: () => resolveQueuedResponsibleUserId(issue),
             async recordContinuationDelivery(runId) {
               if (ownsReconstructionContinuation) {
                 await tx.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
@@ -5296,7 +5288,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           invocationSource: source,
           triggerDetail,
           status: "queued",
-          responsibleUserId: await resolveQueuedResponsibleUserId(),
+          responsibleUserId: await resolveQueuedResponsibleUserId(null),
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
           sessionIdBefore: await resolveSessionBefore(tx),
