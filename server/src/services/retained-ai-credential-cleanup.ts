@@ -85,6 +85,15 @@ export function retainAiCredentialCleanup(input: {
   }, () => { entry.retired = "failed"; warn(entry); });
 }
 
+/** The owning runtime has completed write-back (or durable handoff). Retire
+ * only its exact obligation before physical removal, including direct retries
+ * outside attempt(). Unconfirmed native retirement and other owners stay fenced. */
+export function completeRetainedAiCredentialCleanup(scope: RetainedAiCleanupScope, cleanup: () => Promise<void>): void {
+  for (const entry of retained.get(key(scope)) ?? []) {
+    if (entry.cleanup === cleanup && entry.retired === "confirmed") remove(entry);
+  }
+}
+
 export async function reconcileRetainedAiCleanup(scope: RetainedAiCleanupScope): Promise<void> {
   await Promise.resolve();
   const scopeKey = key(scope);

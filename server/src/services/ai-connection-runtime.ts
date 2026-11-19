@@ -29,7 +29,7 @@ import { NativeEnvironmentProbeCleanupError, sanitizeAntigravityCredential } fro
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
-import { bindRetainedAiCredentialHome, acquireAiCredentialTeardownHold, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { bindRetainedAiCredentialHome, acquireAiCredentialTeardownHold, completeRetainedAiCredentialCleanup, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
 import { removeRunTempTree } from "./run-scratch.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
@@ -436,8 +436,10 @@ export async function prepareManagedAiRuntime(
           ? true
           : await Promise.resolve(homeRemovalGate()).catch(() => false);
         if (!removalAllowed) return;
-        // Write-back has settled before entering removeHome. Release only our
-        // teardown hold; other owners and retained cleanups still protect the tree.
+        // Write-back has settled before entering removeHome. A direct retry
+        // also retires this callback's confirmed retained obligation; other
+        // owners, unconfirmed retirement, and teardown holds stay protective.
+        if (retainedCleanupScope) completeRetainedAiCredentialCleanup(retainedCleanupScope, cleanupRuntime);
         releaseTeardownHold?.();
         // Contained removal: no symlink following, no crossing mount points.
         const removal = await removeRunTempTree(home).catch((error: NodeJS.ErrnoException) => {
