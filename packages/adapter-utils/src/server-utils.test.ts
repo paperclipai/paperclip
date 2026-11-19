@@ -789,6 +789,49 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it("strips systemd service-manager vars (NOTIFY_SOCKET/LISTEN_FDS/LISTEN_PID/LISTEN_FDNAMES) from both inherited and caller-supplied env", async () => {
+    const SERVICE_MANAGER_VARS = ["NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES"] as const;
+    const originalValues: Record<string, string | undefined> = {};
+    for (const key of SERVICE_MANAGER_VARS) {
+      originalValues[key] = process.env[key];
+      process.env[key] = `inherited-${key}`;
+    }
+
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.stdout.write(JSON.stringify(process.env))"],
+        {
+          cwd: process.cwd(),
+          env: {
+            NOTIFY_SOCKET: "/run/caller-supplied.sock",
+            LISTEN_FDS: "1",
+            LISTEN_PID: "12345",
+            LISTEN_FDNAMES: "caller",
+          },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      const childEnv = JSON.parse(result.stdout) as Record<string, string | undefined>;
+      for (const key of SERVICE_MANAGER_VARS) {
+        expect(childEnv[key]).toBeUndefined();
+      }
+    } finally {
+      for (const key of SERVICE_MANAGER_VARS) {
+        if (originalValues[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = originalValues[key];
+        }
+      }
+    }
+  });
+
   it.skipIf(process.platform === "win32")(
     "kills descendant processes on timeout via the process group",
     async () => {
@@ -1109,7 +1152,7 @@ describe("renderPaperclipWakePrompt", () => {
     };
     const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
     expect(ordinary).not.toContain("Execution contract:");
-    expect(ordinary).toContain("Create child issues from the approved plan");
+    expect(ordinary).toContain("Implement the accepted plan on this issue.");
     for (const resumedSession of [false, true]) {
       const chat = renderPaperclipWakePrompt(payload, {
         resumedSession, conversationMode: true, includeExecutionContract: true,
@@ -1117,7 +1160,7 @@ describe("renderPaperclipWakePrompt", () => {
       expect(chat).not.toContain("Execution contract:");
       expect(chat).not.toContain("clear final disposition");
       expect(chat).not.toContain("Create child issues");
-      expect(chat).not.toContain("you may create child implementation issues");
+      expect(chat).not.toContain("Implement the accepted plan on this issue.");
     }
   });
 
@@ -1279,6 +1322,13 @@ describe("renderPaperclipWakePrompt", () => {
     expect(
       isPaperclipExternalChatContractTurn({ ...reviewed, issue: null }),
     ).toBe(false);
+  });
+
+  it("asks Slack for brief public progress without adding a reporting tool", () => {
+    const prompt = renderPaperclipWakePrompt({ ...ordinaryExternalChatWake, externalChatProvider: "slack" });
+    expect(prompt).toContain("Give a brief public update when you change approach or learn something useful");
+    expect(prompt).toContain("current conversation's audience");
+    expect(renderPaperclipWakePrompt(ordinaryExternalChatWake)).not.toContain("Slack can show this public commentary");
   });
 
   it("renders one authoritative direct-response contract for fresh and resumed external-chat turns", () => {
@@ -2552,7 +2602,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
     expect(prompt).not.toContain("accepted-plan continuation");
     expect(prompt).not.toContain(
-      "Create child issues from the approved plan only",
+      "Implement the accepted plan on this issue.",
     );
   });
 
@@ -2574,10 +2624,10 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("accepted-plan continuation");
-    expect(prompt).toContain("Create child issues from the approved plan only");
-    expect(prompt).toContain("may create child implementation issues");
+    expect(prompt).toContain("Implement the accepted plan on this issue.");
+    expect(prompt).toContain("Plan acceptance alone does not require subtasks.");
     expect(prompt).toContain(
-      "must not start implementation work on the planning issue itself",
+      "continue the approved work on this issue unless the approved plan explicitly assigns it elsewhere",
     );
   });
 
@@ -2848,6 +2898,39 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("warns that a delivered comment an earlier turn read may already be applied", () => {
+    const render = (readByEarlierTurn: boolean) => renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Website", status: "in_progress" },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Change the headline to Launch sooner.", author: { type: "user", id: "board-user-1" },
+        createdAt: "2026-06-01T12:05:00.000Z", ...(readByEarlierTurn ? { readByEarlierTurn: true } : {}) }],
+      fallbackFetchNeeded: false,
+    });
+    const note = "An earlier turn already read this comment and may have applied it.";
+    expect(render(true)).toContain(note);
+    expect(render(true).indexOf(note)).toBeGreaterThan(render(true).indexOf("Change the headline to Launch sooner."));
+    expect(render(false)).not.toContain(note);
+  });
+
+  it("keeps the earlier-read warning when the continuation context carries the comment", () => {
+    const body = "Change the headline to Launch sooner.";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Website", status: "in_progress" },
+      commentIds: ["comment-1"], latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body, author: { type: "user", id: "board-user-1" }, createdAt: "2026-06-01T12:05:00.000Z", readByEarlierTurn: true }],
+      executionContinuation: { version: 1, issueId: "issue-1", objective: body,
+        messages: [{ id: "comment-1", body, authorType: "user", authorId: "board-user-1", sourceTrust: "user", createdByRunId: null }] },
+      fallbackFetchNeeded: false,
+    });
+    expect(prompt).not.toContain("New comments in order:");
+    expect(prompt).toContain("Messages comment-1: An earlier turn already read this comment and may have applied it.");
+  });
+
   it("renders grouped non-plan document annotations with editing scope", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_commented",
@@ -2920,7 +3003,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("selected text: Passed in Chrome");
     expect(prompt).toContain("Attach the run id.");
     expect(prompt).toContain(
-      "propose a child issue before making code changes",
+      "obtain authorization before making code changes",
     );
     expect(prompt).toContain(
       "prefer replying and resolving the thread over rewriting the snapshot",
@@ -3006,6 +3089,34 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain(payload.dispositionRepair.instruction);
     expect(prompt).not.toContain("liveness state:");
     expect(JSON.parse(stringifyPaperclipWakePayload(payload)!)).toMatchObject({ dispositionRepair: payload.dispositionRepair });
+  });
+
+  it("tells the agent what it can do when a child or blocker stalls on the board", () => {
+    const payload = {
+      reason: "issue_blocker_stalled",
+      issue: { id: "parent-1", identifier: "CHA-5", title: "Coordinate the rollout", status: "blocked", priority: "medium" },
+      blockerStall: {
+        stalledIssueId: "child-1",
+        stalledIssueIdentifier: "CHA-8",
+        stalledIssueTitle: "Ship the migration",
+        stalledIssueStatus: "blocked",
+        relation: "child",
+        recoveryAction: { id: "action-1", kind: "run_recovery", cause: "execution_recovery_budget_exhausted",
+          status: "escalated", ownerType: "board", nextAction: "Retry the run or reassign the task" },
+      },
+    };
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      blockerStall: { stalledIssueIdentifier: "CHA-8", relation: "child",
+        recoveryAction: { cause: "execution_recovery_budget_exhausted", nextAction: "Retry the run or reassign the task" } },
+    });
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("## Stalled dependency");
+    expect(prompt).toContain("CHA-8 Ship the migration (blocked)");
+    expect(prompt).toContain("execution_recovery_budget_exhausted");
+    expect(prompt).toContain("Retry the run or reassign the task");
+    expect(prompt).toContain("reassign its existing task");
+    expect(prompt).toMatch(/escalate/i);
+    expect(prompt).toMatch(/block this issue/i);
   });
 
   it("includes continuation and child issue summaries in structured wake context", () => {

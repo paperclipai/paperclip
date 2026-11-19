@@ -28,6 +28,19 @@ function ReportRecoveryControl({ owns, onChange }: { owns: boolean; onChange?: (
 const CONTROLLER_HOST_UNVERIFIED = "native_controller_host_unverified";
 const OWNER_UNPROVABLE = "ownership_owner_unprovable";
 
+/** What the stuck record is, by ownership kind, for the board's confirmation. */
+const OWNER_GONE_RESOURCE: Record<string, { what: string; releasing: string }> = {
+  environment_run_lease_active: { what: "A sandbox lease from this task’s earlier run", releasing: "Releasing the sandbox lease…" },
+  legacy_controller_lease: { what: "This task’s earlier run", releasing: "Recovering the run…" },
+  environment_teardown_claim: { what: "A sandbox cleanup from this task’s earlier run", releasing: "Resuming the sandbox cleanup…" },
+  sandbox_creation_intent: { what: "A sandbox this task’s earlier run was creating", releasing: "Reconciling the sandbox…" },
+  workspace_runtime_control_operation: { what: "A workspace service change from this task’s earlier run", releasing: "Releasing the workspace…" },
+  native_workspace_finalize_attempt: { what: "A workspace save from this task’s earlier run", releasing: "Releasing the workspace save…" },
+  native_finalizer_lease: { what: "The result handling of this task’s earlier run", releasing: "Resuming the result handling…" },
+  native_cleanup_lease: { what: "The cleanup of this task’s earlier run", releasing: "Resuming the cleanup…" },
+};
+const OWNER_GONE_DEFAULT = { what: "A resource from this task’s earlier run", releasing: "Releasing the resource…" };
+
 /** Causes whose one action is the board's previous-server stop confirmation;
  * the generic recovery card must not offer other resolutions for them. */
 export function isPreviousServerStopCause(cause: string | null | undefined) {
@@ -65,19 +78,24 @@ export function WorkspaceExportRecovery({ action, className, issueId, companyId,
         copy={{ waiting: "This run’s previous server was recorded before Paperclip stored which host it ran on, so Paperclip can’t verify that it stopped. The run’s saved state is kept.",
           question: "How did you confirm that the previous server stopped?",
           placeholder: "For example: the old server container was replaced and is no longer running.",
-          resuming: "Resuming the run…" }} /></>;
+          resuming: "Controller stop recorded. Checking recovery…" }} /></>;
   }
   // A resource held by a server recorded before Paperclip stored which server held it.
   if (action?.cause === OWNER_UNPROVABLE && issueId && companyId && isOwnerGoneRequired(action, issueId, companyId)) {
+    const resource = OWNER_GONE_RESOURCE[String(action.evidence.kind)] ?? OWNER_GONE_DEFAULT;
     return <><ReportRecoveryControl owns onChange={onRecoveryControlChange} />
-      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.recordId)}`}
+      {/* Keyed by the record version: a request refreshed to a newer version resets an open form, so
+          the board never confirms a version it was not shown. */}
+      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.recordId)}:${String(action.evidence.recordUpdatedAt ?? "")}`}
         action={action} issueId={issueId} companyId={companyId} className={className}
         confirmStop={stopEvidence => issuesApi.confirmOwnerGone(issueId, {
-          actionId: action.id, recordId: action.evidence.recordId as string, stopEvidence })}
-        copy={{ waiting: "A resource from this task’s earlier run was recorded before Paperclip stored which server held it, so Paperclip can’t verify that the server stopped. The resource stays reserved until then.",
+          actionId: action.id, recordId: action.evidence.recordId as string, stopEvidence,
+          // The version shown here: a request refreshed since must be confirmed again.
+          ...(typeof action.evidence.recordUpdatedAt === "string" ? { recordVersion: action.evidence.recordUpdatedAt } : {}) })}
+        copy={{ waiting: `${resource.what} was recorded before Paperclip stored which server held it, so Paperclip can’t verify that the server stopped. It stays reserved until then.`,
           question: "How did you confirm that the previous server stopped?",
           placeholder: "For example: the old server container was replaced and is no longer running.",
-          resuming: "Releasing the resource…" }} /></>;
+          resuming: resource.releasing }} /></>;
   }
   const ownerRecovery = action?.cause === "native_workspace_finalization_owner_unverified";
   // The task's interruption names this wait; the confirmation is its one action.
@@ -105,6 +123,14 @@ function isRetainedExport(action: IssueRecoveryAction, issueId: string, companyI
     && ["board", "system"].includes(action.ownerType)
     && isRetainedWorkspaceExportCause(action.cause)
     && typeof action.evidence.runId === "string" && action.evidence.runId.length > 0;
+}
+
+/** Saved-work recovery ended because the sandbox disk was still full (#20758). */
+function isSandboxDiskFullRest(action: IssueRecoveryAction) {
+  const system = asObject(action.evidence.systemRecovery);
+  const failure = asObject(system.failure);
+  return system.state === "exhausted" && failure.retryClass === "user_action_required"
+    && asObject(failure.cause).label === "sandbox_disk_full";
 }
 
 function isControllerStopRequired(action: IssueRecoveryAction, issueId: string, companyId: string) {
@@ -136,14 +162,15 @@ function retainedOwnerStopToken(action: IssueRecoveryAction): string | null {
 
 /** A previous server that can no longer report cannot confirm its own stop.
  * The board confirms it once; the saved result then finishes without another agent turn. */
-function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId, className, confirmStop, copy }: {
-  action: IssueRecoveryAction; issueId: string; companyId: string; className?: string;
+export function PreviousServerStopConfirmation({ action, runId: givenRunId, formId: givenFormId, ownerToken, issueId, companyId, className, confirmStop, copy }: {
+  action?: IssueRecoveryAction; runId?: string; formId?: string; issueId: string; companyId: string; className?: string;
   /** Saved-work copyback owner; used when no custom confirmation is given. */
   ownerToken?: string;
   confirmStop?: (stopEvidence: string) => Promise<unknown>;
-  copy?: { waiting: string; question: string; placeholder: string; resuming: string };
+  copy?: { waiting: string; question: string; placeholder: string; resuming: string; confirm?: string };
 }) {
-  const runId = action.evidence.runId as string;
+  const runId = givenRunId ?? action!.evidence.runId as string;
+  const formId = givenFormId ?? action!.id;
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [evidence, setEvidence] = useState("");
@@ -153,7 +180,7 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
   const canConfirm = (accessView.kind === "ready" || accessView.kind === "stale") && canBoardConfirmOwnerStop(companyId, access.data);
   const confirm = useMutation({ retry: false, // query-error-ok: an explicit board confirmation; the error is shown below.
     mutationFn: () => confirmStop ? confirmStop(evidence.trim())
-      : issuesApi.resumeWorkspaceFinalization(issueId, { actionId: action.id, runId, ownerToken: ownerToken!,
+      : issuesApi.resumeWorkspaceFinalization(issueId, { actionId: action!.id, runId, ownerToken: ownerToken!,
         controllerAndCopybackStopped: true, stopEvidence: evidence.trim() }),
     onSuccess: () => {
       setOpen(false);
@@ -169,11 +196,11 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
       ? <p className="text-xs text-muted-foreground">{accessView.kind === "loading" || accessView.kind === "reconnecting"
         ? "Checking access…" : "Paperclip is waiting to confirm that the previous server stopped."}</p>
       : !open ? <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
-        Confirm the previous server stopped</Button>
+        {copy?.confirm ?? "Confirm the previous server stopped"}</Button>
       : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (ready && !confirm.isPending) confirm.mutate(); }}>
-        <label htmlFor={`previous-server-stop-${action.id}`} className="text-xs text-muted-foreground">
+        <label htmlFor={`previous-server-stop-${formId}`} className="text-xs text-muted-foreground">
           {copy?.question ?? "How did you confirm that the previous server and its file copy stopped?"}</label>
-        <Textarea id={`previous-server-stop-${action.id}`} value={evidence} onChange={event => setEvidence(event.target.value)}
+        <Textarea id={`previous-server-stop-${formId}`} value={evidence} onChange={event => setEvidence(event.target.value)}
           placeholder={copy?.placeholder ?? "For example: the old server process exited and was not restarted."} maxLength={12000} rows={3} />
         <div className="flex items-center justify-between gap-2">
           <Button type="button" variant="ghost" size="sm" disabled={confirm.isPending} onClick={() => setOpen(false)}>Cancel</Button>
@@ -324,21 +351,26 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
   const waiting = !failedReceipt && !saved && (restoring || acknowledged || serverAcknowledged);
   const unconfirmed = Boolean(pending && !acknowledged && !serverAcknowledged);
   const sourceLoading = sourceView.kind === "loading" || sourceView.kind === "reconnecting";
+  // A save that rested on a full sandbox disk is resumed by the task's Retry,
+  // which saves the files again and then applies the saved result. Its note
+  // names Retry, so this panel offers no separate control for it.
+  const diskFullRest = isSandboxDiskFullRest(current ?? action);
   // A verified source makes this panel the governed recovery path. Otherwise the
   // task's own Retry (renewed, re-verified recovery) remains the next action.
-  const ownsRecoveryControl = canMutate && (sourceLoading || Boolean(current && verified && !saved));
+  const ownsRecoveryControl = canMutate && !diskFullRest && (sourceLoading || Boolean(current && verified && !saved));
   // `waiting` already excludes a failed accepted request, so the reason stays
   // visible after a failed attempt and hides only while recovery is running.
   const unverified = Boolean(current && !verified && !saved && !waiting);
   return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="retained-file-recovery">
     <ReportRecoveryControl owns={ownsRecoveryControl} onChange={onRecoveryControlChange} />
     <p role="status">{saved ? "Saved files recovered. Task recovery is still being checked."
+      : diskFullRest && !waiting ? "The sandbox disk was full when Paperclip saved the files. Free space, then use Retry to save them and finish the task."
       : failedReceipt ? "File recovery has not finished. The saved source remains protected."
       : restoring ? "Recovering saved files. Work remains paused until recovery is verified."
         : waiting ? "File recovery is queued. Waiting for verified saved files."
           : "The saved files need recovery before work can continue."}</p>
     {canMutate ? <>
-      {current && verified && retryable && !waiting && (!pending || unconfirmed && checkedUnconfirmed || confirmedFailedAttempt) ? <Button variant="outline" size="sm"
+      {current && verified && retryable && !waiting && !diskFullRest && (!pending || unconfirmed && checkedUnconfirmed || confirmedFailedAttempt) ? <Button variant="outline" size="sm"
         className="self-start" disabled={request.isPending || check.isPending}
         onClick={() => request.mutate(confirmedFailedAttempt)}>{request.isPending ? "Requesting file recovery…"
           : confirmedFailedAttempt ? "Try file recovery again" : "Recover saved files"}</Button> : null}

@@ -1,3 +1,5 @@
+import { createUuid } from "@/lib/uuid";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
@@ -48,6 +50,7 @@ import type {
   IssueAttachment,
   IssueDocumentSummary,
   IssueBlockerAttention,
+  IssueBlockerStalledWakeContext,
   IssueRecoveryAction,
   IssueQueuedCommentQueue,
   IssueRelationIssueSummary,
@@ -267,6 +270,7 @@ import {
   X,
 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { StalledDependencyNotice } from "./StalledDependencyNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import {
   IssueRecoveryActionCard,
@@ -585,6 +589,8 @@ interface IssueChatThreadProps {
   /** Company-wide set of issue ids with a live (queued/running) run. */
   liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
+  /** Children and blockers stalled on the board (`stalledDependencies` on the issue). */
+  stalledDependencies?: IssueBlockerStalledWakeContext[];
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
@@ -822,6 +828,10 @@ export function IssueAssigneePausedNotice({
   resuming?: boolean;
 }) {
   if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
+
+  // Lifecycle setup is shown by the queued turn and its inline connection card.
+  // Resume changes operator holds; it cannot complete verification.
+  if (!agent.pauseReason && ["preparing", "verifying", "resuming"].includes(agent.lifecycleState ?? "")) return null;
 
   // A freshly created agent is stored as paused with pauseReason "setup" until
   // its setup finishes. That is not an operator pause, so say what is actually
@@ -5174,7 +5184,7 @@ const IssueChatComposer = forwardRef<
         setBody(trimmed);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = createUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // The exact request is stored before it is sent, so a lost response or
       // an outage can resend it with the same ID instead of losing it.
@@ -5874,6 +5884,7 @@ export function IssueChatThread({
   blockedBy = [],
   liveIssueIds,
   blockerAttention = null,
+  stalledDependencies,
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
@@ -6220,8 +6231,8 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      clientRequestId ??= crypto.randomUUID();
-      const attempt = beginSubmission(clientRequestId);
+      clientRequestId ??= createUuid();
+      const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
         await (runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
@@ -6699,7 +6710,7 @@ export function IssueChatThread({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
-        <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+        <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4", ANALYTICS_MASK_CLASS)}>
           {resolvedShowJumpToLatest ? (
             <div className="flex justify-end">
               <button
@@ -6848,6 +6859,7 @@ export function IssueChatThread({
                           : null
                       }
                     />
+                    <StalledDependencyNotice stalled={stalledDependencies} />
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
                       issueStatus={issueStatus}
@@ -6915,7 +6927,9 @@ export function IssueChatThread({
                 mentions={mentions}
                 agentMap={agentMap}
                 hasActiveRun={!!hasActiveRun}
-                onStop={hasActiveRun ? onCancelRun : undefined}
+                // A run still waiting in line is stoppable too: Stop takes the
+                // task out of the agent's queue before it ever starts.
+                onStop={activeRunIds.size > 0 ? onCancelRun : undefined}
                 stopPending={stopPending}
                 stopScope={stopScope}
                 currentUserId={currentUserId}

@@ -27,6 +27,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
+  persistActivity: vi.fn(async () => ({ activity: null, publication: null })),
 }));
 
 // Budget behavior is exercised against PostgreSQL below and in

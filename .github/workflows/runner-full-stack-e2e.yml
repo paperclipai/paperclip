@@ -797,6 +797,16 @@ jobs:
           if [ "$NEEDS_NATIVE_BINARIES" = true ]; then
             pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
           fi
+          # The source server imports the plugin SDK from its generated dist.
+          # Build it once here, with the same certified helper the cell uses,
+          # instead of in every paid cell.
+          node scripts/ensure-plugin-build-deps.mjs
+          for entry in packages/shared/dist/index.js packages/plugins/sdk/dist/index.js; do
+            if [ ! -f "$entry" ] || [ ! -f "$(dirname "$entry")/.paperclip-build-complete" ]; then
+              echo "::error::Workspace build output $entry is missing; paid cells would fail before any test runs."
+              exit 1
+            fi
+          done
 
       - name: Package immutable campaign outputs
         env:
@@ -814,6 +824,8 @@ jobs:
           )
           archive_paths=(
             packages/paperclip-eval-kernel/dist
+            packages/shared/dist
+            packages/plugins/sdk/dist
           )
           if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
             test -d packages/paperclip-runner/dist
@@ -1235,6 +1247,12 @@ jobs:
             --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
             --directory "$GITHUB_WORKSPACE"
           test -d packages/paperclip-eval-kernel/dist
+          for entry in packages/shared/dist/index.js packages/plugins/sdk/dist/index.js; do
+            if [ ! -f "$entry" ]; then
+              echo "::error::Campaign outputs lack $entry; the source server cannot start without it."
+              exit 1
+            fi
+          done
           if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
             test -d packages/paperclip-runner/dist
           fi
@@ -1435,11 +1453,16 @@ jobs:
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
           PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}
+          PAPERCLIP_RUNNER_E2E_SELECTED_ID: ${{ matrix.executionId }}
         run: |
+          # Agents can read any process's argv in /proc. A target that reads the
+          # selected cell from the environment keeps the case id off the command line.
+          selector=(-- --id "$PAPERCLIP_RUNNER_E2E_SELECTED_ID")
+          if grep -q PAPERCLIP_RUNNER_E2E_SELECTED_ID tests/runner-e2e/selectors.ts 2>/dev/null; then selector=(); fi
           if [ -n "$PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT" ]; then
-            pnpm test:e2e:runner -- --id "${{ matrix.executionId }}" > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
+            pnpm test:e2e:runner "${selector[@]}" > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
           else
-            pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
+            pnpm test:e2e:runner "${selector[@]}"
           fi
 
       - name: Stage bounded campaign evidence

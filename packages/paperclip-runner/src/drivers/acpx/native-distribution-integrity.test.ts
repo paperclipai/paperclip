@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyOwnedNodeRuntime } from "../../test-support/owned-node-runtime.js";
 import { awaitVerifiedAcpxProviderExit, awaitVerifiedAcpxProviderOwnership, verifyNativeAcpxInstallation } from "./installation-integrity.js";
 import { createNativeAcpxDistributionSnapshot, readNativeAcpxDistributionEntries, parseNativeAcpxDistributionEntries, type NativeAcpxDistributionInput, type NativeAcpxDistributionEntry } from "./native-distribution-integrity.js";
-import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 
@@ -688,10 +688,10 @@ describe("native ACPX execution closure", () => {
     const installation = await verifyNativeAcpxInstallation(declaration);
     const owner = createAcpxCommandLeaseOwner(await installation.openCommand(), signal => installation.openCommand({ signal }));
     const pidFile = join(declaration.distributionRoot, "native-pid");
-    let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+    let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      port = await openCodexAcpxRuntime({
+      port = await openQualifiedAcpxRuntime({
         command: owner.command, refreshConsumedCommand: owner.refreshConsumedCommand,
         profile: resolveQualifiedAcpxProfile("copilot", "gpt-5.6-luna"),
         cwd: declaration.distributionRoot, stateDirectory: join(declaration.distributionRoot, "state"),

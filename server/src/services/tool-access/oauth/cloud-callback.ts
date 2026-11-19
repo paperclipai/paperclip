@@ -8,7 +8,7 @@ import type { ActorInfo } from "../types.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { loadGitHubGrantMetadata } from "../github-access-discovery.js";
-import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, gte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -131,8 +131,8 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       ...(profile.id === "workspace.all" && stateRow.requestedScopes ? { scopes: stateRow.requestedScopes } : {}),
     });
     if (profile.id === "workspace.all") {
-      const requested = normalizeOauthScopes(stateRow.requestedScopes);
-      credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);
+      const requested = googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(stateRow.requestedScopes));
+      credentials.scopes = googleWorkspaceEffectiveScopes(requested, googleWorkspaceSubmittedScopesIn(credentials.scopes));
       if (!isGoogleWorkspaceScopeGrant(credentials.scopes)) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
     }
     const refreshToken = credentials.refreshToken;

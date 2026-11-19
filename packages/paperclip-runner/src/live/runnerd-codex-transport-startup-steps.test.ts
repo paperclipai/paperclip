@@ -6,6 +6,7 @@ import { createCapabilityRunnerdCodexTransport, type RunnerdStartupStep } from "
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
 const STEP_ORDER = ["runner.runtime.stage", "runner.process.launch", "provider.session.load"];
+const BOOTSTRAP_STEP_ORDER = ["runner.control_plane.open", ...STEP_ORDER];
 const PROVIDER_DELAY_MS = 1_500;
 
 /** A slow provider must show up as session load, never as runner process launch. */
@@ -19,7 +20,7 @@ function expectProviderTimeInSessionLoad(steps: RunnerdStartupStep[]): void {
 }
 
 function expectOrderedSteps(steps: RunnerdStartupStep[], mode: RunnerdStartupStep["mode"]): void {
-  expect(steps.map((step) => step.name)).toEqual(STEP_ORDER);
+  expect(steps.map((step) => step.name)).toEqual(mode === "bootstrap" ? BOOTSTRAP_STEP_ORDER : STEP_ORDER);
   for (const [index, step] of steps.entries()) {
     expect(step).toMatchObject({ mode, outcome: "ok" });
     expect(step.endedAtMs).toBeGreaterThanOrEqual(step.startedAtMs);
@@ -61,7 +62,7 @@ it("reports local stage, launch and provider session load for bootstrap and cold
     const thread = opened.thread as { id: string; sessionId: string };
     await first.transport.close();
     // Closing a live transport is not a startup: no further steps.
-    expect(bootstrapSteps).toHaveLength(3);
+    expect(bootstrapSteps).toHaveLength(BOOTSTRAP_STEP_ORDER.length);
 
     const resumeSteps: RunnerdStartupStep[] = [];
     // A new run on the saved session rotates authority through run.attach,
@@ -98,7 +99,7 @@ it("never lets a failing startup-step sink change startup", async () => {
   try {
     const opened = await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
     expect((opened.thread as { id?: string }).id).toEqual(expect.any(String));
-    expect(names).toEqual(STEP_ORDER);
+    expect(names).toEqual(BOOTSTRAP_STEP_ORDER);
   } finally {
     await bundle.transport.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });

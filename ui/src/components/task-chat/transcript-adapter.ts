@@ -197,6 +197,17 @@ function isOpaqueId(value: unknown): boolean {
  * The task a tool call is about, when its input names one by UUID. The row
  * shows that task's identifier (resolved at render time) instead of the id.
  */
+/** Runners without direct app tools call them through this wrapper, naming the tool in its input. */
+const WRAPPED_APP_TOOL = "paperclip_call_assigned_tool";
+
+/** The app tool a wrapper call runs (its input's `name`), or undefined for any other call. */
+export function wrappedAppToolName(rawName: string | null | undefined, input: unknown): string | undefined {
+  if (!rawName || !(rawName === WRAPPED_APP_TOOL || rawName.endsWith(`_${WRAPPED_APP_TOOL}`) || rawName.endsWith(`.${WRAPPED_APP_TOOL}`))) return undefined;
+  if (input == null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const name = (input as Record<string, unknown>).name;
+  return typeof name === "string" && name.trim() ? name.trim() : undefined;
+}
+
 export function toolInputTaskRef(input: unknown): string | undefined {
   if (input == null || typeof input !== "object" || Array.isArray(input)) return undefined;
   const record = input as Record<string, unknown>;
@@ -908,6 +919,7 @@ export function transcriptToTaskChatItems(
             }
           }
           if (entry.detail) applyToolDetail(existing, entry.detail);
+          existing.appToolName ??= wrappedAppToolName(existing.rawName, entry.input);
           lastToolIndex = existingIndex!;
         } else {
           const tool: TaskChatToolItem = {
@@ -917,6 +929,7 @@ export function transcriptToTaskChatItems(
             rawName: entry.name ?? undefined,
             target: summarizeToolInput(entry.input),
             ...(toolInputTaskRef(entry.input) ? { taskRefId: toolInputTaskRef(entry.input) } : {}),
+            ...(wrappedAppToolName(entry.name, entry.input) ? { appToolName: wrappedAppToolName(entry.name, entry.input) } : {}),
             status: "in_progress",
             ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
           };
@@ -1384,11 +1397,48 @@ export function omitProgressRepeatedByResponseAcrossSegments(
       }
     }
   }
-  if (redundantSegmentIndex < 0) return segments;
+  if (redundantSegmentIndex < 0) return omitProgressComposingResponse(segments, normalizedResponse);
   return segments.map((items, segmentIndex) =>
     segmentIndex === redundantSegmentIndex
       ? items.filter((_, index) => index !== redundantIndex)
       : items,
+  );
+}
+
+/**
+ * A runner can save one reply from several messages written after the last
+ * work tool (an answer, then a closing line after the completion call),
+ * joined by a blank line. The closing message is the response's own item, so
+ * its progress is already gone; the earlier messages remain as progress. When
+ * the latest progress messages make up the whole response, or its opening
+ * paragraphs, the response bubble owns them. One backward walk, bounded by the
+ * response length.
+ */
+function omitProgressComposingResponse(
+  segments: readonly (readonly TaskChatItem[])[],
+  normalizedResponse: string,
+): readonly (readonly TaskChatItem[])[] {
+  let composed = "";
+  let matched = 0;
+  let count = 0;
+  const omitted: string[] = [];
+  walk: for (let segmentIndex = segments.length - 1; segmentIndex >= 0; segmentIndex -= 1) {
+    const items = segments[segmentIndex]!;
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index]!;
+      const text = item.kind === "message" && item.interstitial && item.channel === "progress" ? item.text.trim() : "";
+      if (!text) continue;
+      composed = composed ? `${text}\n\n${composed}` : text;
+      if (composed.length > normalizedResponse.length) break walk;
+      count += 1;
+      omitted.push(`${segmentIndex}:${index}`);
+      if ((count > 1 && composed === normalizedResponse) || normalizedResponse.startsWith(`${composed}\n\n`)) matched = count;
+    }
+  }
+  if (!matched) return segments;
+  const hidden = new Set(omitted.slice(0, matched));
+  return segments.map((items, segmentIndex) =>
+    items.filter((_, index) => !hidden.has(`${segmentIndex}:${index}`)),
   );
 }
 

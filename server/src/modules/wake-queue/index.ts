@@ -1,23 +1,27 @@
-import type { Db } from "@paperclipai/db";
+import type { Db, heartbeatRuns } from "@paperclipai/db";
 import {
-  createAdmissionTransactionScope as buildAdmissionTransactionScope,
+  createPostgresIssueWakeAdmission,
   createPostgresWakeQueueAdapter,
-  createWakeAdmissionReader,
-  createWakeAdmissionWriter,
+  type IssueAdmissionDbTransaction,
+  type IssueAdmissionRow,
+  type IssueAdmissionTarget,
 } from "./adapters/postgres.js";
 import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
+import { createQueuedCommentSteeringAdapter, lockBoardQueuedComments, readBoardQueuedComments } from "./adapters/queued-comment-board-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
+import { createFreshIssueRunAdmission } from "./application/fresh-issue-run.js";
+import { admitIssueWake, type IssueWakeAdmissionEffects, type IssueWakeAdmissionOutcome } from "./application/issue-wake-admission.js";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./application/use-cases.js";
 import {
   createDiscardQueuedComment,
   createEditQueuedComment,
   createReorderQueuedComments,
+  createSteerQueuedComment,
 } from "./application/queued-comment-use-cases.js";
 import type {
   IssueSnapshot,
   RecoveryEscalationPort,
   RunSnapshot,
-  TransactionScope,
   WakeAdmissionHeartbeatHelpers,
   WakeQueueHost,
 } from "./application/ports.js";
@@ -27,19 +31,21 @@ export type {
   ReleaseOutcome,
   RunSummary,
 } from "./application/types.js";
+export { createAutomaticGoalCommentSteering } from "./application/automatic-goal-comment-steering.js";
 export { WakeQueueApplicationError } from "./application/types.js";
 export { hasRetainedExternalChatRetry } from "./domain/context.js";
+export { QUEUED_MESSAGES_DELIVERED_REASON } from "./domain/policy.js";
 export type {
   IssueSnapshot,
   RunSnapshot,
   RecoveryEscalationPort,
   ReleaseRecoveryBlockedNoticeKind,
-  TransactionScope,
 } from "./application/ports.js";
-export type { AdmitWakeBehindIssueExecutionInput, AdmitWakeBehindIssueExecutionResult, ReleaseIssueExecutionInput } from "./application/use-cases.js";
+export type { ReleaseIssueExecutionInput } from "./application/use-cases.js";
 export {
   QueuedCommentMutationError,
   QueuedCommentMutationForbiddenError,
+  requireQueuedCommentMutationTarget,
 } from "./application/queued-comment-use-cases.js";
 export type {
   DiscardQueuedCommentInput,
@@ -75,34 +81,51 @@ export type WakeQueueDeps = {
   recovery: RecoveryEscalationPort;
 };
 
-/**
- * Composes the wake-queue module: the Postgres adapter (which owns the
- * release transaction) and the release use case. `heartbeat.ts` holds the
- * only caller: it builds one instance per process next to
- * `createRunDispatch(db)` and delegates `releaseIssueExecutionAndPromote`'s
- * body to `releaseIssueExecution`.
- *
- * The admission half is temporary: `heartbeat.ts` still opens and owns the
- * transaction that admits a wake behind an active issue execution, so it
- * builds a `TransactionScope` through `createAdmissionTransactionScope`
- * before it calls `admitWakeBehindIssueExecution`.
- */
+type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
+type LockedIssueAdmission = {
+  lockedIssue: IssueAdmissionRow | null;
+  lockIssue: () => Promise<IssueAdmissionRow | null>;
+  admitWakeBehindIssueExecution: ReturnType<typeof createAdmitWakeBehindIssueExecution>;
+  admitFreshIssueRun: ReturnType<typeof createFreshIssueRunAdmission<HeartbeatRun>>;
+};
+
+/** Composes the issue admission and release workflows with their Postgres locks. */
 export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
   const issueLock = createPostgresWakeQueueAdapter(db, {
     resolveResponsibleUserId: deps.resolveResponsibleUserId,
     getRoutineEnv: deps.getRoutineEnv,
     resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
   });
+  const withIssueAdmission = createPostgresIssueWakeAdmission(db);
 
   return {
     releaseIssueExecution: createReleaseIssueExecution({ issueLock, recovery: deps.recovery }),
-    admitWakeBehindIssueExecution: createAdmitWakeBehindIssueExecution({
-      reader: createWakeAdmissionReader(),
-      writer: createWakeAdmissionWriter(),
-      helpers: deps.wakeAdmissionHelpers,
-    }),
-    createAdmissionTransactionScope(companyId: string, tx: Db): TransactionScope {
-      return buildAdmissionTransactionScope(companyId, tx);
+    admitIssueWake(
+      { companyId, issueId, durableChatRequest }: IssueAdmissionTarget,
+      // Specialized heartbeat gates and continuation writes still use this locked transaction.
+      evaluateHeartbeatPolicy: (tx: IssueAdmissionDbTransaction, admission: LockedIssueAdmission) => Promise<IssueWakeAdmissionOutcome<HeartbeatRun>>,
+      effects: IssueWakeAdmissionEffects<HeartbeatRun>,
+    ) {
+      return admitIssueWake(() => withIssueAdmission({ companyId, issueId, durableChatRequest }, (tx, { lockedIssue, lockIssue, reader, writer, fresh }) => {
+        const admitBusy = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: deps.wakeAdmissionHelpers });
+        const admitFresh = createFreshIssueRunAdmission(fresh);
+        return evaluateHeartbeatPolicy(tx, {
+          lockedIssue,
+          lockIssue,
+          async admitWakeBehindIssueExecution(input) {
+            if (input.companyId !== companyId || input.issueId !== issueId || input.contextSnapshot.issueId !== issueId) {
+              throw new Error("wake-queue: admission does not match the locked company and issue");
+            }
+            return admitBusy(input);
+          },
+          async admitFreshIssueRun(input) {
+            if (input.issue.id !== issueId || input.contextSnapshot.issueId !== issueId) {
+              throw new Error("wake-queue: admission does not match the locked issue");
+            }
+            return admitFresh(input);
+          },
+        });
+      }), effects);
     },
   };
 }
@@ -110,9 +133,8 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
 export type WakeQueue = ReturnType<typeof createWakeQueue>;
 
 /**
- * Composes the three queued-comment queue mutations (edit, reorder,
- * discard): the Postgres adapter, which owns the one transaction each
- * mutation runs in, and the three use cases. This is a separate factory
+ * Composes the queued-comment reads and mutations with their Postgres
+ * adapters. This is a separate factory
  * from `createWakeQueue` because these mutations need none of the release
  * or admission host callbacks -- only the small set of comment-reference
  * and external-object sync callbacks in `deps`, which a caller outside
@@ -121,6 +143,9 @@ export type WakeQueue = ReturnType<typeof createWakeQueue>;
 export function createQueuedCommentQueue(db: Db, deps: QueuedCommentQueuePostgresAdapterDeps) {
   const issueLock = createQueuedCommentIssueLockWriter(db, deps);
   return {
+    readBoardQueue: readBoardQueuedComments,
+    lockBoardQueue: lockBoardQueuedComments,
+    steerQueuedComment: createSteerQueuedComment(createQueuedCommentSteeringAdapter(db)),
     editQueuedComment: createEditQueuedComment({ issueLock }),
     reorderQueuedComments: createReorderQueuedComments({ issueLock }),
     discardQueuedComment: createDiscardQueuedComment({ issueLock }),

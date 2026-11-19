@@ -1,14 +1,19 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
-import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { notifyIssueRecovery, notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { ISSUE_DOCUMENT_BATCH_MAX_IDS, isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import { conflict, notFound, payloadTooLarge, unprocessable } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
 import type { ImportIssueDocumentRow } from "./import-write-types.js";
+import { emitPlanCreatedAfterCommit } from "./product-telemetry.js";
+
+// Stay below download_artifact's 10 MiB limit, including JSON escaping and metadata.
+export const ISSUE_DOCUMENT_BATCH_MAX_BYTES = 8 * 1024 * 1024;
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -171,6 +176,34 @@ export function documentService(db: Db) {
       return row ? mapIssueDocumentRow(row, true) : null;
     },
 
+    /** Caller authorizes the task set first. One query reads only the requested key. */
+    getIssueDocumentsByKey: async (companyId: string, issueIds: string[], rawKey: string, includeBody = true) => {
+      const key = normalizeDocumentKey(rawKey);
+      if (issueIds.length > ISSUE_DOCUMENT_BATCH_MAX_IDS) throw unprocessable("Too many issue document IDs");
+      if (!issueIds.length) return [];
+      const join = and(eq(issueDocuments.documentId, documents.id), eq(documents.companyId, companyId));
+      const condition = and(eq(issueDocuments.companyId, companyId), inArray(issueDocuments.issueId, issueIds), eq(issueDocuments.key, key));
+      const read = async (connection: Db) => {
+        if (includeBody) {
+          // PostgreSQL counts encoded JSON one body at a time; no bodies cross
+          // into the app before the entire set fits. The same snapshot below
+          // prevents a concurrent edit from growing the admitted response.
+          const [size] = await connection.select({ bytes: sql<string>`coalesce(sum(octet_length(to_json(${documents.latestBody})::text)), 0)` })
+            .from(issueDocuments).innerJoin(documents, join).where(condition);
+          if (Number(size.bytes) > ISSUE_DOCUMENT_BATCH_MAX_BYTES) {
+            throw payloadTooLarge("Document batch exceeds 8 MiB; split issueIds into smaller requests or use includeBody=false", { maxResponseBytes: ISSUE_DOCUMENT_BATCH_MAX_BYTES });
+          }
+        }
+        const rows = await connection
+          .select({ ...issueDocumentSelect, latestBody: includeBody ? documents.latestBody : sql<string>`''` })
+          .from(issueDocuments).innerJoin(documents, join).where(condition);
+        return rows.map(row => mapIssueDocumentRow(row, includeBody));
+      };
+      return includeBody
+        ? db.transaction(tx => read(tx as unknown as Db), { isolationLevel: "repeatable read", accessMode: "read only" })
+        : read(db);
+    },
+
     /** Bounded receipt read: never load every historical body for one revision. */
     getIssueDocumentRevision: async (issueId: string, rawKey: string, revisionId: string) => {
       const key = normalizeDocumentKey(rawKey);
@@ -228,10 +261,11 @@ export function documentService(db: Db) {
       createdByRunId?: string | null;
       sourceTrust?: typeof documents.$inferInsert.sourceTrust;
       lockedDocumentStrategy?: "conflict" | "create_new_document";
-    }) => {
+    }, options: { initialTaskCreation?: boolean } = {}) => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
-        .select({ id: issues.id, companyId: issues.companyId })
+        .select({ id: issues.id, companyId: issues.companyId, createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId })
         .from(issues)
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
@@ -270,6 +304,16 @@ export function documentService(db: Db) {
             .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key)))
             .then((rows) => rows[0] ?? null);
 
+          await assertAgentInteraction(tx, {
+            companyId: issue.companyId, actorAgentId: input.createdByAgentId,
+            operation: options.initialTaskCreation && !existing ? "mention" : "edit", issueId: issue.id,
+            texts: [
+              ...(!existing || input.body !== existing.latestBody ? [input.body] : []),
+              ...(input.title !== undefined && input.title !== existing?.title ? [input.title ?? ""] : []),
+              input.changeSummary ?? "",
+            ], lock: true,
+          });
+
           if (existing) {
             if (existing.lockedAt) {
               if (input.lockedDocumentStrategy === "create_new_document") {
@@ -279,7 +323,7 @@ export function documentService(db: Db) {
                   .where(eq(issueDocuments.issueId, issue.id));
                 const fallbackKey = nextAvailableDocumentKey(key, issueDocumentKeys.map((row) => row.key));
 
-                await notifyIssueRecovery(tx, { companyId: issue.companyId });
+                await notifyIssueGraphRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
                 const [document] = await tx
                   .insert(documents)
                   .values({
@@ -381,7 +425,7 @@ export function documentService(db: Db) {
               });
             }
 
-            await notifyIssueRecovery(tx, { companyId: issue.companyId });
+            await notifyIssueGraphRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
             const nextRevisionNumber = existing.latestRevisionNumber + 1;
             const [revision] = await tx
               .insert(documentRevisions)
@@ -444,7 +488,7 @@ export function documentService(db: Db) {
             throw conflict("Document does not exist yet", { key });
           }
 
-          await notifyIssueRecovery(tx, { companyId: issue.companyId });
+          await notifyIssueGraphRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
           const [document] = await tx
             .insert(documents)
             .values({
@@ -497,6 +541,15 @@ export function documentService(db: Db) {
             createdAt: now,
             updatedAt: now,
           });
+          if (key === "plan") {
+            emitPlanCreatedAfterCommit({
+              companyId: issue.companyId,
+              createdByAgentId: input.createdByAgentId,
+              createdByUserId: input.createdByUserId,
+              atTaskCreation: options.initialTaskCreation === true,
+              task: issue,
+            });
+          }
 
           return {
             created: true as const,
@@ -649,13 +702,17 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!revision) throw notFound("Document revision not found");
+        await assertAgentInteraction(tx, {
+          companyId: existing.companyId, actorAgentId: input.createdByAgentId,
+          operation: "edit", issueId: input.issueId, texts: [revision.body, revision.title ?? ""], lock: true,
+        });
         if (existing.latestRevisionId === revision.id) {
           throw conflict("Selected revision is already the latest revision", {
             currentRevisionId: existing.latestRevisionId,
           });
         }
 
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         const now = new Date();
         const nextRevisionNumber = existing.latestRevisionNumber + 1;
         const [restoredRevision] = await tx
@@ -728,6 +785,10 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) throw notFound("Document not found");
+        await assertAgentInteraction(tx, {
+          companyId: existing.companyId, actorAgentId: input.lockedByAgentId,
+          operation: "edit", issueId: input.issueId, lock: true,
+        });
         if (existing.lockedAt) {
           return {
             changed: false as const,
@@ -735,7 +796,7 @@ export function documentService(db: Db) {
           };
         }
 
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         const now = new Date();
         await tx
           .update(documents)
@@ -765,7 +826,7 @@ export function documentService(db: Db) {
       });
     },
 
-    unlockIssueDocument: async (issueId: string, rawKey: string) => {
+    unlockIssueDocument: async (issueId: string, rawKey: string, actorAgentId?: string | null) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
         const existing = await tx
@@ -776,6 +837,9 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) throw notFound("Document not found");
+        await assertAgentInteraction(tx, {
+          companyId: existing.companyId, actorAgentId, operation: "edit", issueId, lock: true,
+        });
         if (!existing.lockedAt) {
           return {
             changed: false as const,
@@ -783,7 +847,7 @@ export function documentService(db: Db) {
           };
         }
 
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         const now = new Date();
         await tx
           .update(documents)
@@ -813,7 +877,7 @@ export function documentService(db: Db) {
       });
     },
 
-    deleteIssueDocument: async (issueId: string, rawKey: string) => {
+    deleteIssueDocument: async (issueId: string, rawKey: string, actorAgentId?: string | null) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
         const existing = await tx
@@ -824,6 +888,9 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) return null;
+        await assertAgentInteraction(tx, {
+          companyId: existing.companyId, actorAgentId, operation: "edit", issueId, lock: true,
+        });
         if (existing.lockedAt) {
           throw conflict("Document is locked", {
             key: existing.key,
@@ -832,7 +899,7 @@ export function documentService(db: Db) {
           });
         }
 
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
         await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx.delete(documents).where(eq(documents.id, existing.id));

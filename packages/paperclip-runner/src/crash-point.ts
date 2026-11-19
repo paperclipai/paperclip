@@ -13,7 +13,8 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 export type RunnerCrashPointName =
   | "runner.process.after_spawn_before_identity"
   | "runner.turn_start.after_runner_accept_before_controller_checkpoint"
-  | "runner.turn_start.after_controller_journal_before_db_checkpoint";
+  | "runner.turn_start.after_controller_journal_before_db_checkpoint"
+  | "runner.semantic_tool.after_input_before_dispatch";
 
 type Armed = {
   name: string; nth: number; hits: number; receiptPath: string | null; gatePath: string | null;

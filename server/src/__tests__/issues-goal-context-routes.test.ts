@@ -38,11 +38,17 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getStoredById: vi.fn(),
 }));
 
-const mockAccessService = vi.hoisted(() => ({
-  canUser: vi.fn(),
-  decide: vi.fn(),
-  hasPermission: vi.fn(),
-}));
+const mockAccessService = vi.hoisted(() => {
+  const decide = vi.fn();
+  return {
+    canUser: vi.fn(),
+    decide,
+    // The batched read asks the mocked decision once per task.
+    decideReads: async (actor: unknown, resources: unknown[]) =>
+      Promise.all(resources.map((resource) => decide({ actor, action: "issue:read", resource }))),
+    hasPermission: vi.fn(),
+  };
+});
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -103,6 +109,7 @@ const mockDb = vi.hoisted(() => ({
 vi.mock("../services/task-interruption-presentation.js", () => ({
   taskInterruptionPresentation: vi.fn(async () => null),
   taskInterruptionPresentations: vi.fn(async () => new Map()),
+  taskRetryRefusal: vi.fn(async () => null),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -305,7 +312,7 @@ describe("issue goal context routes", () => {
     );
     expect(mockIssueService.findMentionedProjectIds).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { includeCommentBodies: false },
+      { includeCommentBodies: false, issue: expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }) },
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });

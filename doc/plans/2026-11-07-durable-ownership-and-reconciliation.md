@@ -37,7 +37,7 @@ These become reconciler checks and crash-suite assertions. They should also be a
 5. **Work-based budgets:** a restart consumes run budget only when the resumed attempt started provider work and made no progress.
 6. **Generation fencing:** every runner and provider event carries its generation and turn. Events from an earlier generation are recorded as history and never fail the current turn.
 7. **Visible next action:** every non-terminal task has a next action, either automatic or a working control. "Waiting" with no owner is a violation.
-8. **Fast turns:** TTFT and agent boot stay within their measured budgets. Restart safety work never adds waiting or file transfer before `turn.start` (see "Performance constraint" below).
+8. **Fast turns:** time to first visible agent activity and agent boot stay within their measured budgets (TTFT, time to first text, is reported; since 2026-11-08 the budget judges first activity, because tool-first adapters call tools before writing text). Restart safety work never adds waiting or file transfer before `turn.start` (see "Performance constraint" below).
 
 ## Performance constraint: a turn must start as fast as possible
 
@@ -98,6 +98,12 @@ Restart recovery latency, from `ready` to the recovered run's next provider even
 | claude | 15.0 / 22.5 |
 | codex | 6.5 / 8.0 |
 | opencode | 25.5 / 38.5 |
+
+Since 2026-11-09 this full latency is reported, not judged: the provider's saved-session load (`provider.session.load`) grows with session size and with how many sessions resume at once (Codex at concurrency 6: 3.0–6.3 s of a 5.5–8.5 s recovery). The judged row is Paperclip's own share, `restart_recovery_control_plane`: from `ready` to the start of the provider's session load, or to the next provider event when nothing reloads. It covers claim, prepare, runtime stage and runner launch, which measured 1.2–2.0 s per run with six Codex runs resuming at once (wave `w-20261109T045320-s9807`).
+
+| Adapter | Paperclip share budget (s, p50 / p95) |
+|---|---|
+| claude, codex, opencode | 2.5 / 4.0 |
 
 These budgets measure the product default `lifecycleMode: per_turn`. Phase 1's TTFT work (runner and provider-session reuse, baseline finding 1) should lower them. Lower budgets go in the same table.
 
@@ -211,6 +217,14 @@ Charge an attempt only on a recorded outcome that proves provider work started. 
 - **Charged:** an attempt whose provider accepted a turn (the accepted `turn.start` outcome or `turn.started`), and which then made no progress before the next failure. Progress is defined as in #19720: completed work for that turn.
 
 The rules from #19720 and #19747 then become one rule over these outcome records, instead of watermark heuristics. The on-demand crash-point suite asserts this at the pre-spawn and pre-accept crash points.
+
+**Crash-loop bound past the generation limit (2026-11-10, approved by Dotta).** Uncharged restarts used to stop at controller generation 12: from then on every restart charged, before the work rule was checked. In a concurrency-3 restart chaos wave one long task saw 12–15 restarts, most caused by other tasks. A restart that hit before the provider accepted any turn was charged, the budget ran out, and a person had to click Retry (wave `w-20261110T183431-s9106`, t03). The rule is now:
+
+- Each restart claim records `noProgressRestarts` in its `recovery_history` entry: 0 when the interrupted attempt is proven to have made provider progress, otherwise one more than the previous claim's count. A clean-drain claim carries the previous count unchanged.
+- Before generation 12 nothing changes.
+- From generation 12 on, a restart is not charged only when a durable record proves the interrupted attempt never started provider work (the same `provider_not_started` proof as above, or a resume that never reached execution) and the count is still below `NATIVE_NO_PROGRESS_RESTART_LIMIT` (12). Provider work (progress, or an accepted turn without progress) and unprovable cases still charge, as before.
+- When the count reaches the limit, every further restart charges, so the attempt budget runs out and recovery stops with `execution_recovery_budget_exhausted`, which offers Retry. The limit equals the generation limit, so a run that never makes progress is bounded exactly as before; only proven progress resets the count.
+- Claims saved by earlier releases have no count and are read as zero. A mid-run deploy therefore gives at most 12 more proven-unstarted restarts before the bound applies, and never charges a restart that the old rule would have credited.
 
 ### G. Generation stamping
 

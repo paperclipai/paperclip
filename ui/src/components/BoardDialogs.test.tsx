@@ -11,6 +11,7 @@ vi.mock("./NewIssueDialog", () => ({ NewIssueDialog: () => <input aria-label="Ta
 vi.mock("./NewProjectDialog", () => ({ NewProjectDialog: () => <div>Project dialog</div> }));
 vi.mock("./NewGoalDialog", () => ({ NewGoalDialog: () => <div>Goal dialog</div> }));
 vi.mock("./NewAgentDialog", () => ({ NewAgentDialog: () => <div>Agent dialog</div> }));
+vi.mock("./GitHubStarPrompt", () => ({ GitHubStarPrompt: () => null }));
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {

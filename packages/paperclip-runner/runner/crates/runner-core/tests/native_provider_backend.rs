@@ -152,6 +152,8 @@ fn config(state_dir: &Path) -> DurableRunnerConfig {
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(60),
+        turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     }
 }
 
@@ -438,7 +440,7 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
     let (runtime_package, runtime_version) = if agent == "codex" {
-        (json!("@openai/codex"), json!("0.160.0"))
+        (json!("@openai/codex"), json!("0.170.0"))
     } else {
         (Value::Null, Value::Null)
     };
@@ -453,10 +455,10 @@ fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value
             "kind": "acpx",
             "provider": "acpx",
             "driver": "acpx_runtime",
-            "providerVersion": "0.13.1",
+            "providerVersion": "0.22.0",
             "agent": agent,
             "model": "explicit-test-model",
-            "acpxVersion": "0.13.1",
+            "acpxVersion": "0.22.0",
             "agentServerPackage": "@agentclientprotocol/codex-acp",
             "agentServerVersion": "1.6.2",
             "agentRuntimePackage": runtime_package,
@@ -521,7 +523,7 @@ fn pending_acpx_runtime_request(
         provider["agentServerPackage"] = json!("@agentclientprotocol/claude-agent-acp");
         provider["agentServerVersion"] = json!("0.73.0");
         provider["agentRuntimePackage"] = json!("@anthropic-ai/claude-agent-sdk");
-        provider["agentRuntimeVersion"] = json!("0.3.286");
+        provider["agentRuntimeVersion"] = json!("0.3.328");
         provider["commandDigest"] = json!(digest);
         provider["sidecarArgs"][3] = json!(digest);
     } else {
@@ -604,42 +606,7 @@ fn assert_no_replayed_turn_or_request(events: &[PolledEvent]) {
 }
 
 fn shutdown_recovered_acpx_fixture(executor: &mut NativeProviderCommandExecutor, directory: &Path) {
-    // The fake sidecar advertises the same three lifetime-fence ports for all
-    // fixtures. Parallel recovered shutdowns hold a quorum through state fsync,
-    // temporarily preventing another fixture from proving cleanup. Retry only
-    // that rejection, using the real production quorum proof on every attempt.
-    // This is fixture synchronization, not a production cleanup workaround.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut blocked_attempts = 0;
-    loop {
-        match executor.shutdown() {
-            Ok(()) => break,
-            Err(error) => {
-                assert_eq!(
-                    error.to_string(),
-                    "ACPX original provider lifetime remains active; cleanup is not yet proven",
-                    "unexpected recovered fixture shutdown failure"
-                );
-                let persisted: Value = serde_json::from_slice(
-                    &fs::read(directory.join("acpx-provider-state.json")).unwrap(),
-                )
-                .unwrap();
-                assert_eq!(persisted["providerExitUnconfirmed"], true);
-                blocked_attempts += 1;
-                if blocked_attempts == 1 {
-                    eprintln!("recovered fixture cleanup waiting for the shared lifetime quorum");
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "recovered fixture cleanup never acquired the lifetime quorum"
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-    if blocked_attempts > 0 {
-        eprintln!("recovered fixture cleanup proved after {blocked_attempts} quorum rejections");
-    }
+    executor.shutdown().unwrap();
     let persisted: Value =
         serde_json::from_slice(&fs::read(directory.join("acpx-provider-state.json")).unwrap())
             .unwrap();

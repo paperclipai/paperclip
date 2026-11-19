@@ -120,6 +120,47 @@
         "packages/db/src/schema/agent_task_sessions.ts",
         "packages/db/src/schema/run_identity_contexts.ts"
       ]
+    },
+    {
+      "path": "rules/data-paths.mdc",
+      "description": "Separation of Telemetry, Observability, and the run log, with the review level each path requires.",
+      "scope": [
+        "packages/shared/src/telemetry/**",
+        "server/src/instrumentation.ts",
+        "doc/observability.md",
+        "packages/adapter-utils/src/duplex-observability.ts",
+        "server/src/services/duplex-observability-recorder.ts",
+        "packages/adapter-utils/src/acpx-engine/startup-timing.ts",
+        "doc/run-log-events.md",
+        "packages/db/src/schema/heartbeat_run_events.ts",
+        "server/src/services/heartbeat.ts"
+      ]
+    },
+    {
+      "path": "rules/api-route-expectations.mdc",
+      "description": "Company access checks, actor permissions, activity logging for mutations, and consistent HTTP errors on API routes.",
+      "scope": [
+        "server/src/routes/**"
+      ]
+    },
+    {
+      "path": "rules/company-scope-exceptions.mdc",
+      "description": "The known instance-wide data (announcement dismissals, publication-ID registry, personal workspace preferences, sidebar company order) and the conditions that keep company boundaries intact.",
+      "scope": [
+        "packages/db/src/schema/announcement_dismissals.ts",
+        "packages/shared/src/announcements.ts",
+        "server/src/routes/announcements.ts",
+        "server/src/services/announcements.ts",
+        "server/src/services/announcement-feed.ts",
+        "packages/db/src/schema/user_workspace_preferences.ts",
+        "packages/shared/src/workspace-preferences.ts",
+        "server/src/routes/workspace-preferences.ts",
+        "server/src/services/workspace-preferences.ts",
+        "packages/db/src/schema/user_sidebar_preferences.ts",
+        "packages/shared/src/types/sidebar-preferences.ts",
+        "server/src/routes/sidebar-preferences.ts",
+        "server/src/services/sidebar-preferences.ts"
+      ]
     }
   ]
 }

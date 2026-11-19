@@ -96,6 +96,15 @@ The entry does not assert stopped writers, terminate an agent, clear a hold or
 change remote authority. An unrelated active run is not a global-idle blocker.
 An actual scoped writer, foreign alias or unsupported source still refuses.
 
+Programmatic administrative calls to `migrateRemoteWorkspace` and
+`migrateRemoteWorkspaceCohort` can pass `sourceLockWaitMs` with their existing
+`signal` to join the source-lock queue. The budget covers acquisition of the
+complete sorted source scope, rather than restarting for each key. Timeout or
+abort rolls back that admission before any journal reservation. This opt-in uses
+an independent source transaction and preserves the lifecycle and publication
+checks; activity is published after commit. Omitted options retain try-only
+admission. This is a canonical API option, not an additional JSON entry field.
+
 Before each apply, use the existing per-operation memory, CPU and temporary-disk
 resource preflight. A concurrency bound is not resource admission. Budget every
 logical capture and up to two nested-child verifications. Qualify one single

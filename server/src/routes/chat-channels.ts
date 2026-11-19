@@ -144,6 +144,16 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     if (!enabled) throw forbidden("This connector is not enabled on this instance");
   }
 
+  function assertChatProviderEnabledForCreate(
+    provider: string,
+    experimental: { enableChatConnectors: boolean; enableGitHubReviewBots: boolean },
+  ) {
+    if (provider === "agentmail") return;
+    if (provider === "github" ? experimental.enableGitHubReviewBots : experimental.enableChatConnectors) return;
+    const setting = provider === "github" ? "GitHub review bots" : "Chat connectors";
+    throw forbidden(`${setting} is turned off on this instance, so this chat endpoint cannot be created. An instance admin turns it on in Experimental settings at /<prefix>/company/settings/instance/experimental. Agents cannot change instance settings.`);
+  }
+
   async function assertConnectionManager(
     req: ExpressRequest,
     companyId: string,
@@ -195,6 +205,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertConnectionManager(req, companyId);
+      assertChatProviderEnabledForCreate(req.body.provider, await instanceSettingsService(db).getExperimental());
       if (req.body.provider === "slack" && !req.body.slackSetupMethod) {
         req.body.slackSetupMethod = service.slackRegistration.managerGrants.defaultMethod();
       }
@@ -460,6 +471,11 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       .json(
         await service.generateSetupSecret(endpointId(req), actorUserId(req), connectionRequestContext(req)),
       );
+  });
+
+  router.post("/chat-endpoints/:endpointId/provider-work/:actionId/retry", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/provider-work/:actionId/retry"), validate(z.object({}).strict()), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.retrySlackFormReceipt(endpointId(req), String(req.params.actionId), connectionRequestContext(req)));
   });
 
   router.post("/chat-endpoints/:endpointId/test", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/test"), async (req, res) => {

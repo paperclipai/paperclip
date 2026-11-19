@@ -7,6 +7,7 @@ import type {
   HarnessThreadGoal,
   HarnessThreadLineageEntry,
   PersistedHarnessSemanticResult,
+  PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import {
@@ -91,7 +92,9 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
-export class CodexSessionState {
+const MAX_BOUNDARY_SNAPSHOTS = 8;
+
+export abstract class CodexSessionState {
   readonly transport: CodexAppServerTransport;
   runId: string;
   readonly normalizedSessionId: string;
@@ -145,6 +148,7 @@ export class CodexSessionState {
    * the turn/start response arrives.
    */
   turnStartSettled: Promise<void> = Promise.resolve();
+  recoveryReconciled: Promise<void> = Promise.resolve();
   protocolFailed = false;
   protocolFailureCode: string | null = null;
   protocolFailureMessage: string | null = null;
@@ -161,6 +165,7 @@ export class CodexSessionState {
    * stricter consumed marker.
    */
   restartContinuationTurnId: string | null = null;
+  awaitingProviderTurn = false;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
   /**
@@ -175,6 +180,12 @@ export class CodexSessionState {
    * generation they form the history set (see isHistoryTurn).
    */
   readonly priorGenerationTurns = new Set<string>();
+  /**
+   * A turn the runner accepted for an earlier generation that the restore did not find live.
+   * Its replayed start and items are history; only a restart-loss terminal confirms it lost.
+   * Any other outcome it reports (a terminal or a result) fails closed rather than being dropped.
+   */
+  readonly unconfirmedLostTurns = new Set<string>();
   readonly workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
   readonly emittedFileReferences = new Set<string>();
   #workspaceRoots: string[] | null = null;
@@ -211,8 +222,11 @@ export class CodexSessionState {
     codexUsageBaseline?: CodexUsageBaseline;
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
+    awaitingProviderTurn?: boolean;
     /** A recovered turn whose turn.accepted the previous controller never emitted. */
     adoptedAcceptedTurnId?: string | null;
+    /** A turn the runner accepted for an earlier generation that the restore lost. */
+    lostAcceptedTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
     lineage?: HarnessThreadLineageEntry[];
     goal?: HarnessThreadGoal | null;
@@ -301,6 +315,8 @@ export class CodexSessionState {
     if (this.activeTurnId && this.terminalTurns.has(this.activeTurnId)) {
       this.activeTurnId = null;
     }
+    this.awaitingProviderTurn = input.awaitingProviderTurn === true && this.activeTurnId === null
+      && this.result === null && this.terminalTurns.size > 0;
     const dispositionOnlyRecoveryPreviouslyConsumed =
       input.dispositionOnlyRecoveryConsumed ?? false;
     const dispositionOnlyRecoveryTurnId =
@@ -342,6 +358,9 @@ export class CodexSessionState {
     // accepted) also belongs to an earlier generation. isHistoryTurn keeps it
     // live while it stays active; once reconcile settles it, its late reports
     // are history too.
+    if (input.lostAcceptedTurnId && input.lostAcceptedTurnId !== this.activeTurnId
+      && !this.terminalTurns.has(input.lostAcceptedTurnId))
+      this.unconfirmedLostTurns.add(input.lostAcceptedTurnId);
     for (const turnId of [input.activeTurnId, input.adoptedAcceptedTurnId])
       if (turnId) this.priorGenerationTurns.add(turnId);
     if (dispositionOnlyRecoveryTurnId && dispositionOnlyRecoveryTurnId !== this.activeTurnId)
@@ -410,7 +429,7 @@ export class CodexSessionState {
       && !this.protocolFailed
       && turnId !== this.activeTurnId
       && (this.priorGenerationTurns.has(turnId) || this.restoredTerminalTurns.has(turnId)
-        || this.terminalTurns.has(turnId));
+        || this.terminalTurns.has(turnId) || this.unconfirmedLostTurns.has(turnId));
   }
 
   /** Every turn the history rule covers, for classifiers that take a set. */
@@ -561,6 +580,25 @@ export class CodexSessionState {
       emittedAt: this.now().toISOString(),
       payload,
     });
+  }
+
+  protected abstract persistedSnapshot(): PersistedHarnessSession;
+
+  readonly #boundarySnapshots = new Map<number, PersistedHarnessSession>();
+
+  captureBoundary(sourceSeq: number): void {
+    this.#boundarySnapshots.set(sourceSeq, structuredClone({ ...this.persistedSnapshot(), lastSourceSequence: sourceSeq }));
+    for (const seq of this.#boundarySnapshots.keys()) {
+      if (this.#boundarySnapshots.size <= MAX_BOUNDARY_SNAPSHOTS) break;
+      this.#boundarySnapshots.delete(seq);
+    }
+  }
+
+  boundarySnapshot(sourceSeq: number): PersistedHarnessSession | null {
+    this.assertProtocolIntegrity();
+    const snapshot = this.#boundarySnapshots.get(sourceSeq);
+    for (const seq of [...this.#boundarySnapshots.keys()]) if (seq <= sourceSeq) this.#boundarySnapshots.delete(seq);
+    return snapshot === undefined ? null : structuredClone(snapshot);
   }
 
   emitGoalCapabilities(): void {

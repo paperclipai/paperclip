@@ -851,7 +851,7 @@ async function upsertIssueWatchdogInTransaction(
     .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)))
     .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
 
-  await notifyIssueRecovery(dbOrTx, { companyId });
+  await notifyIssueRecovery(dbOrTx, { companyId, issueId });
   if (existing) {
     const updated = await updateIssueWatchdogRow(dbOrTx, existing, input, now);
     return { watchdog: toIssueWatchdog(updated), created: false };
@@ -1838,7 +1838,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)))
         .then((rows) => rows[0] ?? null);
       if (!existing || existing.status === "disabled") return null;
-      await notifyIssueRecovery(tx, { companyId });
+      await notifyIssueRecovery(tx, { companyId, issueId });
       const [updated] = await tx
         .update(issueWatchdogs)
         .set({

@@ -20,7 +20,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { useNavigate, useSearchParams, Link } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import { toolsApi } from "@/api/tools";
 import { emailApi } from "@/api/email";
 import { Button } from "@/components/ui/button";
@@ -51,6 +50,9 @@ import type {
   AgentPermissions,
   EmailEndpointSummary,
 } from "@paperclipai/shared";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 const selectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
 
@@ -134,8 +136,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId), enabled: !!companyId });
   const agentsView = useQueryView(agents);
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId), enabled: !!companyId && trustOpen });
+  const projects = useQuery({ ...companyProjectsQuery(companyId), enabled: !!companyId && trustOpen });
   const projectsView = useQueryView(projects);
   const boundaryIssues = useQuery({ queryKey: ["email-boundary-issues", companyId],
     queryFn: () => issuesApi.list(companyId), enabled: !!companyId && trustOpen });
@@ -383,13 +384,13 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
             <Input id="email-name" className="min-w-0" value={username} maxLength={64} autoComplete="off" spellCheck={false} disabled={busy}
               aria-invalid={!!addressError} aria-describedby={addressError ? "email-address-error" : "email-address-status"}
               onChange={event => { setUsername(event.target.value.toLowerCase()); setup.reset(); }} />
-            <select id="email-domain" aria-label="Email domain" className={`${selectClass} max-w-1/2 shrink-0`} value={domain}
+            <select id="email-domain" aria-label="Email domain" className={cn(selectClass, "max-w-1/2 shrink-0", ANALYTICS_MASK_CLASS)} value={domain}
               disabled={busy || !inspected.data} onChange={event => { setDomainSelected(true); setDomain(event.target.value); setup.reset(); }}>
               {[...new Set([...customDomains, "agentmail.to", domain])]
                 .map(value => <option key={value} value={value}>@{value}</option>)}
             </select>
           </div>
-        </> : <select id="email-existing" className={selectClass} value={pendingAddress ?? inboxId} disabled={busy || scopedKey || !!pendingAddress}
+        </> : <select id="email-existing" className={cn(selectClass, ANALYTICS_MASK_CLASS)} value={pendingAddress ?? inboxId} disabled={busy || scopedKey || !!pendingAddress}
           aria-invalid={!!addressError} aria-describedby={addressError ? "email-address-error" : undefined}
           onChange={event => { setInboxId(event.target.value); setup.reset(); }}>
           <option value="">Choose an inbox</option>
@@ -457,7 +458,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
       </div>
     </div>}
       <Dialog open={trustOpen} onOpenChange={setTrustOpen}>
-        <DialogContent className="max-h-screen overflow-y-auto sm:max-w-2xl">
+        <DialogContent className={cn("max-h-screen overflow-y-auto sm:max-w-2xl", ANALYTICS_MASK_CLASS)}>
           <DialogHeader>
             <DialogTitle>Trust settings · {chosen?.name}</DialogTitle>
             <DialogDescription>

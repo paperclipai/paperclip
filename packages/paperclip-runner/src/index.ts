@@ -8,6 +8,7 @@ export * from "./contracts/completion-result.js";
 export * from "./contracts/codex.js";
 export * from "./contracts/provider-performance.js";
 export * from "./contracts/durable-recovery.js";
+export * from "./contracts/sandbox-disk-full.js";
 export * from "./contracts/harness-driver.js";
 export * from "./contracts/local-runner.js";
 export * from "./contracts/native-execution.js";
@@ -34,6 +35,7 @@ export {
   summarizeCodexTurnDiff,
 } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
+export * from "./native-provider-turn-wait.js";
 export * from "./steering-delivery.js";
 export {
   DurablePrpControlPlane,
@@ -50,7 +52,9 @@ export {
   decodeDurablePrpCheckpoint,
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectDurablePrpCheckpointRunner,
   inspectUnclaimedBootstrapCheckpoint,
+  inspectUnauthenticatedBootstrapCheckpoint,
   inspectUnclaimedBootstrapState,
   type PrpWireConnection,
   type PrpWireAttachment,
@@ -58,12 +62,23 @@ export {
   type RunnerProcessConnection,
   type RunnerProcessLaunchSpec,
   type RunnerProcessHandle,
+  type SemanticInputAdmission,
 } from "./control-plane/durable-prp-control-plane.js";
+export {
+  TOOL_CALLBACK_INTERRUPTED_CODE,
+  dispatchToolCallback,
+  interruptedToolCallbackOutcome,
+  recoverToolCallback,
+  toolCallbackOwnedByThisProcess,
+} from "./control-plane/orphaned-tool-callback.js";
 export type { DurableRecoveryIdentity } from "./control-plane/prp-transport-types.js";
 export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
 export { codexUsageBaselineForNextRun } from "./drivers/codex/codex-usage-baseline.js";
 export { resolveCodexCommand, resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
+export { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES, type ToolInputSchemaAdmission } from "./drivers/tool-input-schema.js";
+export { TOOL_INPUT_VARIANT_TOOLS, toolInputVariantError } from "./contracts/tool-input-variants.js";
+export { providerToolSchemaShapeIssues } from "./contracts/provider-tool-schema-shape.js";
 export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
@@ -83,10 +98,13 @@ export { resolveGrokEffort } from "./drivers/acpx/grok-effort.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
+  isSettledReleasedRunnerCut,
+  revertUnattachedRelaunchRotation,
   probeNativeRunnerEnvironment,
   NativeEnvironmentProbeCleanupError,
   runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
+  defaultCapabilityRunnerdBinaryAsync,
   readRunnerdArtifactBinding,
   drainRetainedRunnerdMaintenanceOperations,
   coldAdmissionTimeoutMs,
@@ -116,14 +134,14 @@ export * from "./compatibility.js";
 
 export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation } from "./drivers/acpx/installation-integrity.js";
 export { probeAcpxPiInstallation, probeAcpxKimiInstallation } from "./drivers/acpx/profile-installation.js";
-export { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "./live/bundled-remote-provider-pack.js";
+export { BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH, PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, bundledRemoteRunnerRelease } from "./live/bundled-remote-provider-pack.js";
 
 export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";
 
-export type { RunnerExecutionDriver } from "./control-plane/runner-execution-driver.js";
+export type { RunnerExecutionDriver, RunnerReleaseResumeOutcome } from "./control-plane/runner-execution-driver.js";
 
-export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
+export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchPreparationDigest, runnerLaunchRequirementsDigest, runnerLaunchRunDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
 
 export { resolveGrokDisableWebSearch } from "./drivers/acpx/grok-web-search.js";
@@ -136,3 +154,4 @@ export { archiveCursorCloudSessionCheckpoint } from "./drivers/cursor-cloud/chec
 
 export { readProviderFailure, type ProviderFailure } from "./contracts/provider-failure.generated.js";
 export { providerFailureFromError } from "./drivers/provider-failure.js";
+export { SAFE_ERROR_CAUSE_PATTERN, safeErrorCauseCode } from "./control-plane/safe-error-cause.js";

@@ -45,6 +45,7 @@ Plan: [`2026-11-07-durable-ownership-and-reconciliation.md`](2026-11-07-durable-
 | Metric | Definition (run-log spans) |
 |---|---|
 | **TTFT** | `task.time_to_first_token`. It runs from the accepted input to the first deliverable text committed by Core. The accepted input is the wake comment, the answered question, or the durable wake request when that is earlier (#19838). Otherwise it is run creation. `anchor` names which one. |
+| **First visible activity** | `task.time_to_first_agent_activity`: the same start as TTFT, to the first text delta, tool-call start or reasoning item committed by Core. Added 2026-11-08: the speed budgets judge this metric (from run creation) with the TTFT numbers below, and TTFT is reported without a budget, because tool-first adapters such as Claude call tools before they write text. |
 | **Agent boot** | Run claimed (end of `heartbeat.queue`) → provider session accepted `turn.start` (end of `runner.turn.submit`, or of `runner.session.resume` for a resumed session) |
 | **Pre-turn steps** | Every span that starts before the turn boundary above, without cumulative wrappers (`task.prepare`, `runner.session.startup`, `environment.startup`) |
 | **Restart recovery latency** | Fault `readyAt` (the harness saw `/api/ready` = `ready` and a healthy `/api/liveness`) → the recovered run's next provider event, grouped by `native.recovery.transition.runnerDisposition` |
