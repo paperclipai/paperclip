@@ -184,7 +184,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     // Admit through the normal transaction, but hold dispatch so no adapter runs.
     deps.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
     deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
-    const preflight = vi.spyOn(deps.wakeQueue, "preflightIssueWake");
+    const preflight = deps.wakeQueue.preflightIssueWake;
     let reached!: () => void;
     let release!: () => void;
     const atBarrier = new Promise<void>(resolve => { reached = resolve; });
