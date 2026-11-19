@@ -12,14 +12,16 @@ import { boundedHashStream } from "./skill-package-files.js";
 import { skillPackageStore } from "./skill-package-store.js";
 
 export async function migrateLocalSkillPackageObjects(db: Db, input: {
-  source: StorageService; destination: StorageService; writersStopped: boolean; signal: AbortSignal; after?: string;
+  source: StorageService; destination: StorageService; writersStopped: boolean; online?: boolean; signal: AbortSignal; after?: string; limit?: number;
 }) {
-  if (!input.writersStopped || process.env.PAPERCLIP_EPHEMERAL_MIGRATION !== "true"
+  const offline = input.writersStopped && process.env.PAPERCLIP_EPHEMERAL_MIGRATION === "true";
+  if ((!offline && input.online !== true)
     || input.source.provider !== "local_disk" || input.destination.provider !== "s3") throw new Error("offline_skill_object_migration_required");
   const rows = await db.select({ id: snapshots.id, companyId: snapshots.companyId, storage: snapshots.storage })
     .from(snapshots).where(and(sql`${snapshots.storage}->>'provider' = 'local_disk'`,
-      input.after ? gt(snapshots.id, input.after) : undefined)).orderBy(asc(snapshots.id)).limit(50);
+      input.after ? gt(snapshots.id, input.after) : undefined)).orderBy(asc(snapshots.id)).limit(Math.max(1, Math.min(50, input.limit ?? 50)));
   const source = skillPackageStore(db, input.source);
+  let busy = 0;
   for (const row of rows) {
     input.signal.throwIfAborted();
     const original = row.storage!;
@@ -30,7 +32,11 @@ export async function migrateLocalSkillPackageObjects(db: Db, input: {
     const unchanged = sql`${snapshots.storage} = ${JSON.stringify(original)}::jsonb`;
     const [claimed] = await db.update(snapshots).set({ upload }).where(and(eq(snapshots.companyId, row.companyId), eq(snapshots.id, row.id), unchanged,
       sql`(${snapshots.upload} is null or (${snapshots.upload}->>'expiresAt')::timestamptz <= now())`)).returning({ id: snapshots.id });
-    if (!claimed) throw new Error("skill_object_migration_owner_busy");
+    if (!claimed) {
+      if (offline) throw new Error("skill_object_migration_owner_busy");
+      busy++;
+      continue;
+    }
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-object-migration-"));
     try {
       for (const object of [
@@ -59,8 +65,16 @@ export async function migrateLocalSkillPackageObjects(db: Db, input: {
       const [published] = await db.update(snapshots).set({ storage: receipt, upload: null, migrationAt: null })
         .where(and(eq(snapshots.companyId, row.companyId), eq(snapshots.id, row.id), unchanged,
           sql`${snapshots.upload}->>'token' = ${token}`)).returning({ id: snapshots.id });
-      if (!published) throw new Error("skill_object_migration_owner_changed");
+      if (!published) {
+        if (offline) throw new Error("skill_object_migration_owner_changed");
+        busy++;
+        await db.update(snapshots).set({ upload: null }).where(and(eq(snapshots.companyId, row.companyId), eq(snapshots.id, row.id),
+          sql`${snapshots.upload}->>'token' = ${token}`));
+        for (const key of [upload.archiveKey, upload.manifestKey]) {
+          await input.destination.deleteObject(row.companyId, key, { signal: input.signal }).catch(() => undefined);
+        }
+      }
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
   }
-  return { inspected: rows.length, migrated: rows.length, after: rows.at(-1)?.id ?? null };
+  return { inspected: rows.length, migrated: rows.length - busy, busy, after: rows.at(-1)?.id ?? null };
 }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { hostname } from "node:os";
-import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, companies, createDb, environmentLeases, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   executeNativeSession,
   NativeSessionCloseUnrecoverableError,
@@ -55,7 +55,8 @@ describeEmbeddedPostgres("queued native run behind the task's previous session c
   }
 
   async function retainPreviousSessionClose(f: Awaited<ReturnType<typeof seed>>, close: () => Promise<void>,
-    owner: { runId: string; runnerInstanceId: string } = { runId: randomUUID(), runnerInstanceId: randomUUID() }) {
+    owner: { runId: string; runnerInstanceId: string } = { runId: randomUUID(), runnerInstanceId: randomUUID() },
+    remoteCleanupScope?: string) {
     const runId = owner.runId;
     const identity = { runId, sessionId: `closing-${runId}`, companyId: f.companyId, issueId: f.issueId, agentId: f.previousId };
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
@@ -83,6 +84,7 @@ describeEmbeddedPostgres("queued native run behind the task's previous session c
         appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
         replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: async () => {} },
       runnerInstanceId: owner.runnerInstanceId, controlPlaneInstanceId: "control",
+      ...(remoteCleanupScope ? { remoteCleanupScope } : {}),
     })).rejects.toThrow("stopped for reassignment");
   }
 
@@ -165,6 +167,63 @@ describeEmbeddedPostgres("queued native run behind the task's previous session c
     const run = await queueNextAssigneeRun(f);
     await heartbeatService(db).resumeQueuedRuns();
     expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null, errorCode: null });
+  });
+
+  async function recordSandboxLease(f: Awaited<ReturnType<typeof seed>>, providerLeaseId: string, terminated: boolean) {
+    const [failed] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.nextId,
+      invocationSource: "automation", status: "failed", errorCode: "provider_transport_failed", runtimeMode: "native",
+      nativeIssueId: f.issueId, startedAt: new Date(Date.now() - 60_000), finishedAt: new Date(),
+      contextSnapshot: { issueId: f.issueId } }).returning();
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: f.companyId, issueId: f.issueId,
+      heartbeatRunId: failed!.id, provider: "fake-sandbox", providerLeaseId, leasePolicy: "ephemeral",
+      status: terminated ? "released" : "active", releasedAt: terminated ? new Date() : null,
+      cleanupStatus: terminated ? "success" : null,
+      metadata: terminated ? { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: f.companyId,
+        runId: failed!.id, leaseId, provider: "fake-sandbox", providerLeaseId, state: "stopped",
+        confirmedAt: new Date().toISOString() } } : {} });
+    return { leaseId, runId: failed!.id };
+  }
+
+  it("starts a queued run once the previous session's sandbox is confirmed terminated, whichever run released it", async () => {
+    const worker = dispatchWorker();
+    try {
+      const f = await seed();
+      const providerLeaseId = `sandbox-${randomUUID()}`;
+      await retainPreviousSessionClose(f, async () => {
+        throw new NativeSessionCloseUnrecoverableError({ runnerSuspended: false, providerDrained: false });
+      }, undefined, JSON.stringify(["fake-sandbox", providerLeaseId]));
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBe("operator_required");
+      const held = await recordSandboxLease(f, providerLeaseId, false);
+      const run = await queueNextAssigneeRun(f);
+      await heartbeatService(db).resumeQueuedRuns();
+      expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBe("operator_required");
+
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+        metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: f.companyId,
+          runId: held.runId, leaseId: held.leaseId, provider: "fake-sandbox", providerLeaseId, state: "stopped",
+          confirmedAt: new Date().toISOString() } } }).where(eq(environmentLeases.id, held.leaseId));
+      await heartbeatService(db).resumeQueuedRuns();
+      await expect.poll(async () => (await readRun(run.id)).status, { timeout: 15_000 }).not.toBe("queued");
+      expect((await readRun(run.id)).errorCode).not.toBe("native_session_cleanup_quarantined");
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBeNull();
+    } finally {
+      worker.stop();
+    }
+  });
+
+  it("keeps the run queued while a different sandbox of the task is terminated", async () => {
+    const f = await seed();
+    const providerLeaseId = `sandbox-${randomUUID()}`;
+    await retainPreviousSessionClose(f, async () => {
+      throw new NativeSessionCloseUnrecoverableError({ runnerSuspended: false, providerDrained: false });
+    }, undefined, JSON.stringify(["fake-sandbox", providerLeaseId]));
+    await recordSandboxLease(f, `other-${providerLeaseId}`, true);
+    const run = await queueNextAssigneeRun(f);
+    await heartbeatService(db).resumeQueuedRuns();
+    expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBe("operator_required");
   });
 
   it("does not hold a run for a different task", async () => {

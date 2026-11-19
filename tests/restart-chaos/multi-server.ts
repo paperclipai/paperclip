@@ -1,5 +1,5 @@
 /**
- * MS1–MS3: two control planes on one database (README "Two servers, one database").
+ * MS1–MS3: two control planes on one database (SCENARIOS.md "Two servers, one database").
  *
  * Hosted Cloud deploys by rolling overlap: a new server B starts on the same database while the old
  * server A still serves, then A drains (doc/plans/2026-10-31-zero-downtime-web-deploys.md: 5 s overlap,

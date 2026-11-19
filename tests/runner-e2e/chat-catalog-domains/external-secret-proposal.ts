@@ -32,7 +32,7 @@ export function truthfulPendingProposalDisplay(row:SecretProposalView,card:unkno
   &&(!reply.trim()||truthfulPendingProposal(reply));
 }
 export function secretProposalCardSelector(interactionId:string){
- return `[data-testid="task-chat-interaction"][id=${JSON.stringify(`interaction-${interactionId}`)}]`;
+ return `[data-testid="task-chat-interaction"][data-interaction-id=${JSON.stringify(interactionId)}]`;
 }
 async function recordPendingProposalDisplay(ctx:ChatCatalogContext,state:Record<string,unknown>,row:SecretProposalView){
  const cards=await ctx.input.api.get<RequestConfirmationInteraction[]>(`/api/issues/${ctx.issue()!.id}/interactions`);

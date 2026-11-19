@@ -296,7 +296,7 @@ describe("automatic retained workspace recovery", () => {
     const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
     expect(blocker).toMatchObject({ runId: second.runId, cause: "native_continuation_requires_reconciliation", canRetry: true,
-      nextAction: "Saved work recovered. Retry or send a message to continue." });
+      nextAction: "Saved work recovered. Retry continues from it." });
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true, observedRunId: second.runId });
     return { ...f, ...second, service: secondService, issue };
   }
@@ -539,7 +539,7 @@ describe("automatic retained workspace recovery", () => {
       const stable = (row: typeof after) => ({ ...row, updatedAt: null, ownerType: null, nextAction: null,
         evidence: { ...row.evidence, workspaceRecovery: { ...(row.evidence.workspaceRecovery as object), message: null } } });
       if (spent) {
-        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Paperclip refused to recover the saved files: .*Retry runs the check again/) });
+        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Paperclip refused to recover the saved files: .*Retry runs the check again|Paperclip cannot recover the unsaved files .*Retry continues the task in a new workspace/) });
         expect(stable(after)).toEqual(stable(before));
       } else expect(after).toEqual(before);
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].leasePolicy).toBe("reuse_by_environment");

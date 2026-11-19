@@ -25,7 +25,7 @@ function fixture(options: { loadingForever?: boolean; extraRun?: boolean; extraC
       return kind === "heading" || ready && !(kind.includes("comment-reply") && options.missingRenderedReply);
     }, editable: () => ready && !options.readOnly });
   const page = { url: () => current, goto: async (url: string) => { current = new URL(url, "https://fixture.test").href; ready = false; },
-    reload: async () => {}, getByRole: () => locator("heading"), getByTestId: () => locator("composer"), locator };
+    reload: async () => {}, waitForURL: async (matches: (url: URL) => boolean) => { if (!matches(new URL(current))) throw Error("Profile route never settled"); }, getByRole: () => locator("heading"), getByTestId: () => locator("composer"), locator };
   const api = { baseURL: "https://fixture.test", get: async (path: string) => {
     calls.push(path); if (path.endsWith("/primary-agent/me")) return primary;
     if (path.endsWith("/chats/ceo")) return { ...source, ...(options.wrongChat ? { id: "different-source" } : {}) };

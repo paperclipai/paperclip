@@ -39,6 +39,27 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it.each(["requested", "acknowledged"])("shows a %s operator Stop without calling it a failed attempt", state => {
+    const stopped = run({ status: "cancelled", runtimeMode: "legacy", finishedAt: now, errorCode: "cancelled",
+      resultJson: { cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "board" },
+        reason: "Cancelled by a board operator", recordedAt: now.toISOString() }, executionCancellation: { state, proof: "preparation_settled" } } });
+    if (state === "acknowledged") {
+      expect(project(stopped, undefined)).toMatchObject({ phase: "completed", label: "Stopped", cause: null,
+        nextAction: "Send a new message to continue from saved work." });
+    } else {
+      expect(project(stopped, undefined).phase).not.toBe("completed");
+    }
+    // Unrelated provider failures and recovery holds remain visible.
+    expect(project(run({ ...stopped, resultJson: {} }), undefined).phase).toBe("failed");
+    expect(projectExecution(stopped, undefined, [], { cause: "workspace_restore_failed", nextAction: "Save files" }, now).phase)
+      .toBe("recovery_needed");
+  });
+  it.each([undefined, "unknown", "provider_api_stop_receipt"])("retains failure presentation for an unqualified legacy Stop proof: %s", proof => {
+    const stopped = run({ status: "cancelled", runtimeMode: "legacy", finishedAt: now,
+      resultJson: { cancellation: { source: "operator", expected: true, initiator: { type: "user" },
+        reason: "Stop", recordedAt: now.toISOString() }, executionCancellation: { state: "acknowledged", proof } } });
+    expect(project(stopped, undefined).phase).toBe("failed");
+  });
   it.each(["contained", "ordinary", "wrong-source", "continued"] as const)("projects controller containment without inventing queued work: %s", state => {
     const stopped = run({ id: "old", status: "failed" });
     const action = { status: "resolved" as const, cause: "native_restart_recovery_blocked", nextAction: "Inspect the original owner",
@@ -132,12 +153,18 @@ describe("execution truth projection", () => {
     const projected = projectExecution(source, coordinator({ phase: "terminal_failure" }), [], action, now);
     expect(projected).toMatchObject({
       phase: "recovery_needed", label: "Stopped", cause: action.cause,
-      nextAction: status === "recovered" ? "Saved work recovered. Send a message to continue."
+      nextAction: status === "recovered" ? "Saved work recovered."
         : status === "blocked" ? "The saved source cannot be read safely." : "Recovering saved work…",
       permittedActions: ["inspect_run"], successorRunId: null,
     });
     expect(source.status).toBe("failed");
     expect(action.evidence.automaticRecovery.replay).toBe("blocked");
+    if (status === "recovered") {
+      expect(projectExecution({ ...source, status: "timed_out" }, coordinator({ phase: "terminal_failure" }), [], action, now)
+        .nextAction).toBe("Saved work recovered.");
+      expect(projectExecution({ ...source, errorCode: "native_session_cleanup_quarantined" },
+        coordinator({ phase: "terminal_failure" }), [], action, now).nextAction).toBe("Saved work recovered.");
+    }
     expect(projectExecution(source, undefined, [], { ...action,
       evidence: { ...action.evidence, workspaceRecovery: { ...action.evidence.workspaceRecovery,
         runId: "5f227d75-b314-4511-bf23-9c615277e69b" } },

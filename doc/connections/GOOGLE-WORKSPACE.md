@@ -16,7 +16,7 @@ Turn the setting on in **Settings → Experimental** to test the built-in connec
 
 The combined connection has one credential grant, capability catalog, policy
 profile, audit trail and reconnect lifecycle. It requests only the selected
-groups' scopes (nine scopes for the default selection), not the legacy full
+groups' scopes (ten scopes for the default selection), not the legacy full
 union. Google's consent screen also lets users decline
 permissions; discovery skips services without grants and excludes unsupported
 actions. The gateway checks actual grant scopes again before each call, including
@@ -63,6 +63,28 @@ endpoints remain separate. Paperclip namespaces actions by service and routes th
 to a closed endpoint registry using the combined grant. It does not create child
 connections or send provider tokens through Paperclip ID.
 
+Each service has a tool transport, set in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`
+(`packages/shared/src/google-workspace-connectors.ts`). `google_mcp` sends calls
+to Google's hosted MCP server for that service. `paperclip_rest` runs Paperclip's
+own tools over Google's REST APIs, in the server process
+(`server/src/google-workspace-rest-tools/`), with the same tool names, inputs
+and results. Every service is on `google_mcp` today. A service can move to
+`paperclip_rest` only when Paperclip implements every tool on its allowlist; a
+test enforces that. On either transport, the same grant scope checks, approvals,
+audit, token refresh and reconnection, prompt-injection screening, cancellation
+and experimental-feature gate apply. On `paperclip_rest`, discovery and health
+checks prove the token with one cheap REST read per service that the granted
+scopes allow (for example, Gmail reads the account profile) instead of Google's
+`tools/list`. A grant that allows no such read is listed without one, and a
+failed check makes only that service unavailable. See the
+folder's `README.md` for how to switch a service and how to remove the REST
+tools.
+
+Google results are untrusted content. The prompt-injection guard checks them
+before an agent receives them; see
+[Google Workspace content](../prompt-injection-prevention.md#google-workspace-content)
+for what it covers and what it does not.
+
 The catalog reuses the existing reviewed Google mark (`google-people.svg`),
 registered under its own `google-workspace` brand identity. No new artwork is
 downloaded or substituted for a product logo.
@@ -75,11 +97,26 @@ client pair; that client's Cloud project must have every applicable MCP API and
 preview enrollment. Do not remove legacy enabled profiles while their grants are
 in use. This code change does not enable the broker profile or deploy any stack.
 
-The signed request and envelope authentication bind the exact selected request;
-the legacy 21-scope profile remains supported for old clients. The encrypted
-credential payload preserves Google's actual nonempty
-subset. Missing scope evidence and scopes outside that reviewed union fail closed
-on authorization and refresh. Individual legacy profiles retain exact matching.
+The signed request and envelope authentication bind the exact selected request.
+Refresh binds the 14 scopes submitted for Google verification
+(`GOOGLE_WORKSPACE_SUBMITTED_SCOPES`), which the broker accepts as a subset of
+its registry. The encrypted credential payload preserves Google's actual
+nonempty subset. An authorization request with any scope outside the 14 is
+rejected. Callback and refresh use one contract on both managed and
+customer-owned OAuth: Paperclip caps Google's reported scopes to the 14 and to
+the saved request, and continues. A scope outside the 14 (for example a former
+Chat, Contacts, Directory, profile or `calendar.readonly` grant) is ignored and
+never enables an action. Only missing scope evidence or an empty result needs
+reconnecting, and reconnecting with a new service choice always works.
+Individual legacy profiles retain exact matching.
+
+Paperclip's own Google client never starts consent for a profile outside the
+14: `gmail.archive` (`gmail.modify`), `chat.read`, `chat.write`, `people.read`
+and `workspace-search.read`. Their Apps methods are no longer offered for new
+setup even when the broker advertises them, and reconnecting a saved connection
+on one of them is refused. Saved connections keep resolving their method,
+refreshing and running. Customer-owned OAuth methods for those services are
+unchanged.
 For the new `google/workspace.all` profile only, HKDF info is SHA-256(AAD) to
 remain below Node's 1024-byte limit. AES-GCM still authenticates the complete AAD;
 legacy envelope key derivation is unchanged.
@@ -93,8 +130,8 @@ instance to the fixed endpoints below. Customer OAuth uses the instance's existi
 `/api/tools/oauth/callback` instead. Register that exact HTTPS or loopback callback
 on the customer-owned client.
 
-Removal is local for managed grants: Google's project-wide revocation can break
-other connections. Before rollout, verify full and partial consent with an enrolled
+Removing a managed connection or grant asks Paperclip Cloud to revoke it (see
+"Removing a managed Google connection" below). Before rollout, verify full and partial consent with an enrolled
 test account, allowed reads/writes, reconnect, refresh and removal. Deterministic
 tests are not real-provider proof. Combining profiles simplifies onboarding, not
 Google's per-scope demonstration, justification or security-assessment obligations.
@@ -191,10 +228,90 @@ owner when the new method supports that owner.
 
 The Paperclip-managed method signs every broker request with one explicit
 profile. The broker binds that profile into sessions, one-time claims, sealed
-token envelopes, and refresh. Per-profile removal is local-only for managed
-Google grants. Google's revocation endpoint can invalidate all grants for the
-same user and managed client, so Paperclip does not call it while removing one
-Workspace profile.
+token envelopes, and refresh.
+
+### Removing a managed Google connection
+
+Removing a Paperclip-managed Google connection, or one of its per-user,
+organization or per-agent grants, sends each removed grant's refresh token to
+Paperclip Cloud's signed `POST /v1/connector/revoke`. Revoke signs with the
+subject that consented to the grant (`providerTenant.externalId`, saved by the
+managed callback), which is the subject of the broker's ledger row from the
+claim. Grants saved without it fall back to the subject refresh uses. Refresh
+keeps its own existing subject rule.
+
+The broker removes its record for that token. It revokes at Google only when it
+knows of no other live binding that could share the grant, because Google's
+revoke ends the user's whole grant to the managed client. A repeated call for a
+token it already removed returns the outcome it recorded. Its `outcome` is one
+of `revoked`, `other_connections_remain`, `provider_revocation_failed`,
+`binding_not_known`, `provider_revocation_disabled` or
+`revocation_in_progress`. The app adds `revocation_not_available` (an older
+broker's 409), `broker_unavailable` (timeout, network failure or no usable
+Cloud client), `broker_error`, `credential_unavailable` and
+`unexpected_error`.
+
+Order for removing a whole connection: read the refresh tokens; run the whole
+local teardown (grants, installs, the app-managed profile, gateway tokens and
+sessions, runtime slots, catalog status, OAuth state, archive the connection);
+then call the broker, one token at a time under one 5-second deadline; then
+delete the refresh-token secrets that were sent, whatever the outcome; then
+delete the remaining secrets. The broker step never throws, is never retried,
+and never changes the local outcome. A failure anywhere in the teardown makes
+no broker call and leaves the token in place.
+
+Order for removing one grant: read the token, commit the grant revocation,
+call the broker, then delete the grant's refresh-token secret.
+
+Deletion is compare-and-delete. Whether the connection owns the secret is
+checked first. Then `secrets.remove(secretId, { expectedVersion })` claims the
+row in one statement only if it is not deleted and its `latestVersion` still
+equals the version that was read, and only then runs the usual provider-side
+deletion and row removal. No caller transaction or row lock is held, and the
+broker call never runs inside a transaction. A managed Google sign-in that finishes
+during the call always writes a new version of the refresh token, so the new
+sign-in's token is never deleted, and a later removal sends that new token. A
+sign-in that returns no refresh token is refused before anything is written
+(`oauth_refresh_missing`), so it cannot reactivate the grant with the old
+token. During a whole-
+connection removal a sign-in cannot complete after the teardown: the teardown
+deletes the connection's OAuth states, and the callback must consume its state
+in its own transaction. An organization
+grant shares its secrets with the connection's own credential (the shared
+sign-in writes the same refs to both), so revoking it alone neither calls the
+broker nor deletes the secret; removing the connection does both. The same
+holds for any refresh-token secret still used by another live grant or
+connection.
+
+A revoked managed Google grant whose refresh-token secret still exists, and is
+used by nothing live, is a revocation still owed (for example, the process
+stopped after the teardown and before the call). Every later removal of that
+grant or connection sends it, then deletes the secret. Once the secret is
+gone, nothing is sent again. The token outlives the removal only in that crash
+window.
+
+`providerAccess: { provider, result, outcomes }` is returned with the removal
+and recorded in its activity entry, codes only. Once the broker call settles,
+the connection's audit history also gets a `connection.google_access_removal`
+event with `reasonCode` set to the result and `providerAccess` (plus `grantId`
+for a single grant) in its details. This includes owed revocations sent on a
+retry. If that write fails, the removal still succeeds and the failure is
+logged. The result is judged over the
+distinct tokens sent:
+
+| Outcomes | `result` | Message |
+| --- | --- | --- |
+| Every token `revoked` | `ended` | Access was ended at Google |
+| Any other code (failure, not known, unavailable, error) | `not_ended` | Could not end access; link to https://myaccount.google.com/connections |
+| Only `other_connections_remain` | `other_connections_remain` | Other connections keep access |
+| At least one `revoked`, the rest `other_connections_remain` | `ended_unconfirmed` | Access was ended; check Google if more than one account was connected; link to the same page |
+
+The last row is the sequence the broker returns for two tokens of one Google
+grant sent one at a time, but two different Google accounts can return it too.
+Grants record no Google account identity (none of the 14 scopes returns one),
+so the app cannot report `ended` for it.
+
+Connections on a customer-owned Google OAuth client are removed locally only.
 
 | App | Read profile | Write profile |
 | --- | --- | --- |
@@ -262,9 +379,15 @@ Docs, Sheets, and Slides request only their service's read-only scope in the
 read profile and its read/write scope in the write profile. They do not also
 request `drive.readonly` or `drive.file`: those are authorization alternatives,
 not additional requirements. Drive and Workspace Search retain their separate
-Drive permissions. Calendar write requests `calendar.calendarlist.readonly`
-and `calendar.events`; the latter also authorizes `suggest_time`. Calendar read
-retains `calendar.events.freebusy` alongside list/event read-only access.
+Drive permissions. The per-service Calendar write profile requests
+`calendar.calendarlist.readonly` and `calendar.events`; Google's MCP
+`suggest_time` accepts `calendar.events`. Calendar read retains
+`calendar.events.freebusy` alongside list/event read-only access. The combined
+connection's read & write Calendar selection also requests
+`calendar.events.freebusy` (2026-11-17), because Google's REST
+[`freeBusy.query`](https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query)
+does not accept `calendar.events`. The per-service profile keeps its exact
+scope set for the Cloud broker.
 
 References: Google's [Docs read](https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/read_doc)
 and [update](https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/update_doc),

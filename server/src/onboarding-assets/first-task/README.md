@@ -1,5 +1,10 @@
 # First-task onboarding assets
 
+The company wizard now opens a standing chat and starts a live welcome after the
+thread is visible. It creates no task or project; see
+[`doc/onboarding-chat.md`](../../../../doc/onboarding-chat.md).
+These assets remain for existing onboarding tasks and explicit legacy fixtures.
+
 Everything the very first agent is told during onboarding lives here as plain
 markdown so the board can edit the wording without touching TypeScript. The
 server loads these files (see `server/src/services/onboarding-first-task-assets.ts`

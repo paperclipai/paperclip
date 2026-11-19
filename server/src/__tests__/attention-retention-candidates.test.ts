@@ -61,8 +61,11 @@ function oracle(db: Db, scope: AttentionRetentionScope, cursor?: Cursor, sourceI
 
   async function seed(company: string, prefix: string, status: string, size: number) {
     await db.execute(sql`insert into companies (id, name, issue_prefix, status) values (${company}::uuid, ${prefix}, ${prefix}, ${status})`);
-    await db.execute(sql`insert into agents (company_id, name, status)
-      select ${company}::uuid, 'Agent ' || n, case when n % 3 = 0 then 'error' else 'idle' end from generate_series(1, 6) n`);
+    // Put error agents in the archived and kept retention positions. The
+    // unretained error added below guarantees a candidate of this kind.
+    await db.execute(sql`insert into agents (id, company_id, name, status)
+      select (left(${company}::text, 24) || lpad(n::text, 12, '0'))::uuid,
+        ${company}::uuid, 'Agent ' || n, case when n in (4, 6) then 'error' else 'idle' end from generate_series(1, 6) n`);
     // Issues: blocked, in review, hidden, harness-owned and ordinary ones.
     await db.execute(sql`insert into issues (company_id, title, status, hidden_at, harness_kind, updated_at)
       select ${company}::uuid, 'Issue ' || n,
@@ -108,6 +111,8 @@ function oracle(db: Db, scope: AttentionRetentionScope, cursor?: Cursor, sourceI
         union all select company_id, 'decision', id::text, row_number() over (order by id) from decisions where company_id = ${company}::uuid
         union all select company_id, 'agent_error_alert', id::text, row_number() over (order by id) from agents where company_id = ${company}::uuid
       ) x where n % 2 = 0`);
+    await db.execute(sql`insert into agents (company_id, name, status)
+      values (${company}::uuid, 'Unretained error agent', 'error')`);
   }
 
   beforeAll(async () => {

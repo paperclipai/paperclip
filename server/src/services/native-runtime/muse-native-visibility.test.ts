@@ -402,20 +402,20 @@ describe("Muse native visibility intersection", () => {
         .toEqual([{ owner: null, version: target.statusVersion }]);
       expect(enqueueWakeup).not.toHaveBeenCalled();
     };
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.authorizer,
       permissionKey: "tasks:assign_scope", scope: { agentIds: [protectedAgent.id], projectIds: [randomUUID()] } }).returning();
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     await db.update(principalPermissionGrants).set({ scope: { agentIds: [randomUUID()], projectIds: [project.id] } }).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     await db.update(principalPermissionGrants).set({ scope: { agentIds: [protectedAgent.id], projectIds: [project.id] } }).where(eq(principalPermissionGrants.id, grant.id));
     await expect(authority.execute(call)).resolves.toMatchObject({ disposition: "applied" });
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
@@ -430,7 +430,7 @@ describe("Muse native visibility intersection", () => {
     const authority = new PaperclipRunnerToolAuthority(db, { companyId: f.companyId, agentId: f.agentId, issueId: f.issue.id, runId,
       museRuntime: true, externalAuthorizingUserId: f.authorizer, assertBridgeAuthority: async () => {} });
     const call = { tool: "write_document", callId: "viewer-write", arguments: { key: "report", title: "Report", body: "Must not be written", baseRevisionId: null, idempotencyKey: "viewer-write" } };
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for issue:mutate");
+    await expect(authority.execute(call)).rejects.toThrow("The person who authorized this agent does not have permission to change this task.");
     expect(await db.select({ id: issueDocuments.id }).from(issueDocuments).where(eq(issueDocuments.issueId, f.issue.id))).toEqual([]);
     await db.update(companyMemberships).set({ membershipRole: "operator" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.authorizer)));
     await expect(authority.execute(call)).resolves.toMatchObject({ disposition: "applied" });

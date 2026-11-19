@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { reopenTaskDocument } from "./product-journeys/task-document-flow.js";
 import type { JourneyContext } from "./product-journeys/types.js";
 
-for (const layout of ["collapsed", "artifacts", "launcher", "classic"] as const) {
+for (const layout of ["collapsed", "side-panel", "artifacts", "launcher", "classic"] as const) {
   test(`document reopen waits for the ${layout} task controls after reload`, async ({ page }) => {
     const issue = { title: "Journey QA document navigation" };
     let taskLoads = 0;
@@ -20,7 +20,7 @@ for (const layout of ["collapsed", "artifacts", "launcher", "classic"] as const)
           controls.querySelector('button').onclick = ${layout === "artifacts" ? "authoring" : `() => { controls.innerHTML = '<div role="option">Artifacts</div>'; controls.querySelector('[role="option"]').onclick = authoring; }`};
         }
         setTimeout(() => {
-          ${layout === "classic" ? "authoring();" : layout === "collapsed" ? `controls.innerHTML = '<button>Show properties</button>'; controls.querySelector('button').onclick = () => setTimeout(panel, 100);` : "panel();"}
+          ${layout === "classic" ? "authoring();" : layout === "collapsed" || layout === "side-panel" ? `controls.innerHTML = ${JSON.stringify(layout === "side-panel" ? '<button aria-label="Toggle side panel" aria-pressed="false">Open</button>' : '<button>Show properties</button>')}; controls.querySelector('button').onclick = () => setTimeout(panel, 100);` : "panel();"}
         }, 200);
         </script>` });
     });

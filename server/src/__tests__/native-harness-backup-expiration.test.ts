@@ -1020,22 +1020,29 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
 
     // Every arm of the company's lease lookup must be index-backed, or the
     // planner reads each lease's metadata (environment_leases_native_backup_scope_idx).
-    const lookup = queries.find(query => query.text.startsWith('select "id" from "environment_leases"')
-      && query.text.includes("sessionScopeSha256"));
+    const lookup = queries.find(query => query.text.includes("jsonb_to_recordset") && query.text.includes("sessionScopeSha256"));
     expect(lookup).toBeDefined();
-    const custom = JSON.stringify(await db.$client.unsafe(`explain (format json) ${lookup!.text}`, lookup!.params as never[]));
-    // A reused prepared statement gets a generic plan; the bound digest must
-    // still prove the partial index predicate.
-    const generic = JSON.stringify(await db.$client.begin(async tx => {
+    const leaseScans = (plan: unknown): string[] => {
+      const nodes: string[] = [];
+      const visit = (node: Record<string, unknown>) => {
+        if (String(node["One-Time Filter"] ?? "") === "$3") return;
+        if (node["Relation Name"] === "environment_leases" || String(node["Index Name"] ?? "").startsWith("environment_leases"))
+          nodes.push(`${node["Node Type"]}:${node["Index Name"] ?? ""}`);
+        for (const child of (node.Plans as Record<string, unknown>[] | undefined) ?? []) visit(child);
+      };
+      visit(((plan as Array<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>)[0]!["QUERY PLAN"][0]!).Plan);
+      return nodes;
+    };
+    const custom = leaseScans(await db.$client.unsafe(`explain (format json) ${lookup!.text}`, lookup!.params as never[]));
+    const generic = leaseScans(await db.$client.begin(async tx => {
       await tx.unsafe("set local plan_cache_mode = force_generic_plan");
       await tx.unsafe(`prepare backup_lease_lookup as ${lookup!.text}`);
       const values = lookup!.params.map(value => `'${String(value).replaceAll("'", "''")}'`).join(", ");
       return tx.unsafe(`explain (format json) execute backup_lease_lookup(${values})`);
     }));
-    for (const text of [custom, generic]) {
-      expect(text).toContain("environment_leases_native_backup_scope_idx");
-      expect(text).toContain("BitmapOr");
-      expect(text).not.toContain("Seq Scan");
+    for (const scans of [custom, generic]) {
+      expect(scans.some(scan => scan.endsWith("environment_leases_native_backup_scope_idx"))).toBe(true);
+      expect(scans.filter(scan => scan.startsWith("Seq Scan"))).toEqual([]);
     }
   });
 
