@@ -245,6 +245,7 @@ export interface NativeSession {
   beginRunAttachment?(input: { identity: NativeRunIdentity }): boolean;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
+  retireReleasedController?(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null>;
   /** Relinquish controller authority without suspending provider execution. */
   detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;

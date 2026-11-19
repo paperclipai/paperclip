@@ -1,3 +1,4 @@
+import { canActorRetryConversation } from "../lib/conversation-wake-policy.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
@@ -46,8 +47,7 @@ export function assertTaskRetryConversationAllowed(
   issue: { conversationAgentId?: string | null; conversationUserId?: string | null },
   actorId: string,
 ) {
-  if (!issue.conversationAgentId) return;
-  if (issue.conversationUserId !== actorId) throw forbidden("Only the conversation owner can retry a chat run");
+  if (!canActorRetryConversation(issue, actorId)) throw forbidden("Only the conversation owner can retry a chat run");
 }
 
 const taskRetryIntentSchema = z.object({
