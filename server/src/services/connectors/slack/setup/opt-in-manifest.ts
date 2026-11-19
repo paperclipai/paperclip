@@ -12,6 +12,8 @@ import {
   slackOptInGroupsForSetup,
   slackOptInGroupsFromScopes,
   slackRequestedOptInGroups,
+  slackSearchRedirectUri,
+  SLACK_SEARCH_CALLBACK_PATH,
   type SlackOptInScopeGroup,
 } from "@paperclipai/shared";
 import { conflict } from "../../../../errors.js";
@@ -53,7 +55,31 @@ export function canonicalJson(value: unknown): string {
  * user never approved.
  */
 export function slackInstallManifestHash(manifest: unknown): string {
-  return createHash("sha256").update(canonicalJson(manifest)).digest("hex");
+  return createHash("sha256").update(canonicalJson(withoutSearchOAuth(manifest))).digest("hex");
+}
+
+/**
+ * The personal-search redirect URL and user scopes ride along in the manifest
+ * so a push never wipes them, but they do not affect the bot install. Leave
+ * them out of the install-binding hash so apps whose stored manifest predates
+ * them are not seen as changed (and forced to reinstall).
+ */
+function withoutSearchOAuth(manifest: unknown): unknown {
+  const root = object(manifest);
+  const oauth = object(root.oauth_config);
+  const { user: _user, ...scopes } = object(oauth.scopes);
+  const { redirect_urls: redirects, ...restOauth } = oauth;
+  const kept = Array.isArray(redirects)
+    ? redirects.filter((url) => !(typeof url === "string" && url.endsWith(SLACK_SEARCH_CALLBACK_PATH)))
+    : undefined;
+  return {
+    ...root,
+    oauth_config: {
+      ...restOauth,
+      scopes,
+      ...(kept && kept.length > 0 ? { redirect_urls: kept } : {}),
+    },
+  };
 }
 
 /**
@@ -108,6 +134,7 @@ export async function applySlackOptInManifestChange(
     agentName: input.agentName,
     webhookUrl: eventUrl,
     redirectUri: row.callbackUri,
+    searchRedirectUri: slackSearchRedirectUri(row.callbackUri),
     optInScopeGroups: requested,
   });
   const manifestHash = slackInstallManifestHash(manifest);
@@ -289,6 +316,7 @@ export async function ensureSlackManifestScopesCurrent(
     agentName: input.agentName,
     webhookUrl: eventUrl,
     redirectUri: row.callbackUri,
+    searchRedirectUri: slackSearchRedirectUri(row.callbackUri),
     optInScopeGroups: normalizedGroups,
   });
   const manifestHash = slackInstallManifestHash(manifest);

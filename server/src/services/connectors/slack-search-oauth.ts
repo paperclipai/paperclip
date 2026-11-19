@@ -1,4 +1,4 @@
-import { slackSearchConfigSchema } from "@paperclipai/shared";
+import { SLACK_SEARCH_USER_SCOPES as _SLACK_SEARCH_USER_SCOPES, slackSearchConfigSchema } from "@paperclipai/shared";
 import { SLACK_NATIVE_SEARCH_LIMITATION } from "./slack-native-search.js";
 import { syncConnectionCredentialBindings } from "../connection-credential-bindings.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -28,11 +28,8 @@ import { toolAccessService } from "../tool-access.js";
 import { logActivity } from "../activity-log.js";
 import { object, slackClient } from "./slack-client.js";
 
-export const SLACK_SEARCH_USER_SCOPES = [
-  "search:read.public",
-  "search:read.private",
-  "search:read.files",
-];
+// Defined in @paperclipai/shared so the app manifest can request the same scopes.
+export const SLACK_SEARCH_USER_SCOPES: string[] = [..._SLACK_SEARCH_USER_SCOPES];
 const configSchema = z.object({
   clientId: z.string(),
   clientSecretId: z.string().uuid(),

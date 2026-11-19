@@ -170,6 +170,48 @@ describe("Slack opt-in manifest machinery", () => {
       expect(row!.status).toBe("configured");
     });
 
+    it("keeps the personal-search redirect URL and user scopes in a pushed manifest without forcing a reinstall", async () => {
+      const f = await fixture();
+      const app = f.endpoint.setup.slackApp;
+      const [before] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      const searchUri = new URL("/api/slack/search/callback", new URL(before!.callbackUri).origin).toString();
+      // The stored manifest predates the search additions, like every already-installed app.
+      const legacy = buildSlackAppManifest({
+        app: app!, agentName: "Maya", webhookUrl: "https://paperclip.example/api/chat-webhooks/public/slack",
+        redirectUri: before!.callbackUri,
+      });
+      await db!.update(chatSlackRegistrations).set({
+        manifest: legacy, manifestHash: slackInstallManifestHash(legacy), status: "install", errorCode: null,
+      }).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+      // A no-op opt-in edit must not mark the app as needing a repush.
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: { ...f.endpoint.setup, slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] },
+      });
+      let [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      expect(row!.errorCode).toBeNull();
+
+      // A real opt-in change pushes a manifest that still declares the search redirect URL.
+      await applySlackOptInManifestChange(db!, {
+        endpointId: f.endpoint.id, companyId: f.company.id, agentName: "Maya", app,
+        setup: { ...f.endpoint.setup, slackOptInScopeGroups: ["file_upload"] },
+      });
+      [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+      const oauth = (row!.manifest as any).oauth_config;
+      expect(oauth.redirect_urls).toEqual([before!.callbackUri, searchUri]);
+      expect(oauth.scopes.user).toEqual(["search:read.public", "search:read.private", "search:read.files"]);
+    });
+
+    it("ignores the personal-search additions when hashing the install manifest", () => {
+      const base = buildSlackAppManifest({ app: { appName: "a", botName: "b", command: "/b" } as any, agentName: "Maya", webhookUrl: "https://p.example/w", redirectUri: "https://p.example/api/chat-slack/oauth/callback" });
+      const withSearch = buildSlackAppManifest({ app: { appName: "a", botName: "b", command: "/b" } as any, agentName: "Maya", webhookUrl: "https://p.example/w", redirectUri: "https://p.example/api/chat-slack/oauth/callback", searchRedirectUri: "https://p.example/api/slack/search/callback" });
+      expect(slackInstallManifestHash(withSearch)).toBe(slackInstallManifestHash(base));
+      const otherBotScopes = JSON.parse(JSON.stringify(withSearch));
+      otherBotScopes.oauth_config.scopes.bot.push("extra:scope");
+      expect(slackInstallManifestHash(otherBotScopes)).not.toBe(slackInstallManifestHash(base));
+    });
+
     it("keeps errorCode pending on withdrawal when legacy install lacks default scopes snapshot", async () => {
       const f = await fixture();
       const app = f.endpoint.setup.slackApp;

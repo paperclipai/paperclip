@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { chatSlackRegistrations } from "@paperclipai/db";
-import { isProvisionedSlackSetup, resolveAgentAppearance, buildSlackAppManifest, isSlackManifestUpdatePending, slackAppConfigurationSchema, slackRequestedOptInGroups, type SlackRegistrationInput, type SlackAvatarState } from "@paperclipai/shared";
+import { isProvisionedSlackSetup, resolveAgentAppearance, buildSlackAppManifest, slackSearchRedirectUri, isSlackManifestUpdatePending, slackAppConfigurationSchema, slackRequestedOptInGroups, type SlackRegistrationInput, type SlackAvatarState } from "@paperclipai/shared";
 import { conflict } from "../../../../errors.js";
 import { logger } from "../../../../middleware/logger.js";
 import type { CredentialMutationLeaseGuard } from "../../../chat-credential-mutation-lease.js";
@@ -62,7 +62,7 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore, credenti
       const app = slackAppConfigurationSchema.parse(current.endpoint.setup.slackApp);
       const redirect = callbackUri();
       const manifest = buildSlackAppManifest({ app, agentName: current.agentName,
-        webhookUrl: `${origin(options.webhookOrigin())}/api/chat-webhooks/${current.endpoint.publicId}/slack`, redirectUri: redirect,
+        webhookUrl: `${origin(options.webhookOrigin())}/api/chat-webhooks/${current.endpoint.publicId}/slack`, redirectUri: redirect, searchRedirectUri: slackSearchRedirectUri(redirect),
         optInScopeGroups: slackRequestedOptInGroups(current.endpoint.setup) });
       // Slack cannot authenticate a challenge until its creation response gives us
       // the signing secret. Add event subscriptions only after that secret is durable.

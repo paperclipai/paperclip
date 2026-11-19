@@ -304,3 +304,21 @@ export function slackOptInGroupsForSetup(
     return normalizeSlackOptInGroups(SLACK_OPT_IN_SCOPE_GROUPS);
   return [];
 }
+
+/**
+ * User scopes for personal Slack search (a separate per-user OAuth flow, not
+ * the bot install). Shared so the app manifest can request them alongside the
+ * search redirect URL; `apps.manifest.update` replaces both wholesale.
+ */
+export const SLACK_SEARCH_USER_SCOPES = [
+  "search:read.public",
+  "search:read.private",
+  "search:read.files",
+] as const;
+
+export const SLACK_SEARCH_CALLBACK_PATH = "/api/slack/search/callback";
+
+/** The personal-search redirect URL on the same public origin as `baseUrl`. */
+export function slackSearchRedirectUri(baseUrl: string): string {
+  return new URL(SLACK_SEARCH_CALLBACK_PATH, new URL(baseUrl).origin).toString();
+}

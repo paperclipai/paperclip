@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   SLACK_DEFAULT_BOT_SCOPES,
+  SLACK_SEARCH_USER_SCOPES,
   slackBotScopes,
   type SlackOptInScopeGroup,
 } from "./slack-scopes.js";
@@ -55,6 +56,11 @@ export function buildSlackAppManifest(input: {
   agentName: string;
   webhookUrl: string;
   redirectUri?: string;
+  /**
+   * Personal-search OAuth redirect URL. Slack replaces the whole redirect_urls
+   * array on a manifest update, so it must be declared here or an update drops it.
+   */
+  searchRedirectUri?: string;
   /** Per-agent opt-ins. Off by default; each enabled group adds its scopes. */
   optInScopeGroups?: readonly SlackOptInScopeGroup[];
 }) {
@@ -68,8 +74,13 @@ export function buildSlackAppManifest(input: {
         usage_hint: "status | new | close | <task>", should_escape: false, url: input.webhookUrl }],
     },
     oauth_config: {
-      scopes: { bot: slackBotScopes(input.optInScopeGroups) },
-      ...(input.redirectUri ? { redirect_urls: [input.redirectUri] } : {}),
+      scopes: {
+        bot: slackBotScopes(input.optInScopeGroups),
+        ...(input.searchRedirectUri ? { user: [...SLACK_SEARCH_USER_SCOPES] } : {}),
+      },
+      ...(input.redirectUri || input.searchRedirectUri
+        ? { redirect_urls: [...new Set([input.redirectUri, input.searchRedirectUri].filter((url): url is string => !!url))] }
+        : {}),
     },
     settings: {
       org_deploy_enabled: false, socket_mode_enabled: false, token_rotation_enabled: false,
