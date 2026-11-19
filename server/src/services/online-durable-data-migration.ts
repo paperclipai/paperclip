@@ -14,6 +14,9 @@ import { skillInstallationMaintenance } from "./skill-installation-maintenance.j
 import { migrateRuntimeSkillAssets } from "./native-runtime/runtime-skill-preservation.js";
 import { prestageNativeHarnessBackups } from "./native-runtime/native-harness-backup-migration.js";
 import { prestageNativeControllers } from "./native-runtime/native-controller-migration.js";
+import { listLocalWorkspaceCompanies, listLocalWorkspaces } from "./local-workspace-dependencies.js";
+import { reconcileOnlineWorkspaceOperations } from "./offline-workspace-operation-reconciliation.js";
+import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 
 export type OnlineDurableDataMigrationResult = {
   state: "completed" | "budget_exhausted" | "unsupported";
@@ -36,6 +39,12 @@ type Owners = {
   skillPackages: (db: Db, storage: StorageService) => Pick<ReturnType<typeof skillPackageMaintenance>, "migrateSnapshots" | "migrateVersions">;
   skillInstallations: (db: Db, storage: StorageService) => Pick<ReturnType<typeof skillInstallationMaintenance>, "installations">;
   runtimeSkillAssets: typeof migrateRuntimeSkillAssets;
+  workspaceCompanies: typeof listLocalWorkspaceCompanies;
+  workspaceOperations: (db: Db, input: { companyId: string; signal: AbortSignal }) => Promise<{ reconciled: number; held: Array<{ reason: string }> }>;
+  localWorkspaces: typeof listLocalWorkspaces;
+  inventoryWorkspace: (db: Db, input: { companyId: string; workspaceId: string }) => Promise<{ reasons: string[] }>;
+  migrateWorkspace: (input: { db: Db; storage: StorageService; companyId: string; workspaceId: string; apply: true;
+    signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[] }>;
   nativeHarnessBackups: typeof prestageNativeHarnessBackups;
   nativeControllers: typeof prestageNativeControllers;
   eligibility: (db: Db) => Promise<{ eligible: boolean; blockers: string[] }>;
@@ -59,6 +68,11 @@ const defaultOwners: Owners = {
   skillPackages: skillPackageMaintenance,
   skillInstallations: skillInstallationMaintenance,
   runtimeSkillAssets: migrateRuntimeSkillAssets,
+  workspaceCompanies: listLocalWorkspaceCompanies,
+  workspaceOperations: reconcileOnlineWorkspaceOperations,
+  localWorkspaces: listLocalWorkspaces,
+  inventoryWorkspace: inventoryRemoteWorkspaceMigration,
+  migrateWorkspace: migrateRemoteWorkspace,
   nativeHarnessBackups: prestageNativeHarnessBackups,
   nativeControllers: prestageNativeControllers,
   eligibility: readOnlineEphemeralEnrollmentEligibility,
@@ -66,17 +80,39 @@ const defaultOwners: Owners = {
 };
 
 const PHASES = ["agent_files", "skill_objects", "skill_snapshots", "skill_versions", "skill_installations",
-  "runtime_skill_assets", "native_harness_backups", "native_controllers"] as const;
+  "runtime_skill_assets", "workspace_operations", "workspaces", "native_harness_backups", "native_controllers"] as const;
 type Phase = typeof PHASES[number];
 
 let running: Promise<OnlineDurableDataMigrationResult> | null = null;
+let workspaceOwner: Promise<void> | null = null;
 type Progress = { phase: number; after?: string; limit?: number; timeouts?: number };
 let progress: Progress = { phase: 0 };
 const DEFAULT_LIMITS: Partial<Record<Phase, number>> = { agent_files: 5, skill_objects: 50, skill_snapshots: 50, skill_versions: 50,
-  skill_installations: 50, runtime_skill_assets: 50 };
+  skill_installations: 50, runtime_skill_assets: 50, workspace_operations: 10, workspaces: 4 };
+const WORKSPACE_SOURCE_LOCK_WAIT_MS = 1_000;
+const WORKSPACE_BLOCKED = "remote_workspace_migration_blocked:";
+
+function workspaceDeferrals(error: unknown): string[] {
+  const message = error instanceof Error ? error.message : "";
+  if (message.startsWith(WORKSPACE_BLOCKED)) {
+    const reasons = message.slice(WORKSPACE_BLOCKED.length).split(",").filter(reason => /^[a-z_]{1,80}$/.test(reason));
+    if (reasons.length) return reasons;
+  }
+  return [/^[a-z_]{1,80}$/.test(message) ? message : "owner_failed"];
+}
 
 export function resetOnlineDurableDataMigrationProgressForTests() {
   progress = { phase: 0 };
+  workspaceOwner = null;
+}
+
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    if (signal.aborted) return abort();
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 export function runOnlineDurableDataMigration(db: Db, input: { budgetMs: number; now?: () => number }, owners: Owners = defaultOwners) {
@@ -147,6 +183,43 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           const result = await owners.runtimeSkillAssets(db, { apply: true, after, limit, signal }, storage);
           add(counts, "runtimeSkillRuns", result.results.filter(row => row.status === "preserved").length);
           return result.inspected < limit || !result.after ? null : result.after;
+        }
+        case "workspace_operations": {
+          const companies = await owners.workspaceCompanies(db, { after, limit });
+          for (const companyId of companies) {
+            const result = await owners.workspaceOperations(db, { companyId, signal });
+            add(counts, "workspaceOperations", result.reconciled);
+            for (const held of result.held) add(deferred, `workspace_operations:${held.reason}`);
+          }
+          return companies.length < limit ? null : companies.at(-1)!;
+        }
+        case "workspaces": {
+          if (workspaceOwner) {
+            add(deferred, "workspaces:owner_busy");
+            return null;
+          }
+          const rows = await owners.localWorkspaces(db, { after, limit });
+          for (const { companyId, workspaceId } of rows) {
+            let reasons: string[];
+            try {
+              reasons = (await owners.inventoryWorkspace(db, { companyId, workspaceId })).reasons;
+              if (!reasons.length) {
+                const work = owners.migrateWorkspace({ db, storage, companyId, workspaceId, apply: true, signal,
+                  sourceLockWaitMs: WORKSPACE_SOURCE_LOCK_WAIT_MS });
+                const tracked: Promise<void> = work.then(() => undefined, () => undefined)
+                  .finally(() => { if (workspaceOwner === tracked) workspaceOwner = null; });
+                workspaceOwner = tracked;
+                const result = await untilAborted(work, signal);
+                reasons = result.alreadyMigrated ? [] : result.reasons.length ? result.reasons : ["not_migrated"];
+              }
+            } catch (error) {
+              if (signal.aborted) throw error;
+              reasons = workspaceDeferrals(error);
+            }
+            if (!reasons.length) add(counts, "workspaces");
+            for (const reason of reasons) add(deferred, `workspaces:${reason}`);
+          }
+          return rows.length < limit ? null : rows.at(-1)!.cursor;
         }
         case "native_harness_backups": {
           await owners.nativeHarnessBackups(db, { storage, signal, onOutcome: outcome => {
