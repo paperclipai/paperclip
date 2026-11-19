@@ -206,8 +206,6 @@ describe("qualified ACPX runtime sidecar", () => {
     const original = { MCP_TOOL_TIMEOUT: "1000", ANTHROPIC_API_KEY: "selected-key", UNRELATED_SECRET: "private" };
     const claude = create({ env: original }, { agent: "claude", normalizedSessionId: "session" }, createAcpxSidecarHostEnvironment);
     expect(createSanitizedAcpxSpawnInput(claude, "claude").env).toMatchObject({ MCP_TOOL_TIMEOUT: "3600000", ANTHROPIC_API_KEY: "selected-key" });
-    // Claude also aborts a call after 300s without a response or progress;
-    // durable task-tool calls send neither while they wait for the controller.
     expect(createSanitizedAcpxSpawnInput(claude, "claude").env).toMatchObject({ CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: "3600000" });
     expect(createSanitizedAcpxSpawnInput(claude, "claude").env).not.toHaveProperty("UNRELATED_SECRET");
     expect(original.MCP_TOOL_TIMEOUT).toBe("1000");
