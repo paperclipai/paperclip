@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { agentHarnessType, requiresExecutionReconciliation } from "@paperclipai/shared";
 import { PERMANENT_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "./continuation-cause.js";
 import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
@@ -143,6 +143,10 @@ export function agentRunFailureCause(input: {
   return PLATFORM_FAILURE_CODES.has(code) ? "platform_error" : "unknown";
 }
 
+export function telemetryAdapterType(agent: { adapterType: string; adapterConfig: unknown }): string {
+  return agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig));
+}
+
 function providerFailureCategory(resultJson: unknown): string | null {
   const providerFailure = parseObject(parseObject(resultJson).providerFailure);
   return typeof providerFailure.category === "string" ? providerFailure.category : null;
@@ -243,7 +247,7 @@ export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void>
       agentId: run.agentId,
       state: run.status,
       ...(agent
-        ? { adapterType: agent.adapterType, agentRole: agent.role }
+        ? { adapterType: telemetryAdapterType(agent), agentRole: agent.role }
         : {}),
       ...(model ? { model } : {}),
       ...(() => {

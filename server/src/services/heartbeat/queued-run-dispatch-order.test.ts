@@ -244,6 +244,45 @@ describe("work on a task tree a person created", () => {
     expect(queuedRunDispatchClass(recovery, now)).toBe("recovery");
   });
 
+  it("starts a person's task continuing after the tool-call loop limit with that person's work, not after the aging bound", () => {
+    const continuation = run({ wakeReason: "issue_continuation_needed", cleanContinuation: true, personTask: true,
+      readinessRank: 0, createdAt: minutesAgo(5) });
+    expect(queuedRunDispatchClass(continuation, now)).toBe("person");
+    const started: QueuedRunDispatchFacts[] = [];
+    let pending: QueuedRunDispatchFacts[] = [continuation, newAssignment(8), newAssignment(6)];
+    for (let step = 0; step < 2 * OLDEST_DISPATCH_SHARE && !started.includes(continuation); step += 1) {
+      pending.push(newAssignment(0), run({ wakeReason: "issue_assigned", createdAt: minutesAgo(0) }));
+      const history = [...started].reverse().map(entry => queuedRunStartOf(entry, now));
+      const [next] = orderQueuedRunsForDispatch(pending, { now, ...dispatchCountersFromStarts(pending, history, now) });
+      started.push(next!);
+      pending = pending.filter(entry => entry.id !== next!.id);
+    }
+    expect(started[0]!.id).toBe(continuation.id);
+  });
+
+  it("keeps a failure retry of a person's task in the recovery tier while people wait", () => {
+    const failureRetry = run({ wakeReason: "issue_continuation_needed", personTask: true, readinessRank: 0,
+      sourceEndedAt: minutesAgo(6), createdAt: minutesAgo(5) });
+    expect(queuedRunDispatchClass(failureRetry, now)).toBe("recovery");
+    const people = [newAssignment(4), newAssignment(3)];
+    const ordered = orderQueuedRunsForDispatch([failureRetry, ...people], { now, startsSinceRecovery: RECOVERY_DISPATCH_SHARE - 1 });
+    expect(ordered.map(entry => entry.id)).toEqual([...people.map(entry => entry.id), failureRetry.id]);
+  });
+
+  it("counts a clean continuation's start against system recovery's share, as the start history does", () => {
+    const continuation = run({ wakeReason: "issue_continuation_needed", cleanContinuation: true, createdAt: minutesAgo(3) });
+    const recovery = run({ wakeReason: "issue_recovery_action_restored", createdAt: minutesAgo(2), sourceEndedAt: minutesAgo(3) });
+    const work = Array.from({ length: 4 }, () => run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) }));
+    const queue = [continuation, recovery, ...work];
+    const input = { now, startsSinceRecovery: RECOVERY_DISPATCH_SHARE - 2 };
+    const ordered = orderQueuedRunsForDispatch(queue, input);
+    expect(ordered.map(entry => entry.id)).toEqual(queuedRunDispatchLine(queue, input).map(entry => entry.id));
+    expect(ordered[0]!.id).toBe(continuation.id);
+    expect(ordered.findIndex(entry => entry.id === recovery.id)).toBe(RECOVERY_DISPATCH_SHARE);
+    const history = [queuedRunStartOf(continuation, now)];
+    expect(dispatchCountersFromStarts([recovery, ...work], history, now).startsSinceRecovery).toBe(0);
+  });
+
   it("starts another person's new task within the oldest-run share while a deep tree keeps adding in-progress work", () => {
     const start = new Date(now.getTime() - 2 * 60 * 60_000);
     const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);

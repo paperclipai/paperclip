@@ -4,7 +4,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { agentQueuedRunLine, clearAgentQueueLineCache, worktreeExecutionCutoff } from "./heartbeat/queued-run-line.js";
+import { agentQueuedRunLine, clearAgentQueueLineCache, queuedRunDispatchFacts, worktreeExecutionCutoff } from "./heartbeat/queued-run-line.js";
+import { queuedRunDispatchClass } from "./heartbeat/queued-run-dispatch-order.js";
 import { issueService } from "./issues.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -176,6 +177,61 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
 
     const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     expect(await agentQueuedRunLine(db, issueService(db), agent!, now)).toEqual([subtask, parentResume, newAssignment, agentTreeWork]);
+  });
+
+  it("starts a person's task continuing after the tool-call loop limit with that person's work, and keeps failure recovery behind it", async () => {
+    const f = await fixture({ maxConcurrentRuns: 1, running: 1 });
+    const personTask = async (status: "todo" | "in_progress") => {
+      const issueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId: f.companyId, title: "Task", assigneeAgentId: f.agentId, status,
+        priority: "medium", createdByUserId: "board-user" });
+      return issueId;
+    };
+    const sourceRun = async (issueId: string, status: "succeeded" | "failed", context: Record<string, unknown> = {}) => {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status, issueId,
+        createdAt: minutesAgo(80), startedAt: minutesAgo(80), finishedAt: minutesAgo(70),
+        contextSnapshot: { issueId, wakeReason: "issue_assigned", ...context } });
+      return runId;
+    };
+    const queued = async (issueId: string, createdMinutesAgo: number, context: Record<string, unknown>,
+      input: { retryOfRunId?: string; byPerson?: boolean } = {}) => {
+      const runId = randomUUID();
+      const wakeupRequestId = input.byPerson ? randomUUID() : null;
+      if (wakeupRequestId) await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId: f.companyId,
+        agentId: f.agentId, source: "assignment", reason: "issue_assigned", requestedByActorType: "user", requestedByActorId: "board-user" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status: "queued", issueId,
+        wakeupRequestId, retryOfRunId: input.retryOfRunId ?? null, createdAt: minutesAgo(createdMinutesAgo),
+        contextSnapshot: { issueId, ...context } });
+      return runId;
+    };
+    const loopContinuation = (sourceRunId: string) => ({ wakeReason: "issue_continuation_needed",
+      livenessContinuationReason: "agent_tool_call_loop", livenessContinuationSourceRunId: sourceRunId });
+
+    const loopTask = await personTask("in_progress");
+    const continuation = await queued(loopTask, 10, loopContinuation((await sourceRun(loopTask, "succeeded")).toUpperCase()));
+    const [alone] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuation));
+    const { facts: [aloneFacts] } = await queuedRunDispatchFacts(db, { agent: { id: f.agentId, companyId: f.companyId },
+      queuedRuns: [alone!], dependencyReadiness: new Map(), issueById: new Map([[loopTask, { status: "in_progress", priority: "medium",
+        createdByUserId: "board-user" }]]), now });
+    expect(aloneFacts!.cleanContinuation).toBe(true);
+    expect(queuedRunDispatchClass(aloneFacts!, now)).toBe("person");
+    const retryTask = await personTask("in_progress");
+    const failedRun = await sourceRun(retryTask, "failed");
+    const failureRetry = await queued(retryTask, 20, { ...loopContinuation(failedRun), retryReason: "issue_continuation_needed" },
+      { retryOfRunId: failedRun });
+    const chainTask = await personTask("in_progress");
+    const chained = await queued(chainTask, 15, loopContinuation(await sourceRun(chainTask, "succeeded",
+      { wakeReason: "issue_continuation_needed", livenessContinuationReason: "agent_tool_call_loop" })));
+    const failedSourceTask = await personTask("in_progress");
+    const afterFailure = await queued(failedSourceTask, 12, loopContinuation(await sourceRun(failedSourceTask, "failed")));
+    const people = [await queued(await personTask("todo"), 2, { wakeReason: "issue_assigned" }, { byPerson: true }),
+      await queued(await personTask("todo"), 1, { wakeReason: "issue_assigned" }, { byPerson: true })];
+
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const line = await agentQueuedRunLine(db, issueService(db), agent!, now);
+    expect(line.slice(0, 3)).toEqual([continuation, ...people]);
+    expect(line.slice(3).sort()).toEqual([failureRetry, chained, afterFailure].sort());
   });
 
   it("leaves running runs and other companies' runs out of the line", async () => {

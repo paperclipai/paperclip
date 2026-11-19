@@ -1,5 +1,7 @@
-import { aiConnectionCatalogSlug, aiConnectionMetadataSchema, type AppDefinition, type ToolApplication, type ToolConnection } from "@paperclipai/shared";
+import { aiConnectionSourceSlug, type AppDefinition, type ToolApplication, type ToolConnection } from "@paperclipai/shared";
 import { aiConnectionRouterSlug, aiConnectionRouterPluginKey } from "@paperclipai/shared";
+
+export { aiConnectionSourceSlug };
 
 export type AppGalleryDisplayEntry = AppDefinition & {
   key?: string;
@@ -50,10 +52,8 @@ export function appApplicationSourceSlug(application: ToolApplication | null | u
 
 export function appConnectionSourceSlug(connection: ToolConnection | null | undefined): string | null {
   if (!connection) return null;
-  if (connection.connectionPurpose === "ai") {
-    const metadata = aiConnectionMetadataSchema.safeParse(connection.config?.ai);
-    if (metadata.success) return aiConnectionCatalogSlug(metadata.data.provider, metadata.data.routing);
-  }
+  const aiSource = aiConnectionSourceSlug(connection);
+  if (aiSource) return aiSource;
   const router = aiConnectionRouterPluginKey(connection);
   if (router) return aiConnectionRouterSlug(router);
   const source = connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey;
@@ -66,7 +66,7 @@ export function galleryEntryFor(
   application: ToolApplication | undefined,
 ): AppGalleryDisplayEntry | null {
   if (!connection) return null;
-  const sourceSlug = appApplicationSourceSlug(application) ?? appConnectionSourceSlug(connection);
+  const sourceSlug = aiConnectionSourceSlug(connection) ?? appApplicationSourceSlug(application) ?? appConnectionSourceSlug(connection);
   if (sourceSlug) {
     const keyed = apps.find((app) => appDefinitionSlug(app) === sourceSlug);
     if (keyed) return keyed;
