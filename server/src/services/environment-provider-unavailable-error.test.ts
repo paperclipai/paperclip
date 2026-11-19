@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
+import { isRetryableEnvironmentErrorCode, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import {
   EnvironmentProviderUnavailableError,
@@ -13,7 +13,7 @@ function withStatus(status: number, key: "status" | "statusCode" = "status") {
 }
 
 describe("readTransientEnvironmentProviderFailure", () => {
-  it.each([408, 425, 429, 500, 502, 503, 504])("treats HTTP %i as transient", (status) => {
+  it.each([408, 425, 429, 500, 502, 503, 504, 520, 524, 529, 599])("treats HTTP %i as transient", (status) => {
     expect(readTransientEnvironmentProviderFailure(withStatus(status))).toEqual({ httpStatus: status });
   });
 
@@ -22,7 +22,7 @@ describe("readTransientEnvironmentProviderFailure", () => {
   });
 
   it.each(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENETUNREACH",
-    "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"])("treats errno %s as transient", (code) => {
+    "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "CONNECTION_FAILED"])("treats errno %s as transient", (code) => {
     expect(readTransientEnvironmentProviderFailure(Object.assign(new Error("closed"), { code })))
       .toEqual({ errorCode: code });
   });
@@ -31,7 +31,18 @@ describe("readTransientEnvironmentProviderFailure", () => {
     expect(readTransientEnvironmentProviderFailure(Object.assign(new Error("x"), { code }))).toBeNull();
   });
 
-  it.each([400, 401, 403, 404, 409, 422, 501])("does not retry HTTP %i", (status) => {
+  it.each([
+    ["ENOTFOUND", false, true],
+    ["EAI_AGAIN", true, true],
+    ["ABORT_ERR", false, false],
+    ["EACCES", false, false],
+  ] as const)("scopes errno %s: first acquisition %s, reattach to a reached host %s", (code, acquisition, reattach) => {
+    expect(isRetryableEnvironmentErrorCode(code)).toBe(acquisition);
+    expect(isRetryableEnvironmentErrorCode(code, "first_acquisition")).toBe(acquisition);
+    expect(isRetryableEnvironmentErrorCode(code, "known_host")).toBe(reattach);
+  });
+
+  it.each([400, 401, 403, 404, 409, 422, 501, 505])("does not retry HTTP %i", (status) => {
     expect(readTransientEnvironmentProviderFailure(withStatus(status))).toBeNull();
   });
 
@@ -143,6 +154,36 @@ describe("readTransientLeaseAcquisitionFailure", () => {
     expect(readTransientLeaseAcquisitionFailure(creationFailure(12_000), run)).toEqual({ reason: "acquisition_incomplete" });
   });
 
+  it("retries a sandbox the provider could not start and already removed", () => {
+    const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "Daytona could not start the sandbox; it was removed.",
+      data: { schema: "paperclip/environment-acquire-error/v1",
+        acquisitionDiagnostic: { phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } } });
+    captureEnvironmentAcquisitionDiagnostic(error, { companyId: run.companyId, environmentId: "env-1", runId: run.id },
+      readEnvironmentAcquisitionDiagnostic(error));
+    expect(readTransientLeaseAcquisitionFailure(new Error("lease", { cause: error }), run)).toEqual({ reason: "provider_start_failed" });
+    const unavailable = new EnvironmentProviderUnavailableError({ environmentName: "Daytona warm", driver: "sandbox",
+      evidence: { reason: "provider_start_failed" }, cause: error });
+    expect(unavailable.providerFailure).toMatchObject({ retryability: "transient", providerCode: "provider_start_failed" });
+    expect(unavailable.message).toContain("the provider could not start the sandbox");
+  });
+
+  it("names a later-step failure an unfinished acquisition, not a start failure", () => {
+    const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "x",
+      data: { schema: "paperclip/environment-acquire-error/v1",
+        acquisitionDiagnostic: { phase: "shell", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } } });
+    captureEnvironmentAcquisitionDiagnostic(error, { companyId: run.companyId, environmentId: "env-1", runId: run.id },
+      readEnvironmentAcquisitionDiagnostic(error));
+    expect(readTransientLeaseAcquisitionFailure(error, run)).toEqual({ reason: "acquisition_incomplete" });
+  });
+
+  it("does not retry a removed sandbox whose step was never recorded for this run", () => {
+    const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "x",
+      data: { schema: "paperclip/environment-acquire-error/v1",
+        acquisitionDiagnostic: { phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } } });
+    expect(readTransientLeaseAcquisitionFailure(error, run)).toBeNull();
+  });
+
   it("ignores an unfinished-creation diagnostic recorded for another run", () => {
     expect(readTransientLeaseAcquisitionFailure(creationFailure(12_000, "run-2"), run)).toBeNull();
   });
@@ -177,6 +218,13 @@ describe("readTransientLeaseAcquisitionFailure", () => {
   it("does not retry a definite non-transient status, even with other evidence", () => {
     const refused = Object.assign(new Error("unauthorized", { cause: creationFailure(300_000) }), { status: 401 });
     expect(readTransientLeaseAcquisitionFailure(refused, run)).toBeNull();
+  });
+
+  it("retries a provider connection failure reported across the worker RPC", () => {
+    const rpcError = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "read EADDRNOTAVAIL",
+      data: { schema: "paperclip/environment-acquire-error/v1", providerDiagnostic: { errorCode: "CONNECTION_FAILED" } } });
+    expect(readTransientLeaseAcquisitionFailure(new Error("lease", { cause: rpcError }), run))
+      .toEqual({ errorCode: "CONNECTION_FAILED" });
   });
 
   it("does not retry an error without structured evidence", () => {

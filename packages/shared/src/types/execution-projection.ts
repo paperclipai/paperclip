@@ -169,7 +169,7 @@ export interface TaskInterruptionPresentation {
     /** Board confirms that a previous server, which can no longer report, stopped its workspace copyback. */
     | "confirm_owner_stop"
     /** Board confirms that a run whose server restarted before it recorded the agent's process has stopped. */
-    | "confirm_run_stopped" | null;
+    | "confirm_run_stopped" | "unblock" | null;
   /** Only the task's own project id is exposed. Other source projects stay unnamed. */
   projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
   sourceRunIds: string[];

@@ -48,6 +48,15 @@ async function key(key: string) {
 function dialog() { return document.querySelector('[role="dialog"]'); }
 
 describe("document image gallery", () => {
+  it("keeps fragment links scoped to the saved document's task after the URL changes", async () => {
+    await render("#document-local", "[Evidence](#document-evidence&thread=note)\n\n[Explicit](#document-brief&documentIssue=other)\n\n[Section](#section)", "old", "owner", "current");
+    expect([...container.querySelectorAll(".paperclip-markdown a")].map(link => link.getAttribute("href"))).toEqual([
+      "#document-evidence&thread=note&documentIssue=owner",
+      "#document-brief&documentIssue=other",
+      "#section",
+    ]);
+  });
+
   it("opens a clicked occurrence, navigates all rendered images, and updates the URL", async () => {
     await render("#document-report&viewer=full&thread=thread-1");
     await click('[aria-label="Open image: Repeated"]');

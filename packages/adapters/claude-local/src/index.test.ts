@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL, resolveClaudeModel } from "./index.js";
-import { minimumClaudeCliVersionForModel } from "./server/cli-capabilities.js";
+import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL, models, resolveClaudeModel } from "./index.js";
+import { claudeCodeVersionForAgentSdk, minimumClaudeCliVersionForModel } from "./server/cli-capabilities.js";
 
 describe("Claude model defaults", () => {
   it.each([
@@ -24,6 +24,21 @@ describe("Claude model defaults", () => {
     expect(claudeLocalReasoningEffortsForModel(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
+  it.each([
+    "claude-fable-5-2",
+    "claude-fable-5-2[1m]",
+    "global.anthropic.claude-fable-5-2",
+  ])("requires CLI 2.1.321 and offers all efforts for %s", (model) => {
+    expect(minimumClaudeCliVersionForModel(model)).toBe("2.1.321");
+    expect(claudeLocalReasoningEffortsForModel(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("lists Fable 5.2 first and keeps Fable 5.1 selectable", () => {
+    const ids = models.map((model) => model.id);
+    expect(ids[0]).toBe("claude-fable-5-2");
+    expect(ids).toContain("claude-fable-5-1");
+  });
+
   it("keeps model-specific Claude reasoning limits", () => {
     expect(claudeLocalReasoningEffortsForModel("claude-fable-5-1")).toContain("xhigh");
     expect(claudeLocalReasoningEffortsForModel("claude-sonnet-5")).toContain("max");
@@ -31,6 +46,15 @@ describe("Claude model defaults", () => {
     expect(claudeLocalReasoningEffortsForModel("claude-sonnet-4-5")).toEqual(["low", "medium", "high"]);
     expect(claudeLocalReasoningEffortsForModel("claude-haiku-4-5")).toEqual([]);
     expect(claudeLocalReasoningEffortsForModel("custom-model")).toEqual(["low", "medium", "high"]);
+  });
+
+  it("maps an Agent SDK 0.3.N release to the Claude Code 2.1.N it bundles", () => {
+    expect(claudeCodeVersionForAgentSdk("0.3.286")).toBe("2.1.286");
+    expect(claudeCodeVersionForAgentSdk("0.3.328")).toBe("2.1.328");
+    expect(claudeCodeVersionForAgentSdk(" 0.3.321 ")).toBe("2.1.321");
+    for (const version of ["0.4.1", "0.3.286-beta.1", "", null, undefined]) {
+      expect(claudeCodeVersionForAgentSdk(version)).toBeNull();
+    }
   });
 
   it.each([undefined, null, "", "  "])("uses Opus 5.5 for an unset model (%j)", (model) => {

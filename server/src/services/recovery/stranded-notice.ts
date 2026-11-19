@@ -75,7 +75,7 @@ const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string
   remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: TEMPORARY_SETUP_NEXT_ACTION },
   remote_workspace_restore_failed: { title: "Saved workspace could not be restored", nextAction: REMOTE_WORKSPACE_RESTORE_NEXT_ACTION },
   plugin_worker_unavailable: { title: "Environment plugin was not running", nextAction: "The plugin that starts this agent's sandbox was not running, so no agent work started. Press Retry once it is running again." },
-  environment_provider_unavailable: { title: "Environment provider was temporarily unavailable", nextAction: "Paperclip retried automatically before the agent started, but the provider was still unavailable. No agent work started. Retry the task once the provider is available." },
+  environment_provider_unavailable: { title: "Environment provider was temporarily unavailable", nextAction: "Paperclip kept retrying automatically for 30 minutes, but the provider was still unavailable. No agent work started. Retry the task once the provider is available." },
   reusable_sandbox_resume_failed: { title: "Saved sandbox could not be resumed", nextAction: "The sandbox service did not start the saved sandbox in time. "
     + "The saved sandbox and its files were kept, and no agent work started. Paperclip tries again automatically." },
   workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "The server was too busy to read the task's files, so no agent work started. Press Retry to start it again." },

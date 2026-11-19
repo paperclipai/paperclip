@@ -349,7 +349,9 @@ Routine detail exposes `setupPending` and `lastWebhookDelivery` (`status`, `rece
 
 Finish setup with `PATCH /api/routine-triggers/{id}` and `{ "setupPending": false }`. Future deliveries use normal routine dispatch and still respect the routine's enabled state. Test events are not dispatched on activation. Retries with the same `Idempotency-Key`, GitHub `X-GitHub-Delivery`, or timestamp-HMAC replay key remain test receipts after activation. Send a unique delivery ID per event so a sender's retries can be recognized. Requests without a delivery ID are new events after activation.
 
-For compatibility, API-created triggers without `setupPending: true` are immediately live. Completed triggers cannot be returned to setup mode. Checking a previously enabled webhook observes real deliveries and can start the routine; the management UI explains this difference.
+For compatibility, API-created triggers without `setupPending: true` are immediately live.
+
+To test a live webhook again, send `PATCH /api/routine-triggers/{id}` with `{ "setupPending": true }`. Only enabled, non-removed webhook triggers on a routine that is not archived can enter test mode: other trigger kinds return `422`, and a disabled or removed webhook or an archived routine returns `409`. While testing, every authenticated delivery, including real events from the sender, is recorded as a test and never starts the routine. Each test delivery's `lastWebhookDelivery.previous` holds the last real delivery from before testing (or `null`). Sending `{ "setupPending": false }` returns the webhook to live and restores that last real delivery as `lastWebhookDelivery`. Events received while testing are not replayed, and retries of them with the same delivery ID stay test receipts.
 
 Trigger cards support removal with Undo. `PATCH` with `{ "archived": true }` excludes a trigger from routine detail and scheduling, and rejects its webhook deliveries. Setting `archived` back to `false` restores the same URL and credentials. `DELETE` remains the permanent deletion API.
 

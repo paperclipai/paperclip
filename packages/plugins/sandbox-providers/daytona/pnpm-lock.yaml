@@ -113,7 +113,7 @@ packages:
 
   '@daytonaio/sdk@0.203.0':
     resolution: {integrity: sha512-wrCfeZFm36l/oVVyOVJsbPwmcaxNAkzH/z00UKBaEjoda5PYz9gqTqJF9e8vgSpkDT28ZMz3CaYnyl6AO/5Ucw==}
-    deprecated: 'Moved to @daytona/sdk, same API, no breaking changes. Please update: npm uninstall @daytonaio/sdk && npm i @daytona/sdk'
+    deprecated: 'Moved to @daytona/sdk, same API, no breaking changes. Please update: npm uninstall @daytonaio/sdk && npm i @daytona/sdk@0'
 
   '@grpc/grpc-js@1.14.4':
     resolution: {integrity: sha512-k9Dj3DV/itK9D06Y8f190Qgop7/Ui+D0njFV3LHMPwPT75DpXLQohE9Wmz0QElrJnzsjB7KPWiKJbOl7IPDArQ==}

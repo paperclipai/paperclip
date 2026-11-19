@@ -11,7 +11,7 @@ export async function externalBotEnabled(db: Db, provider: "openai_dot" | "grok_
   const experimental = queryOwner
     ? await settings.getExperimentalReadOnly(queryOwner)
     : await settings.getExperimental();
-  return experimental.enablePublicMcp && (provider === "openai_dot" ? experimental.enableOpenAiDot : experimental.enableGrokBot && experimental.enableNativeRunner);
+  return provider === "openai_dot" ? experimental.enableOpenAiDot : experimental.enableGrokBot && experimental.enableNativeRunner;
 }
 
 /** Persistent agent authority, distinct from task/run authority enforced by the broker. */

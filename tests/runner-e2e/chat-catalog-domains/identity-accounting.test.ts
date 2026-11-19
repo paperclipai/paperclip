@@ -15,7 +15,8 @@ function valid(scenarioId: string): IdentityObservation {
     activity: repair ? [{ id: "retry", action: "accounting.retry_requested", entityId: "original", actorType: "user" }] : [],
     state: { worker: { id: "morgan" }, project: { id: "launch" }, preflightTask: { id: "preflight", identifier: "ACO-5" }, morganReceiptTask: { id: "morgan-receipt" }, rileyReceiptTask: { id: "riley-receipt" }, originalRunId: "original",
       originalRun: { id: "original", status: "succeeded", usageJson: { inputTokens: 10 } }, afterOriginalRun: { id: "original", status: "succeeded", usageJson: { inputTokens: 10 } },
-      originalUsagePreserved: true, originalLogPreserved: true, originalTaskPreserved: true, unresolvedBefore: { canRetry: true, runs: [{ runId: "original", reason: "retryable" }], events: [] },
+      originalUsagePreserved: true, originalLogPreserved: true, originalTaskPreserved: true, unresolvedBefore: repair ? { canRetry: true, runs: [{ runId: "original", reason: "retryable" }], events: [] }
+        : { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: "2026-10-28T10:00:00.000Z" }] },
       receiptOrigin: "public-imported-synthetic-fixture", weekFrom: "2026-10-26T00:00:00Z", weekTo: "2026-11-02T00:00:00Z",
       issueCosts: [{ costCents: 137 }, { costCents: 263 }], projectCosts: [{ projectId: "launch", costCents: 400 }], agentRetryStatus: 403, humanRetryHttpStatus: 200, retryAccounted: false, retryReceiptVisible: true, retryQuality: { runs: [{ runId: "original", reason: "retryable" }], events: [] }, retryLedger: [],
       initialReplyCommentIds: ["c1"], leadApiCalls: repair ? [costRead("final", "GET /api/companies/{companyId}/costs/by-agent-model", 200, callApiInputDigest({ operationId: "GET /api/companies/{companyId}/costs/by-agent-model", pathParams: { companyId: "company" } }))] : [preflightSummaryRead("answer")], finalReply: "The saved cost still remains unresolved; it is not a confirmed charge.", finalReplyRunId: "final", retryHumanFollowup: "Actual retry receipt", confirmedPricedRepair: false, afterStillUnresolved: true } };
@@ -49,6 +50,90 @@ describe("actual saved native accounting contexts", () => {
     expect(grade(otherTask).passed).toBe(false);
     const workerRead = valid("budgets-costs.spend-breakdown"); workerRead.state.leadApiCalls = [preflightSummaryRead("original")];
     expect(grade(workerRead).passed).toBe(false);
+  });
+  it("spend breakdown accepts a cost report whose checked date range covers the unpriced run (cohort 16)", () => {
+    const grade = accountingIdentityCases[0]!.grade;
+    const byAgent = "GET /api/companies/{companyId}/costs/by-agent";
+    // The run-log receipt keeps only the input digest; the grader recomputes digests of covering ranges.
+    const ranged = (query: { from?: string; to?: string; period?: string }, runId = "answer", status = 200, operationId = byAgent, pathParams: Record<string, string> = { companyId: "company" }) =>
+      costRead(runId, operationId, status, callApiInputDigest({ operationId, pathParams, query }));
+    const list = (digest: string) => costRead("answer", "GET /api/companies/{companyId}/heartbeat-runs", 200, digest);
+    // Cohort 16: costs/by-agent and costs/summary for the requested week (copied from the task), plus run-list pages.
+    const cohort16 = (calls: LeadApiCall[]) => { const o = valid("budgets-costs.spend-breakdown");
+      Object.assign(o.state.originalRun as object, { startedAt: "2026-11-15T11:41:02.000Z", finishedAt: "2026-11-15T11:43:40.000Z" });
+      o.state.unresolvedBefore = { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: "2026-11-15T11:43:40.000Z" }] };
+      o.state.weekFrom = "2026-11-09T00:00:00.000Z"; o.state.weekTo = "2026-11-16T00:00:00.000Z";
+      o.reply = "| Agent | Launch charges |\n|---|---|\n| Riley | $2.63 |\n| Morgan | $1.37 |\n| **Total** | **$4.00** |\n\nMorgan also finished a session on [ACO-5](/ACO/issues/ACO-5) ([the run](/ACO/agents/morgan/runs/original)) whose usage is saved but not yet priced.";
+      o.links.push("/ACO/issues/ACO-5", "/ACO/agents/morgan/runs/original"); o.state.leadApiCalls = calls; return o; };
+    const week = { from: "2026-11-09T00:00:00.000Z", to: "2026-11-16T00:00:00.000Z" };
+    expect(grade(cohort16([ranged(week), list("page-one"), list("page-two")])).passed).toBe(true);
+    // Covering ranges in the forms the grader recognizes: date-only, seconds-less, open-ended, a local-midnight offset
+    // form, a from equal to the run's startedAt, and an all-time read. The cost event is at 11:43:40Z.
+    for (const query of [{ from: "2026-11-09", to: "2026-11-15T23:59:59Z" }, { from: "2026-11-15T00:00Z" }, { to: "2026-11-16" },
+      { from: "2026-11-15T00:00:00-03:00", to: "2026-11-16T00:00:00-03:00" }, { from: "2026-11-15T11:41:02.000Z", to: "2026-11-15T11:43:40.000Z" },
+      { from: "2026-11-15T11:41:02Z" }, { period: "all" }, { from: "2026-11-15T00:00:00+00:00" }, { from: "2026-11-09T00:00:00-00:00", to: "2026-11-16T00:00:00-00:00" },
+      { period: "month", from: "2026-11-09T00:00:00.000Z", to: "2026-11-16T00:00:00.000Z" }, { from: "2026-11-01" }, { from: "2026-11-01T00:00:00Z", to: "2026-12-01T00:00:00Z" }])
+      expect(grade(cohort16([ranged(query)])).passed, JSON.stringify(query)).toBe(true);
+    expect(grade(cohort16([ranged(week, "answer", 200, "GET /api/companies/{companyId}/costs/summary", {})])).passed).toBe(true);
+    // Negative controls: no read, run-list pages whose inputs prove nothing, a range that excludes the run, another
+    // company, a denied read, and a read by another run. A link to the run (its id is in the task) proves no read.
+    expect(grade(cohort16([])).passed).toBe(false);
+    expect(grade(cohort16([list("page-one"), list("page-two")])).passed).toBe(false);
+    // Ranges that exclude the cost event: an earlier week, one ending before the event (also in an offset form), one
+    // starting after it.
+    // An explicit range wins over period=month: last week's bounds with period=month exclude the event too.
+    for (const query of [{ from: "2026-11-02", to: "2026-11-09" }, { to: "2026-11-15T11:43:00Z" }, { from: "2026-11-14T00:00:00-03:00", to: "2026-11-15T00:00:00-03:00" },
+      { from: "2026-11-15T11:44:00Z" }, { from: "2026-11-16" }, { period: "month", from: "2026-11-02", to: "2026-11-09" }])
+      expect(grade(cohort16([ranged(query)])).passed, JSON.stringify(query)).toBe(false);
+    // The digest names the company: another company's report does not count.
+    expect(grade(cohort16([ranged(week, "answer", 200, byAgent, { companyId: "other-company" })])).passed).toBe(false);
+    expect(grade(cohort16([ranged(week, "answer", 403)])).passed).toBe(false);
+    expect(grade(cohort16([ranged(week, "original")])).passed).toBe(false);
+    // The target's cost event sets the range: a range covering the run but ending before its late cost event fails.
+    const lateEvent = cohort16([ranged({ from: "2026-11-15T00:00:00Z", to: "2026-11-15T11:50:00Z" })]);
+    (lateEvent.state.unresolvedBefore as { events: unknown[] }).events = [{ runId: "original", reason: "missing_price", occurredAt: "2026-11-15T11:52:00.000Z" }];
+    expect(grade(lateEvent).passed).toBe(false);
+    // A pending target (saved usage, no cost event) never appears in by-agent or other ledger groupings: a by-agent read
+    // with a correct-looking reply fails, while summary, data-quality or the run record itself still count.
+    const pendingTarget = (calls: LeadApiCall[]) => { const o = cohort16(calls); (o.state.unresolvedBefore as { runs: unknown[]; events: unknown[] }).runs = [{ runId: "original", reason: "waiting_for_receipt" }];
+      (o.state.unresolvedBefore as { events: unknown[] }).events = []; return o; };
+    expect(grade(pendingTarget([ranged(week)])).passed).toBe(false);
+    expect(grade(pendingTarget([ranged({ period: "all" })])).passed).toBe(false);
+    expect(grade(pendingTarget([preflightSummaryRead("answer")])).passed).toBe(false);
+    for (const operationId of ["GET /api/companies/{companyId}/costs/summary", "GET /api/companies/{companyId}/costs/data-quality"])
+      expect(grade(pendingTarget([ranged(week, "answer", 200, operationId)])).passed, operationId).toBe(true);
+    const targetRecord = costRead("answer", "GET /api/heartbeat-runs/{runId}", 200, callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: "original" } }));
+    expect(grade(pendingTarget([targetRecord])).passed).toBe(true);
+    // A late-month event (Nov 29) read with a month-start from (28 days earlier) or an end-of-month to counts.
+    for (const query of [{ from: "2026-11-01" }, { from: "2026-11-01T00:00:00Z", to: "2026-11-30T23:59:59.999Z" }, { from: "2026-11-01T00:00:00+00:00", to: "2026-12-01T00:00:00+00:00" }]) {
+      const late = cohort16([ranged(query)]);
+      Object.assign(late.state.originalRun as object, { startedAt: "2026-11-29T10:00:00.000Z", finishedAt: "2026-11-29T10:02:00.000Z" });
+      late.state.unresolvedBefore = { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: "2026-11-29T10:02:00.000Z" }] };
+      expect(grade(late).passed, JSON.stringify(query)).toBe(true);
+    }
+    // A report ending at 11:43:40Z excludes an event at 11:43:40.598Z (bounds are compared as parsed instants).
+    const subSecond = cohort16([ranged({ from: "2026-11-15T00:00:00Z", to: "2026-11-15T11:43:40Z" })]);
+    subSecond.state.unresolvedBefore = { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: "2026-11-15T11:43:40.598Z" }] };
+    expect(grade(subSecond).passed).toBe(false);
+    const subSecondExact = cohort16([ranged({ from: "2026-11-15T00:00:00Z", to: "2026-11-15T11:43:40.598Z" })]);
+    subSecondExact.state.unresolvedBefore = subSecond.state.unresolvedBefore;
+    expect(grade(subSecondExact).passed).toBe(true);
+    // Unranged and period=month reads cover the UTC month when the read ran. In-month they count; across a month
+    // rollover (event on Oct 31, read on Nov 1) they do not, while an all-time read still does.
+    const monthRead = (query: { period?: string } | undefined, eventAt: string, readStart: string, readEnd: string) => {
+      const o = cohort16([costRead("answer", byAgent, 200, callApiInputDigest({ operationId: byAgent, pathParams: { companyId: "company" }, ...(query ? { query } : {}) }))]);
+      Object.assign(o.state.originalRun as object, { startedAt: eventAt, finishedAt: eventAt });
+      o.state.unresolvedBefore = { canRetry: false, runs: [], events: [{ runId: "original", reason: "missing_price", occurredAt: eventAt }] };
+      Object.assign(o.runs.find(run => run.id === "answer")!, { startedAt: readStart, finishedAt: readEnd }); return o; };
+    for (const query of [{ period: "month" }, undefined]) {
+      expect(grade(monthRead(query, "2026-11-15T11:43:40.000Z", "2026-11-15T11:50:00.000Z", "2026-11-15T11:52:00.000Z")).passed, JSON.stringify(query)).toBe(true);
+      expect(grade(monthRead(query, "2026-10-31T23:58:00.000Z", "2026-11-01T00:01:00.000Z", "2026-11-01T00:03:00.000Z")).passed, JSON.stringify(query)).toBe(false);
+      expect(grade(monthRead(query, "2026-10-31T23:58:00.000Z", "2026-10-31T23:59:00.000Z", "2026-11-01T00:01:00.000Z")).passed, JSON.stringify(query)).toBe(false);
+    }
+    expect(grade(monthRead({ period: "all" }, "2026-10-31T23:58:00.000Z", "2026-11-01T00:01:00.000Z", "2026-11-01T00:03:00.000Z")).passed).toBe(true);
+    // The answering run reads a different run's record but links the target run's id: still no read of its accounting.
+    const otherRecord = costRead("answer", "GET /api/heartbeat-runs/{runId}", 200, callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: "answer" } }));
+    expect(grade(cohort16([otherRecord, list("page-one")])).passed).toBe(false);
   });
   it("a HTTP200 retry alone does not establish repaired accounting", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.afterStillUnresolved = false; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(false); });
   it("a genuine confirmed priced repair is distinct from still-unresolved", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.confirmedPricedRepair = true; o.state.afterStillUnresolved = false; o.state.retryAccounted = true; o.state.retryQuality = { runs: [], events: [] }; o.state.retryLedger = [{ agentId: "morgan", eventCount: 1, estimatedEventCount: 0 }]; o.state.finalReply = "The saved usage cost is now recorded. The original work was not rerun."; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(true); });

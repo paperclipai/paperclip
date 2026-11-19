@@ -32,6 +32,7 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   requestedByActorCompanyId?: string;
+  responsibleUserId?: string | null;
   taskKey?: string | null;
   /** Latest issue comment that caused this wakeup. Included in both payload
    * and context so the heartbeat can build the exact turn that was requested. */
@@ -43,6 +44,7 @@ export function queueIssueAssignmentWakeup(input: {
   /** External chat conversation the wake answers. The wake queue keeps each
    * conversation in its own batch, because a reviewed chat run attests one. */
   chatConversationId?: string | null;
+  allowRunCoalescing?: boolean;
   rethrowOnError?: boolean;
   durableChatRequest?: DurableChatWakeupRequest;
 }) {
@@ -61,6 +63,7 @@ export function queueIssueAssignmentWakeup(input: {
       },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
+      ...(input.allowRunCoalescing !== undefined ? { allowRunCoalescing: input.allowRunCoalescing } : {}),
       ...(input.requestedByActorCompanyId ? { requestedByActorCompanyId: input.requestedByActorCompanyId } : {}),
       ...(input.durableChatRequest
         ? { durableChatRequest: input.durableChatRequest }
@@ -68,6 +71,7 @@ export function queueIssueAssignmentWakeup(input: {
       contextSnapshot: {
         issueId: input.issue.id,
         source: input.contextSource,
+        ...(input.responsibleUserId ? { responsibleUserId: input.responsibleUserId } : {}),
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
         ...(input.wakeCommentIds?.length ? { wakeCommentIds: input.wakeCommentIds } : {}),

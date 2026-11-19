@@ -6,6 +6,13 @@ interface PositionedNode {
   children?: PositionedNode[];
 }
 
+export function preserveTrailingMarkdownSpaces(markdown: string): string {
+  const suffix = / +$/.exec(markdown);
+  if (!suffix) return markdown;
+  const encoded = markdown.slice(0, suffix.index) + "&#x20;".repeat(suffix[0].length);
+  return restoreTrailingMarkdownSpaces(encoded) === markdown ? encoded : markdown;
+}
+
 /**
  * The rich editor exports a final prose space as `&#x20;`. Restore that space
  * before storing the draft so message submission can trim it normally.

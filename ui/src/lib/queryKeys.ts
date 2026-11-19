@@ -72,6 +72,10 @@ export const queryKeys = {
       ["tools", "connection", connectionId, "installs"] as const,
     connectionGrants: (connectionId: string) =>
       ["tools", "connection", connectionId, "grants"] as const,
+    connectionStoredContent: (connectionId: string) =>
+      ["tools", "connection", connectionId, "stored-content"] as const,
+    connectionStoredContentDeletion: (connectionId: string) =>
+      ["tools", "connection", connectionId, "stored-content", "deletion"] as const,
     catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
     connectionActivity: (connectionId: string) =>
       ["tools", "connection", connectionId, "activity"] as const,
@@ -570,6 +574,51 @@ export const queryKeys = {
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+  },
+  responsibilities: {
+    /** Every responsibilities read; invalidate this after any area mutation. */
+    all: ["responsibilities"] as const,
+    overview: (companyId: string, filters?: { ownerUserId?: string | null; includeLetGo?: boolean }) =>
+      [
+        "responsibilities",
+        "overview",
+        companyId,
+        filters?.ownerUserId ?? "__me__",
+        filters?.includeLetGo === true,
+      ] as const,
+    overviews: (companyId: string) => ["responsibilities", "overview", companyId] as const,
+    detail: (id: string) => ["responsibilities", "detail", id] as const,
+    /** The responsibilities one routine is under, directly or through its project. */
+    routineLinks: (companyId: string, routineId: string) =>
+      ["responsibilities", "links", companyId, "routine", routineId] as const,
+    /** The company's areas (active and proposed). */
+    areas: (companyId: string) => ["responsibilities", "areas", companyId] as const,
+    /** Recent activity on one responsibility, for who last reported its reading. */
+    activity: (id: string) => ["responsibilities", "activity", id] as const,
+    /** The written paragraph of where everything an owner holds stands (the Dashboard). */
+    summary: (companyId: string, ownerUserId?: string | null) =>
+      ["responsibilities", "summary", companyId, ownerUserId ?? "__me__"] as const,
+    /** The written paragraph of what in the work is affecting one responsibility's number. */
+    detailSummary: (id: string) => ["responsibilities", "detail-summary", id] as const,
+    /** Where a responsibility's bar conversation with an agent stands. */
+    barConversation: (id: string) => ["responsibilities", "bar-conversation", id] as const,
+    /** How automated an owner's responsibilities are (the Dashboard's Automation view, One screen). */
+    automation: (companyId: string, ownerUserId?: string | null) =>
+      ["responsibilities", "automation", companyId, ownerUserId ?? "__me__"] as const,
+    /** The agent-written status of every active responsibility an owner holds (the Dashboard's Agent status view). */
+    statusReports: (companyId: string, ownerUserId?: string | null) =>
+      ["responsibilities", "status-reports", companyId, ownerUserId ?? "__me__"] as const,
+    /** One responsibility's agent-written status, its reporter and recent reports. */
+    statusReport: (id: string) => ["responsibilities", "status-report", id] as const,
+    /** One responsibility's metric set, ready to draw (its bar module). */
+    metrics: (id: string) => ["responsibilities", "metrics", id] as const,
+    /** The recent agent runs on one responsibility's work. */
+    runs: (id: string) => ["responsibilities", "runs", id] as const,
+    /** Where a person's dashboard conversation stands, and the latest applied change (the Dashboard's edit module). */
+    dashboard: (companyId: string, ownerUserId: string) => ["responsibilities", "dashboard", companyId, ownerUserId] as const,
+    /** A person's saved dashboard versions. */
+    dashboardVersions: (companyId: string, ownerUserId: string) =>
+      ["responsibilities", "dashboard-versions", companyId, ownerUserId] as const,
   },
   artifacts: {
     list: (

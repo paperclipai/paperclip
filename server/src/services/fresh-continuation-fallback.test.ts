@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions,
-  heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations,
+  heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations, companyMemberships,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
@@ -12,11 +12,11 @@ import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,
   resetBacklogContinuationPacingForTests,
-  freshContinuationNote, heldExecutionsAwaitingFreshContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS, FRESH_CONTINUATION_SAVED_WORK_BOUND_MS,
+  continueFreshInTransaction, expediteFreshContinuationChecks, freshContinuationNote, heldExecutionsAwaitingFreshContinuation, runsAwaitingSystemContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS, FRESH_CONTINUATION_SAVED_WORK_BOUND_MS,
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
-import { currentProcessSpaceHash } from "./controller-process-identity.js";
+import { currentProcessSpaceHash, observedProcessStartedAt } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
@@ -65,6 +65,8 @@ suite("fresh-continuation fallback", () => {
   afterEach(async () => {
     resetBacklogContinuationPacingForTests(db);
     await heartbeatService(db).drainActiveRunExecutions();
+    await db.delete(companyMemberships).where(and(eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalId, userId), eq(companyMemberships.principalType, "user")));
     // The drain covers every background run, wake and resume dispatch, so
     // nothing still holds these tables. A deadlock here is a leak to fix.
     await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
@@ -388,6 +390,8 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   it("never folds a Retry for the admitted continuation's own failure into that ended continuation", async () => {
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user",
+      status: "active", membershipRole: "member" });
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
     await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
       .where(eq(heartbeatRuns.id, f.runId));
@@ -748,8 +752,11 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   // The recorded process identity (host, PID space, start time) of this process.
-  const liveIdentity = () => ({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
-    processStartedAt: new Date(Date.now() - process.uptime() * 1_000) });
+  const liveIdentity = async () => {
+    const startedAt = await observedProcessStartedAt(process.pid);
+    if (startedAt === null) throw new Error("This host cannot report this process's start time");
+    return { processPid: process.pid, processHostHash: currentProcessSpaceHash(), processStartedAt: new Date(startedAt) };
+  };
 
   /** Moves the recorded start of the pending wait into the past. */
   async function waitedFor(actionId: string, ms: number) {
@@ -759,7 +766,7 @@ suite("fresh-continuation fallback", () => {
 
   it("lets a previous process still running on this host settle first, for about ten minutes at most", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
-    await db.update(heartbeatRuns).set(liveIdentity()).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(heartbeatRuns).set(await liveIdentity()).where(eq(heartbeatRuns.id, f.runId));
     const first = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
     expect(first).toMatchObject({ kind: "exact_recovery_pending", reason: "previous_process_running" });
     // Rechecks back off from one minute.
@@ -792,7 +799,7 @@ suite("fresh-continuation fallback", () => {
   it("does not mistake a recycled PID for the old writer", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
     // The PID is alive now, but it belongs to a process that started after the old one was recorded.
-    await db.update(heartbeatRuns).set({ ...liveIdentity(), processStartedAt: new Date("2020-01-01T00:00:00Z") })
+    await db.update(heartbeatRuns).set({ ...(await liveIdentity()), processStartedAt: new Date("2020-01-01T00:00:00Z") })
       .where(eq(heartbeatRuns.id, f.runId));
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "continued" });
@@ -828,6 +835,78 @@ suite("fresh-continuation fallback", () => {
     const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
     expect(settled!.evidence).toMatchObject({ executionReconciliation: { runId: f.runId },
       freshContinuation: { isolation: "fresh_isolated_workspace" } });
+  }, 60_000);
+
+  async function setupFailedAfterWork(state: "scheduled" | "complete" | "exhausted") {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "setup_failed", hold: "settled_blocked" });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    const recovery = { ...createSystemRecovery(f.runId), state, phase: state === "complete" ? "reconcile_effects" : "verify_execution",
+      ...(state === "exhausted" ? { failure: { code: "export_interrupted", retryClass: "retry_transient", evidenceFingerprint: "x" } } : {}) };
+    await db.update(issueRecoveryActions).set({ ownerType: state === "exhausted" ? "board" : "system", evidence: { ...hold!.evidence,
+      workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [] },
+      systemRecovery: recovery } }).where(eq(issueRecoveryActions.id, f.actionId!));
+    return f;
+  }
+
+  it("continues a setup failure of a run that already did work once its saved work is recovered", async () => {
+    const f = await setupFailedAfterWork("complete");
+    expect(await heldExecutionsAwaitingFreshContinuation(db, new Date(), 10)).toEqual([expect.objectContaining({ id: f.actionId })]);
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+    expect((await evidenceOf(f.actionId!)).evidence).toMatchObject({ freshContinuation: { sourceRunId: f.runId, failureCode: "setup_failed" } });
+  }, 60_000);
+
+  it("keeps a setup failure whose saved-work recovery is still under way with that recovery, then continues it on completion", async () => {
+    const f = await setupFailedAfterWork("scheduled");
+    expect(await continueHeldExecutions(db)).toMatchObject({ checked: 1, continued: 0 });
+    const waiting = (await evidenceOf(f.actionId!)).evidence.freshContinuationCheck as { kind: string; nextCheckAt: number };
+    expect(waiting).toMatchObject({ kind: "exact_recovery_pending" });
+    expect(waiting.nextCheckAt).toBeGreaterThan(Date.now());
+    expect(await runsAwaitingSystemContinuation(db, companyId, [f.issueId], [f.runId])).toEqual(new Set([`${f.issueId}:${f.runId}`]));
+    await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{systemRecovery,state}', '"complete"')` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    await db.transaction(tx => expediteFreshContinuationChecks(tx as unknown as typeof db, { companyId, issueId: f.issueId, runId: f.runId }));
+    const due = (await evidenceOf(f.actionId!)).evidence.freshContinuationCheck as { nextCheckAt: number; firstPendingAt: number };
+    expect(due.nextCheckAt).toBeLessThanOrEqual(Date.now());
+    expect(due.firstPendingAt).toBe((waiting as unknown as { firstPendingAt: number }).firstPendingAt);
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+  }, 60_000);
+
+  it("makes a recovery that completes while the backlog pass decides due at once, not at the backed-off check", async () => {
+    const f = await setupFailedAfterWork("scheduled");
+    let completion: Promise<unknown> | undefined;
+    await db.transaction(async tx => {
+      const decided = await continueFreshInTransaction(tx as unknown as typeof db, { companyId, runId: f.runId, trigger: "held_recovery" });
+      expect(decided).toMatchObject({ kind: "exact_recovery_pending" });
+      completion = db.transaction(async other => {
+        await other.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{systemRecovery,state}', '"complete"')` })
+          .where(eq(issueRecoveryActions.id, f.actionId!));
+        await expediteFreshContinuationChecks(other as unknown as typeof db, { companyId, issueId: f.issueId, runId: f.runId });
+      });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await recordFreshContinuationCheck(tx as unknown as typeof db, { companyId, actionId: f.actionId! }, decided);
+    });
+    await completion;
+    const check = (await evidenceOf(f.actionId!)).evidence.freshContinuationCheck as { nextCheckAt: number };
+    expect(check.nextCheckAt).toBeLessThanOrEqual(Date.now());
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+  }, 60_000);
+
+  it("shows a task at the hourly continuation cap as scheduled, not as continuing", async () => {
+    const f = await setupFailedAfterWork("complete");
+    const nextCheckAt = Date.now() + 30 * 60_000;
+    await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+      freshContinuationCheck: { kind: "backoff", checks: 1, checkedAt: Date.now(), nextCheckAt } })}::jsonb` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await runsAwaitingSystemContinuation(db, companyId, [f.issueId], [f.runId])).toEqual(new Set());
+    expect(await taskInterruptionPresentation(db, await issue(f.issueId))).toMatchObject({ state: "retry_scheduled", canRetry: false,
+      nextRetryAt: new Date(nextCheckAt).toISOString() });
+  }, 60_000);
+
+  it("leaves a setup failure for a person once its saved-work recovery is exhausted", async () => {
+    const f = await setupFailedAfterWork("exhausted");
+    expect(await heldExecutionsAwaitingFreshContinuation(db, new Date(), 10)).toEqual([]);
+    expect(await runsAwaitingSystemContinuation(db, companyId, [f.issueId], [f.runId])).toEqual(new Set());
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 0 });
   }, 60_000);
 
   it("lets a running saved-work recovery that keeps advancing use its own budget", async () => {
