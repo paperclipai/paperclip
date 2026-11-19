@@ -3270,9 +3270,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // Old or direct timer producers cannot create a doomed taskless Runner
     // run. Explicit session restoration above can supply a real task scope.
     if (genericTimerWake && !supportsUnscopedTimerHeartbeat(agent)) return null;
-    const sessionBefore =
+    const resolveSessionBefore = async (tx: Pick<Db, "select">) =>
       explicitResumeSession?.sessionDisplayId ??
-      (await resolveSessionBeforeForWakeup(agent, effectiveTaskKey));
+      resolveSessionBeforeForWakeup(agent, effectiveTaskKey, tx);
     let hasResolvablePriorSessionWorkspace: boolean | null = null;
     const resolveHasResolvablePriorSessionWorkspace = async () => {
       if (hasResolvablePriorSessionWorkspace !== null)
@@ -4306,6 +4306,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .where(eq(heartbeatRuns.id, issue.executionRunId))
                 .then((rows) => rows[0] ?? null)
             : null;
+          let activeExecutionAgentNameKey = issue.executionAgentNameKey;
           const manualExecutionHold = activeExecutionRun && await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
             { companyId: issue.companyId, runId: activeExecutionRun.id, issueId: issue.id });
 
@@ -4435,16 +4436,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 const legacyAgent = await tx
                   .select({ name: agents.name })
                   .from(agents)
-                  .where(eq(agents.id, legacyRun.agentId))
+                  .where(and(eq(agents.companyId, issue.companyId), eq(agents.id, legacyRun.agentId)))
                   .then((rows) => rows[0] ?? null);
+                activeExecutionAgentNameKey = normalizeAgentNameKey(legacyAgent?.name);
                 await notifyStatusCardIssueChange(tx, issue.companyId);
                 await tx
                   .update(issues)
                   .set({
                     executionRunId: legacyRun.id,
-                    executionAgentNameKey: normalizeAgentNameKey(
-                      legacyAgent?.name,
-                    ),
+                    executionAgentNameKey: activeExecutionAgentNameKey,
                     executionLockedAt: new Date(),
                     updatedAt: new Date(),
                   })
@@ -4777,7 +4777,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               issueId: issue.id,
               agentId,
               agentNameKey,
-              issueExecutionAgentNameKey: issue.executionAgentNameKey,
+              issueExecutionAgentNameKey: activeExecutionAgentNameKey,
               activeExecutionRun: {
                 id: activeExecutionRun.id,
                 agentId: activeExecutionRun.agentId,
@@ -5064,7 +5064,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               ? durableRequest!.failedRunRetry!.failedRunId
               : opts.failedRunId ?? automaticParentRunId,
             contextSnapshot: enrichedContextSnapshot,
-            sessionIdBefore: sessionBefore,
+            resolveSessionIdBefore: () => resolveSessionBefore(tx),
             continuationAttempt,
             reconciledSourceRunId,
             reconciledRestoreRetryCount,
@@ -5299,7 +5299,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           responsibleUserId: await resolveQueuedResponsibleUserId(),
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
-          sessionIdBefore: sessionBefore,
+          sessionIdBefore: await resolveSessionBefore(tx),
           continuationAttempt,
         })
         .returning()

@@ -29,6 +29,7 @@ import {
 import {
   createPostgresIssueWakeAdmission,
   createPostgresWakeQueueAdapter,
+  createWakeAdmissionReader,
   createWakeAdmissionWriter,
 } from "./postgres.js";
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
@@ -183,6 +184,26 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     return id;
   }
+
+  it("uses the issue execution name key before reading the agent's current name", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId, name: "Renamed agent" });
+    await db.transaction(async (tx) => {
+      const select = vi.spyOn(tx, "select");
+      const reader = createWakeAdmissionReader(tx, companyId);
+      const input = { companyId, activeExecutionRunAgentId: agentId,
+        issueExecutionAgentNameKey: " Original Name ", agentNameKey: "original name" };
+      await expect(reader.isSameExecutionAgent({ ...input, companyId: randomUUID() }))
+        .rejects.toThrow("admission is locked for a different company");
+      await expect(reader.isSameExecutionAgent(input)).resolves.toBe(true);
+      await expect(reader.isSameExecutionAgent({ ...input, agentNameKey: "renamed agent" })).resolves.toBe(false);
+      expect(select).not.toHaveBeenCalled();
+
+      await expect(reader.isSameExecutionAgent({ ...input, issueExecutionAgentNameKey: null, agentNameKey: "renamed agent" }))
+        .resolves.toBe(true);
+      expect(select).toHaveBeenCalledTimes(1);
+    });
+  });
 
   it("checks execution holds only when the scoped saved receipt exists, inside the issue admission transaction", async () => {
     const companyId = await seedCompany();
