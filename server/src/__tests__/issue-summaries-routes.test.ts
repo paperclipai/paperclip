@@ -44,14 +44,15 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
   }
   const url = (companyId: string) => `/api/companies/${companyId}/issues/summaries`;
 
-  it("qualifies recents by personal participation rather than automated provenance, reads or inbox archive", async () => {
+  it("reports personal participation and archive state for navigation", async () => {
     const f = await fixture();
     const user = f.actor.userId!;
-    const names = ["manual", "routine", "github", "agent", "read", "comment", "edit", "assigned", "addressed", "other-request", "archived"];
+    const names = ["manual", "routine", "github", "agent", "read", "comment", "edit", "assigned", "addressed", "other-request", "archived", "archived-by-other", "cancelled"];
     const rows = await ctx.db.insert(issues).values(names.map(title => ({
       companyId: f.companyId, title,
       originKind: title === "routine" ? "routine_execution" : title === "github" ? "chat_channel" : "manual",
-      createdByUserId: ["manual", "routine", "github", "archived"].includes(title) ? user : null,
+      createdByUserId: ["manual", "routine", "github", "archived", "archived-by-other", "cancelled"].includes(title) ? user : null,
+      status: title === "cancelled" ? "cancelled" : "todo",
       responsibleUserId: user,
       assigneeUserId: title === "assigned" ? user : null,
     }))).returning();
@@ -65,7 +66,10 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
       { companyId: f.companyId, entityType: "issue", entityId: id("edit"), actorType: "user", actorId: user, action: "issue.updated" },
       { companyId: f.companyId, entityType: "issue", entityId: id("agent"), actorType: "agent", actorId: "worker", action: "issue.updated", responsibleUserId: user },
     ]);
-    await ctx.db.insert(issueInboxArchives).values({ companyId: f.companyId, issueId: id("archived"), userId: user });
+    await ctx.db.insert(issueInboxArchives).values([
+      { companyId: f.companyId, issueId: id("archived"), userId: user },
+      { companyId: f.companyId, issueId: id("archived-by-other"), userId: "other" },
+    ]);
     await ctx.db.insert(issueThreadInteractions).values(["addressed", "other-request"].map(title => ({
       companyId: f.companyId, issueId: id(title), kind: "request_confirmation", status: "pending",
       addresseeUserId: title === "addressed" ? user : "other", effectiveResolverPolicy: "human_only" as const,
@@ -73,7 +77,12 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     })));
     const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: rows.map(row => row.id).join(","), navigation: "true" }).expect(200);
     expect(res.body.filter((row: { isParticipantForMe: boolean }) => row.isParticipantForMe).map((row: { title: string }) => row.title).sort())
-      .toEqual(["addressed", "archived", "assigned", "comment", "edit", "manual"]);
+      .toEqual(["addressed", "archived", "archived-by-other", "assigned", "cancelled", "comment", "edit", "manual"]);
+    expect(res.body.filter((row: { isArchivedForMe: boolean }) => row.isArchivedForMe).map((row: { title: string }) => row.title)).toEqual(["archived"]);
+    expect(res.body).toContainEqual(expect.objectContaining({ id: id("cancelled"), status: "cancelled", isArchivedForMe: false }));
+    const general = await request(app(f.actor)).get(url(f.companyId)).query({ ids: [id("archived"), id("cancelled")].join(",") }).expect(200);
+    expect(general.body.map((row: { title: string }) => row.title)).toEqual(["archived", "cancelled"]);
+    expect(general.body[0]).not.toHaveProperty("isArchivedForMe");
     expect(res.body.every((row: { isParticipantForMe: unknown }) => typeof row.isParticipantForMe === "boolean")).toBe(true);
   });
 

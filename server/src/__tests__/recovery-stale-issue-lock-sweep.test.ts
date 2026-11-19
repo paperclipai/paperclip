@@ -229,6 +229,23 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     );
   });
 
+  it.each(["in_progress", "done"] as const)("waits for a live executor to settle its run before clearing the lock of a %s task", async status => {
+    const { companyId, agentId, failedRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Executor still settling", status,
+      priority: "high", assigneeAgentId: agentId, executionRunId: failedRunId, executionLockedAt: new Date() });
+    const deadlines: number[] = [];
+    const whileLive = await recoveryService(db, { enqueueWakeup: vi.fn(), liveRunExecutions: new Set([failedRunId]) })
+      .sweepStaleIssueLocks({ companyId, issueId, onDeferredDeadline: at => deadlines.push(at) });
+    expect(whileLive.issueIds).toEqual(status === "done" ? [issueId] : []);
+    expect(deadlines).toHaveLength(status === "done" ? 0 : 1);
+    const afterExecutor = await recoveryService(db, { enqueueWakeup: vi.fn(), liveRunExecutions: new Set<string>() })
+      .sweepStaleIssueLocks({ companyId, issueId });
+    expect(afterExecutor.issueIds).toEqual(status === "done" ? [] : [issueId]);
+    const [row] = await db.select({ executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId));
+    expect(row.executionRunId).toBeNull();
+  });
+
   it("does not clear locks while the referenced run is still running", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     const issueId = randomUUID();
