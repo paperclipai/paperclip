@@ -1,14 +1,17 @@
 import { and, eq, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
-import { withTelemetryCompany } from "../telemetry-company-scope.js";
+import { resolveTelemetryPerson, withTelemetryActor } from "../telemetry-company-scope.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type TelemetryRun = Pick<HeartbeatRun,
-  "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "usageJson" | "contextSnapshot">;
+  "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "usageJson" | "contextSnapshot">
+  & Partial<Pick<HeartbeatRun, "responsibleUserId">>;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
@@ -60,13 +63,26 @@ export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void>
     const client = getTelemetryClient();
     if (!client) return;
 
+    const taskId =
+      readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
+      undefined;
+    const taskRowId = taskId && UUID_RE.test(taskId) ? taskId : null;
+
     const agent = await db
       .select({
         role: agents.role,
         adapterType: agents.adapterType,
         adapterConfig: agents.adapterConfig,
+        taskCreatedByUserId: issues.createdByUserId,
+        taskResponsibleUserId: issues.responsibleUserId,
       })
       .from(agents)
+      .leftJoin(
+        issues,
+        taskRowId
+          ? and(eq(issues.id, taskRowId), eq(issues.companyId, run.companyId))
+          : sql`false`,
+      )
       .where(eq(agents.id, run.agentId))
       .then((rows) => rows[0] ?? null);
 
@@ -76,11 +92,13 @@ export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void>
       readNonEmptyString(parseObject(agent?.adapterConfig).model) ??
       undefined;
 
-    const taskId =
-      readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
-      undefined;
+    const person = resolveTelemetryPerson({
+      taskCreatedByUserId: agent?.taskCreatedByUserId,
+      taskAssignedByUserId: agent?.taskResponsibleUserId,
+      runOwnerUserId: run.responsibleUserId,
+    });
 
-    withTelemetryCompany(run.companyId, () => trackAgentTaskRun(client, {
+    withTelemetryActor({ companyId: run.companyId, person }, () => trackAgentTaskRun(client, {
       agentId: run.agentId,
       state: run.status,
       ...(agent
@@ -141,6 +159,7 @@ export async function emitAgentTaskRunById(
         startedAt: heartbeatRuns.startedAt,
         finishedAt: heartbeatRuns.finishedAt,
         usageJson: heartbeatRuns.usageJson,
+        responsibleUserId: heartbeatRuns.responsibleUserId,
         contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId')`,
       })
       .from(heartbeatRuns)
