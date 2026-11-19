@@ -65,7 +65,8 @@ function createClient(companyId = "company-1", actorId = pluginId) {
     createdAt: new Date("2026-11-02T00:00:00Z"),
   }]);
   client.setQueryData(queryKeys.agents.list(companyId), [{ id: "agent-1", name: "Agent", status: "idle" }]);
-  client.setQueryData(queryKeys.issues.list(companyId), []);
+  client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+  client.setQueryData(queryKeys.issues.listIndex(companyId), []);
   client.setQueryData(queryKeys.projects.list(companyId, { includeArchived: true }), []);
   client.setQueryData(queryKeys.access.companyUserDirectory(companyId), { users: [] });
   return client;
@@ -135,7 +136,7 @@ describe.each([false, true])("Dashboard plugin actors with sandbox=%s", (sandbox
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each([403, 500])("keeps activity readable after %s without retries", async (status) => {
+  it.each([403, 500])("keeps activity readable after %s fails through retries", async (status) => {
     const client = createClient();
     client.setQueryDefaults(queryKeys.plugins.all, { retry: 2, retryDelay: 0 });
     const fetch = vi.fn().mockResolvedValue(Response.json({ error: "Directory unavailable" }, { status }));
@@ -143,7 +144,7 @@ describe.each([false, true])("Dashboard plugin actors with sandbox=%s", (sandbox
     await mount(client);
     await settle(() => expect(client.getQueryState(queryKeys.plugins.all)?.status).toBe("error"));
     expect(container.textContent).toContain("Plugin (62c3f549)");
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it("drops a cached name when a directory refresh fails", async () => {

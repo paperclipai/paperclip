@@ -183,7 +183,6 @@ export function Dashboard() {
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
     enabled: !!selectedCompanyId && !!activity?.some((event) => event.actorType === "plugin"),
-    retry: false,
   });
 
   const pluginNameMap = useMemo(
