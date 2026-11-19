@@ -1,6 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
+import * as executionBlocker from "../../../services/execution-blocker.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -26,7 +27,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import {
+  createPostgresIssueWakeAdmission,
   createPostgresWakeQueueAdapter,
+  createWakeAdmissionReader,
   createWakeAdmissionWriter,
 } from "./postgres.js";
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
@@ -181,6 +184,93 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     return id;
   }
+
+  it("uses the issue execution name key before reading the agent's current name", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId, name: "Renamed agent" });
+    await db.transaction(async (tx) => {
+      const select = vi.spyOn(tx, "select");
+      const reader = createWakeAdmissionReader(tx, companyId);
+      const input = { companyId, activeExecutionRunAgentId: agentId,
+        issueExecutionAgentNameKey: " Original Name ", agentNameKey: "original name" };
+      await expect(reader.isSameExecutionAgent({ ...input, companyId: randomUUID() }))
+        .rejects.toThrow("admission is locked for a different company");
+      await expect(reader.isSameExecutionAgent(input)).resolves.toBe(true);
+      await expect(reader.isSameExecutionAgent({ ...input, agentNameKey: "renamed agent" })).resolves.toBe(false);
+      expect(select).not.toHaveBeenCalled();
+
+      await expect(reader.isSameExecutionAgent({ ...input, issueExecutionAgentNameKey: null, agentNameKey: "renamed agent" }))
+        .resolves.toBe(true);
+      expect(select).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("checks execution holds only when the scoped saved receipt exists, inside the issue admission transaction", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const formerAgentId = await seedAgent({ companyId, name: "Former owner" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const handoffRunId = await seedRun({
+      companyId, agentId: formerAgentId, status: "cancelled", errorCode: "issue_reassigned", contextSnapshot: { issueId },
+    });
+    const wakeId = await seedDeferredWake({ companyId, agentId: formerAgentId, issueId });
+    await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", status: "active",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: handoffRunId,
+      nextAction: "Check the stopped execution.",
+    });
+
+    const blocker = vi.spyOn(executionBlocker, "getExecutionBlocker");
+    const admit = createPostgresIssueWakeAdmission(db);
+    try {
+      await admit({ companyId, issueId }, async (tx, { fresh, lockedIssue }) => {
+        expect(lockedIssue).toMatchObject({ id: issueId, companyId, assigneeAgentId: agentId });
+        await expect(db.execute(sql`select id from issues where id = ${issueId} for update nowait`))
+          .rejects.toMatchObject({ cause: { code: "55P03" } });
+        const input = { issueId, agentId, handoffRunId, checkExecutionBlocker: true };
+        const receiptScope = { kind: "exact" as const, wakeId };
+        await expect(fresh.readCommentCandidates({ ...input, receiptScope: { ...receiptScope, wakeId: randomUUID() } }))
+          .resolves.toEqual({ handoffAgentId: formerAgentId, candidates: [] });
+        expect(blocker).not.toHaveBeenCalled();
+
+        await expect(fresh.readCommentCandidates({ ...input, receiptScope }))
+          .resolves.toEqual({ handoffAgentId: formerAgentId, candidates: [] });
+        expect(blocker).toHaveBeenCalledExactlyOnceWith(tx, companyId, issueId);
+
+        await expect(fresh.readCommentCandidates({ ...input, receiptScope, checkExecutionBlocker: false }))
+          .resolves.toMatchObject({ handoffAgentId: formerAgentId, candidates: [{ id: wakeId }] });
+        expect(blocker).toHaveBeenCalledTimes(1);
+
+        const select = vi.spyOn(tx, "select");
+        try {
+          expect(await executionBlocker.getExecutionBlocker(tx as unknown as Db, companyId, issueId, {
+            lockedIssue: lockedIssue!,
+          })).toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
+          expect(select).not.toHaveBeenCalledWith(expect.objectContaining({ conversationAgentId: issues.conversationAgentId }));
+        } finally {
+          select.mockRestore();
+        }
+        return { kind: "skipped" };
+      });
+    } finally {
+      blocker.mockRestore();
+    }
+  });
+
+  it("locks an issue added after the initial admission lock missed", async () => {
+    const companyId = await seedCompany();
+    const issueId = randomUUID();
+    const admit = createPostgresIssueWakeAdmission(db);
+
+    await admit({ companyId, issueId }, async (_tx, { lockedIssue, lockIssue }) => {
+      expect(lockedIssue).toBeNull();
+      await seedIssue({ companyId, issueId });
+      expect(await lockIssue()).toMatchObject({ id: issueId, companyId });
+      await expect(db.execute(sql`select id from issues where id = ${issueId} for update nowait`))
+        .rejects.toMatchObject({ cause: { code: "55P03" } });
+      return { kind: "skipped" };
+    });
+  });
 
   function recordReleaseRunReads() {
     const rows: unknown[][] = [];

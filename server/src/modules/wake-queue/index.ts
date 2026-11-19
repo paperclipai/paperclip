@@ -3,6 +3,7 @@ import {
   createPostgresIssueWakeAdmission,
   createPostgresWakeQueueAdapter,
   type IssueAdmissionDbTransaction,
+  type IssueAdmissionRow,
   type IssueAdmissionTarget,
 } from "./adapters/postgres.js";
 import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
@@ -82,6 +83,8 @@ export type WakeQueueDeps = {
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LockedIssueAdmission = {
+  lockedIssue: IssueAdmissionRow | null;
+  lockIssue: () => Promise<IssueAdmissionRow | null>;
   admitWakeBehindIssueExecution: ReturnType<typeof createAdmitWakeBehindIssueExecution>;
   admitFreshIssueRun: ReturnType<typeof createFreshIssueRunAdmission<HeartbeatRun>>;
 };
@@ -103,10 +106,12 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
       evaluateHeartbeatPolicy: (tx: IssueAdmissionDbTransaction, admission: LockedIssueAdmission) => Promise<IssueWakeAdmissionOutcome<HeartbeatRun>>,
       effects: IssueWakeAdmissionEffects<HeartbeatRun>,
     ) {
-      return admitIssueWake(() => withIssueAdmission({ companyId, issueId, durableChatRequest }, (tx, { reader, writer, fresh }) => {
+      return admitIssueWake(() => withIssueAdmission({ companyId, issueId, durableChatRequest }, (tx, { lockedIssue, lockIssue, reader, writer, fresh }) => {
         const admitBusy = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: deps.wakeAdmissionHelpers });
         const admitFresh = createFreshIssueRunAdmission(fresh);
         return evaluateHeartbeatPolicy(tx, {
+          lockedIssue,
+          lockIssue,
           async admitWakeBehindIssueExecution(input) {
             if (input.companyId !== companyId || input.issueId !== issueId || input.contextSnapshot.issueId !== issueId) {
               throw new Error("wake-queue: admission does not match the locked company and issue");

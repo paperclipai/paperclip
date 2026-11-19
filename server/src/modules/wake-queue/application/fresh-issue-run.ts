@@ -82,7 +82,7 @@ type FreshIssueRunInput = {
   failedChatRetryReceiptId?: string;
   ownsReconstructionContinuation: boolean;
   contextSnapshot: Record<string, unknown>;
-  sessionIdBefore: string | null;
+  resolveSessionIdBefore(): Promise<string | null>;
   continuationAttempt: number;
   explicitContinuationRunId: string | null;
   retryOfRunId: string | null;
@@ -161,7 +161,7 @@ export function createFreshIssueRunAdmission<Run extends { id: string }>(store: 
       wakeupRequestId: primary.id,
       retryOfRunId: input.reconciledSourceRunId || input.retryOfRunId,
       contextSnapshot: adopted.length ? withQueuedCommentIdsInRunContext(contextSnapshot, commentIds, adoptedWakeIds) : contextSnapshot,
-      sessionIdBefore: input.explicitContinuationRunId ? null : input.sessionIdBefore,
+      sessionIdBefore: input.explicitContinuationRunId ? null : await input.resolveSessionIdBefore(),
       continuationAttempt: input.continuationAttempt,
       ...(input.reconciledRestoreRetryCount !== null ? {
         scheduledRetryAttempt: input.reconciledRestoreRetryCount,

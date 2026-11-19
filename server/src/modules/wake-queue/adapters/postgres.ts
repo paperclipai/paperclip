@@ -1021,6 +1021,8 @@ export function createWakeAdmissionReader(rawTx: IssueAdmissionDbTransaction, ad
       },
     ) {
       assertAdmissionCompany(admittedCompanyId, companyId);
+      const storedNameKey = normalizeAgentNameKey(issueExecutionAgentNameKey);
+      if (storedNameKey !== null) return storedNameKey === agentNameKey;
       const executionAgent = await tx
         .select({ name: agents.name })
         .from(agents)
@@ -1031,12 +1033,8 @@ export function createWakeAdmissionReader(rawTx: IssueAdmissionDbTransaction, ad
           ),
         )
         .then((rows) => rows[0] ?? null);
-      const executionAgentNameKey =
-        normalizeAgentNameKey(issueExecutionAgentNameKey) ??
-        normalizeAgentNameKey(executionAgent?.name);
-      return (
-        Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey
-      );
+      const executionAgentNameKey = normalizeAgentNameKey(executionAgent?.name);
+      return executionAgentNameKey !== null && executionAgentNameKey === agentNameKey;
     },
 
     async findExistingDeferredWake(
@@ -1278,10 +1276,39 @@ export function createWakeAdmissionWriter(rawTx: IssueAdmissionDbTransaction, ad
   };
 }
 
+const issueAdmissionFields = {
+  id: issues.id,
+  companyId: issues.companyId,
+  identifier: issues.identifier,
+  conversationBoundaryCommentId: issues.conversationBoundaryCommentId,
+  conversationAgentId: issues.conversationAgentId,
+  conversationUserId: issues.conversationUserId,
+  conversationState: issues.conversationState,
+  status: issues.status,
+  statusVersion: issues.statusVersion,
+  projectId: issues.projectId,
+  projectWorkspaceId: issues.projectWorkspaceId,
+  executionWorkspaceId: issues.executionWorkspaceId,
+  executionWorkspacePreference: issues.executionWorkspacePreference,
+  executionWorkspaceSettings: issues.executionWorkspaceSettings,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+  monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+  checkoutRunId: issues.checkoutRunId,
+  executionRunId: issues.executionRunId,
+  executionAgentNameKey: issues.executionAgentNameKey,
+  createdAt: issues.createdAt,
+};
+
+export type IssueAdmissionRow = Pick<IssueRow, keyof typeof issueAdmissionFields>;
+
 export function createPostgresIssueWakeAdmission(db: Db) {
   return async function withIssueAdmission(
     { companyId, issueId, durableChatRequest }: IssueAdmissionTarget,
     evaluate: (tx: IssueAdmissionDbTransaction, stores: {
+      lockedIssue: IssueAdmissionRow | null;
+      lockIssue: () => Promise<IssueAdmissionRow | null>;
       reader: WakeAdmissionReader;
       writer: WakeAdmissionWriter;
       fresh: FreshIssueRunStore<HeartbeatRunRow>;
@@ -1290,8 +1317,15 @@ export function createPostgresIssueWakeAdmission(db: Db) {
     try {
       return await db.transaction(withDurableChatAdmission(durableChatRequest, async (tx) => {
         // Mentions may target another agent, but every admission must share the issue lock.
-        await tx.execute(sql`select id from issues where id = ${issueId} and company_id = ${companyId} for update`);
+        const lockIssue = async () => {
+          const [issue] = await tx.select(issueAdmissionFields).from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).for("update");
+          return issue ?? null;
+        };
+        const lockedIssue = await lockIssue();
         return evaluate(tx, {
+          lockedIssue,
+          lockIssue,
           reader: createWakeAdmissionReader(tx, companyId),
           writer: createWakeAdmissionWriter(tx, companyId),
           fresh: createFreshIssueRunStore(tx, companyId),
@@ -1598,7 +1632,7 @@ export function createFreshIssueRunStore(
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
         or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issueId)),
       )) : [];
-      const candidates = receiptScope && (!checkExecutionBlocker || !(await getExecutionBlocker(tx, companyId, issueId)))
+      const candidates = receiptScope
         ? await tx.select({
             id: agentWakeupRequests.id,
             reason: agentWakeupRequests.reason,
@@ -1612,7 +1646,8 @@ export function createFreshIssueRunStore(
             receiptScope.kind === "exact" ? eq(agentWakeupRequests.id, receiptScope.wakeId) : undefined,
           )).orderBy(asc(agentWakeupRequests.requestedAt))
         : [];
-      return { handoffAgentId: handoff?.agentId ?? null, candidates };
+      const blocked = candidates.length > 0 && checkExecutionBlocker && await getExecutionBlocker(tx, companyId, issueId);
+      return { handoffAgentId: handoff?.agentId ?? null, candidates: blocked ? [] : candidates };
     },
     readUndeliveredLegacyCommentIds(issueId, agentId, commentIds) {
       return undeliveredLegacyUserCommentIds(tx, companyId, issueId, agentId, commentIds);

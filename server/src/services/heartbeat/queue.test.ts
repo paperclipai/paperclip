@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { authUsers, agents, agentTaskSessions, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -288,6 +288,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const admit = deps.wakeQueue.admitIssueWake.getMockImplementation()!;
     deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target,
       (tx, admission) => evaluate(tx, otherIssue ? {
+        ...admission,
         admitFreshIssueRun: (input) => admission.admitFreshIssueRun({ ...input,
           issue: { ...input.issue, id: otherIssue.id }, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
         admitWakeBehindIssueExecution: (input) => admission.admitWakeBehindIssueExecution({ ...input,
@@ -307,6 +308,34 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
     expect(await db.select().from(agentWakeupRequests)).toEqual([]);
     expect(await db.select().from(heartbeatRuns)).toHaveLength(kind === "fresh" ? 0 : 1);
+  });
+
+  it("uses issue changes written by durable chat authorization before admission", async () => {
+    const { user, company, agent, issue, queue } = await waitingConversationFixture();
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
+      .where(eq(issues.id, issue.id));
+    const [comment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: user.id, body: "Please continue" }).returning();
+    const requestId = randomUUID();
+    const request = createDurableChatWakeupRequest({
+      id: requestId, companyId: company.id, issueId: issue.id, agentId: agent.id, commentId: comment.id,
+      requestedByActorType: "user", requestedByActorId: user.id, requestedAt: new Date(),
+      authorize: async (tx) => {
+        await tx.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
+      },
+    });
+
+    await expect(queue.enqueueWakeup(agent.id, {
+      source: "assignment", triggerDetail: "system", reason: "External chat message received",
+      requestedByActorType: "user", requestedByActorId: user.id, durableChatRequest: request,
+      payload: { issueId: issue.id, commentId: comment.id, mutation: "chat_message_received" },
+      issueStateGuard: { assigneeAgentId: agent.id, statuses: ["todo"] },
+    })).resolves.toBeNull();
+
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
+    expect(receipt).toMatchObject({ status: "skipped", reason: "issue_state_guard_mismatch",
+      payload: { heartbeatSkip: { actualStatus: "blocked" } } });
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
   });
 
   it("admits the owner's context compaction maintenance request while its conversation waits", async () => {
@@ -570,6 +599,12 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       payload: withQueuedCommentIdsInWakePayload({ issueId: issue.id, mutation }, [commentId]),
     }))).returning();
 
+    const admit = deps.wakeQueue.admitIssueWake.getMockImplementation()!;
+    deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target, async (tx, admission) => {
+      await tx.insert(agentTaskSessions).values({ companyId: company.id, agentId: agent.id,
+        adapterType: agent.adapterType, taskKey: issue.id, sessionDisplayId: "session-available-in-admission" });
+      return evaluate(tx, admission);
+    }, effects));
     const run = await queue.enqueueWakeup(agent.id, {
       source: "assignment", triggerDetail: "system", reason: "issue_assigned", requestedByActorType: "system",
       payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, interruptedRunId: interruptedRun.id },
@@ -577,6 +612,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
 
     const commentIds = matchingIssue ? [earlier.id, later.id] : [later.id];
     expect(run).toMatchObject({ status: "queued", responsibleUserId: user.id, invocationSource: "assignment",
+      sessionIdBefore: "session-available-in-admission",
       contextSnapshot: { wakeCommentIds: commentIds, wakeCommentId: later.id,
         queuedCommentSourceWakeIds: matchingIssue ? [handoff.id, local.id] : [local.id] } });
     const receipts = new Map((await db.select().from(agentWakeupRequests)).map(wake => [wake.id, wake]));
@@ -894,7 +930,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.source.id);
   });
 
-  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
+  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "missing-execution-key", "stale-execution-key", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
     const f = await fixture("queued");
     let admissionAgent: typeof agents.$inferSelect = { ...f.agent, adapterType, adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} };
     await db.update(agents).set({ adapterType, adapterConfig: admissionAgent.adapterConfig }).where(eq(agents.id, f.agent.id));
@@ -922,6 +958,13 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const [scanned] = await db.update(heartbeatRuns).set({ responsibleUserId: userId,
       contextSnapshot: withQueuedCommentIdsInRunContext({ issueId: f.issue.id, wakeReason: "issue_commented" }, [oldComment.id]),
     }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    if (scenario === "missing-execution-key" || scenario === "stale-execution-key") {
+      const [staleRun] = scenario === "stale-execution-key" ? await db.insert(heartbeatRuns).values({
+        companyId: f.company.id, agentId: f.agent.id, status: "succeeded", contextSnapshot: { issueId: f.issue.id },
+      }).returning() : [];
+      await db.update(issues).set({ executionRunId: staleRun?.id ?? null,
+        executionAgentNameKey: staleRun ? "previous agent name" : null }).where(eq(issues.id, f.issue.id));
+    }
     let foreignPrimary: typeof agentWakeupRequests.$inferSelect | undefined;
     if (scenario === "foreign-primary") {
       const [company] = await db.insert(companies).values({ name: "Foreign source", issuePrefix: "FOREIGN" }).returning();
@@ -931,6 +974,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     }
     if (scenario === "delete-old") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, oldComment.id));
     const deps = callbacks(db);
+    const resolveSession = vi.spyOn(deps, "resolveSessionBeforeForWakeup");
     deps.getAgent.mockResolvedValue(admissionAgent);
     deps.canStartNewExternalBotWork.mockResolvedValue(false);
     deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false, enableNativeRunner: true } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
@@ -942,7 +986,12 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
         mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
       recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
     });
-    deps.wakeQueue.admitIssueWake.mockImplementation(admission.admitIssueWake);
+    const busyAdmission = vi.fn();
+    deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admission.admitIssueWake(target,
+      (tx, stores) => evaluate(tx, { ...stores, admitWakeBehindIssueExecution(input) {
+        busyAdmission(input.activeExecutionRun.id, input.issueExecutionAgentNameKey);
+        return stores.admitWakeBehindIssueExecution(input);
+      } }), effects));
     const queue = createHeartbeatQueue(db, deps);
     if (scenario === "running") {
       deps.canStartNewExternalBotWork.mockResolvedValue(true);
@@ -971,6 +1020,10 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       return;
     }
     expect(coalesced).toMatchObject({ id: f.run.id, status: "queued", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
+    expect(resolveSession).not.toHaveBeenCalled();
+    if (scenario === "missing-execution-key" || scenario === "stale-execution-key") {
+      expect(busyAdmission).toHaveBeenCalledExactlyOnceWith(f.run.id, f.agent.name.toLowerCase());
+    }
     const accepted = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
     expect(accepted.find(row => row.id !== f.wake.id)).toMatchObject({ status: "coalesced", runId: f.run.id, finishedAt: expect.any(Date),
       requestedByActorType: "user", requestedByActorId: incomingActorId });
