@@ -135,6 +135,15 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+  // Whether the person directed the run reads the database these tests mock away; routines-e2e covers it.
+  // Here every run with a person was directed by them.
+  vi.doMock("../routes/agent-person-authz.js", () => ({
+    agentPersonInCompany: async (_db: unknown, req: { actor: { type: string; onBehalfOfUserId?: string; onBehalfOfMemberships?: Array<{ companyId: string; status?: string; membershipRole?: string | null }> } }, companyId: string) => {
+      if (req.actor.type !== "agent" || !req.actor.onBehalfOfUserId) return null;
+      const membership = req.actor.onBehalfOfMemberships?.find((item) => item.companyId === companyId && item.status === "active");
+      return membership ? { userId: req.actor.onBehalfOfUserId, role: membership.membershipRole ?? null } : null;
+    },
+  }));
 
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackRoutineCreated: mockTrackRoutineCreated,

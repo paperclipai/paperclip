@@ -1479,7 +1479,7 @@ Terminal states: `done`, `cancelled`
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/api/companies/:companyId/routines` | List all routines in company |
+| GET    | `/api/companies/:companyId/routines` | List the company's routines. Optional filters, all applied before any limit: `projectId`, `q` (words in the title or description), `status`, `assigneeAgentId`, `responsibleUserId`, `responsibilityId` (filed under it, directly or through its project), `unfiled=true` (under no proposed or active responsibility) |
 | GET    | `/api/routines/:routineId` | Routine details including triggers |
 | POST   | `/api/companies/:companyId/routines` | Create routine (`assigneeAgentId` + `projectId` required; agents: own only) |
 | PATCH  | `/api/routines/:routineId` | Update routine (agents: own only, cannot reassign) |
@@ -1509,7 +1509,7 @@ A person's responsibilities are saved records, each optionally filed under an ar
 | GET    | `/api/companies/:companyId/responsibility-areas` | The company's areas; `includeArchived=true` adds archived ones |
 | GET    | `/api/responsibilities/:responsibilityId` | One responsibility with its projects, tasks and routines (`linkId` set when filed directly) and the skills of the agents doing its work |
 | GET    | `/api/companies/:companyId/responsibility-links/lookup` | The responsibilities one item is under; send exactly one of `issueId`, `projectId`, `routineId` or `skillId` |
-| POST   | `/api/companies/:companyId/responsibilities` | Create one. Acting for the person your run works for (who may manage the owner), a title is enough and it is active; otherwise it is a proposal with its whole bar |
+| POST   | `/api/companies/:companyId/responsibilities` | Create one. Acting for the person your run works for (who may manage the owner, and who directed the run: their own chat or task, or their message woke it), a title is enough and it is active; otherwise it is a proposal with its whole bar |
 | PATCH  | `/api/responsibilities/:responsibilityId` | Change any field, as the person could; otherwise only a proposal, or `metricCurrent` on one you work under |
 | POST   | `/api/responsibilities/:responsibilityId/file` | `{ items: [{ kind: "project" \| "task" \| "routine" \| "skill", id }], moveFrom?: responsibilityId \| "all" }`: file items, optionally moving them |
 | POST   | `/api/responsibilities/:responsibilityId/unfile` | `{ items }`: unfile items by kind and id |

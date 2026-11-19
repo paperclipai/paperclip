@@ -9,14 +9,14 @@ export const listRoutinesInputSchema = {
     projectId: { type: "string", pattern: uuidPattern },
     responsibleUserId: { type: "string", minLength: 1, maxLength: 200, description: "Only routines this person is responsible for." },
     responsibilityId: { type: "string", pattern: uuidPattern, description: "Only routines under this responsibility, filed directly or through its project." },
-    unfiled: { type: "boolean", description: "Only active routines filed under no responsibility (needs Responsibilities on)." },
+    unfiled: { type: "boolean", description: "Only routines filed under no proposed or active responsibility, directly or through their project. Combine with status, such as active." },
     limit: { type: "integer", minimum: 1, maximum: 200, description: "Default 50." },
   },
   required: [],
   additionalProperties: false,
 } as const;
 
-export const listRoutinesDescription = "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for active routines under no responsibility.";
+export const listRoutinesDescription = "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for routines under no responsibility; every filter applies before the limit.";
 
 /** Canonical definition and documentation for `list_routines`. */
 export const listRoutinesAction = {

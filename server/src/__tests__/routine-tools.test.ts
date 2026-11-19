@@ -15,6 +15,11 @@ function routine(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** A response with a status or headers; plain values answer 200. */
+class Reply {
+  constructor(readonly body: unknown, readonly status = 200, readonly headers: Record<string, string> = {}) {}
+}
+
 /** Answers by "METHOD path" or path, and records each request. */
 function fakeApi(routes: Record<string, unknown | (() => unknown)>) {
   const calls: Array<{ method: string; path: string; body?: unknown }> = [];
@@ -24,8 +29,9 @@ function fakeApi(routes: Record<string, unknown | (() => unknown)>) {
     calls.push({ method, path, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
     const route = routes[`${method} ${path}`] ?? routes[path];
     if (route === undefined) throw new Error(`unexpected request ${method} ${path}`);
-    const body = typeof route === "function" ? (route as () => unknown)() : route;
-    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const value = typeof route === "function" ? (route as () => unknown)() : route;
+    const reply = value instanceof Reply ? value : new Reply(value);
+    return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { "content-type": "application/json", ...reply.headers } });
   }) as typeof fetch;
   return { calls, fetcher };
 }
@@ -33,71 +39,85 @@ function fakeApi(routes: Record<string, unknown | (() => unknown)>) {
 const base = { apiUrl: "http://paperclip.test/api", token: "agent-token", companyId: COMPANY, companyPrefix: "PAP" };
 
 describe("routine tools", () => {
-  it("lists routines filtered by words, person and a responsibility", async () => {
+  it("passes every filter to the routine list, so they apply before the limit", async () => {
+    const query = new URLSearchParams({ q: "pipeline", status: "paused", responsibleUserId: "person-1", responsibilityId: RESPONSIBILITY, unfiled: "true" });
     const api = fakeApi({
-      [`/companies/${COMPANY}/routines`]: [
-        routine({ triggers: [{ id: TRIGGER, kind: "schedule", enabled: true, cronExpression: "0 9 * * 1", timezone: "Europe/Berlin", nextRunAt: null }] }),
-        routine({ id: OTHER, title: "Daily standup", responsibleUserId: "person-2" }),
+      [`/companies/${COMPANY}/routines?${query}`]: [
+        routine({ status: "paused", triggers: [{ id: TRIGGER, kind: "schedule", enabled: true, cronExpression: "0 9 * * 1", timezone: "Europe/Berlin", nextRunAt: null }] }),
+        routine({ id: OTHER, status: "paused" }),
       ],
-      [`/responsibilities/${RESPONSIBILITY}`]: { routines: [{ id: ROUTINE }] },
     });
-    const result = await callRoutineTool({ ...base, name: "list_routines", arguments: { query: "pipeline", responsibleUserId: "person-1", responsibilityId: RESPONSIBILITY } }, api.fetcher);
+    const result = await callRoutineTool({ ...base, name: "list_routines", arguments: {
+      query: "pipeline", status: "paused", responsibleUserId: "person-1", responsibilityId: RESPONSIBILITY, unfiled: true, limit: 1,
+    } }, api.fetcher);
     expect(result).toMatchObject({
-      total: 1,
+      total: 2,
       routines: [{ id: ROUTINE, title: "Weekly pipeline", triggers: [{ triggerId: TRIGGER, cronExpression: "0 9 * * 1", timezone: "Europe/Berlin" }], href: `/PAP/routines/${ROUTINE}` }],
-      truncated: false,
+      truncated: true,
     });
   });
 
-  it("lists active routines filed under no responsibility", async () => {
-    const api = fakeApi({
-      [`/companies/${COMPANY}/routines`]: [routine(), routine({ id: OTHER })],
-      [`/companies/${COMPANY}/responsibilities`]: { loose: { routines: [{ id: OTHER }], routineCount: 1 } },
-    });
-    const result = await callRoutineTool({ ...base, name: "list_routines", arguments: { unfiled: true } }, api.fetcher);
-    expect(result).toMatchObject({ total: 1, routines: [{ id: OTHER }], note: expect.stringContaining("1 in the company") });
-  });
-
-  it("changes a routine, sets its schedule in plain terms and files it, reporting how to undo", async () => {
+  it("changes a routine and its schedule in one call, files it, and reports each undo", async () => {
     let reads = 0;
-    const scheduled = [{ id: TRIGGER, kind: "schedule", enabled: false, cronExpression: "0 10 * * 1-5", timezone: "UTC", nextRunAt: null }];
+    const scheduled = [{ id: TRIGGER, kind: "schedule", enabled: true, cronExpression: "30 9 * * 1", timezone: "Europe/Berlin", nextRunAt: null }];
     const api = fakeApi({
-      [`GET /routines/${ROUTINE}`]: () => (reads++ === 0 ? routine({ triggers: scheduled }) : routine({ title: "Pipeline review", latestRevisionNumber: 5, triggers: scheduled })),
+      [`GET /routines/${ROUTINE}`]: () => (reads++ === 0 ? routine() : routine({ title: "Pipeline review", latestRevisionNumber: 4, triggers: scheduled })),
       [`PATCH /routines/${ROUTINE}`]: routine({ title: "Pipeline review" }),
-      [`PATCH /routine-triggers/${TRIGGER}`]: {},
-      [`POST /responsibilities/${RESPONSIBILITY}/file`]: { filed: [], unfiled: [] },
+      [`POST /responsibilities/${RESPONSIBILITY}/file`]: new Reply({ filed: [], unfiled: [] }, 200,
+        { "x-paperclip-dashboard-version": "version-7", "x-paperclip-dashboard-owner": "person-1" }),
     });
     const result = await callRoutineTool({ ...base, name: "update_routine", arguments: {
       routineId: ROUTINE, title: "Pipeline review", instructions: "Review the pipeline and flag stalled deals",
       schedule: { frequency: "weekly", dayOfWeek: "monday", time: "09:30", timezone: "Europe/Berlin" }, fileUnder: RESPONSIBILITY,
     } }, api.fetcher);
     expect(api.calls.filter((call) => call.method !== "GET")).toEqual([
-      { method: "PATCH", path: `/routines/${ROUTINE}`, body: { title: "Pipeline review", description: "Review the pipeline and flag stalled deals", baseRevisionId: "rev-1" } },
-      { method: "PATCH", path: `/routine-triggers/${TRIGGER}`, body: { cronExpression: "30 9 * * 1", timezone: "Europe/Berlin", enabled: true } },
+      { method: "PATCH", path: `/routines/${ROUTINE}`, body: {
+        title: "Pipeline review", description: "Review the pipeline and flag stalled deals",
+        schedule: { cronExpression: "30 9 * * 1", timezone: "Europe/Berlin" }, baseRevisionId: "rev-1",
+      } },
       { method: "POST", path: `/responsibilities/${RESPONSIBILITY}/file`, body: { items: [{ kind: "routine", id: ROUTINE }] } },
     ]);
     expect(result).toMatchObject({
-      routine: { title: "Pipeline review", revision: 5 },
-      schedule: { label: "Every Monday at 9:30 AM", cronExpression: "30 9 * * 1" },
-      filedUnder: { responsibilityId: RESPONSIBILITY },
-      undo: expect.stringContaining("restoring revision 3"),
+      routine: { title: "Pipeline review", revision: 4 },
+      schedule: { label: "Every Monday at 9:30 AM", cronExpression: "30 9 * * 1", timezone: "Europe/Berlin" },
+      filedUnder: { responsibilityId: RESPONSIBILITY, dashboardVersionId: "version-7", dashboardOwnerUserId: "person-1", undo: expect.stringContaining("Dashboard history") },
+      undo: expect.stringMatching(/restoring revision 3 .*not the filing/),
     });
   });
 
-  it("adds a schedule when there is none, and turns schedules off with null", async () => {
+  it("says what was saved when filing fails after the routine changed", async () => {
+    let reads = 0;
+    const api = fakeApi({
+      [`GET /routines/${ROUTINE}`]: () => (reads++ === 0 ? routine() : routine({ title: "Pipeline review", latestRevisionNumber: 4 })),
+      [`PATCH /routines/${ROUTINE}`]: routine({ title: "Pipeline review" }),
+      [`POST /responsibilities/${RESPONSIBILITY}/file`]: new Reply({ error: "Responsibilities are not enabled", code: "responsibilities_disabled" }, 404),
+    });
+    const result = await callRoutineTool({ ...base, name: "update_routine", arguments: { routineId: ROUTINE, title: "Pipeline review", fileUnder: RESPONSIBILITY } }, api.fetcher);
+    expect(result).toMatchObject({
+      routine: { title: "Pipeline review", revision: 4 },
+      filedUnder: { responsibilityId: RESPONSIBILITY, failed: true, error: "Responsibilities are not enabled", note: expect.stringContaining("was saved") },
+      undo: expect.stringContaining("restoring revision 3"),
+    });
+
+    // A filing on its own still fails loudly: nothing else was saved.
+    await expect(callRoutineTool({ ...base, name: "update_routine", arguments: { routineId: ROUTINE, fileUnder: RESPONSIBILITY } }, api.fetcher))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  it("leaves the zone to the server when none is given, and turns schedules off with null", async () => {
     const add = fakeApi({
       [`GET /routines/${ROUTINE}`]: routine(),
-      [`POST /routines/${ROUTINE}/triggers`]: {},
+      [`PATCH /routines/${ROUTINE}`]: routine(),
     });
     await callRoutineTool({ ...base, name: "update_routine", arguments: { routineId: ROUTINE, schedule: { frequency: "weekdays", time: "08:00" } } }, add.fetcher);
-    expect(add.calls.find((call) => call.method === "POST")?.body).toEqual({ kind: "schedule", cronExpression: "0 8 * * 1-5", timezone: "UTC" });
+    expect(add.calls.find((call) => call.method === "PATCH")?.body).toEqual({ schedule: { cronExpression: "0 8 * * 1-5" }, baseRevisionId: "rev-1" });
 
     const off = fakeApi({
       [`GET /routines/${ROUTINE}`]: routine({ triggers: [{ id: TRIGGER, kind: "schedule", enabled: true, cronExpression: "0 9 * * 1", timezone: "UTC", nextRunAt: null }] }),
-      [`PATCH /routine-triggers/${TRIGGER}`]: {},
+      [`PATCH /routines/${ROUTINE}`]: routine(),
     });
     const result = await callRoutineTool({ ...base, name: "update_routine", arguments: { routineId: ROUTINE, schedule: null } }, off.fetcher);
-    expect(off.calls.find((call) => call.method === "PATCH")?.body).toEqual({ enabled: false });
+    expect(off.calls.find((call) => call.method === "PATCH")?.body).toEqual({ schedule: null, baseRevisionId: "rev-1" });
     expect(result).toMatchObject({ schedule: { turnedOff: 1 } });
   });
 

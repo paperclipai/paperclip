@@ -57,15 +57,18 @@ export function responsibilityToolsDisabledError() {
   return new HttpError(404, RESPONSIBILITIES_TURNED_OFF_MESSAGE, { code: RESPONSIBILITIES_DISABLED_CODE });
 }
 
-/** What a write reports beside its body: the Dashboard version it saved, if any. */
-type ApiMeta = { version?: string | null };
+/** What a write reports beside its body: the Dashboard version it saved, if any, and whose Dashboard it is. */
+type ApiMeta = { version?: string | null; owner?: string | null };
 type ApiCall = (method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, meta?: ApiMeta) => Promise<unknown>;
 
 function apiCaller(input: { apiUrl: string; token: string }, fetcher: typeof fetch): ApiCall {
   return async (method, path, body, meta) => {
     const response = await fetchPaperclipApi({ ...input, method, path, body, fetcher });
     const result = await response.json().catch(() => ({}));
-    if (meta) meta.version = response.headers.get("x-paperclip-dashboard-version") ?? meta.version ?? null;
+    if (meta && response.headers.get("x-paperclip-dashboard-version")) {
+      meta.version = response.headers.get("x-paperclip-dashboard-version");
+      meta.owner = response.headers.get("x-paperclip-dashboard-owner");
+    }
     if (!response.ok) {
       if (result?.code === RESPONSIBILITIES_DISABLED_CODE) {
         throw responsibilityToolsDisabledError();
@@ -257,12 +260,14 @@ async function findResponsibilitiesFor(call: ApiCall, companyId: string, args: u
 // as a Dashboard version that person can undo. Otherwise it may only propose.
 // ---------------------------------------------------------------------------
 
-const UNDO_NOTE = "Saved as a version in the person's Dashboard history, where they can undo it.";
-const NOT_IN_HISTORY_NOTE = "This change is not in the person's Dashboard history (it holds only active responsibilities and their areas), so it cannot be undone from there.";
+const UNDO_NOTE = "Saved as a version in the Dashboard history of the person in dashboardOwnerUserId, where they can undo it.";
+const NOT_IN_HISTORY_NOTE = "This change cannot be undone from the person's Dashboard history: it holds only active responsibilities and their areas, and Undo never renames, re-describes, reorders or un-archives an area other people's responsibilities share. To reverse it, change it back.";
 const BAR_NOTE = "Undo from the Dashboard history does not put an old bar or metric back; the earlier readings stay in the metric's history.";
 
 function undoNote(meta: ApiMeta) {
-  return meta.version ? { undo: UNDO_NOTE, dashboardVersionId: meta.version } : { undo: NOT_IN_HISTORY_NOTE };
+  return meta.version
+    ? { undo: UNDO_NOTE, dashboardVersionId: meta.version, dashboardOwnerUserId: meta.owner ?? null }
+    : { undo: NOT_IN_HISTORY_NOTE };
 }
 const itemKind = z.enum(["project", "task", "routine", "skill"]);
 const toolItem = z.object({ kind: itemKind, id: z.string().trim().min(1).max(200) }).strict();

@@ -35,7 +35,7 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { skillAccessService } from "../services/skill-access.js";
 import {
-  DASHBOARD_VERSION_HEADER,
+  reportVersionOf,
   responsibilityAgentChangeService,
   responsibilityDeletionKey,
 } from "../services/responsibility-agent-changes.js";
@@ -44,9 +44,8 @@ import {
   type ResponsibilityLinkTarget,
   type ResponsibilityReadScope,
 } from "../services/responsibilities.js";
+import { AGENT_PERSON_RULE, agentActsForResponsibilityOwner, agentPersonInCompany } from "./agent-person-authz.js";
 import {
-  agentActsForResponsibilityOwner,
-  agentPersonInCompany,
   assertBoard,
   assertBoardOrAgent,
   assertCompanyAccess,
@@ -56,16 +55,6 @@ import {
 
 const NOT_FOUND = "Responsibility not found";
 
-/**
- * The create body for this actor: a person, or an agent acting for a person
- * in the company, may send only a title (the bar is set later); any other
- * agent proposing one must always send the whole bar.
- */
-function validateCreateResponsibility(req: Request, _res: Response, next: NextFunction) {
-  const fullCreate = req.actor.type !== "agent" || agentPersonInCompany(req, req.params.companyId as string) !== null;
-  req.body = (fullCreate ? createResponsibilitySchema : proposeResponsibilitySchema).parse(req.body);
-  next();
-}
 const AGENT_LINKABLE_STATUSES = new Set(["proposed", "active"]);
 
 function fileTarget(item: { kind: ResponsibilityFileItemKind; id: string }): ResponsibilityLinkTarget {
@@ -114,6 +103,17 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
   const svc = responsibilityService(db);
   const references = issueReferenceService(db);
   const heartbeat = opts.heartbeat ?? heartbeatService(db);
+
+  /**
+   * The create body for this actor: a person, or an agent acting for a person
+   * in the company, may send only a title (the bar is set later); any other
+   * agent proposing one must always send the whole bar.
+   */
+  async function validateCreateResponsibility(req: Request, _res: Response, next: NextFunction) {
+    const fullCreate = req.actor.type !== "agent" || (await agentPersonInCompany(db, req, req.params.companyId as string)) !== null;
+    req.body = (fullCreate ? createResponsibilitySchema : proposeResponsibilitySchema).parse(req.body);
+    next();
+  }
 
   // Same gate and message shape the status-card routes use when their flag is off.
   async function assertResponsibilitiesEnabled() {
@@ -176,22 +176,22 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     return row;
   }
 
-  function assertAgentMayFileUnder(req: Request, row: { companyId: string; ownerUserId: string; status: string }) {
+  async function assertAgentMayFileUnder(req: Request, row: { companyId: string; ownerUserId: string; status: string }) {
     if (req.actor.type === "agent" && !AGENT_LINKABLE_STATUSES.has(row.status)
-      && !agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId)) {
+      && !(await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId))) {
       throw unprocessable("Agents can only file work under a proposed or active responsibility");
     }
   }
 
   /** A board user who manages the owner, or an agent acting for someone who does (versioned as the agent's change). */
-  function assertWriter(req: Request, row: { companyId: string; ownerUserId: string }) {
+  async function assertWriter(req: Request, row: { companyId: string; ownerUserId: string }) {
     if (req.actor.type === "board") {
       assertBoardCanManage(req, row);
       return null;
     }
-    const personUserId = agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId);
+    const personUserId = await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId);
     if (!personUserId) {
-      throw forbidden("Only the person who owns this responsibility, or a company admin, can change it; this agent's run does not work for such a person");
+      throw forbidden(`Only the person who owns this responsibility, or a company admin, can change it, and this agent's run does not act for such a person. ${AGENT_PERSON_RULE}.`);
     }
     return { personUserId, agentId: getActorInfo(req).actorId };
   }
@@ -219,7 +219,8 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     return agentChanges.record({
       companyId: input.companyId, ownerUserIds: input.ownerUserIds, agentId: actor.agentId,
       createdAreaIds: input.createdAreaIds,
-      onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
+      // The response names the version of the first owner: the one whose responsibility this is.
+      onVersion: reportVersionOf(res, input.ownerUserIds[0]!),
     }, run);
   }
 
@@ -320,7 +321,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       }
       ownerUserId = owner;
       if (!(await svc.isCompanyMember(companyId, ownerUserId))) throw notFound("Owner is not a member of this company");
-      actsFor = agentActsForResponsibilityOwner(req, companyId, ownerUserId);
+      actsFor = await agentActsForResponsibilityOwner(db, req, companyId, ownerUserId);
     } else {
       const self = req.actor.userId;
       ownerUserId = req.body.ownerUserId ?? self ?? "";
@@ -381,7 +382,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const row = await loadForWrite(req, res);
     if (!row) return;
     const scope = await readScope(req);
-    const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
+    const actsFor = req.actor.type === "agent" ? await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId) : null;
     const { areaTitle, ...patch } = req.body as typeof req.body & { areaTitle?: string };
     if (areaTitle && patch.areaId !== undefined) throw unprocessable("Send areaId or areaTitle, not both");
     const { responsibility: updated, activatedArea, newArea } = await inChange(req, res, {
@@ -431,7 +432,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     let confirmationId: string | null = null;
     if (req.actor.type === "agent") {
       // Permanent and not undoable: an agent deletes only after the person accepts its confirmation card.
-      const writer = assertWriter(req, row)!;
+      const writer = (await assertWriter(req, row))!;
       const card = await agentChanges.assertConfirmedDeletion({
         companyId: row.companyId,
         agentId: writer.agentId,
@@ -458,9 +459,9 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     await assertResponsibilitiesEnabled();
     const row = await loadForWrite(req, res);
     if (!row) return;
-    assertAgentMayFileUnder(req, row);
+    await assertAgentMayFileUnder(req, row);
     const target = linkTarget(req.body);
-    const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
+    const actsFor = req.actor.type === "agent" ? await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId) : null;
     const scope = await readScope(req, row.companyId);
     const result = await inChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
       ({ svc: scoped }) => scoped.link(row, target, scope));
@@ -483,8 +484,8 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     await assertResponsibilitiesEnabled();
     const row = await loadForWrite(req, res);
     if (!row) return;
-    assertAgentMayFileUnder(req, row);
-    const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
+    await assertAgentMayFileUnder(req, row);
+    const actsFor = req.actor.type === "agent" ? await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId) : null;
     const removed = await inChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
       ({ svc: scoped }) => scoped.unlink(row, req.params.linkId as string));
     if (!removed) {
@@ -505,13 +506,16 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
    * with `moveFrom` they also leave that responsibility (or, with `all`, every
    * other proposed or active one of the same owner). A board user who manages
    * the owner, or an agent acting for such a person; an agent's change is
-   * saved as a Dashboard version the person can undo.
+   * saved as a Dashboard version the person can undo. Without `moveFrom`, any
+   * agent may also file under a proposed or active one, as with `/links`.
    */
   router.post("/responsibilities/:id/file", validate(fileResponsibilityItemsSchema), async (req, res) => {
     await assertResponsibilitiesEnabled();
     const row = await loadForWrite(req, res);
     if (!row) return;
-    assertWriter(req, row);
+    if (req.body.moveFrom) await assertWriter(req, row);
+    else await assertAgentMayFileUnder(req, row);
+    const actsFor = req.actor.type === "agent" ? await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId) : null;
     const targets = req.body.items.map(fileTarget);
     let moveFromIds: string[] = [];
     const owners = new Set([row.ownerUserId]);
@@ -520,12 +524,12 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     } else if (req.body.moveFrom && req.body.moveFrom !== row.id) {
       const source = await svc.getById(req.body.moveFrom);
       if (!source || source.companyId !== row.companyId) throw notFound("Responsibility to move from not found");
-      assertWriter(req, source);
+      await assertWriter(req, source);
       moveFromIds = [source.id];
       owners.add(source.ownerUserId);
     }
     const scope = await readScope(req, row.companyId);
-    const result = await inChange(req, res, { companyId: row.companyId, ownerUserIds: [...owners] },
+    const result = await inChange(req, res, { companyId: row.companyId, ownerUserIds: req.actor.type === "agent" && !actsFor ? [] : [...owners] },
       ({ svc: scoped }) => scoped.fileItems(row, targets, scope, { moveFromIds }));
     for (const entry of result.filed.filter((item) => item.created)) {
       await logMutation(req, row.companyId, "responsibility.linked", row.id, {
@@ -553,7 +557,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     await assertResponsibilitiesEnabled();
     const row = await loadForWrite(req, res);
     if (!row) return;
-    assertWriter(req, row);
+    await assertWriter(req, row);
     const targets = req.body.items.map(fileTarget);
     const removed = await inChange(req, res, { companyId: row.companyId, ownerUserIds: [row.ownerUserId] },
       ({ svc: scoped }) => scoped.unfileItems(row, targets));

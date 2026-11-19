@@ -533,6 +533,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     description: action.documentation.description,
     placement: "optional",
     effect: action.canonical.sideEffectClass === "read" ? "read" : "write",
+    requiredClaims: action.live.descriptor.requiredClaims,
     allowedModes: action.live.descriptor.allowedModes,
     inputSchema: action.live.descriptor.inputSchema,
     outputSchema: openObject,
