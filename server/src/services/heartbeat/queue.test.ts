@@ -184,13 +184,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     // Admit through the normal transaction, but hold dispatch so no adapter runs.
     deps.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
     deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
-    const getIssueAdmissionContext = deps.getIssueAdmissionContext;
-    const outsideStates: Array<{ status: string; conversationState: string | null }> = [];
-    deps.getIssueAdmissionContext = async (...args) => {
-      const current = await getIssueAdmissionContext(...args);
-      if (current) outsideStates.push({ status: current.status, conversationState: current.conversationState });
-      return current;
-    };
+    const preflight = vi.spyOn(deps.wakeQueue, "preflightIssueWake");
     let reached!: () => void;
     let release!: () => void;
     const atBarrier = new Promise<void>(resolve => { reached = resolve; });
@@ -213,7 +207,8 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     });
     try {
       await atBarrier;
-      expect(outsideStates).toEqual([{ status: "in_progress", conversationState: "active" }]);
+      expect(preflight).toHaveBeenCalledOnce();
+      await expect(preflight.mock.results[0]?.value).resolves.toMatchObject({ kind: "eligible" });
       expect(await settleConversationTurn(db, completed)).toBe(true);
       expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0])
         .toMatchObject({ status: "in_review", conversationState: "waiting" });
@@ -452,7 +447,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     { actor: "foreign owner", userId: "another-conversation-owner", message: "Only the conversation owner can start a chat run" },
   ])("refuses waiting-conversation compaction from a $actor", async ({ userId, message }) => {
     const f = await waitingCompactionFixture();
-    await expect(f.service.request({ companyId: f.company.id, issue: f.issue, userId })).rejects.toThrow(message);
+    await expect(f.service.request({ companyId: f.company.id, issue: f.issue, userId })).rejects.toMatchObject({ status: 403, message });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
     expect(f.deps.executeRun).not.toHaveBeenCalled();
@@ -629,7 +624,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
-  it("keeps the routine run's responsible user when admitting its task", async () => {
+  it("uses the routine run attribution visible in the admission transaction", async () => {
     const { company, agent, issue, deps, queue } = await waitingConversationFixture();
     const [routine] = await db.insert(routines).values({
       companyId: company.id, title: "Routine", assigneeAgentId: agent.id, responsibleUserId: "current-routine-owner",
@@ -639,9 +634,14 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     }).returning();
     await db.update(issues).set({
       conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo",
-      originKind: "routine_execution", originId: routine.id, originRunId: routineRun.id,
+      originKind: "routine_execution", originId: routine.id,
     }).where(eq(issues.id, issue.id));
 
+    const admit = deps.wakeQueue.admitIssueWake.getMockImplementation()!;
+    deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target, async (tx, admission) => {
+      await tx.update(issues).set({ originRunId: routineRun.id }).where(eq(issues.id, issue.id));
+      return evaluate(tx, { ...admission, lockedIssue: await admission.lockIssue() });
+    }, effects));
     const run = await queue.enqueueWakeup(agent.id, {
       source: "assignment", triggerDetail: "system", reason: "issue_assigned", requestedByActorType: "system",
       payload: { issueId: issue.id },

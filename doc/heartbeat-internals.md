@@ -325,9 +325,11 @@ Heartbeat coordinates wakeup dispatch, queued-run claims, daily heartbeat caps,
 concurrency and priority checks, timer admission, and native status wake intents
 in `server/src/services/heartbeat/queue.ts`. The wake-queue module owns the
 company and issue lock, the admission transaction, and the handoff after commit
-for both fresh task runs and wakes arriving behind an active execution. Heartbeat
-uses the locked transaction for its specialized eligibility gates and continuation
-writes. Wake-queue selects eligible saved comment receipts in request order and
+for both fresh task runs and wakes arriving behind an active execution. Wake-queue
+checks conversation eligibility before locking the task. The locked task supplies
+the attribution fields used to select the responsible user for a fresh run.
+Heartbeat uses the transaction for its specialized eligibility gates and
+continuation writes. Wake-queue selects eligible saved comment receipts in request order and
 binds them to the new run. Chat authorization and its admission callback run in
 the same transaction. Authorization contention defers the wake and rolls back
 without publishing buffered effects.

@@ -1276,6 +1276,19 @@ export function createWakeAdmissionWriter(rawTx: IssueAdmissionDbTransaction, ad
   };
 }
 
+export function createIssueWakePreflightReader(db: Db) {
+  return async (companyId: string, issueId: string) => {
+    const [issue] = await db.select({
+      conversationAgentId: issues.conversationAgentId,
+      conversationUserId: issues.conversationUserId,
+      conversationState: issues.conversationState,
+      status: issues.status,
+      originKind: issues.originKind,
+    }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+    return issue ?? null;
+  };
+}
+
 const issueAdmissionFields = {
   id: issues.id,
   companyId: issues.companyId,
@@ -1298,6 +1311,11 @@ const issueAdmissionFields = {
   checkoutRunId: issues.checkoutRunId,
   executionRunId: issues.executionRunId,
   executionAgentNameKey: issues.executionAgentNameKey,
+  responsibleUserId: issues.responsibleUserId,
+  parentId: issues.parentId,
+  originKind: issues.originKind,
+  originId: issues.originId,
+  originRunId: issues.originRunId,
   createdAt: issues.createdAt,
 };
 
