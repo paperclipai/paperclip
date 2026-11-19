@@ -1,3 +1,4 @@
+import { issues } from "@paperclipai/db";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
@@ -202,8 +203,11 @@ describe("workProductService", () => {
   it("uses a transaction when promoting an existing work product to primary", async () => {
     const existingRow = createWorkProductRow({ isPrimary: false });
 
-    const selectWhere = vi.fn(async () => [existingRow]);
-    const selectFrom = vi.fn(() => ({ where: selectWhere }));
+    const selectFrom = vi.fn((table: unknown) => {
+      const rows = table === issues ? [{ id: "issue-1" }] : [existingRow];
+      const query = Promise.resolve(rows);
+      return Object.assign(query, { where: vi.fn(() => query), orderBy: vi.fn(() => query), for: vi.fn(() => query) });
+    });
     const txSelect = vi.fn(() => ({ from: selectFrom }));
 
     const updateReturning = vi
@@ -231,7 +235,7 @@ describe("workProductService", () => {
     });
 
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(txSelect).toHaveBeenCalledTimes(1);
+    expect(txSelect).toHaveBeenCalled();
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });

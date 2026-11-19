@@ -1848,7 +1848,8 @@ export async function finalizeNativeRun(input: {
         : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
       try {
         await validateNativeDeliverableEvidence(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id,
-          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts,
+          enteringConfiguredReview: proposedDecision.reasonCode === COMPLETION_REVIEW_STAGE_REASON }, result);
       } catch (error) {
         if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
         const incomplete = resolveNativeFinalizerStatus({ ...statusInput,
