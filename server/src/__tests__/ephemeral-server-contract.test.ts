@@ -17,6 +17,17 @@ it("requires shared storage and stable secrets without changing volume-backed st
   }
   expect(() => assertEphemeralServerConfig({ ...config, storageProvider: "local_disk" }, env)).toThrow("shared S3");
 });
+it("waives an absent listener only for a caller that opts in, and still requires a postgres runtime database", () => {
+  const unset = { ...env, PAPERCLIP_DATABASE_LISTEN_URL: "" };
+  expect(() => assertEphemeralServerConfig(config, unset)).toThrow(/PAPERCLIP_DATABASE_LISTEN_URL/);
+  expect(assertEphemeralServerConfig(config, unset, { allowMissingListener: true })).toBeNull();
+  expect(() => assertEphemeralServerConfig({ ...config, databaseUrl: "not a url" }, unset, { allowMissingListener: true }))
+    .toThrow(/an external postgres DATABASE_URL is required/);
+  expect(() => assertEphemeralServerConfig({ ...config, databaseUrl: "mysql://runtime@db.test/tenant" }, unset, { allowMissingListener: true }))
+    .toThrow(/an external postgres DATABASE_URL is required/);
+  expect(() => assertEphemeralServerConfig(config, { ...env, PAPERCLIP_DATABASE_LISTEN_URL: "postgres://runtime:fixture@other.test/tenant" },
+    { allowMissingListener: true })).toThrow(/direct connection to the same database/);
+});
 it("never connects the listener with migration privileges, another tenant, or through a transaction pooler", () => {
   for (const url of [env.PAPERCLIP_DATABASE_LISTEN_URL.replace("runtime:", "migration:"),
     env.PAPERCLIP_DATABASE_LISTEN_URL.replace("/tenant", "/neighbor"), config.databaseUrl,

@@ -65,7 +65,6 @@ it.each([
   ["PAPERCLIP_DURABLE_AGENT_FILES", "volume_free_storage_flags_required"],
   ["PAPERCLIP_SHARED_UI_ASSETS", "volume_free_storage_flags_required"],
   ["PAPERCLIP_SECRETS_MASTER_KEY", "volume_free_master_key_required"],
-  ["PAPERCLIP_DATABASE_LISTEN_URL", "volume_free_database_listener_required"],
 ])("names a missing %s as a blocker in preparation and in the eligibility read", async (setting, blocker) => {
   vi.stubEnv(setting, "");
   await expect(prepareOnlineEphemeralEnrollment(db, attempt, control)).rejects.toMatchObject({ status: 409, details: { blockers: [blocker] } });
@@ -126,4 +125,29 @@ it("names the skill blocker once when installations and packages both still need
   localPackages = [{ id: "snapshot-local" }];
   owners.eligibility.mockResolvedValue({ eligible: false, blockers: ["skills_require_migration"] });
   await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ blockers: ["skills_require_migration"] });
+});
+
+it("accepts a volume server without a listener because Cloud supplies it to the replacement", async () => {
+  vi.stubEnv("PAPERCLIP_DATABASE_LISTEN_URL", "");
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toEqual({ eligible: true, blockers: [], ephemeralServer: false });
+  await expect(prepareOnlineEphemeralEnrollment(db, attempt, control)).resolves.toMatchObject({ enrollmentReady: false, decisionSigningSecret: key });
+});
+
+it("still names a listener that points somewhere else", async () => {
+  vi.stubEnv("PAPERCLIP_DATABASE_LISTEN_URL", "postgres://fixture:fixture@other.test/database");
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ eligible: false, blockers: ["volume_free_database_listener_required"] });
+});
+
+it("does not waive an unparseable runtime database because the listener is unset", async () => {
+  vi.stubEnv("PAPERCLIP_DATABASE_LISTEN_URL", "");
+  const config = await import("../config.js");
+  const original = config.loadConfig;
+  vi.spyOn(config, "loadConfig").mockReturnValue({ ...original(), databaseUrl: "not a url" } as never);
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ eligible: false, blockers: ["volume_free_configuration_required"] });
+});
+
+it("still names another missing setting when the listener is unset", async () => {
+  vi.stubEnv("PAPERCLIP_DATABASE_LISTEN_URL", "");
+  vi.stubEnv("PAPERCLIP_SHARED_UI_ASSETS", "");
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ eligible: false, blockers: ["volume_free_storage_flags_required"] });
 });

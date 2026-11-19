@@ -26,7 +26,7 @@ function volumeFreeConfigurationBlocker(): { blocker: string | null; decisionSig
   }
   try {
     assertEphemeralServerConfig(loadConfig(), { ...process.env, PAPERCLIP_EPHEMERAL_SERVER: "true",
-      PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret });
+      PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret }, { allowMissingListener: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     return { blocker: configurationBlockers.find(([pattern]) => pattern.test(message))?.[1] ?? "volume_free_configuration_required" };
