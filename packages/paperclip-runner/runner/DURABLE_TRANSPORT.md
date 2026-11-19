@@ -176,6 +176,16 @@ fresh snapshot and checkpoint and runs any recovery callback. B can then
 start work. If a write or callback fails, Core can retry the handoff.
 Cancellation cleanup only settles retained work.
 
+**What if the Runner starts as B?** Core can rotate the session to B before
+launch: it archives A's Runner state and starts a Runner under B's identity.
+That Runner starts with fresh durable state over A's saved Codex session. It
+does not restore Codex under A's settings. Until `run.attach`, it refuses
+commands that start work; snapshots and shutdown commands still work. The
+Runner saves the wait in the Codex state before it creates its durable state,
+so a restart before attachment keeps it.
+`run.attach` then starts Codex once with B's settings. ACPX follows the same
+rule.
+
 Live qualification still needs to verify that restoring a provider starts no
 work, deployed storage honors fsync, and the old process has exited.
 
