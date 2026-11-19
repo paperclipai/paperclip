@@ -201,19 +201,44 @@ const SKILL_STAGING_PREFIX = ".paperclip-skills-staging-";
 /** A launch copies skills in minutes; older staging was left by an interrupted launch. */
 const ABANDONED_STAGING_AT_LAUNCH_MS = 60 * 60 * 1000;
 
-async function treeBytes(path: string): Promise<number> {
-  const info = await lstat(path).catch(() => null);
-  if (!info || info.isSymbolicLink()) return 0;
-  if (!info.isDirectory()) return info.isFile() ? info.size : 0;
-  let total = 0;
-  for (const name of await readdir(path)) total += await treeBytes(join(path, name));
-  return total;
+/** Entries one abandoned staging tree may hold before cleanup leaves it alone. */
+const MAX_STAGING_ENTRIES = 100_000;
+
+/**
+ * Walks an abandoned staging tree in a provider home the agent can write to,
+ * without opening files or following links: directories are opened with
+ * O_DIRECTORY | O_NOFOLLOW, so a planted FIFO cannot block and a link is never
+ * followed. With `unseal`, each directory is made writable so the tree can be
+ * removed. Returns the file bytes, or null when the tree exceeds `maxEntries`.
+ */
+async function walkStagingTree(root: string, maxEntries: number, unseal: boolean): Promise<number | null> {
+  let bytes = 0;
+  let entries = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    const handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      if (unseal) await handle.chmod(0o700);
+    } finally {
+      await handle.close();
+    }
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (++entries > maxEntries) return null;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile()) bytes += (await lstat(path)).size;
+    }
+  }
+  return bytes;
 }
 
 /**
  * Removes `.paperclip-skills-staging-*` directories in `parent` that are older
  * than `olderThanMs`. An interrupted launch (cancellation, a killed process)
- * leaves a partly sealed copy there that no later launch reuses.
+ * leaves a partly sealed copy there that no later launch reuses. A tree that
+ * cannot be removed safely (too large, or changed underneath) is skipped and
+ * counted, so it never stops the cleanup of the others.
  */
 export async function removeAbandonedSkillStaging(
   parent: string,
@@ -224,15 +249,17 @@ export async function removeAbandonedSkillStaging(
     /** Removals allowed in this call; the rest is reported as `truncated`. */
     maxRemovals?: number;
     shouldContinue?: () => boolean;
+    /** Entries one staging tree may hold (default 100,000). */
+    maxEntries?: number;
   },
-): Promise<{ removed: number; candidates: number; bytes: number; nextDueAt: number | null; truncated: boolean }> {
-  const result = { removed: 0, candidates: 0, bytes: 0, nextDueAt: null as number | null, truncated: false };
+): Promise<{ removed: number; candidates: number; bytes: number; nextDueAt: number | null; truncated: boolean; skipped: number }> {
+  const result = { removed: 0, candidates: 0, bytes: 0, nextDueAt: null as number | null, truncated: false, skipped: 0 };
   const names = await readdir(parent).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT" || error.code === "ENOTDIR") return [] as string[];
     throw error;
   });
   const before = (options.now ?? Date.now()) - options.olderThanMs;
-  for (const name of names) {
+  for (const name of names.sort()) {
     if (!name.startsWith(SKILL_STAGING_PREFIX)) continue;
     const path = join(parent, name);
     const info = await lstat(path).catch(() => null);
@@ -247,11 +274,20 @@ export async function removeAbandonedSkillStaging(
       result.truncated = true;
       continue;
     }
-    result.candidates++;
-    result.bytes += await treeBytes(path);
-    if (options.dryRun) continue;
-    await removeMaterializedTree(path, (target) => rm(target, { recursive: true, force: true }));
-    result.removed++;
+    try {
+      const bytes = await walkStagingTree(path, options.maxEntries ?? MAX_STAGING_ENTRIES, !options.dryRun);
+      if (bytes === null) {
+        result.skipped++;
+        continue;
+      }
+      result.candidates++;
+      result.bytes += bytes;
+      if (options.dryRun) continue;
+      await rm(path, { recursive: true, force: true });
+      result.removed++;
+    } catch {
+      result.skipped++;
+    }
   }
   return result;
 }

@@ -13,7 +13,12 @@ export type SkillStagingSweepResult = {
   nextDueAt: number | null;
   /** Old staging was left because of the removal budget or a stop request. */
   truncated: boolean;
+  /** Old staging that could not be removed safely (too large, or changed underneath). */
+  skipped: number;
 };
+
+/** Provider homes the runner materializes skills into: `codex-home`, `claude-home`, `grok-home`, ... */
+const PROVIDER_HOME_PATTERN = /^[a-z0-9]+-home$/;
 
 async function directories(parent: string): Promise<string[]> {
   const entries = await fs.readdir(parent, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -37,11 +42,11 @@ export async function sweepAbandonedSkillStaging(input: {
   maxRemovals?: number;
   shouldContinue?: () => boolean;
 }): Promise<SkillStagingSweepResult> {
-  const result: SkillStagingSweepResult = { removed: 0, candidates: 0, bytes: 0, nextDueAt: null, truncated: false };
+  const result: SkillStagingSweepResult = { removed: 0, candidates: 0, bytes: 0, nextDueAt: null, truncated: false, skipped: 0 };
   const maxRemovals = input.maxRemovals ?? Infinity;
   for (const sessionRoot of input.sessionRoots) {
     for (const session of await directories(sessionRoot)) {
-      for (const home of await directories(session)) {
+      for (const home of (await directories(session)).filter((home) => PROVIDER_HOME_PATTERN.test(path.basename(home)))) {
         const swept = await removeAbandonedSkillStaging(home, {
           olderThanMs: input.olderThanMs ?? DAY_MS, now: input.now, dryRun: input.dryRun,
           maxRemovals: maxRemovals - result.removed, shouldContinue: input.shouldContinue,
@@ -50,6 +55,7 @@ export async function sweepAbandonedSkillStaging(input: {
         result.candidates += swept.candidates;
         result.bytes += swept.bytes;
         result.truncated ||= swept.truncated;
+        result.skipped += swept.skipped;
         if (swept.nextDueAt !== null) result.nextDueAt = Math.min(result.nextDueAt ?? swept.nextDueAt, swept.nextDueAt);
       }
     }

@@ -53,7 +53,7 @@ describe("abandoned skill staging retention", () => {
 
     const result = await sweepAbandonedSkillStaging({ sessionRoots: [durable, acpx], now: NOW });
 
-    expect(result).toEqual({ removed: 2, candidates: 2, bytes: 2000, nextDueAt: NOW - 2 * 60 * 60 * 1000 + DAY, truncated: false });
+    expect(result).toEqual({ removed: 2, candidates: 2, bytes: 2000, nextDueAt: NOW - 2 * 60 * 60 * 1000 + DAY, truncated: false, skipped: 0 });
     expect(await exists(codexOld)).toBe(false);
     expect(await exists(claudeOld)).toBe(false);
     expect(await exists(claudeRecent)).toBe(true);
@@ -68,7 +68,7 @@ describe("abandoned skill staging retention", () => {
     const result = await sweepAbandonedSkillStaging({
       sessionRoots: [durable, join(root, "missing")], now: NOW, dryRun: true,
     });
-    expect(result).toEqual({ removed: 0, candidates: 1, bytes: 1000, nextDueAt: null, truncated: false });
+    expect(result).toEqual({ removed: 0, candidates: 1, bytes: 1000, nextDueAt: null, truncated: false, skipped: 0 });
     expect(await exists(old)).toBe(true);
   });
 
@@ -83,5 +83,17 @@ describe("abandoned skill staging retention", () => {
     expect([await exists(first), await exists(second)].filter(Boolean)).toHaveLength(1);
     await expect(sweepAbandonedSkillStaging({ sessionRoots: [durable], now: NOW, shouldContinue: () => false }))
       .resolves.toMatchObject({ removed: 0, truncated: true });
+  });
+
+  it("looks only in the provider homes the runner owns", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-skill-staging-"));
+    roots.push(root);
+    const acpx = join(root, "acpx", "acpx");
+    const workspace = await staging(join(acpx, "session-1", "workspace"), "old", 2 * DAY);
+    const claude = await staging(join(acpx, "session-1", "claude-home"), "old", 2 * DAY);
+    const result = await sweepAbandonedSkillStaging({ sessionRoots: [acpx], now: NOW });
+    expect(result).toMatchObject({ removed: 1 });
+    expect(await exists(workspace)).toBe(true);
+    expect(await exists(claude)).toBe(false);
   });
 });
