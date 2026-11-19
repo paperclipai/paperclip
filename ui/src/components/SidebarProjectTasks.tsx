@@ -1,7 +1,7 @@
 import { useId, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
-import type { CompactIssue, Project } from "@paperclipai/shared";
+import type { Issue, Project } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -9,19 +9,18 @@ import { taskStatusIconProps } from "@/lib/task-status-presentation";
 import { RecentTaskNavItem } from "./RecentTaskNavItem";
 import { StatusIcon } from "./StatusIcon";
 
-/** Recent and pinned projects share the same lazy, bounded task list. */
 export function SidebarProjectTasks({ project, userId, children, renderTask }: {
   project: Pick<Project, "id" | "companyId" | "name">;
   userId?: string | null;
   children: ReactNode;
-  renderTask?: (task: CompactIssue) => ReactNode;
+  renderTask?: (task: Issue) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const contentId = useId();
   const { data: tasks, isPending, error } = useQuery({
     queryKey: [...queryKeys.issues.listByProject(project.companyId, project.id), "sidebar-tasks", userId ?? "__local_board__"],
-    queryFn: ({ signal }) => issuesApi.listCompact(project.companyId, {
-      projection: "rows", projectId: project.id, limit: 12, sortField: "updated", sortDir: "desc",
+    queryFn: ({ signal }) => issuesApi.list(project.companyId, {
+      projectId: project.id, includeReadState: true, limit: 12, sortField: "updated", sortDir: "desc",
     }, { signal }),
     enabled: expanded,
   });

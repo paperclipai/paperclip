@@ -19,7 +19,7 @@ vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () =>
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: ({ pinnedTaskIds }: { pinnedTaskIds: string[] }) => ({
   entries: fixture.recentTasks, pinnedTasks: fixture.taskSummaries.filter(task => pinnedTaskIds.includes(String(task.id))),
 }) }));
-vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { list: fixture.projectTasks } }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false, setSidebarOpen: vi.fn() }) }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
@@ -534,7 +534,7 @@ describe("Coordinator project tasks", () => {
     expect(tasks.querySelector('[aria-label="Unread"]')).not.toBeNull();
     expect(tasks.querySelector('svg[role="img"]')?.getAttribute("aria-label")).toBe("Monitoring");
     expect(fixture.projectTasks).toHaveBeenCalledWith("company", {
-      projection: "rows", projectId: "project-1", limit: 12, sortField: "updated", sortDir: "desc",
+      projectId: "project-1", includeReadState: true, limit: 12, sortField: "updated", sortDir: "desc",
     }, { signal: expect.any(AbortSignal) });
     if (pinned) {
       expect(row.querySelector('[aria-label="Reorder pinned Onboarding"]')?.parentElement)
