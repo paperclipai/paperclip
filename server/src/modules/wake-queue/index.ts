@@ -1,7 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import {
   createAdmissionTransactionScope as buildAdmissionTransactionScope,
-  createFreshIssueRunWriter,
+  createFreshIssueRunStore,
   createPostgresWakeQueueAdapter,
   createWakeAdmissionReader,
   createWakeAdmissionWriter,
@@ -114,7 +114,7 @@ export type WakeQueue = ReturnType<typeof createWakeQueue>;
 
 /** Uses the transaction that already owns the issue's admission lock. */
 export function bindFreshIssueRunAdmission(companyId: string, tx: Db) {
-  return createFreshIssueRunAdmission(createFreshIssueRunWriter(buildAdmissionTransactionScope(companyId, tx), companyId));
+  return createFreshIssueRunAdmission(createFreshIssueRunStore(buildAdmissionTransactionScope(companyId, tx), companyId));
 }
 
 /**

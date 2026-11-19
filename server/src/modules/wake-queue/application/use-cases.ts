@@ -1,4 +1,5 @@
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
+import { DEFERRED_WAKE_CONTEXT_KEY } from "../../../lib/queued-comment-context.js";
 import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun, withMergedWakeReasons } from "../domain/context.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../domain/policy.js";
 import {
@@ -35,8 +36,6 @@ import type {
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
-
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
 const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([

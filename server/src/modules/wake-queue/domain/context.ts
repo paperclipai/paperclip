@@ -114,7 +114,7 @@ export function hasRetainedExternalChatRetry(context: unknown): boolean {
       (activeSource === "issue.interaction.respond" && active.externalChatContinuation === true));
 }
 
-function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
+export function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
   return readNonEmptyString(payload?.mutation) === "interaction";
 }
 
