@@ -78,6 +78,7 @@ import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { classifySendFailure } from "../lib/pending-send";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { SubtaskCancellationError, TaskCancellationDismissedError, useTaskCancellation } from "../hooks/useTaskCancellation";
 import { describeInteractionResolutionFailure, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
@@ -4888,6 +4889,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) }),
     ]),
   });
+  const cancelTask = useTaskCancellation();
   const stopAndFinalizeRun = useMutation({
     mutationFn: async ({
       runId,
@@ -4896,6 +4898,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       runId: string;
       status: "cancelled" | "done";
     }) => {
+      if (status === "cancelled") {
+        let stopped = false;
+        try {
+          return await cancelTask(issueId!, { status }, async () => {
+            await heartbeatsApi.cancel(runId);
+            stopped = true;
+          });
+        } catch (err) {
+          if (err instanceof TaskCancellationDismissedError || err instanceof SubtaskCancellationError) throw err;
+          throw stopped ? createRunCancelledStatusUpdateError(err) : err;
+        }
+      }
       await heartbeatsApi.cancel(runId);
       try {
         return await issuesApi.update(issueId!, { status });
@@ -4921,6 +4935,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err, { status }) => {
+      if (err instanceof TaskCancellationDismissedError) return;
+      if (err instanceof SubtaskCancellationError) {
+        invalidateIssueRunState();
+        pushToast({ title: "Some subtasks could not be canceled", body: err.message, tone: "error" });
+        return;
+      }
       const runWasStopped = didRunCancelBeforeStatusUpdateFail(err);
       pushToast({
         title: runWasStopped
@@ -4954,9 +4974,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [updateIssue.mutate],
   );
 
-  const updateChildIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
+  const updateChildIssue = useUpdateIssueMutation({
+    companyId: resolvedCompanyId,
     onSuccess: () => {
       if (resolvedCompanyId) {
         queryClient.invalidateQueries({
@@ -4966,16 +4985,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           queryKey: queryKeys.sidebarBadges(resolvedCompanyId),
         });
       }
-    },
-    onError: (err) => {
-      pushToast({
-        title: "Task update failed",
-        body:
-          err instanceof Error
-            ? err.message
-            : "Unable to save sub-task changes",
-        tone: "error",
-      });
     },
   });
   const handleChildIssueUpdate = useCallback(
