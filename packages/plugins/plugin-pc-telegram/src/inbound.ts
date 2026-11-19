@@ -4,8 +4,15 @@ import {
   DEFAULT_INCOMING_MODE,
   FILE_NAMESPACE,
   INBOUND_MEDIA_WINDOW_MS,
+  INBOUND_MESSAGE_WINDOW_MS,
+  INBOUND_NEW_PEER_WINDOW_MS,
+  INBOUND_QUOTA_DAY_MS,
   MAX_INBOUND_MEDIA_BYTES,
   MAX_INBOUND_MEDIA_PER_PEER,
+  MAX_INBOUND_MEDIA_PER_PEER_DAY,
+  MAX_INBOUND_MESSAGES_PER_PEER,
+  MAX_INBOUND_MESSAGES_PER_PEER_DAY,
+  MAX_NEW_INBOUND_PEERS_PER_HOUR,
 } from "./constants.js";
 import type { InboundAttachment, InboundDirectMessage, TelegramConnection } from "./types.js";
 
@@ -37,15 +44,70 @@ export function shouldAcceptInbound(connection: TelegramConnection, message: Inb
 }
 
 const peerMediaHits = new Map<string, number[]>();
+const peerMediaDays = new Map<string, number[]>();
+const peerMessageHits = new Map<string, number[]>();
+const peerMessageDays = new Map<string, number[]>();
+const newPeerHits = new Map<string, number[]>();
 
-export function takePeerMediaSlot(peerKey: string, now = Date.now()): boolean {
-  const recent = (peerMediaHits.get(peerKey) ?? []).filter((at) => now - at < INBOUND_MEDIA_WINDOW_MS);
-  if (recent.length >= MAX_INBOUND_MEDIA_PER_PEER) {
-    peerMediaHits.set(peerKey, recent);
+function takeWindowSlot(
+  hits: Map<string, number[]>,
+  days: Map<string, number[]>,
+  key: string,
+  now: number,
+  windowMs: number,
+  windowCap: number,
+  dayCap: number,
+): boolean {
+  const day = (days.get(key) ?? []).filter((at) => now - at < INBOUND_QUOTA_DAY_MS);
+  if (day.length >= dayCap) {
+    days.set(key, day);
+    return false;
+  }
+  const recent = (hits.get(key) ?? []).filter((at) => now - at < windowMs);
+  if (recent.length >= windowCap) {
+    hits.set(key, recent);
+    days.set(key, day);
     return false;
   }
   recent.push(now);
-  peerMediaHits.set(peerKey, recent);
+  day.push(now);
+  hits.set(key, recent);
+  days.set(key, day);
+  return true;
+}
+
+export function takePeerMediaSlot(peerKey: string, now = Date.now()): boolean {
+  return takeWindowSlot(
+    peerMediaHits,
+    peerMediaDays,
+    peerKey,
+    now,
+    INBOUND_MEDIA_WINDOW_MS,
+    MAX_INBOUND_MEDIA_PER_PEER,
+    MAX_INBOUND_MEDIA_PER_PEER_DAY,
+  );
+}
+
+export function takeInboundMessageSlot(peerKey: string, now = Date.now()): boolean {
+  return takeWindowSlot(
+    peerMessageHits,
+    peerMessageDays,
+    peerKey,
+    now,
+    INBOUND_MESSAGE_WINDOW_MS,
+    MAX_INBOUND_MESSAGES_PER_PEER,
+    MAX_INBOUND_MESSAGES_PER_PEER_DAY,
+  );
+}
+
+export function takeNewPeerSlot(companyId: string, now = Date.now()): boolean {
+  const recent = (newPeerHits.get(companyId) ?? []).filter((at) => now - at < INBOUND_NEW_PEER_WINDOW_MS);
+  if (recent.length >= MAX_NEW_INBOUND_PEERS_PER_HOUR) {
+    newPeerHits.set(companyId, recent);
+    return false;
+  }
+  recent.push(now);
+  newPeerHits.set(companyId, recent);
   return true;
 }
 
@@ -200,7 +262,6 @@ async function writeDialog(
   message: InboundDirectMessage,
   originId: string,
 ): Promise<Issue | null> {
-  const storedFiles = storeInboundFiles(message.attachments);
   const existing = await ctx.issues.list({
     companyId: connection.companyId,
     originKind: DIALOG_ORIGIN_KIND,
@@ -208,6 +269,8 @@ async function writeDialog(
     limit: 1,
   });
   const current = existing[0];
+  if (!current && !takeNewPeerSlot(connection.companyId)) return null;
+  const storedFiles = storeInboundFiles(message.attachments);
   let issue: Issue;
   if (current) {
     const patch: { assigneeAgentId?: string; status?: Issue["status"] } = {};

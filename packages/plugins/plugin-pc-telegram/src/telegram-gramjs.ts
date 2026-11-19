@@ -65,6 +65,27 @@ export function telegramPeerId(sender: { id?: unknown } | null | undefined, peer
   return asUserId(peerId);
 }
 
+function readOptionalUserId(value: unknown): string | null {
+  try {
+    const id = asUserId(value);
+    return /^[1-9]\d{0,15}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A private user peer. The peer itself must be a user. Bots, channels, and a sender that disagrees are dropped. */
+export function directUserPeerId(
+  sender: { id?: unknown; bot?: boolean } | null | undefined,
+  peerId: unknown,
+): string | null {
+  if (sender?.bot) return null;
+  const peer = readOptionalUserId(peerId);
+  if (!peer) return null;
+  if (sender?.id != null && readOptionalUserId(sender.id) !== peer) return null;
+  return peer;
+}
+
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -92,7 +113,7 @@ export function readEventMessage(event: unknown): {
   id?: unknown;
   message?: unknown;
   peerId?: unknown;
-  sender?: { username?: string | null; firstName?: string | null; lastName?: string | null; id?: unknown };
+  sender?: { username?: string | null; firstName?: string | null; lastName?: string | null; id?: unknown; bot?: boolean };
   media?: unknown;
   downloadMedia?: (params?: {
     progressCallback?: (downloaded: unknown, total: unknown) => void;
@@ -250,7 +271,8 @@ export function createGramJsClientFactory(): TelegramClientFactory {
         if (!message) return;
         if (message.out || message.isGroup || message.isChannel || message.isPrivate === false) return;
         const sender = message.sender;
-        const peerId = telegramPeerId(sender, message.peerId);
+        const peerId = directUserPeerId(sender, message.peerId);
+        if (!peerId) return;
         const inbound: InboundDirectMessage = {
           companyId: input.companyId,
           accountId: account.telegramUserId,

@@ -28,7 +28,7 @@ import {
   publicConnection,
   upsertConnection,
 } from "./connections.js";
-import { inboundShapeAllowed, ingestInboundMessage, takePeerMediaSlot } from "./inbound.js";
+import { inboundShapeAllowed, ingestInboundMessage, takeInboundMessageSlot, takePeerMediaSlot } from "./inbound.js";
 import { idleLoginStatus, reduceLogin } from "./login.js";
 import { redactValue } from "./redaction.js";
 import { authorizeSendText } from "./send.js";
@@ -210,6 +210,9 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   async function handleInbound(message: Parameters<typeof ingestInboundMessage>[2]) {
     const ctx = pluginContext;
     if (!ctx || !message.companyId) return;
+    // The update loop still carries the invocation that connected the account.
+    // That invocation is released when connect returns, so each message opens
+    // its own company scope instead of reusing the expired one.
     await ctx.runInCompanyBackground(message.companyId, () => acceptInbound(ctx, message));
   }
 
@@ -223,11 +226,24 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       });
       return;
     }
+    const peerKey = `${message.companyId}:${message.accountId}:${message.peerId}`;
+    const shapeAllowed = inboundShapeAllowed(connection, message);
+    const consumesQuota = shapeAllowed && (
+      message.text.trim().length > 0
+      || message.attachments.length > 0
+      || Boolean(message.loadAttachments)
+    );
+    if (consumesQuota && !takeInboundMessageSlot(peerKey)) {
+      log.warn("Dropped inbound Telegram message over the peer quota", {
+        companyId: message.companyId,
+        accountId: message.accountId,
+      });
+      return;
+    }
     let attachments = message.attachments;
     if (message.loadAttachments) {
       attachments = [];
-      if (inboundShapeAllowed(connection, message)) {
-        const peerKey = `${message.companyId}:${message.accountId}:${message.peerId}`;
+      if (shapeAllowed) {
         if (takePeerMediaSlot(peerKey)) {
           try {
             attachments = await message.loadAttachments();
@@ -427,7 +443,9 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             const signedIn = await handle.waitUntilSignedIn();
             if (!loginStillCurrent(pending)) return;
             const generation = accountGeneration(companyId, signedIn.account.telegramUserId);
+            let replacedSecretId = "";
             const kept = await withAccountGate(companyId, signedIn.account.telegramUserId, async () => {
+              const existing = await findConnection(ctx, companyId, signedIn.account.telegramUserId, liveAccountIds());
               const stored = await putAccountSession(ctx, companyId, signedIn.session);
               storedSecretId = stored.secretId;
               savedAccount = signedIn.account;
@@ -441,6 +459,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
                 sessionSecretId: stored.secretId,
                 sessionConfigPath: stored.configPath,
               });
+              if (
+                existing?.sessionSecretId
+                && existing.sessionSecretId !== stored.secretId
+              ) {
+                replacedSecretId = existing.sessionSecretId;
+              }
               if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
                 await discardOwnedSession(ctx, companyId, signedIn.account, stored.secretId);
                 return false;
@@ -464,6 +488,14 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
               await dropLive(companyId, signedIn.account.telegramUserId, live);
               await clearStoredSession(ctx, companyId, signedIn.account, storedSecretId);
               return;
+            }
+            if (replacedSecretId) {
+              const supersededSecretId = replacedSecretId;
+              await withAccountGate(companyId, signedIn.account.telegramUserId, async () => {
+                const current = await findConnection(ctx, companyId, signedIn.account.telegramUserId, liveAccountIds());
+                if (current?.sessionSecretId !== storedSecretId) return;
+                await deleteAccountSession(ctx, companyId, supersededSecretId);
+              });
             }
             settleLogin(pending, reduceLogin(pending.status, {
               type: "connected",

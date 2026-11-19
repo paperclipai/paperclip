@@ -9,6 +9,7 @@ import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { DIALOG_ORIGIN_KIND, PLUGIN_ID, TOOL_SEND_TEXT } from "../src/constants.js";
 import { containsSecretMaterial } from "../src/redaction.js";
 import { TelegramConnectPage } from "../src/ui/index.js";
+import { getAccountSession } from "../src/secrets.js";
 import { createTelegramUserClientPlugin } from "../src/worker.js";
 import manifest from "../src/manifest.js";
 import {
@@ -168,6 +169,46 @@ describe("pc-telegram plugin", () => {
     });
     expect(overview.connections).toEqual([
       expect.objectContaining({ telegramUserId: "1001", hasSession: true, live: false }),
+    ]);
+  });
+
+  it("discards the previous session secret after a replacement login connects", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    const storedIds: string[] = [];
+    const discardedIds: string[] = [];
+    const store = harness.ctx.secrets.store.bind(harness.ctx.secrets);
+    const discard = harness.ctx.secrets.discard.bind(harness.ctx.secrets);
+    harness.ctx.secrets.store = async (input) => {
+      const stored = await store(input);
+      storedIds.push(stored.secretId);
+      return stored;
+    };
+    harness.ctx.secrets.discard = async (input) => {
+      discardedIds.push(input.secretId);
+      await discard(input);
+    };
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin(undefined, "session-old");
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin(undefined, "session-new");
+    await waitFor(() => storedIds.length === 2 && discardedIds.includes(storedIds[0]!));
+    expect(telegram.connectFromSessionCalls).toHaveLength(2);
+    expect(discardedIds).toContain(storedIds[0]);
+    expect(discardedIds).not.toContain(storedIds[1]);
+    expect(await getAccountSession(harness.ctx, COMPANY_ID, storedIds[0]!, `plugin-secret.${storedIds[0]}`)).toBeNull();
+    expect(await getAccountSession(harness.ctx, COMPANY_ID, storedIds[1]!, `plugin-secret.${storedIds[1]}`)).toBe("session-new");
+    const overview = await harness.getData<{ connections: Array<{ hasSession: boolean; paused: boolean }> }>("overview", {
+      companyId: COMPANY_ID,
+    });
+    expect(overview.connections).toEqual([
+      expect.objectContaining({ telegramUserId: "1001", hasSession: true, paused: false }),
     ]);
   });
 

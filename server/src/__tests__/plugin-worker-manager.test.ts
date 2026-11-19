@@ -502,6 +502,35 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("opens a fresh company scope when retain echoes an already released invocation", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      proactiveCompanyScopes: ["company-a"],
+      hostHandlers: { "companies.get": vi.fn(async () => ({ id: "company-a" })) as never },
+    });
+    try {
+      await handle.start();
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "retain-released", requestedCompanyId: "company-a" },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ invocationId: expect.any(String) });
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "retain-released", requestedCompanyId: "company-b" },
+      } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("refuses to retain background company access from an agent invocation", async () => {
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,

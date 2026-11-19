@@ -12,6 +12,13 @@ export const FILE_NAMESPACE = "inbound-files";
 export const MAX_INBOUND_MEDIA_BYTES = 4 * 1024 * 1024;
 export const MAX_INBOUND_MEDIA_PER_PEER = 8;
 export const INBOUND_MEDIA_WINDOW_MS = 60_000;
+export const MAX_INBOUND_MEDIA_PER_PEER_DAY = 40;
+export const INBOUND_QUOTA_DAY_MS = 24 * 60 * 60 * 1000;
+export const MAX_INBOUND_MESSAGES_PER_PEER = 20;
+export const INBOUND_MESSAGE_WINDOW_MS = 60_000;
+export const MAX_INBOUND_MESSAGES_PER_PEER_DAY = 200;
+export const MAX_NEW_INBOUND_PEERS_PER_HOUR = 30;
+export const INBOUND_NEW_PEER_WINDOW_MS = 60 * 60 * 1000;
 
 export const LOGIN_STREAM_CHANNEL = "telegram-login";
 

@@ -2879,7 +2879,22 @@ export function createPluginWorkerHandle(
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
     }
     const entry = activeInvocations.get(invocationId);
-    if (!entry) return { invalidInvocationScope: true };
+    if (!entry) {
+      // A released invocation id must not authorize ordinary host calls.
+      // Opening a fresh background scope is the exception: the company still
+      // has to be one this worker may act on proactively, and the stale id
+      // itself grants nothing.
+      if (message.method === "background.retain") {
+        const companyId = referencedCompanyId(
+          message.method,
+          (message as { params?: unknown }).params,
+        );
+        if (companyId && proactiveCompanyScopes.has(companyId)) {
+          return { invocationScope: { companyId } };
+        }
+      }
+      return { invalidInvocationScope: true };
+    }
     return { invocationScope: entry.scope, traceparent: entry.traceparent, providerSpanBudget:entry.providerSpanBudget };
   }
 

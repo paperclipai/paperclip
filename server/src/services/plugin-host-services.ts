@@ -1837,12 +1837,28 @@ export function buildHostServices(
       async store(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return secretsHandler.store({ ...params, companyId });
+        const stored = await secretsHandler.store({ ...params, companyId });
+        await logPluginActivity({
+          companyId,
+          action: "secret.created",
+          entityType: "secret",
+          entityId: stored.secretId,
+          details: { secretId: stored.secretId },
+        });
+        return stored;
       },
       async discard(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        await secretsHandler.discard({ ...params, companyId });
+        const secretId = params.secretId.trim();
+        await secretsHandler.discard({ ...params, companyId, secretId });
+        await logPluginActivity({
+          companyId,
+          action: "secret.deleted",
+          entityType: "secret",
+          entityId: secretId,
+          details: { secretId },
+        });
       },
     },
 

@@ -52,23 +52,26 @@ function sendNestedHostRequest(originalRequest, invocationId) {
     : {
         companyId: requestedCompanyId,
       };
-  if (mode === "retain" || mode === "use-retained" || mode === "release-retained") {
+  if (mode === "retain" || mode === "retain-released" || mode === "use-retained" || mode === "release-retained") {
+    const openingScope = mode === "retain" || mode === "retain-released";
     const retainedRequest = {
       jsonrpc: "2.0",
       id: nestedId,
-      method: mode === "retain"
+      method: openingScope
         ? "background.retain"
         : mode === "release-retained"
           ? "background.release"
           : "companies.get",
-      params: mode === "retain"
+      params: openingScope
         ? { companyId: requestedCompanyId }
         : mode === "release-retained"
           ? { invocationId: retainedInvocationId }
           : { companyId: requestedCompanyId },
       paperclipInvocationId: mode === "retain"
         ? invocationId
-        : (retainedInvocationId || releasedInvocationId || "released-invocation"),
+        : mode === "retain-released"
+          ? "released-invocation"
+          : (retainedInvocationId || releasedInvocationId || "released-invocation"),
     };
     pendingNested.set(nestedId, {
       id: originalRequest.id,

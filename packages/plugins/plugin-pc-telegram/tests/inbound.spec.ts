@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { DIALOG_ORIGIN_KIND, MAX_INBOUND_MEDIA_BYTES } from "../src/constants.js";
-import { inboundShapeAllowed, ingestInboundMessage, shouldAcceptInbound, takePeerMediaSlot } from "../src/inbound.js";
-import { collectInboundAttachments, readEventMessage, telegramPeerId } from "../src/telegram-gramjs.js";
+import {
+  inboundShapeAllowed,
+  ingestInboundMessage,
+  shouldAcceptInbound,
+  takeInboundMessageSlot,
+  takeNewPeerSlot,
+  takePeerMediaSlot,
+} from "../src/inbound.js";
+import { collectInboundAttachments, directUserPeerId, readEventMessage, telegramPeerId } from "../src/telegram-gramjs.js";
 import manifest from "../src/manifest.js";
 import { containsSecretMaterial } from "../src/redaction.js";
 import {
@@ -157,6 +164,41 @@ describe("inbound issue mapping", () => {
     expect(takePeerMediaSlot(peerKey, now + 60_000)).toBe(true);
   });
 
+  it("stops a peer after a day of media even when each minute stays inside the short window", () => {
+    const peerKey = "company:account:day-peer";
+    const start = 10_000_000;
+    for (let bucket = 0; bucket < 5; bucket += 1) {
+      const at = start + bucket * 60_000;
+      for (let index = 0; index < 8; index += 1) {
+        expect(takePeerMediaSlot(peerKey, at)).toBe(true);
+      }
+    }
+    expect(takePeerMediaSlot(peerKey, start + 5 * 60_000)).toBe(false);
+    expect(takePeerMediaSlot(peerKey, start + 24 * 60 * 60 * 1000)).toBe(true);
+  });
+
+  it("caps text messages per peer and new conversations per company", () => {
+    const peerKey = "company:account:text-peer";
+    const now = 20_000_000;
+    for (let index = 0; index < 20; index += 1) {
+      expect(takeInboundMessageSlot(peerKey, now)).toBe(true);
+    }
+    expect(takeInboundMessageSlot(peerKey, now)).toBe(false);
+    expect(takeInboundMessageSlot(peerKey, now + 60_000)).toBe(true);
+    const companyId = "company-new-peers";
+    for (let index = 0; index < 30; index += 1) {
+      expect(takeNewPeerSlot(companyId, now)).toBe(true);
+    }
+    expect(takeNewPeerSlot(companyId, now)).toBe(false);
+    expect(takeNewPeerSlot(companyId, now + 60 * 60 * 1000)).toBe(true);
+    const dayKey = "company:account:text-day";
+    const dayStart = 30_000_000;
+    for (let index = 0; index < 200; index += 1) {
+      expect(takeInboundMessageSlot(dayKey, dayStart + index * 60_000)).toBe(true);
+    }
+    expect(takeInboundMessageSlot(dayKey, dayStart + 200 * 60_000)).toBe(false);
+  });
+
   it("keeps GramJS getters and reads a PeerUser id", () => {
     class GramMessage {
       id = 9;
@@ -172,6 +214,11 @@ describe("inbound issue mapping", () => {
     expect(message?.sender?.firstName).toBe("Sam");
     expect(typeof message?.downloadMedia).toBe("function");
     expect(telegramPeerId(message?.sender, message?.peerId)).toBe("2002");
+    expect(directUserPeerId(message?.sender, message?.peerId)).toBe("2002");
+    expect(directUserPeerId({ id: 2002, bot: true }, { userId: 2002 })).toBeNull();
+    expect(directUserPeerId({ id: 9 }, { userId: 2002 })).toBeNull();
+    expect(directUserPeerId({ id: 2002 }, { channelId: 9 })).toBeNull();
+    expect(directUserPeerId(null, { channelId: 9 })).toBeNull();
     expect(MAX_INBOUND_MEDIA_BYTES).toBe(4 * 1024 * 1024);
   });
 
