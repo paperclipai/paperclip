@@ -2,6 +2,8 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { pluginManifestValidator } from "../services/plugin-manifest-validator.js";
+import kubernetes from "../../../packages/plugins/sandbox-providers/kubernetes/src/manifest.js";
 import {
   BUNDLED_PLUGIN_CATALOG,
   DEFAULT_BUNDLED_CATALOG_ROOT,
@@ -430,6 +432,23 @@ describe("ensureBundledPlugins", () => {
     await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
     expect(update).toHaveBeenCalledExactlyOnceWith("row-daytona", { version: "0.1.0", manifest });
     expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a parsed Core bundle against a JSON-persisted registration without repeated writes", async () => {
+    const manifest = pluginManifestValidator().parseOrThrow(kubernetes);
+    const stored = JSON.parse(JSON.stringify(manifest)); stored.description = "Previous help text";
+    const { deps, loadManifest, update } = makeDeps({ rows: { [K8S.pluginKey]: {
+      id: "row-kubernetes", pluginKey: K8S.pluginKey, status: "ready", version: manifest.version, manifestJson: stored,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([K8S], deps, { reinstallUninstalled: false });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-kubernetes", { version: manifest.version, manifest });
+    const unchanged = makeDeps({ rows: { [K8S.pluginKey]: {
+      id: "row-kubernetes", pluginKey: K8S.pluginKey, status: "ready", version: manifest.version, manifestJson: JSON.parse(JSON.stringify(manifest)),
+    } } });
+    unchanged.loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([K8S], unchanged.deps, { reinstallUninstalled: false });
+    expect(unchanged.update).not.toHaveBeenCalled();
   });
 
   it.each(["capability", "entrypoint", "schema", "default", "pending-approval", "uninstalled"] as const)("does not treat a %s change as description-only", async (change) => {

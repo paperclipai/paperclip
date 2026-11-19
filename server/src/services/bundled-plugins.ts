@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import { pluginManifestJson } from "./bundled-plugin-package.js";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { assertDistributionManifestCapabilities, readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
 
@@ -258,7 +259,7 @@ function defaultBundleManifestExists(localPath: string): boolean {
 }
 
 function withoutDisplayDescriptions(manifest: PaperclipPluginManifestV1): unknown {
-  const copy = structuredClone(manifest) as unknown as Record<string, unknown>;
+  const copy = pluginManifestJson(manifest) as unknown as Record<string, unknown>;
   const removeDescription = (value: unknown) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const object = value as Record<string, unknown>;
@@ -315,7 +316,7 @@ async function reconcileBundledPluginManifest(
     const rebindPackage = !preservePackagePath && install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
     const refreshDistribution = install.distribution && !isDeepStrictEqual(bundleManifest, existing.manifestJson);
     const refreshDescriptions = !install.distribution && !["uninstalled", "upgrade_pending"].includes(existing.status) &&
-      !isDeepStrictEqual(bundleManifest, existing.manifestJson) &&
+      !isDeepStrictEqual(pluginManifestJson(bundleManifest), pluginManifestJson(existing.manifestJson)) &&
       isDeepStrictEqual(withoutDisplayDescriptions(bundleManifest), withoutDisplayDescriptions(existing.manifestJson));
     if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval && !refreshDistribution && !refreshDescriptions) return;
     await deps.registry.update(existing.id, {
