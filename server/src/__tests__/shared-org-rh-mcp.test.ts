@@ -20,6 +20,7 @@ import {
 import {
   DEFAULT_MCP_SPEC,
   RH_MCP_SERVICE_REVIEWED_TOOLS,
+  RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION,
   RH_MCP_SERVICE_TOOLS_BY_SCOPE,
 } from "../services/default-mcp-spec.js";
 import { snapshotDefaultMcpForNewAgent } from "../services/default-mcp-setup.js";
@@ -28,8 +29,10 @@ import {
   SHARED_ORG_RH_MCP_ENABLED_ENV,
   SHARED_ORG_RH_MCP_EXPIRY_CONFIG_KEY,
   SHARED_ORG_RH_MCP_REFRESH_WINDOW_MS,
+  SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY,
   SHARED_ORG_RH_MCP_URL_ENV,
   ensureSharedOrgRhMcp,
+  parseReviewedToolsVersion,
   startSharedOrgRhMcpSweep,
   sweepSharedOrgRhMcp,
   type SharedOrgRhMcpContext,
@@ -72,6 +75,7 @@ function makeFetch(
     mint?: (call: MintCall) => Response | "throw" | null;
     rotate?: () => Response | "throw" | null;
     listFails?: boolean;
+    tools?: string[];
   } = {},
 ) {
   const calls = { mints: [] as MintCall[], rotates: [] as MintCall[], toolsList: 0, authorizations: [] as Array<string | null> };
@@ -111,7 +115,8 @@ function makeFetch(
       if (body.method === "tools/list") {
         calls.toolsList += 1;
         if (opts.listFails) return new Response("down", { status: 503 });
-        const tools = [...RH_MCP_SERVICE_REVIEWED_TOOLS, ...UNREVIEWED_TOOLS].map((name) => ({
+        const toolNames = opts.tools ?? [...RH_MCP_SERVICE_REVIEWED_TOOLS, ...UNREVIEWED_TOOLS];
+        const tools = toolNames.map((name) => ({
           name,
           description: `${name} description`,
           inputSchema: { type: "object", properties: {} },
@@ -132,8 +137,8 @@ describe("rh-mcp service tool set", () => {
     expect([...RH_MCP_SERVICE_TOKEN_SCOPES].sort()).toEqual(Object.keys(RH_MCP_SERVICE_TOOLS_BY_SCOPE).sort());
     for (const scope of RH_MCP_SERVICE_TOKEN_SCOPES) {
       expect(scope).not.toMatch(/:(write|secrets|impersonate)$/);
-      // `comps:run` is the one reviewed `:run` scope (TECH-8433): it only starts/polls/cancels an api-main comps job.
-      if (scope.endsWith(":run")) expect(scope).toBe("comps:run");
+      // Reviewed `:run` scopes: `comps:run` (TECH-8433, async api-main verbs) and `decisions:run` (TECH-9109, synchronous grid with internal 45s cap).
+      if (scope.endsWith(":run")) expect(["comps:run", "decisions:run"]).toContain(scope);
       expect(scope.startsWith("supabase:")).toBe(false);
       expect(scope.startsWith("ownership:")).toBe(false);
       expect(scope.startsWith("comms:")).toBe(false);
@@ -151,10 +156,12 @@ describe("rh-mcp service tool set", () => {
       expect(RH_MCP_SERVICE_REVIEWED_TOOLS).not.toContain(identityKeyed);
     }
     expect(RH_MCP_SERVICE_TOOLS_BY_SCOPE["comps:run"]).toEqual(["comps__start", "comps__get", "comps__cancel"]);
+    expect(RH_MCP_SERVICE_TOOLS_BY_SCOPE["decisions:run"]).toEqual(["decisions_run_grid"]);
     // voice_apply rides the existing voice:read scope: no new scope, so no org-token rotation.
     expect(RH_MCP_SERVICE_TOOLS_BY_SCOPE["voice:read"]).toContain("voice_apply");
     // The blocking one-call comps tool outlives the gateway's 60 s clamp, so only the async verbs are offered.
     expect(RH_MCP_SERVICE_REVIEWED_TOOLS).not.toContain("comps__run_business_area_comps");
+    expect(RH_MCP_SERVICE_REVIEWED_TOOLS).toContain("decisions_run_grid");
     // The review verbs are what ClaudeBot-style agents need; losing them would silently recreate TECH-8066.
     expect(RH_MCP_SERVICE_REVIEWED_TOOLS).toEqual(expect.arrayContaining(["argus_start_review", "argus_get_review", "argus_cancel_review"]));
   });
@@ -167,12 +174,36 @@ describe("rh-mcp service tool set", () => {
     expect(entry!.setupHook).toBeUndefined();
     expect(entry!.reviewedTools?.allow).toEqual(RH_MCP_SERVICE_REVIEWED_TOOLS);
   });
+});
 
+describe("composeRhMcpServiceSub", () => {
   it("composes one canonical sub per org and refuses anything that is not a UUID", () => {
     const id = "0B2C7C1E-4F0A-4A4E-9B3E-0D6F0A3C9A11";
     expect(composeRhMcpServiceSub(id)).toBe(`paperclip-rh-mcp-${id.toLowerCase()}`);
     expect(composeRhMcpServiceSub("not-a-uuid")).toBeNull();
     expect(composeRhMcpServiceSub(`${id}::x`)).toBeNull();
+  });
+});
+
+describe("parseReviewedToolsVersion", () => {
+  it("parses valid non-negative integer numbers and strict integer strings", () => {
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: 4 })).toBe(4);
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: 0 })).toBe(0);
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: "4" })).toBe(4);
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: "  4  " })).toBe(4);
+  });
+
+  it("rejects malformed numbers and strings", () => {
+    expect(parseReviewedToolsVersion(null)).toBeNull();
+    expect(parseReviewedToolsVersion(undefined)).toBeNull();
+    expect(parseReviewedToolsVersion([])).toBeNull();
+    expect(parseReviewedToolsVersion("4")).toBeNull();
+    expect(parseReviewedToolsVersion({})).toBeNull();
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: -1 })).toBeNull();
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: 4.5 })).toBeNull();
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: "4abc" })).toBeNull();
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: "4.5" })).toBeNull();
+    expect(parseReviewedToolsVersion({ [SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]: "-1" })).toBeNull();
   });
 });
 
@@ -357,6 +388,7 @@ describeEmbeddedPostgres("shared-org rh-mcp service connection (TECH-8066)", () 
     const [connection] = await connectionsOf(companyId);
     expect(connection).toMatchObject({ status: "active", enabled: true, authKind: "api_key", credentialPolicy: "shared" });
     expect(new Date((connection!.config as Record<string, string>)[SHARED_ORG_RH_MCP_EXPIRY_CONFIG_KEY]!).toISOString()).toBe("2027-10-30T00:00:00.000Z");
+    expect((connection!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION);
 
     // Only the reviewed tools are enabled; supabase, writes and identity-keyed tools are discovered but off.
     const enabled = await enabledToolNames(connection!.id, companyId);
@@ -557,6 +589,449 @@ describeEmbeddedPostgres("shared-org rh-mcp service connection (TECH-8066)", () 
     expect(await secretService(db).resolveSecretValue(companyId, secretId, "latest")).toBe(ROTATED_TOKEN);
     const [secret] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, secretId));
     expect(secret!.latestVersion).toBe(2);
+  });
+
+  // ---- reconciliation / upgrade path (TECH-9109) -------------------------------------------
+
+  it("upgrades an existing active connection stored at an older reviewed-tools version without recreating the connection", async () => {
+    const companyId = await seedCompany();
+    await seedOwner(companyId);
+    await seedAgent(companyId);
+    const fetchMock = makeFetch();
+
+    // 1. Initial provisioning creates the connection at current version
+    const initial = await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    expect(initial.kind).toBe("provisioned");
+    const [originalConnection] = await connectionsOf(companyId);
+    expect(originalConnection).toBeDefined();
+    const originalConnectionId = originalConnection!.id;
+
+    // 2. Simulate an existing pre-upgrade state (version 3, before decisions_run_grid was reviewed):
+    //    - config stores version 3
+    //    - decisions_run_grid catalog entry is quarantined with reviewed_declined
+    //    - decisions_run_grid is NOT present in the connection's profile entries
+    const [gridCatalogEntry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.toolName, "decisions_run_grid")));
+    expect(gridCatalogEntry).toBeDefined();
+
+    // Remove decisions_run_grid from toolProfileEntries
+    await db
+      .delete(toolProfileEntries)
+      .where(
+        and(
+          eq(toolProfileEntries.companyId, companyId),
+          eq(toolProfileEntries.catalogEntryId, gridCatalogEntry!.id),
+        ),
+      );
+
+    // Set decisions_run_grid to quarantined / reviewed_declined
+    await db
+      .update(toolCatalogEntries)
+      .set({ status: "quarantined", quarantineReason: "reviewed_declined" })
+      .where(eq(toolCatalogEntries.id, gridCatalogEntry!.id));
+
+    // Set connection version to 3
+    await db
+      .update(toolConnections)
+      .set({
+        config: sql`jsonb_set(coalesce(${toolConnections.config}, '{}'::jsonb), ARRAY[${SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY}::text], '3'::jsonb, true)`,
+      })
+      .where(eq(toolConnections.id, originalConnectionId));
+
+    // Confirm pre-upgrade condition: connection is active, but decisions_run_grid is missing from the effective profile
+    const preUpgradeTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(preUpgradeTools).not.toContain("decisions_run_grid");
+
+    // 3. The sweep / ensureSharedOrgRhMcp runs for this active connection
+    const upgradeOutcome = await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    expect(upgradeOutcome).toEqual({ kind: "reconciled", installed: 0 });
+
+    // 4. Verify the connection was NOT deleted and recreated
+    const connections = await connectionsOf(companyId);
+    expect(connections).toHaveLength(1);
+    expect(connections[0]!.id).toBe(originalConnectionId);
+    expect((connections[0]!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION);
+
+    // 5. Verify decisions_run_grid is now active and present in the effective tool profile
+    const postUpgradeTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(postUpgradeTools).toContain("decisions_run_grid");
+    expect(postUpgradeTools).toEqual([...RH_MCP_SERVICE_REVIEWED_TOOLS].sort());
+
+    const [updatedGridEntry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.id, gridCatalogEntry!.id));
+    expect(updatedGridEntry!.status).toBe("active");
+    expect(updatedGridEntry!.quarantineReason).toBeNull();
+
+    // 6. Verify subsequent ticks are steady-state "ready"
+    const nextTick = await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    expect(nextTick).toEqual({ kind: "ready", installed: 0 });
+
+    // 7. Verify activity log contains previous and new version details
+    const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    const reconcileActivity = activities.find((a) => a.action === "company.shared_org_rh_mcp.reconciled");
+    expect(reconcileActivity).toBeDefined();
+    expect(reconcileActivity!.details).toMatchObject({
+      connectionId: originalConnectionId,
+      installed: 0,
+      previousVersion: 3,
+      version: RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION,
+    });
+  });
+
+  it("upgrades a legacy active connection with no stored reviewed-tools version", async () => {
+    const companyId = await seedCompany();
+    await seedOwner(companyId);
+    await seedAgent(companyId);
+    const fetchMock = makeFetch();
+
+    // Initial provisioning
+    await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    const [originalConnection] = await connectionsOf(companyId);
+    const originalConnectionId = originalConnection!.id;
+
+    // Simulate legacy connection where the version config key was never set,
+    // and decisions_run_grid is not yet in the profile
+    const [gridCatalogEntry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.toolName, "decisions_run_grid")));
+
+    await db
+      .delete(toolProfileEntries)
+      .where(
+        and(
+          eq(toolProfileEntries.companyId, companyId),
+          eq(toolProfileEntries.catalogEntryId, gridCatalogEntry!.id),
+        ),
+      );
+    await db
+      .update(toolCatalogEntries)
+      .set({ status: "quarantined", quarantineReason: "reviewed_declined" })
+      .where(eq(toolCatalogEntries.id, gridCatalogEntry!.id));
+
+    // Remove the version key entirely from config
+    await db
+      .update(toolConnections)
+      .set({
+        config: sql`${toolConnections.config} - ${SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY}`,
+      })
+      .where(eq(toolConnections.id, originalConnectionId));
+
+    const preUpgradeTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(preUpgradeTools).not.toContain("decisions_run_grid");
+
+    // Sweep runs and reconciles
+    const upgradeOutcome = await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    expect(upgradeOutcome).toEqual({ kind: "reconciled", installed: 0 });
+
+    const connections = await connectionsOf(companyId);
+    expect(connections).toHaveLength(1);
+    expect(connections[0]!.id).toBe(originalConnectionId);
+    expect((connections[0]!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION);
+
+    const postUpgradeTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(postUpgradeTools).toContain("decisions_run_grid");
+  });
+
+  it("does not stamp the version and returns finish_failed when refreshCatalog fails during reconciliation", async () => {
+    const companyId = await seedCompany();
+    await seedOwner(companyId);
+    await seedAgent(companyId);
+    const fetchMock = makeFetch();
+
+    // 1. Initial provisioning
+    await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    const [originalConnection] = await connectionsOf(companyId);
+    const originalConnectionId = originalConnection!.id;
+
+    // 2. Simulate pre-upgrade state: connection at version 3, decisions_run_grid missing from catalog & profile
+    const [gridCatalogEntry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.toolName, "decisions_run_grid")));
+    await db.delete(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, companyId), eq(toolProfileEntries.catalogEntryId, gridCatalogEntry!.id)));
+    await db.delete(toolCatalogEntries).where(eq(toolCatalogEntries.id, gridCatalogEntry!.id));
+
+    await db
+      .update(toolConnections)
+      .set({
+        config: sql`jsonb_set(coalesce(${toolConnections.config}, '{}'::jsonb), ARRAY[${SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY}::text], '3'::jsonb, true)`,
+      })
+      .where(eq(toolConnections.id, originalConnectionId));
+
+    // 3. Downstream rh-mcp tools/list fails
+    const failingFetchMock = makeFetch({ listFails: true });
+    const outcome = await ensureSharedOrgRhMcp(ctxFor(failingFetchMock), companyId);
+    expect(outcome).toEqual({ kind: "error", reason: "finish_failed" });
+
+    // 4. Verify version 4 was NOT stamped
+    const [connection] = await connectionsOf(companyId);
+    expect((connection!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(3);
+
+    // 5. Verify decisions_run_grid is NOT enabled
+    const enabledTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(enabledTools).not.toContain("decisions_run_grid");
+  });
+
+  it("does not stamp the version and returns tools_missing when a reviewed tool remains absent after refresh", async () => {
+    const companyId = await seedCompany();
+    await seedOwner(companyId);
+    await seedAgent(companyId);
+    const fetchMock = makeFetch();
+
+    // 1. Initial provisioning
+    await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    const [originalConnection] = await connectionsOf(companyId);
+    const originalConnectionId = originalConnection!.id;
+
+    // 2. Simulate pre-upgrade state: version 3, decisions_run_grid missing
+    const [gridCatalogEntry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.toolName, "decisions_run_grid")));
+    await db.delete(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, companyId), eq(toolProfileEntries.catalogEntryId, gridCatalogEntry!.id)));
+    await db.delete(toolCatalogEntries).where(eq(toolCatalogEntries.id, gridCatalogEntry!.id));
+
+    await db
+      .update(toolConnections)
+      .set({
+        config: sql`jsonb_set(coalesce(${toolConnections.config}, '{}'::jsonb), ARRAY[${SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY}::text], '3'::jsonb, true)`,
+      })
+      .where(eq(toolConnections.id, originalConnectionId));
+
+    // 3. Downstream rh-mcp succeeds on tools/list, but omits decisions_run_grid
+    const withoutGridFetchMock = makeFetch({
+      tools: [...RH_MCP_SERVICE_REVIEWED_TOOLS.filter((t) => t !== "decisions_run_grid"), ...UNREVIEWED_TOOLS],
+    });
+    const outcome = await ensureSharedOrgRhMcp(ctxFor(withoutGridFetchMock), companyId);
+    expect(outcome).toEqual({ kind: "error", reason: "tools_missing" });
+
+    // 4. Verify version 4 was NOT stamped
+    const [connection] = await connectionsOf(companyId);
+    expect((connection!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(3);
+
+    // 5. Verify decisions_run_grid is NOT enabled
+    const enabledTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(enabledTools).not.toContain("decisions_run_grid");
+  });
+
+  it("proceeds with token rotation in the same tick even when reconciliation fails", async () => {
+    const companyId = await seedCompany();
+    await seedOwner(companyId);
+    await seedAgent(companyId);
+    const fetchMock = makeFetch();
+
+    // 1. Initial provisioning
+    await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    const [originalConnection] = await connectionsOf(companyId);
+    const originalConnectionId = originalConnection!.id;
+    const secretId = originalConnection!.credentialSecretRefs?.[0]?.secretId!;
+
+    // 2. Set token expiry within refresh window (5 days from now)
+    const now = new Date("2026-11-01T00:00:00.000Z");
+    const nearExpiry = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    await db
+      .update(toolConnections)
+      .set({
+        config: sql`jsonb_set(
+          jsonb_set(coalesce(${toolConnections.config}, '{}'::jsonb), ARRAY[${SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY}::text], '3'::jsonb, true),
+          ARRAY[${SHARED_ORG_RH_MCP_EXPIRY_CONFIG_KEY}::text],
+          to_jsonb(${nearExpiry}::text),
+          true
+        )`,
+      })
+      .where(eq(toolConnections.id, originalConnectionId));
+
+    // 3. Remove decisions_run_grid so reconcile is triggered
+    const [gridCatalogEntry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.toolName, "decisions_run_grid")));
+    await db.delete(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, companyId), eq(toolProfileEntries.catalogEntryId, gridCatalogEntry!.id)));
+    await db.delete(toolCatalogEntries).where(eq(toolCatalogEntries.id, gridCatalogEntry!.id));
+
+    // 4. Downstream tools/list fails, but ownership rotate succeeds
+    const failingListFetchMock = makeFetch({ listFails: true });
+    const outcome = await ensureSharedOrgRhMcp(ctxFor(failingListFetchMock, { now: () => now }), companyId);
+
+    // 5. Rotation succeeded despite reconcile failure!
+    expect(outcome).toEqual({ kind: "rotated", installed: 0 });
+    expect(failingListFetchMock.calls.rotates).toHaveLength(1);
+    expect(await secretService(db).resolveSecretValue(companyId, secretId, "latest")).toBe(ROTATED_TOKEN);
+
+    // 6. Version was NOT stamped because reconcile failed, and activity log reflects the connection's actual stored version (3, not 4)
+    const [connectionAfterRotation] = await connectionsOf(companyId);
+    expect((connectionAfterRotation!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(3);
+    const postRotateTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(postRotateTools).not.toContain("decisions_run_grid");
+
+    const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    const rotateActivity = activities.find((a) => a.action === "company.shared_org_rh_mcp.rotated");
+    expect(rotateActivity).toBeDefined();
+    expect(rotateActivity!.details).toMatchObject({
+      connectionId: originalConnectionId,
+      installed: 0,
+      version: 3,
+    });
+
+    // 7. On a subsequent tick when refresh succeeds, reconciliation retries and succeeds!
+    const healthyFetchMock = makeFetch();
+    const reconcileOutcome = await ensureSharedOrgRhMcp(ctxFor(healthyFetchMock, { now: () => now }), companyId);
+    expect(reconcileOutcome).toEqual({ kind: "reconciled", installed: 0 });
+
+    const [finalConnection] = await connectionsOf(companyId);
+    expect((finalConnection!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION);
+    const finalTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(finalTools).toContain("decisions_run_grid");
+  });
+
+  it("reconciles reviewed tools and rotates token in the same tick when both are needed", async () => {
+    const companyId = await seedCompany();
+    await seedOwner(companyId);
+    await seedAgent(companyId);
+    const fetchMock = makeFetch();
+
+    // 1. Initial provisioning
+    await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    const [originalConnection] = await connectionsOf(companyId);
+    const originalConnectionId = originalConnection!.id;
+    const secretId = originalConnection!.credentialSecretRefs?.[0]?.secretId!;
+
+    // 2. Set token expiry within refresh window AND set version to 3
+    const now = new Date("2026-11-01T00:00:00.000Z");
+    const nearExpiry = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000).toISOString();
+    await db
+      .update(toolConnections)
+      .set({
+        config: sql`jsonb_set(
+          jsonb_set(coalesce(${toolConnections.config}, '{}'::jsonb), ARRAY[${SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY}::text], '3'::jsonb, true),
+          ARRAY[${SHARED_ORG_RH_MCP_EXPIRY_CONFIG_KEY}::text],
+          to_jsonb(${nearExpiry}::text),
+          true
+        )`,
+      })
+      .where(eq(toolConnections.id, originalConnectionId));
+
+    // Remove decisions_run_grid from profile so reconcile has work to do
+    const [gridCatalogEntry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.toolName, "decisions_run_grid")));
+    await db.delete(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, companyId), eq(toolProfileEntries.catalogEntryId, gridCatalogEntry!.id)));
+    await db.update(toolCatalogEntries).set({ status: "quarantined", quarantineReason: "reviewed_declined" }).where(eq(toolCatalogEntries.id, gridCatalogEntry!.id));
+
+    // 3. Run sweep
+    const sweepFetch = makeFetch();
+    const outcome = await ensureSharedOrgRhMcp(ctxFor(sweepFetch, { now: () => now }), companyId);
+
+    // Both succeeded: return rotated, and both activities are recorded
+    expect(outcome).toEqual({ kind: "rotated", installed: 0 });
+    expect(sweepFetch.calls.rotates).toHaveLength(1);
+    expect(await secretService(db).resolveSecretValue(companyId, secretId, "latest")).toBe(ROTATED_TOKEN);
+
+    const [connection] = await connectionsOf(companyId);
+    expect((connection!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION);
+    const tools = await enabledToolNames(originalConnectionId, companyId);
+    expect(tools).toContain("decisions_run_grid");
+
+    const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    expect(activities.some((a) => a.action === "company.shared_org_rh_mcp.reconciled")).toBe(true);
+    expect(activities.some((a) => a.action === "company.shared_org_rh_mcp.rotated")).toBe(true);
+  });
+
+  it("retains existing agent installs (including pending_approval) during reconciliation and filters out truly orphaned agent installs without crashing", async () => {
+    const companyId = await seedCompany();
+    await seedOwner(companyId);
+    const liveAgentId = await seedAgent(companyId);
+    const terminatedAgentId = await seedAgent(companyId, "terminated");
+    const pendingAgentId = await seedAgent(companyId, "pending_approval");
+    const fetchMock = makeFetch();
+
+    // 1. Initial provisioning creates connection and installs on the live agent
+    await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    const [originalConnection] = await connectionsOf(companyId);
+    const originalConnectionId = originalConnection!.id;
+
+    // 2. Simulate pre-upgrade state: connection at version 3, decisions_run_grid missing from catalog/profile
+    const [gridCatalogEntry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.toolName, "decisions_run_grid")));
+    await db.delete(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, companyId), eq(toolProfileEntries.catalogEntryId, gridCatalogEntry!.id)));
+    await db.update(toolCatalogEntries).set({ status: "quarantined", quarantineReason: "reviewed_declined" }).where(eq(toolCatalogEntries.id, gridCatalogEntry!.id));
+
+    await db
+      .update(toolConnections)
+      .set({
+        config: sql`jsonb_set(coalesce(${toolConnections.config}, '{}'::jsonb), ARRAY[${SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY}::text], '3'::jsonb, true)`,
+      })
+      .where(eq(toolConnections.id, originalConnectionId));
+
+    // 3. Inject stale/corrupt install rows: an orphaned agent ID (not in agents table), terminated agent, and pending agent
+    const orphanedAgentId = randomUUID();
+    await db.insert(toolConnectionInstalls).values([
+      {
+        companyId,
+        connectionId: originalConnectionId,
+        targetType: "agent",
+        targetId: orphanedAgentId,
+      },
+      {
+        companyId,
+        connectionId: originalConnectionId,
+        targetType: "agent",
+        targetId: terminatedAgentId,
+      },
+      {
+        companyId,
+        connectionId: originalConnectionId,
+        targetType: "agent",
+        targetId: pendingAgentId,
+      },
+    ]);
+
+    // Verify corrupt install rows exist before reconciliation
+    const preInstalls = await installsOf(originalConnectionId);
+    const preTargetIds = preInstalls.map((row) => row.targetId);
+    expect(preTargetIds).toContain(orphanedAgentId);
+    expect(preTargetIds).toContain(terminatedAgentId);
+    expect(preTargetIds).toContain(pendingAgentId);
+    expect(preTargetIds).toContain(liveAgentId);
+
+    // 4. Run reconciliation - must NOT crash with assertAgentsInCompany throwing unprocessable
+    const reconcileOutcome = await ensureSharedOrgRhMcp(ctxFor(fetchMock), companyId);
+    expect(reconcileOutcome).toEqual({ kind: "reconciled", installed: 0 });
+
+    // 5. Version stamped to 4 and decisions_run_grid enabled
+    const [reconciledConn] = await connectionsOf(companyId);
+    expect((reconciledConn!.config as Record<string, unknown>)[SHARED_ORG_RH_MCP_REVIEWED_TOOLS_VERSION_CONFIG_KEY]).toBe(RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION);
+    const enabledTools = await enabledToolNames(originalConnectionId, companyId);
+    expect(enabledTools).toContain("decisions_run_grid");
+
+    // 6. Verify existing agents (including pending_approval and terminated) retain their bindings in access.agentIds, while truly orphaned agent IDs are safely excluded
+    const [profile] = await db
+      .select({ id: toolProfiles.id })
+      .from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, `app:${originalConnectionId}`)));
+    const postBindings = await db
+      .select({ targetId: toolProfileBindings.targetId, targetType: toolProfileBindings.targetType })
+      .from(toolProfileBindings)
+      .where(and(eq(toolProfileBindings.companyId, companyId), eq(toolProfileBindings.profileId, profile!.id)));
+    const postBoundAgentIds = postBindings.filter((b) => b.targetType === "agent").map((b) => b.targetId);
+    expect(postBoundAgentIds).toContain(liveAgentId);
+    expect(postBoundAgentIds).toContain(pendingAgentId);
+    expect(postBoundAgentIds).toContain(terminatedAgentId);
+    expect(postBoundAgentIds).not.toContain(orphanedAgentId);
+
+    const postInstalls = await installsOf(originalConnectionId);
+    const postTargetIds = postInstalls.map((row) => row.targetId);
+    expect(postTargetIds).toContain(liveAgentId);
+    expect(postTargetIds).toContain(pendingAgentId);
+    expect(postTargetIds).toContain(terminatedAgentId);
   });
 
   // ---- sweep --------------------------------------------------------------------------------

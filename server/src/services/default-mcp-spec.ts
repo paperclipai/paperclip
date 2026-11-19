@@ -241,14 +241,19 @@ export const RH_MCP_SERVICE_TOOLS_BY_SCOPE = Object.freeze({
   // Async comps run (TECH-8433): start returns a job id at once, get polls, cancel stops it. `comps__run_business_area_comps`
   // (one call that waits 30-90 s) is deliberately absent: it outlives the gateway's 60 s per-call clamp.
   "comps:run": ["comps__start", "comps__get", "comps__cancel"],
+  // Decision grid (TECH-9041/TECH-9109): one synchronous call that caps its own wall clock at 45s
+  // by default and returns a partial grid rather than overrunning. Unlike
+  // `comps__run_business_area_comps`, it cannot outlive the gateway's 60s clamp.
+  "decisions:run": ["decisions_run_grid"],
 } as const satisfies Record<string, readonly string[]>);
 
 /**
- * Version of `RH_MCP_SERVICE_REVIEWED_TOOLS`. Bump it whenever the tool or scope set changes (v2 = + `comps:run`, TECH-8433; v3 = + `voice_apply` under the existing `voice:read` scope).
+ * Version of `RH_MCP_SERVICE_REVIEWED_TOOLS`. Bump it whenever the tool or scope set changes (v2 = + `comps:run`, TECH-8433; v3 = + `voice_apply` under the existing `voice:read` scope; v4 = + `decisions:run`, TECH-9109).
+ * The periodic sweep reconciles existing active connections whenever their stored version is behind this constant.
  * Adding a tool under an existing scope (v3) needs no rotation. Changing the scope set does not re-issue existing org tokens: nothing reads `RH_MCP_SERVICE_TOKEN_SCOPES_VERSION`, and
  * the sweep only rotates a token near expiry. Rotate each org's token by hand (see DEFAULT-MCP-SPEC.md).
  */
-export const RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION = 3;
+export const RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION = 4;
 export const RH_MCP_SERVICE_REVIEWED_TOOLS: readonly string[] = Object.freeze(
   Object.values(RH_MCP_SERVICE_TOOLS_BY_SCOPE).flatMap((tools) => [...tools]),
 );
@@ -261,6 +266,9 @@ export const ARGUS_REVIEW_TOOL_TIMEOUT_MS = 30_000;
 export const COMPS_TOOL_TIMEOUT_MS = ARGUS_REVIEW_TOOL_TIMEOUT_MS;
 /** `voice_apply` runs an LLM pass over a draft, so it gets the full gateway ceiling (60 s). */
 export const VOICE_APPLY_TOOL_TIMEOUT_MS = MAX_TOOL_TIMEOUT_MS;
+/** A decision grid runs up to five concurrent Jev calls in rh-mcp's own process and caps itself
+ * at 45s, so it gets the full gateway ceiling. */
+export const DECISIONS_GRID_TOOL_TIMEOUT_MS = MAX_TOOL_TIMEOUT_MS;
 /**
  * Memory service tool budgets (TECH-8832). A cold `memory_add` runs LLM extraction and took ~10.5 s on dev, which the 10 s
  * default reports as a failure although the row was stored (a retry would then save the fact twice).
@@ -603,6 +611,7 @@ export const DEFAULT_MCP_SPEC: readonly DefaultMcpEntrySpec[] = [
       ...ARGUS_REVIEW_REVIEWED_TOOLS.map((tool) => [tool, ARGUS_REVIEW_TOOL_TIMEOUT_MS]),
       ...RH_MCP_SERVICE_TOOLS_BY_SCOPE["comps:run"].map((tool) => [tool, COMPS_TOOL_TIMEOUT_MS]),
       ["voice_apply", VOICE_APPLY_TOOL_TIMEOUT_MS],
+      ["decisions_run_grid", DECISIONS_GRID_TOOL_TIMEOUT_MS],
     ]),
   },
   {

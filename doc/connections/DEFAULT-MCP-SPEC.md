@@ -704,19 +704,20 @@ connection to rh-mcp named `rh-mcp-service`, so no agent depends on one person's
 - **Off by default.** Set `PAPERCLIP_SHARED_ORG_RH_MCP_ENABLED=true` (also needs the default-MCP spec flag, the rh-mcp URL in
   `PAPERCLIP_DEFAULT_MCP_RH_MCP_URL`, and the comms ownership API credentials). Rollout follows the company template scope.
 - **One token per org**, minted through the ownership API (`paperclip-rh-mcp-<companyId>`), never by Paperclip. Scopes are the
-  closed allowlist in `RH_MCP_SERVICE_TOOLS_BY_SCOPE` (read scopes, plus the async comps run scope): Argus review, MDM read, Opik read, Coresignal, Definitive Healthcare, the
-  voice humanizer checklist, `voice_apply` (same `voice:read` scope; degrades to the universal checklist for a service token; 60 s timeout) and the async comps verbs (`comps:run`: `comps__start`/`comps__get`/`comps__cancel`, TECH-8433). Never `supabase:*` (Ashby views are readable under `supabase:read`), writes, secrets or impersonation.
+  closed allowlist in `RH_MCP_SERVICE_TOOLS_BY_SCOPE` (read scopes, plus the async comps run scope and decision grid scope): Argus review, MDM read, Opik read, Coresignal, Definitive Healthcare, the
+  voice humanizer checklist, `voice_apply` (same `voice:read` scope; degrades to the universal checklist for a service token; 60 s timeout), the async comps verbs (`comps:run`: `comps__start`/`comps__get`/`comps__cancel`, TECH-8433), and decision grid (`decisions:run`: `decisions_run_grid`, 60 s timeout as the tool self-caps its own budget at 45 s and returns partial results rather than overrunning, TECH-9109). Never `supabase:*` (Ashby views are readable under `supabase:read`), writes, secrets or impersonation.
 - **Offered tools equal the scopes.** The spec entry's reviewed allowlist is derived from the same map; identity-keyed tools
   (annotations, Granola status, voice guides) are left out because a service identity has no meaningful answer for them.
 - **Lifecycle.** A periodic sweep (startup, then every 5 minutes) mints, connects, enables exactly the reviewed tools and installs
   live agents. New agents get it from `defaultEnabled`. The token is re-issued into a new vault version 60 days before expiry
-  (expiry kept in `config.rhMcpServiceTokenExpiresAt`).
+  (expiry kept in `config.rhMcpServiceTokenExpiresAt`). When `RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION` advances, the sweep reconciles
+  existing active connections (stored in `config.rhMcpServiceReviewedToolsVersion`) to re-apply the reviewed tools set without recreating the connection.
 - **Scope changes do not reach existing orgs automatically.** The token's scopes are the keys of the map, and an issued token
   keeps its scopes until it is re-issued (60 days before expiry, or by hand with `POST /agents/{sub}/rotate` on the ownership
-  API). After adding a scope such as `comps:run`, rotate each org's token manually: `POST /agents/paperclip-rh-mcp-<companyId>/rotate` with a JSON body of
+  API). After adding a scope such as `comps:run` or `decisions:run` (TECH-9109), rotate each org's token manually: `POST /agents/paperclip-rh-mcp-<companyId>/rotate` with a JSON body of
   `{"scopes": <every key of RH_MCP_SERVICE_TOKEN_SCOPES>, "expires_in_days": <days>}`, then store the returned `token` as a new version of the
   connection's vault secret (the API call alone does not update Paperclip; the old token keeps its old scopes until it expires). Bump `RH_MCP_SERVICE_REVIEWED_TOOLS_VERSION`
-  whenever a scope or tool is added (a tool under an existing scope, like `voice_apply`, needs no rotation). The Argus and comps verbs get a 30 s per-call timeout (api-main cold starts).
+  whenever a scope or tool is added (a tool under an existing scope, like `voice_apply`, needs no rotation; adding a new scope like `decisions:run` requires a manual rotation of every shared org's token). The Argus and comps verbs get a 30 s per-call timeout (api-main cold starts); `decisions_run_grid` gets the 60 s gateway ceiling (the tool self-caps its own budget at 45 s and returns partial results rather than overrunning).
 - **Opt-out:** archive the `rh-mcp-service` connection; it is not re-created.
 
 ## Credential health and OAuth callback failures

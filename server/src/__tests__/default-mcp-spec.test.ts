@@ -15,6 +15,7 @@ import {
   COMMS_BOARD_TOKEN_EXPIRES_IN_DAYS,
   COMMS_BOARD_TOKEN_SCOPES,
   COMMS_BOARD_TEMPLATE_TOKEN_SCOPES,
+  RH_MCP_SERVICE_TOKEN_SCOPES_VERSION,
 } from "../services/comms-board-provisioner-client.js";
 import {
   AGENT_MEMORY_TOOL_TIMEOUT_MS,
@@ -22,6 +23,7 @@ import {
   RH_MCP_SERVICE_TOOLS_BY_SCOPE,
   COMPS_TOOL_TIMEOUT_MS,
   VOICE_APPLY_TOOL_TIMEOUT_MS,
+  DECISIONS_GRID_TOOL_TIMEOUT_MS,
   MAX_TOOL_TIMEOUT_MS,
   defaultToolTimeoutMs,
   ARGUS_REVIEW_REVIEWED_TOOLS,
@@ -577,6 +579,12 @@ describe("per-tool timeout (argus-review)", () => {
     expect(defaultToolTimeoutMs("rh-mcp-personal", "mdm_get_granola_note")).toBeUndefined();
   });
 
+  it("gives decisions_run_grid the 60 s gateway ceiling on the service entry (TECH-9109)", () => {
+    expect(DECISIONS_GRID_TOOL_TIMEOUT_MS).toBe(MAX_TOOL_TIMEOUT_MS);
+    expect(defaultToolTimeoutMs("rh-mcp-service", "decisions_run_grid")).toBe(60_000);
+    expect(defaultToolTimeoutMs("rh-mcp-personal", "decisions_run_grid")).toBeUndefined();
+  });
+
   it("leaves every other tool and connection on the gateway default (undefined)", () => {
     expect(defaultToolTimeoutMs("rh-mcp-argus-review", "argus_get_proxy_token")).toBeUndefined();
     expect(defaultToolTimeoutMs("rh-mcp-argus-review", "toString")).toBeUndefined();
@@ -616,10 +624,9 @@ describe("per-tool timeout (argus-review)", () => {
   });
 });
 
-describe("rh-mcp-service reviewed tools: comps:run (TECH-8433)", () => {
-  it("offers voice_apply under the existing voice:read scope (no new scope) at reviewed-tools version 3", () => {
+describe("rh-mcp-service reviewed tools: comps:run (TECH-8433) and decisions:run (TECH-9109)", () => {
+  it("offers voice_apply under the existing voice:read scope (no new scope)", () => {
     const entry = DEFAULT_MCP_SPEC.find((candidate) => candidate.key === "rh-mcp-service")!;
-    expect(entry.reviewedTools!.version).toBe(3);
     expect(RH_MCP_SERVICE_TOOLS_BY_SCOPE["voice:read"]).toEqual(["voice_get_humanizer_checklist", "voice_apply"]);
     expect(entry.reviewedTools!.allow).toContain("voice_apply");
   });
@@ -629,6 +636,14 @@ describe("rh-mcp-service reviewed tools: comps:run (TECH-8433)", () => {
     expect(RH_MCP_SERVICE_TOOLS_BY_SCOPE["comps:run"]).toEqual(["comps__start", "comps__get", "comps__cancel"]);
     for (const tool of ["comps__start", "comps__get", "comps__cancel"]) expect(entry.reviewedTools!.allow).toContain(tool);
     expect(entry.reviewedTools!.allow).not.toContain("comps__run_business_area_comps");
+  });
+
+  it("offers decisions_run_grid under the decisions:run scope at reviewed-tools version 4 (TECH-9109)", () => {
+    const entry = DEFAULT_MCP_SPEC.find((candidate) => candidate.key === "rh-mcp-service")!;
+    expect(entry.reviewedTools!.version).toBe(4);
+    expect(RH_MCP_SERVICE_TOKEN_SCOPES_VERSION).toBe(2);
+    expect(RH_MCP_SERVICE_TOOLS_BY_SCOPE["decisions:run"]).toEqual(["decisions_run_grid"]);
+    expect(entry.reviewedTools!.allow).toContain("decisions_run_grid");
   });
 });
 
