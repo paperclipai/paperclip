@@ -6,7 +6,7 @@ import { Check, Copy, MessageCircle, WrapText } from "lucide-react";
 import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { useCoordinatorChatReference } from "./coordinator/CoordinatorChatReferences";
 import { SidebarDocumentLink } from "./SidebarDocumentLink";
-import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
+import { buildDocumentAnnotationHash, parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
@@ -130,6 +130,7 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
   /** Resolve file links to app routes; null leaves the label without a link. */
   resolveLinkHref?: (href: string) => string | null;
+  documentIssueId?: string;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string, image: HTMLImageElement) => void;
   /** Keep media inert as references, or omit images in compact text previews. */
@@ -775,6 +776,7 @@ function MarkdownBodyImpl({
   externalReferences,
   resolveImageSrc,
   resolveLinkHref,
+  documentIssueId,
   onImageClick,
   mediaMode = "render",
   resolveWorkspaceFileRef,
@@ -782,6 +784,11 @@ function MarkdownBodyImpl({
   const { theme } = useTheme();
   const coordinator = useCoordinatorPresentation();
   const streamWords = useContext(MarkdownWordStreaming);
+  const scopedUrlTransform = useCallback((url: string, key: string) => {
+    const safeUrl = safeMarkdownUrlTransform(url);
+    const target = key === "href" && documentIssueId ? parseDocumentAnnotationHash(safeUrl) : null;
+    return target && !target.documentIssueId ? buildDocumentAnnotationHash({ ...target, documentIssueId }) : safeUrl;
+  }, [documentIssueId]);
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
   // knownPrefixes undefined, which keeps issue auto-linking permissive.
@@ -1039,7 +1046,7 @@ function MarkdownBodyImpl({
         remarkPlugins={remarkPlugins}
         rehypePlugins={streamWords ? [rehypeStreamingWords] : undefined}
         components={components}
-        urlTransform={safeMarkdownUrlTransform}
+        urlTransform={documentIssueId ? scopedUrlTransform : safeMarkdownUrlTransform}
       >
         {children}
       </Markdown>

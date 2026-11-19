@@ -92,7 +92,7 @@ export interface Responsibility {
   updatedAt: Date;
 }
 
-/** One project, task or routine filed under a responsibility. Exactly one target id is set. */
+/** One project, task, routine or company skill filed under a responsibility. Exactly one target id is set. */
 export interface ResponsibilityLink {
   id: string;
   companyId: string;
@@ -100,6 +100,7 @@ export interface ResponsibilityLink {
   projectId: string | null;
   issueId: string | null;
   routineId: string | null;
+  skillId: string | null;
   createdAt: Date;
 }
 
@@ -262,12 +263,17 @@ export interface ResponsibilityRoutineLastRun {
 }
 
 /**
- * A company skill held by an agent that works under a responsibility: its
- * `runByAgentId`, the assignees of its open member tasks and of its
- * non-archived routines, and its linked projects' lead agents. Paperclip's
- * own coordination and onboarding skills are left out.
+ * A company skill under a responsibility: filed there by hand (`linkId`), or
+ * held by an agent that works under it (`computed`): its `runByAgentId`, the
+ * assignees of its open member tasks and of its non-archived routines, and
+ * its linked projects' lead agents. A skill can be both. Paperclip's own
+ * coordination and onboarding skills are left out of the computed ones.
  */
 export interface ResponsibilitySkillSummary {
+  /** The link when the skill is filed here by hand; null when it is only computed. */
+  linkId: string | null;
+  /** True when an agent that works under the responsibility holds it. */
+  computed: boolean;
   id: string;
   key: string;
   slug: string;
@@ -276,7 +282,7 @@ export interface ResponsibilitySkillSummary {
   tagline: string | null;
   iconUrl: string | null;
   color: string | null;
-  /** Which of those agents hold it, sorted. */
+  /** Which of the agents working under it hold it, sorted; empty for a filed skill no such agent holds. */
   agentIds: string[];
 }
 

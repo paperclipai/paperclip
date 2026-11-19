@@ -436,8 +436,9 @@ describe("scheduled resource wait presentation", () => {
   });
 
   it("keeps failure retries, user gates and failed Retry preparation authoritative", () => {
-    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure" },
-      agent, paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure",
+      scheduledRetryAt: new Date(now - 10 * 60_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: true, approval: false }, now))
       .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: false, approval: false,
@@ -569,6 +570,15 @@ describe("automatic scheduled retry", () => {
     expect(projectTaskInterruption(issue, { run: scheduled, agent, paused: false, approval: false }, now))
       .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: new Date(now + 60_000).toISOString() });
   });
+
+  it.each(["transient_failure", "native_environment_blocker"])(
+    "keeps a just-due %s retry working while the dispatcher promotes it", scheduledRetryReason => {
+      for (const overdueMs of [0, 1_000, 30_000, 119_000]) {
+        expect(projectTaskInterruption({ ...issue, status: "in_progress" }, { run: { ...scheduled, runtimeMode: "native",
+          scheduledRetryReason, scheduledRetryAt: new Date(now - overdueMs) }, agent, paused: false, approval: false }, now))
+          .toMatchObject({ state: "working", canRetry: false });
+      }
+    });
 
   it("offers Retry once the scheduled retry is past due with nothing else pending", () => {
     expect(projectTaskInterruption(issue, { run: { ...scheduled, scheduledRetryAt: new Date(now - 10 * 60_000) }, agent,
