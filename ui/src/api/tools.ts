@@ -320,6 +320,10 @@ export const toolsApi = {
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
   createMachineSignIn: (companyId: string, input: import("@paperclipai/shared").CreateMachineSignIn) =>
     api.post<import("@paperclipai/shared").MachineSignInSetupResult>(`/companies/${companyId}/tools/machine-sign-in`, input),
+  getAwsSetup: (connectionId: string, accessLevel?: "read_only" | "full") =>
+    api.get<import("@paperclipai/shared").AwsConnectionSetup>(
+      `/tool-connections/${connectionId}/aws-setup${accessLevel ? `?accessLevel=${accessLevel}` : ""}`,
+    ),
   getMachineSignIn: (connectionId: string) =>
     api.get<import("@paperclipai/shared").MachineSignInStatus>(`/tool-connections/${connectionId}/machine-sign-in`),
   testMachineSignIn: (connectionId: string, input: import("@paperclipai/shared").TestMachineSignIn) =>

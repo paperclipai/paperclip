@@ -1,5 +1,8 @@
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
+import { writeDeferredExecutionWait } from "../../../services/deferred-execution-wait.js";
+import { recordExecutionWait } from "../../../services/execution-wait.js";
+import type { ActivityPublication } from "../../../services/activity-log.js";
 import { notifyQueuedRunDispatch, notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
@@ -17,6 +20,7 @@ import { currentConversationCommentCondition, isConversation, isConversationRese
 import { getExecutionBlocker, getExecutionOwnershipBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
 import { preserveTaskRemoteWorkspaceWriter } from "../../../services/native-runtime/native-failed-workspace-recovery.js";
 import type { WakeRecoveryAdmissionStore } from "../application/recovery-admission.js";
+import { createWakeRecoveryDeferral } from "../application/recovery-deferral.js";
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
 import { and, asc, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
@@ -1332,6 +1336,7 @@ export function createPostgresIssueWakeAdmission(db: Db) {
       lockedIssue: IssueAdmissionRow | null;
       lockIssue: () => Promise<IssueAdmissionRow | null>;
       recovery: WakeRecoveryAdmissionStore<IssueWakeContinuationInput, IssueWakeContinuationResult>;
+      deferBlockedWake: ReturnType<typeof createWakeRecoveryDeferral<ActivityPublication>>;
       reader: WakeAdmissionReader;
       writer: WakeAdmissionWriter;
       fresh: FreshIssueRunStore<HeartbeatRunRow>;
@@ -1348,6 +1353,23 @@ export function createPostgresIssueWakeAdmission(db: Db) {
           return lockedIssue;
         };
         await lockIssue();
+        const deferBlockedWake = createWakeRecoveryDeferral<ActivityPublication>(issueId, Boolean(durableChatRequest), {
+          updateWait({ requestId, agentId, condition, publications }) {
+            return writeDeferredExecutionWait(tx as unknown as Db, {
+              companyId, issueId, agentId, requestId,
+            }, condition, { replace: true, publications });
+          },
+          async insertDeferred(request) {
+            await notifyDeferredExecutionWork(tx, { companyId });
+            await tx.insert(agentWakeupRequests).values({ ...request, companyId, status: DEFERRED_WAKE_STATUS });
+          },
+          async recordWait({ request, condition, nextAction, coalesce }) {
+            await recordExecutionWait(tx as unknown as Db, {
+              issueId, condition, coalesce,
+              request: { ...request, companyId, reason: "execution_reconciliation_required", error: nextAction },
+            });
+          },
+        });
         return evaluate(tx, {
           lockedIssue,
           lockIssue,
@@ -1382,6 +1404,10 @@ export function createPostgresIssueWakeAdmission(db: Db) {
             admitExplicit(input, dryRun, onBlocked) {
               return admitExplicitNativeContinuation({ ...input, db: tx as unknown as Db, companyId, issueId, dryRun, onBlocked });
             },
+          },
+          deferBlockedWake: async input => {
+            if (!lockedIssue) throw new Error("wake-queue: recovery deferral requires a locked issue");
+            return deferBlockedWake(input);
           },
           reader: createWakeAdmissionReader(tx, companyId),
           writer: createWakeAdmissionWriter(tx, companyId),
