@@ -53,6 +53,8 @@ import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
+import { emitArtifactCreatedAfterCommit, emitTaskCreatedAfterCommit, emitTaskStatusTransitionAfterCommit } from "./product-telemetry.js";
+import { hasUnfinishedBlockers } from "./issue-dependency-wakeups.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { loadRunBoundIssue } from "./issue-creation-source.js";
@@ -11220,6 +11222,7 @@ export function issueService(db: Db) {
         await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: values.id, parentId: values.parentId, originKind: values.originKind, originId: values.originId });
         if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
         const [issue] = await tx.insert(issues).values(values).returning();
+        emitTaskCreatedAfterCommit(issue);
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
           await tx.insert(issueAccessGrants).values({
@@ -12519,6 +12522,18 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        const enteredBlocked = updated.status === "blocked" && receiptExisting.status !== "blocked";
+        emitTaskStatusTransitionAfterCommit({
+          companyId: updated.companyId,
+          previousStatus: receiptExisting.status,
+          nextStatus: updated.status,
+          parentId: updated.parentId,
+          conversationAgentId: updated.conversationAgentId,
+          actorAgentId,
+          actorUserId,
+          unblockDescriptor: updated.unblockDescriptor,
+          hasOpenBlockers: enteredBlocked && await hasUnfinishedBlockers(tx, updated),
+        });
         if (
           issueData.executionWorkspaceSettings !== undefined &&
           nextExecutionWorkspaceId &&
@@ -14534,6 +14549,9 @@ export function issueService(db: Db) {
               })
               .returning({ id: issueWorkProducts.id })
           : [];
+        if (artifactWorkProduct) {
+          emitArtifactCreatedAfterCommit({ companyId: issue.companyId, type: "artifact", provider: "paperclip", creationFlow: "run_deliverable" });
+        }
 
         if (
           input.createdByAgentId &&

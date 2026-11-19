@@ -220,6 +220,7 @@ import type { instanceSettingsService } from "../instance-settings.js";
 import type { createRunDispatch } from "../../modules/run-dispatch/index.js";
 import { hasRetainedExternalChatRetry, type PostCommitEffect as WakeQueuePostCommitEffect, type createWakeQueue } from "../../modules/wake-queue/index.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+import { emitSystemTaskBlockedAfterCommit } from "../product-telemetry.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type QueuedRunCandidate = Pick<HeartbeatRun, "id" | "companyId" | "agentId" | "status" | "invocationSource" | "createdAt"
@@ -4663,17 +4664,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 const blocked = await issuesSvc.updateForCompany(issue.id, issue.companyId,
                   { status: "blocked", executionState: null }, tx, issueActivityPublications, issuePostCommitActions);
                 if (!blocked) throw conflict("The task changed before its workspace settings could be checked");
-              } else await tx
-                .update(issues)
-                .set({
-                  status: "blocked",
-                  checkoutRunId: null,
-                  executionRunId: null,
-                  executionAgentNameKey: null,
-                  executionLockedAt: null,
-                  updatedAt: now,
-                })
-                .where(eq(issues.id, issue.id));
+              } else {
+                const [blocked] = await tx
+                  .update(issues)
+                  .set({
+                    status: "blocked",
+                    checkoutRunId: null,
+                    executionRunId: null,
+                    executionAgentNameKey: null,
+                    executionLockedAt: null,
+                    updatedAt: now,
+                  })
+                  .where(eq(issues.id, issue.id))
+                  .returning();
+                if (blocked) await emitSystemTaskBlockedAfterCommit(tx, blocked, issue.status);
+              }
               await insertIssueComment(tx, {
                 companyId: issue.companyId,
                 issueId: issue.id,

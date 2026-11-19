@@ -148,6 +148,7 @@ import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { withTelemetryCompany } from "../telemetry-company-scope.js";
+import { emitPlanApprovedAfterCommit } from "./product-telemetry.js";
 import { authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
@@ -2839,6 +2840,14 @@ export function issueThreadInteractionService(
         acceptedPlanTarget?.issueId === issueContext.id &&
         acceptedPlanTarget.key === "plan" &&
         issueContext.workMode === "planning";
+      if (lockedCurrent.kind === "request_confirmation" && acceptedPlanTarget?.issueId === issueContext.id
+        && acceptedPlanTarget.key === "plan") {
+        emitPlanApprovedAfterCommit({
+          companyId: issueContext.companyId,
+          actor: args.actor,
+          startsExecution: acceptedPlanStartsExecution,
+        });
+      }
       if (isNativeCompletionReview(lockedCurrent)) {
         const otherPending = await tx.select({ id: issueThreadInteractions.id })
           .from(issueThreadInteractions).where(and(

@@ -29,6 +29,13 @@ input_tokens?: number
 output_tokens?: number
 cached_tokens?: number
 task_id?: string
+failure_cause?: ("missing_access" | "provider_limit" | "provider_error" | "waiting_for_person" | "task_changed" | "platform_error" | "agent_error" | "unknown")
+}
+
+export interface PaperclipArtifactCreatedDimensions {
+artifact_type: ("preview_url" | "runtime_service" | "pull_request" | "branch" | "commit" | "artifact" | "document" | "other")
+provider: ("paperclip" | "github" | "vercel" | "s3" | "custom" | "other")
+creation_flow: ("direct" | "promotion" | "run_deliverable" | "other")
 }
 
 export interface PaperclipCompanyImportedDimensions {
@@ -109,6 +116,24 @@ source_run_id?: string
 legacy_inherited_restriction: boolean
 }
 
+export interface PaperclipModelConnectedDimensions {
+provider: ("anthropic" | "openai" | "openrouter" | "xai" | "github" | "google" | "other")
+connection_method: ("subscription" | "api_key" | "other")
+ownership: ("personal" | "shared" | "other")
+routing_kind?: ("openrouter" | "bedrock" | "gateway" | "local" | "other")
+first_for_company: boolean
+}
+
+export interface PaperclipPlanApprovedDimensions {
+approved_by_kind: ("user" | "agent" | "system" | "other")
+starts_execution: boolean
+}
+
+export interface PaperclipPlanCreatedDimensions {
+created_by_kind: ("user" | "agent" | "system" | "other")
+at_task_creation: boolean
+}
+
 export interface PaperclipProjectCreatedDimensions {
 
 }
@@ -131,11 +156,27 @@ source_type: ("local_path" | "github" | "url" | "catalog" | "skills_sh" | "unkno
 skill_ref?: string
 }
 
+export interface PaperclipTaskBlockedDimensions {
+blocked_reason: ("waiting_on_task" | "waiting_for_person" | "waiting_for_agent" | "needs_recovery" | "unspecified" | "other")
+blocked_by_kind: ("user" | "agent" | "system" | "other")
+}
+
+export interface PaperclipTaskCompletedDimensions {
+completed_by_kind: ("user" | "agent" | "system" | "other")
+is_subtask: boolean
+}
+
+export interface PaperclipTaskCreatedDimensions {
+created_by_kind: ("user" | "agent" | "routine" | "onboarding" | "system" | "other")
+is_subtask: boolean
+}
+
 export type PaperclipEventName =
   | "agent.created"
   | "agent.first_heartbeat"
   | "agent.task_completed"
   | "agent.task_run"
+  | "artifact.created"
   | "company.imported"
   | "connection.created"
   | "connection.invoked"
@@ -146,17 +187,24 @@ export type PaperclipEventName =
   | "install.started"
   | "interaction.created"
   | "interaction.resolved"
+  | "model.connected"
+  | "plan.approved"
+  | "plan.created"
   | "project.created"
   | "routine.created"
   | "routine.run"
   | "server.started"
-  | "skill.imported";
+  | "skill.imported"
+  | "task.blocked"
+  | "task.completed"
+  | "task.created";
 
 export interface EventDimensionsMap {
   "agent.created": PaperclipAgentCreatedDimensions;
   "agent.first_heartbeat": PaperclipAgentFirstHeartbeatDimensions;
   "agent.task_completed": PaperclipAgentTaskCompletedDimensions;
   "agent.task_run": PaperclipAgentTaskRunDimensions;
+  "artifact.created": PaperclipArtifactCreatedDimensions;
   "company.imported": PaperclipCompanyImportedDimensions;
   "connection.created": PaperclipConnectionCreatedDimensions;
   "connection.invoked": PaperclipConnectionInvokedDimensions;
@@ -167,11 +215,17 @@ export interface EventDimensionsMap {
   "install.started": PaperclipInstallStartedDimensions;
   "interaction.created": PaperclipInteractionCreatedDimensions;
   "interaction.resolved": PaperclipInteractionResolvedDimensions;
+  "model.connected": PaperclipModelConnectedDimensions;
+  "plan.approved": PaperclipPlanApprovedDimensions;
+  "plan.created": PaperclipPlanCreatedDimensions;
   "project.created": PaperclipProjectCreatedDimensions;
   "routine.created": PaperclipRoutineCreatedDimensions;
   "routine.run": PaperclipRoutineRunDimensions;
   "server.started": PaperclipServerStartedDimensions;
   "skill.imported": PaperclipSkillImportedDimensions;
+  "task.blocked": PaperclipTaskBlockedDimensions;
+  "task.completed": PaperclipTaskCompletedDimensions;
+  "task.created": PaperclipTaskCreatedDimensions;
 }
 
 export const PAPERCLIP_EVENTS = {
@@ -179,6 +233,7 @@ export const PAPERCLIP_EVENTS = {
   "agent.first_heartbeat": "agent.first_heartbeat",
   "agent.task_completed": "agent.task_completed",
   "agent.task_run": "agent.task_run",
+  "artifact.created": "artifact.created",
   "company.imported": "company.imported",
   "connection.created": "connection.created",
   "connection.invoked": "connection.invoked",
@@ -189,11 +244,17 @@ export const PAPERCLIP_EVENTS = {
   "install.started": "install.started",
   "interaction.created": "interaction.created",
   "interaction.resolved": "interaction.resolved",
+  "model.connected": "model.connected",
+  "plan.approved": "plan.approved",
+  "plan.created": "plan.created",
   "project.created": "project.created",
   "routine.created": "routine.created",
   "routine.run": "routine.run",
   "server.started": "server.started",
   "skill.imported": "skill.imported",
+  "task.blocked": "task.blocked",
+  "task.completed": "task.completed",
+  "task.created": "task.created",
 } as const;
 
 export const PAPERCLIP_ENUM_DESCRIPTIONS = {
@@ -306,6 +367,42 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "failed": "The agent run reached a terminal state because of an unrecoverable error.",
       "cancelled": "The agent run was cancelled before it reached a successful terminal state.",
       "timed_out": "The agent run reached its time limit before it finished."
+    },
+    "failure_cause": {
+      "missing_access": "The run lacked a sign-in, permission, secret, or repository access.",
+      "provider_limit": "The model provider reported a rate limit, quota, or capacity limit.",
+      "provider_error": "The model provider rejected the request or failed for another reason.",
+      "waiting_for_person": "The run stopped because a person must review or reconcile its result.",
+      "task_changed": "The task was reassigned, paused, closed, blocked, or stopped by a person while the run was active.",
+      "platform_error": "Paperclip infrastructure, the workspace, or the sandbox failed or restarted.",
+      "agent_error": "The agent's own output, tool use, or time limit ended the run.",
+      "unknown": "The stored failure did not match a tracked code."
+    }
+  },
+  "artifact.created": {
+    "artifact_type": {
+      "preview_url": "A preview deployment link.",
+      "runtime_service": "A running workspace service.",
+      "pull_request": "A pull request.",
+      "branch": "A source branch.",
+      "commit": "A source commit.",
+      "artifact": "A file or other deliverable stored with the task.",
+      "document": "A document work product.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    },
+    "provider": {
+      "paperclip": "Paperclip stores the artifact.",
+      "github": "GitHub hosts the artifact.",
+      "vercel": "Vercel hosts the artifact.",
+      "s3": "An S3-compatible store hosts the artifact.",
+      "custom": "Another system hosts the artifact.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    },
+    "creation_flow": {
+      "direct": "A person, agent, or integration recorded the artifact on the task.",
+      "promotion": "A reviewer promoted an untrusted task file or document to an approved artifact.",
+      "run_deliverable": "An agent run uploaded a file deliverable to the task.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
     }
   },
   "company.imported": {
@@ -502,6 +599,50 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "other": "Fallback when the target type is unknown or not represented by the tracked enum."
     }
   },
+  "model.connected": {
+    "provider": {
+      "anthropic": "The connection signs in to Anthropic.",
+      "openai": "The connection signs in to OpenAI.",
+      "openrouter": "The connection signs in to OpenRouter.",
+      "xai": "The connection signs in to xAI.",
+      "github": "The connection signs in to GitHub Copilot.",
+      "google": "The connection signs in to Google.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    },
+    "connection_method": {
+      "subscription": "The connection uses a provider subscription sign-in.",
+      "api_key": "The connection uses a provider API key.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    },
+    "ownership": {
+      "personal": "The connection belongs to the person who connected it.",
+      "shared": "The connection is shared with the company.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    },
+    "routing_kind": {
+      "openrouter": "The connection routes through OpenRouter.",
+      "bedrock": "The connection routes through Amazon Bedrock.",
+      "gateway": "The connection routes through a custom model gateway.",
+      "local": "The connection routes to a model server on the same machine.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    }
+  },
+  "plan.approved": {
+    "approved_by_kind": {
+      "user": "A board member or other person accepted the plan confirmation.",
+      "agent": "An agent accepted the plan confirmation.",
+      "system": "Paperclip accepted the plan confirmation automatically, with no acting person or agent.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    }
+  },
+  "plan.created": {
+    "created_by_kind": {
+      "user": "A board member or other person wrote the first plan revision.",
+      "agent": "An agent wrote the first plan revision.",
+      "system": "Paperclip wrote the first plan revision automatically, with no acting person or agent.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    }
+  },
   "routine.run": {
     "source": {
       "schedule": "Routine was triggered by a scheduled trigger.",
@@ -544,6 +685,40 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "catalog": "Import source came from a Paperclip catalog entry.",
       "skills_sh": "Import source came from a Skills.sh-compatible source.",
       "unknown": "Source type could not be classified."
+    }
+  },
+  "task.blocked": {
+    "blocked_reason": {
+      "waiting_on_task": "The task waits on one or more unfinished blocking tasks.",
+      "waiting_for_person": "The task names a person or the board as the owner of the next action.",
+      "waiting_for_agent": "The task names an agent as the owner of the next action.",
+      "needs_recovery": "Paperclip blocked the task automatically for recovery, with no blocking task or unblock owner.",
+      "unspecified": "A person or agent blocked the task without a blocking task or unblock owner.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    },
+    "blocked_by_kind": {
+      "user": "A board member or other person moved the task to blocked.",
+      "agent": "An agent moved the task to blocked.",
+      "system": "Paperclip moved the task to blocked automatically, with no acting person or agent.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    }
+  },
+  "task.completed": {
+    "completed_by_kind": {
+      "user": "A board member or other person moved the task to done.",
+      "agent": "An agent moved the task to done.",
+      "system": "Paperclip moved the task to done automatically, with no acting person or agent.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
+    }
+  },
+  "task.created": {
+    "created_by_kind": {
+      "user": "A board member or other person created the task.",
+      "agent": "An agent created the task.",
+      "routine": "A routine run created the task.",
+      "onboarding": "The onboarding wizard created the workspace's first task when a person launched it.",
+      "system": "Paperclip created the task automatically, with no acting person or agent.",
+      "other": "Fallback when the value is unknown or not represented by the tracked enum."
     }
   }
 } as const;

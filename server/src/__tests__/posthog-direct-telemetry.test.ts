@@ -5,7 +5,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { trackAgentTaskRun, trackCompanyImported, trackRoutineCreated, trackRoutineRun } from "@paperclipai/shared/telemetry";
+import { trackAgentTaskRun, trackCompanyImported, trackRoutineCreated, trackRoutineRun, trackTaskBlocked, trackTaskCompleted, trackTaskCreated } from "@paperclipai/shared/telemetry";
 
 const hoisted = vi.hoisted(() => ({ instanceRoot: "", posthogNodeLoads: 0 }));
 
@@ -440,6 +440,25 @@ describe("server telemetry sender selection", () => {
     expect(routineRun.properties).toMatchObject({ company_id: "company-bg", stack_id: "stack-123" });
     const unscoped = posthog.captured.find((message) => message.event === "routine.created")!;
     expect(unscoped.properties).not.toHaveProperty("company_id");
+  });
+
+  it("Cloud: background product lifecycle events carry the company in scope", async () => {
+    const posthog = fakePostHog();
+    const client = initTelemetry({ enabled: true }, { env: CLOUD_ENV, postHogFactory: posthog.factory })!;
+    withTelemetryCompany("company-bg", () => {
+      trackTaskCreated(client, { createdByKind: "routine", isSubtask: false });
+      trackTaskCompleted(client, { completedByKind: "agent", isSubtask: true });
+      trackTaskBlocked(client, { blockedReason: "waiting_on_task", blockedByKind: "system" });
+      trackAgentTaskRun(client, { agentId: "agent-1", state: "failed", failureCause: "provider_limit" });
+    });
+    await shutdownTelemetry();
+
+    for (const event of ["task.created", "task.completed", "task.blocked", "agent.task_run"]) {
+      const message = posthog.captured.find((captured) => captured.event === event)!;
+      expect(message.properties).toMatchObject({ company_id: "company-bg", stack_id: "stack-123" });
+    }
+    expect(posthog.captured.find((captured) => captured.event === "agent.task_run")!.properties)
+      .toMatchObject({ failure_cause: "provider_limit", normalized_properties: [] });
   });
 
   it("Cloud: a live request's company wins over a background company scope", async () => {

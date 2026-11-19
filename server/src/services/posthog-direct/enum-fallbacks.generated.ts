@@ -33,6 +33,24 @@ export const UNKNOWN_ENUM_FALLBACKS = {
     "agent_role": {
       "fallback": "other",
       "required": false
+    },
+    "failure_cause": {
+      "fallback": "unknown",
+      "required": false
+    }
+  },
+  "artifact.created": {
+    "artifact_type": {
+      "fallback": "other",
+      "required": true
+    },
+    "provider": {
+      "fallback": "other",
+      "required": true
+    },
+    "creation_flow": {
+      "fallback": "other",
+      "required": true
     }
   },
   "company.imported": {
@@ -93,6 +111,36 @@ export const UNKNOWN_ENUM_FALLBACKS = {
       "required": false
     }
   },
+  "model.connected": {
+    "provider": {
+      "fallback": "other",
+      "required": true
+    },
+    "connection_method": {
+      "fallback": "other",
+      "required": true
+    },
+    "ownership": {
+      "fallback": "other",
+      "required": true
+    },
+    "routing_kind": {
+      "fallback": "other",
+      "required": false
+    }
+  },
+  "plan.approved": {
+    "approved_by_kind": {
+      "fallback": "other",
+      "required": true
+    }
+  },
+  "plan.created": {
+    "created_by_kind": {
+      "fallback": "other",
+      "required": true
+    }
+  },
   "routine.run": {
     "source": {
       "fallback": "other",
@@ -112,6 +160,28 @@ export const UNKNOWN_ENUM_FALLBACKS = {
   "skill.imported": {
     "source_type": {
       "fallback": "unknown",
+      "required": true
+    }
+  },
+  "task.blocked": {
+    "blocked_reason": {
+      "fallback": "other",
+      "required": true
+    },
+    "blocked_by_kind": {
+      "fallback": "other",
+      "required": true
+    }
+  },
+  "task.completed": {
+    "completed_by_kind": {
+      "fallback": "other",
+      "required": true
+    }
+  },
+  "task.created": {
+    "created_by_kind": {
+      "fallback": "other",
       "required": true
     }
   }

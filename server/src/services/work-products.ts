@@ -19,6 +19,7 @@ import {
   type GitHubCommitDiffDetailsResolver,
 } from "./github-commit-details.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
+import { emitArtifactCreatedAfterCommit } from "./product-telemetry.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 type WorkProductTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -304,7 +305,7 @@ export function workProductService(
               ),
             );
         }
-        return await tx
+        const created = await tx
           .insert(issueWorkProducts)
           .values({
             ...data,
@@ -313,6 +314,8 @@ export function workProductService(
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (created) emitArtifactCreatedAfterCommit({ companyId, type: created.type, provider: created.provider, creationFlow: "direct" });
+        return created;
       });
       return row ? toIssueWorkProduct(row) : null;
     },
