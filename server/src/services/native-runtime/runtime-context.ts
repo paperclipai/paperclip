@@ -380,7 +380,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
       || connection.transport === "plugin"
       || !isToolConnectionAttentionHealth(connection.healthStatus))
     // Keep this transport list equal to buildPaperclipRuntimeMcpServers.
-    && (["mcp_remote", "local_stdio", "plugin"].includes(connection.transport) || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id))
+    && (["mcp_remote", "connector", "local_stdio", "plugin"].includes(connection.transport) || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id))
   ).map((connection) => connection.id));
   const assignment = {
     version: 1,
