@@ -69,12 +69,15 @@ export function parseDashboardSnapshot(value: unknown): ResponsibilityDashboardS
  */
 export function dashboardSnapshotHash(snapshot: ResponsibilityDashboardSnapshot, opts: { legacy?: boolean } = {}): string {
   const areas = [...snapshot.areas].sort((a, b) => a.id.localeCompare(b.id))
-    .map((area) => [area.id, area.title, area.status, area.sortOrder]);
+    .map((area) => opts.legacy || area.description === undefined
+      ? [area.id, area.title, area.status, area.sortOrder]
+      : [area.id, area.title, area.status, area.sortOrder, area.description]);
   const items = [...snapshot.responsibilities].sort((a, b) => a.id.localeCompare(b.id))
     .map((item) => {
       const base: unknown[] = [item.id, item.title, item.standard, item.areaId, item.status, item.sortOrder];
       if (opts.legacy || !item.links) return base;
-      return [...base, item.links, item.description ?? null, item.runByAgentId ?? null];
+      return [...base, item.links, item.description ?? null, item.runByAgentId ?? null,
+        item.evidence ?? null, item.healthOverride ?? null, item.healthNote ?? null];
     });
   return createHash("sha256").update(JSON.stringify({ areas, items })).digest("hex");
 }
@@ -120,6 +123,9 @@ export function responsibilityDashboardVersionService(db: Db) {
         sortOrder: responsibilities.sortOrder,
         description: responsibilities.description,
         runByAgentId: responsibilities.runByAgentId,
+        evidence: responsibilities.evidence,
+        healthOverride: responsibilities.healthOverride,
+        healthNote: responsibilities.healthNote,
       }).from(responsibilities).where(and(
         eq(responsibilities.companyId, companyId),
         eq(responsibilities.ownerUserId, ownerUserId),
@@ -156,19 +162,25 @@ export function responsibilityDashboardVersionService(db: Db) {
       const entry = linksBy.get(id) ?? { projectIds: [], issueIds: [], routineIds: [] };
       return { projectIds: [...entry.projectIds].sort(), issueIds: [...entry.issueIds].sort(), routineIds: [...entry.routineIds].sort() };
     };
-    const items = rows.map(({ description, runByAgentId, ...item }) => ({ ...item, links: sortedLinks(item.id), description, runByAgentId }));
+    const items = rows.map(({ description, runByAgentId, evidence, healthOverride, healthNote, ...item }) => ({
+      ...item, links: sortedLinks(item.id), description, runByAgentId, evidence, healthOverride, healthNote,
+    }));
     const referenced = [...new Set(items.map((item) => item.areaId).filter((value): value is string => value !== null))];
-    const createdIds = [...new Set([...created.map((row) => row.id), ...createdNow, ...touched])].filter((value) => !referenced.includes(value));
-    const areas = referenced.length + createdIds.length === 0 ? [] : await database.select({
+    const createdIds = [...new Set([...created.map((row) => row.id), ...createdNow])].filter((value) => !referenced.includes(value));
+    // An area a change is about to touch is held whatever its status, so undoing a restore archives it again.
+    const touchedIds = touched.filter((value) => !referenced.includes(value));
+    const areas = referenced.length + createdIds.length + touchedIds.length === 0 ? [] : await database.select({
       id: responsibilityAreas.id,
       title: responsibilityAreas.title,
       status: responsibilityAreas.status,
       sortOrder: responsibilityAreas.sortOrder,
+      description: responsibilityAreas.description,
     }).from(responsibilityAreas).where(and(
       eq(responsibilityAreas.companyId, companyId),
       or(
         referenced.length > 0 ? inArray(responsibilityAreas.id, referenced) : undefined,
         createdIds.length > 0 ? and(inArray(responsibilityAreas.id, createdIds), ne(responsibilityAreas.status, "archived")) : undefined,
+        touchedIds.length > 0 ? inArray(responsibilityAreas.id, touchedIds) : undefined,
       ),
     ));
     return {
@@ -219,9 +231,18 @@ export function responsibilityDashboardVersionService(db: Db) {
     const previous = await latestRow(tx, input.companyId, input.ownerUserId);
     const hash = dashboardSnapshotHash(input.snapshot);
     // A version saved before snapshots held filed items is compared on what it holds.
-    const comparable = previous && isLegacySnapshot(parseDashboardSnapshot(previous.snapshot))
-      ? dashboardSnapshotHash(input.snapshot, { legacy: true }) : hash;
-    if (previous && previous.snapshotHash === comparable) return { row: previous, created: false };
+    const legacy = previous ? isLegacySnapshot(parseDashboardSnapshot(previous.snapshot)) : false;
+    const comparable = legacy ? dashboardSnapshotHash(input.snapshot, { legacy: true }) : hash;
+    if (previous && previous.snapshotHash === comparable) {
+      if (!legacy) return { row: previous, created: false };
+      // The same dashboard as an older version that held no filed items or
+      // details: it now holds them, so the next change compares, and undoes, in full.
+      const [upgraded] = await tx.update(responsibilityDashboardVersions)
+        .set({ snapshot: input.snapshot as unknown as Record<string, unknown>, snapshotHash: hash })
+        .where(eq(responsibilityDashboardVersions.id, previous.id))
+        .returning();
+      return { row: upgraded ?? previous, created: false };
+    }
     const summary = responsibilityDashboardChangeSummary(previous ? parseDashboardSnapshot(previous.snapshot) : null, input.snapshot);
     // Strictly after the previous version, so "newest" never ties within one transaction.
     const createdAt = new Date(Math.max(Date.now(), (previous?.createdAt.getTime() ?? 0) + 1));
@@ -348,7 +369,9 @@ export function responsibilityDashboardVersionService(db: Db) {
       const nextTitle = isShared ? row.title : want.title;
       const nextStatus = isShared ? (row.status === "archived" && want.status !== "archived" ? "active" : row.status) : want.status;
       const nextOrder = isShared ? row.sortOrder : want.sortOrder;
-      if (nextTitle === row.title && nextStatus === row.status && nextOrder === row.sortOrder) {
+      // A version that holds the description puts it back, except on an area others share.
+      const nextDescription = isShared || want.description === undefined ? row.description : want.description;
+      if (nextTitle === row.title && nextStatus === row.status && nextOrder === row.sortOrder && nextDescription === row.description) {
         areaFor.set(want.id, row.id);
         return true;
       }
@@ -362,7 +385,7 @@ export function responsibilityDashboardVersionService(db: Db) {
         }
       }
       const [updated] = await tx.update(responsibilityAreas)
-        .set({ title: nextTitle, status: nextStatus, sortOrder: nextOrder, updatedAt: now })
+        .set({ title: nextTitle, status: nextStatus, sortOrder: nextOrder, description: nextDescription, updatedAt: now })
         .where(and(eq(responsibilityAreas.id, row.id), eq(responsibilityAreas.companyId, companyId)))
         .returning();
       areasById.set(row.id, updated!);
@@ -373,7 +396,10 @@ export function responsibilityDashboardVersionService(db: Db) {
         entityType: "responsibility_area",
         entityId: row.id,
         details: {
-          fields: [nextTitle !== row.title ? "title" : null, nextStatus !== row.status ? "status" : null, nextOrder !== row.sortOrder ? "sortOrder" : null].filter(Boolean),
+          fields: [
+            nextTitle !== row.title ? "title" : null, nextStatus !== row.status ? "status" : null,
+            nextOrder !== row.sortOrder ? "sortOrder" : null, nextDescription !== row.description ? "description" : null,
+          ].filter(Boolean),
           ...(nextTitle !== row.title ? { fromTitle: row.title, toTitle: nextTitle } : {}),
           ...(nextStatus !== row.status ? { fromStatus: row.status, toStatus: nextStatus } : {}),
           ...source,
@@ -476,13 +502,16 @@ export function responsibilityDashboardVersionService(db: Db) {
   async function restoreDetailsInTx(
     tx: DashboardTransaction,
     companyId: string,
-    row: Pick<ResponsibilityRow, "id" | "description" | "runByAgentId">,
+    row: Pick<ResponsibilityRow, "id" | "description" | "runByAgentId" | "evidence" | "healthOverride" | "healthNote">,
     want: ResponsibilityDashboardSnapshot["responsibilities"][number],
     source: Record<string, unknown>,
   ): Promise<DashboardActivityEvent[]> {
     const events: DashboardActivityEvent[] = [];
     const set: Partial<typeof responsibilities.$inferInsert> = {};
     if (want.description !== undefined && (row.description ?? null) !== want.description) set.description = want.description;
+    if (want.evidence !== undefined && (row.evidence ?? null) !== want.evidence) set.evidence = want.evidence;
+    if (want.healthOverride !== undefined && (row.healthOverride ?? null) !== want.healthOverride) set.healthOverride = want.healthOverride;
+    if (want.healthNote !== undefined && (row.healthNote ?? null) !== want.healthNote) set.healthNote = want.healthNote;
     if (want.runByAgentId !== undefined && row.runByAgentId !== want.runByAgentId) {
       const agentExists = want.runByAgentId === null || (await tx.select({ id: agents.id }).from(agents)
         .where(and(eq(agents.id, want.runByAgentId), eq(agents.companyId, companyId)))).length > 0;

@@ -41,6 +41,8 @@ import {
 import { agentPersonInCompany, assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const NOT_FOUND = "Responsibility not found";
+/** Names the Dashboard version an agent's change saved, for the agent to say it can be undone. */
+export const DASHBOARD_VERSION_HEADER = "X-Paperclip-Dashboard-Version";
 
 /**
  * The create body for this actor: a person, or an agent acting for a person
@@ -191,15 +193,24 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     return { personUserId, agentId: getActorInfo(req).actorId };
   }
 
-  /** Run an agent's change for a person as a Dashboard version they can undo; a board change runs as is. */
+  /**
+   * Run an agent's change for a person as a Dashboard version they can undo;
+   * a board change runs as is. The response names the version in
+   * `X-Paperclip-Dashboard-Version` when one was saved (only active
+   * responsibilities are on a Dashboard).
+   */
   async function asAgentChange<T>(
     req: Request,
+    res: Response,
     input: { companyId: string; ownerUserIds: readonly string[] },
     mutate: () => Promise<T>,
   ): Promise<T> {
     const actor = getActorInfo(req);
     if (req.actor.type !== "agent" || !actor.agentId) return mutate();
-    return agentChanges.record({ companyId: input.companyId, ownerUserIds: input.ownerUserIds, agentId: actor.agentId }, mutate);
+    return agentChanges.record({
+      companyId: input.companyId, ownerUserIds: input.ownerUserIds, agentId: actor.agentId,
+      onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
+    }, mutate);
   }
 
   async function logMutation(
@@ -288,14 +299,20 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
         if (!(await svc.isCompanyMember(companyId, ownerUserId))) throw notFound("Owner is not a member of this company");
       }
     }
-    const { responsibility: created, activatedArea } = await asAgentChange(req, { companyId, ownerUserIds: actsFor ? [ownerUserId] : [] }, () => svc.create(
+    const { responsibility: created, activatedArea, created: isNew } = await asAgentChange(req, res, { companyId, ownerUserIds: actsFor ? [ownerUserId] : [] }, () => svc.create(
       companyId,
       req.body,
       req.actor.type !== "agent" ? { type: "board", userId: actor.actorId }
         : actsFor ? { type: "board", userId: actsFor, viaAgentId: actor.actorId }
           : { type: "agent", agentId: actor.actorId },
       ownerUserId,
+      // An agent's retry, or two of its calls at once, reuse the live one with that title.
+      { reuseLiveTitle: req.actor.type === "agent" },
     ));
+    if (!isNew) {
+      res.json(await svc.withRollup(created, await readScope(req)));
+      return;
+    }
     await logMutation(req, companyId, "responsibility.created", created.id, {
       title: created.title,
       ownerUserId: created.ownerUserId,
@@ -320,7 +337,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     if (!row) return;
     const scope = await readScope(req);
     const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
-    const { responsibility: updated, activatedArea } = await asAgentChange(req, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] }, () => svc.update(
+    const { responsibility: updated, activatedArea } = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] }, () => svc.update(
       row,
       req.body,
       req.actor.type !== "agent" ? { type: "board", userId: getActorInfo(req).actorId }
@@ -387,7 +404,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const target = linkTarget(req.body);
     const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
     const scope = await readScope(req);
-    const result = await asAgentChange(req, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
+    const result = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
       () => svc.link(row, target, scope));
     if (result.created) {
       await logMutation(req, row.companyId, "responsibility.linked", row.id, {
@@ -410,7 +427,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     if (!row) return;
     assertAgentMayFileUnder(req, row);
     const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
-    const removed = await asAgentChange(req, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
+    const removed = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
       () => svc.unlink(row, req.params.linkId as string));
     if (!removed) {
       res.status(404).json({ error: "Link not found" });
@@ -450,7 +467,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       owners.add(source.ownerUserId);
     }
     const scope = await readScope(req);
-    const result = await asAgentChange(req, { companyId: row.companyId, ownerUserIds: [...owners] },
+    const result = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: [...owners] },
       () => svc.fileItems(row, targets, scope, { moveFromIds }));
     for (const entry of result.filed.filter((item) => item.created)) {
       await logMutation(req, row.companyId, "responsibility.linked", row.id, {
@@ -480,7 +497,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     if (!row) return;
     assertWriter(req, row);
     const targets = req.body.items.map(fileTarget);
-    const removed = await asAgentChange(req, { companyId: row.companyId, ownerUserIds: [row.ownerUserId] },
+    const removed = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: [row.ownerUserId] },
       () => svc.unfileItems(row, targets));
     for (const link of removed) {
       await logMutation(req, row.companyId, "responsibility.unlinked", row.id, {

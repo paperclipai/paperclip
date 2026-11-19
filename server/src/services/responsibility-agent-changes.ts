@@ -33,6 +33,8 @@ export function responsibilityAgentChangeService(db: Db) {
         touchedAreaIds?: readonly string[];
         /** Areas the change created, so an empty one shows (and can be undone). */
         createdAreaIds?: (result: T) => readonly string[];
+        /** Told the version the change saved, when it changed the dashboard at all. */
+        onVersion?: (versionId: string) => void;
       },
       mutate: () => Promise<T>,
     ): Promise<T> {
@@ -45,13 +47,15 @@ export function responsibilityAgentChangeService(db: Db) {
         });
       }
       const result = await mutate();
-      const created = [...(input.createdAreaIds?.(result) ?? [])];
+      // Touched areas are kept with the created ones, so later versions still hold them and Undo can reach them.
+      const kept = [...new Set([...(input.createdAreaIds?.(result) ?? []), ...touched])];
       for (const owner of owners) {
-        await db.transaction(async (tx) => {
+        const saved = await db.transaction(async (tx) => {
           await lockDashboard(tx, input.companyId, owner);
-          const snapshot = await versions.captureSnapshot(tx, input.companyId, owner, created, touched);
-          await versions.save(tx, { companyId: input.companyId, ownerUserId: owner, cause: "change_set", snapshot, actorAgentId: input.agentId });
+          const snapshot = await versions.captureSnapshot(tx, input.companyId, owner, kept, touched);
+          return versions.save(tx, { companyId: input.companyId, ownerUserId: owner, cause: "change_set", snapshot, actorAgentId: input.agentId });
         });
+        if (saved.created) input.onVersion?.(saved.row.id);
       }
       return result;
     },

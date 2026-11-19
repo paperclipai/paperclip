@@ -29,7 +29,7 @@ function responsibility(overrides: Record<string, unknown> = {}) {
 }
 
 /** Records each request and answers from a path table; unknown paths are a test failure. */
-function fakeApi(routes: Record<string, { status?: number; body: unknown }>) {
+function fakeApi(routes: Record<string, { status?: number; body: unknown; headers?: Record<string, string> }>) {
   const calls: Array<{ url: string; auth: string | null; method?: string; body?: unknown }> = [];
   const fetcher = (async (url: string | URL, init?: RequestInit) => {
     const href = String(url);
@@ -42,13 +42,14 @@ function fakeApi(routes: Record<string, { status?: number; body: unknown }>) {
     // A route is keyed by path, or by "METHOD path" when one path takes several methods.
     const route = routes[`${method} ${path}`] ?? routes[path];
     if (!route) throw new Error(`unexpected request ${path}`);
-    return new Response(JSON.stringify(route.body), { status: route.status ?? 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify(route.body), { status: route.status ?? 200, headers: { "content-type": "application/json", ...route.headers } });
   }) as typeof fetch;
   return { calls, fetcher };
 }
 
 const ISSUE = "77777777-7777-4777-8777-777777777777";
-const base = { apiUrl: "http://paperclip.test/api", token: "agent-token", companyId: COMPANY, issueId: ISSUE, companyPrefix: "PAP" };
+const AGENT = "88888888-0000-4000-8000-000000000000";
+const base = { apiUrl: "http://paperclip.test/api", token: "agent-token", companyId: COMPANY, issueId: ISSUE, agentId: AGENT, companyPrefix: "PAP" };
 
 describe("responsibility tools", () => {
   it("groups a person's responsibilities by area and reports uncovered work", async () => {
@@ -167,21 +168,52 @@ describe("responsibility tools", () => {
         [`/companies/${COMPANY}/responsibilities?includeLetGo=false`]: { body: emptyOverview },
         [`GET /companies/${COMPANY}/responsibility-areas`]: { body: [{ id: AREA, title: "Money", status: "active" }] },
         [`POST /companies/${COMPANY}/responsibility-areas`]: { body: { id: "99999999-9999-4999-8999-999999999999", title: "People", status: "active" } },
-        [`POST /companies/${COMPANY}/responsibilities`]: { body: created },
+        [`POST /companies/${COMPANY}/responsibilities`]: { body: created, headers: { "x-paperclip-dashboard-version": "version-9" } },
       });
       const result = await callResponsibilityTool({ ...base, name: "create_responsibility", arguments: { title: "Hiring", areaTitle: "people" } }, api.fetcher);
       expect(api.calls.filter((entry) => entry.method === "POST").map((entry) => entry.body)).toEqual([
         { title: "people" },
         { title: "Hiring", areaId: "99999999-9999-4999-8999-999999999999" },
       ]);
-      expect(result).toMatchObject({ created: true, responsibility: { title: "Hiring", status: "active" }, undo: expect.stringContaining("undo") });
+      expect(result).toMatchObject({ created: true, responsibility: { title: "Hiring", status: "active" }, undo: expect.stringContaining("can undo it"), dashboardVersionId: "version-9" });
     });
 
-    it("reuses a live responsibility with the same title instead of making a copy", async () => {
+    it("reuses a live responsibility with the same title instead of making a copy, and files what a retry asks", async () => {
       const api = fakeApi({ [`/companies/${COMPANY}/responsibilities?includeLetGo=false`]: { body: emptyOverview } });
       const result = await callResponsibilityTool({ ...base, name: "create_responsibility", arguments: { title: "  fundraising " } }, api.fetcher);
       expect(result).toMatchObject({ created: false, responsibility: { id: RESPONSIBILITY } });
       expect(api.calls.some((entry) => entry.method === "POST")).toBe(false);
+
+      // A retry after the filing step failed files the items into the one that was saved.
+      const retry = fakeApi({
+        [`/companies/${COMPANY}/responsibilities?includeLetGo=false`]: { body: emptyOverview },
+        [`POST /responsibilities/${RESPONSIBILITY}/file`]: { body: { filed: [{ link: { id: "l1" }, created: true }], unfiled: [] } },
+      });
+      expect(await callResponsibilityTool({ ...base, name: "create_responsibility", arguments: { title: "Fundraising", fileItems: [{ kind: "routine", id: ROUTINE }] } }, retry.fetcher))
+        .toMatchObject({ created: false, filedItems: 1, undo: expect.stringContaining("cannot be undone") });
+    });
+
+    it("names the area and its destination on a delete card", async () => {
+      const OTHER_AREA = "99999999-0000-4000-8000-000000000000";
+      const api = fakeApi({
+        [`/companies/${COMPANY}/responsibility-areas?includeArchived=true`]: { body: [{ id: AREA, title: "Money", status: "active" }, { id: OTHER_AREA, title: "Finance", status: "active" }] },
+        [`GET /issues/${ISSUE}/interactions`]: { body: [] },
+        [`POST /issues/${ISSUE}/interactions`]: { body: { id: "card-9" } },
+      });
+      await callResponsibilityTool({ ...base, name: "delete_area", arguments: { areaId: AREA, moveResponsibilitiesTo: OTHER_AREA } }, api.fetcher);
+      expect(api.calls.find((entry) => entry.method === "POST")?.body).toMatchObject({
+        title: 'Delete the area "Money"',
+        payload: { prompt: 'Delete the area "Money" permanently?', detailsMarkdown: expect.stringContaining('move to "Finance"') },
+      });
+    });
+
+    it("notes when a change is outside the Dashboard history and that a bar change is not undone there", async () => {
+      const api = fakeApi({ [`PATCH /responsibilities/${RESPONSIBILITY}`]: { body: responsibility({ status: "proposed" }) } });
+      const result = await callResponsibilityTool({ ...base, name: "update_responsibility", arguments: {
+        responsibilityId: RESPONSIBILITY, bar: { kind: "volume", name: "Calls", target: 5 },
+      } }, api.fetcher);
+      expect(result).toMatchObject({ undo: expect.stringContaining("cannot be undone"), barNote: expect.stringContaining("old bar") });
+      expect(result).not.toHaveProperty("dashboardVersionId");
     });
 
     it("maps a cleared bar to empty metric inputs and moves to an area by title", async () => {
@@ -198,7 +230,9 @@ describe("responsibility tools", () => {
     it("asks the person on a card before a permanent delete, and deletes once they accept", async () => {
       const detail = { ...responsibility(), area: null, skills: [], artifacts: [], artifactsTotal: 0, artifactsTruncated: false, projects: [], tasks: [], tasksTruncated: false, routines: [] };
       const key = `responsibility-delete:${RESPONSIBILITY}`;
-      const card = (status: string, id = "card-1") => ({ id, kind: "request_confirmation", status, createdAt: "2026-11-18T00:00:00.000Z", payload: { target: { type: "custom", key } } });
+      const card = (status: string, id = "card-1", createdByAgentId = AGENT) => ({
+        id, kind: "request_confirmation", status, createdAt: "2026-11-18T00:00:00.000Z", createdByAgentId, payload: { target: { type: "custom", key } },
+      });
 
       const first = fakeApi({
         [`/responsibilities/${RESPONSIBILITY}`]: { body: detail },
@@ -219,7 +253,11 @@ describe("responsibility tools", () => {
 
       const accepted = fakeApi({
         [`/responsibilities/${RESPONSIBILITY}`]: { body: detail },
-        [`GET /issues/${ISSUE}/interactions`]: { body: [card("rejected", "card-0"), { ...card("accepted"), createdAt: "2026-11-18T01:00:00.000Z" }] },
+        // Another agent's accepted card does not count: the route accepts only this agent's own.
+        [`GET /issues/${ISSUE}/interactions`]: { body: [
+          card("rejected", "card-0"), { ...card("accepted"), createdAt: "2026-11-18T01:00:00.000Z" },
+          { ...card("accepted", "card-other", "another-agent"), createdAt: "2026-11-18T02:00:00.000Z" },
+        ] },
         [`DELETE /responsibilities/${RESPONSIBILITY}?confirmationId=card-1`]: { body: responsibility() },
       });
       expect(await callResponsibilityTool({ ...base, name: "delete_responsibility", arguments: { responsibilityId: RESPONSIBILITY } }, accepted.fetcher))
