@@ -1021,6 +1021,8 @@ export function createWakeAdmissionReader(rawTx: IssueAdmissionDbTransaction, ad
       },
     ) {
       assertAdmissionCompany(admittedCompanyId, companyId);
+      const storedNameKey = normalizeAgentNameKey(issueExecutionAgentNameKey);
+      if (storedNameKey !== null) return storedNameKey === agentNameKey;
       const executionAgent = await tx
         .select({ name: agents.name })
         .from(agents)
@@ -1031,12 +1033,8 @@ export function createWakeAdmissionReader(rawTx: IssueAdmissionDbTransaction, ad
           ),
         )
         .then((rows) => rows[0] ?? null);
-      const executionAgentNameKey =
-        normalizeAgentNameKey(issueExecutionAgentNameKey) ??
-        normalizeAgentNameKey(executionAgent?.name);
-      return (
-        Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey
-      );
+      const executionAgentNameKey = normalizeAgentNameKey(executionAgent?.name);
+      return executionAgentNameKey !== null && executionAgentNameKey === agentNameKey;
     },
 
     async findExistingDeferredWake(
