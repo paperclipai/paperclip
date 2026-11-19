@@ -358,6 +358,19 @@ Only a user's operator Stop gets this acknowledgement and clears an obsolete
 automatic-recovery marker. A system cancellation keeps its existing recovery
 delivery metadata, so saved comments and continuation intents still reach admission.
 
+The control plane can also cancel a run that is still waiting and was never
+claimed. An example is a scheduled retry that is cancelled when its task moves to
+backlog. This run has no actions with an unknown outcome. If the run has
+`errorCode = cancelled`, an expected system `control_plane` cancellation, and none
+of the retained execution evidence that the dispatch-gate cancellations also check
+(start time, stage, process, controller, session, lease, finalization or execution
+events), it does not create a reconciliation hold. A retry also continues its
+chain, so its predecessor must have succeeded. Otherwise the predecessor can
+have actions with an unknown outcome, and the hold stays. A hold that an earlier
+release recorded for such a run no longer blocks execution, so the next wake or
+Retry starts normally. The failure-retry count of the chain does not change this,
+because the cancelled run did not make an attempt.
+
 Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
 ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and
 session-goal recovery. `createHeartbeatScheduling` binds explicit dependencies
