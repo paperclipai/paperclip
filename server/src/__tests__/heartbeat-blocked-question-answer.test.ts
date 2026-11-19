@@ -9,6 +9,7 @@ import {
   completionContracts,
   createDb,
   heartbeatRuns,
+  issueRelations,
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
@@ -17,6 +18,7 @@ import {
   workAssessments,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { agentBlockingQuestionState } from "../services/blocked-question-answer.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { issueService } from "../services/issues.ts";
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
@@ -131,9 +133,9 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
       .where(eq(issueThreadInteractions.id, question.id));
   }
 
-  async function deliverAnswer(input: { agentId: string; issueId: string; questionId: string }) {
+  async function deliverAnswer(input: { agentId: string; issueId: string; questionId: string; kind?: string; status?: string }) {
     const context = { issueId: input.issueId, mutation: "interaction", interactionId: input.questionId,
-      interactionKind: "ask_user_questions", interactionStatus: "answered",
+      interactionKind: input.kind ?? "ask_user_questions", interactionStatus: input.status ?? "answered",
       interactionResolvedAt: new Date().toISOString(), wakeReason: "issue_commented" };
     const run = await heartbeat.wakeup(input.agentId, { source: "automation", triggerDetail: "system",
       reason: "issue_commented", payload: context, contextSnapshot: context,
@@ -233,5 +235,97 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
       .rejects.toThrow();
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
       .toMatchObject({ status: "blocked", unblockDescriptor: { owner: "board", action: "Person's new blocker" } });
+  }, 60_000);
+
+  async function blockWithoutDecision(input: { agentId: string; issueId: string; blockedAt?: Date }) {
+    await db.update(issues).set({ status: "blocked", blockedTransitionAt: input.blockedAt ?? new Date(),
+      unblockDescriptor: { owner: { agentId: input.agentId }, action: "Read the answer and continue." } })
+      .where(eq(issues.id, input.issueId));
+  }
+
+  it("delivers the answer when the agent blocked the task on its own question without a recorded decision", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question } = await seed();
+    await blockWithoutDecision({ agentId, issueId });
+    await answer(question);
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect({ status: run?.status, errorCode: run?.errorCode ?? null }).toEqual({ status: "succeeded", errorCode: null });
+    expect(mockAdapterExecute).toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ status: "in_progress", unblockDescriptor: null, blockedTransitionAt: null });
+  }, 60_000);
+
+  it("keeps cancelling the answer when the task was blocked again after the answer", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question } = await seed();
+    await answer(question);
+    await blockWithoutDecision({ agentId, issueId, blockedAt: new Date(Date.now() + 60_000) });
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("keeps cancelling the answer when the agent resolved its own question", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question } = await seed();
+    await blockWithoutDecision({ agentId, issueId });
+    await db.update(issueThreadInteractions).set({ status: "answered", resolvedByAgentId: agentId, resolvedAt: new Date(),
+      result: { version: 1, answers: [{ questionId: "codename", optionIds: ["bravo"] }] } })
+      .where(eq(issueThreadInteractions.id, question.id));
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("keeps cancelling the answer for a blocked task whose question belongs to another agent", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question, companyId } = await seed();
+    const otherId = randomUUID();
+    await db.insert(agents).values({ id: otherId, companyId, name: "Other", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, permissions: {}, runtimeConfig: {} });
+    await db.update(issueThreadInteractions).set({ createdByAgentId: otherId }).where(eq(issueThreadInteractions.id, question.id));
+    await blockWithoutDecision({ agentId, issueId });
+    await answer(question);
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+  }, 60_000);
+
+  it("does not claim a blocked task for checkout while it still has an unresolved blocker", async () => {
+    const { agentId, issueId, question, companyId } = await seed();
+    const context = { mutation: "interaction", interactionId: question.id, interactionStatus: "answered" };
+    await blockWithoutDecision({ agentId, issueId });
+    await answer(question);
+    expect(await agentBlockingQuestionState(db, { companyId, issueId, agentId, context })).toMatchObject({ lastStatusDecisionId: null });
+    const blockerId = randomUUID();
+    await db.insert(issues).values({ id: blockerId, companyId, title: "Upstream work", status: "todo" });
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" } as never);
+    expect(await agentBlockingQuestionState(db, { companyId, issueId, agentId, context })).toBeNull();
+  }, 60_000);
+
+  it("leaves a task with an unresolved blocker blocked and does not fail the run", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question, companyId } = await seed();
+    const blockerId = randomUUID();
+    await db.insert(issues).values({ id: blockerId, companyId, title: "Upstream work", status: "todo" });
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" } as never);
+    await blockWithoutDecision({ agentId, issueId });
+    await answer(question);
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect(run?.status).not.toBe("failed");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked" });
+  }, 60_000);
+
+  it("delivers an accepted confirmation when the agent blocked the task on it without a recorded decision", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, companyId } = await seed();
+    const [confirmation] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+      createdByAgentId: agentId, kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+      title: "Proceed?", payload: { version: 1, prompt: "Proceed with the change?" } }).returning();
+    await blockWithoutDecision({ agentId, issueId });
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: userId, resolvedAt: new Date(),
+      result: { version: 1, outcome: "accepted" } }).where(eq(issueThreadInteractions.id, confirmation!.id));
+    const run = await deliverAnswer({ agentId, issueId, questionId: confirmation!.id, kind: "request_confirmation", status: "accepted" });
+    expect({ status: run?.status, errorCode: run?.errorCode ?? null }).toEqual({ status: "succeeded", errorCode: null });
+    expect(mockAdapterExecute).toHaveBeenCalled();
   }, 60_000);
 });
