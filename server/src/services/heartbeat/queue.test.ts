@@ -288,6 +288,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const admit = deps.wakeQueue.admitIssueWake.getMockImplementation()!;
     deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target,
       (tx, admission) => evaluate(tx, otherIssue ? {
+        ...admission,
         admitFreshIssueRun: (input) => admission.admitFreshIssueRun({ ...input,
           issue: { ...input.issue, id: otherIssue.id }, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
         admitWakeBehindIssueExecution: (input) => admission.admitWakeBehindIssueExecution({ ...input,
@@ -307,6 +308,34 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
     expect(await db.select().from(agentWakeupRequests)).toEqual([]);
     expect(await db.select().from(heartbeatRuns)).toHaveLength(kind === "fresh" ? 0 : 1);
+  });
+
+  it("uses issue changes written by durable chat authorization before admission", async () => {
+    const { user, company, agent, issue, queue } = await waitingConversationFixture();
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
+      .where(eq(issues.id, issue.id));
+    const [comment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: user.id, body: "Please continue" }).returning();
+    const requestId = randomUUID();
+    const request = createDurableChatWakeupRequest({
+      id: requestId, companyId: company.id, issueId: issue.id, agentId: agent.id, commentId: comment.id,
+      requestedByActorType: "user", requestedByActorId: user.id, requestedAt: new Date(),
+      authorize: async (tx) => {
+        await tx.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
+      },
+    });
+
+    await expect(queue.enqueueWakeup(agent.id, {
+      source: "assignment", triggerDetail: "system", reason: "External chat message received",
+      requestedByActorType: "user", requestedByActorId: user.id, durableChatRequest: request,
+      payload: { issueId: issue.id, commentId: comment.id, mutation: "chat_message_received" },
+      issueStateGuard: { assigneeAgentId: agent.id, statuses: ["todo"] },
+    })).resolves.toBeNull();
+
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
+    expect(receipt).toMatchObject({ status: "skipped", reason: "issue_state_guard_mismatch",
+      payload: { heartbeatSkip: { actualStatus: "blocked" } } });
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
   });
 
   it("admits the owner's context compaction maintenance request while its conversation waits", async () => {

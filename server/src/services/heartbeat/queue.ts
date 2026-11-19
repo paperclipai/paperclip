@@ -3528,7 +3528,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
       return wakeQueue.admitIssueWake(
         { companyId: agent.companyId, issueId, durableChatRequest: durableRequest },
-        async (tx, { admitWakeBehindIssueExecution, admitFreshIssueRun }) => {
+        async (tx, { lockedIssue, lockIssue, admitWakeBehindIssueExecution, admitFreshIssueRun }) => {
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),
@@ -3781,37 +3781,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
           }
 
-          const issue = await tx
-            .select({
-              id: issues.id,
-              companyId: issues.companyId,
-              identifier: issues.identifier,
-              conversationAgentId: issues.conversationAgentId,
-              conversationUserId: issues.conversationUserId,
-              conversationState: issues.conversationState,
-              status: issues.status,
-              statusVersion: issues.statusVersion,
-              projectId: issues.projectId,
-              projectWorkspaceId: issues.projectWorkspaceId,
-              executionWorkspaceId: issues.executionWorkspaceId,
-              executionWorkspacePreference: issues.executionWorkspacePreference,
-              executionWorkspaceSettings: issues.executionWorkspaceSettings,
-              assigneeAgentId: issues.assigneeAgentId,
-              assigneeUserId: issues.assigneeUserId,
-              monitorNextCheckAt: issues.monitorNextCheckAt,
-              monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
-              executionRunId: issues.executionRunId,
-              executionAgentNameKey: issues.executionAgentNameKey,
-              createdAt: issues.createdAt,
-            })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.id, issueId),
-                eq(issues.companyId, agent.companyId),
-              ),
-            )
-            .then((rows) => rows[0] ?? null);
+          // Durable chat authorization can write through this transaction. A missing
+          // row has no lock, so the later read can also see a newly inserted issue.
+          const issue = durableRequest || !lockedIssue ? await lockIssue() : lockedIssue;
 
           if (!issue) {
             if (caseRequest) throw conflict("Case handoff task no longer exists");
@@ -4110,11 +4082,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               )).limit(1)
             : [];
           const verifiedConversationReset = Boolean(resetComment && isConversationReset(resetComment.body));
-          if (wakeCommentId && opts.requestedByActorType === "user")
+          const preserveWorkspace = wakeCommentId && opts.requestedByActorType === "user"
+            && issue.executionWorkspaceId !== null;
+          if (preserveWorkspace)
             await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, issue.companyId, issue.id);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
-            { conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null },
+            {
+              conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null,
+              lockedIssue: preserveWorkspace ? undefined : issue,
+            },
           );
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.

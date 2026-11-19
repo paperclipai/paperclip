@@ -202,7 +202,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const blocker = vi.spyOn(executionBlocker, "getExecutionBlocker");
     const admit = createPostgresIssueWakeAdmission(db);
     try {
-      await admit({ companyId, issueId }, async (tx, { fresh }) => {
+      await admit({ companyId, issueId }, async (tx, { fresh, lockedIssue }) => {
+        expect(lockedIssue).toMatchObject({ id: issueId, companyId, assigneeAgentId: agentId });
         await expect(db.execute(sql`select id from issues where id = ${issueId} for update nowait`))
           .rejects.toMatchObject({ cause: { code: "55P03" } });
         const input = { issueId, agentId, handoffRunId, checkExecutionBlocker: true };
@@ -218,11 +219,36 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         await expect(fresh.readCommentCandidates({ ...input, receiptScope, checkExecutionBlocker: false }))
           .resolves.toMatchObject({ handoffAgentId: formerAgentId, candidates: [{ id: wakeId }] });
         expect(blocker).toHaveBeenCalledTimes(1);
+
+        const select = vi.spyOn(tx, "select");
+        try {
+          expect(await executionBlocker.getExecutionBlocker(tx as unknown as Db, companyId, issueId, {
+            lockedIssue: lockedIssue!,
+          })).toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
+          expect(select).not.toHaveBeenCalledWith(expect.objectContaining({ conversationAgentId: issues.conversationAgentId }));
+        } finally {
+          select.mockRestore();
+        }
         return { kind: "skipped" };
       });
     } finally {
       blocker.mockRestore();
     }
+  });
+
+  it("locks an issue added after the initial admission lock missed", async () => {
+    const companyId = await seedCompany();
+    const issueId = randomUUID();
+    const admit = createPostgresIssueWakeAdmission(db);
+
+    await admit({ companyId, issueId }, async (_tx, { lockedIssue, lockIssue }) => {
+      expect(lockedIssue).toBeNull();
+      await seedIssue({ companyId, issueId });
+      expect(await lockIssue()).toMatchObject({ id: issueId, companyId });
+      await expect(db.execute(sql`select id from issues where id = ${issueId} for update nowait`))
+        .rejects.toMatchObject({ cause: { code: "55P03" } });
+      return { kind: "skipped" };
+    });
   });
 
   function recordReleaseRunReads() {
