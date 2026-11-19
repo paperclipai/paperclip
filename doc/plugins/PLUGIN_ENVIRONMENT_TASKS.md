@@ -174,6 +174,12 @@ event acknowledged and no command in progress. Core then sends one ordinary
 and `runner` must return the original result and must not start a second
 Runner. Without `runner` on `resume`, keep the claimant handover above.
 
+While a released task can still be resumed, its `status` must report
+`executionStopped: false`, even when its Runner process is stopped. Core
+replaces a reused task whose `status` reports a stop, and then cannot resume
+the released session on it. Report the stop only when the task can no longer
+resume.
+
 The `resume` result has a closed `outcome`:
 
 - `resumed`: the same logical session is exclusively reserved for this claimant,

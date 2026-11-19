@@ -834,6 +834,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
       () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut }),
       { resumeIdentityVersion: 1, onResumed });
     expect(owner.driver.relaunchReleasedRunner).toEqual(source);
+    expect(owner.driver.adoptExistingRunner).toBeUndefined();
     owner.launcher(relaunchSpec());
     registration.activate();
     try {

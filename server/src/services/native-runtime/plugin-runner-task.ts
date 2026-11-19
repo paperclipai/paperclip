@@ -439,6 +439,16 @@ export function createPluginRunnerTaskOwner(input: {
       },
     };
   };
+  const adoptedRunner: NonNullable<RunnerExecutionDriver["adoptExistingRunner"]> = {
+    // Provider ownership is attested by Launcher, never by a controller-local PID.
+    pid: null, processGroupId: null, startedAt: null,
+    isAlive: async () => {
+      if (!adoptionVerified) { if ((await readStatus()).executionStopped === true) return false; adoptionVerified = true; }
+      // Authenticated PRP detects disconnects; this cache never asserts termination.
+      return stoppedState === undefined;
+    },
+    signal: async () => { stopRequested = true; await stopAndConfirm(); return true; },
+  };
   const driver: RunnerExecutionDriver = {
     get releaseResume() {
       if (input.releaseResumeVersion !== 1 || input.warmTaskVersion !== 1 || !input.accountIdentity) return undefined;
@@ -474,16 +484,7 @@ export function createPluginRunnerTaskOwner(input: {
       return result.state;
     },
     controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal, identity),
-    ...(input.adoptIdentity ? { adoptExistingRunner: {
-      // Provider ownership is attested by Launcher, never by a controller-local PID.
-      pid: null, processGroupId: null, startedAt: null,
-      isAlive: async () => {
-        if (!adoptionVerified) { if ((await readStatus()).executionStopped === true) return false; adoptionVerified = true; }
-        // Authenticated PRP detects disconnects; this cache never asserts termination.
-        return stoppedState === undefined;
-      },
-      signal: async () => { stopRequested = true; await stopAndConfirm(); return true; },
-    } } : {}),
+    get adoptExistingRunner() { return input.adoptIdentity ? adoptedRunner : undefined; },
   };
   const readWorkspaceFile = async (path: string, maxBytes: number): Promise<Buffer> => {
     if (!submitted || !preparedIdentity || released || stopRequested) throw new Error("Plugin Runner file access unavailable");

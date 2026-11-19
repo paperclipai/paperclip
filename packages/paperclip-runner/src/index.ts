@@ -99,6 +99,7 @@ export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
   isSettledReleasedRunnerCut,
+  revertUnattachedRelaunchRotation,
   probeNativeRunnerEnvironment,
   NativeEnvironmentProbeCleanupError,
   runnerCodexDynamicToolsFit,

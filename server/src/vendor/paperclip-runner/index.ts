@@ -102,6 +102,7 @@ export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpC
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
 export const inspectDurablePrpCheckpointRunner = runner.inspectDurablePrpCheckpointRunner;
 export const isSettledReleasedRunnerCut = runner.isSettledReleasedRunnerCut;
+export const revertUnattachedRelaunchRotation = runner.revertUnattachedRelaunchRotation;
 export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
 export const inspectUnauthenticatedBootstrapCheckpoint = runner.inspectUnauthenticatedBootstrapCheckpoint;
 export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapState;

@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, describeRunnerCommandStall, isSettledReleasedRunnerCut, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, describeRunnerCommandStall, isSettledReleasedRunnerCut, revertUnattachedRelaunchRotation, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -2180,6 +2180,35 @@ describe("a rotation for a released Runner that the host starts again", () => {
       expect(unavailable).not.toHaveBeenCalled();
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("puts the source authority back only when no Runner attached to the rotated run", async () => {
+    for (const target of [
+      { state: { schema: "paperclip.runner.external-control-plane-state.v1", identity: desiredIdentity }, reverted: true },
+      { state: { schema: "paperclip.runner.durable.control-plane-state.v1", identity: desiredIdentity, connectionCount: 0, ackedSourceSeq: 0,
+        committedEvents: [], leases: {}, tickets: { ticket: { usedAt: null } } }, reverted: true },
+      { state: { schema: "paperclip.runner.durable.control-plane-state.v1", identity: desiredIdentity, connectionCount: 1, ackedSourceSeq: 3,
+        committedEvents: [], leases: {}, tickets: { ticket: { usedAt: "2099-01-01T00:00:00.000Z" } } }, reverted: false },
+      { state: { schema: "paperclip.runner.external-control-plane-state.v1", identity: priorIdentity }, reverted: false },
+    ]) {
+      const root = await mkdtemp(join(tmpdir(), "paperclip-relaunch-revert-"));
+      const source = { schema: "paperclip.runner.durable.control-plane-state.v1", identity: priorIdentity };
+      try {
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(source));
+        const unavailable = async () => { throw new Error("the host archives this state"); };
+        await runnerdRecoveryInternals.rotateAuthorityEpoch(root, source, desiredIdentity,
+          { archivedByLaunch: true, read: unavailable, archive: unavailable });
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(target.state));
+        expect(revertUnattachedRelaunchRotation(root, priorIdentity)).toBe(target.reverted);
+        const active = JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8"));
+        expect(active.identity).toEqual(target.reverted ? priorIdentity : target.state.identity);
+        expect(await readdir(join(root, "authority-epochs"))).toHaveLength(target.reverted ? 0 : 1);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
   });
 

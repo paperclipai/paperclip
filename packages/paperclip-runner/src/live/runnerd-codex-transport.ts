@@ -40,6 +40,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -532,6 +533,31 @@ async function rotateAuthorityEpoch(
   });
   assertSuspendedRunnerState(archivedRunnerState, priorIdentity);
   return resumedState ?? controlPlaneState;
+}
+
+export function revertUnattachedRelaunchRotation(root: string, source: DurableRecoveryIdentity): boolean {
+  const epoch = authorityArchiveDirectory(root, source);
+  const archived = resolve(epoch, "control-plane");
+  const active = resolve(root, "control-plane");
+  if (!existsSync(resolve(archived, "control-plane-state.json")) || !existsSync(resolve(active, "control-plane-state.json"))) return false;
+  assertRealDirectory(epoch);
+  assertRealDirectory(archived);
+  assertRealDirectory(active);
+  if (existsSync(resolve(epoch, "runner-state.json"))) return false;
+  if (!recoveryIdentityMatches(controlPlaneIdentity(readControlPlaneState(archived)), source)) return false;
+  const target = readControlPlaneState(active);
+  const identity = controlPlaneIdentity(target);
+  const externallyPersisted = target.schema === "paperclip.runner.external-control-plane-state.v1";
+  if (identity.runnerInstanceId !== source.runnerInstanceId || identity.normalizedSessionId !== source.normalizedSessionId
+    || identity.runId === source.runId) return false;
+  if (!externallyPersisted && (target.connectionCount !== 0 || target.ackedSourceSeq !== 0
+    || !Array.isArray(target.committedEvents) || target.committedEvents.length !== 0
+    || Object.keys(record(target.leases)).length !== 0
+    || Object.values(record(target.tickets)).some(ticket => record(ticket).usedAt !== null))) return false;
+  rmSync(active, { recursive: true });
+  renameSync(archived, active);
+  if (readdirSync(epoch).length === 0) rmdirSync(epoch);
+  return true;
 }
 
 function projectCopilotRunGrant(

@@ -224,6 +224,7 @@ import {
   inspectStagedRunAttachment,
   inspectDurablePrpCheckpointHeader,
   inspectDurablePrpCheckpointRunner,
+  revertUnattachedRelaunchRotation,
   inspectStagedRunAttachmentHeader,
   inspectRetainedRunInstructions,
   inspectWarmRunTransition,
@@ -12231,7 +12232,7 @@ async function executePaperclipNativeSessionAttempt(
   let existingWarmSession: NativeSession | undefined;
   let reusingReleasedRunner = false;
   let relaunchReleased: { owner: ReturnType<typeof createPluginRunnerTaskOwner>; source: DurableRecoveryIdentity;
-    runner: { version: string; digest: string } } | undefined;
+    runner: { version: string; digest: string }; published?: true } | undefined;
   let managedCredentialSession: NativeSession | undefined;
   let githubAccess: NativeGitHubAccess | undefined;
   let releaseGitHubRun: (() => void) | undefined;
@@ -12635,7 +12636,14 @@ async function executePaperclipNativeSessionAttempt(
         || remoteWarmRecovery || warmConfigDigest === null || target?.kind !== "remote" || target.transport !== "sandbox"
         || !target.runnerTask || runnerdBackend === null) return false;
       const retainedTaskId = target.sandboxLeaseAcquisition?.providerLeaseId;
-      await existingWarmSession?.close({ reason: "retained Runner was unavailable for reuse" });
+      if (existingWarmSession) await existingWarmSession.close({ reason: "retained Runner was unavailable for reuse" });
+      else if (warmSessionId !== null) {
+        const retired = warmNativeSessions.get(warmSessionId);
+        if (retired?.ownerToken === warmSessionOwnerToken) {
+          if (retired.idleTimer !== null) clearTimeout(retired.idleTimer);
+          forgetWarmNativeSession(warmSessionId, retired);
+        }
+      }
       relaunchReleased = undefined;
       const inspect = () => target.runnerTask!({ kind: "describe" }, executionContext ? { executionContext } : undefined);
       const description = environmentTaskResultSchema.parse(await (executionContext ? executionContext.wait(inspect) : inspect()));
@@ -12860,6 +12868,7 @@ async function executePaperclipNativeSessionAttempt(
             },
             onSession: async (session) => {
               if (session) settleReattachRun(input.execution.binding.runId, "reached");
+              if (session && relaunchReleased) relaunchReleased.published = true;
               input.bindAttachmentSession?.(session);
               if (session) runnerdBackend?.bindDiagnosticSession?.(session);
               if (session && input.runnerExecutionTarget?.kind === "remote"
@@ -13099,6 +13108,7 @@ async function executePaperclipNativeSessionAttempt(
         try {
           result = await trace.run(runnerSessionStartupScope, runExecution);
         } catch (error) {
+          if (relaunchReleased && !relaunchReleased.published) revertUnattachedRelaunchRotation(scopedRunnerdStateRoot(input.execution), relaunchReleased.source);
           if (!await continueAfterUnavailableReuse(error)) throw error;
           result = await trace.run(runnerSessionStartupScope, runExecution);
         }
