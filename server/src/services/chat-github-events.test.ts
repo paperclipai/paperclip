@@ -76,6 +76,19 @@ describe("explicit GitHub mentions", () => {
     expect(githubBodyMentionsBot("- item\n\n    ```\n      @maya help\n    ```", "maya[bot]")).toBe(false);
   });
 
+  it("counts tab stops so two tabs after a list marker are an indented code block", () => {
+    expect(githubBodyMentionsBot("- item\n\n\t@maya", "maya[bot]")).toBe(true);
+    expect(githubBodyMentionsBot("- item\n\n\t\t@maya", "maya[bot]")).toBe(false);
+    expect(githubBodyMentionsBot("text\n\n\t\t@maya", "maya[bot]")).toBe(false);
+  });
+
+  it("ends a list's unclosed fence when a paragraph leaves the list", () => {
+    expect(githubBodyMentionsBot("- item\n\n    ```\n    log\n\n@maya help", "maya[bot]")).toBe(true);
+    expect(githubBodyMentionsBot("- item\n\n    ```\n    @maya log\n    more\n\n@maya help", "maya[bot]")).toBe(true);
+    expect(githubBodyMentionsBot("- item\n\n    ```\n    @maya log\nmore text", "maya[bot]")).toBe(false);
+    expect(githubBodyMentionsBot("- item\n\n    ```\n    log\n```\n@maya log", "maya[bot]")).toBe(false);
+  });
+
   it("downgrades a code-only mention trigger before the envelope is addressed", async () => {
     const message = {
       id: "m1", text: "@maya", isMention: true,

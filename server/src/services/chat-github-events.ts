@@ -66,22 +66,36 @@ function stripInlineCodeSpans(text: string): string {
   return out;
 }
 
+function leadingWhitespaceColumns(leading: string): number {
+  let columns = 0;
+  for (const char of leading) columns = char === "\t" ? columns + (4 - (columns % 4)) : columns + 1;
+  return columns;
+}
+
 function stripGitHubCommentCodeSpans(body: string): string {
   const kept: string[] = [];
   let fenceChar: string | null = null;
   let fenceLen = 0;
+  let fenceListIndent: number | null = null;
   let indentedCode = false;
   let blankContext = true;
   let listIndent: number | null = null;
   for (const line of body.split(/\r\n|\r|\n/)) {
-    if (fenceChar !== null) {
-      const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
-      if (run && run[1][0] === fenceChar && run[1].length >= fenceLen && /^[ \t]*(`+|~+)[ \t]*$/.test(line))
-        fenceChar = null;
-      continue;
-    }
     const leading = (line.match(/^[ \t]*/) ?? [""])[0];
-    const indent = leading.includes("\t") ? 4 : leading.length;
+    const indent = leadingWhitespaceColumns(leading);
+    if (fenceChar !== null) {
+      if (fenceListIndent !== null && line.trim() !== "" && indent < fenceListIndent) {
+        fenceChar = null;
+        fenceListIndent = null;
+      } else {
+        const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
+        if (run && run[1][0] === fenceChar && run[1].length >= fenceLen && /^[ \t]*(`+|~+)[ \t]*$/.test(line)) {
+          fenceChar = null;
+          fenceListIndent = null;
+        }
+        continue;
+      }
+    }
     const indented = indent >= 4;
     if (indentedCode) {
       if (line.trim() === "" || indented) continue;
@@ -99,13 +113,20 @@ function stripGitHubCommentCodeSpans(body: string): string {
     if (run && (!indented || (listIndent !== null && indent < listIndent + 4))) {
       fenceChar = run[1][0];
       fenceLen = run[1].length;
+      fenceListIndent = listIndent !== null && indent >= listIndent ? listIndent : null;
+      if (listIndent !== null && indent < listIndent) listIndent = null;
       continue;
     }
     kept.push(line);
     blankContext = false;
     if (!indented) {
-      const marker = line.match(/^( {0,3})([-*+]|\d{1,9}[.)])[ \t]/);
-      listIndent = marker ? marker[1].length + marker[2].length + 1 : null;
+      const marker = line.match(/^( {0,3})([-*+]|\d{1,9}[.)])([ \t])/);
+      if (marker) {
+        const contentColumn = marker[1].length + marker[2].length;
+        listIndent = marker[3] === "\t" ? contentColumn + (4 - (contentColumn % 4)) : contentColumn + 1;
+      } else {
+        listIndent = null;
+      }
     }
   }
   return stripInlineCodeSpans(kept.join("\n"));
