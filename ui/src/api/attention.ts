@@ -44,7 +44,8 @@ export const attentionApi = {
     if (options.cursor) params.set("cursor", options.cursor);
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     const query = params.toString();
-    return api.get<AttentionFeed>(`/companies/${companyId}/attention${query ? `?${query}` : ""}`);
+    // A post-answer refresh must not join a GET begun before the answer.
+    return api.get<AttentionFeed>(`/companies/${companyId}/attention${query ? `?${query}` : ""}`, { fresh: true, cache: "no-store" });
   },
   /** Claim an Unassigned card: you become its addressee (PAP-749 plan §1, Rule 3). */
   claim: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>

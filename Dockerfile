@@ -12,7 +12,40 @@ RUN usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
   && usermod -g $USER_GID -d /paperclip node
 
-FROM base AS deps
+FROM base AS tailscale-client
+ARG TARGETARCH
+WORKDIR /out
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) digest=720cbbccbfc03d8b55df72afc19e5a72e31b0f65934700aa6fa38074d4ad7bf7 ;; \
+      arm64) digest=e900b0e6e25023a1e504b2c237ce2a32ea0535e006f8c1a1097a490886493b6c ;; \
+      *) echo "Unsupported Tailscale architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl --fail --silent --show-error --location --retry 2 --connect-timeout 15 --max-time 120 --proto '=https' --proto-redir '=https' \
+      "https://pkgs.tailscale.com/stable/tailscale_1.104.5_${TARGETARCH}.tgz" -o tailscale.tgz; \
+    printf '%s  tailscale.tgz\n' "$digest" > tailscale.sha256; \
+    sha256sum -c tailscale.sha256; \
+    tar -xzf tailscale.tgz --strip-components=1; \
+    gosu node /out/tailscale version; \
+    gosu node /out/tailscaled --version
+COPY docker/tailscale.LICENSE /out/LICENSE
+
+FROM base AS runner-lockfile
+WORKDIR /runner-lockfile
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY packages/paperclip-eval-kernel/package.json packages/paperclip-eval-kernel/
+COPY packages/paperclip-runner/package.json packages/paperclip-runner/
+COPY patches/ patches/
+RUN pnpm install --frozen-lockfile --lockfile-only --offline --ignore-scripts --filter '@paperclipai/paperclip-runner...' > /tmp/runner-lockfile.log 2>&1 \
+  || { cat /tmp/runner-lockfile.log >&2; \
+    if grep -Eq 'ERR_PNPM_OUTDATED_LOCKFILE|ERR_PNPM_LOCKFILE_CONFIG_MISMATCH' /tmp/runner-lockfile.log; then \
+      echo "ERROR: pnpm-lock.yaml is behind the manifests the Runner is installed from: package.json, pnpm-workspace.yaml, patches, packages/paperclip-runner/package.json or packages/paperclip-eval-kernel/package.json. The image build installs the Runner with a frozen lockfile, so it stops here. Run this command in the checkout, then build again: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile" >&2; \
+    else \
+      echo "ERROR: pnpm could not check pnpm-lock.yaml against the manifests the Runner is installed from. Its output is above." >&2; \
+    fi; \
+    exit 1; }
+
+FROM runner-lockfile AS deps
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY cli/package.json cli/
@@ -57,23 +90,76 @@ COPY server/src/services/copilot-connection-probe.ts server/src/services/
 # private build tree, then install from that exact generated lock.
 RUN pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile && pnpm install --frozen-lockfile
 
-FROM base AS rust-toolchain
-WORKDIR /app
-# Debian's packaged rust lags the ecosystem (trixie ships 1.85) and the
-# runner's dependency tree now requires a newer rustc. Install rustup from a
-# version-pinned, checksum-verified installer and let the runner's own
-# rust-toolchain.toml choose the compiler — one pin, owned by the runner
-# package, shared by CI and image builds alike.
+# Runner image (`--target runner-artifacts`).
 #
-# The C toolchain is explicit: apt's cargo used to pull gcc in as a
-# dependency, and rustup does not — without it every build script dies on
-# "linker `cc` not found".
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends gcc libc6-dev pkg-config \
-  && rm -rf /var/lib/apt/lists/*
+# The stages below build the Runner once, from its own inputs only, as a plain
+# file tree: the daemon, the Runner package's build output with its build
+# stamp, the remote provider pack with its transport archives, and the few
+# source files a sandbox image reads. The tree is the image
+# ghcr.io/paperclipai/paperclip-runner, named `inputs-<digest>` after its
+# inputs. doc/runner-image-contract.md is the contract;
+# scripts/runner-image-layout.mjs and scripts/runner-image-identity.mjs
+# enforce it.
+#
+# These stages are independent of every stage above. They install with a
+# filtered, frozen lockfile and never read the server, the UI or the `deps`
+# stage, so a change outside the Runner's inputs leaves them cached.
+#
+# Consumers must only read `runner-artifacts`, with `COPY --from` or a bind
+# mount, or `runner-artifacts-slim`, the same tree without the pack's transport
+# archives. A build can then replace the stage with an image built earlier:
+#   --build-context runner-artifacts=docker-image://ghcr.io/paperclipai/paperclip-runner@sha256:<digest>
+#
+# The image identity is a digest of this whole file and of every file under
+# the paths `runner-artifacts-context` copies. A test
+# (runner-image-identity.test.ts) holds the three rules that make that enough:
+# every base image of these stages is pinned by digest, only
+# `runner-artifacts-context` reads the build context, and it copies only paths
+# in RUNNER_IMAGE_CONTEXT_INPUTS (scripts/runner-image-identity.mjs).
+
+# The Runner's inputs, exactly as the build context supplies them (after
+# .dockerignore). Later stages copy from here, so each one is keyed by the
+# content of the paths it reads and by nothing else in the repository.
+FROM scratch AS runner-artifacts-context
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json /
+COPY patches /patches
+COPY scripts/create-provider-pack-archive.mjs scripts/link-plugin-dev-sdk.mjs scripts/runner-image-identity.mjs scripts/runner-image-layout.mjs /scripts/
+COPY packages/paperclip-eval-kernel /packages/paperclip-eval-kernel
+COPY packages/paperclip-runner /packages/paperclip-runner
+# build:typescript checks the Runner's generated provider-failure contract
+# against this copy, which @paperclipai/shared owns.
+COPY packages/shared/src/provider-failure.generated.ts /packages/shared/src/
+
+# Debian bookworm is the oldest glibc any consumer runs, so a daemon compiled
+# here also runs on trixie. The pack copies this Node binary as its own
+# interpreter, which is why the exact Node release is pinned and part of the
+# image identity. The digest is the multi-platform index (amd64 and arm64).
+FROM node:24.22.3-bookworm@sha256:9d266751ca3d7fdbe651c878ffd5ad0a42fed49a18c283509267c97f025b7496 AS runner-artifacts-node
+RUN corepack enable
+
+# The image identity, computed inside the build from the files the build
+# actually receives. `--target runner-artifacts-identity` exports it alone, so
+# CI can read the digest before it builds. The Dockerfile is copied here
+# only: the identity covers its text.
+FROM runner-artifacts-node AS runner-artifacts-identity-compute
+WORKDIR /workspace
+COPY --from=runner-artifacts-context / ./
+COPY Dockerfile ./
+RUN node scripts/runner-image-identity.mjs --json > /runner-image-identity.json
+
+FROM scratch AS runner-artifacts-identity
+COPY --from=runner-artifacts-identity-compute /runner-image-identity.json /runner-image-identity.json
+
+# A version-pinned, checksum-verified rustup on the bookworm base. The
+# compiler is the one packages/paperclip-runner/rust-toolchain.toml names. The
+# base image supplies the C toolchain.
+FROM runner-artifacts-node AS runner-artifacts-toolchain
+# cargo strips the release binary itself. The Runner's build stamp records the
+# size of every file under dist, so the binary must not change after the build.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH
+    PATH=/usr/local/cargo/bin:$PATH \
+    CARGO_PROFILE_RELEASE_STRIP=symbols
 ARG RUSTUP_VERSION=1.29.0
 ARG RUSTUP_SHA256_AMD64=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
 ARG RUSTUP_SHA256_ARM64=9732d6c5e2a098d3521fca8145d826ae0aaa067ef2385ead08e6feac88fa5792
@@ -89,52 +175,153 @@ RUN set -eux; \
     chmod +x /tmp/rustup-init; \
     /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none; \
     rm /tmp/rustup-init
-# Install the package-owned compiler before any application source enters the
-# stage. rustup-init above installs rustup itself, not the selected compiler.
-COPY packages/paperclip-runner/rust-toolchain.toml /tmp/runner-toolchain/rust-toolchain.toml
-RUN cd /tmp/runner-toolchain && rustup show
+COPY --from=runner-artifacts-context /packages/paperclip-runner/rust-toolchain.toml /tmp/runner-toolchain/rust-toolchain.toml
+RUN cd /tmp/runner-toolchain && rustup toolchain install && rustc --version
 
-# Pin the recipe generator and its dependency lockfile. It is a build-only tool
-# and uses the same package-owned compiler as both native build stages.
-FROM rust-toolchain AS rust-chef
-RUN cd /tmp/runner-toolchain && cargo install cargo-chef --version 0.1.73 --locked
-
-FROM rust-chef AS runner-plan
-WORKDIR /app/packages/paperclip-runner
-COPY packages/paperclip-runner/rust-toolchain.toml ./
-COPY packages/paperclip-runner/runner ./runner
-RUN cd runner && cargo chef prepare --recipe-path /tmp/runner-recipe.json
-
-FROM rust-chef AS runner-deps
-WORKDIR /app/packages/paperclip-runner/runner
-COPY packages/paperclip-runner/rust-toolchain.toml ../
-# The recipe changes only when dependency manifests, the lockfile, or target
-# metadata change. Source edits can reuse this compiled dependency layer.
-COPY --from=runner-plan /tmp/runner-recipe.json /tmp/runner-recipe.json
-RUN cargo chef cook --release --locked --package paperclip-runner-core --bin paperclip-runnerd --recipe-path /tmp/runner-recipe.json \
-  && find . -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
-
-FROM runner-deps AS runner-build
-WORKDIR /app/packages/paperclip-runner
-# Rust embeds protocol schemas and fixtures with include_str!. Keep those
-# alongside the complete Cargo workspace so every compile-time input keys
-# this layer. Ordinary server/UI edits can then reuse the native build.
-COPY packages/paperclip-runner/rust-toolchain.toml ./
-COPY packages/paperclip-runner/runner ./runner
-COPY packages/paperclip-runner/protocol ./protocol
-COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ./
-# Cargo fingerprints source mtimes. Normalize them here and after the full
-# source copy below so a fresh checkout cannot invalidate unchanged inputs.
+# Compile the daemon from the files Cargo reads, so a TypeScript-only change
+# reuses this layer. The Runner's own build below runs the same cargo command
+# and finds the target current.
+FROM runner-artifacts-toolchain AS runner-artifacts-runnerd
+WORKDIR /workspace/packages/paperclip-runner
+COPY --from=runner-artifacts-context /packages/paperclip-runner/rust-toolchain.toml ./
+COPY --from=runner-artifacts-context /packages/paperclip-runner/runner ./runner
+COPY --from=runner-artifacts-context /packages/paperclip-runner/protocol ./protocol
+COPY --from=runner-artifacts-context /packages/paperclip-runner/acpx-profiles.json /packages/paperclip-runner/antigravity-distributions.json ./
+# Cargo fingerprints source mtimes. Normalize them here and in the build
+# below so a fresh checkout cannot invalidate unchanged inputs.
 RUN find runner protocol -type f -exec touch -d @0 {} + \
   && touch -d @0 rust-toolchain.toml acpx-profiles.json antigravity-distributions.json \
   && cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd
 
-FROM runner-build AS build
+FROM runner-artifacts-runnerd AS runner-artifacts-build
+WORKDIR /workspace
+COPY --from=runner-artifacts-context / ./
+COPY --from=runner-artifacts-identity /runner-image-identity.json /runner-image-identity.json
+# The source revision is provenance, not identity: the commit whose build
+# produced this image. PAPERCLIP_BUILD_COMMIT is the fallback so one argument
+# stamps a whole `docker build`. Without either, the tree has the daemon and
+# the Runner build but no provider pack.
+ARG PAPERCLIP_RUNNER_SOURCE_REVISION=""
+ARG PAPERCLIP_BUILD_COMMIT=""
+# Set to 1 only by .github/workflows/runner-image.yml, which builds the
+# publication form of the image. Only then does the pack record
+# `runnerInputsDigest`, the identity of this image. Another image build that
+# runs this stage inline, with PAPERCLIP_BUILD_COMMIT, builds the same Runner
+# but must not claim to be this image.
+ARG PAPERCLIP_RUNNER_IMAGE_PUBLICATION=""
+# One layer: the install tree and the pnpm store are removed before the layer
+# is committed, and the pack is granted a+rX in the layer that writes it. A
+# `chmod -R` in a later layer stores every changed file a second time.
+#
+# The Runner is built with its own scripts, in the order its `build` script
+# runs them: the two steps that write build output, between the two that record
+# the build stamp. The stamp lets a later build reuse this output
+# (server/scripts/prepare-runner-vendor.mjs). The other steps of `build` are
+# drift checks that compare committed files across the repository; they write
+# nothing, they need files outside the Runner's inputs, and repository CI runs
+# them on every pull request. A test fails when `build` gains a step, so that
+# a new output step cannot be missed here.
+#
+# The install is frozen: the identity above covers pnpm-lock.yaml as the build
+# received it, and resolving again here would build from a lockfile the
+# identity never saw.
+#
+# The pack's large dependency files get a fixed timestamp before their
+# transport archives are written, so each archive has the same bytes while its
+# file does. The last commands sort the tree into the layers of the two final
+# stages. `dist` is what the Runner's own build writes: its large files change
+# with the Runner's source, so they stay with the content that does.
+RUN set -eu; \
+    revision="${PAPERCLIP_RUNNER_SOURCE_REVISION:-${PAPERCLIP_BUILD_COMMIT}}"; \
+    publication="${PAPERCLIP_RUNNER_IMAGE_PUBLICATION}"; \
+    case "$publication" in ""|1) ;; *) echo "ERROR: PAPERCLIP_RUNNER_IMAGE_PUBLICATION must be 1 or unset" >&2; exit 1 ;; esac; \
+    if [ -n "$publication" ] && [ -z "$revision" ]; then echo "ERROR: a publication build needs PAPERCLIP_RUNNER_SOURCE_REVISION" >&2; exit 1; fi; \
+    find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} +; \
+    touch -d @0 packages/paperclip-runner/rust-toolchain.toml packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json; \
+    pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...' || { \
+      echo "ERROR: the frozen install failed. If pnpm reported ERR_PNPM_OUTDATED_LOCKFILE, the committed pnpm-lock.yaml is behind the Runner's manifests. The repository's lockfile refresh fixes that on master. For a local build only, resolve it first: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile" >&2; \
+      exit 1; \
+    }; \
+    cd packages/paperclip-runner; \
+    node scripts/record-build-inputs.mjs --begin; \
+    pnpm run build:typescript; \
+    pnpm run build:binary; \
+    node scripts/record-build-inputs.mjs --finish; \
+    cd /workspace; \
+    mkdir -p /out /out-large /out-archives /out-transport; \
+    if [ -n "$revision" ]; then \
+      if [ -n "$publication" ]; then \
+        PAPERCLIP_RUNNER_INPUTS_DIGEST="$(node -p 'require("/runner-image-identity.json").digest')"; \
+        export PAPERCLIP_RUNNER_INPUTS_DIGEST; \
+      fi; \
+      PAPERCLIP_RUNNER_SOURCE_REVISION="$revision" node packages/paperclip-runner/scripts/build-provider-pack.mjs /out/provider-pack; \
+      find /out/provider-pack -path /out/provider-pack/dist -prune -o -type f -size +1048575c -exec touch -d @0 {} +; \
+      node scripts/create-provider-pack-archive.mjs /out/provider-pack; \
+      node_modules/.bin/esbuild /out/provider-pack/dist/live/runnerd-codex-transport.js \
+        --bundle --platform=node --format=esm --log-level=warning \
+        --banner:js='import { createRequire as paperclipCreateRequire } from "node:module"; const require = paperclipCreateRequire(import.meta.url);' \
+        --outfile=/out/bundles/runnerd-codex-transport.mjs; \
+      node scripts/runner-image-layout.mjs write --out /out --workspace /workspace --identity /runner-image-identity.json --source-revision "$revision" ${publication:+--publication}; \
+      chmod -R a+rX /out; \
+      node scripts/runner-image-layout.mjs check /out --variant full --expect-source-revision "$revision" ${publication:+--expect-inputs-digest "$PAPERCLIP_RUNNER_INPUTS_DIGEST"}; \
+      cd / && /out/provider-pack/node_modules/node/bin/node --input-type=module -e 'const transport = await import("/out/bundles/runnerd-codex-transport.mjs"); if (typeof transport.createCapabilityRunnerdCodexTransport !== "function") process.exit(1);'; \
+    else \
+      echo "Skipping the provider pack: supply a full PAPERCLIP_RUNNER_SOURCE_REVISION or PAPERCLIP_BUILD_COMMIT to build a complete Runner image"; \
+      node scripts/runner-image-layout.mjs write --out /out --workspace /workspace --identity /runner-image-identity.json; \
+      chmod -R a+rX /out; \
+      node scripts/runner-image-layout.mjs check /out --variant full --allow-unstamped; \
+    fi; \
+    /out/paperclip-runnerd --build-metadata > /dev/null; \
+    cd /out; \
+    find provider-pack -path provider-pack/dist -prune -o -type f -size +1048575c \
+      -exec sh -c 'mkdir -p "/out-large/$(dirname "$1")" && mv "$1" "/out-large/$1"' _ {} \; ; \
+    if [ -f provider-pack.archive.json ]; then \
+      mkdir -p /out-archives/provider-pack.archives /out-transport; \
+      node -e 'for (const [index, file] of require("/out/provider-pack.archive.json").files.entries()) if (!file.path.startsWith("dist/")) console.log(index)' > /tmp/stable-archives; \
+      while read -r index; do mv "provider-pack.archives/$index.tar.zst" /out-archives/provider-pack.archives/; done < /tmp/stable-archives; \
+      rm /tmp/stable-archives; \
+      mv provider-pack.archives provider-pack.archive.json /out-transport/; \
+    fi; \
+    find /out-large /out-archives -exec touch -h -d @0 {} +; \
+    cd /; \
+    rm -rf /workspace /root/.local/share/pnpm /root/.cache
+
+# Two variants of one build. Both are plain file trees, and each `COPY --link`
+# is one layer, independent of the layers under it. The layers are split by
+# how often their content changes, so a new image shares its large layers with
+# the one before it; the stage above gives the files of layers 1 and 3 a fixed
+# timestamp, so those layers have the same bytes whenever their files do.
+#   1. provider pack dependency files of 1 MiB or more (provider binaries and
+#      Node), which change with a provider version or the Node pin;
+#   2. everything else, which changes with every Runner source change.
+# `runner-artifacts-slim` is these two layers: the Runner without the pack's
+# transport form. `runner-artifacts` is the same two layers, then
+#   3. the transport archive of each file in layer 1, as stable as layer 1;
+#   4. the other transport archives, the overlay archive and the receipt,
+#      which change with layer 2.
+# Layers 3 and 4 hold the transport archives and their receipt and nothing
+# else, so a reader can fetch all of them without the pack.
+# `runner-image-oci.mjs check-layers` checks all of this on built images.
+# Every path is where it would be in a single layer; consumers copy by path.
+FROM scratch AS runner-artifacts-slim
+COPY --link --from=runner-artifacts-build /out-large/ /
+COPY --link --from=runner-artifacts-build /out/ /
+
+FROM runner-artifacts-slim AS runner-artifacts
+COPY --link --from=runner-artifacts-build /out-archives/ /
+COPY --link --from=runner-artifacts-build /out-transport/ /
+
+FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
-  && touch -d @0 packages/paperclip-runner/rust-toolchain.toml packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json
+COPY --from=runner-artifacts /runner-package/dist /app/packages/paperclip-runner/dist
+COPY --from=runner-artifacts /runner-package/node_modules/.cache/paperclip-runner-build-inputs.json /app/packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json
+ARG PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST=""
+RUN --mount=type=bind,from=runner-artifacts,source=/runner-image.json,target=/tmp/runner-image.json \
+  node scripts/check-runner-image-expectation.mjs /tmp/runner-image.json
+ENV PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1
+RUN node server/scripts/prepare-runner-vendor.mjs
 # Both the browser bundle and server stamp need the source commit. Declare it
 # after the stable dependency layers, before either application build.
 ARG PAPERCLIP_BUILD_COMMIT=""
@@ -154,24 +341,31 @@ RUN PAPERCLIP_TSC_EMIT_ONLY=1 pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN pnpm --filter @paperclipai/server build:runtime \
   && test -f server/dist-runtime/index.mjs || (echo "ERROR: server runtime bundle missing" && exit 1)
-RUN rm -rf packages/paperclip-runner/runner/target
 
 # Remote OpenCode and ACPX runs require a controller-owned provider pack to
 # verify the sandbox installation or stage matching assets. Ship it in the
 # standard image so downstream Cloud compositions inherit the same artifacts.
 # Grok's native executable stays an external sandbox prerequisite; this pack
 # contains only its launcher.
-FROM build AS runner-provider-pack
+FROM base AS runner-provider-pack
 # Unstamped local builds remain usable, but cannot qualify a remote pack.
 # Never invent a source revision to make an unqualified pack look verified.
-RUN mkdir -p /provider-pack /provider-pack-transport \
-  && if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then \
-    PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
-      && node scripts/create-provider-pack-archive.mjs /provider-pack \
-      && mv /provider-pack.archives /provider-pack.archive.json /provider-pack-transport/; \
+# The pack is ~2.5 GB of provider binaries that change only when a provider
+# version does, next to small files that change on every commit (the manifest
+# carries the source revision). Move the large files to their own tree so
+# production can copy them as a layer that stays identical between commits.
+# Normalized mtimes keep that layer's bytes identical when this stage reruns.
+RUN --mount=type=bind,from=runner-artifacts,target=/runner-artifacts \
+  mkdir -p /provider-pack /provider-pack-large /provider-pack-transport \
+  && if [ -f /runner-artifacts/provider-pack/provider-pack.json ]; then \
+    cp -a /runner-artifacts/provider-pack/. /provider-pack/ \
+      && cp -a /runner-artifacts/provider-pack.archives /runner-artifacts/provider-pack.archive.json /provider-pack-transport/; \
   else \
     echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote OpenCode/ACPX execution"; \
-  fi
+  fi \
+  && cd /provider-pack \
+  && find . -type f -size +1048575c -exec sh -c 'mkdir -p "/provider-pack-large/$(dirname "$1")" && mv "$1" "/provider-pack-large/$1"' _ {} \; \
+  && find /provider-pack-large -exec touch -h -d @0 {} +
 
 FROM base AS production
 ARG USER_UID=1000
@@ -193,19 +387,31 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
+COPY --from=tailscale-client /out/tailscale /out/tailscaled /usr/local/bin/
+COPY --from=tailscale-client /out/LICENSE /usr/local/share/licenses/tailscale/LICENSE
+RUN gosu node tailscale version && gosu node tailscaled --version
+
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-COPY --chown=node:node --from=build /app /app
+# Installed dependencies are ~2.9 GB of /app and change only with the lockfile.
+# Copied from the deps stage as their own layer, a commit that leaves the
+# lockfile alone does not push or pull them again. The build stage writes
+# nothing under the root node_modules, so the rest of /app is copied without it.
+COPY --chown=node:node --from=deps /app/node_modules /app/node_modules
+COPY --chown=node:node --exclude=node_modules --from=build /app /app
 
+# Large provider binaries first, linked so the layer does not depend on the
+# per-commit /app layer above; then the small per-commit remainder of the pack.
+COPY --link --chown=0:0 --from=runner-provider-pack /provider-pack-large/ /opt/paperclip-runner/provider-pack/
 COPY --chown=0:0 --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
 COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/
 # Managed deployments can remap node's UID at startup. This immutable pack
 # contains public code and integrity metadata, never credentials; it must remain
-# readable afterward.
+# readable afterward. The Runner build grants a+rX, and every copy up to this
+# COPY preserves modes.
 # Keep it root-owned and verify access as an unrelated unprivileged UID.
-RUN chmod -R a+rX /opt/paperclip-runner/provider-pack \
-  && if [ -f /opt/paperclip-runner/provider-pack/provider-pack.json ]; then \
+RUN if [ -f /opt/paperclip-runner/provider-pack/provider-pack.json ]; then \
     gosu 65534:65534 node -e 'const fs = require("node:fs"); const path = require("node:path"); const root = "/opt/paperclip-runner/provider-pack"; const manifest = JSON.parse(fs.readFileSync(path.join(root, "provider-pack.json"), "utf8")); for (const artifact of Object.values(manifest.payload.artifacts)) fs.readFileSync(path.join(root, artifact.path)); fs.accessSync(path.join(root, manifest.payload.artifacts.nodeCommand.path), fs.constants.X_OK);'; \
   fi
 ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack

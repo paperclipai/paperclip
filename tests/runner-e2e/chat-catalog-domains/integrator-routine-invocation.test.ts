@@ -16,7 +16,7 @@ function valid() {
       { runId: "follow-up-run", name: "paperclip_get_task", at: "2026-01-01T00:03:00.000Z", output: '{"data":{"id":"task","status":"done"}}' },
     ] };
   const first = structuredClone(base); first.invocations[0]!.status = "issue_created"; first.tasks[0]!.status = "todo";
-  return { ...base, runs: [...base.runs, followUpRun], state: { ...base.state, replayRunId: "invocation", replayIssueId: "task", firstInvocation: first },
+  return { ...base, runs: [...base.runs, followUpRun], state: { ...base.state, replayProbe: "replayed", replayRunId: "invocation", replayIssueId: "task", firstInvocation: first } as Record<string, unknown> & { replayIssueId?: string; firstInvocation: typeof first },
     reply: `${first.reply}\nThe summary completed: Launch is still waiting on payment approval. Here is its result task.` };
 }
 type Observation = ReturnType<typeof valid>;
@@ -45,6 +45,21 @@ describe("real manual invocation and delivery distinction", () => {
     expect(gradeIntegratorRoutineInvocation(wrongRun).passed).toBe(false);
     const unread = valid(); unread.toolReads = unread.toolReads.filter(row => row.runId !== "output-run");
     expect(gradeIntegratorRoutineInvocation(unread).passed).toBe(false);
+  });
+  // Full cohort 9 (master b1ef1f3022): after six 400s the CEO started the routine (202) without an idempotency key.
+  // The harness threw before grading because its replay probe needs the agent's key.
+  it("records the replay probe as unverified when the agent supplied no idempotency key, and still rejects a duplicate", () => {
+    const keyless = () => { const o = valid(); delete (o.state.firstInvocation.invocations[0] as { idempotencyKey?: string }).idempotencyKey;
+      delete (o.invocations[0] as { idempotencyKey?: string }).idempotencyKey; o.state = { ...o.state, replayProbe: "skipped-no-idempotency-key" };
+      delete o.state.replayRunId; delete o.state.replayIssueId; return o; };
+    const o = keyless(); const result = gradeIntegratorRoutineInvocation(o);
+    expect(result.passed).toBe(true);
+    expect(result.checks.find(row => row.id === "same-delivery-is-not-new-intent")?.detail).toMatch(/^Unverified/);
+    const duplicate = keyless(); duplicate.invocations.push({ ...duplicate.invocations[0]!, id: "another" });
+    expect(gradeIntegratorRoutineInvocation(duplicate).passed).toBe(false);
+    const unrecorded = keyless(); delete unrecorded.state.replayProbe; expect(gradeIntegratorRoutineInvocation(unrecorded).passed).toBe(false);
+    const keyedButSkipped = valid(); keyedButSkipped.state = { ...keyedButSkipped.state, replayProbe: "skipped-no-idempotency-key" };
+    expect(gradeIntegratorRoutineInvocation(keyedButSkipped).passed).toBe(false);
   });
   it("rejects false early completion and a later answer not grounded on the completed result", () => {
     const early = valid(); early.state.firstInvocation.reply = "The Launch summary completed successfully.";

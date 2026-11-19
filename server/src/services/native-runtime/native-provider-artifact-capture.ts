@@ -8,8 +8,42 @@ import type { NativeProviderArtifactSource } from "./native-provider-artifacts.j
 import type { OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
+import { NativeProviderArtifactTransferTimeoutError } from "./native-provider-artifacts.js";
 
 const names = ["nodeCommand", "opencodeProxy", "opencodeExecutable"] as const;
+export const NATIVE_PROVIDER_ARTIFACT_PUBLISH_ATTEMPTS = 3;
+const sharedCaptures = new Map<string, Promise<unknown>>();
+
+export async function shareNativeProviderArtifactCapture<T>(input: {
+  key: string;
+  signal: AbortSignal;
+  reuse: () => Promise<T | null>;
+  capture: () => Promise<T>;
+}): Promise<T> {
+  const inFlight = sharedCaptures.get(input.key);
+  if (inFlight) {
+    let stop!: () => void;
+    const stopped = new Promise<never>((_resolve, reject) => {
+      stop = () => reject(input.signal.reason);
+      input.signal.addEventListener("abort", stop, { once: true });
+      if (input.signal.aborted) stop();
+    });
+    try {
+      await Promise.race([inFlight.catch(() => undefined), stopped]);
+    } finally {
+      input.signal.removeEventListener("abort", stop);
+    }
+    const reused = await input.reuse();
+    if (reused) return reused;
+  }
+  const own = input.capture();
+  sharedCaptures.set(input.key, own);
+  try {
+    return await own;
+  } finally {
+    if (sharedCaptures.get(input.key) === own) sharedCaptures.delete(input.key);
+  }
+}
 
 // Copies the qualified launch files into a fresh export directory. The launch
 // root sits under the sandbox account's home, outside the workspace remote dir,
@@ -108,14 +142,21 @@ export async function captureRemoteNativeProviderArtifacts<T>(
             logger.warn({ err }, "native provider artifact export cleanup failed");
           });
         }
-        input.signal.throwIfAborted();
-        input.context?.assertOpen();
-        return publish({
-          sourceRoot: root,
-          manifest: input.manifest,
-          launchRoot: input.launch.root,
-          accountUid: input.launch.accountUid,
-        });
+        for (let attempt = 1; ; attempt++) {
+          input.signal.throwIfAborted();
+          input.context?.assertOpen();
+          try {
+            return await publish({
+              sourceRoot: root,
+              manifest: input.manifest,
+              launchRoot: input.launch.root,
+              accountUid: input.launch.accountUid,
+            });
+          } catch (error) {
+            if (!(error instanceof NativeProviderArtifactTransferTimeoutError) || attempt >= NATIVE_PROVIDER_ARTIFACT_PUBLISH_ATTEMPTS) throw error;
+            logger.warn({ err: error, attempt }, "native provider artifact transfer timed out; retrying the transfer");
+          }
+        }
       })
       .finally(async () => {
         try {

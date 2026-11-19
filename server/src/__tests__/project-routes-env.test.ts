@@ -22,6 +22,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockProtectedKeyHolders = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
@@ -54,6 +55,10 @@ vi.mock("../services/workspace-runtime.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/protected-environment-keys.js", async () => ({
+    ...await vi.importActual<typeof import("../services/protected-environment-keys.js")>("../services/protected-environment-keys.js"),
+    listProtectedEnvironmentKeyHolders: mockProtectedKeyHolders,
+  }));
   vi.doMock("../services/activity-log.js", async () => ({
     ...await vi.importActual<typeof import("../services/activity-log.js")>("../services/activity-log.js"),
     persistActivity: async (db: unknown, input: unknown) => { await mockLogActivity(db, input); return { activity: { id: "activity" }, publication: null }; },
@@ -168,6 +173,31 @@ describe("project env routes", () => {
     mockProjectService.listWorkspaces.mockResolvedValue([]);
     mockEnvironmentService.getById.mockReset();
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
+    mockProtectedKeyHolders.mockResolvedValue([]);
+  });
+
+  it("saves a protected env key and returns a notice that names the environment", async () => {
+    const env = { DESKTOP_SESSION: { type: "plain", value: "mine" }, OTHER: { type: "plain", value: "ok" } };
+    mockProtectedKeyHolders.mockResolvedValue([{ environmentId: "computer", environmentName: "Team Computer", keys: new Set(["DESKTOP_SESSION"]) }]);
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.update.mockResolvedValue(buildProject({ env }));
+    const app = await createApp();
+    const res = await request(app).patch("/api/projects/project-1").send({ env });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockProjectService.update).toHaveBeenCalledWith("project-1", expect.objectContaining({ env }));
+    expect(res.body.configurationWarnings).toEqual([{ code: "protected_environment_variable", field: "env.DESKTOP_SESSION",
+      message: "DESKTOP_SESSION is set by Team Computer on its tasks. Agents running there may see the platform's value instead of this one." }]);
+  });
+
+  it("returns no notice when the update does not change env", async () => {
+    mockProtectedKeyHolders.mockResolvedValue([{ environmentId: "computer", environmentName: "Team Computer", keys: new Set(["DESKTOP_SESSION"]) }]);
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.update.mockResolvedValue(buildProject({ name: "Renamed" }));
+    const app = await createApp();
+    const res = await request(app).patch("/api/projects/project-1").send({ name: "Renamed" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).not.toHaveProperty("configurationWarnings");
+    expect(mockProtectedKeyHolders).not.toHaveBeenCalled();
   });
 
   it('requires workspace-write authority to attach a repository despite project read access', async () => {

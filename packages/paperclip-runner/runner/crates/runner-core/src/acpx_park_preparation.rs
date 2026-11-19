@@ -26,12 +26,26 @@ impl AcpxCommandExecutor {
 
     pub(super) fn restart_session_after_turn(&mut self) -> Result<(), DurableRunnerError> {
         self.ensure_persistence_healthy()?;
-        if !self.generation_restartable(AcpxProviderSession::can_restart_after_turn) {
+        if self.awaiting_provider_turn()
+            || self
+                .session
+                .as_ref()
+                .is_some_and(AcpxProviderSession::continues_in_process)
+            || !self.generation_restartable(AcpxProviderSession::can_restart_after_turn)
+        {
             return Ok(());
         }
         let session = self.session.as_mut().expect("checked ACPX session");
         if session.settle_park_observation().is_err()
             || !self.generation_restartable(AcpxProviderSession::can_restart_after_turn)
+        {
+            return Ok(());
+        }
+        if self
+            .session
+            .as_mut()
+            .expect("checked ACPX session")
+            .continue_after_quiet_turn()
         {
             return Ok(());
         }

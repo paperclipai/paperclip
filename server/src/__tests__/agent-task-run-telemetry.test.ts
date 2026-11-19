@@ -1,11 +1,14 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../telemetry-company-scope.js";
+import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
+import { PERMANENT_FAILURE_CODES, PERSON_OWNED_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "../services/continuation-cause.ts";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
@@ -24,7 +27,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-import { emitAgentTaskRun, emitAgentTaskRunById } from "../services/agent-task-run-telemetry.ts";
+import { agentRunFailureCause, emitAgentTaskRun, emitAgentTaskRunById } from "../services/agent-task-run-telemetry.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -43,6 +46,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -103,6 +107,59 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
         expect.objectContaining({ agentId, state }),
       );
     }
+  });
+
+  it("tracks agent.task_run in the run's company scope", async () => {
+    await seedCompanyAndAgent();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded" }).returning();
+    const scopedCompanies: Array<string | undefined> = [];
+    const recordScope = () => scopedCompanies.push(scopedTelemetryCompanyId());
+    mockTrackAgentTaskRun.mockImplementationOnce(recordScope).mockImplementationOnce(recordScope);
+
+    await emitAgentTaskRun(db, run);
+    await emitAgentTaskRunById(db, { runId: run.id, companyId });
+
+    expect(scopedCompanies).toEqual([companyId, companyId]);
+    expect(scopedTelemetryCompanyId()).toBeUndefined();
+  });
+
+  it.each([
+    { name: "task creator", issue: { createdByUserId: "user-creator", responsibleUserId: "user-assigner" }, runOwner: "user-owner", expected: { userId: "user-creator", attributedVia: "task_creator" } },
+    { name: "task assigner", issue: { createdByUserId: null, responsibleUserId: "user-assigner" }, runOwner: "user-owner", expected: { userId: "user-assigner", attributedVia: "task_assigner" } },
+    { name: "run owner", issue: { createdByUserId: null, responsibleUserId: null }, runOwner: "user-owner", expected: { userId: "user-owner", attributedVia: "run_owner" } },
+    { name: "nobody", issue: { createdByUserId: null, responsibleUserId: null }, runOwner: null, expected: undefined },
+  ])("tracks agent.task_run for the person responsible: $name", async ({ issue, runOwner, expected }) => {
+    await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Write the report", assigneeAgentId: agentId, createdByAgentId: issue.createdByUserId ? null : agentId, ...issue });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded",
+      responsibleUserId: runOwner, contextSnapshot: { issueId } }).returning();
+    const people: unknown[] = [];
+    const recordPerson = () => people.push(scopedTelemetryPerson());
+    mockTrackAgentTaskRun.mockImplementationOnce(recordPerson).mockImplementationOnce(recordPerson);
+
+    await emitAgentTaskRun(db, run);
+    await emitAgentTaskRunById(db, { runId: run.id, companyId });
+
+    expect(people).toEqual([expected, expected]);
+    expect(mockTrackAgentTaskRun).toHaveBeenCalledWith(mockTelemetryClient, expect.objectContaining({ taskId: issueId }));
+  });
+
+  it("does not read another company's task for attribution", async () => {
+    await seedCompanyAndAgent();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId: otherCompanyId, title: "Other task", createdByUserId: "user-other" });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } }).returning();
+    const people: unknown[] = [];
+    mockTrackAgentTaskRun.mockImplementationOnce(() => people.push(scopedTelemetryPerson()));
+
+    await emitAgentTaskRun(db, run);
+
+    expect(people).toEqual([undefined]);
+    await db.delete(issues);
+    await db.delete(companies).where(eq(companies.id, otherCompanyId));
   });
 
   it("emits the same event from a small scoped run read without loading execution payloads", async () => {
@@ -337,5 +394,63 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     const dims = mockTrackAgentTaskRun.mock.calls[0][1];
     expect(dims).not.toHaveProperty("adapterType");
     expect(dims).not.toHaveProperty("agentRole");
+  });
+
+  it("sends a fixed failure_cause from the stored error code and provider category for failed runs", async () => {
+    await seedCompanyAndAgent();
+    const [quota] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", errorCode: "adapter_failed",
+      error: "provider said: secret detail", resultJson: { providerFailure: { category: "rate_limit", message: "secret detail" } } }).returning();
+    const [lost] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "interrupted", errorCode: "process_lost" }).returning();
+    const [done] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", errorCode: null }).returning();
+
+    await emitAgentTaskRun(db, quota);
+    await emitAgentTaskRunById(db, { companyId, runId: lost.id });
+    await emitAgentTaskRun(db, done);
+
+    const sent = mockTrackAgentTaskRun.mock.calls.map((call) => call[1]);
+    expect(sent[0].failureCause).toBe("provider_limit");
+    expect(sent[1].failureCause).toBe("platform_error");
+    expect(sent[2]).not.toHaveProperty("failureCause");
+    expect(JSON.stringify(sent)).not.toContain("secret detail");
+  });
+});
+
+describe("agentRunFailureCause", () => {
+  it.each([
+    [{ errorCode: "provider_auth_failed", providerFailureCategory: null }, "missing_access"],
+    [{ errorCode: "adapter_failed", providerFailureCategory: "authentication" }, "missing_access"],
+    [{ errorCode: "provider_quota", providerFailureCategory: null }, "provider_limit"],
+    [{ errorCode: "adapter_failed", providerFailureCategory: "overloaded" }, "provider_limit"],
+    [{ errorCode: "native_provider_model_rejected", providerFailureCategory: null }, "provider_error"],
+    [{ errorCode: "adapter_failed", providerFailureCategory: "model_unavailable" }, "provider_error"],
+    [{ errorCode: "provider_transport_failed", providerFailureCategory: "rate_limit" }, "provider_error"],
+    [{ errorCode: "native_provider_usage_limit", providerFailureCategory: "authentication" }, "provider_limit"],
+    [{ errorCode: "budget_hard_stop", providerFailureCategory: null }, "waiting_for_person"],
+    [{ errorCode: "agent_not_invokable", providerFailureCategory: null }, "platform_error"],
+    [{ errorCode: "execution_reconciliation_required", providerFailureCategory: null }, "waiting_for_person"],
+    [{ errorCode: "native_session_cleanup_quarantined", providerFailureCategory: null }, "waiting_for_person"],
+    [{ errorCode: "issue_reassigned", providerFailureCategory: null }, "task_changed"],
+    [{ errorCode: "operator_interrupted", providerFailureCategory: null }, "task_changed"],
+    [{ errorCode: "process_lost", providerFailureCategory: null }, "platform_error"],
+    [{ errorCode: "setup_failed", providerFailureCategory: "rate_limit" }, "platform_error"],
+    [{ errorCode: "adapter_failed", providerFailureCategory: null }, "agent_error"],
+    [{ errorCode: "timeout", providerFailureCategory: null }, "agent_error"],
+    [{ errorCode: "some_future_code", providerFailureCategory: null }, "unknown"],
+    [{ errorCode: null, providerFailureCategory: null }, "unknown"],
+  ] as const)("maps %o to %s", (input, expected) => {
+    expect(agentRunFailureCause(input)).toBe(expected);
+  });
+
+  it("classifies every canonical run failure code", () => {
+    const canonical = [
+      ...PERSON_OWNED_FAILURE_CODES,
+      ...PERMANENT_FAILURE_CODES,
+      ...RESTART_CLASS_FAILURE_CODES,
+      ...SETUP_FAILURE_CODES,
+      ...EXECUTION_RECONCILIATION_CAUSES,
+    ];
+    const unclassified = canonical.filter((errorCode) =>
+      agentRunFailureCause({ errorCode, providerFailureCategory: null }) === "unknown");
+    expect(unclassified).toEqual([]);
   });
 });

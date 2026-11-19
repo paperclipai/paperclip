@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRuns,
-  issueComments, issues } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRunEvents,
+  heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { accountRunCost } from "../services/run-cost-accounting.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { requestTaskRetry } from "../services/task-retry.js";
@@ -15,6 +15,8 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { applyOwnershipReportBackstops } from "../services/native-runtime/native-finalization-reconciler.js";
 import { promoteDeferredWorkIntents, TEMPORARY_REFUSAL_TRIGGERS, WORK_INTENT_TERMINAL_OUTCOMES } from "../services/work-intent-outbox.js";
+import { deliveredQueuedCommentIds } from "../services/queued-comment-delivery.js";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -32,6 +34,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
   let heartbeat: ReturnType<typeof heartbeatService>;
   const adapterType = "codex_local";
   const dispatched: Array<{ runId: string; context: Record<string, unknown> }> = [];
+  let duringTurn: ((runId: string) => Promise<void>) | null = null;
   const oldHome = process.env.PAPERCLIP_HOME;
   let home: string;
 
@@ -45,6 +48,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
       type: adapterType, supportsLocalAgentJwt: false,
       execute: async input => {
         dispatched.push({ runId: input.runId, context: input.context as Record<string, unknown> });
+        await duringTurn?.(input.runId);
         // The agent finishes the task, so no disposition repair follows.
         await db.update(issues).set({ status: "done" }).where(eq(issues.id, String(input.context.issueId)));
         return { exitCode: 0, signal: null, timedOut: false, resultJson: {} };
@@ -730,6 +734,154 @@ describePostgres("saved intents while another run's accounting is pending", () =
         executionContinuation: { messages: [{ id: f.commentId }] } } });
     await settle(f); await settle(f);
     expect(deliveries(f.commentId)).toHaveLength(1);
+  }, 180_000);
+
+  async function runningNativeSource(f: Awaited<ReturnType<typeof seedHeldComment>>) {
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: f.issueId, finishedAt: null,
+      startedAt: new Date(Date.now() - 30_000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ executionRunId: f.sourceRunId, executionLockedAt: new Date() }).where(eq(issues.id, f.issueId));
+  }
+
+  async function readHistoryDuringTurn(f: Awaited<ReturnType<typeof seedHeldComment>>) {
+    const reader = new PaperclipRunnerToolAuthority(db, { companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+      runId: f.sourceRunId });
+    try {
+      const history = await reader.execute({ tool: "get_task_history", callId: `history-${f.sourceRunId}`, arguments: {} });
+      expect((history as { comments: Array<{ id: string }> }).comments.map(comment => comment.id)).toContain(f.commentId);
+      expect((history as { arrivedDuringThisTurn?: string[] }).arrivedDuringThisTurn).toContain(`comment:${f.commentId}`);
+    } finally { reader.close(); }
+  }
+
+  const reportResult = (f: { companyId: string; agentId: string; commentId: string }, runId: string, cited: boolean) =>
+    db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId, agentId: f.agentId, seq: 100_000, eventType: "run.result.accepted",
+      stream: "system", level: "info", payload: { prpEvent: { payload: { result: { schema: "paperclip.run_result.v1",
+        reportedWorkDisposition: "done", summary: "Done.",
+        evidence: [{ ref: "document:plan" }, ...(cited ? [{ ref: `comment:${f.commentId} (applied)` }] : [])],
+        completionClaim: { contractRevision: "1", objectiveSatisfied: true, remainingWork: [],
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: ["document:plan"] }] } } } } } });
+
+  async function closeSourceRun(f: Awaited<ReturnType<typeof seedHeldComment>>) {
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(Date.now() + 1_000) })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issueId));
+    await closeByAgent(f);
+  }
+
+  const issueStatus = async (f: { issueId: string }) =>
+    (await db.select({ status: issues.status }).from(issues).where(eq(issues.id, f.issueId)))[0]?.status;
+
+  const postComment = (f: Awaited<ReturnType<typeof seedHeldComment>>) => heartbeat.wakeup(f.agentId, {
+    source: "automation", triggerDetail: "system", reason: "issue_commented",
+    payload: { issueId: f.issueId, commentId: f.commentId, mutation: "comment" },
+    requestedByActorType: "user", requestedByActorId: f.userId,
+    contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: f.commentId, wakeCommentId: f.commentId,
+      source: "issue.comment", wakeReason: "issue_commented" },
+  });
+
+  it.each([
+    { shape: "read unchanged and cited as handled", edit: false, cited: true, delivered: 0 },
+    { shape: "read unchanged but not cited", edit: false, cited: false, delivered: 1 },
+    { shape: "edited after the read", edit: true, cited: true, delivered: 1 },
+  ])("settles a stale queued run of a message the closing run read mid-turn ($shape)", async ({ edit, cited, delivered }) => {
+    const f = await seedHeldComment();
+    await runningNativeSource(f);
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "queued", requestedByActorType: "user", requestedByActorId: f.userId,
+      payload: { issueId: f.issueId, commentId: f.commentId, mutation: "comment" } }).returning();
+    const [stale] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation",
+      triggerDetail: "system", status: "queued", wakeupRequestId: wake!.id,
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: f.commentId, wakeCommentId: f.commentId,
+        wakeCommentIds: [f.commentId], wakeReason: "issue_commented", source: "issue.comment" } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: stale!.id }).where(eq(agentWakeupRequests.id, wake!.id));
+    await readHistoryDuringTurn(f);
+    if (edit) await db.update(issueComments).set({ body: "Edited: also include the FOLLOWUP line twice.",
+      updatedAt: new Date(Date.now() + 500) }).where(eq(issueComments.id, f.commentId));
+    await reportResult(f, f.sourceRunId, cited);
+    await closeSourceRun(f);
+    await db.update(issues).set({ executionRunId: null, executionLockedAt: null }).where(eq(issues.id, f.issueId));
+    await settle(f); await settle(f);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, stale!.id)))[0]).toMatchObject({
+      status: "cancelled", errorCode: "continuation_task_ownership_changed" });
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(delivered);
+    await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(delivered);
+    expect(await issueStatus(f)).toBe("done");
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(row => row.recordId === f.commentId)).toEqual([]);
+  }, 180_000);
+
+  it.each([
+    { outcome: "succeeded", edit: "none", cited: true, consumed: true },
+    { outcome: "succeeded", edit: "none", cited: false, consumed: false },
+    { outcome: "succeeded", edit: "during the run", cited: true, consumed: false },
+    { outcome: "succeeded", edit: "after the run finished", cited: true, consumed: false },
+    { outcome: "failed", edit: "none", cited: true, consumed: false },
+  ])("counts a mid-turn history read as delivery only for a run that $outcome on the current revision and cited it (edited: $edit, cited: $cited)", async ({ outcome, edit, cited, consumed }) => {
+    const f = await seedHeldComment();
+    await runningNativeSource(f);
+    await readHistoryDuringTurn(f);
+    await reportResult(f, f.sourceRunId, cited);
+    const editComment = (at: number) => db.update(issueComments).set({ body: "Edited after the read.", updatedAt: new Date(at) })
+      .where(eq(issueComments.id, f.commentId));
+    if (edit === "during the run") await editComment(Date.now() + 500);
+    await db.update(heartbeatRuns).set({ status: outcome, finishedAt: new Date(Date.now() + 1_000),
+      ...(outcome === "failed" ? { errorCode: "adapter_failed" } : {}) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (edit === "after the run finished") await editComment(Date.now() + 60_000);
+    const delivered = await deliveredQueuedCommentIds(db, { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
+      commentIds: [f.commentId] });
+    expect(delivered.has(f.commentId)).toBe(consumed);
+  }, 180_000);
+
+  it("holds a message behind a run another server is executing instead of queueing a run of its own", async () => {
+    const f = await seedHeldComment();
+    await runningNativeSource(f);
+    await postComment(f);
+    const queued = (await issueRuns(f)).filter(run => run.id !== f.sourceRunId && run.status === "queued");
+    expect(queued).toEqual([]);
+    const held = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    expect(held.map(row => row.payload?.commentId)).toEqual([f.commentId]);
+  }, 180_000);
+
+  it.each([
+    { read: true, cited: true, delivered: 0 },
+    { read: true, cited: false, delivered: 1 },
+    { read: false, cited: false, delivered: 1 },
+  ])("settles a held message as soon as its run closes the task (read mid-turn: $read, cited: $cited)", async ({ read, cited, delivered }) => {
+    const f = await seedHeldComment();
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    let closingRunId: string | null = null;
+    duringTurn = async runId => {
+      duringTurn = null;
+      closingRunId = runId;
+      await db.update(issueComments).set({ createdAt: new Date(), updatedAt: new Date() }).where(eq(issueComments.id, f.commentId));
+      await postComment(f);
+      if (!read) return;
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issueId }).where(eq(heartbeatRuns.id, runId));
+      await readHistoryDuringTurn({ ...f, sourceRunId: runId });
+      await reportResult(f, runId, cited);
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, runId));
+      await closeByAgent(f);
+    };
+    if (!read) await closeByAgent(f);
+    await heartbeat.wakeup(f.agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeReason: "issue_assigned" } });
+    await heartbeat.drainActiveRunExecutions();
+    await heartbeat.drainActiveRunExecutions();
+    expect(closingRunId).not.toBeNull();
+    expect(deliveries(f.commentId)).toHaveLength(delivered);
+    expect((await issueRuns(f)).filter(run => run.status === "cancelled")).toEqual([]);
+    await settle(f); await settle(f);
+    expect(deliveries(f.commentId)).toHaveLength(delivered);
+    expect(await issueStatus(f)).toBe("done");
+    const delivery = deliveries(f.commentId)[0]?.context.paperclipWake as { comments?: Array<{ id: string; readByEarlierTurn?: boolean }> } | undefined;
+    if (delivered) expect(delivery?.comments?.find(comment => comment.id === f.commentId)?.readByEarlierTurn ?? false).toBe(read);
   }, 180_000);
 
   it("still refuses work at a reached hard stop, which the board owns", async () => {

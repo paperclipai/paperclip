@@ -5,7 +5,7 @@ import type { InternalObservation } from "./internal-support.js";
 vi.mock("@playwright/test",()=>({expect:Object.assign((node:any)=>({toBeVisible:async()=>{if(!node.visible)throw Error("Missing real UI item");},toBeEditable:async()=>{if(!node.editable)throw Error("Noneditable real UI");},toHaveURL:async(predicate:(url:URL)=>boolean)=>{if(!predicate(new URL(node.url())))throw Error("Wrong actual Studio identity");},toPass:async()=>{let error:unknown;for(let i=0;i<3;i++){try{await node();return;}catch(caught){error=caught;}}throw error;}}),{poll:(read:()=>Promise<boolean>)=>({toBe:async(expected:boolean)=>{for(let i=0;i<3;i++)if(await read()===expected)return;throw Error("UI content did not hydrate to the saved checklist");}})})}));
 const observed=vi.hoisted(()=>({base:undefined as unknown}));
 vi.mock("./integrator-support.js",async original=>({...await original<typeof import("./integrator-support.js")>(),observeInternal:vi.fn(async(_ctx:unknown,state:unknown)=>({...observed.base as object,state}))}));
-import { gradeIntegratorSkills, authoredChecklistTextBlocks, preservesVisibleWebsiteChecklist, inspectAuthoredSkill, integratorSkillsCases, websiteChecklist } from "./integrator-skills.js";
+import { gradeIntegratorSkills, authoredChecklistTextBlocks, visibleChecklistKeepsLiterals, inspectAuthoredSkill, integratorSkillsCases, websiteChecklist } from "./integrator-skills.js";
 afterEach(()=>vi.restoreAllMocks());
 function fixture(){
  const markdown=websiteChecklist.join("\n"),source="https://fixture.test/ACORN/chats/ceo";let current=source,reloads=0,editorReads=0;
@@ -64,7 +64,7 @@ it("rejects invented inspection receipts and keeps other skill cases on their or
  f.state.authoredSkillInspection={companyId:"company",skillId:"other",versionId:"revision",libraryVisible:true,studioVisible:true,editable:true,checklistVisible:true,reloaded:true,readbackMatched:true};
  expect(gradeIntegratorSkills(f.o).passed).toBe(false);
  expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.explicit-restriction")!.oracleVersion).toBe("paperclip.chat-catalog.skill-restriction.structural.v2");
- expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!.oracleVersion).toBe("paperclip.chat-catalog.skill-authoring.v9");
+ expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!.oracleVersion).toBe("paperclip.chat-catalog.skill-authoring.v10");
 });
 it("opens the skill from its Skill created card when the reply has no skill link",async()=>{
  const f=fixture();Object.assign(f.o,{links:[],renderedLinkEvidence:[]});
@@ -88,13 +88,14 @@ it("waits for actual saved editor content instead of rejecting its visible empty
  expect(f.state.authoredSkillInspection).toMatchObject({checklistVisible:true,reloaded:true});
 });
 
-it("inspects real rich-text blocks without applying Markdown marker assumptions to unrelated prefaces", () => {
+it("inspects real rich-text blocks for the setup literals, not for checklist wording", () => {
  const blocks=["Do not mark a check passed without evidence.",...websiteChecklist];
- expect(preservesVisibleWebsiteChecklist(blocks)).toBe(true);
- expect(preservesVisibleWebsiteChecklist([blocks[0]!,...websiteChecklist.toReversed()])).toBe(false);
- for(let index=0;index<4;index++)expect(preservesVisibleWebsiteChecklist(websiteChecklist.filter((_,i)=>i!==index))).toBe(false);
- expect(preservesVisibleWebsiteChecklist(["Website review checklist","Type here to edit"])).toBe(false);
- expect(preservesVisibleWebsiteChecklist([...websiteChecklist.slice(0,3),"375 pixel viewport"])).toBe(false);
+ expect(visibleChecklistKeepsLiterals(blocks)).toBe(true);
+ expect(visibleChecklistKeepsLiterals(websiteChecklist.toReversed())).toBe(true);
+ expect(visibleChecklistKeepsLiterals(["Website review checklist","Type here to edit"])).toBe(false);
+ expect(visibleChecklistKeepsLiterals(websiteChecklist.filter(item=>!item.includes("375")))).toBe(false);
+ expect(visibleChecklistKeepsLiterals(websiteChecklist.filter(item=>!item.includes("WCAG")))).toBe(false);
+ expect(visibleChecklistKeepsLiterals([])).toBe(false);
 });
 
 it("retains exact direct Studio card navigation when the UI uses it", async()=>{ const f=fixture();f.ui.directStudio=true;await inspectAuthoredSkill(f.ctx,f.state,f.o);expect(f.events).toEqual(["reply-link","My Skills","open-skill","reload","return-chat"]);expect(f.state.authoredSkillInspection).toMatchObject({readbackMatched:true,editorSurface:"studio"}); });
@@ -114,17 +115,9 @@ function renderedSections(markup: string) {
  const document = new JSDOM(`<aside>375px viewport without horizontal scrolling</aside><div role="textbox" aria-label="editable markdown">${markup}</div>`).window.document;
  return authoredChecklistTextBlocks(Array.from(document.querySelector('[role="textbox"]')!.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li")) as Element[]);
 }
-it("reads actual editor heading context with its following steps rather than isolated list items",()=>{
- expect(preservesVisibleWebsiteChecklist(renderedSections(sectionMarkup))).toBe(true);
-});
-it.each(["wrong section","missing check","heading only","negated directive","negated keyboard"])("rejects incomplete editor sections: %s",fault=>{
- let markup=sectionMarkup;
- if(fault==="wrong section")markup=markup.replace("<h3>375px viewport without horizontal scrolling", "<h3>Archived dimensions</h3><p>The earlier width was 375 pixels.</p><h3>Responsive review").replace("375 pixel wide viewport","wide viewport");
- if(fault==="missing check")markup=markup.replace(/<h3>WCAG AA text contrast<\/h3><ul>.*?<\/ul>/,"");
- if(fault==="heading only")markup=markup.replace("<ul><li>Load the landing page at a 375 pixel wide viewport.</li><li>Confirm no horizontal scrollbar appears.</li></ul>","");
- if(fault==="negated directive")markup=markup.replace("Load the landing page", "Do not test the landing page");
- if(fault==="negated keyboard")markup=markup.replace("Do not use a mouse or touch input.", "Do not use the keyboard.");
- expect(preservesVisibleWebsiteChecklist(renderedSections(markup))).toBe(false);
+it("reads actual editor heading context with its following steps",()=>{
+ expect(visibleChecklistKeepsLiterals(renderedSections(sectionMarkup))).toBe(true);
+ expect(visibleChecklistKeepsLiterals(renderedSections(sectionMarkup.replace(/<h3>WCAG AA text contrast<\/h3><ul>.*?<\/ul>/,"")))).toBe(false);
 });
 
 it("clicks the library card again when the first click leaves the list open (gha-42937394973), still requiring this skill's page",async()=>{

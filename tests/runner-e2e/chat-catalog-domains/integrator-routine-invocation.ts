@@ -74,9 +74,11 @@ export function gradeIntegratorRoutineInvocation(value: unknown) {
     && invocation.triggerPayload?.variables != null && (invocation.triggerPayload.variables as Record<string, unknown>).projectName === "Launch"
     && !!task && task.projectId === projectId && task.assigneeAgentId === o.leadId,
   "Exactly one manual invocation retains the supplied project-name input and creates the intended owned Launch task.");
-  c.add("same-delivery-is-not-new-intent", !!firstInvocation?.idempotencyKey && o.state.replayRunId === invocation?.id
-    && o.state.replayIssueId === task?.id && firstInvocation.id === invocation?.id && o.invocations.length === 1,
-  "Replaying the committed public invocation with its original key retains the same invocation and task IDs.");
+  const replaySkipped = !firstInvocation?.idempotencyKey && o.state.replayProbe === "skipped-no-idempotency-key";
+  c.add("same-delivery-is-not-new-intent", !!firstInvocation && firstInvocation.id === invocation?.id && o.invocations.length === 1 && (replaySkipped
+    || !!firstInvocation.idempotencyKey && o.state.replayProbe === "replayed" && o.state.replayRunId === invocation?.id && o.state.replayIssueId === task?.id),
+  replaySkipped ? "Unverified: the agent started the routine without an idempotency key, so no replay probe ran; exactly one invocation exists."
+    : "Replaying the committed public invocation with its original key retains the same invocation and task IDs.");
   c.add("accepted-versus-completed-at-first-reply", !!first && first.invocations.length === 1 && first.reply.trim().length > 0
     && (!prematureCompletionClaim(first.reply) || firstInvocation?.status === "completed" && first.tasks.some(row => row.id === firstInvocation.linkedIssueId && row.status === "done")),
   "The first answer cannot claim a completed summary before the saved invocation and task actually complete.");
@@ -110,7 +112,7 @@ export const integratorRoutineInvocationCases = [integratorDefinition("routines"
   if (!o || !task) throw new Error("Missing actual routine result task");
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, task.title!, resultHref(o, task.identifier ?? task.id, "issues") ?? resultHref(o, task.id, "issues"));
 }, {
-  oracleVersion: "paperclip.chat-catalog.integrator.routine-invocation.v4",
+  oracleVersion: "paperclip.chat-catalog.integrator.routine-invocation.v5",
   sourceFiles: ["chat-catalog-domains/integrator-routine-invocation.ts", "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/routines.yaml"],
   expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
   async act(ctx, state) {
@@ -119,14 +121,16 @@ export const integratorRoutineInvocationCases = [integratorDefinition("routines"
       reject: o => o.invocations.length > 1 ? "Initial request created duplicate routine invocations" : undefined });
     state.firstInvocation = { ...first, state: structuredClone(state) };
     const invocation = first.invocations[0]!;
-    if (!invocation.idempotencyKey || !invocation.linkedIssueId) throw new Error("Committed routine invocation has no replayable public identity");
-    // Independent transport-delivery probe of the existing committed request;
-    // it must not supply another user intent or admit another execution.
-    const replay = await ctx.input.api.post<RoutineRunSummary>(`/api/routines/${invocation.routineId}/run`, {
-      source: invocation.source, triggerId: invocation.triggerId, idempotencyKey: invocation.idempotencyKey,
-      payload: invocation.triggerPayload, variables: invocation.triggerPayload?.variables,
-    });
-    state.replayRunId = replay.id; state.replayIssueId = replay.linkedIssueId;
+    if (!invocation.linkedIssueId) throw new Error("Committed routine invocation created no task");
+    if (invocation.idempotencyKey) {
+      // Independent transport-delivery probe of the existing committed request;
+      // it must not supply another user intent or admit another execution.
+      const replay = await ctx.input.api.post<RoutineRunSummary>(`/api/routines/${invocation.routineId}/run`, {
+        source: invocation.source, triggerId: invocation.triggerId, idempotencyKey: invocation.idempotencyKey,
+        payload: invocation.triggerPayload, variables: invocation.triggerPayload?.variables,
+      });
+      state.replayProbe = "replayed"; state.replayRunId = replay.id; state.replayIssueId = replay.linkedIssueId;
+    } else state.replayProbe = "skipped-no-idempotency-key";
     await ctx.input.evidence("chat-routine-invocation-first-response.json", state.firstInvocation);
     await pollUntil({ label: "real routine execution completed", deadlineAt: Date.now() + 240_000, intervalMs: 1000,
       load: () => observeInvocation(ctx, state), accept: o => o.invocations.length === 1 && o.invocations[0]?.status === "completed" && o.runs.length === 2 && o.runs.every(run => run.status === "succeeded"),

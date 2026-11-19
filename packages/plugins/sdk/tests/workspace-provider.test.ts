@@ -3,6 +3,7 @@ import {
   workspaceProviderOperationSchema,
   parseWorkspaceProviderResult,
   parseWorkspacePrepareResult,
+  pluginWorkspaceParamsSchema,
   pluginWorkspacePrepareParamsSchema,
   type PluginWorkspaceParams,
 } from "../src/workspace-provider.js";
@@ -52,6 +53,24 @@ const result = {
   branchCreatedByRuntime: true,
 };
 describe("workspace provider SDK", () => {
+  it("accepts the run's own-driver environment and rejects malformed ones", () => {
+    const environment = { id: id(30), driverKey: "tasks", config: { snapshot: "base", nested: { size: 2 } } };
+    expect(pluginWorkspaceParamsSchema.parse({ ...params, environment }).environment).toEqual(environment);
+    expect(pluginWorkspaceParamsSchema.parse({ ...params, environment: { ...environment, config: {} } }).environment?.config).toEqual({});
+    expect(pluginWorkspaceParamsSchema.parse(params)).not.toHaveProperty("environment");
+    for (const bad of [
+      { ...environment, id: "not-a-uuid" },
+      { ...environment, driverKey: "" },
+      { ...environment, driverKey: "x".repeat(129) },
+      { ...environment, config: null },
+      { ...environment, config: ["snapshot"] },
+      { id: environment.id, driverKey: environment.driverKey },
+      { ...environment, pluginKey: "other.plugin" },
+    ]) {
+      expect(pluginWorkspaceParamsSchema.safeParse({ ...params, environment: bad }).success).toBe(false);
+    }
+  });
+
   it("validates asynchronous preparation receipts and preserves result scope", () => {
     const submit = pluginWorkspacePrepareParamsSchema.parse({ ...params, phase: "submit" });
     const poll = { ...submit, phase: "poll" as const };

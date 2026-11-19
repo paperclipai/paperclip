@@ -9,7 +9,7 @@ import { prepareAdapterExecutionTargetRuntime, runAdapterExecutionTargetShellCom
 import { withDirectoryMergeLock, directorySnapshotSha256, parseDirectorySnapshot, serializeDirectorySnapshot, type DirectoryMergeLockOperation } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { AGENT_FILES_CONTRACT, AgentFileLimitError, agentFileStore, agentStorageWarning, inspectAgentDirectory } from "./agent-file-store.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
-import { instructionGitExcludeProgram } from "./agent-instruction-files.js";
+import { excludeRuntimeFromRemoteGit } from "./agent-instruction-files.js";
 import { resolveInstructionActor } from "./agent-instruction-authorization.js";
 import { HttpError, conflict, notFound } from "../errors.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -235,11 +235,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     }
     try {
       if (input.target?.kind === "remote") {
-        const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-        const excluded = await runAdapterExecutionTargetShellCommand(input.runId, input.target,
-          `node -e ${quote(instructionGitExcludeProgram)} ${quote(input.target.remoteCwd)}`,
-          { cwd: input.target.remoteCwd, env: {}, timeoutSec: 15 });
-        if (excluded.exitCode !== 0 || excluded.timedOut) throw new Error("Could not exclude agent files from task Git staging");
+        await excludeRuntimeFromRemoteGit(input.runId, input.target, "Could not exclude agent files from task Git staging");
         const runtime = await transport(row, input.target, false);
         transports.set(key(row), runtime);
         if (input.target.transport === "sandbox") {
@@ -404,9 +400,25 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     } else await replacement?.cleanupWorkspaceSnapshot?.();
     return adopted;
   }
-  async function checkpoint(row: Copy, target?: AdapterExecutionTarget | null, stopped = false): Promise<Copy> {
+  type Capture = Awaited<ReturnType<typeof captureAgentFileCheckpoint>>;
+  type Precapture = { row: Copy; target: AdapterExecutionTarget; captured: Capture };
+  async function precapture(row: Copy, target?: AdapterExecutionTarget | null): Promise<Precapture | undefined> {
+    if (!disposableRemoteCopy(row) || row.receipt?.warm !== true || !await owns(row) || row.state === "superseded") return undefined;
+    const resolved = target ?? transports.get(key(row))?.target;
+    if (resolved?.kind !== "remote" || row.localRoot !== projectionRoot(row)) return undefined;
+    try {
+      const previous = row.receipt?.checkpointManifest as AgentFileManifest | undefined ?? checkpointBaseline(baseline(row));
+      const captured = await captureAgentFileCheckpoint({ runId: row.runId, localRoot: row.localRoot, executionRoot: row.executionRoot, previous, target: resolved });
+      return { row, target: resolved, captured };
+    } catch (error) {
+      logger.warn({ err: error, runId: row.runId }, "Agent file checkpoint capture before the directory lock failed; capturing under the lock");
+      return undefined;
+    }
+  }
+  async function checkpoint(row: Copy, target?: AdapterExecutionTarget | null, stopped = false, early?: Precapture): Promise<Copy> {
     if (!await owns(row) || row.state === "superseded") return row;
     target ??= transports.get(key(row))?.target;
+    const reusable = early && early.target === target && isDeepStrictEqual(adoptionAuthority(early.row), adoptionAuthority(row)) ? early.captured : undefined;
     if (row.location !== "local" && target?.kind !== "remote") {
       // A missing controller cache is not the remote directory. Retain the
       // pending save until its exact remote collector or destruction proof exists.
@@ -416,16 +428,19 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     }
     let failure: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
-      let captured: Awaited<ReturnType<typeof captureAgentFileCheckpoint>> | undefined;
+      let captured: Capture | undefined;
       try {
         const previous = row.receipt?.checkpointManifest as AgentFileManifest | undefined ?? checkpointBaseline(baseline(row));
-        captured = await captureAgentFileCheckpoint({ runId: row.runId, localRoot: row.localRoot, executionRoot: row.executionRoot, previous, target });
+        captured = attempt === 0 && reusable ? reusable
+          : await captureAgentFileCheckpoint({ runId: row.runId, localRoot: row.localRoot, executionRoot: row.executionRoot, previous, target });
         const snapshot = checkpointSnapshot(captured.manifest);
         const nextHash = directorySnapshotSha256(snapshot);
         const changed = nextHash !== row.baseHash;
+        // An unchanged run writes no agent file. Its save skips the row lock
+        // when the durable head is already current for the local projection.
         const { storageWarning } = changed
           ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest }, actor(row))
-          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => ({
+          : await store.saveUnchanged(row.companyId, row.agentId, actor(row)).then(() => ({
             storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null,
           }));
         row = await patch(row, { state: stopped ? (changed ? "saved" : "unchanged") : "warm_saved", baseHash: nextHash,
@@ -440,7 +455,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         if (error instanceof HttpError && error.status < 500) break;
       }
       finally {
-        await captured?.cleanup().catch(error => logger.warn({ err: error, runId: row.runId }, "Agent checkpoint scratch cleanup deferred to session retirement"));
+        if (captured !== early?.captured) await captured?.cleanup().catch(error => logger.warn({ err: error, runId: row.runId }, "Agent checkpoint scratch cleanup deferred to session retirement"));
       }
     }
     const rejection = failure instanceof HttpError && failure.status === 403 ? failure.message : null;
@@ -669,7 +684,14 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,
     recoverStoppedRemote: (row: Copy) => serial(row, current => current.receipt?.retainedByRunId ? Promise.resolve(current) : recoverStoppedRemote(current), "agent_directory_collect"),
-    checkpointWarm: (row: Copy, target?: AdapterExecutionTarget | null) => serial(row, current => current.receipt?.warm === true ? checkpoint(current, target) : Promise.resolve(current), "agent_directory_checkpoint"),
+    checkpointWarm: async (row: Copy, target?: AdapterExecutionTarget | null) => {
+      const early = await precapture(row, target);
+      try {
+        return await serial(row, current => current.receipt?.warm === true ? checkpoint(current, target, false, early) : Promise.resolve(current), "agent_directory_checkpoint");
+      } finally {
+        await early?.captured.cleanup().catch(error => logger.warn({ err: error, runId: row.runId }, "Agent checkpoint scratch cleanup deferred to session retirement"));
+      }
+    },
     collectStopped: (row: Copy, target?: AdapterExecutionTarget | null) => serial(row, current => collectStopped(current, target), "agent_directory_collect"),
     release: async (row: Copy) => {
       let current = await get(row.companyId, row.runId);

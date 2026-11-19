@@ -2,6 +2,8 @@ import { HttpError, unprocessable } from "../../../errors.js";
 import { asRecord, originOf } from "./metadata.js";
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
 import type { OAuthProviderEndpoints, OAuthTokenEndpointAuthMethod, OAuthTransport } from "./types.js";
+import { oauthApplicationType } from "./client-metadata.js";
+import { CLIENT_ASSERTION_TYPE } from "./client-credentials.js";
 
 const MAX_OAUTH_DCR_CLIENT_ID_LENGTH = 4_096;
 
@@ -188,11 +190,10 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
       ],
       response_types: ["code"],
       token_endpoint_auth_method: tokenEndpointAuthMethod,
-      // RFC 7591: Paperclip's callback is a server-side HTTPS endpoint, so this
-      // is a `web` client, not a `native` one. Some authorization servers reject
-      // an https redirect URI when the default (`web`) is left implicit, and
-      // others apply native-client redirect rules without it.
-      application_type: "web",
+      // MCP requires an explicit `application_type`: `web` for Paperclip's
+      // server-side HTTPS callback, `native` for a local install's localhost
+      // callback, which OIDC servers refuse for web clients.
+      application_type: oauthApplicationType(input.redirectUri),
     };
     const response = await fetchRemoteHttpUrl(
       assertOAuthEndpointUrl("registration", input.endpoints.registrationUrl),
@@ -309,6 +310,12 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     refreshToken?: string | null;
     /** RFC 8707 resource indicator: the MCP server this token is for. */
     resource?: string | null;
+    /**
+     * RFC 7523 signed client assertion (`private_key_jwt`). When present it is
+     * the only client authentication sent: the client is identified by the
+     * assertion's `sub`, so no client_id or secret goes in the request.
+     */
+    clientAssertion?: string | null;
   }) {
     const body = new URLSearchParams();
     if (input.grantType === "client_credentials") {
@@ -324,10 +331,14 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
       body.set("redirect_uri", input.redirectUri ?? "");
       body.set("code_verifier", input.codeVerifier ?? "");
     }
-    const tokenEndpointAuthMethod =
-      input.tokenEndpointAuthMethod ??
-      (input.clientSecret ? "client_secret_post" : "none");
-    if (tokenEndpointAuthMethod !== "client_secret_basic")
+    const tokenEndpointAuthMethod = input.clientAssertion
+      ? "private_key_jwt"
+      : input.tokenEndpointAuthMethod ??
+        (input.clientSecret ? "client_secret_post" : "none");
+    if (input.clientAssertion) {
+      body.set("client_assertion_type", CLIENT_ASSERTION_TYPE);
+      body.set("client_assertion", input.clientAssertion);
+    } else if (tokenEndpointAuthMethod !== "client_secret_basic")
       body.set("client_id", input.clientId);
     if (tokenEndpointAuthMethod === "client_secret_post") {
       if (!input.clientSecret) {

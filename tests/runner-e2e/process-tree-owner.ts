@@ -29,6 +29,8 @@ export function restartProcessStartMatches(observed: string, expected: string, p
 }
 
 export const UNCERTAIN_GROUP_IDENTITY = "Owned process group identity became uncertain";
+export const INSPECTION_UNAVAILABLE = "Could not inspect owned process identities";
+const INSPECTION_ATTEMPTS = 3;
 
 /**
  * Under load or during a graceful drain a whole group can turn over between
@@ -39,10 +41,15 @@ export const UNCERTAIN_GROUP_IDENTITY = "Owned process group identity became unc
  * meanwhile; a straggler that outlives the deadline keeps the original error.
  */
 export async function settleUncertainIdentity<T>(step: () => Promise<T>, until: () => number, pollMs = 100): Promise<T> {
+  let inspectionFailures = 0;
   for (;;) {
     try { return await step(); }
     catch (error) {
-      if (!String(error).includes(UNCERTAIN_GROUP_IDENTITY) || Date.now() >= until()) throw error;
+      const text = String(error);
+      const transient = text.includes(UNCERTAIN_GROUP_IDENTITY)
+        || (text.includes(INSPECTION_UNAVAILABLE) && ++inspectionFailures < INSPECTION_ATTEMPTS);
+      const remaining = until() - Date.now();
+      if (!transient || remaining <= pollMs) throw error;
       await new Promise(resolve => setTimeout(resolve, pollMs));
     }
   }
@@ -59,7 +66,8 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
   let restartRunner: ProcessObservation | undefined;
   let observing: Promise<void> | undefined;
   const covered = new Set<number>();
-  const readTable = options.readTable ?? readProcessTable;
+  let inspectionFailure = "";
+  const readTable = options.readTable ?? (() => readProcessTable(undefined, reason => { inspectionFailure = reason; }));
   const signalGroup = options.signalGroup ?? ((pid, signal) => process.kill(-pid, signal));
   const exited = () => root.exitCode !== null || root.signalCode !== null || !root.pid;
   const running = (candidate: ProcessObservation) => !candidate.state?.startsWith("Z");
@@ -68,8 +76,9 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     if (process.platform === "win32") return Promise.resolve();
     if (observing) return observing;
     observing = (async () => {
+      inspectionFailure = "";
       const next = await readTable();
-      if (!next) throw new Error("Could not inspect owned process identities");
+      if (!next) throw new Error(inspectionFailure ? `${INSPECTION_UNAVAILABLE} (${inspectionFailure})` : INSPECTION_UNAVAILABLE);
       const callerGroup = next.find(row => row.pid === process.pid)?.processGroupId;
       if (callerGroup === undefined) throw new Error("Cleanup caller group identity is unavailable");
       const rootRow = next.find(row => row.pid === root.pid);

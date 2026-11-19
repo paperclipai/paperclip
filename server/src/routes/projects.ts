@@ -1,4 +1,5 @@
 import { projectEnvironmentOptions } from "../services/project-environments.js";
+import { listProtectedEnvironmentKeyHolders, protectedEnvironmentKeyWarnings } from "../services/protected-environment-keys.js";
 import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
@@ -420,6 +421,8 @@ export function projectRoutes(db: Db) {
         { strictMode: strictSecretsMode, fieldPath: "env" },
       );
     }
+    const configurationWarnings = projectData.env !== undefined
+      ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), projectData.env, "env") : [];
     if (workspace && (repositoryIds || repositoryUrls)) throw unprocessable("Use either workspace or repositoryIds/repositoryUrls when creating a project");
     const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
     const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
@@ -513,7 +516,7 @@ export function projectRoutes(db: Db) {
     if (telemetryClient) {
       trackProjectCreated(telemetryClient);
     }
-    res.status(result.duplicate ? 200 : 201).json(result.project);
+    res.status(result.duplicate ? 200 : 201).json({ ...result.project, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
@@ -540,6 +543,8 @@ export function projectRoutes(db: Db) {
         fieldPath: "env",
       });
     }
+    const configurationWarnings = body.env !== undefined
+      ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), body.env, "env") : [];
     const project = await svc.update(id, body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
@@ -571,7 +576,7 @@ export function projectRoutes(db: Db) {
       },
     });
 
-    res.json(project);
+    res.json({ ...project, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
   router.get("/projects/:id/access-members", async (req, res) => {

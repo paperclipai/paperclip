@@ -40,22 +40,33 @@ describe("AI pool session adoption", () => {
     const switchPool = revision("revision-3", { mode: "router", connectionId: "previous-pool" }, pool);
     expect((await decision({ agentRuntimeConfig: { aiConnection: binding }, agentConfigRevision: aiConnectionRevisionMetadata(first) }, { agentConfigRevision: aiConnectionRevisionMetadata(switchPool) }, { revisions: [switchPool, adoption, first] })).reset).toBe(false);
   });
-  it("retains resets when the same edit also changes unrelated configuration", async () => {
+  it("retains resets when the same edit also changes a setting the thread uses", async () => {
+    const first = revision("revision-1", null, binding);
+    const edit = revision("revision-2", binding, pool, { adapterConfig: { model: "gpt-5.6-terra" } });
+    expect(aiConnectionOnlyConfigRevision(edit)).toBe(false);
+    expect((await decision({ agentRuntimeConfig: { aiConnection: binding }, agentConfigRevision: aiConnectionRevisionMetadata(first) }, { agentConfigRevision: aiConnectionRevisionMetadata(edit), effectiveAdapterConfig: { ...config, model: "gpt-5.6-terra" } }, { revisions: [edit, first] })).reset).toBe(true);
+  });
+  it("keeps the session when the same edit also renames the agent", async () => {
     const first = revision("revision-1", null, binding);
     const edit = revision("revision-2", binding, pool, { name: "Renamed agent" });
     expect(aiConnectionOnlyConfigRevision(edit)).toBe(false);
-    expect((await decision({ agentRuntimeConfig: { aiConnection: binding }, agentConfigRevision: aiConnectionRevisionMetadata(first) }, { agentConfigRevision: aiConnectionRevisionMetadata(edit) }, { revisions: [edit, first] })).reset).toBe(true);
+    expect((await decision({ agentRuntimeConfig: { aiConnection: binding }, agentConfigRevision: aiConnectionRevisionMetadata(first) }, { agentConfigRevision: aiConnectionRevisionMetadata(edit) }, { revisions: [edit, first] })).reset).toBe(false);
   });
   it("does not bridge a stale revision over a newer runtime settings change", async () => {
     const first = revision("revision-1", null, binding);
     const adoption = revision("revision-2", binding, pool);
-    expect((await decision({ agentRuntimeConfig: { aiConnection: binding }, agentConfigRevision: aiConnectionRevisionMetadata(first) }, { agentRuntimeConfig: { aiConnection: pool, heartbeat: { enabled: false } }, agentConfigRevision: aiConnectionRevisionMetadata(adoption) }, { revisions: [adoption, first] })).reset).toBe(true);
+    expect((await decision({ agentRuntimeConfig: { aiConnection: binding }, agentConfigRevision: aiConnectionRevisionMetadata(first) }, { agentRuntimeConfig: { aiConnection: pool, futureSetting: true }, agentConfigRevision: aiConnectionRevisionMetadata(adoption) }, { revisions: [adoption, first] })).reset).toBe(true);
+  });
+  it("keeps the session across a wake-scheduling change after a binding edit", async () => {
+    const first = revision("revision-1", null, binding);
+    const adoption = revision("revision-2", binding, pool);
+    expect((await decision({ agentRuntimeConfig: { aiConnection: binding }, agentConfigRevision: aiConnectionRevisionMetadata(first) }, { agentRuntimeConfig: { aiConnection: pool, heartbeat: { enabled: false } }, agentConfigRevision: aiConnectionRevisionMetadata(adoption) }, { revisions: [adoption, first] })).reset).toBe(false);
   });
   it.each([
     { effectiveAdapterConfig: { ...config, model: "gpt-5.6-terra" } },
     { effectiveAdapterConfig: { ...config, provider: "acpx", acpxAgent: "codex" } },
     { effectiveAdapterConfig: { ...config, env: { ...config.env, OTHER: "changed" } } },
-    { agentRuntimeConfig: { aiConnection: pool, heartbeat: { maxConcurrentRuns: 2 } } },
+    { agentRuntimeConfig: { aiConnection: pool, futureSetting: true } },
     { workspaceConfig: { effectiveMode: "isolated_workspace" } },
   ])("preserves normal resets for effective settings changes: %j", async next => {
     expect((await decision({ agentRuntimeConfig: { aiConnection: binding } }, next)).reset).toBe(true);

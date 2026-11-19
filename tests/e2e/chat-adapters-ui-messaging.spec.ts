@@ -49,7 +49,22 @@ test.describe("chat destination partial updates", () => {
         await expect(primarySwitch(page)).toBeChecked();
       }
       const staleView = await context.newPage();
+      const resourcesPath = "/api/chat-endpoints/endpoint-discord/resources";
+      const initialResources = staleView.waitForResponse(response =>
+        new URL(response.url()).pathname === resourcesPath && response.request().method() === "GET",
+      );
       await staleView.goto(settingsUrl);
+      const snapshot = await (await initialResources).json();
+      let retainSnapshot = true;
+      await staleView.route(`**${resourcesPath}`, async route => {
+        const method = route.request().method();
+        if (method === "GET" && retainSnapshot) {
+          await fulfill(route, snapshot);
+          return;
+        }
+        if (method === "PUT") retainSnapshot = false;
+        await route.fallback();
+      });
       await expect(primarySwitch(staleView)).toBeChecked({
         checked: initiallyEnabled,
       });
@@ -59,7 +74,6 @@ test.describe("chat destination partial updates", () => {
       await expect(primarySwitch(page)).toBeChecked({
         checked: !initiallyEnabled,
       });
-      // Assert the stale prerequisite instead of assuming browser focus/refetch.
       await expect(primarySwitch(staleView)).toBeChecked({
         checked: initiallyEnabled,
       });
