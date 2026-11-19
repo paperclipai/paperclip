@@ -43,6 +43,8 @@ import { BlockedTaskCardBody, RecoveryCardBody, ReviewTaskCardBody } from "./Nee
 import { NEEDS_YOU_SECTIONS, NeedsYouPanelRow, needsYouSection, type NeedsYouSection } from "./NeedsYouCardKit";
 import { NeedsYouAudience, NeedsYouReceiptCard, NeedsYouRequester, NeedsYouTaskLink, NeedsYouTypeLabel, needsYouTaskRef } from "./NeedsYouCardParts";
 import { CoordinatorNeedsYouSidePanel, needsYouReviewTab, needsYouReviewTabId, needsYouTabArtifact, type NeedsYouReviewPayload } from "./CoordinatorNeedsYouSidePanel";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 type Group = "type" | "none" | "task" | "agent" | "project";
 
@@ -320,7 +322,7 @@ export function CoordinatorNeedsYou() {
     const title = coordinatorCardTitle(item);
     const detail = coordinatorCardDetail(item, attentionDetailLine(item));
     // The ask, with one plain line under it (UI1).
-    const heading = <div className="space-y-1.5"><h2>{title}</h2>{detail && !sameText(detail, title) ? <p className="text-sm text-muted-foreground">{detail}</p> : null}</div>;
+    const heading = <div className={cn("space-y-1.5", ANALYTICS_MASK_CLASS)}><h2>{title}</h2>{detail && !sameText(detail, title) ? <p className="text-sm text-muted-foreground">{detail}</p> : null}</div>;
     const footerContext = <AttentionObligationEvidence item={item} evidence={attentionObligationEvidence(obligations, item)} />;
     const type = attentionCardType(item);
     return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>

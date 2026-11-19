@@ -9,7 +9,7 @@ import { prepareAdapterExecutionTargetRuntime, runAdapterExecutionTargetShellCom
 import { withDirectoryMergeLock, directorySnapshotSha256, parseDirectorySnapshot, serializeDirectorySnapshot, type DirectoryMergeLockOperation } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { AGENT_FILES_CONTRACT, AgentFileLimitError, agentFileStore, agentStorageWarning, inspectAgentDirectory } from "./agent-file-store.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
-import { instructionGitExcludeProgram } from "./agent-instruction-files.js";
+import { excludeRuntimeFromRemoteGit } from "./agent-instruction-files.js";
 import { resolveInstructionActor } from "./agent-instruction-authorization.js";
 import { HttpError, conflict, notFound } from "../errors.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -235,11 +235,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     }
     try {
       if (input.target?.kind === "remote") {
-        const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-        const excluded = await runAdapterExecutionTargetShellCommand(input.runId, input.target,
-          `node -e ${quote(instructionGitExcludeProgram)} ${quote(input.target.remoteCwd)}`,
-          { cwd: input.target.remoteCwd, env: {}, timeoutSec: 15 });
-        if (excluded.exitCode !== 0 || excluded.timedOut) throw new Error("Could not exclude agent files from task Git staging");
+        await excludeRuntimeFromRemoteGit(input.runId, input.target, "Could not exclude agent files from task Git staging");
         const runtime = await transport(row, input.target, false);
         transports.set(key(row), runtime);
         if (input.target.transport === "sandbox") {

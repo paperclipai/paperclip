@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { costAdjustments, costEvents, decisionInvocations, promptInjectionInvocations, fastResponseRequests, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { costAdjustments, costEvents, decisionInvocations, promptInjectionInvocations, fastResponseRequests, heartbeatRuns, issues, responsibilitySummaryInvocations, type Db } from "@paperclipai/db";
 import { normalizeCents } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
@@ -32,6 +32,8 @@ export async function lockCostCorrectionOwner(tx: Db, companyId: string, eventId
     .where(and(eq(decisionInvocations.costEventId, eventId), eq(decisionInvocations.companyId, companyId))).for("update");
   else if (event.usageKind === "prompt_injection") await tx.select({ id: promptInjectionInvocations.id }).from(promptInjectionInvocations)
     .where(and(eq(promptInjectionInvocations.costEventId, eventId), eq(promptInjectionInvocations.companyId, companyId))).for("update");
+  else if (event.usageKind === "responsibility_summary") await tx.select({ id: responsibilitySummaryInvocations.id }).from(responsibilitySummaryInvocations)
+    .where(and(eq(responsibilitySummaryInvocations.costEventId, eventId), eq(responsibilitySummaryInvocations.companyId, companyId))).for("update");
   else if (event.usageKind === "fast_response") await tx.select({ id: fastResponseRequests.id }).from(fastResponseRequests)
     .where(and(eq(fastResponseRequests.costEventId, eventId), eq(fastResponseRequests.companyId, companyId))).for("update");
   else if (event.heartbeatRunId) await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)

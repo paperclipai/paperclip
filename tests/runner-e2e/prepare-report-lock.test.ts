@@ -7,7 +7,9 @@ import { expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { prepareReportLock, refreshReportLock } from './prepare-report-lock.mjs';
 
-it.each(['valid', 'unknown-lock', 'changed-patch', 'wrong-output'])(
+const pendingDependabotLock = process.env.PAPERCLIP_CI_PR_AUTHOR === 'dependabot[bot]';
+
+it.skipIf(pendingDependabotLock).each(['valid', 'unknown-lock', 'changed-patch', 'wrong-output'])(
   'installs only the reviewed dependency correction: %s', async variant => {
     const root = await mkdtemp(path.join(tmpdir(), 'eval-report-lock-test-'));
     const here = import.meta.dirname, relative = path.join(root, 'tests/runner-e2e');

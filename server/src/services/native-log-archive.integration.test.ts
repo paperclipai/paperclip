@@ -75,6 +75,18 @@ describeEmbeddedPostgres("online native historical log preservation", () => {
     });
   });
 
+  it("archives by run id a settled source whose canonical online import cannot prove coverage", async () => {
+    await withSource(async f => {
+      const { preserveSettledNativeFiles: _archive, ...canonical } = f.options;
+      expect((await migrateRunEvidence(f.db, canonical)).items)
+        .toMatchObject([{ id: f.runId, state: "blocked", reason: "native_log_source_coverage_unproven" }]);
+      const result = await migrateRunEvidence(f.db, { apply: true, runId: f.runId, kinds: ["log"], limit: 1, preserveSettledNativeFiles: true });
+      expect(result.items).toMatchObject([{ id: f.runId, state: "migrated", historicalArchive: true, bytes: f.bytes.length }]);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+        .toMatchObject({ logStore: "s3_archive", logRef: `${f.companyId}/${f.agentId}/${f.runId}.archive` });
+    });
+  });
+
   it("preserves a committed successful run without changing its result or completeness metadata", async () => {
     await withSource(async f => {
       const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));

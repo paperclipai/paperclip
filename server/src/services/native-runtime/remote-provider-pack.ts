@@ -42,6 +42,7 @@ export async function runRemoteProviderVerification(
 ): Promise<VerificationCommandResult> {
   let diagnostic = "command unavailable";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    if (attempt > 1) await new Promise<void>(resolve => setTimeout(resolve, 1_000));
     let result: VerificationCommandResult;
     try {
       result = await execute();

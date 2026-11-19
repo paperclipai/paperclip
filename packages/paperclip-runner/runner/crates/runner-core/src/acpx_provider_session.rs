@@ -10,6 +10,7 @@ use crate::acpx_provider_state::{
     PRP_COMPLETION_TOOL_NAME,
 };
 use crate::acpx_sidecar_transport::{AcpxSidecarTransport, AcpxSidecarTransportConfig};
+use crate::acpx_tool_failure_feedback::{semantic_failure_feedback, GENERIC_SEMANTIC_FAILURE};
 use crate::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
     GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
@@ -963,6 +964,7 @@ impl AcpxProviderSession {
         let mut next_bridge = self.tool_bridge.clone();
         let mut next_reserved_bridge = self.reserved_tool_bridge.clone();
         let mut reconciled_events = Vec::with_capacity(events.len());
+        let mut retryable_rejections = Vec::new();
         for event in events {
             let mut expose_event = true;
             match &event {
@@ -998,9 +1000,19 @@ impl AcpxProviderSession {
                     if let Err(error) =
                         bridge.begin_call(call_id.clone(), operation_id.clone(), input.clone())
                     {
-                        return Err(self.fail_closed(LocalRunnerError::invalid(format!(
-                            "ACPX provider tool authorization failed: {error}"
-                        ))));
+                        if !error.is_retryable() {
+                            return Err(self.fail_closed(LocalRunnerError::invalid(format!(
+                                "ACPX provider tool authorization failed: {error}"
+                            ))));
+                        }
+                        if let Err(error) = next_state.complete_tool(call_id, operation_id) {
+                            return Err(self.fail_closed(error));
+                        }
+                        retryable_rejections.push((
+                            call_id.clone(),
+                            error.safe_provider_message().unwrap_or_default().to_owned(),
+                        ));
+                        expose_event = false;
                     }
                 }
                 AcpxProviderStateEvent::SemanticResult(result) => {
@@ -1125,6 +1137,22 @@ impl AcpxProviderSession {
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
+        if let Some(turn_id) = (!retryable_rejections.is_empty())
+            .then(|| self.state.active_turn_id().map(str::to_owned))
+            .flatten()
+        {
+            for (call_id, message) in retryable_rejections {
+                let response = self
+                    .transport
+                    .request_tool_resolve(json!({
+                        "callId": call_id,
+                        "turnId": turn_id,
+                        "error": {"message": message},
+                    }))
+                    .map_err(|(error, _)| self.fail_closed(error))?;
+                self.verify_resolution(&response, "tool")?;
+            }
+        }
         if let Some(turn_id) = terminal_turn {
             self.offer_provider_turn(&turn_id, terminal_completed, terminal_live);
         }
@@ -1170,12 +1198,13 @@ impl AcpxProviderSession {
         let resolution = if result.is_error {
             // The durable result remains authoritative for correlation and
             // retry bookkeeping, but provider-facing failures expose only a
-            // fixed diagnostic. Internal dispatcher payloads must not cross
-            // the sidecar boundary on the separate success-result channel.
+            // stable code and validated field rules. Internal dispatcher
+            // payloads must not cross the sidecar boundary on the separate
+            // success-result channel.
             let message = if is_reserved_terminal_operation(&result.operation_id) {
                 reserved_terminal_feedback(&result.result)
             } else {
-                "Paperclip semantic operation failed".to_owned()
+                semantic_failure_feedback(&result.result)
             };
             json!({
                 "callId":result.call_id,
@@ -1514,7 +1543,7 @@ impl AcpxProviderSession {
 fn reserved_terminal_feedback(result: &Value) -> String {
     const MAX_FEEDBACK_CHARS: usize = 2_000;
     if result.get("success").and_then(Value::as_bool) != Some(false) {
-        return "Paperclip semantic operation failed".to_owned();
+        return GENERIC_SEMANTIC_FAILURE.to_owned();
     }
     let text = result
         .get("contentItems")
@@ -1523,13 +1552,13 @@ fn reserved_terminal_feedback(result: &Value) -> String {
         .filter(|item| item.get("type").and_then(Value::as_str) == Some("inputText"))
         .and_then(|item| item.get("text"))
         .and_then(Value::as_str)
-        .unwrap_or("Paperclip semantic operation failed");
+        .unwrap_or(GENERIC_SEMANTIC_FAILURE);
     let mut bounded = text.chars().take(MAX_FEEDBACK_CHARS).collect::<String>();
     if text.chars().count() > MAX_FEEDBACK_CHARS {
         bounded.push_str("…");
     }
     if bounded.trim().is_empty() {
-        "Paperclip semantic operation failed".to_owned()
+        GENERIC_SEMANTIC_FAILURE.to_owned()
     } else {
         bounded
     }

@@ -1686,6 +1686,8 @@ server's pid, start, exit and freezes). A violation fails the wave.
   `controller_lease_lost` counts only when no freeze past the lease came before it.
 - `MS_double_executor`: a run recorded a second local runner identity
   (`native.process_identity_recorded`) before the first was shown stopped (`native.local_process_stopped`).
+  Sandbox identities (`targetKind: "remote"`) are not graded: the server records stop evidence only for
+  local processes, so every in-run sandbox relaunch would look like a second executor.
 - Ownership failures whose owner is not a wave server (or is unknown) are listed as `unattributed`.
 
 The usual R1–R6, U1–U4 and T checks grade every task as before. In the speed grade, MS1 and MS2 take no

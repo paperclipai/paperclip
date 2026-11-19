@@ -308,6 +308,21 @@ describe("intentional native Stop presentation", () => {
   });
 });
 
+describe("intentional legacy Stop presentation", () => {
+  it("clears the failed-attempt notice only after the requested Stop is acknowledged", () => {
+    const stopped = { ...run, runtimeMode: "legacy" as const, status: "cancelled", finishedAt: new Date(), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user" }, reason: "Stop", recordedAt: new Date().toISOString() },
+      executionCancellation: { state: "acknowledged", proof: "preparation_settled" },
+    } };
+    const input = { run: stopped, agent, paused: false, approval: false };
+    expect(projectTaskInterruption(issue, input)).toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(issue, { ...input, run: { ...stopped, resultJson: { ...stopped.resultJson,
+      executionCancellation: { state: "requested" } } } })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { ...input, paused: true })).toMatchObject({ userAction: "resume" });
+    expect(projectTaskInterruption(issue, { ...input, approval: true })).toMatchObject({ userAction: "approval" });
+  });
+});
+
 it("preserves a provider explanation on a failed task without changing retry authority", () => {
   const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
     category: "rate_limit", message: "API error: 429 This request would exceed your account's rate limit.",
@@ -421,8 +436,9 @@ describe("scheduled resource wait presentation", () => {
   });
 
   it("keeps failure retries, user gates and failed Retry preparation authoritative", () => {
-    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure" },
-      agent, paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure",
+      scheduledRetryAt: new Date(now - 10 * 60_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: true, approval: false }, now))
       .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: false, approval: false,
@@ -554,6 +570,15 @@ describe("automatic scheduled retry", () => {
     expect(projectTaskInterruption(issue, { run: scheduled, agent, paused: false, approval: false }, now))
       .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: new Date(now + 60_000).toISOString() });
   });
+
+  it.each(["transient_failure", "native_environment_blocker"])(
+    "keeps a just-due %s retry working while the dispatcher promotes it", scheduledRetryReason => {
+      for (const overdueMs of [0, 1_000, 30_000, 119_000]) {
+        expect(projectTaskInterruption({ ...issue, status: "in_progress" }, { run: { ...scheduled, runtimeMode: "native",
+          scheduledRetryReason, scheduledRetryAt: new Date(now - overdueMs) }, agent, paused: false, approval: false }, now))
+          .toMatchObject({ state: "working", canRetry: false });
+      }
+    });
 
   it("offers Retry once the scheduled retry is past due with nothing else pending", () => {
     expect(projectTaskInterruption(issue, { run: { ...scheduled, scheduledRetryAt: new Date(now - 10 * 60_000) }, agent,

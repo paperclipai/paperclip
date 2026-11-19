@@ -27,6 +27,7 @@ import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { describeRunRetryState } from "../lib/runRetryState";
+import { ProviderLimitMessage } from "./ProviderLimitMessage";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
 import { ResponsibleUserDenialNotice } from "./ResponsibleUserDenialNotice";
@@ -37,6 +38,7 @@ import {
   runRequestedProviderTrace,
 } from "./ProviderTraceStatusBadge";
 import { readFromIssueChatBootstrap } from "@/lib/issue-chat-bootstrap";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -973,7 +975,7 @@ export function IssueRunLedgerContent({
                 </div>
 
                 {retryState ? (
-                  <div className="rounded-md border border-border/70 bg-accent/20 px-2 py-2 text-xs leading-5 text-muted-foreground">
+                  <div className={cn("rounded-md border border-border/70 bg-accent/20 px-2 py-2 text-xs leading-5 text-muted-foreground", ANALYTICS_MASK_CLASS)}>
                     {retryState.detail ? <p>{retryState.detail}</p> : null}
                     {retryState.secondary ? (
                       <p>{retryState.secondary}</p>
@@ -1017,7 +1019,7 @@ export function IssueRunLedgerContent({
                       Next action:{" "}
                     </span>
                     <span className="break-words text-muted-foreground">
-                      {nextAction}
+                      <ProviderLimitMessage>{nextAction}</ProviderLimitMessage>
                     </span>
                   </div>
                 ) : null}
