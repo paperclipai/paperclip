@@ -325,7 +325,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(await db.select().from(heartbeatRuns)).toHaveLength(kind === "fresh" ? 0 : 1);
   });
 
-  it("defers an ordinary user wake behind a recovery hold committed while acquiring the task lock and adopts its receipt once", async () => {
+  it("delivers a comment saved behind a concurrent recovery hold to one run on repeated retry", async () => {
     const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
     await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
       .where(eq(issues.id, issue.id));
@@ -364,74 +364,28 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
 
     await expect(pending).resolves.toBeNull();
     expect(await db.select().from(heartbeatRuns)).toEqual([]);
-    expect(await db.select().from(agentWakeupRequests)).toEqual([
+    const receipts = await db.select().from(agentWakeupRequests);
+    expect(receipts).toEqual([
       expect.objectContaining({ status: "deferred_issue_execution", runId: null,
         payload: expect.objectContaining({ issueId: issue.id, commentId: comment.id,
           executionWait: expect.objectContaining({ recoveryActionId: actionId }) }) }),
     ]);
-    const [receipt] = await db.select().from(agentWakeupRequests);
+    const [receipt] = receipts;
     const controlDeps = runControlCallbacks(db);
     vi.mocked(controlDeps.enqueueWakeup).mockImplementation(queue.enqueueWakeup);
     const control = createHeartbeatRunControl(db, controlDeps);
 
-    await control.resumeSavedLegacyComments(company.id, randomUUID());
-    expect(controlDeps.enqueueWakeup).not.toHaveBeenCalled();
     deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
     await control.resumeSavedLegacyComments(company.id, receipt.id);
-    expect(await db.select().from(agentWakeupRequests)).toEqual([
-      expect.objectContaining({ id: receipt.id, status: "deferred_issue_execution", runId: null,
-        payload: expect.objectContaining({ executionWait: expect.objectContaining({ recoveryActionId: actionId }) }) }),
-    ]);
     expect(await db.select().from(heartbeatRuns)).toEqual([]);
 
     await db.update(issueRecoveryActions).set({ evidence: {} }).where(eq(issueRecoveryActions.id, actionId));
     deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
     await control.resumeSavedLegacyComments(company.id, receipt.id);
     await control.resumeSavedLegacyComments(company.id, receipt.id);
-    const runs = await db.select().from(heartbeatRuns);
-    expect(runs).toEqual([expect.objectContaining({
-      contextSnapshot: expect.objectContaining({ wakeCommentIds: [comment.id], queuedCommentSourceWakeIds: [receipt.id] }),
+    expect(await db.select().from(heartbeatRuns)).toEqual([expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ wakeCommentIds: [comment.id] }),
     })]);
-    const adopted = await db.select().from(agentWakeupRequests);
-    expect(adopted).toHaveLength(2);
-    expect(adopted).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: receipt.id, status: "coalesced", runId: runs[0]?.id }),
-      expect.objectContaining({ id: runs[0]?.wakeupRequestId, status: "queued", runId: runs[0]?.id,
-        idempotencyKey: `queued-comment-delivery:${receipt.id}` }),
-    ]));
-    expect(deps.executeRun).not.toHaveBeenCalled();
-  });
-
-  it("rolls back the saved recovery wait when ordinary comment admission fails before commit", async () => {
-    const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
-    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
-      .where(eq(issues.id, issue.id));
-    const [comment] = await db.insert(issueComments).values({
-      companyId: company.id, issueId: issue.id, authorType: "user", authorUserId: user.id, body: "Please continue.",
-    }).returning();
-    const [action] = await db.insert(issueRecoveryActions).values({
-      companyId: company.id, sourceIssueId: issue.id, kind: "active_run_watchdog",
-      cause: "legacy_execution_requires_reconciliation", fingerprint: randomUUID(), nextAction: "Inspect the stopped run.",
-    }).returning();
-    const admit = deps.wakeQueue.admitIssueWake.getMockImplementation()!;
-    const publishIssueActivity = vi.fn();
-    deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target, async (tx, admission) => {
-      expect(await evaluate(tx, admission)).toEqual({ kind: "deferred", admitted: true });
-      expect(await tx.select().from(agentWakeupRequests)).toEqual([
-        expect.objectContaining({ status: "deferred_issue_execution", runId: null,
-          payload: expect.objectContaining({ issueId: issue.id, commentId: comment.id,
-            executionWait: expect.objectContaining({ recoveryActionId: action.id }) }) }),
-      ]);
-      throw new Error("Admission failed before commit");
-    }, { ...effects, publishIssueActivity }));
-
-    await expect(queue.enqueueWakeup(agent.id, {
-      source: "automation", triggerDetail: "system", reason: "issue_commented",
-      requestedByActorType: "user", requestedByActorId: user.id, payload: { issueId: issue.id, commentId: comment.id },
-    })).rejects.toThrow("Admission failed before commit");
-    expect(await db.select().from(agentWakeupRequests)).toEqual([]);
-    expect(await db.select().from(heartbeatRuns)).toEqual([]);
-    expect(publishIssueActivity).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 

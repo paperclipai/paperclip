@@ -313,7 +313,35 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
   });
 
-  it.each(["issue", "agent"])("rejects a recovery retry for a receipt scoped to another %s", async mismatch => {
+  it("saves the blocked comment receipt inside admission and rolls it back when admission fails", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const authorUserId = randomUUID();
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId, authorType: "user", authorUserId, body: "Please continue.",
+    }).returning();
+    const condition = { recoveryActionId: randomUUID(), reason: "execution_recovery", message: "Waiting for recovery." };
+    const failure = new Error("Admission failed before commit");
+
+    await expect(createPostgresIssueWakeAdmission(db)({ companyId, issueId }, async (tx, { deferBlockedWake }) => {
+      await expect(deferBlockedWake({
+        commentId: comment.id, contextSnapshot: { issueId }, condition,
+        coalesce: false, publications: [], nextAction: "Inspect the stopped run.",
+        request: { agentId, source: "automation", triggerDetail: "system", reason: "issue_commented",
+          payload: { issueId, commentId: comment.id }, requestedByActorType: "user",
+          requestedByActorId: authorUserId, idempotencyKey: null },
+      })).resolves.toEqual({ kind: "deferred", admitted: true });
+      const [receipt] = await tx.select().from(agentWakeupRequests);
+      expect(receipt).toMatchObject({ companyId, agentId, status: "deferred_issue_execution", runId: null,
+        payload: { issueId, commentId: comment.id, executionWait: condition,
+          _paperclipWakeContext: { wakeCommentIds: [comment.id] } } });
+      throw failure;
+    })).rejects.toBe(failure);
+    expect(await db.select().from(agentWakeupRequests)).toEqual([]);
+  });
+
+  it.each(["issue", "agent", "missing"])("ignores a recovery retry with a %s receipt mismatch", async mismatch => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
     const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
@@ -328,7 +356,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await createPostgresIssueWakeAdmission(db)({ companyId, issueId }, async (_tx, { deferBlockedWake }) => {
       const publications: Parameters<typeof deferBlockedWake>[0]["publications"] = [];
       const outcome = await deferBlockedWake({
-        existingRequestId: requestId, contextSnapshot: {}, coalesce: false, publications,
+        existingRequestId: mismatch === "missing" ? randomUUID() : requestId, contextSnapshot: {}, coalesce: false, publications,
         condition: { recoveryActionId: null, reason: "execution_recovery", message: "Waiting." }, nextAction: "Wait.",
         request: { agentId, source: "automation", triggerDetail: "system", reason: "issue_commented",
           payload: null, requestedByActorType: "user", requestedByActorId: null, idempotencyKey: null },
