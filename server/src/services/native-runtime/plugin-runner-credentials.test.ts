@@ -41,7 +41,6 @@ describe("plugin Runner selected credentials", () => {
 });
 
 describe("plugin Runner provider environment credentials", () => {
-  // Managed AI preparation blanks every other AI variable; blank values are not credentials.
   const blanks = { XAI_API_KEY: "", COPILOT_GITHUB_TOKEN: "", OPENROUTER_API_KEY: "", PAPERCLIP_AI_PROVIDER_URL: "", PAPERCLIP_AI_PROVIDER_KEY: "",
     ANTHROPIC_API_KEY: "", HOME: "/controller/private", GROK_HOME: "/controller/private/provider", OTHER_SECRET: "fixture-unrelated" };
   it.each([

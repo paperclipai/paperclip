@@ -54,16 +54,13 @@ export async function preparePluginRunnerCredentials(input: {
   if (input.provider === "grok" || input.provider === "copilot" || input.provider === "opencode") {
     const provider: PluginEnvironmentTaskCredentialProvider = input.provider;
     if (provider === "grok") {
-      // A Grok base URL would redirect the transferred key; the Runner receives only the key.
       if (input.environment.XAI_BASE_URL) throw new Error("Plugin Runner does not support the selected provider routing");
-      // A Grok subscription is an auth file with refresh and writeback, not an environment credential.
       if (!input.environment.XAI_API_KEY) throw new Error("Plugin Runner supports Grok only with an xAI API key. Grok subscription login is not supported.");
     }
     const names = new Set(ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS[provider].flat());
     const environment = Object.fromEntries([...names]
       .flatMap(key => input.environment[key] ? [[key, input.environment[key]]] : []));
     const credential = environmentTaskCredentialSchema.safeParse({ type: "provider-env", provider, environment });
-    // The parse error can name selected variables; never surface their values.
     if (!credential.success) throw new Error("Plugin Runner selected credential unavailable");
     return { ...github, accountIdentity, credential: credential.data };
   }

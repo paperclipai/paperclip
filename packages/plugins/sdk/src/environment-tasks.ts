@@ -56,10 +56,6 @@ export const environmentTaskConfiguredEnvironmentSchema = z.record(
 });
 export type PluginEnvironmentTaskConfiguredEnvironment = z.infer<typeof environmentTaskConfiguredEnvironmentSchema>;
 
-/**
- * The environment variable sets that a `provider-env` credential can carry, by provider. A credential carries exactly
- * one complete set and no other variable. The Runner reads these names from its own process environment.
- */
 export const ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS = {
   grok: [["XAI_API_KEY"]],
   copilot: [["COPILOT_GITHUB_TOKEN"]],
