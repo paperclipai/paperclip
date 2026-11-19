@@ -2698,7 +2698,8 @@ export function routineService(
         };
 
         // The schedule changes under the same lock and in the same revision as the fields.
-        const scheduleChanged = patch.schedule !== undefined && await replaceSchedule(txDb, locked, patch.schedule, actor);
+        // With the routine as it will be saved, so a schedule without a zone uses the new responsible person's.
+        const scheduleChanged = patch.schedule !== undefined && await replaceSchedule(txDb, candidate, patch.schedule, actor);
         const fieldsMatch = routineCurrentFieldsMatch(locked, candidate);
         const folderChanged = patch.folderId !== undefined && locked.folderId !== candidate.folderId;
         if (locked.latestRevisionId && fieldsMatch && !scheduleChanged) {
