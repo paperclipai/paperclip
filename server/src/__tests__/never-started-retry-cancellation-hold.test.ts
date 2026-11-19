@@ -23,13 +23,15 @@ const support = await getEmbeddedPostgresTestSupport();
   }, 90_000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
-  // The scheduler retries only a run that needs no reconciliation. A transient
-  // failure before provider work is the usual source; a resource wait can also
-  // retry a run that succeeded.
-  async function seed(predecessor: "failed_before_provider_work" | "succeeded" = "failed_before_provider_work") {
+  // The scheduler retries only a run that needs no reconciliation: a transient
+  // failure before provider work, a resource wait it cancelled itself, or (as
+  // in the reported incident) an environment wait after a run that succeeded.
+  async function seed(predecessor: "failed_before_provider_work" | "succeeded" | "ai_connection_wait" = "failed_before_provider_work") {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const sourceRunId = randomUUID(), retryRunId = randomUUID(), wakeupRequestId = randomUUID();
     const now = Date.now();
+    const retryReason = { failed_before_provider_work: "transient_failure", succeeded: "native_environment_blocker",
+      ai_connection_wait: "ai_connection_busy" }[predecessor];
     await db.insert(companies).values({ id: companyId, name: "Backlog retry", defaultResponsibleUserId: "board",
       issuePrefix: "B" + companyId.replaceAll("-", "").slice(0, 8) });
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer",
@@ -39,8 +41,11 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, issueId, runtimeMode: "legacy",
       startedAt: new Date(now - 120_000), finishedAt: new Date(now - 90_000),
       createdAt: new Date(now - 120_000), contextSnapshot: { issueId },
-      ...(predecessor === "succeeded" ? { status: "succeeded" } : { status: "failed", errorCode: "adapter_failed",
-        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }) });
+      ...(predecessor === "succeeded" ? { status: "succeeded" }
+        : predecessor === "ai_connection_wait" ? { status: "cancelled", errorCode: "ai_connection_busy",
+          resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } } }
+        : { status: "failed", errorCode: "adapter_failed",
+          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }) });
     // The scheduler's placeholder: it only waits for its time and has never
     // been claimed, so it has no process, lease, stage or execution events.
     // Its chain has already spent two automatic retries.
@@ -50,8 +55,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(heartbeatRuns).values({ id: retryRunId, companyId, agentId, issueId, runtimeMode: "legacy",
       invocationSource: "automation", triggerDetail: "system", status: "scheduled_retry", wakeupRequestId,
       retryOfRunId: sourceRunId, scheduledRetryAt: new Date(now + 60_000), scheduledRetryAttempt: 2,
-      scheduledRetryReason: "transient_failure", createdAt: new Date(now - 60_000),
-      contextSnapshot: { issueId, retryOfRunId: sourceRunId, retryReason: "transient_failure", scheduledRetryAttempt: 2,
+      scheduledRetryReason: retryReason, createdAt: new Date(now - 60_000),
+      contextSnapshot: { issueId, retryOfRunId: sourceRunId, retryReason, scheduledRetryAttempt: 2,
         executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 0 } } });
     await db.update(agentWakeupRequests).set({ runId: retryRunId }).where(eq(agentWakeupRequests.id, wakeupRequestId));
     await db.update(issues).set({ executionRunId: retryRunId, executionLockedAt: new Date(now - 60_000) })
@@ -70,7 +75,7 @@ const support = await getEmbeddedPostgresTestSupport();
   const holds = (issueId: string) => db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.sourceIssueId, issueId), eq(issueRecoveryActions.cause, "legacy_execution_requires_reconciliation")));
 
-  it.each(["failed_before_provider_work", "succeeded"] as const)(
+  it.each(["failed_before_provider_work", "succeeded", "ai_connection_wait"] as const)(
     "does not hold the task for reconciliation, so todo and Retry continue it (predecessor %s)", async predecessor => {
     const f = await seed(predecessor);
     await moveToBacklog(f);
@@ -137,14 +142,18 @@ const support = await getEmbeddedPostgresTestSupport();
       .toMatchObject({ status: "resolved", outcome: "blocked" });
   });
 
-  it.each(["started", "process", "stage", "execution_event", "unexpected_cancellation", "predecessor_did_provider_work"] as const)(
+  it.each(["started", "process", "stage", "execution_event", "unexpected_cancellation", "predecessor_held", "predecessor_deleted"] as const)(
     "keeps the hold when the cancelled retry shows it may have run: %s", async evidence => {
       const f = await seed();
       await moveToBacklog(f);
-      // The retry continues its chain. A predecessor that did not succeed
-      // may have left actions with an unknown outcome, so the hold stays.
-      if (evidence === "predecessor_did_provider_work") await db.update(heartbeatRuns).set({ resultJson: null })
-        .where(eq(heartbeatRuns.id, f.sourceRunId));
+      // The retry continues its chain: a predecessor with its own unknown
+      // outcome, or one that is gone, keeps the hold on the retry too.
+      if (evidence === "predecessor_held") await db.insert(issueRecoveryActions).values({ companyId: f.companyId,
+        sourceIssueId: f.issueId, kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation",
+        fingerprint: `legacy-execution:${f.sourceRunId}`, status: "cancelled", outcome: "cancelled", ownerType: "board",
+        nextAction: "Superseded by the retry's hold.", evidence: { runId: f.sourceRunId } });
+      else if (evidence === "predecessor_deleted") await db.update(heartbeatRuns).set({ retryOfRunId: null })
+        .where(eq(heartbeatRuns.id, f.retryRunId));
       else if (evidence === "execution_event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
         agentId: f.agentId, runId: f.retryRunId, seq: 1000, eventType: "tool.execution.started" });
       else {

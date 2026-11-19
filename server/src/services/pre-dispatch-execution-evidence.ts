@@ -3,6 +3,7 @@ import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinaliza
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 import { readRunCancellation } from "./run-cancellation.js";
+import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
 
 export function isPreDispatchResourceWait(run: Pick<typeof heartbeatRuns.$inferSelect,
   "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
@@ -34,7 +35,8 @@ export function agentDirectoryPreparationWaitPredicate() {
 
 /** The control plane cancels a run that is still waiting, for example a
  * scheduled retry superseded by a task change. This row check only selects a
- * candidate; `unclaimedControlPlaneCancellationPredicate` is the proof. */
+ * candidate cheaply; `unclaimedControlPlaneCancellationPredicate` (with the
+ * chain rule) plus `noRetainedExecutionPredicate` is the proof. */
 export function isUnclaimedControlPlaneCancellationCandidate(run: Pick<typeof heartbeatRuns.$inferSelect,
   "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
   const cancellation = readRunCancellation(run.resultJson);
@@ -43,19 +45,27 @@ export function isUnclaimedControlPlaneCancellationCandidate(run: Pick<typeof he
 }
 
 /** A retry continues its chain, so its own missing execution evidence is not
- * enough: the run it retries must be settled too. The scheduler only retries a
- * run that needs no reconciliation; this records the two outcomes it can prove
- * from the row: the predecessor succeeded, or its setup failed before provider
- * work. Resource-wait chains keep their own proof (cancelled-native-startup). */
+ * enough. Terminalization records a reconciliation hold on any predecessor
+ * whose outcome is unknown, and the scheduler refuses to retry such a run.
+ * The chain is settled when the predecessor exists and carries no such hold
+ * that is still effective or was superseded. A row with retry metadata whose
+ * predecessor was deleted fails closed. Workspace-wait retries keep their own
+ * proof (`isCancelledNativeStartup`). */
 export function settledRetryPredecessorPredicate() {
-  return sql`(${heartbeatRuns.retryOfRunId} is null or exists (select 1 from heartbeat_runs predecessor
-    where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}
-      and predecessor.agent_id = ${heartbeatRuns.agentId} and predecessor.finished_at is not null
-      and (predecessor.status = 'succeeded' or (predecessor.status in ('failed', 'cancelled', 'interrupted', 'timed_out')
-        and predecessor.result_json #>> '{executionRecovery,kind}' = 'bootstrap'
-        and predecessor.result_json #> '{executionRecovery,providerWorkStarted}' = 'false'::jsonb
-        and coalesce(predecessor.result_json->>'workspaceRestoreFailure', '') = ''
-        and predecessor.result_json->'workspaceRestoreRecovery' is null))))`;
+  return sql`(case when ${heartbeatRuns.retryOfRunId} is null
+    then ${heartbeatRuns.scheduledRetryAttempt} = 0 and ${heartbeatRuns.scheduledRetryReason} is null
+    else coalesce(${heartbeatRuns.scheduledRetryReason}, '') <> 'workspace_busy'
+      and exists (select 1 from heartbeat_runs predecessor
+        where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}
+          and predecessor.agent_id = ${heartbeatRuns.agentId} and predecessor.finished_at is not null)
+      and not exists (select 1 from issue_recovery_actions predecessor_hold
+        where predecessor_hold.company_id = ${heartbeatRuns.companyId}
+          and predecessor_hold.cause in (${sql.join(EXECUTION_RECONCILIATION_CAUSES.map(cause => sql`${cause}`), sql`, `)})
+          and coalesce(predecessor_hold.evidence->>'runId', predecessor_hold.evidence->>'sourceRunId') = ${heartbeatRuns.retryOfRunId}::text
+          and (predecessor_hold.status in ('active', 'escalated')
+            or predecessor_hold.evidence->'automaticRecovery'->>'replay' = 'blocked'
+            or (predecessor_hold.status = 'cancelled' and predecessor_hold.outcome = 'cancelled')))
+    end)`;
 }
 
 /** SQL proof for `isUnclaimedControlPlaneCancellationCandidate`. Callers add
