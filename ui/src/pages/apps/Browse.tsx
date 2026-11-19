@@ -1,3 +1,4 @@
+import { connectionRemovalToast } from "@/features/connections/googleAccessRemoval";
 import { AGGREGATOR_NAMES, aggregatorManagementUrl, isAppAggregator, type AggregatorAppSnapshot, type AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
 import type { CatalogSource } from "./CatalogSourceFilters";
 import { ConnectorsToolbar } from "./ConnectorsToolbar";
@@ -84,6 +85,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -120,6 +122,8 @@ import {
   connectionOwnerProfile,
   type ConnectionOwnerProfile,
 } from "./connection-owner";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 type ConnectorRowModel = {
   key: string;
@@ -414,6 +418,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const [aggregatorToConnect, setAggregatorToConnect] = useState<AggregatorAppCatalogEntry | null>(null);
   const [aggregatorToManage, setAggregatorToManage] = useState<{ app: AggregatorAppCatalogEntry; connectionId?: string } | null>(null);
   const [initialAggregatorProvider, setInitialAggregatorProvider] = useState<AggregatorAppCatalogEntry["routes"][number]["provider"]>();
+  const [deleteStoredContent, setDeleteStoredContent] = useState(false);
   const [connectionToRemove, setConnectionToRemove] =
     useState<ConnectionRemovalTarget | null>(null);
 
@@ -539,10 +544,11 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         if (!target.poolRevision) throw new Error("Open the confirmation again before removing this pool.");
         await aiConnectionPoolsApi.remove(selectedCompanyId!, target.id, target.poolRevision);
       } else {
-        await toolsApi.archiveConnection(target.id);
+        return toolsApi.archiveConnection(target.id, { deleteStoredContent });
       }
+      return null;
     },
-    onSuccess: (_connection, target) => {
+    onSuccess: (removed, target) => {
       queryClient.invalidateQueries({ queryKey: ["email-inboxes", selectedCompanyId!] });
       queryClient.invalidateQueries({
         queryKey: queryKeys.chatEndpoints.list(selectedCompanyId!),
@@ -556,16 +562,17 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       queryClient.invalidateQueries({
         queryKey: queryKeys.apps.attention(selectedCompanyId!),
       });
-      pushToast({
-        title: "Connection removed",
-        body:
+      const body =
           target.pool ? "The connections in the pool are kept." : target.kind === "chat"
             ? `${target.providerName} is disconnected. Existing Paperclip tasks remain available.`
             : target.remainingConnectionCount > 0
             ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
-            : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
-        tone: "success",
-      });
+            : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`;
+      pushToast(connectionRemovalToast({
+        title: deleteStoredContent && !target.pool && target.kind !== "chat" ? "Connection removed. Deleting its saved data." : "Connection removed",
+        body,
+        providerAccess: removed?.removal?.providerAccess,
+      }));
       setConnectionToRemove(null);
     },
     onError: (error) =>
@@ -577,6 +584,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   });
   async function requestConnectionRemoval(target: ConnectionRemovalTarget) {
     removeConnection.reset();
+    setDeleteStoredContent(false);
     if (!target.pool) { setConnectionToRemove(target); return; }
     try {
       const pool = (await aiConnectionPoolsApi.list(selectedCompanyId!)).find(pool => pool.id === target.id);
@@ -1048,7 +1056,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           <Button variant="outline" size="sm" onClick={() => changeQuery("")}>Clear search</Button>
         </div>
       ) : (
-        <div className="space-y-3" role="list" aria-label="Connector list">
+        <div className={cn("space-y-3", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
           {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
           {paginatedRows.map((row) => (
             row.networkConnections ? <TailscaleConnectorCard key={row.key} onNavigate={navigate} /> : <ConnectorCard
@@ -1109,9 +1117,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           }
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
           <AlertDialogHeader>
-            <AlertDialogTitle>
+            <AlertDialogTitle className={ANALYTICS_MASK_CLASS}>
               Remove {connectionToRemove?.accountName ?? "this"} connection?
             </AlertDialogTitle>
             <AlertDialogDescription>
@@ -1125,6 +1133,22 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
                   : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {connectionToRemove && !connectionToRemove.pool && connectionToRemove.kind !== "chat" ? (
+            <label className="flex items-start gap-2 text-sm text-foreground">
+              <Checkbox
+                className="mt-0.5"
+                checked={deleteStoredContent}
+                disabled={removeConnection.isPending}
+                onCheckedChange={(checked) => setDeleteStoredContent(checked === true)}
+              />
+              <span>
+                Also delete data read through this connection
+                <span className="block text-xs text-muted-foreground">
+                  Permanently removes saved tool results and the transcripts of runs that used it. This cannot be undone.
+                </span>
+              </span>
+            </label>
+          ) : null}
           {removeConnection.error ? <p role="alert" className="text-sm text-destructive">
             {describeError(removeConnection.error).body}
           </p> : null}
@@ -1264,7 +1288,7 @@ export function ConnectorCard({
                 <button type="button" aria-label={label} onClick={() => managed ? onManageAggregator?.(row.aggregatorApp!, managedSnapshot?.connectionId) : onConnectAggregator?.(row.aggregatorApp!)} className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   <AppLogo name={providerName} brandKey={route.provider} size={16} compact />
                 </button>
-              </TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>;
+              </TooltipTrigger><TooltipContent className={ANALYTICS_MASK_CLASS}>{label}</TooltipContent></Tooltip>;
             })}
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
@@ -1355,10 +1379,10 @@ export function ConnectorCard({
               const managementUrl = aggregatorManagementUrl(provider, account.managementUrl ?? (typeof connection.config?.managementUrl === "string" ? connection.config?.managementUrl : null));
               const manage = () => onManageAggregator?.(row.upstreamCatalogApp!, connection.id);
               return <ConnectionAccountRowLayout key={`${connection.id}:${snapshot.toolkit}:${account.id}`} state={state} accountName={name}
-                source={<><AppLogo name={providerName} brandKey={provider} size={16} compact /><span>Managed by {providerName} ·</span><button type="button" className="max-w-full truncate hover:underline" onClick={() => onNavigate(`/apps/${connection.id}/permissions`)}>“{connection.name}”</button></>}
+                source={<><AppLogo name={providerName} brandKey={provider} size={16} compact /><span>Managed by {providerName} ·</span><button type="button" className={cn("max-w-full truncate hover:underline", ANALYTICS_MASK_CLASS)} onClick={() => onNavigate(`/apps/${connection.id}/permissions`)}>“{connection.name}”</button></>}
                 onOpen={manage} openLabel={`Manage ${name}`}>
                 <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label={`Manage ${name} connection`}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
+                  <DropdownMenuContent className={ANALYTICS_MASK_CLASS} align="end">
                     {managementUrl ? <DropdownMenuItem asChild><a href={managementUrl} target="_blank" rel="noopener noreferrer">Open in {providerName}<ExternalLink className="size-4" /></a></DropdownMenuItem>
                       : <DropdownMenuItem disabled title="Set the management URL on this gateway to open its console">Open in {providerName}<ExternalLink className="size-4" /></DropdownMenuItem>}
                   </DropdownMenuContent>
@@ -1420,7 +1444,7 @@ export function ConnectorCard({
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
+                      <DropdownMenuContent className={ANALYTICS_MASK_CLASS} align="end">
                         <DropdownMenuItem onSelect={() => onNavigate(`/apps/chat/${endpoint.id}/settings`)}>
                           Manage
                         </DropdownMenuItem>
@@ -1520,7 +1544,7 @@ function ConnectionAccountRow({
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent className={ANALYTICS_MASK_CLASS} align="end">
             {account?.canSetDefault && aiDefaults && !aiDefaults.accounts.error && <AiDefaultMenuItem account={account}
               pending={aiDefaults.pending(account.provider)} onSelect={() => aiDefaults.choose(account)} />}
             <DropdownMenuItem
@@ -1558,7 +1582,7 @@ function ConnectionAccountRowLayout({ state, accountName, afterName, owner, sour
         <div className="min-w-0">
           <div className="flex min-w-0 items-center gap-2"><button
             type="button"
-            className="block max-w-full cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline focus-visible:underline"
+            className={cn("block max-w-full cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline focus-visible:underline", ANALYTICS_MASK_CLASS)}
             aria-label={openLabel}
             onClick={onOpen}
           >

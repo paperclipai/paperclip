@@ -185,13 +185,22 @@ API: `present` — representative operation IDs:
 
 - `POST /api/companies/{companyId}/issues`.
 - `POST /api/issues/{issueId}/children`.
+- `POST /api/companies/{companyId}/chats/{agentRef}/onboarding` (board only).
+- `POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting` (board only).
 
 Agent access: `available` — Native create_task / agent REST / CLI issue.
 
 Policy: Instance setup is operator work; company creation is board; agent creation/task
 creation retain their individual permissions.
 
-An authenticated run bound to the server-created onboarding first task must
+The company wizard opens the owner's standing chat without an execution task or
+project. Its board client requests a live welcome only once the thread is
+visible. Agents use the existing chat interactions to propose work; acceptance
+creates standalone tasks, and explicit task requests permit direct creation.
+See [chat-first onboarding](../../doc/onboarding-chat.md). The new board routes
+do not grant agents authority to start another person's onboarding conversation.
+
+For historical task-based onboarding, an authenticated run bound to an onboarding first task must
 obtain persisted human acceptance of the latest ordinary proposal before creating
 new tasks through native `create_task` or REST. Its authenticated run determines
 this admission even for an explicit standalone task. A card decision or a saved

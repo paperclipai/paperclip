@@ -11,8 +11,22 @@ import { seedRecoveryPopulation } from "./helpers/recovery-population.js";
 vi.hoisted(() => { process.env.PAPERCLIP_DEBUG_WORK_SIGNALS = "stranded-assignments:1,assigned-work-invariant:1"; });
 
 const MINUTE = 60_000;
+const TEST_TIMEOUT_MS = 240_000;
+const STEP_TIMEOUT_MS = 20_000;
 const TOPICS = new Set(["stranded-assignments", "assigned-work-invariant"]);
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
 type Recorded = { at: number; topic: string; name: string; fields: Record<string, unknown> };
+
+/** Bounds one step with the real clock, captured before the timers are faked,
+ * so a wait that cannot finish fails in seconds and names what it waited for. */
+function bounded<T>(work: Promise<T>, waitingFor: () => string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = realSetTimeout(() => reject(new Error(`Timed out after ${STEP_TIMEOUT_MS} ms waiting for ${waitingFor()}`)), STEP_TIMEOUT_MS);
+  });
+  return Promise.race([work, expired]).finally(() => realClearTimeout(timer));
+}
 
 /**
  * Staging shape: about 860 settled assigned tasks, most of them held by the
@@ -27,9 +41,14 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
     const until = Date.now() + ms;
     let nextTick = Date.now();
     while (Date.now() < until) {
-      if (onTick && Date.now() >= nextTick) { await onTick(); nextTick = Date.now() + 10_000; }
-      await vi.advanceTimersByTimeAsync(Math.min(1000, until - Date.now()));
-      await Promise.allSettled([...state.passes]); await immediate();
+      const at = new Date(Date.now()).toISOString();
+      if (onTick && Date.now() >= nextTick) {
+        await bounded(onTick(), () => `the run event at simulated ${at} to commit`);
+        nextTick = Date.now() + 10_000;
+      }
+      await bounded(vi.advanceTimersByTimeAsync(Math.min(1000, until - Date.now())), () => `simulated time to advance past ${at}`);
+      await bounded(Promise.allSettled([...state.passes]), () => `${state.passes.size} delivery passes started by simulated ${at} to settle`);
+      await immediate();
     }
   }
 
@@ -56,38 +75,52 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
   async function seed() {
     const f = await state.fixture();
     // 12 agents leave 3 workers, so each holds about 266 of the settled reviews.
-    const population = await seedRecoveryPopulation(state.db, f.companyId, { agents: 12, inReview: 800, inProgress: 30, todo: 30 });
+    // No agent takes on-demand wakes: a check that repairs a task would start a
+    // real run while setTimeout is faked, and that run can wait forever. The
+    // census counts queue checks, not runs.
+    const population = await seedRecoveryPopulation(state.db, f.companyId,
+      { agents: 12, inReview: 800, inProgress: 30, todo: 30, wakeOnDemand: false });
+    // Settled long before the window, as on staging. Rows stamped now count as
+    // changed for the first backstop after the warm-up, which would re-check
+    // every seeded task once.
+    const settledAt = new Date(Date.now() - 2 * 60 * MINUTE);
+    await state.db.update(issues).set({ createdAt: settledAt, updatedAt: settledAt }).where(eq(issues.companyId, f.companyId));
+    await state.db.update(heartbeatRuns).set({ updatedAt: settledAt }).where(eq(heartbeatRuns.companyId, f.companyId));
+    await state.db.update(agents).set({ createdAt: settledAt, updatedAt: settledAt }).where(eq(agents.companyId, f.companyId));
     const liveAgentId = population.agentIds[7]!;
-    const [liveTask] = await state.db.insert(issues).values({ companyId: f.companyId, title: "Live native task", status: "in_progress",
+    // A settled review until its run starts. An in-progress task with no run
+    // is real assigned work, so recovery would start a real run for it while
+    // setTimeout is faked, and that run can wait forever.
+    const [liveTask] = await state.db.insert(issues).values({ companyId: f.companyId, title: "Live native task", status: "in_review",
       assigneeAgentId: liveAgentId }).returning({ id: issues.id });
     // A paused agent with one waiting task, both settled long before the window.
-    const old = new Date(Date.now() - 2 * 60 * MINUTE);
+    // It takes no on-demand wakes, so resuming it never starts a real run.
     const [held] = await state.db.insert(agents).values({ companyId: f.companyId, name: "Held worker", role: "engineer", status: "paused",
-      lifecycleHolds: ["manual"], adapterType: "process", reportsTo: population.agentIds[1], createdAt: old, updatedAt: old,
+      lifecycleHolds: ["manual"], adapterType: "process", reportsTo: population.agentIds[1], createdAt: settledAt, updatedAt: settledAt,
       adapterConfig: { command: process.execPath, args: ["-e", "0"], cwd: process.cwd() },
-      runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: true } } }).returning({ id: agents.id });
+      runtimeConfig: { heartbeat: { enabled: false, intervalSec: 0, wakeOnDemand: false } } }).returning({ id: agents.id });
     const [waiting] = await state.db.insert(issues).values({ companyId: f.companyId, title: "Waits for its agent", status: "todo",
-      assigneeAgentId: held!.id, createdAt: old, updatedAt: old }).returning({ id: issues.id });
+      assigneeAgentId: held!.id, createdAt: settledAt, updatedAt: settledAt }).returning({ id: issues.id });
     return { ...f, population, liveAgentId, liveTaskId: liveTask!.id, heldAgentId: held!.id, waitingTaskId: waiting!.id };
   }
 
   async function boot() {
-    const f = await seed();
+    const f = await bounded(seed(), () => "the fixture to be seeded");
     const events = record();
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-    await state.start({});
+    await bounded(state.start({}), () => "the recovery workers to start");
     await advance(10 * MINUTE);
     events.length = 0;
     return { ...f, events };
   }
 
-  /** What execution start writes (heartbeat.ts): the run, then the agent's
-   * status flip to running without a heartbeat time. */
+  /** What execution start writes (heartbeat.ts): the run, the task's checkout,
+   * then the agent's status flip to running without a heartbeat time. */
   async function startLiveRun(f: Awaited<ReturnType<typeof boot>>) {
     const [run] = await state.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.liveAgentId, status: "running",
       runtimeMode: "native", startedAt: new Date(), contextSnapshot: { issueId: f.liveTaskId }, nativeIssueId: f.liveTaskId })
       .returning({ id: heartbeatRuns.id });
-    await state.db.update(issues).set({ executionRunId: run!.id }).where(eq(issues.id, f.liveTaskId));
+    await state.db.update(issues).set({ status: "in_progress", executionRunId: run!.id }).where(eq(issues.id, f.liveTaskId));
     await state.db.update(agents).set({ status: "running", updatedAt: new Date() }).where(eq(agents.id, f.liveAgentId));
     const runId = run!.id;
     return {
@@ -102,7 +135,7 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
 
   it("does not re-check the live agent's settled tasks while its run stays live", async () => {
     const f = await boot();
-    const live = await startLiveRun(f);
+    const live = await bounded(startLiveRun(f), () => "the live run to start");
     let ticks = 0;
     const before = state.meter.read();
     await advance(30 * MINUTE, () => { ticks += 1; return live.tick(); });
@@ -121,11 +154,11 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
     expect(result.strandedByWake.hint ?? 0).toBeLessThanOrEqual(ticks + 10);
     expect(result.assignedWork).toBeLessThanOrEqual(10);
     expect(result.signalsBeyondRunEvents).toBe(0);
-  }, 1_800_000);
+  }, TEST_TIMEOUT_MS);
 
   it("still checks a task of the live agent within the backstop bound when its own rows change without a hint", async () => {
     const f = await boot();
-    const live = await startLiveRun(f);
+    const live = await bounded(startLiveRun(f), () => "the live run to start");
     await advance(6 * MINUTE, live.tick);
     f.events.length = 0;
     const target = f.population.inReview.find((_, index) => index % 3 === 0)!;
@@ -133,31 +166,32 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
     expect(current!.assignee).toBe(f.liveAgentId);
     const changedAt = Date.now();
     // A direct write that sends no hint (for example an edit by an older server).
-    await state.db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, target));
+    await bounded(state.db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, target)),
+      () => "the direct task write");
     await advance(ISSUE_RECOVERY_BACKSTOP_MS + 2 * MINUTE, live.tick);
     const checked = f.events.find(event => event.topic === "stranded-assignments" && event.name === "check" && event.fields.issueId === target);
     expect(checked).toBeDefined();
     expect(checked!.at - changedAt).toBeLessThanOrEqual(ISSUE_RECOVERY_BACKSTOP_MS + 2 * MINUTE);
-  }, 1_800_000);
+  }, TEST_TIMEOUT_MS);
 
   it("still checks a resumed agent's task within the backstop bound when the resume sends no hint", async () => {
     const f = await boot();
-    const live = await startLiveRun(f);
+    const live = await bounded(startLiveRun(f), () => "the live run to start");
     await advance(6 * MINUTE, live.tick);
     f.events.length = 0;
     const waiting = f.waitingTaskId;
     const changedAt = Date.now();
-    await state.db.update(agents).set({ status: "idle", lifecycleHolds: [], updatedAt: new Date() })
-      .where(eq(agents.id, f.heldAgentId));
+    await bounded(state.db.update(agents).set({ status: "idle", lifecycleHolds: [], updatedAt: new Date() })
+      .where(eq(agents.id, f.heldAgentId)), () => "the agent resume write");
     await advance(ISSUE_RECOVERY_BACKSTOP_MS + 2 * MINUTE, live.tick);
     const checked = f.events.find(event => event.topic === "stranded-assignments" && event.name === "check" && event.fields.issueId === waiting);
     expect(checked).toBeDefined();
     expect(checked!.at - changedAt).toBeLessThanOrEqual(ISSUE_RECOVERY_BACKSTOP_MS + 2 * MINUTE);
-  }, 1_800_000);
+  }, TEST_TIMEOUT_MS);
 
   it("still re-checks every settled task in the hourly full pass", async () => {
     const f = await boot();
-    const live = await startLiveRun(f);
+    const live = await bounded(startLiveRun(f), () => "the live run to start");
     await advance(ISSUE_RECOVERY_FULL_BACKSTOP_MS + 5 * MINUTE, live.tick);
     const checked = new Set(checksOf(f.events, "stranded-assignments").map(event => String(event.fields.issueId)));
     const missing = f.population.inReview.filter(id => !checked.has(id));
@@ -165,5 +199,5 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
     const runs = await state.db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, f.companyId), sql`${heartbeatRuns.status} = 'running'`));
     expect(runs.map(run => run.id)).toContain(live.runId);
-  }, 1_800_000);
+  }, TEST_TIMEOUT_MS);
 });

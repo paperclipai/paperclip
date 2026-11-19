@@ -2,7 +2,7 @@ import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js"
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { centsToUnits, centsToUsd, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
+import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, responsibilitySummaryInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
@@ -500,6 +500,9 @@ export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDi
       union all
       select ${promptInjectionInvocations.startedAt} from ${promptInjectionInvocations}
         where ${promptInjectionInvocations.status} = 'running'
+      union all
+      select ${responsibilitySummaryInvocations.startedAt} from ${responsibilitySummaryInvocations}
+        where ${responsibilitySummaryInvocations.status} = 'running'
     ) running_service_invocations`);
   // Wake when a run waiting for closure evidence reaches its bound.
   const [closure] = await db.select({ at: sql<Date | string | null>`min(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}))` })

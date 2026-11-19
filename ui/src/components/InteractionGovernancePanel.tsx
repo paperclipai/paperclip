@@ -23,6 +23,10 @@ const INTERACTION_KIND_LABELS: Record<IssueThreadInteractionKind, string> = {
   request_checkbox_confirmation: "Checkbox confirmations",
   request_item_verdicts: "Item verdicts",
   connection_intent: "Connection requests",
+  suggest_routine: "Routine offers",
+  propose_responsibility_bar: "Proposed bars",
+  propose_automation: "Proposed automations",
+  propose_dashboard_changes: "Proposed dashboard changes",
 };
 
 /**
@@ -269,7 +273,8 @@ export function InteractionGovernancePanel({
           <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
             Cap
           </div>
-          {ISSUE_THREAD_INTERACTION_KINDS.map((kind) => {
+          {ISSUE_THREAD_INTERACTION_KINDS.filter((kind) => kind !== "suggest_routine" && kind !== "propose_responsibility_bar" && kind !== "propose_automation" && kind !== "propose_dashboard_changes").map((kind) => {
+            // Routine offers and proposed bars are always answered by a person; there is no audience to govern.
             const entry = governance[kind] ?? {};
             const kindLabel = INTERACTION_KIND_LABELS[kind];
             return (

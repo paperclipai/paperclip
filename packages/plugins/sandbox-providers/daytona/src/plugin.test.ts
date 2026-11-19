@@ -39,7 +39,7 @@ import plugin, {
   STUCK_STOPPING_FORCE_AFTER_MS,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
+import { PluginEnvironmentAcquisitionError, environmentAcquireErrorData, environmentResumeErrorData, readEnvironmentAcquireErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
 import * as duplexCommands from "./duplex-command-stream.js";
@@ -1563,6 +1563,29 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.delete).toHaveBeenCalledOnce();
     });
 
+    it.each([
+      ["DaytonaConnectionError", "read EADDRNOTAVAIL", "CONNECTION_FAILED"],
+      ["DaytonaConnectionTimeoutError", "HTTP request timed out", "ETIMEDOUT"],
+    ])("reports a %s during setup as a transient transport failure", async (name, message, errorCode) => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      sandbox.getWorkDir.mockRejectedValue(Object.assign(new Error(message), { name, code: undefined }));
+      sandbox.delete.mockResolvedValue(undefined);
+      const error = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(error.message).toBe(message);
+      expect(readEnvironmentAcquireErrorDiagnostic({ data: environmentAcquireErrorData(error) })).toEqual({ errorCode });
+      expect(sandbox.delete).toHaveBeenCalledOnce();
+    });
+
+    it("leaves other setup failures without a transport diagnostic", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      sandbox.getWorkDir.mockRejectedValue(new Error("workspace unavailable"));
+      sandbox.delete.mockResolvedValue(undefined);
+      const error = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(environmentAcquireErrorData(error)).toBeUndefined();
+    });
+
     it("keeps ownership when setup and its inline deletion both reject", async () => {
       const sandbox = createMockSandbox();
       mockCreate.mockResolvedValue(sandbox);
@@ -1704,6 +1727,33 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledWith(mockCreate.mock.calls[0][0].name);
       expect(orphan!.delete).toHaveBeenCalledWith(10, true);
       expect(orphan!.process.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it("reports a sandbox that failed to start as a removed allocation with its observed step", async () => {
+      const startError = new Error("Sandbox private-sandbox-id failed to start with status: error, error reason: null");
+      mockCreate.mockRejectedValue(startError);
+      let orphan: ReturnType<typeof ownedSandbox>;
+      mockGet.mockImplementation(async () => {
+        orphan = { ...ownedSandbox(), state: "error" };
+        orphan.delete.mockImplementation(async () => { orphan.state = "destroyed"; });
+        return orphan;
+      });
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(orphan!.delete).toHaveBeenCalledWith(10, true);
+      expect(failure).toBeInstanceOf(PluginEnvironmentAcquisitionError);
+      expect(failure.message).not.toContain("private-sandbox-id");
+      expect(failure.cause).toBe(startError);
+      expect(readEnvironmentCreationCleanupError(failure)).toBeNull();
+      expect(readEnvironmentAcquisitionDiagnostic(failure)).toMatchObject({ phase: "create", providerState: "error" });
+      expect(environmentAcquireErrorData(failure)).toMatchObject({
+        schema: "paperclip/environment-acquire-error/v1", acquisitionDiagnostic: { phase: "create", providerState: "error" } });
+    });
+
+    it.each(["build_failed", "started"])("keeps the create error when the removed sandbox was %s", async (state) => {
+      const startError = new Error("Sandbox failed to start");
+      mockCreate.mockRejectedValue(startError);
+      mockGet.mockImplementation(async () => ({ ...ownedSandbox(), state }));
+      await expect(plugin.definition.onEnvironmentAcquireLease!(params)).rejects.toBe(startError);
     });
 
     it.each(["paperclip-company-id", "paperclip-environment-id", "paperclip-run-id", "paperclip-create-attempt", "paperclip-provider"])("never deletes a sandbox with a mismatched %s", async (label) => {
@@ -5958,9 +6008,13 @@ describe("Daytona sandbox provider plugin", () => {
         // Idle past half of the default 15-min auto-stop interval so the next
         // lookup refreshes the stale handle.
         nowMs += 8 * 60_000;
-        await expect(
-          plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config }),
-        ).rejects.toThrow(/did not respond within 50 ms/);
+        const timedOut = await Promise.resolve(plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config }))
+          .catch((error: unknown) => error);
+        expect(timedOut).toBeInstanceOf(Error);
+        expect((timedOut as Error).message).toMatch(/did not respond within 50 ms/);
+        expect(timedOut).toMatchObject({ code: "ETIMEDOUT" });
+        expect(environmentResumeErrorData(timedOut)).toEqual({ schema: "paperclip/environment-resume-error/v1",
+          diagnostic: { errorCode: "ETIMEDOUT" } });
       } finally {
         restoreFreshness();
       }

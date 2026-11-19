@@ -1,6 +1,6 @@
 import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo } from "../types.js";
-import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { isPluginAppSlug, isRemoteMcpConnectorMethod } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueThreadInteractions, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
@@ -69,7 +69,10 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
     // Workspace setup saves the operator's install selection before OAuth too.
     // An empty selection means no agents, not permission to apply all-agent
     // defaults after the user returns from Google.
-    const preserveEmptyInstalls = input.connection.config.sourceTemplateKey === "google-workspace"
+    // A plugin connector never gets agent access from signing in: an agent or
+    // company install is always an explicit operator choice.
+    const preserveEmptyInstalls = isPluginAppSlug(input.connection.config.sourceTemplateKey)
+      || input.connection.config.sourceTemplateKey === "google-workspace"
       || isRemoteMcpConnectorMethod(
       input.connection.config.sourceTemplateKey,
       input.connection.config.connectionMethodKey,

@@ -152,12 +152,17 @@ export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
   baseTriggerSchema.extend({
     kind: z.literal("api"),
   }),
+  // A standing check (experimental `enableResponsibilities`): never fires a run;
+  // the routine's agent carries it out on each heartbeat wake-up.
+  baseTriggerSchema.extend({
+    kind: z.literal("heartbeat"),
+  }),
 ]);
 
 export type CreateRoutineTrigger = z.infer<typeof createRoutineTriggerSchema>;
 
 export const updateRoutineTriggerSchema = z.object({
-  setupPending: z.literal(false).optional(),
+  setupPending: z.boolean().optional(),
   archived: z.boolean().optional(),
   label: z.string().trim().max(120).optional().nullable(),
   enabled: z.boolean().optional(),

@@ -12,6 +12,7 @@ export function createMcpAppViewIndex(views: readonly McpAppViewSummary[]): McpA
   const byRun = new Map<string, McpAppViewSummary[]>();
   for (const view of views) {
     if (!view.runId) continue;
+    if (view.upstreamToolName === "get_me" && view.resourceUri === "ui://github-mcp-server/get-me") continue;
     const list = byRun.get(view.runId);
     if (list) list.push(view);
     else byRun.set(view.runId, [view]);

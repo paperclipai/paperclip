@@ -72,6 +72,7 @@ import {
 } from "../lib/import-job-watch";
 import { Badge } from "@/components/ui/badge";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 // ── Import-specific helpers ───────────────────────────────────────────
 
@@ -275,7 +276,7 @@ function ImportPreviewPane({
             <img src={imageSrc} alt={selectedFile} className="max-h-(--sz-480px) max-w-full object-contain" />
           </div>
         ) : textContent !== null ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{textContent}</code>
           </pre>
         ) : (

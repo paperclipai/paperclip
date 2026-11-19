@@ -8,8 +8,8 @@ import { TASK_COLLECTION_PAINTED_EVENT } from "@/lib/issue-detail-preload-events
 import type { Issue } from "@paperclipai/shared";
 import { seedIssueChatBootstrap, type IssueChatBootstrapEntry } from "@/lib/issueChatBootstrapCache";
 import { queryKeys } from "@/lib/queryKeys";
-import { resetIssueChatBootstrapsForTest } from "@/lib/issue-chat-bootstrap";
-import { resetRecentTaskChatPreloadForTests, useRecentTaskOpenWarmup, type RecentTaskOpenWarmupTask } from "./useRecentTaskOpenWarmup";
+import { CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS, resetIssueChatBootstrapsForTest } from "@/lib/issue-chat-bootstrap";
+import { useRecentTaskOpenWarmup, type RecentTaskOpenWarmupTask } from "./useRecentTaskOpenWarmup";
 
 const chatBootstrap = vi.hoisted(() => vi.fn());
 vi.mock("@/api/issues", () => ({ issuesApi: { chatBootstrap } }));
@@ -41,23 +41,22 @@ let root: Root;
 let queryClient: QueryClient;
 let visibility: DocumentVisibilityState;
 
-function Probe(props: { companyId: string | null; userId: string | null; tasks: RecentTaskOpenWarmupTask[] }) {
+function Probe(props: { companyId: string | null; userId: string | null; tasks: RecentTaskOpenWarmupTask[]; navigationKey?: string }) {
   useRecentTaskOpenWarmup(props);
   return null;
 }
 
-function render(props: { companyId?: string | null; userId?: string | null; tasks: RecentTaskOpenWarmupTask[] }) {
+function render(props: { companyId?: string | null; userId?: string | null; tasks: RecentTaskOpenWarmupTask[]; navigationKey?: string }) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <Probe companyId={props.companyId === undefined ? "company-1" : props.companyId} userId={props.userId ?? "user-1"} tasks={props.tasks} />
+        <Probe companyId={props.companyId === undefined ? "company-1" : props.companyId} userId={props.userId ?? "user-1"} tasks={props.tasks} navigationKey={props.navigationKey} />
       </QueryClientProvider>,
     );
   });
 }
 
 beforeEach(() => {
-  resetRecentTaskChatPreloadForTests();
   resetIssueChatBootstrapsForTest();
   chatBootstrap.mockReset();
   chatBootstrap.mockImplementation(async (_companyId: string, ids: string[]) => ({
@@ -72,6 +71,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   act(() => root.unmount());
   container.remove();
   queryClient.clear();
@@ -184,8 +184,8 @@ describe("useRecentTaskOpenWarmup", () => {
     expect(chatBootstrap).toHaveBeenCalledTimes(1);
     expect(chatBootstrap.mock.calls[0]![1]).toEqual(["id-2"]);
 
-    // Now all three are cached in full: no request at all.
-    resetRecentTaskChatPreloadForTests();
+    // Now all three are cached in full: no request at all, even past the repeat window.
+    resetIssueChatBootstrapsForTest();
     chatBootstrap.mockClear();
     act(() => root.unmount());
     root = createRoot(container);
@@ -194,11 +194,50 @@ describe("useRecentTaskOpenWarmup", () => {
     expect(chatBootstrap).not.toHaveBeenCalled();
   });
 
-  it("preloads once per account per page load and never seeds another company's tasks", async () => {
-    render({ tasks: tasks(1) });
+  it("sends nothing new on navigations within five minutes of a warm", async () => {
+    render({ tasks: tasks(2), navigationKey: "/PAP/inbox" });
+    await settle();
+    render({ tasks: tasks(2), navigationKey: "/PAP/issues/PAP-9" });
     await settle();
     act(() => root.unmount());
     root = createRoot(container);
+    render({ tasks: tasks(2), navigationKey: "/PAP/dashboard" });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it("warms Recents again on a navigation once the earlier warm may have been dropped", async () => {
+    // The sidebar stays mounted for hours; unread cache entries are dropped after five minutes.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    render({ tasks: tasks(2), navigationKey: "/PAP/inbox" });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(1);
+    queryClient.clear();
+    vi.setSystemTime(Date.now() + CHAT_BOOTSTRAP_BACKGROUND_REPEAT_MS + 1);
+    render({ tasks: tasks(2), navigationKey: "/PAP/dashboard" });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(2);
+    expect(chatBootstrap.mock.calls[1]![1]).toEqual(["id-0", "id-1"]);
+    expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-1"), "core"])).toMatchObject({ id: "id-1" });
+  });
+
+  it("preloads the same task again for another account signed in within five minutes", async () => {
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    render({ tasks: tasks(1) });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(1);
+    // A sign-out clears the cached tasks; the next account opens the same task.
+    queryClient.clear();
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    act(() => root.unmount());
+    root = createRoot(container);
+    render({ userId: "user-2", tasks: tasks(1) });
+    await settle();
+    expect(chatBootstrap).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData([...queryKeys.issues.detail("PAP-0"), "core"])).toMatchObject({ id: "id-0" });
+  });
+
+  it("never seeds another company's tasks", async () => {
     render({ tasks: tasks(1) });
     await settle();
     expect(chatBootstrap).toHaveBeenCalledTimes(1);

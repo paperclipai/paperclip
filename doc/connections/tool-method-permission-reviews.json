@@ -24,7 +24,7 @@
         "https://www.googleapis.com/auth/calendar.events"
       ],
       "capability": "write",
-      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request ten scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
       "evidence": [
         "https://developers.google.com/workspace/guides/configure-mcp-servers",
         "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
@@ -54,7 +54,7 @@
         "https://www.googleapis.com/auth/calendar.events"
       ],
       "capability": "write",
-      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request ten scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
       "evidence": [
         "https://developers.google.com/workspace/guides/configure-mcp-servers",
         "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
@@ -2978,6 +2978,39 @@
       "reviewedAt": "2026-10-22",
       "liveProof": "read-write-verified",
       "evidenceLimit": "2026-10-23: a replacement token passed all eight actions through a real run-scoped gateway for personal and shared credentials, including create/list/read/update/secret resolution/archive/delete on synthetic items. Both test items were deleted and absent from subsequent listings. Catalog refresh, reconnect preserving identity, removal, retained-session denial and credential absence passed. The 2026-10-22 token denied creation; the first 2026-10-23 attempt stopped before provider calls due to host PostgreSQL semaphore exhaustion. A temporary ten-connection test profile allowed the complete live retry to pass without changing shared services."
+    },
+    {
+      "app": "aws",
+      "method": "aws-role",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Any AWS API the connection's IAM role allows, through run_script. The read-only access level adds AWS ReadOnlyAccess as a session policy.",
+      "evidence": [
+        "https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html",
+        "https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html",
+        "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html"
+      ],
+      "reviewedAt": "2026-11-18",
+      "liveProof": "2026-11-18 spike in the Paperclip dev AWS account (doc/plans/2026-11-17-aws-connector-and-minted-credentials.md, Spike findings): a Paperclip-signed connection token assumed its role, another connection's token was denied, the bearer exchange and tools/list passed, and run_script read and wrote. A read-only session read and AWS refused its write. Both access-key paths obtained a bearer. The production connector path itself is not yet live-tested."
+    },
+    {
+      "app": "aws",
+      "method": "aws-access-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Any AWS API the IAM user (or its optional role) allows, through run_script. The read-only access level adds AWS ReadOnlyAccess as a session policy.",
+      "evidence": [
+        "https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html",
+        "https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html",
+        "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html"
+      ],
+      "reviewedAt": "2026-11-18",
+      "liveProof": "2026-11-18 spike in the Paperclip dev AWS account (doc/plans/2026-11-17-aws-connector-and-minted-credentials.md, Spike findings): a Paperclip-signed connection token assumed its role, another connection's token was denied, the bearer exchange and tools/list passed, and run_script read and wrote. A read-only session read and AWS refused its write. Both access-key paths obtained a bearer. The production connector path itself is not yet live-tested.",
+      "keyPermissions": "Use a dedicated IAM user for this connection. It needs AWSMCPSignInOAuthAccessPolicy, sts:GetFederationToken, and the permissions agents should have; Paperclip cannot raise them."
     }
   ]
 }

@@ -8,11 +8,11 @@ import type { PluginOrganizationSwitcherProps } from "@paperclipai/plugin-sdk/ui
 import { PluginOrganizationSwitcher } from "./PluginOrganizationSwitcher";
 import { registerPluginReactComponent, registerPluginWebComponent, type ResolvedPluginSlot } from "@/plugins/slots";
 
-const state = vi.hoisted(() => ({ userId: "alice", companyId: "company-a", settled: true, failed: false, isLoading: false, companyListError: false, companyListReady: true, companyIds: ["company-a", "company-b"], slots: [] as ResolvedPluginSlot[], errorMessage: null as string | null, mobile: false, collapsed: false, close: vi.fn(), signOut: vi.fn(), props: null as PluginOrganizationSwitcherProps | null }));
+const state = vi.hoisted(() => ({ userId: "alice", companyId: "company-a", settled: true, failed: false, isLoading: false, companyListError: false, companyListReady: true, companyIds: ["company-a", "company-b"], slots: [] as ResolvedPluginSlot[], errorMessage: null as string | null, mobile: false, close: vi.fn(), signOut: vi.fn(), props: null as PluginOrganizationSwitcherProps | null }));
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => state, useCompanyListQuery: () => ({ isSuccess: state.companyListReady, isError: state.companyListError, data: { unauthorized: false, companies: state.companyIds.map(id => ({ id, name: "Acme", issuePrefix: "ACME", logoUrl: "/logo" })) } }) }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: state.userId } }) } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: state.companyId, selectedCompany: { name: "Acme", issuePrefix: "ACME", logoUrl: "/logo" } }) }));
-vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: state.mobile, setSidebarOpen: state.close, collapsed: state.collapsed, peeking: false }) }));
+vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: state.mobile, setSidebarOpen: state.close }) }));
 vi.mock("@/hooks/useSignOut", () => ({ useSignOut: () => ({ mutate: state.signOut, isPending: false }) }));
 vi.mock("./CompanyPatternIcon", () => ({ CompanyPatternIcon: () => <span>icon</span> }));
 vi.mock("@/plugins/slots", async (importOriginal) => ({ ...await importOriginal<object>(), usePluginSlots: () => state }));
@@ -26,7 +26,7 @@ function render() {
 }
 afterEach(() => {
   if (root) flushSync(() => root!.unmount()); root = undefined; container?.remove(); client.clear(); vi.restoreAllMocks();
-  Object.assign(state, { userId: "alice", companyId: "company-a", settled: true, failed: false, isLoading: false, companyListError: false, companyListReady: true, companyIds: ["company-a", "company-b"], slots: [], errorMessage: null, mobile: false, collapsed: false, props: null });
+  Object.assign(state, { userId: "alice", companyId: "company-a", settled: true, failed: false, isLoading: false, companyListError: false, companyListReady: true, companyIds: ["company-a", "company-b"], slots: [], errorMessage: null, mobile: false, props: null });
   state.close.mockClear(); state.signOut.mockClear();
 });
 function register() {
@@ -95,10 +95,10 @@ describe("organization navigation replacement", () => {
     expect(container.textContent).toBe("Built-in organizations");
   });
   it("renders one replacement, keeps host controls, and clears state across identity changes", () => {
-    register(); state.mobile = true; state.collapsed = true; render();
+    register(); state.mobile = true; render();
     expect(container.textContent).toBe("Private organizations");
     const host = state.props!.organizationSwitcher;
-    expect(host.currentCompany).toEqual({ name: "Acme", logoUrl: "/logo" }); expect(host.collapsed).toBe(true);
+    expect(host.currentCompany).toEqual({ name: "Acme", logoUrl: "/logo" }); expect(host.collapsed).toBe(false);
     flushSync(() => host.onOpenChange(true)); expect(state.props!.organizationSwitcher.open).toBe(true);
     flushSync(() => host.onNavigate()); expect(state.close).toHaveBeenCalledWith(false); expect(state.props!.organizationSwitcher.open).toBe(false);
     host.onSignOut(); expect(state.signOut).toHaveBeenCalledOnce();

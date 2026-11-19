@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { toolConnections, toolInvocations, type Db } from "@paperclipai/db";
-import { getConnectableAppDefinition } from "@paperclipai/shared";
+import { getConnectableAppDefinition, isPluginAppSlug } from "@paperclipai/shared";
 import {
   trackConnectionCreated,
   trackConnectionUpdated,
@@ -8,6 +8,7 @@ import {
 } from "@paperclipai/shared/telemetry";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 
 type ToolConnectionRow = typeof toolConnections.$inferSelect;
 type ToolInvocationRow = typeof toolInvocations.$inferSelect;
@@ -50,7 +51,9 @@ export function connectorKeyForConnection(
 ): string {
   const raw = connection.config?.sourceTemplateKey;
   const key = typeof raw === "string" ? raw : null;
-  return key && getConnectableAppDefinition(key) ? key : "custom";
+  // Only built-in connector keys leave the instance; a plugin's connector
+  // names its (possibly private) plugin, so it is reported as custom.
+  return key && !isPluginAppSlug(key) && getConnectableAppDefinition(key) ? key : "custom";
 }
 
 /**
@@ -91,14 +94,14 @@ export function emitConnectionCreated(
     const client = getTelemetryClient();
     if (!client) return;
     if (!isToolPurpose(connection)) return;
-    trackConnectionCreated(client, {
+    withTelemetryCompany(connection.companyId, () => trackConnectionCreated(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       auth_kind: connection.authKind,
       setup_flow: setupFlow,
       status: connection.status,
       enabled: connection.enabled,
-    });
+    }));
   } catch (err) {
     logger.warn(
       { err, connectionId: connection.id },
@@ -129,7 +132,7 @@ export function emitConnectionUpdated(
     ) {
       return;
     }
-    trackConnectionUpdated(client, {
+    withTelemetryCompany(connection.companyId, () => trackConnectionUpdated(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       auth_kind: connection.authKind,
@@ -138,7 +141,7 @@ export function emitConnectionUpdated(
       status: connection.status,
       previous_enabled: previous.enabled,
       enabled: connection.enabled,
-    });
+    }));
   } catch (err) {
     logger.warn(
       { err, connectionId: connection.id },
@@ -210,13 +213,13 @@ export async function emitConnectionInvoked(
         ? Math.max(0, Math.round((completedAtMs - startedAtMs) / 1000))
         : undefined;
 
-    trackConnectionInvoked(client, {
+    withTelemetryCompany(connection.companyId, () => trackConnectionInvoked(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       status: invocation.status,
       origin: invocationOrigin(invocation),
       ...(durationSeconds === undefined ? {} : { duration_seconds: durationSeconds }),
-    });
+    }));
   } catch (err) {
     logger.warn(
       { err, invocationId },

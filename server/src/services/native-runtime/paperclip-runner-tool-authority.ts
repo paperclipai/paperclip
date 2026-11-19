@@ -80,6 +80,7 @@ import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, RU
 import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { AGENT_TOOL_CALL_LOOP, TOOL_CALL_LOOP_HINT, toolCallLoopContinuationKey, type ToolCallLoopError } from "./repeated-tool-failure-guard.js";
+import { nativeRunHasStopRequest } from "./native-tool-receipt-limit.js";
 import { enqueueWake } from "./status-decision-committer.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -144,6 +145,9 @@ import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGui
 import { recordChildTaskRead } from "./native-child-completion-delivery.js";
 import { logger } from "../../middleware/logger.js";
 
+// Artifacts are at most RUNNER_API_MAX_BYTES; a healthy read takes seconds.
+// Stay well inside the provider MCP client's five-minute request cutoff.
+const ARTIFACT_STORAGE_READ_TIMEOUT_MS = 60_000;
 const EXTERNAL_WORKSPACE_OPERATIONS = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "register_deliverable"]);
 const IMPLEMENTED_OPERATIONS = new Set([
   "send_chat_message",
@@ -226,6 +230,8 @@ type Binding = {
   /** Server-owned API origin and storage; never obtained from tool input. */
   apiUrl?: string;
   storage?: StorageService;
+  /** Deadline for one artifact read from storage; defaults to ARTIFACT_STORAGE_READ_TIMEOUT_MS. */
+  storageReadTimeoutMs?: number;
   /** Server-owned suppression for baseline evals; true never overrides operator opt-in. */
   connectorAssignments?: Pick<ConnectorAssignment, "tools">[];
   assignedMcpTools?: Awaited<ReturnType<typeof createAssignedMcpTools>>;
@@ -357,7 +363,13 @@ export class PaperclipRunnerToolAuthority {
     const review = this.binding.nativeReview;
     const loopContext = { sourceRunId: this.binding.runId, continuationCause: AGENT_TOOL_CALL_LOOP,
       tool: loop.tool, refusals: loop.refusals, runRefusals: loop.runRefusals, argumentNames: loop.argumentNames };
-    await this.db.transaction(tx => enqueueWake({
+    return this.db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, this.binding.issueId), eq(issues.companyId, this.binding.companyId))).for("update");
+      const [run] = await tx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("share");
+      if (!run || nativeRunHasStopRequest(run.resultJson)) return false;
+      await enqueueWake({
       tx: tx as unknown as Db,
       originRunId: this.binding.runId,
       companyId: this.binding.companyId,
@@ -368,8 +380,9 @@ export class PaperclipRunnerToolAuthority {
       payload: { ...(review ?? {}), ...loopContext },
       contextSnapshot: { ...(review ?? {}), forceFreshSession: true, livenessContinuationSourceRunId: this.binding.runId,
         livenessContinuationReason: AGENT_TOOL_CALL_LOOP, livenessContinuationInstruction: TOOL_CALL_LOOP_HINT },
-    }));
-    return true;
+      });
+      return true;
+    });
   }
   constructor(readonly db: Db, readonly binding: Binding) {}
 
@@ -1718,17 +1731,41 @@ export class PaperclipRunnerToolAuthority {
       };
       await assertArtifactAccess();
       if (asset.byteSize > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
-      const object = await (this.binding.storage ?? getStorageService()).getObject(this.binding.companyId, asset.objectKey);
+      // A stalled storage read must fail well before the provider's MCP
+      // client gives up, so the call settles with a retryable error instead
+      // of an anonymous client timeout. Nothing is written before this read.
+      const timeoutMs = this.binding.storageReadTimeoutMs ?? ARTIFACT_STORAGE_READ_TIMEOUT_MS;
+      const signal = AbortSignal.timeout(timeoutMs);
+      let object: Awaited<ReturnType<StorageService["getObject"]>> | undefined;
+      let onAbort = () => {};
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => {
+          object?.stream.destroy();
+          reject(new HttpError(504, `Artifact storage read did not finish within ${Math.ceil(timeoutMs / 1000)} seconds. No file was written; retry the same download.`, { code: "artifact_storage_timeout" }));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
       const chunks: Buffer[] = [];
-      let length = 0;
       try {
-        for await (const chunk of object.stream) {
-          const bytes = Buffer.from(chunk);
-          length += bytes.length;
-          if (length > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
-          chunks.push(bytes);
-        }
-      } finally { object.stream.destroy(); }
+        await Promise.race([aborted, (async () => {
+          const opened = await (this.binding.storage ?? getStorageService()).getObject(this.binding.companyId, asset.objectKey, { signal });
+          // A reply after the deadline can carry a stream opened with the
+          // aborted signal. Its AbortError must never become uncaught.
+          opened.stream.on("error", () => undefined);
+          if (signal.aborted) { opened.stream.destroy(); return; }
+          object = opened;
+          let length = 0;
+          for await (const chunk of opened.stream) {
+            const bytes = Buffer.from(chunk);
+            length += bytes.length;
+            if (length > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
+            chunks.push(bytes);
+          }
+        })()]);
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        object?.stream.destroy();
+      }
       await assertArtifactAccess();
       return { bytes: Buffer.concat(chunks), filename: asset.originalFilename ?? "file", contentType: asset.contentType };
     }
@@ -2537,7 +2574,7 @@ export class PaperclipRunnerToolAuthority {
     let replayed = false;
     let replayStatus: string | null = null;
     let replayMonitor: ReturnType<typeof summarizeIssueMonitor> | null = null;
-    const authorizeTarget = async (tx: Db, context: { run: typeof heartbeatRuns.$inferSelect }) => {
+    const authorizeTarget = async (tx: Db, context: { run: typeof heartbeatRuns.$inferSelect; actor: typeof agents.$inferSelect }) => {
       // A second owned task may itself be writing another task: fail on lock
       // contention instead of taking opposite issue/run locks and deadlocking.
       const [target] = await tx.select().from(issues).where(and(
@@ -2553,7 +2590,17 @@ export class PaperclipRunnerToolAuthority {
         } });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
-      await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true);
+      const project = target.projectId
+        ? (await tx.select().from(projects).where(and(eq(projects.id, target.projectId), eq(projects.companyId, this.binding.companyId))))[0] ?? null
+        : null;
+      const taskSources = { companyId: this.binding.companyId, agent: context.actor, project, issue: target };
+      const taskTrust = resolveCoreTrustPreset(taskSources);
+      const runTrust = resolveCoreTrustPreset({ ...taskSources,
+        run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy } });
+      const wakeKeepsTrust = taskTrust.kind === "low_trust_review" && runTrust.kind === "low_trust_review"
+        && canonicalJson(taskTrust.boundary) === canonicalJson(runTrust.boundary);
+      await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true,
+        wakeKeepsTrust ? { monitor: input.monitor, existing: normalizeIssueExecutionPolicy(target.executionPolicy)?.monitor ?? null } : undefined);
       if (target.assigneeAgentId !== this.binding.agentId || target.assigneeUserId ||
           !["in_progress", "in_review"].includes(target.status)) {
         throw forbidden("Monitors require an in-progress or in-review task assigned to this agent");

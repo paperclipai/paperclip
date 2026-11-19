@@ -375,12 +375,12 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       ? { state: "resolved", canRetry: false } : { state: "failed", canRetry: true });
     const query = await captureInterruptionQuery(db, taskInterruptionPresentations, companyId, [issue]);
     const [projected] = await db.$client.unsafe(query.sql, query.params as never[]);
-    expect(projected.jsonb_build_object.nativeCancellation).toEqual({ ...nativeCancellation,
+    expect(projected.result_json.nativeCancellation).toEqual({ ...nativeCancellation,
       intentAuditId: variant === "numeric_audit" ? null : nativeCancellation.intentAuditId });
-    expect(projected.jsonb_build_object.cancelledByUserId).toBe(variant === "numeric_user" ? null : "board");
+    expect(projected.result_json.cancelledByUserId).toBe(variant === "numeric_user" ? null : "board");
     expect(projected).toMatchObject({ company_id: companyId, native_issue_id: issue.id, runtime_mode: "native" });
-    expect(projected.jsonb_build_object).not.toHaveProperty("unrelatedPayload");
-    expect(JSON.stringify(projected.jsonb_build_object).length).toBeLessThan(4000);
+    expect(projected.result_json).not.toHaveProperty("unrelatedPayload");
+    expect(JSON.stringify(projected.result_json).length).toBeLessThan(4000);
   });
 
   it("redacts registered run secrets from both task detail and list provider explanations", async () => {

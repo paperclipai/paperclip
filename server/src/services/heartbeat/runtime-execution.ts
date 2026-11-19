@@ -60,6 +60,7 @@ import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@pap
 import { conflict } from "../../errors.js";
 import { getStartupTraceContext } from "../../instrumentation.js";
 import { logger } from "../../middleware/logger.js";
+import { reserveLiveNativeFinalization } from "../native-runtime/live-native-finalization.js";
 import {
   buildNativeProviderEnvironment,
   executePaperclipNativeSession,
@@ -547,6 +548,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const runGoalControlRequestId = readNonEmptyString(
     context.goalControlRequestId,
   );
+  // The runner posts its accepted result before it returns. Keep the recovery
+  // workers off this run until this heartbeat has finished it.
+  const releaseLiveNativeFinalization = nativeRuntimeResolution.kind === "native"
+    ? reserveLiveNativeFinalization(db, { companyId: run.companyId, runId: run.id, issueId: issueRef?.id })
+    : undefined;
   try {
     if (nativeRuntimeResolution.kind === "native") {
       if (!nativeExecution || !nativeRunnerInstanceId)
@@ -1090,7 +1096,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     };
     if (nativeWorkspaceSync || remoteWorkspaceAuthority) {
       const owned = await measureRunPhase("execution.workspace_ownership", () => withNativeWorkspaceFinalizationOwnership({
-        db, companyId: run.companyId, runId: run.id,
+        db, companyId: run.companyId, runId: run.id, liveHeartbeat: true,
+        ...(remoteWorkspaceAuthority && nativeRuntimeResolution.kind !== "native" && persistedExecutionWorkspace
+          ? { remoteWorkspaceId: persistedExecutionWorkspace.id } : {}),
       }, completeWorkspace));
       if (!owned.acquired) throw new NativeWorkspaceFinalizationBusyError();
     } else {
@@ -1324,6 +1332,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     }
     throw adapterErr;
   } finally {
+    // Never throws, so a failed cleanup below cannot keep the workers waiting.
+    await releaseLiveNativeFinalization?.();
     try {
       if (!preserveRunGatewayTokens) await revokeHeartbeatRunGatewayTokens({
         db,

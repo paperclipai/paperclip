@@ -122,6 +122,8 @@ configuration variables; task bindings cannot override them.
 
 When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
 
+A workspace-provider plugin owns the files of the workspaces it prepares, so the run environment only decides where the runner executes. For these workspaces, a changed environment configuration is a refresh, not a replacement: Paperclip records the new workspace fingerprint once and reports the drift in that run only. Other replacement-class changes, such as the repository or base ref, keep the replacement decision.
+
 The saved-session fingerprint covers only inputs that can change what the provider thread saw or may do, or what the native session digest compares before a follow-up turn attaches to its warm Runner. It leaves out the agent config revision row itself (its id and time), agent identity and display fields that tools read live, turn timeouts, the legacy kill grace, permission keys of a provider that is not selected, wake scheduling (`runtimeConfig.heartbeat`), the environment row's update time and selection source, and the environment's release, log-streaming, and RPC-timeout settings. Lifecycle inputs stay in: the lifecycle mode, the agent and environment warm idle windows, and the environment's lease reuse, because they become `session.lifecyclePolicy`, and a kept session with a different policy cannot attach to its warm Runner. `server/src/services/heartbeat/session-fingerprint-inputs.ts` classifies every input with the reason. Its tests fail when an agent revision field, a runner config schema field, a provider permission key, or an environment config key appears without a classification, when a new field reaches a hashed category, or when an excluded runner key reaches the native execution input. An unknown adapter or runtime config key is hashed. A session saved with the previous fingerprint composition is accepted once for the same inputs, so an upgrade does not discard saved sessions.
 
 An explicit `reuse_existing` Git workspace keeps its recorded source repository, including after its project-workspace row is deleted or the project primary changes. The server verifies the original company, project, repository origin, and worktree registration before reuse. It does not attach a deleted association to the new primary. A conflicting explicit project-workspace selection, missing source identity, or an unverified legacy local checkout blocks the run. Restore the original source. Before intentionally clearing the existing-workspace binding to choose a new repository, review and preserve its retained work. Missing worktrees may be reconstructed only from the verified original source; current project defaults are not a fallback.
@@ -338,6 +340,23 @@ and cancellation maps so scheduler and route instances observe the same owners.
 Forwarding callbacks preserve construction order for budget, retry, recovery,
 and queue services. Existing public helpers remain re-exported by `heartbeat.ts`.
 Keep cancellation policy changes separate from this extraction and execution.
+
+An operator Stop during preparation can settle before any adapter starts. The
+preparation owner records `executionCancellation.state = acknowledged` only after
+it unwinds and the retained dispatch, process, session, event and lease evidence confirms
+that provider work never started. A terminal run status alone is not this proof.
+The locked run must have no `budgetDispatch.handedOffAt` marker. The dispatch gate
+writes that marker before adapter entry, so a missing invocation event or an old
+owner's local flag cannot prove that dispatch never occurred.
+The task page shows a confirmed operator Stop as Stopped and accepts a new message
+through normal admission. Stop does not automatically restart the task. Recovery
+holds, approvals, budget limits and uncertain termination keep their own gates.
+The receipt's `preparation_settled` proof identifies that evidence path. Both page
+projections read the same bounded evidence and require that proof; an acknowledged
+receipt from a different path does not clear the preparation failure notice.
+Only a user's operator Stop gets this acknowledgement and clears an obsolete
+automatic-recovery marker. A system cancellation keeps its existing recovery
+delivery metadata, so saved comments and continuation intents still reach admission.
 
 Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
 ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and

@@ -69,9 +69,9 @@ regressions cover this route separately from company-wide audit. Live sandbox
 agent access remains unverified; use the companion recipe.
 
 Audit-event Load more and run listings differ: Runs currently loads at most 200
-entries without pagination. The tested RoutineAuditActivity component has no
-registered activity-route host; inspect execution links actually offered by
-the routine rather than treating that component test as a reachable journey.
+entries without pagination. RoutineAuditActivity is reachable as the routine
+page's Audit log (`/routines/:routineId/activity`); inspect execution links
+from there rather than treating its component test as the journey.
 
 ### `agent-commentary`
 

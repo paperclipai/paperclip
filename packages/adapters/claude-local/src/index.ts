@@ -26,7 +26,7 @@ export const type = "claude_local";
 export function claudeLocalReasoningEffortsForModel(model: string): readonly string[] {
   const id = model.trim().replace(/\[1m\]$/, "").replace(/^(?:(?:us|eu|apac|global|jp|au)\.)?anthropic\./, "");
   if (/^claude-haiku-/.test(id)) return [];
-  if (/^claude-(?:opus-5(?:-5)?|opus-4-[78]|sonnet-5(?:-5)?|fable-5(?:-1)?)$/.test(id)) {
+  if (/^claude-(?:opus-5(?:-5)?|opus-4-[78]|sonnet-5(?:-5)?|fable-5(?:-[12])?)$/.test(id)) {
     return ["low", "medium", "high", "xhigh", "max"];
   }
   if (/^claude-(?:opus|sonnet)-4-6(?:-v1)?$/.test(id)) return ["low", "medium", "high", "max"];
@@ -40,16 +40,18 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code
 // first, by decreasing capability, then older releases grouped by family. The server applies the
 // same order to discovered models (server/model-order.ts); the picker keeps it.
 export const models = [
-  { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
+  { id: "claude-fable-5-2", label: "Claude Fable 5.2" },
   { id: "claude-mythos-5", label: "Claude Mythos 5" },
   { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
   { id: "claude-fable-5", label: "Claude Fable 5" },
   { id: "claude-opus-5", label: "Claude Opus 5" },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
   { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+  { id: "claude-opus-4-5", label: "Claude Opus 4.5" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
   { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
@@ -93,6 +95,7 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
+- Claude Fable 5.2 uses model ID \`claude-fable-5-2\` (Bedrock: \`global.anthropic.claude-fable-5-2\`) and requires Claude Code v2.1.321 or later.
 - Claude Opus 5.5 uses model ID \`claude-opus-5-5\` and requires Claude Code v2.1.280 or later.
 - Claude Sonnet 5.5 uses model ID \`claude-sonnet-5-5\` and requires Claude Code v2.1.284 or later.
 - filesystemScope and networkScope are spawn-level confinement and are orthogonal to Claude permission flags. Both require Bubblewrap on the host and explicit engine="cli"; default or explicit ACP is rejected because ACP confinement is not yet supported. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.

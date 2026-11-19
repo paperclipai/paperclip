@@ -24,6 +24,8 @@ import { Button } from "@/components/ui/button";
 import { formatDateTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { caseAuditHref } from "./audit/audit-navigation";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 function CaseRelation({ item, search }: { item: Pick<CaseSummary, "id" | "identifier" | "title" | "caseType" | "status">; search: string }) {
   const caseHref = useCaseHref();
@@ -100,7 +102,7 @@ export function CaseDetail() {
         <span>{caseData.caseType}</span><CaseStatus status={caseData.status} />
       </div>
       <h1 className="text-2xl font-semibold tracking-tight">{caseData.title}</h1>
-      {caseData.summary && <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{caseData.summary}</p>}
+      {caseData.summary && <p className={cn("max-w-3xl text-sm leading-relaxed text-muted-foreground", ANALYTICS_MASK_CLASS)}>{caseData.summary}</p>}
       {caseData.labels.length > 0 && <div className="flex flex-wrap gap-1.5" aria-label="Case labels">{caseData.labels.map(label => <Badge key={label.id} variant="secondary" className="font-normal">{label.name}</Badge>)}</div>}
     </header>
 
@@ -123,7 +125,7 @@ export function CaseDetail() {
       {caseData.attachments.length > 0 && <section className="space-y-3" aria-label="Case attachments">
         <h2 className="text-sm font-semibold">Attachments</h2>
         {images.length > 0 && <CaseAttachmentsGallery attachments={images} />}
-        {files.length > 0 && <ul className="space-y-2">{files.map(attachment => <li key={attachment.id}><a href={caseAttachmentUrl(attachment)} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 text-sm text-primary hover:underline"><FileText aria-hidden className="size-4 shrink-0" /><span className="truncate">{attachment.asset.originalFilename ?? "Download attachment"}</span></a></li>)}</ul>}
+        {files.length > 0 && <ul className={cn("space-y-2", ANALYTICS_MASK_CLASS)}>{files.map(attachment => <li key={attachment.id}><a href={caseAttachmentUrl(attachment)} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 text-sm text-primary hover:underline"><FileText aria-hidden className="size-4 shrink-0" /><span className="truncate">{attachment.asset.originalFilename ?? "Download attachment"}</span></a></li>)}</ul>}
       </section>}
 
       {caseData.workIssueId && <CaseHandoffHistory caseId={caseData.id} task={caseData.workIssue} agents={agents} />}

@@ -485,7 +485,7 @@ else
   fi
 
   release_info "  Installing paperclipai@$DIST_TAG into a clean prefix..."
-  if ! verify_npm_installable "paperclipai@$DIST_TAG" "$TARGET_PUBLISH_VERSION"; then
+  if ! wait_for_npm_installable "paperclipai@$DIST_TAG" "$TARGET_PUBLISH_VERSION" "${NPM_INSTALL_VERIFY_TIMEOUT_SECONDS:-1200}" "${NPM_INSTALL_VERIFY_DELAY_SECONDS:-30}"; then
     release_fail "paperclipai@$DIST_TAG did not install cleanly at expected version ${TARGET_PUBLISH_VERSION}"
   fi
   release_info "    ✓ Clean-prefix install resolved ${TARGET_PUBLISH_VERSION}"

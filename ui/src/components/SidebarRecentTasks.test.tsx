@@ -49,8 +49,6 @@ vi.mock("@/lib/router", () => ({
 }));
 vi.mock("@/context/SidebarContext", () => ({
   useSidebar: () => ({
-    collapsed: false,
-    peeking: false,
     isMobile: false,
     setSidebarOpen: vi.fn(),
   }),
@@ -69,7 +67,7 @@ describe("SidebarRecentTasks", () => {
     Object.values(mockIssuesApi).forEach((mock) => mock.mockReset());
     mockIssuesApi.summaries.mockImplementation(async (_company: string, ids: string[]) => {
       const rows = await Promise.all(ids.map(id => mockIssuesApi.get.getMockImplementation()?.(id)));
-      return rows.filter(row => row && !row.hiddenAt);
+      return rows.filter(row => row && !row.hiddenAt).map(row => ({ ...row, isParticipantForMe: true }));
     });
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -133,30 +131,24 @@ describe("SidebarRecentTasks", () => {
     expect(container.textContent).not.toContain("Recent Tasks");
     expect(container.textContent).not.toContain("Open or create a task");
   });
-  it("keeps actions on both parent and nested child rows", async () => {
-    const parent = { id: "parent", companyId: "company-1", title: "Parent", identifier: "PAP-1", status: "todo" as const, updatedAt: new Date(1), subtaskCount: 1 };
-    recordRecentTask(parent, "user-1");
-    mockIssuesApi.summaries.mockResolvedValue([parent]);
-    mockIssuesApi.listCompact.mockResolvedValue([{ id: "child", companyId: "company-1", parentId: "parent", title: "Child", identifier: "PAP-2", status: "todo" }] as never);
+  it("keeps actions on independent parent and child rows in recent order", async () => {
+    const parent = { id: "parent", companyId: "company-1", title: "Parent", identifier: "PAP-1", status: "todo" as const, updatedAt: new Date(1), subtaskCount: 1, isParticipantForMe: true };
+    const child = { ...parent, id: "child", parentId: parent.id, title: "Child", identifier: "PAP-2", subtaskCount: 0 };
+    recordRecentTask(parent, "user-1", 1);
+    recordRecentTask(child, "user-1", 2);
+    mockIssuesApi.summaries.mockResolvedValue([parent, child]);
+
     await render();
+
+    const links = [...container.querySelectorAll("a")];
+    expect(links.map(link => link.getAttribute("href"))).toEqual(["/issues/PAP-2", "/issues/PAP-1"]);
+    expect(links[0]!.parentElement?.parentElement).toBe(links[1]!.parentElement?.parentElement);
+    expect(mockIssuesApi.listCompact).not.toHaveBeenCalled();
     expect(container.querySelector('[aria-label="More actions for Parent"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="More actions for Child"]')).not.toBeNull();
     await openActions("Child");
     expect(menuItem("Rename")).toBeDefined();
     expect(menuItem("Archive")).toBeDefined();
     expect(menuItem("Pause/Restart")).toBeDefined();
-  });
-  it("shows every task once in a four-level recent chain", async () => {
-    const tasks = ["a", "b", "c", "d"].map((id, index) => ({
-      id, companyId: "company-1", identifier: `TASK-${id}`, title: `Task ${id}`, status: "todo" as const, updatedAt: new Date(index + 1),
-      parentId: index ? ["a", "b", "c"][index - 1] : null, subtaskCount: index < 3 ? 1 : 0,
-    }));
-    tasks.forEach(task => recordRecentTask(task, "user-1"));
-    mockIssuesApi.summaries.mockResolvedValue(tasks);
-    mockIssuesApi.listCompact.mockImplementation(async (_company, filters) => tasks.filter(task => task.parentId === filters?.parentId));
-    await render();
-    expect(container.querySelectorAll("a")).toHaveLength(4);
-    for (const id of ["a", "b", "c", "d"]) expect(container.querySelectorAll(`a[href="/issues/TASK-${id}"]`)).toHaveLength(1);
   });
 
   it("renders refreshed task text and live state without shifting for a status icon", async () => {
@@ -203,7 +195,7 @@ describe("SidebarRecentTasks", () => {
     expect(actions?.className).toContain("opacity-0");
   });
 
-  it("keeps rows stable during alternating activity and applies the final order after quiet", async () => {
+  it("refreshes background activity without changing the personal order after quiet", async () => {
     const tasks = [1, 2, 3].map((id) => ({
       id: `issue-${id}`,
       companyId: "company-1",
@@ -214,7 +206,7 @@ describe("SidebarRecentTasks", () => {
       projectId: null,
       updatedAt: new Date(id),
     }));
-    tasks.forEach((task) => recordRecentTask(task, "user-1"));
+    tasks.forEach((task) => recordRecentTask(task, "user-1", task.updatedAt.getTime()));
     mockIssuesApi.get.mockImplementation(async (id: string) => tasks.find((task) => task.id === id));
     const queryClient = await render();
     const order = () => Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"));
@@ -239,28 +231,29 @@ describe("SidebarRecentTasks", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(499); });
     expect(order()).toEqual(originalOrder);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(order()).toEqual(["/issues/PAP-2", "/issues/PAP-1", "/issues/PAP-3"]);
+    expect(order()).toEqual(originalOrder);
     expect(mockIssuesApi.get).not.toHaveBeenCalled();
     expect(mockIssuesApi.summaries).toHaveBeenCalledTimes(1);
     queryClient.clear();
   });
 
-  it("adds and removes tasks immediately while an activity reorder is pending", async () => {
+  it("adds verified tasks and removes tasks while a personal activity reorder is pending", async () => {
     const task = (id: string, recordedAt: number) => ({
       id, companyId: "company-1", title: id, identifier: id,
       status: "todo" as const, updatedAt: new Date(recordedAt),
     });
-    recordRecentTask(task("first", 1), "user-1");
-    recordRecentTask(task("second", 2), "user-1");
+    recordRecentTask(task("first", 1), "user-1", 1);
+    recordRecentTask(task("second", 2), "user-1", 2);
     mockIssuesApi.get.mockImplementation(async (id: string) => task(id, 0));
     const queryClient = await render();
     vi.useFakeTimers();
-    act(() => recordRecentTask(task("first", 3), "user-1"));
+    act(() => recordRecentTask(task("first", 3), "user-1", 3));
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/second");
     await act(async () => {
-      recordRecentTask(task("new", 4), "user-1");
-      await vi.advanceTimersByTimeAsync(0);
+      recordRecentTask(task("new", 4), "user-1", 4);
+      await vi.advanceTimersByTimeAsync(10);
     });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/new");
     act(() => pruneRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1", new Set(["second"])));
     expect(container.querySelector('a[href="/issues/second"]')).toBeNull();
@@ -310,7 +303,7 @@ describe("SidebarRecentTasks", () => {
     expect(container.textContent).toContain("Idle");
   });
 
-  it("archives a task from the inbox without hiding or removing the recent task", async () => {
+  it("removes a recent task after archiving it from the inbox", async () => {
     const issue = {
       id: "issue-1",
       companyId: "company-1",
@@ -337,14 +330,11 @@ describe("SidebarRecentTasks", () => {
 
     expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledWith("issue-1");
     expect(mockIssuesApi.update).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Recent Tasks");
-    expect(container.querySelector('a[href="/issues/PAP-1"]')?.textContent).toContain(
-      "Archive me",
-    );
+    expect(container.querySelector('a[href="/issues/PAP-1"]')).toBeNull();
     expect(readRecentTasks(
       getRecentTasksStorageKey("company-1", "user-1"),
       "company-1",
-    )).toHaveLength(1);
+    )).toEqual([]);
   });
 
   it("refreshes task activity after a rename", async () => {
@@ -358,8 +348,10 @@ describe("SidebarRecentTasks", () => {
       updatedAt: new Date(1),
     };
     const renamedIssue = { ...issue, title: "New title", updatedAt: new Date(2) };
-    recordRecentTask(issue, "user-1");
-    mockIssuesApi.get.mockResolvedValue(issue);
+    const newer = { ...issue, id: "issue-2", identifier: "PAP-2", title: "Newer work" };
+    recordRecentTask(issue, "user-1", 10);
+    recordRecentTask(newer, "user-1", 20);
+    mockIssuesApi.get.mockImplementation(async (id: string) => id === issue.id ? issue : newer);
     mockIssuesApi.update.mockResolvedValue(renamedIssue);
 
     const queryClient = await render();
@@ -383,6 +375,10 @@ describe("SidebarRecentTasks", () => {
     });
 
     expect(mockIssuesApi.update).toHaveBeenCalledWith("issue-1", { title: "New title" });
+    const stored = readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
+    expect(stored.map(entry => entry.id)).toEqual(["issue-1", "issue-2"]);
+    expect(stored[0]?.recordedAt).toBeGreaterThan(20);
+    expect(stored[0]?.title).toBe("New title");
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.issues.activity("issue-1"),
     });
@@ -518,7 +514,10 @@ describe("SidebarRecentTasks", () => {
   });
 
   it("synchronizes recent tasks written by another tab", async () => {
-    mockIssuesApi.get.mockImplementation(() => new Promise(() => {}));
+    mockIssuesApi.get.mockResolvedValue({
+      id: "issue-2", companyId: "company-1", title: "Cross-tab task", identifier: "PAP-2",
+      status: "todo", updatedAt: new Date(2),
+    });
     await render();
     const storageKey = getRecentTasksStorageKey("company-1", "user-1");
     const entries = [{
@@ -533,8 +532,9 @@ describe("SidebarRecentTasks", () => {
     await act(async () => {
       window.localStorage.setItem(storageKey, JSON.stringify(entries));
       window.dispatchEvent(new StorageEvent("storage", { key: storageKey }));
-      await Promise.resolve();
+      await new Promise(resolve => setTimeout(resolve, 10));
     });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
 
     expect(container.querySelector('a[href="/issues/PAP-2"]')?.textContent).toContain("Cross-tab task");
   });
