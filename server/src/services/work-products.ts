@@ -19,6 +19,8 @@ import {
   type GitHubCommitDiffDetailsResolver,
 } from "./github-commit-details.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
+import { emitArtifactCreatedAfterCommit } from "./product-telemetry.js";
+import { logger } from "../middleware/logger.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 type WorkProductTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -304,7 +306,7 @@ export function workProductService(
               ),
             );
         }
-        return await tx
+        const created = await tx
           .insert(issueWorkProducts)
           .values({
             ...data,
@@ -313,6 +315,18 @@ export function workProductService(
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (created) {
+          const task = await tx.transaction(async (read) => (await read
+            .select({ createdByUserId: issues.createdByUserId, responsibleUserId: issues.responsibleUserId })
+            .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))))[0] ?? null)
+            .catch((err: unknown) => {
+              logger.warn({ err, issueId }, "failed to read task owner for artifact telemetry");
+              return null;
+            });
+          emitArtifactCreatedAfterCommit({ companyId, type: created.type, provider: created.provider, creationFlow: "direct",
+            task, runOwnerUserId: null });
+        }
+        return created;
       });
       return row ? toIssueWorkProduct(row) : null;
     },
