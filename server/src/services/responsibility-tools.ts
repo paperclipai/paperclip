@@ -10,7 +10,8 @@ import type {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { HttpError } from "../errors.js";
-import { RESPONSIBILITIES_DISABLED_CODE } from "./responsibilities-disabled.js";
+import { fetchPaperclipApi } from "./paperclip-api-loopback.js";
+import { RESPONSIBILITIES_DISABLED_CODE, RESPONSIBILITIES_OFF_GUIDANCE } from "./responsibilities-disabled.js";
 
 /**
  * Native agent tools for areas and responsibilities. Every call goes through
@@ -26,9 +27,7 @@ export function isResponsibilityTool(name: string): name is ResponsibilityToolNa
 }
 
 /** What the agent says when the instance has the feature off; also used for the prompt note. */
-export const RESPONSIBILITIES_TURNED_OFF_MESSAGE = "Areas and responsibilities are turned off for this company. "
-  + "This is not an empty list: tell the person the feature is off (an instance admin turns on Responsibilities in Experimental settings) "
-  + "instead of saying they have no responsibilities, and do not look for them through other tools.";
+export const RESPONSIBILITIES_TURNED_OFF_MESSAGE = RESPONSIBILITIES_OFF_GUIDANCE;
 
 const uuid = z.string().guid();
 
@@ -56,13 +55,8 @@ export function responsibilityToolsDisabledError() {
 type ApiCall = (method: "GET", path: string) => Promise<unknown>;
 
 function apiCaller(input: { apiUrl: string; token: string }, fetcher: typeof fetch): ApiCall {
-  const base = `${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api`;
   return async (method, path) => {
-    const response = await fetcher(`${base}${path}`, {
-      method,
-      headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(60_000),
-    });
+    const response = await fetchPaperclipApi({ ...input, method, path, fetcher });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (result?.code === RESPONSIBILITIES_DISABLED_CODE) {
@@ -135,6 +129,8 @@ async function listResponsibilities(call: ApiCall, companyId: string, args: unkn
   const rows = [...overview.responsibilities, ...(input.includeProposed ? overview.proposed : [])];
   const areas = new Map<string, AreaEntry>();
   for (const area of [...overview.areas, ...archivedAreas] as Array<ResponsibilityOverviewArea | ResponsibilityArea>) {
+    // Archived areas only on request; responsibilities in one then list under withoutArea.
+    if (area.status === "archived" && !input.includeArchivedAreas) continue;
     if (!areas.has(area.id)) areas.set(area.id, { id: area.id, title: area.title, description: area.description, status: area.status });
   }
   const inArea = (areaId: string | null) => rows.filter((row) => row.areaId === areaId).map((row) => summary(row, prefix));
@@ -142,32 +138,43 @@ async function listResponsibilities(call: ApiCall, companyId: string, args: unkn
     .filter((area) => !input.areaId || area.id === input.areaId)
     .map((area) => ({ ...area, responsibilities: inArea(area.id) }));
   const loose = overview.loose;
-  const count = (status: string) => rows.filter((row) => row.status === status).length;
+  const scoped = input.areaId ? rows.filter((row) => row.areaId === input.areaId) : rows;
+  const count = (status: string) => scoped.filter((row) => row.status === status).length;
+  const activeByHealth = { behind: 0, at_risk: 0, on_track: 0, not_measured: 0 };
+  for (const row of scoped) if (row.status === "active") activeByHealth[row.rollup.health] += 1;
   return {
     ownerUserId: overview.ownerUserId,
     areas: areaList,
     ...(input.areaId ? {} : { withoutArea: rows.filter((row) => !row.areaId || !areas.has(row.areaId)).map((row) => summary(row, prefix)) }),
-    totals: {
-      active: count("active"),
-      proposed: input.includeProposed ? overview.proposed.length : 0,
-      letGo: count("let_go"),
-      activeByHealth: overview.totals.byHealth,
-      openTasks: overview.totals.openTasks,
-      blockedTasks: overview.totals.blockedTasks,
-      projects: overview.totals.projects,
-      lateProjects: overview.totals.lateProjects,
-    },
-    uncoveredWork: {
-      note: "Company work filed under no proposed or active responsibility of anyone, directly or through its project. Counts are complete; lists are capped.",
-      routineCount: loose.routineCount,
-      projectCount: loose.projectCount,
-      openTaskCount: loose.openTaskCount,
-      routines: loose.routines.map((routine) => ({ id: routine.id, title: routine.title, status: routine.status, assigneeAgentId: routine.assigneeAgentId, projectId: routine.projectId })),
-      projects: loose.projects.map((project) => ({ id: project.id, name: project.name, status: project.status, targetDate: project.targetDate, leadAgentId: project.leadAgentId })),
-      tasks: loose.tasks.map((task) => ({ id: task.id, identifier: task.identifier, title: task.title, status: task.status, assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId, projectId: task.projectId })),
-    },
-    ...(rows.length === 0 ? {
+    // With areaId, totals count only that area; the person's task and project totals and the company's uncovered work are left out.
+    totals: input.areaId
+      ? { scope: "area", active: count("active"), proposed: count("proposed"), letGo: count("let_go"), activeByHealth }
+      : {
+          scope: "person",
+          active: count("active"),
+          proposed: count("proposed"),
+          letGo: count("let_go"),
+          activeByHealth,
+          openTasks: overview.totals.openTasks,
+          blockedTasks: overview.totals.blockedTasks,
+          projects: overview.totals.projects,
+          lateProjects: overview.totals.lateProjects,
+        },
+    ...(input.areaId ? {} : {
+      uncoveredWork: {
+        note: "Company work filed under no proposed or active responsibility of anyone, directly or through its project. Counts are complete; lists are capped.",
+        routineCount: loose.routineCount,
+        projectCount: loose.projectCount,
+        openTaskCount: loose.openTaskCount,
+        routines: loose.routines.map((routine) => ({ id: routine.id, title: routine.title, status: routine.status, assigneeAgentId: routine.assigneeAgentId, projectId: routine.projectId })),
+        projects: loose.projects.map((project) => ({ id: project.id, name: project.name, status: project.status, targetDate: project.targetDate, leadAgentId: project.leadAgentId })),
+        tasks: loose.tasks.map((task) => ({ id: task.id, identifier: task.identifier, title: task.title, status: task.status, assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId, projectId: task.projectId })),
+      },
+    }),
+    ...(overview.responsibilities.length + overview.proposed.length === 0 ? {
       guidance: "This person has no responsibilities yet. Ask what they are responsible for before proposing any; do not invent them.",
+    } : rows.length === 0 ? {
+      guidance: `This person has ${overview.proposed.length} proposed responsibilities, hidden by includeProposed: false. Read them before proposing more.`,
     } : {}),
   };
 }
