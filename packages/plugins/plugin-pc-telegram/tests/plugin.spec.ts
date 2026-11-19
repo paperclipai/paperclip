@@ -196,7 +196,14 @@ describe("pc-telegram plugin", () => {
     }, boardUser);
     expect(telegram.startQrLoginCount).toBe(1);
 
+    let inboundScopes = 0;
+    const runInCompany = harness.ctx.runInCompanyBackground.bind(harness.ctx);
+    harness.ctx.runInCompanyBackground = async (scopeCompanyId, fn) => {
+      inboundScopes += 1;
+      return runInCompany(scopeCompanyId, fn);
+    };
     await telegram.deliver(inboundMessage());
+    expect(inboundScopes).toBe(1);
     const issues = await harness.ctx.issues.list({ companyId: COMPANY_ID, originKind: DIALOG_ORIGIN_KIND });
     expect(issues).toEqual([
       expect.objectContaining({

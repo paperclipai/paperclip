@@ -108,6 +108,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const pendingLogins = new Map<string, PendingLogin>();
   const loginResults = new Map<string, SettledLogin>();
   const accountGenerations = new Map<string, number>();
+  const accountGates = new Map<string, Promise<void>>();
   const reconnectJobs = new Set<Promise<void>>();
   let pluginContext: PluginContext | null = null;
   let shuttingDown = false;
@@ -136,6 +137,21 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     return next;
   }
 
+  function withAccountGate<T>(companyId: string, telegramUserId: string, fn: () => Promise<T>): Promise<T> {
+    const key = accountGenerationKey(companyId, telegramUserId);
+    const previous = accountGates.get(key) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate, () => gate);
+    accountGates.set(key, tail);
+    return previous.then(fn, fn).finally(() => {
+      release();
+      if (accountGates.get(key) === tail) accountGates.delete(key);
+    });
+  }
+
   async function dropLive(companyId: string, telegramUserId: string, live?: LiveTelegramAccount): Promise<void> {
     const current = liveByAccount.get(telegramUserId);
     if (live && live !== current) await live.disconnect().catch(() => undefined);
@@ -145,18 +161,15 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     }
   }
 
-  async function clearStoredSession(
+  async function discardOwnedSession(
     ctx: PluginContext,
     companyId: string,
     account: { telegramUserId: string; username: string | null; displayName: string },
     secretId: string,
   ): Promise<void> {
     const current = await findConnection(ctx, companyId, account.telegramUserId, liveAccountIds());
-    if (current?.sessionSecretId && current.sessionSecretId !== secretId) {
-      if (secretId) await deleteAccountSession(ctx, companyId, secretId);
-      return;
-    }
     if (secretId) await deleteAccountSession(ctx, companyId, secretId);
+    if (current?.sessionSecretId !== secretId) return;
     await upsertConnection(ctx, {
       companyId,
       account,
@@ -164,6 +177,15 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       sessionConfigPath: "",
       paused: true,
     });
+  }
+
+  function clearStoredSession(
+    ctx: PluginContext,
+    companyId: string,
+    account: { telegramUserId: string; username: string | null; displayName: string },
+    secretId: string,
+  ): Promise<void> {
+    return withAccountGate(companyId, account.telegramUserId, () => discardOwnedSession(ctx, companyId, account, secretId));
   }
 
   function emitLogin(companyId: string, status: LoginStatus) {
@@ -187,7 +209,11 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
 
   async function handleInbound(message: Parameters<typeof ingestInboundMessage>[2]) {
     const ctx = pluginContext;
-    if (!ctx) return;
+    if (!ctx || !message.companyId) return;
+    await ctx.runInCompanyBackground(message.companyId, () => acceptInbound(ctx, message));
+  }
+
+  async function acceptInbound(ctx: PluginContext, message: Parameters<typeof ingestInboundMessage>[2]) {
     const log = wrapLogger(ctx);
     const connection = await findConnection(ctx, message.companyId, message.accountId, liveAccountIds());
     if (!connection) {
@@ -401,23 +427,27 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             const signedIn = await handle.waitUntilSignedIn();
             if (!loginStillCurrent(pending)) return;
             const generation = accountGeneration(companyId, signedIn.account.telegramUserId);
-            const stored = await putAccountSession(ctx, companyId, signedIn.session);
-            storedSecretId = stored.secretId;
-            savedAccount = signedIn.account;
-            if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
-              await clearStoredSession(ctx, companyId, signedIn.account, stored.secretId);
-              return;
-            }
-            await upsertConnection(ctx, {
-              companyId,
-              account: signedIn.account,
-              sessionSecretId: stored.secretId,
-              sessionConfigPath: stored.configPath,
+            const kept = await withAccountGate(companyId, signedIn.account.telegramUserId, async () => {
+              const stored = await putAccountSession(ctx, companyId, signedIn.session);
+              storedSecretId = stored.secretId;
+              savedAccount = signedIn.account;
+              if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
+                await discardOwnedSession(ctx, companyId, signedIn.account, stored.secretId);
+                return false;
+              }
+              await upsertConnection(ctx, {
+                companyId,
+                account: signedIn.account,
+                sessionSecretId: stored.secretId,
+                sessionConfigPath: stored.configPath,
+              });
+              if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
+                await discardOwnedSession(ctx, companyId, signedIn.account, stored.secretId);
+                return false;
+              }
+              return true;
             });
-            if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
-              await clearStoredSession(ctx, companyId, signedIn.account, stored.secretId);
-              return;
-            }
+            if (!kept || !loginStillCurrent(pending)) return;
             const live = await createClient.connectFromSession({
               companyId,
               credentials,
@@ -426,13 +456,13 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             });
             if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
               await live.disconnect().catch(() => undefined);
-              await clearStoredSession(ctx, companyId, signedIn.account, stored.secretId);
+              await clearStoredSession(ctx, companyId, signedIn.account, storedSecretId);
               return;
             }
             await attachLiveSession(companyId, live);
             if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
               await dropLive(companyId, signedIn.account.telegramUserId, live);
-              await clearStoredSession(ctx, companyId, signedIn.account, stored.secretId);
+              await clearStoredSession(ctx, companyId, signedIn.account, storedSecretId);
               return;
             }
             settleLogin(pending, reduceLogin(pending.status, {

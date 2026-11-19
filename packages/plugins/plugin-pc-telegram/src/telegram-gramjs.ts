@@ -52,8 +52,17 @@ function displayNameFromUser(user: { username?: string | null; firstName?: strin
 
 function asUserId(value: unknown): string {
   if (typeof value === "string" || typeof value === "number" || typeof value === "bigint") return String(value);
-  if (value && typeof value === "object" && "value" in value) return asUserId((value as { value: unknown }).value);
+  if (value && typeof value === "object") {
+    const record = value as { userId?: unknown; value?: unknown };
+    if ("userId" in record && record.userId != null) return asUserId(record.userId);
+    if ("value" in record && record.value != null) return asUserId(record.value);
+  }
   throw new Error("Telegram user id is missing.");
+}
+
+export function telegramPeerId(sender: { id?: unknown } | null | undefined, peerId: unknown): string {
+  if (sender?.id != null) return asUserId(sender.id);
+  return asUserId(peerId);
 }
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
@@ -75,7 +84,7 @@ async function loadGramJs(): Promise<{ client: GramJsModule; sessions: GramJsSes
   return { client, sessions, events };
 }
 
-function readEventMessage(event: unknown): {
+export function readEventMessage(event: unknown): {
   out?: boolean;
   isPrivate?: boolean;
   isGroup?: boolean;
@@ -90,11 +99,9 @@ function readEventMessage(event: unknown): {
   }) => Promise<Buffer | Uint8Array | string | null | undefined>;
 } | null {
   if (!event || typeof event !== "object") return null;
-  const record = event as { message?: unknown; isPrivate?: boolean; isGroup?: boolean; isChannel?: boolean };
-  if (record.message && typeof record.message === "object") {
-    return { ...record, ...(record.message as object) };
-  }
-  return record;
+  const record = event as { message?: unknown };
+  if (record.message && typeof record.message === "object") return record.message as NonNullable<ReturnType<typeof readEventMessage>>;
+  return record as NonNullable<ReturnType<typeof readEventMessage>>;
 }
 
 function asByteCount(value: unknown): number | null {
@@ -243,7 +250,7 @@ export function createGramJsClientFactory(): TelegramClientFactory {
         if (!message) return;
         if (message.out || message.isGroup || message.isChannel || message.isPrivate === false) return;
         const sender = message.sender;
-        const peerId = asUserId(sender?.id ?? message.peerId);
+        const peerId = telegramPeerId(sender, message.peerId);
         const inbound: InboundDirectMessage = {
           companyId: input.companyId,
           accountId: account.telegramUserId,

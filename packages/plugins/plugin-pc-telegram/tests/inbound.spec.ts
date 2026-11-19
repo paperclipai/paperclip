@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { DIALOG_ORIGIN_KIND, MAX_INBOUND_MEDIA_BYTES } from "../src/constants.js";
 import { inboundShapeAllowed, ingestInboundMessage, shouldAcceptInbound, takePeerMediaSlot } from "../src/inbound.js";
-import { collectInboundAttachments } from "../src/telegram-gramjs.js";
+import { collectInboundAttachments, readEventMessage, telegramPeerId } from "../src/telegram-gramjs.js";
 import manifest from "../src/manifest.js";
 import { containsSecretMaterial } from "../src/redaction.js";
 import {
@@ -155,6 +155,24 @@ describe("inbound issue mapping", () => {
     }
     expect(takePeerMediaSlot(peerKey, now)).toBe(false);
     expect(takePeerMediaSlot(peerKey, now + 60_000)).toBe(true);
+  });
+
+  it("keeps GramJS getters and reads a PeerUser id", () => {
+    class GramMessage {
+      id = 9;
+      message = "hello";
+      get isPrivate() { return true; }
+      get out() { return false; }
+      get peerId() { return { userId: 2002 }; }
+      get sender() { return { firstName: "Sam" }; }
+      downloadMedia() { return Promise.resolve(Buffer.from([1])); }
+    }
+    const message = readEventMessage({ message: new GramMessage() });
+    expect(message?.isPrivate).toBe(true);
+    expect(message?.sender?.firstName).toBe("Sam");
+    expect(typeof message?.downloadMedia).toBe("function");
+    expect(telegramPeerId(message?.sender, message?.peerId)).toBe("2002");
+    expect(MAX_INBOUND_MEDIA_BYTES).toBe(4 * 1024 * 1024);
   });
 
   it("does not download media whose declared size is over the cap", async () => {

@@ -9,7 +9,7 @@ export const TOOL_SEND_TEXT = "telegram_send_text";
 
 export const SESSION_SECRET_NAMESPACE = "session-secrets";
 export const FILE_NAMESPACE = "inbound-files";
-export const MAX_INBOUND_MEDIA_BYTES = 10 * 1024 * 1024;
+export const MAX_INBOUND_MEDIA_BYTES = 4 * 1024 * 1024;
 export const MAX_INBOUND_MEDIA_PER_PEER = 8;
 export const INBOUND_MEDIA_WINDOW_MS = 60_000;
 
