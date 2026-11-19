@@ -548,14 +548,14 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
       const { rootId, childId } = await seedTree(companyId);
 
       const detached = await issueService(db).update(childId, { parentId: null });
-      expect(detached.parentId).toBeNull();
+      expect(detached!.parentId).toBeNull();
 
       const reattached = await issueService(db).update(childId, { parentId: rootId });
-      expect(reattached.parentId).toBe(rootId);
+      expect(reattached!.parentId).toBe(rootId);
 
       const noop = await issueService(db).update(childId, { parentId: rootId, title: "Renamed" });
-      expect(noop.parentId).toBe(rootId);
-      expect(noop.title).toBe("Renamed");
+      expect(noop!.parentId).toBe(rootId);
+      expect(noop!.title).toBe("Renamed");
     });
 
     it("keeps rejecting a cross-company parent on update", async () => {
