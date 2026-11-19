@@ -5117,7 +5117,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // in separate turns, or finalization will deliver it a second time.
           const pendingComments =
             (executionWaitRequestId || canCoalesceComments) &&
-            (ownsReconstructionContinuation || !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id)))
+            (ownsReconstructionContinuation || !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id,
+              { userInitiated: Boolean(taskRetryActorId) || Boolean(wakeComment) })))
               ? await tx
                   .select()
                   .from(agentWakeupRequests)

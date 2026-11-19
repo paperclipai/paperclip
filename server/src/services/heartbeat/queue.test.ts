@@ -1376,4 +1376,43 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, company.id),
       eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
   });
+
+  it("adopts the parked interrupt wake behind a resolved no-replay hold so claim authority verifies", async () => {
+    const [company] = await db.insert(companies).values({ name: "Interrupt authority", issuePrefix: "IA" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Worker", role: "engineer",
+      status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Interrupted task",
+      status: "blocked", assigneeAgentId: agent.id }).returning();
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      issueId: issue.id, status: "cancelled", runtimeMode: "legacy", finishedAt: new Date(),
+      errorCode: "operator_interrupted", error: "Interrupted to send queued messages",
+      contextSnapshot: { issueId: issue.id } }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId: company.id, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: source.id,
+      status: "resolved", outcome: "blocked", nextAction: "Inspect the source run.",
+      evidence: { runId: source.id, automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked" } } });
+    const [comment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: "board", body: "Continue please" }).returning();
+    const [parked] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+      source: "on_demand", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: issue.id, commentId: comment.id,
+        queuedCommentInterrupt: { actorId: "board", requestedAt: new Date().toISOString() },
+        _paperclipWakeContext: { source: "issue.comment", taskId: issue.id, issueId: issue.id, taskKey: issue.id,
+          wakeReason: "issue_commented", wakeCommentIds: [comment.id], commentId: comment.id } } }).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
+    const queue = createHeartbeatQueue(db, deps);
+    const admitted = await queue.enqueueWakeup(agent.id, { source: "on_demand", triggerDetail: "manual",
+      reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
+      idempotencyKey: `queued-comment-interrupt:${parked.id}`, queuedCommentInterruptId: parked.id,
+      payload: { issueId: issue.id, commentId: comment.id },
+      contextSnapshot: { source: "issue.comment", issueId: issue.id, wakeCommentId: comment.id } });
+    expect(admitted).toMatchObject({ status: "queued" });
+    const [dispatched] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, admitted!.id));
+    expect(dispatched).toMatchObject({ status: "running", errorCode: null });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, parked.id));
+    expect(receipt).toMatchObject({ status: "coalesced", runId: admitted!.id });
+  });
 });
