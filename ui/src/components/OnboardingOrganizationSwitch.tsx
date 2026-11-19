@@ -35,7 +35,7 @@ export function OnboardingOrganizationSwitch({
   const current = choices.find((company) => company.id === selectedCompanyId) ?? null;
 
   return (
-    <div className="pointer-events-auto fixed top-4 left-4 z-[200] max-w-56">
+    <div className="pointer-events-auto fixed top-4 left-4 z-(--z-200) max-w-56">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -58,7 +58,7 @@ export function OnboardingOrganizationSwitch({
             <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" sideOffset={8} className="z-[250] w-64">
+        <DropdownMenuContent align="start" sideOffset={8} className="z-(--z-250) w-64">
           <DropdownMenuLabel className="text-xs text-muted-foreground">Organizations</DropdownMenuLabel>
           {choices.map((company) => (
             <DropdownMenuItem

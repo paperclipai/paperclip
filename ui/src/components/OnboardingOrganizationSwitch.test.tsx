@@ -80,6 +80,9 @@ describe("OnboardingOrganizationSwitch", () => {
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
+    expect(trigger?.closest("div")?.className).toContain("z-(--z-200)");
+    const menu = document.body.querySelector('[data-slot="dropdown-menu-content"]');
+    expect(menu?.className).toContain("z-(--z-250)");
     const other = Array.from(document.body.querySelectorAll('[role="menuitem"]')).find((item) =>
       item.textContent?.includes("andhash"),
     );

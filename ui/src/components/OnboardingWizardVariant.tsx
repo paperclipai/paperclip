@@ -33,7 +33,7 @@ export function OnboardingWizardVariant() {
           invalidateOnboardingActions();
           closeOnboarding();
           setOnboardingRouteDismissed(true);
-          companyState.setSelectedCompanyId(company.id);
+          companyState.setSelectedCompanyId(company.id, { source: "route_sync" });
           navigate(`/${company.issuePrefix}/dashboard`);
         }}
       />
