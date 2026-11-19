@@ -4,8 +4,6 @@ import {
   routineSuggestionCadenceLabel,
   routineSuggestionCadenceSchema,
   routineSuggestionCronExpression,
-  type ResponsibilityDetail,
-  type ResponsibilityOverview,
   type RoutineDetail,
   type RoutineListItem,
   type RoutineTrigger,
@@ -17,9 +15,10 @@ import { fetchPaperclipApi } from "./paperclip-api-loopback.js";
 /**
  * Native agent tools for routines. Like the responsibility tools they call the
  * authenticated HTTP API with the run's agent token, so the routine routes'
- * rules apply: an agent manages its own routines and those of the person its
- * run works for (when that person is responsible for them). Every change is a
- * routine revision the person can restore from the routine's history.
+ * rules apply: an agent manages its own routines and those of the person who
+ * directed its run (when that person is responsible for them). A change to a
+ * routine and its schedule is one routine revision the person can restore;
+ * filing it under a responsibility is saved in their Dashboard history.
  */
 export const ROUTINE_TOOL_NAMES = ["list_routines", "update_routine"] as const;
 export type RoutineToolName = (typeof ROUTINE_TOOL_NAMES)[number];
@@ -59,12 +58,18 @@ export const updateRoutineToolInput = z.object({
   fileUnder: uuid.optional(),
 }).strict();
 
-type ApiCall = (method: "GET" | "POST" | "PATCH", path: string, body?: unknown) => Promise<unknown>;
+/** What a write reports beside its body: the Dashboard version it saved, if any, and whose Dashboard it is. */
+type ApiMeta = { version?: string | null; owner?: string | null };
+type ApiCall = (method: "GET" | "POST" | "PATCH", path: string, body?: unknown, meta?: ApiMeta) => Promise<unknown>;
 
 function apiCaller(input: { apiUrl: string; token: string }, fetcher: typeof fetch): ApiCall {
-  return async (method, path, body) => {
+  return async (method, path, body, meta) => {
     const response = await fetchPaperclipApi({ ...input, method, path, body, fetcher });
     const result = await response.json().catch(() => ({}));
+    if (meta) {
+      meta.version = response.headers.get("x-paperclip-dashboard-version");
+      meta.owner = response.headers.get("x-paperclip-dashboard-owner");
+    }
     if (!response.ok) {
       throw new HttpError(response.status, typeof result?.error === "string" ? result.error : `Routine tool failed (${response.status})`,
         typeof result?.code === "string" ? { code: result.code } : undefined);
@@ -88,27 +93,16 @@ function schedules(triggers: readonly ScheduleTrigger[]) {
 
 async function listRoutines(call: ApiCall, companyId: string, args: unknown, prefix: string | null | undefined) {
   const input = listRoutinesToolInput.parse(args);
-  const company = encodeURIComponent(companyId);
-  const query = input.projectId ? `?${new URLSearchParams({ projectId: input.projectId })}` : "";
-  const [all, under, loose] = await Promise.all([
-    call("GET", `/companies/${company}/routines${query}`) as Promise<RoutineListItem[]>,
-    input.responsibilityId
-      ? (call("GET", `/responsibilities/${encodeURIComponent(input.responsibilityId)}`) as Promise<ResponsibilityDetail>)
-        .then((detail) => new Set(detail.routines.map((routine) => routine.id)))
-      : Promise.resolve(null),
-    input.unfiled
-      ? (call("GET", `/companies/${company}/responsibilities`) as Promise<ResponsibilityOverview>)
-        .then((overview) => ({ ids: new Set(overview.loose.routines.map((routine) => routine.id)), count: overview.loose.routineCount }))
-      : Promise.resolve(null),
-  ]);
-  const words = input.query?.toLowerCase();
-  const matches = all.filter((routine) =>
-    (!words || routine.title.toLowerCase().includes(words) || (routine.description ?? "").toLowerCase().includes(words))
-    && (!input.status || routine.status === input.status)
-    && (!input.assigneeAgentId || routine.assigneeAgentId === input.assigneeAgentId)
-    && (!input.responsibleUserId || routine.responsibleUserId === input.responsibleUserId)
-    && (!under || under.has(routine.id))
-    && (!loose || loose.ids.has(routine.id)));
+  // Every filter runs in the routine list's query, so nothing is cut before it is matched.
+  const params = new URLSearchParams();
+  if (input.query) params.set("q", input.query);
+  for (const key of ["status", "assigneeAgentId", "projectId", "responsibleUserId", "responsibilityId"] as const) {
+    const value = input[key];
+    if (value) params.set(key, value);
+  }
+  if (input.unfiled) params.set("unfiled", "true");
+  const query = params.toString() ? `?${params}` : "";
+  const matches = await call("GET", `/companies/${encodeURIComponent(companyId)}/routines${query}`) as RoutineListItem[];
   return {
     total: matches.length,
     routines: matches.slice(0, input.limit).map((routine) => ({
@@ -123,8 +117,11 @@ async function listRoutines(call: ApiCall, companyId: string, args: unknown, pre
       href: pageHref(prefix, `/routines/${encodeURIComponent(routine.id)}`),
     })),
     truncated: matches.length > input.limit,
-    ...(loose ? { note: `unfiled lists active routines filed under no proposed or active responsibility (${loose.count} in the company).` } : {}),
   };
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function updateRoutine(call: ApiCall, args: unknown, prefix: string | null | undefined) {
@@ -138,44 +135,40 @@ async function updateRoutine(call: ApiCall, args: unknown, prefix: string | null
   for (const key of ["assigneeAgentId", "projectId", "status", "priority"] as const) {
     if (input[key] !== undefined) patch[key] = input[key];
   }
-  if (Object.keys(patch).length === 0 && schedule === undefined && !input.fileUnder) {
+  if (schedule !== undefined) {
+    // Without a zone the server keeps the current schedule's, else uses the person's own.
+    patch.schedule = schedule === null ? null
+      : { cronExpression: routineSuggestionCronExpression(schedule), ...(schedule.timezone ? { timezone: schedule.timezone } : {}) };
+  }
+  if (Object.keys(patch).length === 0 && !input.fileUnder) {
     throw new HttpError(422, "Send at least one field to change");
   }
-  let routine: RoutineDetail | (RoutineDetail & Record<string, unknown>) = before;
+  // The fields and the schedule are one change and one revision; a change made since `before` makes it fail instead of mixing.
   if (Object.keys(patch).length > 0) {
-    routine = await call("PATCH", `/routines/${id}`, { ...patch, baseRevisionId: before.latestRevisionId }) as RoutineDetail;
+    await call("PATCH", `/routines/${id}`, { ...patch, baseRevisionId: before.latestRevisionId });
   }
-  let scheduleResult: Record<string, unknown> | null = null;
-  if (schedule !== undefined) {
-    const existing = before.triggers.filter((trigger) => trigger.kind === "schedule" && !trigger.archived);
-    if (schedule === null) {
-      // No schedule: turn its schedules off, which a restore can turn back on.
-      for (const trigger of existing.filter((entry) => entry.enabled)) {
-        await call("PATCH", `/routine-triggers/${encodeURIComponent(trigger.id)}`, { enabled: false });
-      }
-      scheduleResult = { turnedOff: existing.filter((entry) => entry.enabled).length };
-    } else {
-      const cronExpression = routineSuggestionCronExpression(schedule);
-      const timezone = schedule.timezone ?? existing[0]?.timezone ?? "UTC";
-      const [first, ...rest] = existing;
-      if (first) {
-        await call("PATCH", `/routine-triggers/${encodeURIComponent(first.id)}`, { cronExpression, timezone, enabled: true });
-      } else {
-        await call("POST", `/routines/${id}/triggers`, { kind: "schedule", cronExpression, timezone });
-      }
-      // One schedule: any other schedule trigger is turned off so the routine does not also run on an old time.
-      for (const trigger of rest.filter((entry) => entry.enabled)) {
-        await call("PATCH", `/routine-triggers/${encodeURIComponent(trigger.id)}`, { enabled: false });
-      }
-      scheduleResult = { label: routineSuggestionCadenceLabel(schedule), cronExpression, timezone };
+  // Filing is a separate change in the person's Dashboard history. If it fails after the routine changed, say what was saved.
+  let filedUnder: Record<string, unknown> | null = null;
+  if (input.fileUnder) {
+    const meta: ApiMeta = {};
+    try {
+      await call("POST", `/responsibilities/${encodeURIComponent(input.fileUnder)}/file`, { items: [{ kind: "routine", id: input.routineId }] }, meta);
+      filedUnder = {
+        responsibilityId: input.fileUnder,
+        undo: meta.version
+          ? "Saved as a version in the Dashboard history of the person in dashboardOwnerUserId, where they can undo it; remove_from_responsibility also unfiles it."
+          : "Not in the person's Dashboard history; remove_from_responsibility unfiles it.",
+        ...(meta.version ? { dashboardVersionId: meta.version, dashboardOwnerUserId: meta.owner ?? null } : {}),
+      };
+    } catch (error) {
+      if (Object.keys(patch).length === 0) throw error;
+      filedUnder = { responsibilityId: input.fileUnder, failed: true, error: errorMessage(error), note: "The routine change above was saved; only the filing failed." };
     }
   }
-  let filed: Record<string, unknown> | null = null;
-  if (input.fileUnder) {
-    await call("POST", `/responsibilities/${encodeURIComponent(input.fileUnder)}/file`, { items: [{ kind: "routine", id: input.routineId }] });
-    filed = { responsibilityId: input.fileUnder };
-  }
   const after = await call("GET", `/routines/${id}`) as RoutineDetail;
+  const enabledSchedules = (triggers: readonly ScheduleTrigger[]) =>
+    triggers.filter((trigger) => trigger.kind === "schedule" && trigger.enabled && !trigger.archived);
+  const current = enabledSchedules(after.triggers)[0];
   return {
     routine: {
       id: after.id, title: after.title, status: after.status, assigneeAgentId: after.assigneeAgentId,
@@ -183,10 +176,13 @@ async function updateRoutine(call: ApiCall, args: unknown, prefix: string | null
       triggers: schedules(after.triggers), revision: after.latestRevisionNumber,
       href: pageHref(prefix, `/routines/${encodeURIComponent(after.id)}`),
     },
-    ...(scheduleResult ? { schedule: scheduleResult } : {}),
-    ...(filed ? { filedUnder: filed } : {}),
+    ...(schedule === null ? { schedule: { turnedOff: enabledSchedules(before.triggers).length } } : {}),
+    ...(schedule && current ? {
+      schedule: { label: routineSuggestionCadenceLabel(schedule), cronExpression: current.cronExpression, timezone: current.timezone },
+    } : {}),
+    ...(filedUnder ? { filedUnder } : {}),
     ...(after.latestRevisionNumber !== before.latestRevisionNumber ? {
-      undo: `Saved as revision ${after.latestRevisionNumber}; restoring revision ${before.latestRevisionNumber} from the routine's history undoes it.`,
+      undo: `The routine${schedule !== undefined ? " and its schedule" : ""} saved as revision ${after.latestRevisionNumber}; restoring revision ${before.latestRevisionNumber} from the routine's history undoes that${input.fileUnder ? " (not the filing; see filedUnder)" : ""}.`,
     } : {}),
   };
 }

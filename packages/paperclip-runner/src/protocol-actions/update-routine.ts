@@ -1,5 +1,5 @@
 const uuidPattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
-const description = "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines and those the person your run works for is responsible for; handing one to another agent needs that person to be allowed to assign work. Each change is a routine revision the person can restore from the routine's history.";
+const description = "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines, and those the person who directed your run (their own chat or task, or their message woke you) is responsible for; on a routine you do not run, changing its agent, turning it on or changing its schedule needs that person to be allowed to assign work. The routine and its schedule change together as one routine revision the person can restore from the routine's history; filing is saved separately in their Dashboard history (see filedUnder.undo).";
 
 export const updateRoutineInputSchema = {
   type: "object", additionalProperties: false, required: ["routineId"],
@@ -19,7 +19,7 @@ export const updateRoutineInputSchema = {
         dayOfWeek: { type: "string", enum: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"], description: "For weekly." },
         dayOfMonth: { type: "integer", minimum: 1, maximum: 28, description: "For monthly." },
         time: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$", description: "24-hour HH:MM." },
-        timezone: { type: "string", minLength: 1, maxLength: 100, description: "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone." },
+        timezone: { type: "string", minLength: 1, maxLength: 100, description: "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone, else the person's own time zone." },
       },
     },
     fileUnder: { type: "string", pattern: uuidPattern, description: "A responsibility ID to file the routine under." },

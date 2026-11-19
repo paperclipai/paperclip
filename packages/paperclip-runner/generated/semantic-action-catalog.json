@@ -3663,7 +3663,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for active routines under no responsibility.",
+    "description": "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for routines under no responsibility; every filter applies before the limit.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -3709,7 +3709,7 @@
           "type": "string"
         },
         "unfiled": {
-          "description": "Only active routines filed under no responsibility (needs Responsibilities on).",
+          "description": "Only routines filed under no proposed or active responsibility, directly or through their project. Combine with status, such as active.",
           "type": "boolean"
         }
       },
@@ -3722,7 +3722,9 @@
       "type": "object"
     },
     "placement": "optional",
-    "requiredClaims": [],
+    "requiredClaims": [
+      "routines:read"
+    ],
     "schema": "paperclip.semantic-action.v1",
     "title": "List routines",
     "version": 1
@@ -3731,7 +3733,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines and those the person your run works for is responsible for; handing one to another agent needs that person to be allowed to assign work. Each change is a routine revision the person can restore from the routine's history.",
+    "description": "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines, and those the person who directed your run (their own chat or task, or their message woke you) is responsible for; on a routine you do not run, changing its agent, turning it on or changing its schedule needs that person to be allowed to assign work. The routine and its schedule change together as one routine revision the person can restore from the routine's history; filing is saved separately in their Dashboard history (see filedUnder.undo).",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3816,7 +3818,7 @@
               "type": "string"
             },
             "timezone": {
-              "description": "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone.",
+              "description": "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone, else the person's own time zone.",
               "maxLength": 100,
               "minLength": 1,
               "type": "string"

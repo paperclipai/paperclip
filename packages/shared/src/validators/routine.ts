@@ -85,6 +85,17 @@ export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 export const updateRoutineSchema = objectWithoutDefaults(createRoutineSchema).partial().extend({
   baseRevisionId: z.string().guid().optional().nullable(),
   responsibleUserId: z.string().trim().min(1).optional(),
+  /**
+   * Replace the routine's schedule in the same change and revision: one
+   * enabled schedule trigger at this time (other schedule triggers are turned
+   * off), or null to turn every schedule off. Other triggers are left alone.
+   * Without a timezone it keeps the current schedule's, else uses the
+   * responsible person's own time zone.
+   */
+  schedule: z.object({
+    cronExpression: z.string().trim().min(1).max(200),
+    timezone: z.string().trim().min(1).max(100).optional(),
+  }).strict().nullable().optional(),
 });
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;
 
