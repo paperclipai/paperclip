@@ -1080,6 +1080,33 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(connectionIntentService(db).complete(card.id, f.connection.id, f.userId)).resolves.toMatchObject({ status: "accepted" });
   });
 
+  it("keeps a Copilot request declined before the connector split declined in its continuation", async () => {
+    const companyId = claims.company_id;
+    const userId = claims.responsible_user_id!;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const continuationRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Copilot Agent", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Copilot authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId: userId, contextSnapshot: { issueId } });
+    const intents = connectionIntentService(db);
+    const card = await issueThreadInteractionService(db).createConnectionIntent({ id: issueId, companyId }, {
+      payload: { version: 1, serviceSlug: "github", serviceName: "GitHub", serviceLogoUrl: null, requestingAgentId: agentId,
+        requestingAgentName: "Copilot Agent", phase: "requested", purpose: "ai" },
+      sourceRunId: runId,
+      addresseeUserId: userId,
+      idempotencyKey: `connection-intent:${runId}:${userId}:github:ai`,
+    });
+    await intents.decline(card.id, userId);
+    await db.insert(heartbeatRuns).values({ id: continuationRunId, companyId, agentId, status: "running", responsibleUserId: userId,
+      contextSnapshot: { issueId, interactionId: card.id } });
+    await expect(intents.request({ ...claims, sub: agentId, run_id: continuationRunId }, "github", { purpose: "ai" }))
+      .rejects.toThrow("The user declined this connection");
+  });
+
   it("adopts a Copilot account for an agent without a saved AI connection", async () => {
     const f = await copilotAccountFixture({}, { status: "failed", errorCode: "copilot_auth_required" });
     const intents = connectionIntentService(db);

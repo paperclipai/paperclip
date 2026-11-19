@@ -123,8 +123,11 @@ export const ToolSetup: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: /^Connect GitHub$/ }));
-    await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
+    await expect(await canvas.findByRole("button", { name: "Continue to GitHub" })).toBeVisible();
     await expect(canvas.queryByRole("heading", { name: "Choose how to connect" })).not.toBeInTheDocument();
+    // The identity choice is a stated default; Change opens it.
+    await userEvent.click(canvas.getByRole("button", { name: "Change" }));
+    await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
   },
 };
 export const CopilotSetup: Story = {
@@ -132,8 +135,12 @@ export const CopilotSetup: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.queryByRole("button", { name: "Connect Copilot" })).not.toBeInTheDocument();
     await userEvent.click(await canvas.findByRole("button", { name: /^Connect GitHub Copilot$/ }));
-    await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
+    // The key prompt fades in, so check that it rendered rather than its opacity.
+    await expect(await canvas.findByText("Provide your GitHub Copilot API key to connect")).toBeInTheDocument();
     await expect(canvas.queryByRole("heading", { name: "Choose how to connect" })).not.toBeInTheDocument();
+    // Copilot connects with an API key, so its identity choice sits under Change.
+    await userEvent.click(canvas.getByRole("button", { name: "Change" }));
+    await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
   },
 };
 export const BotSetup: Story = {

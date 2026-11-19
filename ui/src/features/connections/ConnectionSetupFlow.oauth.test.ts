@@ -196,6 +196,41 @@ describe("retained reconnect definition lookup", () => {
     })).toBe(expected);
   });
 
+  it("resumes an older Copilot draft saved under the GitHub application through GitHub Copilot", () => {
+    const github = {
+      id: "app-github",
+      companyId: "company-1",
+      applicationKey: "app-gallery:github",
+      metadata: { sourceTemplateKey: "github" },
+    } as unknown as ToolApplication;
+    const copilotDraft = {
+      id: "connection-1",
+      companyId: "company-1",
+      applicationId: "app-github",
+      status: "draft",
+      connectionPurpose: "ai",
+      config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } },
+    } as unknown as ToolConnection;
+    const githubDraft = {
+      id: "connection-2",
+      companyId: "company-1",
+      applicationId: "app-github",
+      status: "draft",
+      config: { sourceTemplateKey: "github" },
+    } as unknown as ToolConnection;
+    const resume = (requestedAppKey: string, resumeConnection: ToolConnection) => retainedResumeMatches({
+      requestedAppKey,
+      resumeConnection,
+      resumeApplication: github,
+      completedResumeConnectionId: null,
+    });
+
+    expect(resume("github-copilot", copilotDraft)).toBe(true);
+    expect(resume("github", copilotDraft)).toBe(false);
+    expect(resume("github-copilot", githubDraft)).toBe(false);
+    expect(resume("github", githubDraft)).toBe(true);
+  });
+
   it("does not apply fresh-setup availability to an exact retained reconnect", () => {
     expect(isVercelConnectUnavailable({
       credentialSource: "vercel_connect",

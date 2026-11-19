@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionMetadataSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionRouterBindingSchema, aiConnectionSourceSlug } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -115,12 +115,16 @@ function aiBindingMatchesService(provider: string, serviceSlug: string) {
   return provider === serviceSlug || aiConnectionCatalogSlug(provider) === serviceSlug;
 }
 
+/** AI intents saved before a provider had its own catalog entry still name the provider. */
+function intentCatalogSlug(payload: { serviceSlug: string; purpose?: string }) {
+  return payload.purpose === "ai" ? aiConnectionCatalogSlug(payload.serviceSlug) : payload.serviceSlug;
+}
+
 function sourceSlugForConnection(
   connection: ToolConnection,
   applications: ReadonlyMap<string, ToolApplication>,
 ) {
-  const ai = connection.connectionPurpose === "ai" ? aiConnectionMetadataSchema.safeParse(connection.config?.ai) : null;
-  const source = (ai?.success ? aiConnectionCatalogSlug(ai.data.provider, ai.data.routing) : null)
+  const source = aiConnectionSourceSlug(connection)
     ?? text(connection.config?.sourceTemplateKey)
     ?? text(connection.transportConfig?.sourceTemplateKey)
     ?? sourceSlugForApplication(applications.get(connection.applicationId));
@@ -990,7 +994,8 @@ export function connectionIntentService(db: Db) {
     const outcomeId = context.run.contextSnapshot?.interactionId;
     if (typeof outcomeId === "string") {
       const [outcome] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.id, outcomeId), eq(issueThreadInteractions.companyId, context.run.companyId), eq(issueThreadInteractions.issueId, context.issue.id)));
-      if (outcome?.kind === "connection_intent" && outcome.status === "rejected" && connectionIntentPayloadSchema.parse(outcome.payload).serviceSlug === app.slug && connectionIntentPayloadSchema.parse(outcome.payload).purpose === options.purpose) {
+      const declined = outcome?.kind === "connection_intent" && outcome.status === "rejected" ? connectionIntentPayloadSchema.parse(outcome.payload) : null;
+      if (declined && intentCatalogSlug(declined) === app.slug && declined.purpose === options.purpose) {
         throw conflict("The user declined this connection. Pursue alternatives; do not request it again in this continuation.");
       }
     }
@@ -1266,7 +1271,7 @@ export function connectionIntentService(db: Db) {
       if (sourceSlugForConnection(
         selectedConnection,
         new Map([[selectedApplication.id, selectedApplication]]),
-      ) !== (payload.purpose === "ai" ? aiConnectionCatalogSlug(payload.serviceSlug) : payload.serviceSlug)) {
+      ) !== intentCatalogSlug(payload)) {
         throw notFound("Connection does not match this intent");
       }
       if (selectedConnection.status !== "active" || !selectedConnection.enabled || isToolConnectionAttentionHealth(selectedConnection.healthStatus)) {
