@@ -313,6 +313,34 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
   });
 
+  it.each(["issue", "agent"])("rejects a recovery retry for a receipt scoped to another %s", async mismatch => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const receipt = {
+      companyId,
+      issueId: mismatch === "issue" ? await seedIssue({ companyId }) : issueId,
+      agentId: mismatch === "agent" ? await seedAgent({ companyId, name: "Other agent" }) : agentId,
+    };
+    const requestId = await seedDeferredWake(receipt);
+    const [before] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
+
+    await createPostgresIssueWakeAdmission(db)({ companyId, issueId }, async (_tx, { deferBlockedWake }) => {
+      const publications: Parameters<typeof deferBlockedWake>[0]["publications"] = [];
+      const outcome = await deferBlockedWake({
+        existingRequestId: requestId, contextSnapshot: {}, coalesce: false, publications,
+        condition: { recoveryActionId: null, reason: "execution_recovery", message: "Waiting." }, nextAction: "Wait.",
+        request: { agentId, source: "automation", triggerDetail: "system", reason: "issue_commented",
+          payload: null, requestedByActorType: "user", requestedByActorId: null, idempotencyKey: null },
+      });
+      expect(outcome).toEqual({ kind: "deferred" });
+      expect(publications).toEqual([]);
+      return outcome;
+    });
+    expect(await db.select().from(agentWakeupRequests)).toEqual([before]);
+    expect(await db.select().from(activityLog)).toEqual([]);
+  });
+
   it("checks conversation reset eligibility using the row refreshed under the admission lock", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
