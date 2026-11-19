@@ -117,7 +117,8 @@ export function responsibilityAreaService(db: Db) {
           : { status: input.status ?? "active", source: input.source ?? "manual", proposedByAgentId: actor.viaAgentId ?? null }),
       };
       try {
-        const [row] = await db.insert(responsibilityAreas).values(values).returning();
+        // Its own (sub)transaction: a title clash must not abort a caller's transaction.
+        const [row] = await db.transaction((tx) => tx.insert(responsibilityAreas).values(values).returning());
         return { area: toResponsibilityArea(row!), created: true };
       } catch (error) {
         if (!isTitleConflict(error)) throw error;
@@ -142,9 +143,9 @@ export function responsibilityAreaService(db: Db) {
         }
       }
       try {
-        const [row] = await db.update(responsibilityAreas).set(set)
+        const [row] = await db.transaction((tx) => tx.update(responsibilityAreas).set(set)
           .where(and(eq(responsibilityAreas.id, existing.id), eq(responsibilityAreas.companyId, existing.companyId)))
-          .returning();
+          .returning());
         if (!row) throw notFound("Area not found");
         return toResponsibilityArea(row);
       } catch (error) {
@@ -178,6 +179,16 @@ export function responsibilityAreaService(db: Db) {
           .returning();
         return row ? { area: toResponsibilityArea(row), moved } : null;
       });
+    },
+
+    /** The people with an active responsibility in the area, whose Dashboards show it. */
+    async ownersInArea(companyId: string, areaId: string): Promise<string[]> {
+      const rows = await db.selectDistinct({ ownerUserId: responsibilities.ownerUserId }).from(responsibilities).where(and(
+        eq(responsibilities.companyId, companyId),
+        eq(responsibilities.areaId, areaId),
+        eq(responsibilities.status, "active"),
+      ));
+      return rows.map((row) => row.ownerUserId);
     },
 
     /** Inside `tx`: make a proposed area active. Returns the area when it changed. */

@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
+import { responsibilityAreaService, type ResponsibilityAreaCreateActor } from "../services/responsibility-areas.js";
 import { validate } from "../middleware/validate.js";
 import {
   authorizationDeniedDetails,
@@ -32,17 +33,27 @@ import {
   logActivity,
 } from "../services/index.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
-import { responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
+import {
+  DASHBOARD_VERSION_HEADER,
+  responsibilityAgentChangeService,
+  responsibilityDeletionKey,
+} from "../services/responsibility-agent-changes.js";
 import {
   responsibilityService,
   type ResponsibilityLinkTarget,
   type ResponsibilityReadScope,
 } from "../services/responsibilities.js";
-import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import {
+  agentActsForResponsibilityOwner,
+  agentPersonInCompany,
+  assertBoard,
+  assertBoardOrAgent,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+} from "./authz.js";
 
 const NOT_FOUND = "Responsibility not found";
-/** Names the Dashboard version an agent's change saved, for the agent to say it can be undone. */
-export const DASHBOARD_VERSION_HEADER = "X-Paperclip-Dashboard-Version";
 
 /**
  * The create body for this actor: a person, or an agent acting for a person
@@ -80,28 +91,6 @@ export function boardCanManageResponsibilityOwner(req: Request, companyId: strin
   if (req.actor.userId && req.actor.userId === ownerUserId) return true;
   const membership = req.actor.memberships?.find((item) => item.companyId === companyId && item.status === "active");
   return membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
-}
-
-/**
- * The person an agent's run works for (the person chatting, or the task's
- * responsible person), while they are an active member of `companyId`.
- */
-export function agentPersonInCompany(req: Request, companyId: string): { userId: string; role: string | null } | null {
-  if (req.actor.type !== "agent" || !req.actor.onBehalfOfUserId) return null;
-  const membership = req.actor.onBehalfOfMemberships?.find((item) => item.companyId === companyId && item.status === "active");
-  return membership ? { userId: req.actor.onBehalfOfUserId, role: membership.membershipRole ?? null } : null;
-}
-
-/**
- * The writer rule for an agent: it acts for the person its run works for and
- * may change what that person could, so it manages that person's own
- * responsibilities, and anyone's when that person is a company owner or
- * admin. Returns that person's user id, or null.
- */
-export function agentActsForResponsibilityOwner(req: Request, companyId: string, ownerUserId: string): string | null {
-  const person = agentPersonInCompany(req, companyId);
-  if (!person) return null;
-  return person.userId === ownerUserId || person.role === "owner" || person.role === "admin" ? person.userId : null;
 }
 
 /**
@@ -203,24 +192,54 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     return { personUserId, agentId: getActorInfo(req).actorId };
   }
 
+  type ScopedServices = { svc: ReturnType<typeof responsibilityService>; areas: ReturnType<typeof responsibilityAreaService> };
+
   /**
-   * Run an agent's change for a person as a Dashboard version they can undo;
-   * a board change runs as is. The response names the version in
-   * `X-Paperclip-Dashboard-Version` when one was saved (only active
-   * responsibilities are on a Dashboard).
+   * Run a change in one transaction, on services bound to it. An agent's
+   * change for a person (`ownerUserIds`) is also saved as a version of those
+   * Dashboards they can undo, in the same transaction; the response names it
+   * in `X-Paperclip-Dashboard-Version` (only active responsibilities and their
+   * areas are on a Dashboard).
    */
-  async function asAgentChange<T>(
+  async function inChange<T>(
     req: Request,
     res: Response,
-    input: { companyId: string; ownerUserIds: readonly string[] },
-    mutate: () => Promise<T>,
+    input: { companyId: string; ownerUserIds: readonly string[]; createdAreaIds?: (result: NoInfer<T>) => readonly string[] },
+    mutate: (scoped: ScopedServices) => Promise<T>,
   ): Promise<T> {
+    const run = (tx: Db) => mutate({ svc: responsibilityService(tx), areas: responsibilityAreaService(tx) });
     const actor = getActorInfo(req);
-    if (req.actor.type !== "agent" || !actor.agentId) return mutate();
+    if (req.actor.type !== "agent" || !actor.agentId || input.ownerUserIds.length === 0) {
+      return db.transaction((tx) => run(tx as unknown as Db));
+    }
     return agentChanges.record({
       companyId: input.companyId, ownerUserIds: input.ownerUserIds, agentId: actor.agentId,
+      createdAreaIds: input.createdAreaIds,
       onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
-    }, mutate);
+    }, run);
+  }
+
+  /** Who an area made from `areaTitle` is by: a person, an agent acting for one, or a proposing agent. */
+  function areaActorFor(req: Request, actsFor: string | null): ResponsibilityAreaCreateActor {
+    const agentId = getActorInfo(req).actorId;
+    if (req.actor.type !== "agent") return { type: "board" };
+    return actsFor ? { type: "board", viaAgentId: agentId } : { type: "agent", agentId };
+  }
+
+  async function logAreaCreated(req: Request, area: ResponsibilityArea) {
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: area.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "responsibility_area.created",
+      entityType: "responsibility_area",
+      entityId: area.id,
+      details: { title: area.title, status: area.status, source: area.source },
+    });
   }
 
   async function logMutation(
@@ -309,16 +328,28 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
         if (!(await svc.isCompanyMember(companyId, ownerUserId))) throw notFound("Owner is not a member of this company");
       }
     }
-    const { responsibility: created, activatedArea, created: isNew } = await asAgentChange(req, res, { companyId, ownerUserIds: actsFor ? [ownerUserId] : [] }, () => svc.create(
+    const { areaTitle, ...body } = req.body as typeof req.body & { areaTitle?: string };
+    if (areaTitle && body.areaId) throw unprocessable("Send areaId or areaTitle, not both");
+    const { responsibility: created, activatedArea, created: isNew, newArea } = await inChange(req, res, {
       companyId,
-      req.body,
-      req.actor.type !== "agent" ? { type: "board", userId: actor.actorId }
-        : actsFor ? { type: "board", userId: actsFor, viaAgentId: actor.actorId }
-          : { type: "agent", agentId: actor.actorId },
-      ownerUserId,
-      // An agent's retry, or two of its calls at once, reuse the live one with that title.
-      { reuseLiveTitle: req.actor.type === "agent" },
-    ));
+      ownerUserIds: actsFor ? [ownerUserId] : [],
+      createdAreaIds: (result) => (result.newArea ? [result.newArea.id] : []),
+    }, async ({ svc: scoped, areas }: ScopedServices) => {
+      // The area by title is made in the same transaction, so a refused create leaves no area behind.
+      const area = areaTitle ? await areas.create(companyId, { title: areaTitle }, areaActorFor(req, actsFor)) : null;
+      const result = await scoped.create(
+        companyId,
+        { ...body, ...(area ? { areaId: area.area.id } : {}) },
+        req.actor.type !== "agent" ? { type: "board", userId: actor.actorId }
+          : actsFor ? { type: "board", userId: actsFor, viaAgentId: actor.actorId }
+            : { type: "agent", agentId: actor.actorId },
+        ownerUserId,
+        // An agent's retry, or two of its calls at once, reuse the live one with that title.
+        { reuseLiveTitle: req.actor.type === "agent" },
+      );
+      return { ...result, newArea: area?.created ? area.area : null };
+    });
+    if (newArea) await logAreaCreated(req, newArea);
     if (!isNew) {
       res.json(await svc.withRollup(created, await readScope(req)));
       return;
@@ -347,24 +378,37 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     if (!row) return;
     const scope = await readScope(req);
     const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
-    const { responsibility: updated, activatedArea } = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] }, () => svc.update(
-      row,
-      req.body,
-      req.actor.type !== "agent" ? { type: "board", userId: getActorInfo(req).actorId }
-        : actsFor ? { type: "board", userId: actsFor, viaAgentId: getActorInfo(req).actorId }
-          : { type: "agent", agentId: getActorInfo(req).actorId, scope },
-    ));
-    const otherFields = Object.keys(req.body).filter((key) => key !== "metricCurrent");
+    const { areaTitle, ...patch } = req.body as typeof req.body & { areaTitle?: string };
+    if (areaTitle && patch.areaId !== undefined) throw unprocessable("Send areaId or areaTitle, not both");
+    const { responsibility: updated, activatedArea, newArea } = await inChange(req, res, {
+      companyId: row.companyId,
+      ownerUserIds: actsFor ? [row.ownerUserId] : [],
+      createdAreaIds: (result) => (result.newArea ? [result.newArea.id] : []),
+    }, async ({ svc: scoped, areas }: ScopedServices) => {
+      // The area by title is made in the same transaction, so a refused change leaves no area behind.
+      const area = areaTitle ? await areas.create(row.companyId, { title: areaTitle }, areaActorFor(req, actsFor)) : null;
+      if (area) patch.areaId = area.area.id;
+      const result = await scoped.update(
+        row,
+        patch,
+        req.actor.type !== "agent" ? { type: "board", userId: getActorInfo(req).actorId }
+          : actsFor ? { type: "board", userId: actsFor, viaAgentId: getActorInfo(req).actorId }
+            : { type: "agent", agentId: getActorInfo(req).actorId, scope },
+      );
+      return { ...result, newArea: area?.created ? area.area : null };
+    });
+    if (newArea) await logAreaCreated(req, newArea);
+    const otherFields = Object.keys(patch).filter((key) => key !== "metricCurrent");
     if (otherFields.length > 0) {
       await logMutation(req, row.companyId, "responsibility.updated", row.id, {
         fields: otherFields,
-        ...(req.body.status !== undefined ? { fromStatus: row.status, toStatus: updated.status } : {}),
-        ...(req.body.healthOverride !== undefined ? { healthOverride: updated.healthOverride } : {}),
-        ...(req.body.areaId !== undefined ? { fromAreaId: row.areaId, toAreaId: updated.areaId } : {}),
-        ...(req.body.runByAgentId !== undefined ? { fromRunByAgentId: row.runByAgentId, toRunByAgentId: updated.runByAgentId } : {}),
+        ...(patch.status !== undefined ? { fromStatus: row.status, toStatus: updated.status } : {}),
+        ...(patch.healthOverride !== undefined ? { healthOverride: updated.healthOverride } : {}),
+        ...(patch.areaId !== undefined ? { fromAreaId: row.areaId, toAreaId: updated.areaId } : {}),
+        ...(patch.runByAgentId !== undefined ? { fromRunByAgentId: row.runByAgentId, toRunByAgentId: updated.runByAgentId } : {}),
       });
     }
-    if (req.body.metricCurrent !== undefined) {
+    if (patch.metricCurrent !== undefined) {
       await logMutation(req, row.companyId, "responsibility.metric_updated", row.id, {
         metricName: updated.metricName,
         from: row.metricCurrent === null ? null : Number(row.metricCurrent),
@@ -414,8 +458,8 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const target = linkTarget(req.body);
     const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
     const scope = await readScope(req);
-    const result = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
-      () => svc.link(row, target, scope));
+    const result = await inChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
+      ({ svc: scoped }) => scoped.link(row, target, scope));
     if (result.created) {
       await logMutation(req, row.companyId, "responsibility.linked", row.id, {
         linkId: result.link.id,
@@ -437,8 +481,8 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     if (!row) return;
     assertAgentMayFileUnder(req, row);
     const actsFor = req.actor.type === "agent" ? agentActsForResponsibilityOwner(req, row.companyId, row.ownerUserId) : null;
-    const removed = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
-      () => svc.unlink(row, req.params.linkId as string));
+    const removed = await inChange(req, res, { companyId: row.companyId, ownerUserIds: actsFor ? [row.ownerUserId] : [] },
+      ({ svc: scoped }) => scoped.unlink(row, req.params.linkId as string));
     if (!removed) {
       res.status(404).json({ error: "Link not found" });
       return;
@@ -477,8 +521,8 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       owners.add(source.ownerUserId);
     }
     const scope = await readScope(req);
-    const result = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: [...owners] },
-      () => svc.fileItems(row, targets, scope, { moveFromIds }));
+    const result = await inChange(req, res, { companyId: row.companyId, ownerUserIds: [...owners] },
+      ({ svc: scoped }) => scoped.fileItems(row, targets, scope, { moveFromIds }));
     for (const entry of result.filed.filter((item) => item.created)) {
       await logMutation(req, row.companyId, "responsibility.linked", row.id, {
         linkId: entry.link.id,
@@ -507,8 +551,8 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     if (!row) return;
     assertWriter(req, row);
     const targets = req.body.items.map(fileTarget);
-    const removed = await asAgentChange(req, res, { companyId: row.companyId, ownerUserIds: [row.ownerUserId] },
-      () => svc.unfileItems(row, targets));
+    const removed = await inChange(req, res, { companyId: row.companyId, ownerUserIds: [row.ownerUserId] },
+      ({ svc: scoped }) => scoped.unfileItems(row, targets));
     for (const link of removed) {
       await logMutation(req, row.companyId, "responsibility.unlinked", row.id, {
         linkId: link.id,
