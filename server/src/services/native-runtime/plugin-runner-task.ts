@@ -574,6 +574,7 @@ export function createPluginRunnerTaskOwner(input: {
           JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
       input = next;
       released = false;
+      relaunchProgress = "none";
       bindStartupAbort();
     },
   };

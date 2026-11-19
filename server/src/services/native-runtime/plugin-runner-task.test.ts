@@ -849,6 +849,9 @@ describe("plugin Runner relaunch as the claimant run", () => {
       expect(onResumed).toHaveBeenCalledExactlyOnceWith(source);
       expect(ingress.connect).toHaveBeenCalledOnce();
       expect(owner.relaunchMayHaveStarted()).toBe(true);
+      owner.rebind({ ...base, task, authorityRunId: "later-run", resumeRelaunchedRunnerVersion: 1, resumeIdentityVersion: 1,
+        relaunch: { source: next, runner: build } });
+      expect(owner.relaunchMayHaveStarted()).toBe(false);
     } finally { await registration.release("detach"); }
   });
 
