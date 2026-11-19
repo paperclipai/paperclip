@@ -1763,9 +1763,8 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     );
   }
 
-  // The form page is routed, so leaving it (tab close, reload, an in-app
-  // link, or a desktop notification click) silently drops the draft.
-  // Intercept every exit while dirty.
+  // The form page is routed, so leaving it (tab close, reload, or an in-app
+  // link) silently drops the draft. Intercept both exits while dirty.
   useEffect(() => {
     if (!environmentHasUnsavedChanges) return;
 
