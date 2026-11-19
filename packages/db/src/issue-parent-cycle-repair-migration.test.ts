@@ -40,6 +40,21 @@ async function seed(sql: postgres.Sql) {
       VALUES (${id}, ${companyId}, ${`Issue ${id.slice(0, 6)}`}, 'todo', ${parentId})`;
     return id;
   };
+  const issueChain = async (length: number, firstParent: string | null) => {
+    if (length === 0) return [];
+    const ids = Array.from({ length }, () => randomUUID());
+    const values = ids
+      .map((_, index) => `($${index * 5 + 1}, $${index * 5 + 2}, $${index * 5 + 3}, $${index * 5 + 4}, $${index * 5 + 5})`)
+      .join(", ");
+    const params = ids.flatMap((id, index) => [
+      id, companyId, `Issue ${id.slice(0, 6)}`, "todo", index === 0 ? firstParent : ids[index - 1],
+    ]);
+    await sql.unsafe(
+      `INSERT INTO issues (id, company_id, title, status, parent_id) VALUES ${values}`,
+      params,
+    );
+    return ids;
+  };
   const selfId = await issue(null);
   await sql`UPDATE issues SET parent_id = id WHERE id = ${selfId}`;
   // 2-cycle: x -> y -> x.
@@ -58,11 +73,22 @@ async function seed(sql: postgres.Sql) {
   for (let step = 1; step < 220; step += 1) bigCycle.push(await issue(bigCycle[bigCycle.length - 1]));
   await sql`UPDATE issues SET parent_id = ${bigCycle[bigCycle.length - 1]} WHERE id = ${bigCycle[0]}`;
   const bigHanger = await issue(bigCycle[0]);
+  // 1000-cycle: the scale the round-2 review flagged. The repair must stay
+  // linear in the cycle length (no per-row path arrays), so a cycle this long
+  // repairs quickly instead of copying quadratic path contents into temp.
+  // A child hangs below it too.
+  const longCycle = await issueChain(1000, null);
+  await sql`UPDATE issues SET parent_id = ${longCycle[longCycle.length - 1]} WHERE id = ${longCycle[0]}`;
+  const longHanger = await issue(longCycle[0]);
+  // A deep healthy chain (nested issues are allowed) the repair must not
+  // touch: reachability over it must stay linear in the issue count, not a
+  // walk from every row.
+  const deepChain = await issueChain(300, null);
   // A healthy chain the repair must not touch.
   const chainRoot = await issue(null);
   const chainMid = await issue(chainRoot);
   const chainLeaf = await issue(chainMid);
-  return { companyId, selfId, twoA, twoB, threeA, threeB, threeC, hanger, bigCycle, bigHanger, chainRoot, chainMid, chainLeaf };
+  return { companyId, selfId, twoA, twoB, threeA, threeB, threeC, hanger, bigCycle, bigHanger, longCycle, longHanger, deepChain, chainRoot, chainMid, chainLeaf };
 }
 
 async function parents(sql: postgres.Sql, ids: string[]) {
@@ -79,6 +105,8 @@ describePostgres("0500 issue parent cycle repair", () => {
       seeded.selfId, seeded.twoA, seeded.twoB,
       seeded.threeA, seeded.threeB, seeded.threeC, seeded.hanger,
       ...seeded.bigCycle, seeded.bigHanger,
+      ...seeded.longCycle, seeded.longHanger,
+      ...seeded.deepChain,
       seeded.chainRoot, seeded.chainMid, seeded.chainLeaf,
     ];
 
@@ -98,6 +126,14 @@ describePostgres("0500 issue parent cycle repair", () => {
     // A cycle longer than 200 members is fully repaired: every edge in it goes.
     for (const id of seeded.bigCycle) expect(after[id]).toBeNull();
     expect(after[seeded.bigHanger]).toBe(seeded.bigCycle[0]);
+    // A 1000-member cycle is fully repaired with the staging repair: every
+    // edge in it goes without quadratic temp copying.
+    for (const id of seeded.longCycle) expect(after[id]).toBeNull();
+    expect(after[seeded.longHanger]).toBe(seeded.longCycle[0]);
+    // The deep healthy chain keeps every parent edge.
+    for (let step = 1; step < seeded.deepChain.length; step += 1) {
+      expect(after[seeded.deepChain[step]]).toBe(seeded.deepChain[step - 1]);
+    }
     // The healthy chain is untouched.
     expect(after[seeded.chainMid]).toBe(seeded.chainRoot);
     expect(after[seeded.chainLeaf]).toBe(seeded.chainMid);
@@ -106,5 +142,5 @@ describePostgres("0500 issue parent cycle repair", () => {
     await runMigrationBody(sql);
     expect(await parents(sql, members)).toEqual(after);
     expect(await inspectMigrations(connectionString)).toMatchObject({ status: "upToDate" });
-  }, 60_000);
+  }, 120_000);
 });
