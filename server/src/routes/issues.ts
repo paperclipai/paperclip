@@ -10060,7 +10060,9 @@ export function issueRoutes(
         runId: req.actor.runId });
       if (grantor) {
         // The agent's own limits apply first: scoped keys never use the grant,
-        // the run must be the agent's, and its trust boundary must reach the task.
+        // the run must be the agent's, and its trust boundary and company
+        // policy must let it change the task. The grant lifts only the
+        // assignee rule for this one action.
         if (req.actor.keyScope) throw forbidden("Scoped credentials cannot use the Retry grant");
         const runId = requireAgentRunId(req, res);
         if (!runId) return;
@@ -10068,6 +10070,9 @@ export function issueRoutes(
           throw forbidden("Run does not belong to this agent");
         const own = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
         if (!own || !(await assertIssueReadAllowed(req, res, own))) return;
+        const ownWrite = await decideIssueAccess(req, own, "issue:mutate");
+        if (!ownWrite.allowed && issueWriteDenialCodeForDecision(ownWrite) === "issue_write_actor_class_excluded")
+          throw forbidden(ownWrite.explanation, authorizationDeniedDetails(ownWrite));
         agentRetry = { companyId: req.actor.companyId, agentId: req.actor.agentId, runId };
         req.actor = grantor;
       }

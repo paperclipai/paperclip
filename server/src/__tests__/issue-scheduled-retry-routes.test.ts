@@ -984,9 +984,10 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   });
 
   describe("agent Retry with a board user's tasks:retry grant", () => {
-    async function grant(f: { companyId: string; agentId: string }, grantedByUserId: string | null) {
+    async function grant(f: { companyId: string; agentId: string }, grantedByUserId: string | null,
+      scope: Record<string, unknown> | null = null) {
       await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent",
-        principalId: f.agentId, permissionKey: "tasks:retry", grantedByUserId });
+        principalId: f.agentId, permissionKey: "tasks:retry", grantedByUserId, scope });
     }
     function retry(f: { companyId: string; agentId: string; issueId: string; sourceRunId: string; retryRunId: string },
       opts: { runId?: string; idempotencyKey?: string; actor?: Partial<Express.Request["actor"]> } = {}) {
@@ -1074,6 +1075,29 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       const res = await retry(f, { runId: randomUUID() });
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(await retryRunStatus(f)).toBe("scheduled_retry");
+    });
+
+    it("refuses a grant saved with a scope", async () => {
+      const f = await seedIssueWithRetry();
+      await grant(f, "board-user", { projectIds: [randomUUID()] });
+
+      const res = await retry(f);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(await retryRunStatus(f)).toBe("scheduled_retry");
+    });
+
+    it("keeps a low-trust agent within its own task boundary", async () => {
+      const f = await seedIssueWithRetry();
+      await grant(f, "board-user");
+      await db.update(agents).set({ permissions: { trustPreset: "low_trust_review", authorizationPolicy: {
+        trustBoundary: { mode: "low_trust_review", companyId: f.companyId, rootIssueId: randomUUID() } } } })
+        .where(eq(agents.id, f.agentId));
+
+      const res = await retry(f);
+
+      expect([403, 404], JSON.stringify(res.body)).toContain(res.status);
       expect(await retryRunStatus(f)).toBe("scheduled_retry");
     });
 

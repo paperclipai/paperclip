@@ -218,11 +218,11 @@ Saves a Retry request for the task's latest stopped run. The same `idempotencyKe
 
 Every answer includes `presentation`, the task's current interruption state.
 
-An agent can call this endpoint only when a board user granted it `tasks:retry`. A grant that an agent saved does not count. The agent's call must:
+An agent can call this endpoint only when a board user granted it `tasks:retry` without a scope. A grant that an agent saved, or a grant with a scope, does not count. The agent's call must:
 
 - come from one of the agent's own runs in the company (`X-Paperclip-Run-Id` for an agent API key). Another run gives `403`.
 - use an unscoped key. A skill-test or task-bridge key gives `403`.
-- be on a task that the agent itself can read, within its own trust limits.
+- be on a task that the agent itself can read and that its own trust limits and company policy let it change. Only the rule about the task's assignee does not apply.
 
 The Retry then runs as the user who granted it, with that user's access and Retry checks. Chat tasks give `403`. Each agent can save at most 3 Retry requests on one task in a rolling day. A replay of the same `idempotencyKey` counts once. The fourth request gives `429` with `details.code: "agent_task_retry_cap_reached"`. Each request is logged as `issue.retry_requested_by_agent`, with the agent, its run and the granting user.
 

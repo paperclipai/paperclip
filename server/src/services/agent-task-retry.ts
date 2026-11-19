@@ -12,7 +12,9 @@ export const AGENT_TASK_RETRY_ACTION = "issue.retry_requested_by_agent";
 /**
  * The board actor an agent presses Retry as: the active member whose
  * tasks:retry grant names this agent. Only a grant a board user saved counts;
- * a grant row written by an agent has no granting user. The actor covers only
+ * a grant row written by an agent has no granting user. A grant saved with a
+ * scope does not count, since the Retry runs with the person's full task
+ * access and could reach outside that scope. The actor covers only
  * the agent's company, so every Retry gate the person meets applies unchanged.
  */
 export async function agentTaskRetryActor(db: Db, agent: { companyId: string; agentId: string; runId?: string }) {
@@ -26,7 +28,8 @@ export async function agentTaskRetryActor(db: Db, agent: { companyId: string; ag
       eq(principalPermissionGrants.companyId, agent.companyId),
       eq(principalPermissionGrants.principalType, "agent"),
       eq(principalPermissionGrants.principalId, agent.agentId),
-      eq(principalPermissionGrants.permissionKey, "tasks:retry")));
+      eq(principalPermissionGrants.permissionKey, "tasks:retry"),
+      sql`coalesce(${principalPermissionGrants.scope}, '{}'::jsonb) = '{}'::jsonb`));
   if (!grantor) return null;
   return {
     type: "board", userId: grantor.userId, companyIds: [agent.companyId], isInstanceAdmin: false,
