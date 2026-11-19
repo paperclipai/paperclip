@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
 import { agentsApi } from "@/api/agents";
@@ -9,6 +9,7 @@ import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
 import { useAccountIdentity } from "@/api/companies-query";
 import { useOptionalToastActions } from "@/context/ToastContext";
 import {
+  pruneRecentTasks,
   recordRecentTask,
   type RecentTaskEntry,
 } from "@/lib/recent-tasks";
@@ -31,8 +32,6 @@ import { Input } from "@/components/ui/input";
 import { StatusIcon } from "./StatusIcon";
 import { SidebarSection } from "./SidebarSection";
 import { RecentTaskNavItem } from "./RecentTaskNavItem";
-import { RecentTaskGroup } from "./RecentTaskGroup";
-import { recentTaskHierarchy } from "@/lib/recent-task-hierarchy";
 import { useLocation } from "@/lib/router";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
@@ -102,9 +101,8 @@ function RecentTasksList({
   userId: string | null;
   liveIssueIds: ReadonlySet<string>;
 }) {
-  const { entries } = useRecentTasks({ companyId, userId });
+  const { entries, storageKey } = useRecentTasks({ companyId, userId });
   const { pathname } = useLocation();
-  const hierarchy = useMemo(() => recentTaskHierarchy(entries, pathname), [entries, pathname]);
   const queryClient = useQueryClient();
   const toastActions = useOptionalToastActions();
   const [renameEntry, setRenameEntry] = useState<RecentTaskEntry | null>(null);
@@ -159,6 +157,7 @@ function RecentTasksList({
     setPendingAction("archive");
     try {
       await issuesApi.archiveFromInbox(entry.id);
+      if (storageKey) pruneRecentTasks(storageKey, companyId, new Set([entry.id]));
       await refreshIssueQueries(entry.id);
       await queryClient.invalidateQueries({
         queryKey: queryKeys.sidebarBadges(companyId),
@@ -247,7 +246,7 @@ function RecentTasksList({
   };
 
   const renderTaskRow = (entry: RecentTaskEntry) => (
-  <div className="sidebar-action-row group/recent-task relative">
+  <div key={entry.id} className="sidebar-action-row group/recent-task relative">
     <RecentTaskNavItem
       task={entry}
       label={entry.title}
@@ -305,12 +304,7 @@ function RecentTasksList({
   return (
     <>
       <SidebarSection label="Recent Tasks">
-        {entries.filter(entry => !hierarchy.nestedIds.has(entry.id)).map((entry) => (
-          <RecentTaskGroup key={entry.id} task={entry} userId={userId} flattened={hierarchy.flattenedIds.has(entry.id)}
-            selectedChild={hierarchy.selectedChild?.parentId === entry.id ? hierarchy.selectedChild : undefined} renderChild={renderTaskRow}>
-          {renderTaskRow(entry)}
-          </RecentTaskGroup>
-        ))}
+        {entries.map(renderTaskRow)}
       </SidebarSection>
 
       <Dialog

@@ -403,6 +403,14 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         Ok(())
     }
 
+    fn observe_fresh_durable_state(&mut self) -> Result<(), DurableRunnerError> {
+        if self.state_dir.join(CODEX_PROVIDER_STATE_FILE).exists() {
+            CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config)
+                .await_new_run_attach()?;
+        }
+        Ok(())
+    }
+
     fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {
         match self.selected.as_mut() {
             Some(SelectedExecutor::Acpx(executor)) => executor.defer_parked_acpx_restore(),

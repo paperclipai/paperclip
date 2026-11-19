@@ -249,9 +249,17 @@ They read only the queued run's runtime mode. Mutation locks retain complete
 wake and run rows, so edits, ordering, interruption, and saved execution inputs
 keep their existing write contract.
 
+Wake-queue also handles automatic steering for a saved task comment when an
+active session goal is working. It suppresses the assignee's comment wake after
+the live runner acknowledges delivery. When the live command cannot deliver the
+comment, the comment follows the route's normal wake rules.
+
 The task composer offers Steer when the native session has an active provider
-turn that accepts steering. If steering is unavailable or unsupported, it offers
-an explicit Interrupt action instead. Interrupt records the board user's intent,
+turn that accepts steering. Wake-queue locks the task and receipt for the click,
+then locks and rereads the run after the provider acknowledges delivery. It
+records the acknowledgement and removes the queued entry in one transaction.
+If steering is unavailable or unsupported, the composer offers Interrupt.
+Interrupt records the board user's intent,
 requests cancellation, and delivers the saved queue through normal admission after
 the previous execution stops. Preparation and cleanup can keep messages queued;
 the action does not bypass Stop confirmation or execution gates.
@@ -313,9 +321,16 @@ and shared execution sets so separate service instances keep the same ownership
 and shutdown barriers. Cleanup single-flight state stays at module scope.
 Keep recovery policy changes separate from retry scheduling and execution changes.
 
-Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
-It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,
-concurrency and priority checks, timer admission, and native status wake intents.
+Heartbeat coordinates wakeup dispatch, queued-run claims, daily heartbeat caps,
+concurrency and priority checks, timer admission, and native status wake intents
+in `server/src/services/heartbeat/queue.ts`. The wake-queue module owns the
+company and issue lock, the admission transaction, and the handoff after commit
+for both fresh task runs and wakes arriving behind an active execution. Heartbeat
+uses the locked transaction for its specialized eligibility gates and continuation
+writes. Wake-queue selects eligible saved comment receipts in request order and
+binds them to the new run. Chat authorization and its admission callback run in
+the same transaction. Authorization contention defers the wake and rolls back
+without publishing buffered effects.
 `createHeartbeatQueue` binds these operations without querying or starting work.
 The service supplies lifecycle effects, execution callbacks, worktree gates, and
 its process-wide execution and wakeup promise sets. Forwarding callbacks preserve

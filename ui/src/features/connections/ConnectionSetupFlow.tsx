@@ -466,7 +466,7 @@ function recommendedManagedConnectorMethod(
 // One-method sign-in skips the access step. These providers' warnings (Railway
 // project scope, Circleback sharing outside the workspace) must still be read
 // before authorizing, so the sign-in screen repeats them.
-const SIGN_IN_GUIDANCE_SLUGS = new Set(["railway", "circleback"]);
+const SIGN_IN_GUIDANCE_SLUGS = new Set(["railway", "circleback", "github"]);
 
 function canUseAutomaticOAuthFastPath(entry: AppDefinition | null | undefined): boolean {
   if (!entry) return false;
@@ -552,6 +552,59 @@ export function readConnectionIntentOAuthOutcome(
     || message.outcome === "failed"
     ? message.outcome
     : null;
+}
+
+export function readConnectionIntentGitHubRecovery(data: unknown): { installationUrl: string | null; managementUrl: string | null } | null {
+  if (!data || typeof data !== "object") return null;
+  const message = data as { code?: unknown; recovery?: unknown };
+  if (message.code !== "github_installation_required" || !message.recovery || typeof message.recovery !== "object") return null;
+  const recovery = message.recovery as { installationUrl?: unknown; managementUrl?: unknown };
+  const installationUrl = githubRecoveryUrl(typeof recovery.installationUrl === "string" ? recovery.installationUrl : null);
+  const managementUrl = githubRecoveryUrl(typeof recovery.managementUrl === "string" ? recovery.managementUrl : null);
+  return installationUrl || managementUrl ? { installationUrl, managementUrl } : null;
+}
+
+export function isMissingOAuthStateMessage(
+  event: Pick<MessageEvent, "origin" | "data" | "source">,
+  expectedOrigin: string,
+  activePopup: Window | null,
+): boolean {
+  if (!activePopup || event.source !== activePopup) return false;
+  if (event.origin !== expectedOrigin || !event.data || typeof event.data !== "object") return false;
+  const message = event.data as { type?: unknown; interactionId?: unknown; outcome?: unknown; code?: unknown };
+  return message.type === "paperclip.connection-intent.oauth"
+    && message.interactionId === undefined
+    && message.outcome === "failed"
+    && message.code === "oauth_state_missing";
+}
+
+export function readConnectionIntentOAuthFailureCode(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const code = (data as { code?: unknown }).code;
+  return typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : null;
+}
+
+export function oauthFailureMessage(code: string | null): string {
+  switch (code) {
+    case "oauth_state_expired":
+    case "oauth_state_missing":
+      return "The sign-in took too long or was already used. Try again and finish signing in within a few minutes.";
+    case "oauth_session_mismatch":
+      return "Sign-in finished in a different Paperclip session. Stay signed in to Paperclip in this browser and try again.";
+    case "oauth_redirect_origin_unsupported":
+      return "Sign-in returned to a different Paperclip address than the one you started from. Open Paperclip at its usual address and try again.";
+    case "oauth_token_exchange_failed":
+    case "oauth_token_endpoint_rejected":
+    case "oauth_access_token_missing":
+      return "The provider accepted your sign-in but didn’t give Paperclip access. Try again; if it keeps happening, check that your account or organization allows this app.";
+    case "oauth_insufficient_scope":
+    case "oauth_scope_grant_invalid":
+      return "The provider didn’t grant the access Paperclip asked for. Try again and approve every requested permission.";
+    case "github_installation_required":
+      return "You signed in, but the Paperclip for GitHub app isn’t installed on any account you can use. Install it and choose at least one repository, then try again. An organization owner may need to approve the install.";
+    default:
+      return "Authorization did not complete. Try again when you’re ready.";
+  }
 }
 
 export interface ConnectionSetupFlowProps {
@@ -796,6 +849,7 @@ function StandardConnectionSetupFlow({
     if (!resumingAfterOAuthFailure) return null;
     return oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode);
   });
+  const [intentGitHubRecovery, setIntentGitHubRecovery] = useState<{ installationUrl: string | null; managementUrl: string | null } | null>(null);
   /** Host of the page the operator is about to be sent to, shown while redirecting. */
   const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
   const directOAuthAccessConfirmedRef = useRef(false);
@@ -869,6 +923,7 @@ function StandardConnectionSetupFlow({
     // proxy from window.open without opening a usable authorization tab.
     oauthPopupRef.current = null;
     setOAuthError(null);
+    setIntentGitHubRecovery(null);
     setOAuthPhase("redirecting");
     onPhaseChange?.("authorizing");
   }, [onPhaseChange]);
@@ -888,6 +943,7 @@ function StandardConnectionSetupFlow({
   const prepareAndOpenOAuth = useCallback(async (
     start: Pick<ToolOAuthStartResult, "authorizationUrl" | "handoff">,
   ) => {
+    setIntentGitHubRecovery(null);
     oauthHandoffAbortRef.current?.abort();
     const controller = new AbortController();
     oauthHandoffAbortRef.current = controller;
@@ -925,6 +981,11 @@ function StandardConnectionSetupFlow({
     let disposed = false;
     const receiveOAuthOutcome = async (event: MessageEvent) => {
       const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, connectionIntentId);
+      if (!outcome && isMissingOAuthStateMessage(event, window.location.origin, oauthPopupRef.current)) {
+        setOAuthPhase("error");
+        setOAuthError(oauthFailureMessage("oauth_state_missing"));
+        return;
+      }
       if (outcome === "connected") {
         setOAuthPhase("entry");
         setAuthorizationFallbackUrl(null);
@@ -952,7 +1013,8 @@ function StandardConnectionSetupFlow({
       }
       if (outcome !== "failed") return;
       setOAuthPhase("error");
-      setOAuthError("Authorization did not complete. Try again when you’re ready.");
+      setIntentGitHubRecovery(readConnectionIntentGitHubRecovery(event.data));
+      setOAuthError(oauthFailureMessage(readConnectionIntentOAuthFailureCode(event.data)));
     };
     window.addEventListener("message", receiveOAuthOutcome);
     return () => { disposed = true; window.removeEventListener("message", receiveOAuthOutcome); };
@@ -2359,7 +2421,7 @@ function StandardConnectionSetupFlow({
         recoveryActions={oauthCallbackCode === "github_installation_required" ? {
           installationUrl: githubInstallationUrl,
           managementUrl: githubManagementUrl,
-        } : undefined}
+        } : intentGitHubRecovery ?? undefined}
         authorizationHost={authorizationHost}
         authorizationUrl={authorizationFallbackUrl}
         guidance={entry && SIGN_IN_GUIDANCE_SLUGS.has(entry.slug) && accessStepMethod ? (

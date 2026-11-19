@@ -28,7 +28,7 @@
       "defaults": {
         "serverUrl": "https://api.githubcopilot.com/mcp/"
       },
-      "guidanceMd": "Authorize Paperclip, then choose selected repositories in GitHub. You can edit repository access later from GitHub's installation settings.",
+      "guidanceMd": "Paperclip connects through the Paperclip for GitHub app. Sign in to GitHub, then install the app on the account or organization that owns your repositories and choose which repositories agents can use. An organization owner may need to approve the install. You can change repository access later in GitHub's installation settings.",
       "riskTier": "S3",
       "label": "Connect GitHub",
       "purpose": "tool",
