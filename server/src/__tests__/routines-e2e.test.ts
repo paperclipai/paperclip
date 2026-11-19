@@ -27,10 +27,14 @@ import {
   principalPermissionGrants,
   projectWorkspaces,
   projects,
+  responsibilities,
+  responsibilityLinks,
   routineDocuments,
+  routineRevisions,
   routineRuns,
   routines,
   routineTriggers,
+  userWorkspacePreferences,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -115,6 +119,9 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await db.delete(documentAnnotationAnchorSnapshots);
     await db.delete(documentAnnotationComments);
     await db.delete(documentAnnotationThreads);
+    await db.delete(responsibilityLinks);
+    await db.delete(responsibilities);
+    await db.delete(userWorkspacePreferences);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(heartbeatRunEvents);
@@ -1055,6 +1062,150 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+  });
+
+  describe("an agent acting for the routine's person", () => {
+    /** A second agent, working in the person's own chat, so it acts for them. */
+    async function helperFor(companyId: string, personUserId: string) {
+      const [helper] = await db.insert(agents).values({
+        companyId, name: "Helper", role: "general", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      }).returning();
+      const [chat] = await db.insert(issues).values({ companyId, title: "Chat", createdByUserId: personUserId, responsibleUserId: personUserId }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: helper!.id, issueId: chat!.id, scopeKind: "issue", status: "running", contextSnapshot: { issueId: chat!.id } }).returning();
+      const app = await createApp({
+        type: "agent", agentId: helper!.id, companyId, runId: run!.id, source: "agent_jwt",
+        onBehalfOfUserId: personUserId, onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active" }],
+      });
+      return { app, helperId: helper!.id };
+    }
+
+    async function personRoutine(companyId: string, agentId: string, userId: string, values: Record<string, unknown> = {}) {
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const created = await request(board).post(`/api/companies/${companyId}/routines`).send({ assigneeAgentId: agentId, title: "Weekly pipeline", ...values });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      return created.body.id as string;
+    }
+
+    it("reschedules its person's routine run by another agent in one revision, with one schedule however often it races", async () => {
+      const { companyId, agentId, userId } = await seedFixture();
+      const routineId = await personRoutine(companyId, agentId, userId);
+      const { app } = await helperFor(companyId, userId);
+      const revisions = async () => db.select().from(routineRevisions).where(eq(routineRevisions.routineId, routineId));
+      const before = (await revisions()).length;
+
+      // No zone given, none on the routine and none saved for the person: the agent must name one.
+      const unnamed = await request(app).patch(`/api/routines/${routineId}`).send({ title: "Pipeline review", schedule: { cronExpression: "30 9 * * 1" } });
+      expect(unnamed.status).toBe(422);
+      expect((await revisions()).length).toBe(before);
+
+      await db.insert(userWorkspacePreferences).values({ userId, timeZone: "Europe/Berlin" });
+      const changed = await request(app).patch(`/api/routines/${routineId}`).send({ title: "Pipeline review", schedule: { cronExpression: "30 9 * * 1" } });
+      expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+      const after = await revisions();
+      expect(after.length).toBe(before + 1);
+      expect(after.find((revision) => revision.revisionNumber === Math.max(...after.map((r) => r.revisionNumber)))?.changeSummary).toBe("Updated routine and schedule");
+      const schedules = async () => db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routineId));
+      expect(await schedules()).toMatchObject([{ kind: "schedule", enabled: true, cronExpression: "30 9 * * 1", timezone: "Europe/Berlin" }]);
+
+      // Two changes at once: the routine lock keeps one enabled schedule.
+      await db.delete(routineTriggers).where(eq(routineTriggers.routineId, routineId));
+      const raced = await Promise.all([
+        request(app).patch(`/api/routines/${routineId}`).send({ schedule: { cronExpression: "0 8 * * *", timezone: "UTC" } }),
+        request(app).patch(`/api/routines/${routineId}`).send({ schedule: { cronExpression: "0 18 * * *", timezone: "UTC" } }),
+      ]);
+      expect(raced.map((res) => res.status)).toEqual([200, 200]);
+      expect((await schedules()).filter((trigger) => trigger.enabled)).toHaveLength(1);
+
+      const off = await request(app).patch(`/api/routines/${routineId}`).send({ schedule: null });
+      expect(off.status).toBe(200);
+      expect((await schedules()).every((trigger) => !trigger.enabled)).toBe(true);
+
+      // Handing the routine to another person with a new time: the time is in the new person's zone.
+      const nextPerson = randomUUID();
+      await accessService(db).ensureMembership(companyId, "user", nextPerson, "operator", "active");
+      await db.insert(userWorkspacePreferences).values({ userId: nextPerson, timeZone: "Asia/Tokyo" });
+      await db.delete(routineTriggers).where(eq(routineTriggers.routineId, routineId));
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const handed = await request(board).patch(`/api/routines/${routineId}`).send({ responsibleUserId: nextPerson, schedule: { cronExpression: "0 9 * * *" } });
+      expect(handed.status, JSON.stringify(handed.body)).toBe(200);
+      expect(await schedules()).toMatchObject([{ enabled: true, timezone: "Asia/Tokyo" }]);
+    });
+
+    it("refuses another person's routine, and needs the person's tasks:assign to take, turn on or reschedule one it does not run", async () => {
+      const { companyId, agentId, userId } = await seedFixture();
+      const memberId = randomUUID();
+      await accessService(db).ensureMembership(companyId, "user", memberId, "operator", "active");
+      // A member who may not assign tasks, as under a restricted assignment policy.
+      vi.doMock("../services/index.js", async () => {
+        const [{ accessService: realAccess }, { documentAnnotationService }, { logActivity }, { routineService }] = await Promise.all([
+          import("../services/access.js"), import("../services/document-annotations.js"),
+          import("../services/activity-log.js"), import("../services/routines.js"),
+        ]);
+        const accessService = (database: typeof db) => {
+          const access = realAccess(database);
+          return { ...access, canUser: async (...args: Parameters<typeof access.canUser>) =>
+            (args[1] === memberId && args[2] === "tasks:assign" ? false : access.canUser(...args)) };
+        };
+        return { accessService, documentAnnotationService, logActivity, routineService };
+      });
+      const ownersRoutine = await personRoutine(companyId, agentId, userId);
+      const membersRoutine = await personRoutine(companyId, agentId, userId, { status: "paused" });
+      await db.update(routines).set({ responsibleUserId: memberId }).where(eq(routines.id, membersRoutine));
+
+      const { app: forMember, helperId } = await helperFor(companyId, memberId);
+      // Not the member's routine: no change at all.
+      expect((await request(forMember).patch(`/api/routines/${ownersRoutine}`).send({ title: "x" })).status).toBe(403);
+      // The member's routine: an ordinary change is fine, but the member may not assign tasks.
+      expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ title: "Member pipeline" })).status).toBe(200);
+      expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ assigneeAgentId: helperId })).status).toBe(403);
+      expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ status: "active" })).status).toBe(403);
+      expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ schedule: { cronExpression: "0 9 * * 1", timezone: "UTC" } })).status).toBe(403);
+      expect((await request(forMember).post(`/api/routines/${membersRoutine}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1", timezone: "UTC" })).status).toBe(403);
+      // Nor change an existing trigger, start the routine, or restore a revision of it.
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const trigger = await request(board).post(`/api/routines/${membersRoutine}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1", timezone: "UTC", enabled: false });
+      expect(trigger.status, JSON.stringify(trigger.body)).toBe(201);
+      expect((await request(forMember).patch(`/api/routine-triggers/${trigger.body.trigger.id}`).send({ enabled: true })).status).toBe(403);
+      expect((await request(forMember).delete(`/api/routine-triggers/${trigger.body.trigger.id}`)).status).toBe(403);
+      expect((await request(forMember).post(`/api/routines/${membersRoutine}/run`).send({})).status).toBe(403);
+      const [revision] = await db.select().from(routineRevisions).where(eq(routineRevisions.routineId, membersRoutine)).limit(1);
+      expect((await request(forMember).post(`/api/routines/${membersRoutine}/revisions/${revision!.id}/restore`).send({})).status).toBe(403);
+
+      // The owner may assign tasks, so an agent acting for them may take the routine.
+      const { app: forOwner, helperId: ownersHelper } = await helperFor(companyId, userId);
+      const taken = await request(forOwner).patch(`/api/routines/${ownersRoutine}`).send({ assigneeAgentId: ownersHelper });
+      expect(taken.status, JSON.stringify(taken.body)).toBe(200);
+      // The agent that runs a routine still reschedules its own, also through its trigger.
+      const runner = await createApp({ type: "agent", agentId, companyId });
+      expect((await request(runner).patch(`/api/routines/${membersRoutine}`).send({ schedule: { cronExpression: "0 9 * * 1", timezone: "UTC" } })).status).toBe(200);
+      expect((await request(runner).patch(`/api/routine-triggers/${trigger.body.trigger.id}`).send({ cronExpression: "0 10 * * 1" })).status).toBe(200);
+    });
+
+    it("filters the list in the query: words, status and routines filed under no responsibility", async () => {
+      const { companyId, agentId, userId } = await seedFixture();
+      await db.delete(instanceSettings);
+      await db.insert(instanceSettings).values({ experimental: { enableResponsibilities: true } });
+      const filed = await personRoutine(companyId, agentId, userId, { title: "Pipeline filed" });
+      const loose = await personRoutine(companyId, agentId, userId, { title: "Pipeline loose", status: "paused" });
+      await personRoutine(companyId, agentId, userId, { title: "Standup" });
+      const [hiring] = await db.insert(responsibilities).values({ companyId, ownerUserId: userId, title: "Hiring", status: "active" }).returning();
+      await db.insert(responsibilityLinks).values({ companyId, responsibilityId: hiring!.id, routineId: filed });
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const list = async (query: string) => (await request(board).get(`/api/companies/${companyId}/routines?${query}`)).body.map((routine: { id: string }) => routine.id);
+
+      expect(await list("q=PIPELINE")).toEqual(expect.arrayContaining([filed, loose]));
+      expect(await list("q=PIPELINE")).toHaveLength(2);
+      expect(await list("q=pipeline&unfiled=true&status=paused")).toEqual([loose]);
+      expect(await list(`responsibilityId=${hiring!.id}`)).toEqual([filed]);
+
+      // The responsibility filters are part of the Responsibilities experiment; plain searches are not.
+      await db.update(instanceSettings).set({ experimental: { enableResponsibilities: false } });
+      (await import("../services/instance-settings-cache.js")).invalidateInstanceSettingsCache();
+      const off = await request(board).get(`/api/companies/${companyId}/routines?unfiled=true`);
+      expect(off.status).toBe(404);
+      expect(off.body.code).toBe("responsibilities_disabled");
+      expect(await list("q=standup")).toHaveLength(1);
     });
   });
 });

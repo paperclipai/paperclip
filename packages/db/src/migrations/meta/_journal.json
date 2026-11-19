@@ -3482,10 +3482,10 @@
       "breakpoints": true
     },
     {
-      "idx": 504,
+      "idx": 499,
       "version": "7",
-      "when": 1795071624153,
-      "tag": "0504_claude_project_trust",
+      "when": 1795048062306,
+      "tag": "0499_numerous_whizzer",
       "breakpoints": true
     }
   ]
