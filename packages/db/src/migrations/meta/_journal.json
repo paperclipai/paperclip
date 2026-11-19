@@ -3487,6 +3487,13 @@
       "when": 1795048062306,
       "tag": "0499_numerous_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 508,
+      "version": "7",
+      "when": 1795114590866,
+      "tag": "0508_project_repository_checkout",
+      "breakpoints": true
     }
   ]
 }
