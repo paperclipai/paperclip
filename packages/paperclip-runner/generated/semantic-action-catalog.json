@@ -3008,7 +3008,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Create an area, a broad heading for responsibilities such as Fundraising. If a live area already has this title (any case), it is returned instead. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Create an area, a broad heading for responsibilities such as Fundraising. If a live area already has this title (any case), it is returned instead. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3050,7 +3050,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Rename, describe, reorder, archive or restore an area. Archiving keeps its responsibilities and can be undone. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Rename, describe, reorder, archive or restore an area. Archiving keeps its responsibilities and can be undone. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3144,7 +3144,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Create a responsibility for a person; a title alone is enough, the bar can come later. Defaults to the person this run works for and to active. A live responsibility of that person with the same title is returned instead of a copy. File it under an area by areaId or areaTitle (an area with that title is reused or created), and file work under it with fileItems. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Create a responsibility for a person; a title alone is enough, the bar can come later. Defaults to the person this run works for and to active. A live responsibility of that person with the same title is returned instead of a copy. File it under an area by areaId or areaTitle (an area with that title is reused or created), and file work under it with fileItems. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3325,7 +3325,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Change a responsibility: its title, description, bar sentence (standard), metric (bar; null clears it), area (areaId, null for none, or areaTitle), the agent that runs it, order, health override and note, or status (active, proposed, let_go to stop it, dismissed for a proposal). Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Change a responsibility: its title, description, bar sentence (standard), metric (bar; null clears it), area (areaId, null for none, or areaTitle), the agent that runs it, order, health override and note, or status (active, proposed, let_go to stop it, dismissed for a proposal). When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3536,7 +3536,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "File projects, tasks, routines and company skills under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "File projects, tasks, routines and company skills under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3602,7 +3602,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Unfile projects, tasks, routines and skills from a responsibility by what they are; no link IDs needed. The items themselves are not changed. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Unfile projects, tasks, routines and skills from a responsibility by what they are; no link IDs needed. The items themselves are not changed. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3667,7 +3667,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for active routines under no responsibility.",
+    "description": "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for routines under no responsibility; every filter applies before the limit.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -3713,7 +3713,7 @@
           "type": "string"
         },
         "unfiled": {
-          "description": "Only active routines filed under no responsibility (needs Responsibilities on).",
+          "description": "Only routines filed under no proposed or active responsibility, directly or through their project. Combine with status, such as active.",
           "type": "boolean"
         }
       },
@@ -3726,7 +3726,9 @@
       "type": "object"
     },
     "placement": "optional",
-    "requiredClaims": [],
+    "requiredClaims": [
+      "routines:read"
+    ],
     "schema": "paperclip.semantic-action.v1",
     "title": "List routines",
     "version": 1
@@ -3735,7 +3737,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines and those the person your run works for is responsible for; handing one to another agent needs that person to be allowed to assign work. Each change is a routine revision the person can restore from the routine's history.",
+    "description": "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines, and those the person who directed your run (their own chat or task, or their message woke you) is responsible for; on a routine you do not run, changing its agent, turning it on or changing its schedule needs that person to be allowed to assign work. The routine and its schedule change together as one routine revision the person can restore from the routine's history; filing is saved separately in their Dashboard history (see filedUnder.undo).",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3820,7 +3822,7 @@
               "type": "string"
             },
             "timezone": {
-              "description": "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone.",
+              "description": "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone, else the person's own time zone.",
               "maxLength": 100,
               "minLength": 1,
               "type": "string"
@@ -3869,7 +3871,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Change a company skill's catalog details outside SKILL.md: its tagline (one line) and categories. Its name and description are SKILL.md frontmatter; change those with update_skill. Uses the skill page's edit policy.",
+    "description": "Change a company skill's catalog details outside SKILL.md: its tagline (one line) and categories; send tagline, categories or both. Its name and description are SKILL.md frontmatter; change those with update_skill. Uses the skill page's edit policy.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,

@@ -66,20 +66,23 @@ export async function callCreateSkillTool(input: {
 /**
  * A company skill's catalog details that live outside SKILL.md. Its name and
  * description are SKILL.md frontmatter, so they change through update_skill.
+ * Like the advertised schema, only skillId is required; without a detail the
+ * call changes nothing.
  */
 export const updateSkillDetailsToolInput = z.object({
   skillId: z.string().guid(),
   tagline: z.string().trim().max(120).nullable().optional(),
   categories: z.array(z.string().trim().min(1).max(60)).max(20).optional(),
-}).strict().refine((input) => input.tagline !== undefined || input.categories !== undefined, {
-  message: "Send tagline, categories or both",
-});
+}).strict();
 
 /** Same API and company skill edit policy as the skill page. */
 export async function callUpdateSkillDetailsTool(input: {
   arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string;
 }, fetcher: typeof fetch = fetch) {
   const { skillId, ...details } = updateSkillDetailsToolInput.parse(input.arguments);
+  if (details.tagline === undefined && details.categories === undefined) {
+    return { id: skillId, changed: false, note: "Nothing changed: send tagline, categories or both." };
+  }
   const response = await fetcher(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api/companies/${encodeURIComponent(input.companyId)}/skills/${encodeURIComponent(skillId)}`, {
     method: "PATCH",
     headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },

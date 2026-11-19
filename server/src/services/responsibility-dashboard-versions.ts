@@ -15,6 +15,7 @@ import {
   type ResponsibilityDashboardVersionSummary,
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { skillAccessService } from "./skill-access.js";
 
 /**
  * Versions of a person's Dashboard (experimental `enableResponsibilities`).
@@ -87,6 +88,11 @@ export function dashboardSnapshotHash(snapshot: ResponsibilityDashboardSnapshot,
 /** True for a version saved before snapshots held filed items. */
 function isLegacySnapshot(snapshot: ResponsibilityDashboardSnapshot) {
   return snapshot.responsibilities.some((item) => item.links === undefined);
+}
+
+/** True for a version saved before snapshots held filed skills: restoring it would leave filed skills alone. */
+function lacksFiledSkills(snapshot: ResponsibilityDashboardSnapshot) {
+  return snapshot.responsibilities.some((item) => item.links !== undefined && item.links.skillIds === undefined);
 }
 
 /** Serialize all dashboard writes for one person inside `tx`. */
@@ -236,14 +242,16 @@ export function responsibilityDashboardVersionService(db: Db) {
     restoredFromVersionId?: string | null;
   }): Promise<{ row: VersionRow; created: boolean }> {
     const previous = await latestRow(tx, input.companyId, input.ownerUserId);
+    const previousSnapshot = previous ? parseDashboardSnapshot(previous.snapshot) : null;
     const hash = dashboardSnapshotHash(input.snapshot);
     // A version saved before snapshots held filed items is compared on what it holds.
-    const legacy = previous ? isLegacySnapshot(parseDashboardSnapshot(previous.snapshot)) : false;
+    const legacy = previousSnapshot ? isLegacySnapshot(previousSnapshot) : false;
     const comparable = legacy ? dashboardSnapshotHash(input.snapshot, { legacy: true }) : hash;
     if (previous && previous.snapshotHash === comparable) {
-      if (!legacy) return { row: previous, created: false };
-      // The same dashboard as an older version that held no filed items or
-      // details: it now holds them, so the next change compares, and undoes, in full.
+      // One saved before skills could be filed hashes the same (no filed skills) but must hold the empty list too.
+      if (!legacy && !lacksFiledSkills(previousSnapshot!)) return { row: previous, created: false };
+      // The same dashboard as an older version that held no filed items,
+      // details or skills: it now holds them, so the next change compares, and undoes, in full.
       const [upgraded] = await tx.update(responsibilityDashboardVersions)
         .set({ snapshot: input.snapshot as unknown as Record<string, unknown>, snapshotHash: hash })
         .where(eq(responsibilityDashboardVersions.id, previous.id))
@@ -542,13 +550,21 @@ export function responsibilityDashboardVersionService(db: Db) {
     if (!want.links) return events;
     // A version saved before skills could be filed leaves filed skills as they are.
     const withSkills = want.links.skillIds !== undefined;
-    const current = (await tx.select().from(responsibilityLinks).where(eq(responsibilityLinks.responsibilityId, row.id)))
-      .filter((link) => withSkills || !link.skillId);
+    const linked = await tx.select().from(responsibilityLinks).where(eq(responsibilityLinks.responsibilityId, row.id));
+    // Skills the person restoring cannot see (the request's actor) are left as they are: not filed again, not removed.
+    const skillIds = [...new Set([...linked.flatMap((link) => (link.skillId ? [link.skillId] : [])), ...(want.links.skillIds ?? [])])];
+    const visibleSkills = !withSkills || skillIds.length === 0 ? new Set<string>() : new Set(
+      (await tx.select({ id: companySkills.id }).from(companySkills).where(and(
+        eq(companySkills.companyId, companyId), inArray(companySkills.id, skillIds),
+        await skillAccessService(tx as unknown as Db).condition(companyId),
+      ))).map((skill) => skill.id),
+    );
+    const current = linked.filter((link) => !link.skillId || visibleSkills.has(link.skillId));
     const wanted = new Set([
       ...want.links.projectIds.map((id) => `project:${id}`),
       ...want.links.issueIds.map((id) => `issue:${id}`),
       ...want.links.routineIds.map((id) => `routine:${id}`),
-      ...(want.links.skillIds ?? []).map((id) => `skill:${id}`),
+      ...(want.links.skillIds ?? []).filter((id) => visibleSkills.has(id)).map((id) => `skill:${id}`),
     ]);
     const keyOf = (link: typeof responsibilityLinks.$inferSelect) =>
       link.projectId ? `project:${link.projectId}` : link.issueId ? `issue:${link.issueId}`

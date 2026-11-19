@@ -1,4 +1,4 @@
-const description = "Change a company skill's catalog details outside SKILL.md: its tagline (one line) and categories. Its name and description are SKILL.md frontmatter; change those with update_skill. Uses the skill page's edit policy.";
+const description = "Change a company skill's catalog details outside SKILL.md: its tagline (one line) and categories; send tagline, categories or both. Its name and description are SKILL.md frontmatter; change those with update_skill. Uses the skill page's edit policy.";
 
 /** Canonical definition and documentation for `update_skill_details`. */
 export const updateSkillDetailsAction = {

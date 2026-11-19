@@ -96,8 +96,13 @@ export type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export interface ResponsibilityReadScope {
   issueReadCondition: SQL<boolean>;
   projectReadCondition: SQL<boolean>;
-  /** Company skills the reader may see; reads that list no skills leave it out. */
+  /** Company skills the reader may see. Left out, no filed skill is visible: visibility is never dropped by omission. */
   skillReadCondition?: SQL;
+}
+
+/** The skill visibility condition of a scope; none means no skill is visible. */
+function skillsVisible(scope: ResponsibilityReadScope): SQL {
+  return scope.skillReadCondition ?? sql`false`;
 }
 
 export type ResponsibilityLinkTarget =
@@ -960,7 +965,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
     }
     if (target.kind === "skill") {
       const [row] = await db.select({ id: companySkills.id }).from(companySkills)
-        .where(and(eq(companySkills.id, target.id), eq(companySkills.companyId, companyId), scope.skillReadCondition))
+        .where(and(eq(companySkills.id, target.id), eq(companySkills.companyId, companyId), skillsVisible(scope)))
         .limit(1);
       if (!row) throw notFound("Skill not found");
       return row;
@@ -1064,7 +1069,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
         color: companySkills.color,
       }).from(responsibilityLinks)
         .innerJoin(companySkills, and(eq(companySkills.id, responsibilityLinks.skillId), eq(companySkills.companyId, responsibilityLinks.companyId)))
-        .where(and(eq(responsibilityLinks.responsibilityId, row.id), scope.skillReadCondition)),
+        .where(and(eq(responsibilityLinks.responsibilityId, row.id), skillsVisible(scope))),
     ]);
     const byId = new Map<string, ResponsibilitySkillSummary>();
     for (const { skill, agentIds: holders } of assigned) {

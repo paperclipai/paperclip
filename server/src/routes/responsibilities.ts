@@ -143,14 +143,14 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     await assertAgentCompanyScope(req, companyId);
   }
 
-  /** The reader's visibility; with `companyId`, which of that company's skills they may see too. */
-  async function readScope(req: Request, companyId?: string): Promise<ResponsibilityReadScope> {
+  /** The reader's visibility in `companyId`, including which of its skills they may see. */
+  async function readScope(req: Request, companyId: string): Promise<ResponsibilityReadScope> {
     const [issueReadCondition, projectReadCondition, skillReadCondition] = await Promise.all([
       issueReadSqlCondition(db, req.actor),
       projectReadSqlCondition(db, req.actor),
-      companyId ? skillAccessService(db, req.actor).condition(companyId) : Promise.resolve(undefined),
+      skillAccessService(db, req.actor).condition(companyId),
     ]);
-    return { issueReadCondition, projectReadCondition, ...(skillReadCondition ? { skillReadCondition } : {}) };
+    return { issueReadCondition, projectReadCondition, skillReadCondition };
   }
 
   const boardCanManageOwner = boardCanManageResponsibilityOwner;
@@ -302,7 +302,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     }
     res.json(await svc.overview(companyId, ownerUserId, {
       includeLetGo: query.includeLetGo,
-      scope: await readScope(req),
+      scope: await readScope(req, companyId),
     }));
   });
 
@@ -356,7 +356,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     });
     if (newArea) await logAreaCreated(req, newArea);
     if (!isNew) {
-      res.json(await svc.withRollup(created, await readScope(req)));
+      res.json(await svc.withRollup(created, await readScope(req, companyId)));
       return;
     }
     await logMutation(req, companyId, "responsibility.created", created.id, {
@@ -367,7 +367,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       areaId: created.areaId,
     });
     await logAreaActivated(req, activatedArea, created.id);
-    res.status(201).json(await svc.withRollup(created, await readScope(req)));
+    res.status(201).json(await svc.withRollup(created, await readScope(req, companyId)));
   });
 
   router.get("/responsibilities/:id", async (req, res) => {
@@ -381,7 +381,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     await assertResponsibilitiesEnabled();
     const row = await loadForWrite(req, res);
     if (!row) return;
-    const scope = await readScope(req);
+    const scope = await readScope(req, row.companyId);
     const actsFor = req.actor.type === "agent" ? await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId) : null;
     const { areaTitle, ...patch } = req.body as typeof req.body & { areaTitle?: string };
     if (areaTitle && patch.areaId !== undefined) throw unprocessable("Send areaId or areaTitle, not both");
@@ -600,7 +600,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       runId: actor.runId,
       identityContextId: req.actor.identityContextId ?? null,
       authorizationActor: req.actor,
-    }, await readScope(req));
+    }, await readScope(req, row.companyId));
     await references.syncIssue(issue.id);
     await logActivity(db, {
       companyId: row.companyId,

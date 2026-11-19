@@ -79,9 +79,11 @@ describe("update skill details tool", () => {
     expect(result).toEqual({ id: skillId, name: "review", slug: "review", tagline: "Reviews pull requests", categories: ["engineering"], studioPath: `/skills/studio/${skillId}` });
   });
 
-  it("refuses a call that changes nothing, and fields that live in SKILL.md", async () => {
+  it("changes nothing without a detail, and refuses fields that live in SKILL.md", async () => {
     const fetcher = vi.fn<typeof fetch>();
-    await expect(callUpdateSkillDetailsTool({ arguments: { skillId }, apiUrl: "http://localhost", token: "token", companyId: "company" }, fetcher)).rejects.toThrow();
+    // The advertised schema requires only skillId, so that call is a no-op, not an error.
+    await expect(callUpdateSkillDetailsTool({ arguments: { skillId }, apiUrl: "http://localhost", token: "token", companyId: "company" }, fetcher))
+      .resolves.toEqual({ id: skillId, changed: false, note: expect.stringContaining("send tagline, categories or both") });
     await expect(callUpdateSkillDetailsTool({ arguments: { skillId, name: "renamed" }, apiUrl: "http://localhost", token: "token", companyId: "company" }, fetcher)).rejects.toThrow();
     expect(fetcher).not.toHaveBeenCalled();
   });

@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   bars: { conversation: vi.fn(), start: vi.fn(), accept: vi.fn(), decline: vi.fn() },
   metrics: { metrics: vi.fn(), removeMetric: vi.fn(), setDisplay: vi.fn() },
   runs: { recent: vi.fn() },
+  skills: { list: vi.fn() },
   navigate: vi.fn(),
 }));
 vi.mock("@/api/responsibilities", () => ({ responsibilitiesApi: mocks.api, responsibilityAreasApi: mocks.areas }));
@@ -50,6 +51,7 @@ vi.mock("@/api/routines", () => ({ routinesApi: mocks.routines }));
 vi.mock("@/api/responsibility-bars", () => ({ responsibilityBarsApi: mocks.bars }));
 vi.mock("@/api/responsibility-metrics", () => ({ responsibilityMetricsApi: mocks.metrics }));
 vi.mock("@/api/responsibility-runs", () => ({ responsibilityRunsApi: mocks.runs }));
+vi.mock("@/api/companySkills", () => ({ companySkillsApi: mocks.skills }));
 // The app's own new-project form, standing in: it hands back the project it made.
 vi.mock("@/components/NewProjectDialog", () => ({
   NewProjectForm: ({ onCreated, onClose }: { onCreated?: (project: { id: string }) => Promise<unknown>; onClose: () => void }) => (
@@ -214,9 +216,10 @@ describe("One screen v2: the page", () => {
     for (const key of ["routines", "skills", "projects", "tasks", "runs", "artifacts"]) {
       expect(section(key).querySelector("p")?.textContent).toBe("None yet.");
     }
-    // Nothing to run and nobody to give a skill to: the + says why.
+    // Nothing to run: the + says why. A company skill can still be added.
     expect(section("runs").querySelector("[data-section-add-disabled]")?.getAttribute("title")).toBe("No routines to run yet");
-    expect(section("skills").querySelector("[data-section-add-disabled] button")?.hasAttribute("disabled")).toBe(true);
+    expect(section("skills").querySelector("[data-section-add-disabled]")).toBeNull();
+    expect(section("skills").querySelector("[data-section-add]")).not.toBeNull();
   });
 });
 
@@ -273,13 +276,33 @@ describe("One screen v2: each +", () => {
     expect(document.body.querySelector("[data-new-project-form]")).toBeNull();
   });
 
-  it("Skills: the skills page of each agent working under it", async () => {
+  it("Skills: add an existing company skill, remove one filed here, or open an agent's skills page", async () => {
+    mocks.skills.list.mockResolvedValue([{ id: "skill-pitch", name: "Pitch coach" }]);
+    const filed = {
+      linkId: "link-skill-crm", computed: false, id: "skill-crm", key: "paperclip/crm", slug: "crm",
+      name: "CRM upkeep", description: null, tagline: null, iconUrl: null, color: null, agentIds: [],
+    };
+    mocks.api.get.mockImplementation(async (id: string) => ({ ...DETAILS[id], skills: [...DETAILS[id]!.skills, filed] }));
     await render();
+    expect(section("skills").querySelector('[data-work-id="skill-crm"] [data-row-stat]')?.textContent).toBe("Filed here");
+
     await openMenu(section("skills").querySelector<HTMLElement>("[data-section-add]")!);
-    const links = [...document.body.querySelectorAll<HTMLAnchorElement>('[role="menuitem"]')].map((item) => [item.textContent, item.getAttribute("href")]);
-    expect(links).toEqual([
-      ["CodexCoder", "/agents/codexcoder/skills"],
-    ]);
+    // Only a skill filed by hand can be removed; the agents' own skills come from them.
+    expect(menuItems().map((item) => item.textContent)).toEqual(["Add existing skill", "CRM upkeep", "CodexCoder"]);
+    expect(menuItem("CodexCoder").getAttribute("href")).toBe("/agents/codexcoder/skills");
+    await choose(menuItem("CRM upkeep"));
+    expect(mocks.api.unlink).toHaveBeenCalledExactlyOnceWith("resp-fundraising", "link-skill-crm");
+
+    await openMenu(section("skills").querySelector<HTMLElement>("[data-section-add]")!);
+    await choose(menuItem("Add existing skill"));
+    await flush();
+    const option = await vi.waitFor(() => {
+      const found = [...document.body.querySelectorAll<HTMLElement>("[cmdk-item]")].find((item) => item.textContent?.includes("Pitch coach"));
+      if (!found) throw new Error("not yet");
+      return found;
+    });
+    await choose(option);
+    expect(mocks.api.link).toHaveBeenCalledWith("resp-fundraising", { skillId: "skill-pitch" });
   });
 
   it("Recent runs: runs one of its routines now", async () => {
