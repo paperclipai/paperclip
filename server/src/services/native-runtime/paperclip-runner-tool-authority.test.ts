@@ -190,6 +190,19 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.delete(agents).where(eq(agents.id, claudeId));
   });
 
+  it("advertises the responsibility tools only while the instance has them on", async () => {
+    const tools = ["list_responsibilities", "get_responsibility", "find_responsibilities_for"];
+    const off = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    expect(off.definitions().map(tool => tool.name)).not.toEqual(expect.arrayContaining([tools[0]]));
+    // A hidden tool called by name says the feature is off, so the agent does not report an empty list.
+    await expect(off.execute({ tool: "list_responsibilities", callId: randomUUID(), arguments: {} }))
+      .rejects.toThrow("Areas and responsibilities are turned off");
+
+    const on = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, responsibilitiesEnabled: true });
+    expect(on.definitions()).toHaveLength(off.definitions().length + tools.length);
+    expect(on.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining(tools));
+  });
+
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,

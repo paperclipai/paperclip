@@ -12,6 +12,7 @@ import { listProjectsDescription, listProjectsInputSchema } from "../protocol-ac
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
 import { sendChatMessageAction } from "../protocol-actions/send-chat-message.js";
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
+import { findResponsibilitiesForAction, getResponsibilityAction, listResponsibilitiesAction } from "../protocol-actions/responsibilities.js";
 import type {
   PaperclipJsonSchema,
   PaperclipSemanticActionDescriptor,
@@ -513,6 +514,15 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     placement: "optional",
     inputSchema: object({}),
   }),
+  ...[listResponsibilitiesAction, getResponsibilityAction, findResponsibilitiesForAction].map((action) => descriptor({
+    operationId: action.id,
+    title: action.documentation.title,
+    description: action.documentation.description,
+    placement: "optional",
+    allowedModes: action.live.descriptor.allowedModes,
+    inputSchema: action.live.descriptor.inputSchema,
+    outputSchema: openObject,
+  })),
   descriptor({
     operationId: "create_project",
     title: "Create project",

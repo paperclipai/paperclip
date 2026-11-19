@@ -113,6 +113,15 @@
       ]
     },
     {
+      "id": "responsibilities",
+      "description": "Read a person's areas and responsibilities, one responsibility in full, and where a project, task or routine is filed, through the live company/run authority. Hidden while the instance has Responsibilities off.",
+      "operationIds": [
+        "list_responsibilities",
+        "get_responsibility",
+        "find_responsibilities_for"
+      ]
+    },
+    {
       "id": "workspace_runtime",
       "description": "Inspect and select task workspaces, prepare repositories, and control workspace runtime services.",
       "operationIds": [
@@ -290,19 +299,23 @@
         "get_agent",
         "list_projects",
         "list_goals",
-        "list_project_repositories"
+        "list_project_repositories",
+        "list_responsibilities",
+        "get_responsibility",
+        "find_responsibilities_for"
       ],
       "controlPlaneOperationIds": [],
-      "realSurface": "company issue search and agent/project/goal list/get routes",
+      "realSurface": "company issue search, agent/project/goal list/get routes, and responsibility list/detail/lookup routes",
       "mockStateDomains": [
         "company",
         "task",
         "actor",
         "project",
-        "goal"
+        "goal",
+        "responsibility"
       ],
       "prpEvidence": "bounded redacted read projections through tool-result item events",
-      "gap": "Goal operations remain scenario-only. Project and repository discovery contracts are delivered by the live server authority; they are not implemented by the mock command dispatcher."
+      "gap": "Goal operations remain scenario-only. Project and repository discovery contracts are delivered by the live server authority; they are not implemented by the mock command dispatcher. Responsibility discovery is likewise live-only and hidden while the instance has Responsibilities off."
     },
     {
       "id": "su",

@@ -93,6 +93,11 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+Canceling a task with active subtasks opens a modal headed “Cancel N active subtasks?”
+The modal lists each readable active descendant's status icon and title, without task IDs or links.
+Done and canceled tasks are excluded. The person can cancel only the parent,
+cancel the parent and listed subtasks, or dismiss the modal to leave them unchanged.
+
 When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list and shows each task once. Project
@@ -109,6 +114,9 @@ Coordinator Recents lets you pin tasks, agent chats, and projects above More.
 The pin button appears on the current row or when a row is hovered or focused
 with the keyboard. Shortcuts share the saved order with pinned pages and stay
 available as Recents changes.
+Project links in Recents and pinned navigation open the project's Tasks tab.
+Both locations have a chevron that shows up to 12 recently updated project tasks.
+The task list loads when expanded and keeps the task status and unread markers.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery
@@ -438,6 +446,12 @@ in-app only.
 
 Coordinator is the standard workspace for everyone. Settings → Experimental offers a personal **Classic workspace** opt-in, off by default. Historical Coordinator experiment settings do not enable Classic. Agent Chat is available to everyone on new and existing instances. The retired `enableAgentChat` key remains accepted for compatibility; stored and managed off values are ignored. Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
 
+Document links labeled to open in the sidebar keep the conversation on screen
+and show the requested document revision. **Open source task** in the sidebar
+takes the reader to the owning task's detail page with its task breadcrumb.
+The breadcrumb uses the short UUID for conversation-backed tasks without a
+task number.
+
 ### Slack task progress
 
 Slack threads reuse one editable progress message for each active run. Native
@@ -493,6 +507,10 @@ Terminated agents and agents you have left are omitted unless you have history w
 filters by name, title, or role; **+** starts or reopens a conversation.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.
+
+When an artifact in the side panel leaves too little room for the conversation,
+the chat list collapses and **Browse chats** opens the chat picker from the
+header. The list returns when you leave the artifact or make more room.
 
 Beside a conversation, the side panel opens on the agent's tasks: one card per
 task the agent created, was assigned, commented on, or acted on, newest first,
