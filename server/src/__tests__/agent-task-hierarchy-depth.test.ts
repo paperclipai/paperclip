@@ -516,6 +516,33 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
         .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
     });
 
+    it("rejects re-affirming a poisoned self-parent through issueService.update", async () => {
+      const { companyId } = await seedCompany();
+      const id = await seedIssue(companyId);
+      // Legacy corruption written before the guard existed: parent_id = id.
+      await db.update(issues).set({ parentId: id }).where(eq(issues.id, id));
+
+      await expect(issueService(db).update(id, { parentId: id }))
+        .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+      const [row] = await db.select({ parentId: issues.parentId }).from(issues).where(eq(issues.id, id));
+      expect(row!.parentId).toBe(id);
+    });
+
+    it("rejects re-affirming a stored 2-cycle edge through issueService.update", async () => {
+      const { companyId } = await seedCompany();
+      const aId = await seedIssue(companyId, { identifier: "CY-A" });
+      const bId = await seedIssue(companyId, { parentId: aId, identifier: "CY-B" });
+      await db.update(issues).set({ parentId: bId }).where(eq(issues.id, aId));
+
+      // A write whose value equals the stored (cyclic) parent still surfaces
+      // the corruption.
+      await expect(issueService(db).update(aId, { parentId: bId, title: "Renamed" }))
+        .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+      const [row] = await db.select({ parentId: issues.parentId, title: issues.title }).from(issues).where(eq(issues.id, aId));
+      expect(row!.parentId).toBe(bId);
+      expect(row!.title).not.toBe("Renamed");
+    });
+
     it("keeps legal moves working: detach, reattach, and a no-op parent patch", async () => {
       const { companyId } = await seedCompany();
       const { rootId, childId } = await seedTree(companyId);

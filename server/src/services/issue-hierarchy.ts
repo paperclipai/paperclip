@@ -186,24 +186,22 @@ export function planParentChange(
 }
 
 /**
- * Database-backed {@link planParentChange} for the issue service. Rejects a
- * self-parent request and any explicit parent write whose proposed parent is
- * the issue's own descendant (a cycle, including re-affirming a poisoned edge
- * already in the data) with a 422 `issue_parent_cycle` error; cross-company and
- * unknown parents are rejected downstream by the caller's company check.
+ * Rejects a self-parent request and any explicit parent write whose proposed
+ * parent already has the moving issue as an ancestor (a cycle, including
+ * re-affirming a poisoned edge already in the data) with a 422
+ * `issue_parent_cycle` error. Exported so the update path can also validate a
+ * repeated write whose value equals the stored parent — that stored edge can
+ * itself be poisoned. Returns the loaded parent chain for reuse.
  */
-export async function planIssueParentChange(
-  db: Pick<Db, "execute" | "select">,
+export async function assertParentWriteAllowed(
+  db: Pick<Db, "execute">,
   existing: { id: string; companyId: string; parentId: string | null },
   requestedParentId: string,
-  policy: IssueParentDepthPolicy = "flatten",
-) {
+): Promise<ParentChainRow[]> {
   // A poisoned self-edge (`parent_id = id`) once made every subtree walk over
   // the tree recurse forever, so no policy accepts one, and a write whose
   // proposed parent already has the moving issue as an ancestor would close
-  // (or perpetuate) the same kind of cycle. Both checks run before the cheap
-  // early returns, so a re-affirming update surfaces the corruption instead of
-  // silently keeping it.
+  // (or perpetuate) the same kind of cycle.
   if (requestedParentId === existing.id) {
     throw unprocessable("An issue cannot be its own parent", { code: "issue_parent_cycle" });
   }
@@ -218,6 +216,22 @@ export async function planIssueParentChange(
       { code: "issue_parent_cycle" },
     );
   }
+  return chain;
+}
+
+/**
+ * Database-backed {@link planParentChange} for the issue service. Rejects
+ * cycle-creating parent writes (see {@link assertParentWriteAllowed});
+ * cross-company and unknown parents are rejected downstream by the caller's
+ * company check.
+ */
+export async function planIssueParentChange(
+  db: Pick<Db, "execute" | "select">,
+  existing: { id: string; companyId: string; parentId: string | null },
+  requestedParentId: string,
+  policy: IssueParentDepthPolicy = "flatten",
+) {
+  const chain = await assertParentWriteAllowed(db, existing, requestedParentId);
   if (requestedParentId === existing.parentId) {
     return { parentId: requestedParentId as string | null | undefined, adjustment: null as IssueParentAdjustment | null };
   }
