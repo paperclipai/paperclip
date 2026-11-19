@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { withDatabaseOperation } from "@paperclipai/db";
 import { EXECUTION_PREPARATION_SPAN_ATTRS, getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { createHash } from "node:crypto";
-import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context } from "@opentelemetry/api";
+import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context, type Span } from "@opentelemetry/api";
 
 type PreparationPhase = "environment_selection" | "execution_configuration" | "session"
   | "agent_read" | "chat_completion" | "conversation" | "runtime_state" | "issue_context"
@@ -102,6 +102,9 @@ export type ExecutionPhase =
   | "connectors.browser_use.connection" | "connectors.browser_use.catalog" | "connectors.browser_use.grant"
   | "connectors.discovery.scheduled" | "connectors.discovery.queue" | "connectors.discovery.build" | "connectors.discovery.agent"
   | "connectors.discovery.connections" | "connectors.discovery.github" | "connectors.discovery.slack" | "connectors.discovery.speko"
+  | "connectors.discovery.connections.transaction" | "connectors.discovery.connections.transaction.catalog_entries"
+  | "connectors.discovery.connections.transaction.matched_connections"
+  | "connectors.discovery.connections.availability" | "connectors.discovery.connections.descriptors"
   | "connectors.discovery.policy" | "connectors.discovery.on_demand_policy"
   | "connectors.slack.candidates" | "connectors.slack.authority" | "connectors.slack.profile"
   | "connectors.slack.settings" | "connectors.slack.identity" | "connectors.slack.credentials" | "connectors.slack.revision"
@@ -124,7 +127,7 @@ export type ExecutionPhase =
 // recordRunId: the run whose preparation log receives nested measureRunPhase
 // steps. A traced step opens its own scope, so it carries its preparation
 // ancestor's target; other scopes (execution attempts) never record.
-type RunScope = { runId: string; phase: string; parent?: Context; ended: boolean; details: Map<string, number>; recordRunId?: string };
+type RunScope = { runId: string; phase: string; parent?: Context; span?: Span; ended: boolean; details: Map<string, number>; recordRunId?: string };
 const ownership = new AsyncLocalStorage<RunScope>();
 const endpointEnabled = () => Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim());
 
@@ -144,6 +147,20 @@ export function recordRepositoryObjectCacheDetail(detail: {
     }
     if (typeof detail.referenceSupplied === "boolean") {
       span?.setAttribute(EXECUTION_PREPARATION_SPAN_ATTRS.repositoryCacheReferenceSupplied, detail.referenceSupplied);
+    }
+  } catch {}
+}
+
+export function recordConnectionCatalogCounts(catalogEntryCount: number, connectionCount: number): void {
+  const owned = ownership.getStore();
+  if (!endpointEnabled() || owned?.phase !== "connectors.discovery.connections.transaction" || !owned.span || owned.ended) return;
+  try {
+    const span = owned.span;
+    if (Number.isSafeInteger(catalogEntryCount) && catalogEntryCount >= 0) {
+      span.setAttribute(EXECUTION_PREPARATION_SPAN_ATTRS.catalogEntryCount, catalogEntryCount);
+    }
+    if (Number.isSafeInteger(connectionCount) && connectionCount >= 0) {
+      span.setAttribute(EXECUTION_PREPARATION_SPAN_ATTRS.connectionCount, connectionCount);
     }
   } catch {}
 }
@@ -209,10 +226,10 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
 
 function measureTraced<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context, recordRunId?: string): Promise<T> {
   let operation: Promise<T> | undefined;
-  const run = (span?: { setStatus(status: { code: number }): void; end(): void }, parent?: Context) => {
+  const run = (span?: Span, parent?: Context) => {
     if (operation) return operation;
     const previous = ownership.getStore();
-    const owned: RunScope = { runId, phase: name,
+    const owned: RunScope = { runId, phase: name, span,
       parent: parent ?? (!independent && previous?.runId === runId && !previous.ended ? previous.parent : undefined),
       ended: false,
       details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>(),

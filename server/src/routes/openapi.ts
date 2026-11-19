@@ -4509,10 +4509,13 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues/summaries",
   tags: ["issues"],
   summary: "Get authorized recent-task summaries",
-  description: "Accepts only the ids query parameter: one to fifty comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. This private, no-store read excludes full task and workspace enrichment.",
+  description: "Accepts one to fifty comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. With navigation=true, board viewers receive personal navigation state, including whether each task is archived for them. This private, no-store read excludes full task and workspace enrichment.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ ids: z.string().min(1).describe("One to fifty comma-separated task UUIDs; repeated query parameters are rejected") }),
+    query: z.object({
+      ids: z.string().min(1).describe("One to fifty comma-separated task UUIDs. Repeated query parameters are rejected."),
+      navigation: z.literal("true").optional(),
+    }),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
@@ -12741,6 +12744,17 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/machine-sign-in",
   tags: ["tool-access"],
   summary: "Read a connection's machine sign-in settings (no secret values)",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/aws-setup",
+  tags: ["tool-access"],
+  summary: "Read what to configure in AWS for an AWS role connection",
+  description: "Returns the issuer, audience, connection subject, trust policy and a CloudFormation template for this connection. No secret values. Optional query `accessLevel` (`read_only` or `full`) sets up for an access level not saved yet. 422 when the connection does not use an AWS role.",
   responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
 });
 
