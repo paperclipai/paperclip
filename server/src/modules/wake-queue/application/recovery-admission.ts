@@ -1,4 +1,5 @@
 import type { ExecutionBlocker } from "@paperclipai/shared";
+import type { createWakeRecoveryDeferral } from "./recovery-deferral.js";
 
 type ContinuationWait = { reason: string; message: string };
 type AdmissionBlocker = Pick<ExecutionBlocker, "recoveryActionId" | "cause" | "nextAction" | "runId">;
@@ -19,10 +20,11 @@ export type WakeRecoveryAdmissionStore<ExplicitInput, ExplicitResult> = {
     Promise<ExplicitResult | null>;
 };
 
-export function createWakeRecoveryAdmission<ExplicitInput extends ExplicitContinuationIntent, ExplicitResult, Busy, Fresh>(
+export function createWakeRecoveryAdmission<ExplicitInput extends ExplicitContinuationIntent, ExplicitResult, Busy, Fresh, Publication>(
   store: WakeRecoveryAdmissionStore<ExplicitInput, ExplicitResult>,
   admitBusy: Busy,
   admitFresh: Fresh,
+  defer: ReturnType<typeof createWakeRecoveryDeferral<Publication>>,
 ) {
   return async function prepareRecovery(
     input: ExplicitInput & WakeRecoveryReadInput & {
@@ -36,6 +38,7 @@ export function createWakeRecoveryAdmission<ExplicitInput extends ExplicitContin
     return {
       blocker,
       ownsReconstruction,
+      defer,
       async checkBusyAdmission() {
         let wait: ContinuationWait | undefined;
         const onBlocked = (reason: string, message: string) => { wait = { reason, message }; };

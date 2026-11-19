@@ -4019,49 +4019,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           ) => {
             if (caseRequest) waitForCaseAdmission("execution_reconciliation_required", executionBlocker.nextAction);
             opts.issueStateGuard?.onExecutionDeferred?.(executionBlocker.cause);
-            const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
-            if (executionWaitRequestId) {
-              await writeDeferredExecutionWait(tx as unknown as Db, { companyId: agent.companyId,
-                requestId: executionWaitRequestId }, condition, { replace: true, publications: issueActivityPublications });
-              return { kind: "deferred" as const, admitted: true };
-            }
-            if (durableRequest || wakeCommentId ||
-                hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
-                readNonEmptyString(enrichedContextSnapshot.nativeStatusWakeIntentId)) {
-              await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
-              await tx.insert(agentWakeupRequests).values({
-                ...durableReceiptFields,
-                companyId: agent.companyId, agentId, source, triggerDetail, reason,
-                payload: withQueuedCommentIdsInWakePayload({
-                  ...payload,
-                  issueId: issue.id,
-                  [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
-                  executionWait: condition,
-                }, [...new Set([
-                  ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
-                  ...(wakeCommentId ? [wakeCommentId] : []),
-                ])]),
-                status: "deferred_issue_execution",
+            return recovery.defer({
+              existingRequestId: executionWaitRequestId,
+              commentId: wakeCommentId,
+              contextSnapshot: enrichedContextSnapshot,
+              condition: { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait },
+              nextAction: executionBlocker.nextAction,
+              coalesce: coalesceExecutionWait,
+              publications: issueActivityPublications,
+              request: {
+                ...durableReceiptFields, agentId, source, triggerDetail, reason, payload,
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null,
                 idempotencyKey: opts.idempotencyKey ?? null,
-              });
-            } else {
-              await recordExecutionWait(tx as unknown as Db, {
-                issueId: issue.id, condition, coalesce: coalesceExecutionWait,
-                request: {
-                  ...durableReceiptFields,
-                  companyId: agent.companyId, agentId, source, triggerDetail,
-                  reason: "execution_reconciliation_required",
-                  error: executionBlocker.nextAction,
-                  payload,
-                  requestedByActorType: opts.requestedByActorType ?? null,
-                  requestedByActorId: opts.requestedByActorId ?? null,
-                  idempotencyKey: opts.idempotencyKey ?? null,
-                },
-              });
-            }
-            return { kind: "deferred" as const, admitted: true };
+              },
+            });
           };
           const explicitContinuationRunId = randomUUID();
           const recovery = await prepareRecovery({

@@ -325,7 +325,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(await db.select().from(heartbeatRuns)).toHaveLength(kind === "fresh" ? 0 : 1);
   });
 
-  it("defers an ordinary user wake behind a recovery hold committed while acquiring the task lock", async () => {
+  it("delivers a comment saved behind a concurrent recovery hold to one run on repeated retry", async () => {
     const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
     await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
       .where(eq(issues.id, issue.id));
@@ -335,7 +335,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const actionId = randomUUID();
     function enqueue() {
       return queue.enqueueWakeup(agent.id, {
-        source: "assignment", triggerDetail: "system", reason: "issue_commented",
+        source: "automation", triggerDetail: "system", reason: "issue_commented",
         requestedByActorType: "user", requestedByActorId: user.id, payload: { issueId: issue.id, commentId: comment.id },
       });
     }
@@ -364,11 +364,28 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
 
     await expect(pending).resolves.toBeNull();
     expect(await db.select().from(heartbeatRuns)).toEqual([]);
-    expect(await db.select().from(agentWakeupRequests)).toEqual([
+    const receipts = await db.select().from(agentWakeupRequests);
+    expect(receipts).toEqual([
       expect.objectContaining({ status: "deferred_issue_execution", runId: null,
         payload: expect.objectContaining({ issueId: issue.id, commentId: comment.id,
           executionWait: expect.objectContaining({ recoveryActionId: actionId }) }) }),
     ]);
+    const [receipt] = receipts;
+    const controlDeps = runControlCallbacks(db);
+    vi.mocked(controlDeps.enqueueWakeup).mockImplementation(queue.enqueueWakeup);
+    const control = createHeartbeatRunControl(db, controlDeps);
+
+    deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
+    await control.resumeSavedLegacyComments(company.id, receipt.id);
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+
+    await db.update(issueRecoveryActions).set({ evidence: {} }).where(eq(issueRecoveryActions.id, actionId));
+    deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
+    await control.resumeSavedLegacyComments(company.id, receipt.id);
+    await control.resumeSavedLegacyComments(company.id, receipt.id);
+    expect(await db.select().from(heartbeatRuns)).toEqual([expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ wakeCommentIds: [comment.id] }),
+    })]);
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
