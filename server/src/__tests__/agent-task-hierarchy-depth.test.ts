@@ -7,7 +7,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
-import { planIssueParentChange, resolveNewTaskParent } from "../services/issue-hierarchy.ts";
+import {
+  PARENT_WRITE_VALIDATION_DEPTH_CAP,
+  loadParentChainBounded,
+  planIssueParentChange,
+  resolveNewTaskParent,
+} from "../services/issue-hierarchy.ts";
 import { resolveIssueCreationSource } from "../services/issue-creation-source.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -568,6 +573,93 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
         .rejects.toMatchObject({ status: 404 });
       const [row] = await db.select({ parentId: issues.parentId }).from(issues).where(eq(issues.id, id));
       expect(row!.parentId).toBeNull();
+    });
+  });
+
+  describe("bounded parent-write validation", () => {
+    // A legacy/board chain deeper than the validation window.
+    async function seedDeepChain(companyId: string, depth: number) {
+      const rootId = await seedIssue(companyId, { identifier: `DEEP-ROOT-${randomUUID().slice(0, 6)}` });
+      const ids = [rootId];
+      let lastId = rootId;
+      for (let level = 1; level < depth; level += 1) {
+        lastId = await seedIssue(companyId, { parentId: lastId });
+        ids.push(lastId);
+      }
+      return { rootId, ids, deepestId: lastId };
+    }
+
+    it("caps the validation walk on a deep acyclic chain", async () => {
+      const { companyId } = await seedCompany();
+      const { deepestId } = await seedDeepChain(companyId, PARENT_WRITE_VALIDATION_DEPTH_CAP + 6);
+
+      const chain = await loadParentChainBounded(db, companyId, deepestId);
+
+      expect(chain).toHaveLength(PARENT_WRITE_VALIDATION_DEPTH_CAP);
+      expect(chain[0]!.id).toBe(deepestId);
+      expect(chain[chain.length - 1]!.parentId).not.toBeNull();
+    });
+
+    it("keeps allowing repeated board writes on a deep acyclic chain", async () => {
+      const { companyId } = await seedCompany();
+      const { deepestId } = await seedDeepChain(companyId, PARENT_WRITE_VALIDATION_DEPTH_CAP + 6);
+      const moverId = await seedIssue(companyId);
+
+      const plan = await planIssueParentChange(db, { id: moverId, companyId, parentId: null }, deepestId, "allow_nested");
+
+      expect(plan).toEqual({ parentId: deepestId, adjustment: null });
+    });
+
+    it("rejects re-affirming an ancestor past the validation window", async () => {
+      const { companyId } = await seedCompany();
+      const { ids } = await seedDeepChain(companyId, PARENT_WRITE_VALIDATION_DEPTH_CAP + 6);
+
+      // ids[3] sits beyond the window's reach from the deepest issue, so only
+      // the full fallback walk can see the cycle it would close. Running the
+      // plan inside a transaction mirrors the runner's relock path: the
+      // fallback's savepoint and statement timeout must nest cleanly.
+      await db.transaction(async (tx) => {
+        await expect(planIssueParentChange(tx, { id: ids[3]!, companyId, parentId: null }, ids[ids.length - 1]!, "allow_nested"))
+          .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+      });
+    });
+
+    it("rejects re-affirming an ancestor inside the validation window", async () => {
+      const { companyId } = await seedCompany();
+      const { ids } = await seedDeepChain(companyId, 40);
+
+      await expect(planIssueParentChange(db, { id: ids[3]!, companyId, parentId: null }, ids[30]!))
+        .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+    });
+
+    it("allows writes under a parent whose window loops without the moving issue", async () => {
+      const { companyId } = await seedCompany();
+      const { ids } = await seedDeepChain(companyId, 40);
+      // Corruption elsewhere in the tree: a forward edge closes a cycle among
+      // ids[5]..ids[20]. The window walks into the loop, sees the repeat, and
+      // decides without a full walk; the mover is not in the chain, so the
+      // write under ids[30] is allowed exactly as before the cap.
+      await db.update(issues).set({ parentId: ids[20]! }).where(eq(issues.id, ids[5]!));
+      const moverId = await seedIssue(companyId);
+
+      const plan = await planIssueParentChange(db, { id: moverId, companyId, parentId: null }, ids[30]!, "allow_nested");
+
+      expect(plan).toEqual({ parentId: ids[30], adjustment: null });
+    });
+
+    it("still places an agent move beside a deep legacy subtree at the real root", async () => {
+      const { companyId } = await seedCompany();
+      const { rootId, deepestId } = await seedDeepChain(companyId, PARENT_WRITE_VALIDATION_DEPTH_CAP + 6);
+      const moverId = await seedIssue(companyId);
+
+      const updated = await issueService(db).update(moverId, { parentId: deepestId, expectedParentId: rootId });
+
+      expect(updated?.parentId).toBe(rootId);
+      expect(updated?.parentAdjusted).toMatchObject({
+        reason: "max_agent_depth",
+        applied: true,
+        effectiveParent: { id: rootId },
+      });
     });
   });
 });
