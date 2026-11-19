@@ -437,7 +437,7 @@ export async function createAssignedMcpTools(input: {
         parameters = object(args.arguments);
         const resolved = resolveAssignedName(args.name, "name");
         if (!resolved) {
-          const authorized = (await authorizedTools(currentWorkMode)).map(([candidate]) => candidate);
+          const authorized = await authorizedTools(currentWorkMode).then(entries => entries.map(([candidate]) => candidate), () => []);
           throw new Error(`assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools.${closestNames(args.name, authorized)} Search assigned tools again and use the returned name.`);
         }
         name = resolved;

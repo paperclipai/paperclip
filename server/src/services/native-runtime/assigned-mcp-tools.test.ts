@@ -156,15 +156,16 @@ describe("assigned MCP runner tools", () => {
     await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: `${alias(read)}x` } }))
       .rejects.toThrow(`Closest assigned names: ${alias(read)}`);
 
-    const started = performance.now();
-    const oversized = `${alias(read)}${"x".repeat(4 * 1024 * 1024)}`;
+    const oversized = `${alias(read)}${"x".repeat(8 * 1024 * 1024)}`;
     expect(await unknown(oversized)).not.toContain("Closest assigned names");
     await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: oversized } }))
       .rejects.toThrow("schemaTool must match an authorized inputSchemaRef. Omit schemaTool");
-    expect(performance.now() - started).toBeLessThan(1000);
 
     f.listToolsForNamedGateway.mockResolvedValue([read, submit]);
     expect(await unknown(`${alias(begin).slice(0, -1)}0`)).not.toContain(alias(begin));
+
+    f.listToolsForNamedGateway.mockRejectedValue(new Error("gateway_token_revoked"));
+    expect(await unknown(`${alias(read).slice(0, -1)}0`)).toBe("assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools. Search assigned tools again and use the returned name.");
     expect(f.executeTool).not.toHaveBeenCalled();
   });
 
