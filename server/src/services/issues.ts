@@ -6130,13 +6130,14 @@ async function listIssueBlockedInboxAttentionMap(
     dbOrTx
       .select({
         ...blockedInboxGraphIssueSelect,
+        // Keep the outer column qualified in the single-table projection.
         incomingBlockerIds: sql<string[]>`ARRAY(
           SELECT ${issueRelations.issueId}
           FROM ${issueRelations}
           WHERE ${issueRelations.companyId} = ${companyId}
             AND ${issueRelations.type} = 'blocks'
-            AND ${issueRelations.relatedIssueId} = ${issues.id}
-        )`.mapWith((value: string[]) => value),
+            AND ${issueRelations.relatedIssueId} = "issues"."id"
+        )`,
       })
       .from(issues)
       .where(blockedInboxGraphScope(companyId, rowIssueIds, [...recoveryReferenceIds])),
