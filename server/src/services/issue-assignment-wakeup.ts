@@ -32,6 +32,7 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   requestedByActorCompanyId?: string;
+  responsibleUserId?: string | null;
   taskKey?: string | null;
   /** Latest issue comment that caused this wakeup. Included in both payload
    * and context so the heartbeat can build the exact turn that was requested. */
@@ -70,6 +71,7 @@ export function queueIssueAssignmentWakeup(input: {
       contextSnapshot: {
         issueId: input.issue.id,
         source: input.contextSource,
+        ...(input.responsibleUserId ? { responsibleUserId: input.responsibleUserId } : {}),
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
         ...(input.wakeCommentIds?.length ? { wakeCommentIds: input.wakeCommentIds } : {}),

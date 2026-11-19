@@ -131,7 +131,14 @@ describe("auth routes", () => {
       environment: "staging",
       stackId: "stack-1",
       replayEnabled: true,
+      consentRequired: null,
     });
+
+    vi.stubEnv("PAPERCLIP_POSTHOG_COUNTRY_HEADER", "cf-ipcountry");
+    const eu = await request(createApp(actor, baseUser)).get("/api/auth/get-session").set("CF-IPCountry", "FR");
+    expect(eu.body.browserAnalytics.consentRequired).toBe(true);
+    const us = await request(createApp(actor, baseUser)).get("/api/auth/get-session").set("CF-IPCountry", "US");
+    expect(us.body.browserAnalytics.consentRequired).toBe(false);
   });
 
   it("preserves the session when optional navigation bootstrap cannot load", async () => {

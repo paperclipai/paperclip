@@ -79,7 +79,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerPackage": "@agentclientprotocol/claude-agent-acp",
     "agentServerVersion": "0.73.0",
     "agentRuntimePackage": "@anthropic-ai/claude-agent-sdk",
-    "agentRuntimeVersion": "0.3.286",
+    "agentRuntimeVersion": "0.3.328",
     "commandDigest": "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
     "permissionPolicy": "interactive"
   },
@@ -92,7 +92,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerPackage": "@agentclientprotocol/codex-acp",
     "agentServerVersion": "1.6.2",
     "agentRuntimePackage": "@openai/codex",
-    "agentRuntimeVersion": "0.160.0",
+    "agentRuntimeVersion": "0.170.0",
     "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
     "permissionPolicy": "interactive"
   },

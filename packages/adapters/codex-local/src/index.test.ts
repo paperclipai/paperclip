@@ -19,6 +19,9 @@ describe("codex model CLI floors", () => {
     expect(minimumCodexCliVersionForModel(" gpt-6.1-sol ")).toBe("0.159.0");
     expect(minimumCodexCliVersionForModel("gpt-6-sol")).toBe("0.157.0");
     expect(minimumCodexCliVersionForModel("gpt-6-luna")).toBe("0.157.0");
+    // 0.169.1 is the first stable release whose bundled catalog lists GPT-6.2.
+    expect(minimumCodexCliVersionForModel("gpt-6.2-sol")).toBe("0.169.1");
+    expect(minimumCodexCliVersionForModel("gpt-6.2-astra")).toBe("0.169.1");
   });
 
   it("gates the default model on its CLI floor and keeps the compatibility fallback floor-free", () => {
@@ -83,7 +86,9 @@ describe("codex local adapter metadata", () => {
     expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-6.1-sol");
     expect(CODEX_LOCAL_COMPATIBILITY_FALLBACK_MODEL).toBe("gpt-5.6-sol");
     // Ordered like the ChatGPT app: newest version first, then by capability within a version (#14878).
-    expect(modelIds.slice(0, 13)).toEqual([
+    expect(modelIds.slice(0, 15)).toEqual([
+      "gpt-6.2-sol",
+      "gpt-6.2-astra",
       "gpt-6.1-sol",
       "gpt-6-astra",
       "gpt-6-sol",
@@ -103,11 +108,13 @@ describe("codex local adapter metadata", () => {
     expect(isCodexLocalFastModeSupported("gpt-6-astra")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6.1-sol")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-sol")).toBe(true);
+    expect(isCodexLocalFastModeSupported("gpt-6.2-sol")).toBe(true);
+    expect(isCodexLocalFastModeSupported("gpt-6.2-astra")).toBe(true);
     expect(modelIds).not.toContain("gpt-5.3-codex");
     expect(modelIds).not.toContain("gpt-5.3-codex-spark");
   });
 
-  it.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
+  it.each(["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
     expect(codexLocalReasoningEffortsForModel(model)).toEqual([
       "low",
       "medium",

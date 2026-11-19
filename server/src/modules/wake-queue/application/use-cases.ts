@@ -1,4 +1,5 @@
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
+import { DEFERRED_WAKE_CONTEXT_KEY } from "../../../lib/queued-comment-context.js";
 import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun, withMergedWakeReasons } from "../domain/context.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../domain/policy.js";
 import {
@@ -25,7 +26,6 @@ import type {
   RecoveryEscalationPort,
   ReleaseTransactionResult,
   RunSnapshot,
-  TransactionScope,
   WakeAdmissionActiveExecutionRun,
   WakeAdmissionHeartbeatHelpers,
   WakeAdmissionReader,
@@ -35,8 +35,6 @@ import type {
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
-
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
 const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([
@@ -869,7 +867,6 @@ export function createAdmitWakeBehindIssueExecution(deps: {
   helpers: WakeAdmissionHeartbeatHelpers;
 }) {
   return async function admitWakeBehindIssueExecution(
-    scope: TransactionScope,
     input: AdmitWakeBehindIssueExecutionInput,
   ): Promise<AdmitWakeBehindIssueExecutionResult> {
     const manualUserWakeActorId = input.payload?.manualUserWake === true
@@ -878,7 +875,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         (input.requestedByActorType !== "user" || !manualUserWakeActorId)) {
       throw new Error("wake-queue: manual wake requires an authenticated user");
     }
-    const isSameExecutionAgent = await deps.reader.isSameExecutionAgent(scope, {
+    const isSameExecutionAgent = await deps.reader.isSameExecutionAgent({
       companyId: input.companyId,
       activeExecutionRunAgentId: input.activeExecutionRun.agentId,
       issueExecutionAgentNameKey: input.issueExecutionAgentNameKey,
@@ -910,7 +907,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
 
     const sameDurableActor =
       !input.durableReceipt ||
-      (await deps.reader.matchesActiveWakeActor(scope, {
+      (await deps.reader.matchesActiveWakeActor({
         companyId: input.companyId,
         wakeupRequestId: availableActiveExecutionRun?.wakeupRequestId ?? null,
         requestedByActorType: input.requestedByActorType,
@@ -941,7 +938,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
             target.status === "queued" || target.status === "scheduled_retry",
         },
       );
-      const run = await deps.writer.coalesceIntoActiveExecutionRun(scope, {
+      const run = await deps.writer.coalesceIntoActiveExecutionRun({
         companyId: input.companyId,
         activeExecutionRunId: target.id,
         activeExecutionRunStatus: target.status,
@@ -963,7 +960,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     const existingDeferred =
       (interactionReceipt || input.allowRunCoalescing === false)
         ? null
-        : await deps.reader.findExistingDeferredWake(scope, {
+        : await deps.reader.findExistingDeferredWake({
             companyId: input.companyId,
             agentId: input.agentId,
             issueId: input.issueId,
@@ -996,7 +993,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         issueId: input.issueId,
         [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
       };
-      await deps.writer.mergeIntoExistingDeferredWake(scope, {
+      await deps.writer.mergeIntoExistingDeferredWake({
         companyId: input.companyId,
         existingDeferredWakeId: existingDeferred.id,
         mergedPayload,
@@ -1032,7 +1029,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       issueId: input.issueId,
       [DEFERRED_WAKE_CONTEXT_KEY]: input.contextSnapshot,
     };
-    await deps.writer.insertNewDeferredWake(scope, {
+    await deps.writer.insertNewDeferredWake({
       companyId: input.companyId,
       agentId: input.agentId,
       source: input.source,

@@ -62,9 +62,9 @@ What option A gives up compared with the proxy, and how we cover it:
   one AWS account and role. Companies with several accounts add several
   connections.
 - **Default region metadata**: the proxy injects `AWS_REGION` into requests.
-  The spike checks whether we can send the same metadata directly. Otherwise
-  the region goes in the connection's agent instructions, and agents pass it
-  per call.
+  Not needed. The spike showed that `run_script` takes the region on each
+  `call_boto3` call. The connection's agent instructions name the default
+  region.
 
 ## Design
 
@@ -163,11 +163,16 @@ Minting then works as follows:
    - Session name: `paperclip-<connection name>`, so CloudTrail shows which
      connection acted.
    - Duration: one hour.
-   - Read-scope tokens add the AWS managed `ReadOnlyAccess` policy as a
-     session policy (`PolicyArns`). The session can then do at most what the
-     role allows and what read-only allows.
-   - With no role ARN, the dedicated IAM user's key is used directly. A
-     read-only scope still applies, via a `GetFederationToken` session policy.
+   - Read-scope tokens add two AWS managed policies as session policies
+     (`PolicyArns`): `ReadOnlyAccess` and `AWSMCPSignInOAuthAccessPolicy`.
+     The session can then do at most what the role allows and what those
+     allow. The spike showed that the second one is required: with
+     `ReadOnlyAccess` alone, the token exchange in step 2 is refused.
+   - With no role ARN, the dedicated IAM user's key is used directly.
+     Read-scope tokens call `GetFederationToken` with the same two session
+     policies: `ReadOnlyAccess` and `AWSMCPSignInOAuthAccessPolicy`. The IAM
+     user's own policy must allow `sts:GetFederationToken` and the sign-in
+     action. The setup template attaches `AWSMCPSignInOAuthAccessPolicy`.
 2. Sign-in `CreateOAuth2TokenWithIAM`:
    - Grant type is `client_credentials`.
    - Resource is `aws-mcp.amazonaws.com`.
@@ -182,9 +187,13 @@ Agents never receive the token. They see AWS tools the way they see any
 connector's tools, through the control-plane MCP endpoint they're already
 connected to:
 
-1. The agent calls the `aws___call_aws` tool with the operation it wants
-   (an AWS CLI-style command and its parameters), or calls `aws___run_script`
-   with a short Python script that chains several calls.
+1. The agent calls `aws___run_script` with a short Python script. Inside it,
+   `await call_boto3(service_name=..., operation_name=..., region_name=..., params=...)`
+   makes one AWS API call; `operation_name` is the PascalCase API name, such as
+   `ListBuckets`. A script can chain and parallelize calls. The server in the
+   spike account did not offer `aws___call_aws`, so the design does not rely on
+   it. The region is passed per call, so no default-region metadata is needed;
+   the connection's agent instructions name the default region.
 2. The gateway on the control plane checks policy, attaches the connection's
    bearer token, and forwards the call to AWS's hosted MCP server.
 3. **AWS runs the operation on its side.** That includes `run_script`, which
@@ -201,10 +210,10 @@ need the CLI is option D, which is a later opt-in.
 - Tools are discovered with a minted token and published to the catalog as
   for any remote MCP connector.
 - Reviewed risk:
-  - `aws___call_aws` and `aws___run_script` are writes.
+  - `aws___run_script` is a write. It is the only tool that calls AWS APIs.
   - Documentation, skill, region and task tools are reads.
   - `aws___get_presigned_url` is a write, because it can grant upload access.
-- **Read-only agents keep `aws___call_aws`, called with a read-scope token.**
+- **Read-only agents keep `aws___run_script`, called with a read-scope token.**
   AWS then refuses anything that isn't read-only, which beats hiding the
   main tool. Writes need an agent granted write scope, plus the normal approval
   policy.
@@ -223,7 +232,8 @@ need the CLI is option D, which is a later opt-in.
      the permissions the customer picks (read-only to start, or their own
      policy).
    - The **Access key** choice's template creates a dedicated IAM user with
-     the same policies.
+     the same policies, plus an inline policy that allows
+     `sts:GetFederationToken`, so the user can mint read-scope tokens.
 2. The customer pastes the role ARN (or the key pair) and picks an endpoint
    region from the 8
    AWS publishes (us-east-1, us-west-2, eu-west-1, eu-west-2, eu-central-1,
@@ -236,18 +246,65 @@ need the CLI is option D, which is a later opt-in.
 
 An optional second method, "Sign in with AWS as yourself" (a personal grant),
 may need no code: the hosted server supports standard MCP OAuth with dynamic
-client registration. Verify it in the spike.
+client registration. Deferred: it is not part of v1, and the spike did not
+test it. Verify it when the personal-grant method is built.
 
 ## Phases (one PR each)
 
 | # | Deliverable | Proof |
 |---|---|---|
-| 0 | Spike with a test AWS account (`~/.secrets`): assume a role, exchange for a token, list and call tools from Node. Check that a `ReadOnlyAccess` session policy carries into the token (through `AssumeRoleWithWebIdentity`, `AssumeRole` and `GetFederationToken`); that AWS accepts a JWT issued by a tunnelled local issuer URL, what the call inputs of `aws___call_aws` look like, whether region metadata can be sent, latency of the mint and the first call, and that the DCR OAuth method works. | Findings recorded in this doc |
-| 1 | Minted-credential source in the gateway: minter interface, cache, single retry on 401, health reasons. | Red/green tests: cache hit and expiry, a 401 leads to one re-mint, mint failure sets health, nothing persisted or logged |
-| 1b | Per-company workload-identity issuer (`/oidc/companies/<companyId>`): signing key stored in the database, encrypted with the vault master key; discovery and JWKS routes, key rotation, JWT signing for a connection. Built in [the issuer PR](./2026-11-17-workload-identity-issuer.md). Built generically, because GCP and Azure accept the same kind of federation. | Red/green tests; AWS accepts a token from a staging instance |
-| 2 | AWS minter (role via OIDC, and access key), app definition, setup screen, CloudFormation template, reviewed tools, and `doc/connections/AWS.md` following the connector playbook. | Real-provider proof: a read-only agent's write is refused by AWS; a write agent's write succeeds after approval |
+| 0 | **Done 2026-11-18. Results are in "Spike findings".** Verified: AWS accepts a JWT from a tunnelled Paperclip issuer; connection isolation; the token exchange; tool listing; reads and writes through `aws___run_script`; read-only session policies through `AssumeRoleWithWebIdentity` and `GetFederationToken`; the region is passed per call; timings. Resolved: the server offers no `aws___call_aws`. **Not tested, deferred:** DCR OAuth sign-in as a person, and `AssumeRole` from an access key. | Findings recorded in this doc |
+| 1 | **Built.** Methods can declare `credentialMinter`. The gateway and health checks mint the `Authorization` header at call time and share one in-memory cache per connection and grant. A 401 mints again without replaying the call. AWS errors map to plain health reasons. See `doc/connections/AWS.md`. | Red/green unit and integration tests; a real-AWS run of the integrated path |
+| 1b | **Built** (paperclipai/paperclip#22083). Per-company workload-identity issuer (`/oidc/companies/<companyId>`): signing key stored in the database, encrypted with the vault master key; discovery and JWKS routes, key rotation, JWT signing for a connection. | Red/green tests; AWS accepted its tokens in the spike and in the integrated run |
+| 2 | **Partly built.** Done: the AWS minter (role and access key), the app definition behind `enableAwsConnector`, reviewed tools, artwork, and `doc/connections/AWS.md`. Setup uses save-as-draft, then resume, because the role must trust an existing connection. Saving the draft publishes the issuer. **Next:** a guided setup screen showing the issuer and subject, and the CloudFormation template. | Real-AWS run: both methods listed 8 tools; a read succeeded and AWS refused a write |
 | 3 | Paperclip Cloud staging verification. | An AWS task completed on a staging stack |
 | Later | Option D (sandbox credentials for Terraform/CDK). Further minters as connectors need them, such as GCP service-account impersonation or Azure client credentials. Each needs its own check of what the provider supports. | Separate plans |
+
+## Spike findings (2026-11-18)
+
+The spike ran against the Paperclip dev AWS account (`paperclip-dev` profile).
+It used the merged issuer code (paperclipai/paperclip#22083) served over a
+temporary public HTTPS tunnel. All spike resources were deleted afterwards.
+
+| Check | Result |
+|---|---|
+| AWS accepts a Paperclip-signed connection token (`AssumeRoleWithWebIdentity`) | Yes. The role session appears as `assumed-role/<role>/<session name>`. |
+| Another connection's token assumes this connection's role | No: `AccessDenied`. The `sub` condition isolates connections. |
+| Role credentials to an AWS MCP bearer token (`CreateOAuth2TokenWithIAM`, `client_credentials`, resource `aws-mcp.amazonaws.com`) | Yes. The token lasts 3,599 seconds and has no refresh token. |
+| MCP `initialize` and `tools/list` with that bearer | Yes. 8 tools. Writes: `aws___run_script`, `aws___get_presigned_url`. Reads: `aws___search_documentation`, `aws___read_documentation`, `aws___retrieve_skill`, `aws___list_regions`, `aws___get_regional_availability`, `aws___get_tasks`. **No `aws___call_aws`.** |
+| Read through `run_script` (`sts:GetCallerIdentity`) | Success |
+| Write through `run_script` (`s3:CreateBucket`) | Success with a full-scope token |
+| Read-only session policy | `ListBuckets` succeeds. `DeleteBucket` is refused by AWS: "no session policy allows the s3:DeleteBucket action". |
+| Read-only session policy with only `ReadOnlyAccess` | The token exchange fails: `signin:CreateOAuth2Token` is not allowed. Add `AWSMCPSignInOAuthAccessPolicy` too. |
+| Access-key method: the key directly, then the token exchange | Yes |
+| Access-key method: `GetFederationToken` with read-only session policies, then the token exchange | Yes |
+| Paperclip Cloud front door forwards the issuer paths | Yes, after the Paperclip Cloud gateway added `GET`/`HEAD` on these two paths for a lowercase company UUID to its anonymous allowlist (2026-11-18). Staging returns the app's 404 for a company without a key, and other `/oidc` paths still get 401. |
+
+Timings (ms, from a laptop to us-east-1):
+
+| Step | Time |
+|---|---|
+| Sign the token | 17–43 |
+| `AssumeRoleWithWebIdentity` | 547–974 |
+| `CreateOAuth2TokenWithIAM` | 188–221 |
+| MCP `initialize` | 420–464 |
+| MCP `tools/list` | 352–400 |
+| First `run_script` call | 9,074 (sandbox cold start) |
+| Later `run_script` call | 1,907 |
+
+Implications for the build:
+- Cache the minted bearer per connection and scope for about 55 minutes.
+  Minting costs about 0.8 s and happens once an hour. Drop the cached entry
+  when the connection is disabled, deleted or edited, and when its grant or
+  scope changes. Look up the cache only after the gateway's per-call policy
+  check passes, so a downgraded agent never reuses a write-scope token.
+- `run_script` is the main tool, so a write tool does all real work. A
+  read-only scope must be enforced by AWS, with the session policy above, not
+  by hiding the tool.
+- The first `run_script` call in a session can take about 9 s. The gateway
+  timeout for this connector must allow for that.
+- Not tested: "sign in with AWS as yourself" (DCR OAuth). It needs a browser,
+  and it isn't part of v1.
 
 ## Success criteria
 
@@ -268,9 +325,11 @@ client registration. Verify it in the spike.
    **Decided: one issuer per company**
    (`https://<instance>/oidc/companies/<companyId>`), so a customer's identity
    provider trusts only their own company, even on a shared instance.
-2. **Read-only by AWS session policy** (recommended), rather than hiding the
-   write tools. It needs `PolicyArns` support carried into the token, which the
-   spike verifies.
+2. **Decided: read-only by AWS session policy**, rather than hiding the
+   write tools. The spike verified it through `AssumeRoleWithWebIdentity` and
+   `GetFederationToken`, with `ReadOnlyAccess` plus
+   `AWSMCPSignInOAuthAccessPolicy`. Not yet tested: `AssumeRole` from an
+   access key with a role ARN. Test it when that path is built.
 3. **Offer option D later** (credentials in the sandbox for infrastructure
    agents), or never.
 

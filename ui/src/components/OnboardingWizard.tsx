@@ -140,6 +140,7 @@ import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
+import { captureOnboardingStepCompleted, useOnboardingAnalytics } from "@/lib/analytics/onboarding-analytics";
 import {
   ArrowLeft,
   ArrowRight,
@@ -677,6 +678,11 @@ function OnboardingWizardInner({
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
       ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
   );
+  const onboardingAnalytics = useOnboardingAnalytics({
+    open: effectiveOnboardingOpen,
+    step,
+    connectOutcome: credentialMode === "api" ? "api_key" : "subscription",
+  });
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
@@ -829,6 +835,9 @@ function OnboardingWizardInner({
     if (initialStepRef.current && !resumesRouteDraft) {
       setStep(initialStepRef.current);
       setEntryStep(initialStepRef.current);
+    }
+    if (!previousRequest?.open) {
+      onboardingAnalytics.opened(initialStepRef.current && !resumesRouteDraft ? initialStepRef.current : step, step);
     }
     if (routeCompanyId) {
       // Claim ownership only when the route *introduces* a company. A route
@@ -1831,6 +1840,7 @@ function OnboardingWizardInner({
   }
 
   function handleClose() {
+    onboardingAnalytics.dismissed(step);
     reset();
     closeOnboarding();
     // On the /onboarding route the wizard is also kept open by the route
@@ -1884,9 +1894,12 @@ function OnboardingWizardInner({
     }
     setLoading(true);
     setError(null);
+    captureOnboardingStepCompleted("review");
     try {
       await agentChatsApi.startOnboarding(createdCompanyId, createdAgentId);
+      captureOnboardingStepCompleted("launch", "succeeded");
       if (!stillTheSameCompany(createdCompanyId)) return;
+      onboardingAnalytics.finished();
       const prefix = createdCompanyPrefix;
       const agentId = createdAgentId;
       // Route sync preserves this explicit destination over page memory.
@@ -1895,6 +1908,7 @@ function OnboardingWizardInner({
       closeOnboarding();
       navigate(`${prefix ? `/${prefix}` : ""}/chats/${agentId}`);
     } catch (err) {
+      captureOnboardingStepCompleted("launch", "failed");
       setError(err instanceof Error ? err.message : "Failed to open your chat. Please try again.");
     } finally {
       setLoading(false);

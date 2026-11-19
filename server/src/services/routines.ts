@@ -49,6 +49,7 @@ import type {
   RoutineTrigger,
   RoutineTriggerSecretMaterial,
   RoutineVariable,
+  RoutineWebhookDelivery,
   RunRoutine,
   UpdateRoutine,
   UpdateRoutineTrigger,
@@ -69,6 +70,7 @@ import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
@@ -88,6 +90,7 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
+import { planTriggerUpdate } from "./routine-trigger-update-plan.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -2016,6 +2019,7 @@ export function routineService(
           reason: "issue_assigned",
           mutation: "create",
           contextSource: "routine.dispatch",
+          responsibleUserId,
           requestedByActorType: interactionActorAgentId ? "agent" : input.actor?.userId ? "user" : input.source === "schedule" ? "system" : undefined,
           requestedByActorId: interactionActorAgentId ?? input.actor?.userId ?? null,
           requestedByActorCompanyId: interactionActorCompanyId,
@@ -2082,10 +2086,10 @@ export function routineService(
 
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
-      trackRoutineRun(telemetryClient, {
+      withTelemetryCompany(input.routine.companyId, () => trackRoutineRun(telemetryClient, {
         source: run.source,
         status: run.status,
-      });
+      }));
     }
 
     return run;
@@ -2792,11 +2796,21 @@ export function routineService(
         }
       }
 
+      if (patch.setupPending === true && existing.kind !== "webhook") {
+        throw unprocessable("Only webhooks can be tested");
+      }
+
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
         const current = await txDb
-          .select({ signingMode: routineTriggers.signingMode })
+          .select({
+            signingMode: routineTriggers.signingMode,
+            enabled: routineTriggers.enabled,
+            archived: routineTriggers.archived,
+            setupPending: routineTriggers.setupPending,
+            lastWebhookDelivery: routineTriggers.lastWebhookDelivery,
+          })
           .from(routineTriggers)
           .where(eq(routineTriggers.id, id))
           .then((rows) => rows[0] ?? null);
@@ -2804,13 +2818,29 @@ export function routineService(
         if (existing.kind === "webhook" && current.signingMode !== "none") {
           assertAgentWebhookAuthenticated(actor, patch.signingMode);
         }
+        const plan = planTriggerUpdate(patch, {
+          kind: existing.kind,
+          setupPending: current.setupPending,
+          lastWebhookDelivery: current.lastWebhookDelivery ?? null,
+        });
+        if (patch.setupPending === true) {
+          if (patch.archived ?? current.archived) throw conflict("This webhook was removed");
+          if (!(patch.enabled ?? current.enabled)) throw conflict("Turn the webhook on before testing it");
+          const [lockedRoutine] = await txDb
+            .select({ status: routines.status })
+            .from(routines)
+            .where(eq(routines.id, existing.routineId));
+          if (!lockedRoutine) throw notFound("Routine not found");
+          if (lockedRoutine.status === "archived") throw conflict("This routine is archived");
+        }
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [updated] = await txDb
           .update(routineTriggers)
           .set({
             label: patch.label === undefined ? existing.label : patch.label,
             enabled: patch.enabled ?? existing.enabled,
-            ...(patch.setupPending === false ? { setupPending: false } : {}),
+            ...(patch.setupPending !== undefined ? { setupPending: patch.setupPending } : {}),
+            ...(plan.restoredDelivery ? { lastWebhookDelivery: plan.restoredDelivery.value } : {}),
             ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
             cronExpression,
             timezone,
@@ -2830,9 +2860,7 @@ export function routineService(
           .where(eq(routines.id, existing.routineId))
           .then((rows) => rows[0] ?? null);
         if (!routine) throw notFound("Routine not found");
-        const appended = await appendRoutineRevision(txDb, routine, actor, {
-          changeSummary: `Updated ${existing.kind} trigger`,
-        });
+        const appended = await appendRoutineRevision(txDb, routine, actor, { changeSummary: plan.changeSummary });
         return { trigger: updated as RoutineTrigger, revision: appended.revision };
       });
       return result;
@@ -3170,7 +3198,12 @@ export function routineService(
         if (!trigger.enabled || (!trigger.setupPending && routine.status !== "active")) throw conflict("Routine trigger is not active");
         const recordDelivery = async (status: "received" | "rejected") => {
           const receivedAt = new Date().toISOString();
-          await txDb.update(routineTriggers).set({ lastWebhookDelivery: { status, receivedAt, test: trigger.setupPending } }).where(eq(routineTriggers.id, trigger.id));
+          const last = trigger.lastWebhookDelivery;
+          // While testing, carry the last real delivery so finishing the test can restore it.
+          const delivery: RoutineWebhookDelivery = trigger.setupPending
+            ? { status, receivedAt, test: true, previous: last ? (last.test ? last.previous ?? null : last) : null }
+            : { status, receivedAt, test: false };
+          await txDb.update(routineTriggers).set({ lastWebhookDelivery: delivery }).where(eq(routineTriggers.id, trigger.id));
           await logActivity(txDb, {
             companyId: routine.companyId, actorType: "system", actorId: "routine-webhook",
             action: trigger.setupPending ? `routine.webhook_test_${status}` : `routine.webhook_${status}`,

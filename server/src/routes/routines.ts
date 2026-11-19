@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { triggerUpdateActivityAction } from "../services/routine-trigger-update-plan.js";
 import { listProtectedEnvironmentKeyHolders, protectedEnvironmentKeyWarnings } from "../services/protected-environment-keys.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -561,7 +562,7 @@ export function routineRoutes(
       agentId: actor.agentId,
       runId: actor.runId,
       agentApiKeyId: actor.agentApiKeyId,
-      action: req.body.archived === true ? "routine.trigger_removed" : req.body.archived === false ? "routine.trigger_restored" : req.body.setupPending === false ? "routine.trigger_setup_finished" : "routine.trigger_updated",
+      action: triggerUpdateActivityAction(req.body),
       entityType: "routine",
       entityId: routine.id,
       details: { triggerId: trigger.id, kind: updated?.trigger.kind ?? trigger.kind },

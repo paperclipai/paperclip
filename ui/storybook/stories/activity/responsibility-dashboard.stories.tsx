@@ -11,6 +11,7 @@ import {
   dashboardFixtureAgents,
   dashboardStateFixture,
   dashboardVersionsFixture,
+  mixedAreaChanges,
 } from "../../fixtures/responsibility-dashboard";
 import { prepareFixtureApi } from "../../support/capability-gaps/api";
 
@@ -30,7 +31,7 @@ const meta = {
       implementation: "production",
       boundary: "fixtures",
       notes:
-        "Shipped Dashboard edit module of the Outline v2 view, behind the experimental enableResponsibilities flag: creating a dashboard with an agent when it is empty, the quiet Edit your dashboard row below the areas when it is not, a conversation in progress, proposed changes waiting (a first dashboard and a small edit) with each change droppable, the Undo line after applying, and the version list. States, proposals, versions and the agent are synthetic fixtures; starting, applying, declining and restoring are simulated, so these stories do not prove the server's guardrails, writer rule, atomic apply or what a restore puts back.",
+        "Shipped Dashboard edit module and DashboardChangesCard, behind the experimental enableResponsibilities flag. Proposals show area changes in their headings and explicitly labeled responsibility changes nested under their parent area. Covers first creation, existing and new areas together, an empty new area, rewords, moves, removals, drop/keep dependencies, narrow layout and the correction form. Also covers the edit-module entry states, Undo and versions. States, proposals, versions and the agent are synthetic fixtures; starting, applying, declining and restoring are simulated, so these stories do not prove server guardrails, the writer rule, atomic apply or what a restore puts back.",
     },
   },
   beforeEach: () =>
@@ -127,11 +128,54 @@ export const ProposalCreate: Story = {
   render: () => <ModuleIn state={dashboardStateFixture("create_proposal")} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    const fundraising = within(canvas.getByRole("region", { name: "Fundraising" }));
+    await expect(fundraising.getByRole("heading", { name: "Fundraising" })).toBeInTheDocument();
+    await expect(fundraising.getByText("New area", { exact: true })).toBeInTheDocument();
+    const responsibilities = within(fundraising.getByRole("list", { name: "Responsibilities in Fundraising" }));
+    await expect(responsibilities.getAllByText("New responsibility", { exact: true })).toHaveLength(2);
     const team = within(canvas.getByRole("region", { name: "Team" }));
     await userEvent.click(team.getAllByRole("button", { name: "Drop this change" })[0]!);
     await expect(team.getByText("Goes with Team")).toBeInTheDocument();
     await userEvent.click(team.getAllByRole("button", { name: "Keep" })[1]!);
     await expect(team.queryByText("Goes with Team")).not.toBeInTheDocument();
+  },
+};
+
+export const ProposalHierarchy: Story = {
+  name: "Proposal hierarchy: new areas and responsibilities",
+  render: () => <Column><DashboardChangesCard interaction={dashboardChangesFixture("create")} /></Column>,
+};
+
+export const ProposalHierarchyMobile: Story = {
+  name: "Proposal hierarchy: mobile",
+  render: () => <div className="max-w-sm"><DashboardChangesCard interaction={dashboardChangesFixture("create")} /></div>,
+};
+
+export const ProposalNewAndExistingAreas: Story = {
+  name: "Proposal hierarchy: new and existing areas",
+  render: () => {
+    const interaction = dashboardChangesFixture("edit");
+    return (
+      <Column>
+        <DashboardChangesCard interaction={{ ...interaction, payload: { ...interaction.payload, message: "Keep Product focused, and give quality a home of its own.", changes: mixedAreaChanges } }} />
+      </Column>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const product = within(canvas.getByRole("region", { name: "Product" }));
+    await expect(product.getByText("Existing area")).toBeInTheDocument();
+    await expect(product.getByText("New responsibility")).toBeInTheDocument();
+    const quality = within(canvas.getByRole("region", { name: "Quality & Reliability" }));
+    await expect(quality.getByText("New area")).toBeInTheDocument();
+    await expect(quality.getByText("Moved from Product")).toBeInTheDocument();
+    const community = within(canvas.getByRole("region", { name: "Community" }));
+    await expect(community.queryByRole("list")).not.toBeInTheDocument();
+    await userEvent.click(quality.getAllByRole("button", { name: "Drop this change" })[0]!);
+    await expect(quality.getAllByText("Goes with Quality & Reliability")).toHaveLength(2);
+    await userEvent.click(quality.getAllByRole("button", { name: "Keep" })[2]!);
+    await expect(quality.queryByText("Goes with Quality & Reliability")).not.toBeInTheDocument();
+    await userEvent.click(quality.getByRole("button", { name: "Keep" }));
   },
 };
 

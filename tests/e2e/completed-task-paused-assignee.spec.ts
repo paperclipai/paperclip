@@ -81,11 +81,12 @@ for (const classic of [false, true]) {
       await testInfo.attach(name, { path, contentType: "image/png" });
     };
     const observe = async (status: string, warningVisible: boolean) => {
-      await expect(page.getByText(task.title, { exact: true }).first()).toBeVisible();
+      const header = page.getByTestId("issue-detail-header");
+      await expect(header.getByRole("heading", { name: task.title, exact: true })).toBeVisible();
       const showProperties = page.getByRole("button", { name: "Show properties", exact: true });
       if (await showProperties.isVisible()) await showProperties.click();
       const statusLabel = status[0].toUpperCase() + status.slice(1);
-      await expect(page.getByTestId("issue-detail-header").getByRole("button", {
+      await expect(header.getByRole("button", {
         name: status === "blocked"
           ? /^Change status \(current: Blocked(?: · [^)]*)?\)$/
           : `Change status (current: ${statusLabel})`,
