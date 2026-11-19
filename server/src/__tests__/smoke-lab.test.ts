@@ -28,6 +28,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { smokeLabRoutes } from "../routes/smoke-lab.js";
 import { SMOKE_LAB_OAUTH_SCOPE } from "../services/smoke-lab.js";
 import { errorHandler } from "../middleware/index.js";
+import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_SMOKE_LAB_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -50,6 +51,7 @@ async function enableSmokeLab(db: TestDb) {
     target: [instanceSettings.singletonKey],
     set: { experimental: { enableSmokeLab: true }, updatedAt: new Date() },
   });
+  invalidateInstanceSettingsCache();
 }
 
 async function createAgent(db: TestDb, companyId: string) {

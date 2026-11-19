@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
   issueComments,
@@ -8,6 +8,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./status-arbiter.js";
+
+const NATIVE_CONVERSATION_TURN_FINISHED_REASON = "conversation_turn_finished";
 
 type Binding = {
   companyId: string;
@@ -82,4 +84,55 @@ export async function hasCommittedNativeResponseWakeWait(
     )
     .limit(1);
   return !unanswered;
+}
+
+export async function hasCommittedNativeConversationTurnWait(
+  db: Db,
+  binding: Binding,
+): Promise<boolean> {
+  const [wait] = await db
+    .select({ runId: heartbeatRuns.id })
+    .from(nativeRunFinalizations)
+    .innerJoin(
+      statusDecisions,
+      and(
+        eq(statusDecisions.id, nativeRunFinalizations.decisionId),
+        eq(statusDecisions.companyId, binding.companyId),
+        eq(statusDecisions.issueId, binding.issueId),
+        eq(statusDecisions.runId, binding.runId),
+        eq(statusDecisions.applicationState, "applied"),
+        eq(statusDecisions.reasonCode, NATIVE_CONVERSATION_TURN_FINISHED_REASON),
+      ),
+    )
+    .innerJoin(
+      heartbeatRuns,
+      and(
+        eq(heartbeatRuns.id, binding.runId),
+        eq(heartbeatRuns.companyId, binding.companyId),
+        eq(heartbeatRuns.agentId, binding.agentId),
+        eq(heartbeatRuns.nativeIssueId, binding.issueId),
+        eq(heartbeatRuns.runtimeMode, "native"),
+        eq(heartbeatRuns.status, "succeeded"),
+      ),
+    )
+    .innerJoin(
+      issues,
+      and(
+        eq(issues.id, binding.issueId),
+        eq(issues.companyId, binding.companyId),
+        eq(issues.conversationAgentId, binding.agentId),
+        isNotNull(issues.conversationUserId),
+        isNull(issues.hiddenAt),
+      ),
+    )
+    .where(
+      and(
+        eq(nativeRunFinalizations.companyId, binding.companyId),
+        eq(nativeRunFinalizations.issueId, binding.issueId),
+        eq(nativeRunFinalizations.runId, binding.runId),
+        eq(nativeRunFinalizations.phase, "committed"),
+      ),
+    )
+    .limit(1);
+  return Boolean(wait);
 }

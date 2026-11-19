@@ -576,6 +576,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       "provider_session_open_rejected",
       "provider_session_open_timeout",
       "local_runtime_api_listener_unavailable",
+      "runner_ingress_startup_failed",
     ];
     if (
       !coordinator ||

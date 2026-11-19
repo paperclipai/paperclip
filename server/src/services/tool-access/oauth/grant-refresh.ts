@@ -1,9 +1,10 @@
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
-import type { ActorInfo } from "../types.js";
+import type { ActorInfo, DbTransaction } from "../types.js";
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
-import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -15,9 +16,11 @@ import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, type P
 
 import { actorForSecret, type OAuthCredentialStore } from "./credential-store.js";
 import { withoutOAuthRefreshLease, type OAuthRefreshLeases } from "./refresh-leases.js";
-import { managedConnectorProfile, oauthGrantConfig, oauthGrantExpiresAtMs } from "./client-settings.js";
+import { managedConnectorProfile, managedConnectorSubject, oauthGrantConfig, oauthGrantExpiresAtMs } from "./client-settings.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { singleFlight } from "../single-flight.js";
+import { usesClientCredentials } from "./client-credentials.js";
+import { requireClientCredentials, type ClientCredentialsService } from "./client-credentials-service.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -31,9 +34,11 @@ type GrantRefreshDependencies = {
   currentCloudConnector: () => PaperclipCloudConnector | null;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   exchangeOAuthToken: ReturnType<typeof createOAuthClientProtocol>["exchangeOAuthToken"];
+  /** Absent only in narrow test harnesses that never use machine sign-in. */
+  requestClientCredentialsToken?: ClientCredentialsService["requestClientCredentialsToken"];
 };
 
-export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentCloudConnector, getConnectionRow, exchangeOAuthToken }: GrantRefreshDependencies) {
+export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentCloudConnector, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken }: GrantRefreshDependencies) {
   const oauthGrantRefreshFlights = new Map<string, Promise<unknown>>();
   const { getOAuthGrantRow, resolveOAuthGrantSecret, createOrRotateOAuthSecret, oauthClientForConnection, syncCredentialBindings } = store;
   const { acquireOAuthGrantRefreshLease, clearOAuthGrantRefreshLease } = leases;
@@ -101,14 +106,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 : undefined,
             );
             const cloudConnector = currentCloudConnector();
-            const connectorSubject =
-              grant.kind === "agent" && grant.subjectAgentId
-                ? `agent:${grant.subjectAgentId}`
-                : grant.kind === "user" && grant.subjectUserId
-                  ? grant.subjectUserId
-                  : typeof oauth.connectorSubjectUserId === "string"
-                    ? oauth.connectorSubjectUserId
-                    : null;
+            const connectorSubject = managedConnectorSubject(grant, oauth);
             const accessRef = grant.credentialSecretRefs.find(
               (ref) => ref.configPath === "oauth.access_token",
             );
@@ -144,8 +142,8 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 refreshToken: refreshSecret.value,
               });
               if (profile.id === "workspace.all") {
-                const requested = normalizeOauthScopes(oauthGrantConfig(grant).requestedScopes ?? oauthGrantConfig(grant).scopes);
-                credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);
+                const requested = googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(oauthGrantConfig(grant).requestedScopes ?? oauthGrantConfig(grant).scopes));
+                credentials.scopes = googleWorkspaceEffectiveScopes(requested, googleWorkspaceSubmittedScopesIn(credentials.scopes));
               }
               if (profile.id === "workspace.all" && !isGoogleWorkspaceScopeGrant(credentials.scopes)) {
                 throw new PaperclipCloudConnectorError("Google did not return verifiable permissions", "REAUTHORIZATION_REQUIRED");
@@ -272,10 +270,13 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
       if (!lease.leaseId) return lease.grant;
       try {
         const grant = lease.grant;
-        const refreshRef = grant.credentialSecretRefs.find(
+        // Machine sign-in has no refresh token: it simply asks for a new access
+        // token with the connection's own client credentials.
+        const machineSignIn = usesClientCredentials(connection);
+        const refreshRef = machineSignIn ? undefined : grant.credentialSecretRefs.find(
           (ref) => ref.configPath === "oauth.refresh_token",
         );
-        if (!refreshRef) {
+        if (!machineSignIn && !refreshRef) {
           throw unprocessable(
             "OAuth credentials have expired and no refresh token is available",
             {
@@ -285,29 +286,32 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
             },
           );
         }
-        const refreshSecret = await resolveOAuthGrantSecret(
+        const refreshSecret = refreshRef ? await resolveOAuthGrantSecret(
           connection,
           grant,
           refreshRef,
           input.actor,
           input,
-        );
+        ) : null;
         const credentialActor: ActorInfo | undefined =
           grant.kind === "user" && grant.subjectUserId
             ? { actorType: "user", actorId: grant.subjectUserId }
             : input.actor;
-        const client = await oauthClientForConnection(
-          connection,
-          oauthProvider,
-          credentialActor,
-        );
-        if (!client.clientId)
-          throw unprocessable(
-            `OAuth client id is not configured for ${oauthProvider}`,
-          );
         const grantOauth = oauthGrantConfig(grant);
         let token: Awaited<ReturnType<typeof exchangeOAuthToken>>;
         try {
+          if (machineSignIn) {
+            token = await requireClientCredentials(requestClientCredentialsToken)(connection, input.actor);
+          } else {
+          const client = await oauthClientForConnection(
+            connection,
+            oauthProvider,
+            credentialActor,
+          );
+          if (!client.clientId)
+            throw unprocessable(
+              `OAuth client id is not configured for ${oauthProvider}`,
+            );
           token = await exchangeOAuthToken({
             tokenUrl: oauthTokenUrl,
             clientId: client.clientId,
@@ -323,14 +327,16 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 : normalizeOauthScopes(oauth.scopes).length > 0
                   ? normalizeOauthScopes(oauth.scopes)
                   : normalizeOauthScopes(oauth.scope),
-            refreshToken: refreshSecret.value,
+            refreshToken: refreshSecret!.value,
             resource:
               typeof oauth.resource === "string" && oauth.resource
                 ? oauth.resource
                 : null,
           });
+          }
         } catch (error) {
           if (
+            refreshRef && refreshSecret &&
             error instanceof HttpError &&
             asRecord(error.details).code === "oauth_reauthorization_required"
           ) {
@@ -443,6 +449,9 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
           throw error;
         }
 
+        if (connection.config.sourceTemplateKey === "google-workspace") {
+          token.scope = googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(token.scope)).join(" ");
+        }
         if (connection.config.sourceTemplateKey === "google-workspace"
           && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
           await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: now() })
@@ -466,7 +475,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 : undefined,
           });
         }
-        const accessRef = await createOrRotateOAuthSecret({
+        const writeAccessToken = (client?: DbTransaction) => createOrRotateOAuthSecret({
           companyId: connection.companyId,
           connection,
           configPath: "oauth.access_token",
@@ -479,14 +488,18 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
             grant.kind === "user"
               ? (grant.subjectUserId ?? undefined)
               : undefined,
-        });
-        const nextCredentialSecretRefs = [
+        }, client ? { dbClient: client, secretClient: secretService(client) } : undefined);
+        // Machine sign-in may take over a lease abandoned by a paused server, so
+        // its token is written only inside the commit that proves this refresh
+        // still owns the lease (below). Other grants keep their existing order.
+        const accessRef = machineSignIn ? null : await writeAccessToken();
+        const credentialSecretRefsWith = (access: ToolCredentialSecretRef) => [
           ...grant.credentialSecretRefs.filter(
             (ref) =>
               ref.configPath !== "oauth.access_token" &&
               (!nextRefreshRef || ref.configPath !== "oauth.refresh_token"),
           ),
-          accessRef,
+          access,
           ...(nextRefreshRef ? [nextRefreshRef] : []),
         ];
         const expiresAt = token.expiresIn
@@ -528,11 +541,11 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
             tokenType: token.tokenType,
             refreshedAt: now().toISOString(),
         };
-        const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
+        const commitGrant = (tx: Db, access: ToolCredentialSecretRef) => tx
           .update(connectionGrants)
           .set({
             providerTenant: sql`jsonb_set(coalesce(${connectionGrants.providerTenant}, '{}'::jsonb), '{oauth}', (coalesce(${connectionGrants.providerTenant}->'oauth', '{}'::jsonb) || ${JSON.stringify(oauthUpdates)}::jsonb) - 'refreshLease')`,
-            credentialSecretRefs: nextCredentialSecretRefs,
+            credentialSecretRefs: credentialSecretRefsWith(access),
             status: "active",
             updatedAt: now(),
           })
@@ -544,7 +557,22 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
             ),
           )
-          .returning());
+          .returning();
+        const [updated] = machineSignIn
+          ? await withAccountHomeSecretMutationLock(undefined, connection.companyId, () =>
+            writeToolConnectionHealthChange(db, connection, async (tx) => {
+              const [owned] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+                .where(and(
+                  eq(connectionGrants.id, grant.id),
+                  eq(connectionGrants.companyId, grant.companyId),
+                  eq(connectionGrants.status, "active"),
+                  sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
+                ))
+                .for("update");
+              if (!owned) return [];
+              return commitGrant(tx, await writeAccessToken(tx as unknown as DbTransaction));
+            }))
+          : await writeToolConnectionHealthChange(db, connection, (tx) => commitGrant(tx, accessRef!));
         if (!updated) {
           throw conflict(
             "OAuth credentials changed while refresh was in progress. Retry the request.",
@@ -603,7 +631,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
           ),
         );
         const nextKeys = new Set(
-          nextCredentialSecretRefs.map(
+          updated.credentialSecretRefs.map(
             (ref) => `${ref.secretId}:${ref.configPath}`,
           ),
         );

@@ -3,8 +3,8 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildTrace, traceUrl } from "./trace.mjs";
-import { associatedProfilePr, authorizedActors, trustedOwnerIds } from "./authorize.mjs";
+import { buildTrace, normalizeChecks, pendingChecks, traceUrl } from "./trace.mjs";
+import { associatedOwnerPr, associatedProfilePr, authorizedActors, exportMode, sampleRate, trustedOwnerIds } from "./authorize.mjs";
 
 const repository = "paperclipai/paperclip";
 const repoPath = `/repos/${repository}`;
@@ -46,6 +46,21 @@ export async function sendEvents(events, apiKey, dataset, fetcher = fetch, pause
   }
 }
 
+// Reviews and scans from outside apps can outlast the workflow. Wait a bounded
+// time so the trace records how long they took; whatever is still running
+// after that is reported as pending instead of holding the export open.
+export async function settledChecks(run, load, { waitMs = 15 * 60_000, intervalMs = 30_000,
+  pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now } = {}) {
+  // The deadline is on the wall clock, so slow GitHub responses count against it.
+  const deadline = now() + waitMs;
+  let checks = load();
+  while (now() < deadline && pendingChecks(run, checks).length) {
+    await pause(Math.min(intervalMs, deadline - now()));
+    checks = load();
+  }
+  return checks;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const arg = (name) => args.find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1);
@@ -76,20 +91,31 @@ async function main() {
       return;
     }
   }
-  const pr = historical ? undefined : associatedProfilePr(run, pulls, ownerIds);
-  if (!pr && !historical) {
-    console.log("No CODEOWNERS-authorized profile-ci PR at this revision; no data exported.");
-    return;
-  }
-  const jobs = pages(`${repoPath}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`, "jobs");
-  const artifacts = pages(`${repoPath}/actions/runs/${runId}/artifacts?per_page=100`, "artifacts")
-    .filter((artifact) => artifact.name.startsWith(`ci-profile-${attempt}-`));
-  // The run name snapshots selection at dispatch. A label added while an
-  // ordinary run finishes must not retroactively select that earlier run.
-  if (!historical && !run.display_title.startsWith("CI profile · PR #")) {
+  // The run name snapshots label selection at dispatch. A label added while
+  // an ordinary run finishes must not retroactively select that earlier run;
+  // such a run is exported only if its run number is in the sample.
+  const mode = historical ? "historical" : exportMode(run);
+  if (!mode) {
     console.log("This attempt was not selected for profiling; no data exported.");
     return;
   }
+  const pr = mode === "label" ? associatedProfilePr(run, pulls, ownerIds)
+    : mode === "sampled" ? associatedOwnerPr(run, pulls, ownerIds) : undefined;
+  if (!pr && !historical) {
+    console.log("No CODEOWNERS-authorized PR at this revision; no data exported.");
+    return;
+  }
+  const jobs = pages(`${repoPath}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`, "jobs");
+  // Sampled runs wrote no timing artifacts, so none are read.
+  const artifacts = mode === "sampled" ? [] : pages(`${repoPath}/actions/runs/${runId}/artifacts?per_page=100`, "artifacts")
+    .filter((artifact) => artifact.name.startsWith(`ci-profile-${attempt}-`));
+  if (!/^[a-f\d]{40}$/.test(run.head_sha)) throw new Error("Invalid head commit");
+  const loadChecks = () => normalizeChecks(run, {
+    checkRuns: pages(`${repoPath}/commits/${run.head_sha}/check-runs?per_page=100`, "check_runs"),
+    statuses: pages(`${repoPath}/commits/${run.head_sha}/statuses?per_page=100`),
+    workflowRuns: pages(`${repoPath}/actions/runs?head_sha=${run.head_sha}&per_page=100`, "workflow_runs"),
+  });
+  const checks = await settledChecks(run, loadChecks, args.includes("--dry-run") ? { waitMs: 0 } : {});
   const directory = mkdtempSync(path.join(tmpdir(), "paperclip-ci-export-"));
   const records = [];
   let bytes = 0;
@@ -108,8 +134,11 @@ async function main() {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-  const trace = buildTrace(run, jobs, records);
-  trace.events[0].data["ci.profile_source"] = historical ? "historical" : "label";
+  const trace = buildTrace(run, jobs, records, {
+    sampleRate: mode === "sampled" ? sampleRate : 1, checks, testDetail: mode !== "sampled",
+  });
+  trace.events[0].data["ci.profile_source"] = mode;
+  if (pr) trace.events[0].data["ci.pr_number"] = pr.number;
   const dataset = process.env.HONEYCOMB_CI_DATASET || "paperclip-ci";
   const url = traceUrl(process.env.HONEYCOMB_TEAM || "paperclip", process.env.HONEYCOMB_ENVIRONMENT || "test", dataset, trace);
   if (arg("--output")) writeFileSync(arg("--output"), JSON.stringify(trace, null, 2));
@@ -123,6 +152,8 @@ async function main() {
     `### CI profile${pr ? ` for PR #${pr.number}` : " (historical job/step baseline)"}`,
     "", `[Open the full CI waterfall in Honeycomb](${url})`, "",
     `${trace.jobCount} jobs · ${(trace.wallMs / 1000).toFixed(1)} seconds elapsed · ${trace.events.length} spans`,
+    "", `${trace.checkCount} outside checks · ${(trace.windowMs / 1000).toFixed(1)} seconds until the last one finished`,
+    ...(mode === "sampled" ? ["", `Sampled run (1 in ${sampleRate}): job and step timings, without per-test detail.`] : []),
     "", `GitHub run: ${run.html_url}/attempts/${attempt}`, "",
     ...trace.warnings.map((warning) => `- ${warning}`),
     "", "The workflow root measures elapsed time. Parallel job durations must not be summed as elapsed time.", "",

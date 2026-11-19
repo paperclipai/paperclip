@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
-import type { ChatCatalogCase } from "../chat-catalog-contract.js";
+import { pollUntil } from "../api.js";
+import { chatCatalogOriginalPhaseDeadline, type ChatCatalogCase, type ChatCatalogContext } from "../chat-catalog-contract.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
 import { openStandingChat } from "./identity-support.js";
 import { agentStatus, cleanupPrivacyProbes, mainPerson, observerPerson, personRead } from "./internal-privacy.js";
@@ -35,6 +36,28 @@ export function gradePrivateDelegation(value: unknown) {
     "Actual worker execution belongs to the private work task instead of the standing conversation.");
   return c.result();
 }
+const followUpFailure = "Private delegated work or its completion follow-up failed";
+export function privateDelegationSettled(input: { source?: { conversationState?: string | null }; runs: Array<{ agentId: string; status: string }>; leadId: string; workerId: string }) {
+  if (input.source?.conversationState !== "waiting" || !input.runs.every(run => run.status === "succeeded") || !input.runs.some(run => run.agentId === input.workerId)) return "unsettled";
+  return input.runs.filter(run => run.agentId === input.leadId).length >= 2 ? "reported" : "quiet";
+}
+async function settleDelegatedCompletion(ctx: ChatCatalogContext, workerId: string) {
+  const original = chatCatalogOriginalPhaseDeadline(ctx), deadlineAt = Math.min(original === undefined ? Number.POSITIVE_INFINITY : original - 15_000, Date.now() + 120_000);
+  let quietSince: number | undefined;
+  try {
+    await pollUntil({ label: "Private delegated work and its completion follow-up settled", deadlineAt, intervalMs: 1000,
+      load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
+      accept: ({ source, runs }) => {
+        const state = privateDelegationSettled({ source, runs, leadId: ctx.input.fixtures.agent.id, workerId });
+        if (state === "unsettled") { quietSince = undefined; return false; }
+        if (state === "reported") return true;
+        quietSince ??= Date.now(); return Date.now() - quietSince >= 30_000;
+      },
+      reject: ({ runs }) => runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? followUpFailure : undefined });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes(followUpFailure)) throw error;
+  }
+}
 function privateDelegation(): ChatCatalogCase {
   let observer: Awaited<ReturnType<typeof observerPerson>> | undefined;
   const base = makeDefinition("tasks.private-task", async ctx => {
@@ -49,7 +72,7 @@ function privateDelegation(): ChatCatalogCase {
     await putDocument(ctx, source.id, `# Confidential launch brief\n${confidentialMarker}. Keep the announcement inside Private Launch and its authorized team.\n`);
     return { project: p, worker, ownerId, observerId: observer.id, sourceId: source.id, confidentialMarker };
   }, gradePrivateDelegation);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.private-task.v2", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.private-task.v3", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2,
     runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-private-delegation.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-support.ts"],
     async observe(ctx, state): Promise<PrivateDelegationObservation> {
@@ -71,6 +94,7 @@ function privateDelegation(): ChatCatalogCase {
         observerSearchResults: JSON.stringify(search.results ?? []) };
     },
     async verifyResult(ctx, state, value) {
+      await settleDelegatedCompletion(ctx, entity(state, "worker").id);
       await base.verifyResult(ctx, state, value);
       if (!observer) throw new Error("Missing authenticated observer browser"); const o = value as PrivateDelegationObservation; const saved = o.tasks[0]!;
       const page = await observer.context.newPage();

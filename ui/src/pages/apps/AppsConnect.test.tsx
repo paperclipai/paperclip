@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition, pluginAppDefinition, pluginAppSlug, setPluginAppDefinitions } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RequestOptions } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -72,6 +72,7 @@ const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog"
 const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
 const GAUGE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
+const CIRCLEBACK = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "circleback")!;
 const DITTO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "ditto")!;
 const BRAINTRUST = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "braintrust")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
@@ -201,7 +202,10 @@ function stepLabelsOnScreen(): string[] {
  */
 async function openAccessAdvanced() {
   const change = Array.from(document.body.querySelectorAll("button")).find(
-    (b) => b.textContent?.trim() === "Change" && b.getAttribute("aria-expanded") === "false",
+    (b) => b.textContent?.trim() === "Change"
+      && b.getAttribute("aria-expanded") === "false"
+      // A pasted MCP server also states its sign-in with a Change link.
+      && b.dataset.testid !== "generic-mcp-sign-in-toggle",
   );
   if (!change) return;
   await act(async () => {
@@ -455,6 +459,76 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).not.toHaveBeenCalled();
   });
 
+  it("sends a plugin connector's settings from its settings schema", async () => {
+    const app = pluginAppDefinition("example.records", {
+      schemaVersion: 1, slug: "records", name: "Records", description: "Look up records", categories: ["data"],
+      branding: { logoUrl: "/brands/apps/api-key-generic.svg" }, urlPatterns: [],
+      methods: [{ key: "api-key", label: "API key", transport: "plugin", auth: "api_key", ownershipModes: ["customer"],
+        whenToUse: "Use an API key.", guidanceMd: "Paste a key.", riskTier: "S2",
+        credentialFields: [{ key: "apiKey", label: "API key", type: "password", required: true, placeholder: "key", secret: true }],
+        settingsSchema: { type: "object", properties: { workspace: { type: "string", title: "Workspace" } }, required: ["workspace"] },
+        tools: { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" } }] } }],
+    });
+    setPluginAppDefinitions([app]);
+    try {
+      listGalleryMock.mockResolvedValue({ apps: [app] });
+      await render(undefined, false, <ConnectionSetupFlow serviceSlug={app.slug} />);
+      const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+      const workspace = [...container.querySelectorAll<HTMLInputElement>('input:not([type="password"])')].find(input => !input.disabled)!;
+      expect(buttonByText("Connect")?.disabled).toBe(true);
+      await act(async () => setInputValue(key, "records-key"));
+      await act(async () => setInputValue(workspace, "acme"));
+      await act(async () => buttonByText("Connect")?.click());
+      await flushReact();
+      expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: app.slug,
+        connectionMethodKey: "api-key", settings: { workspace: "acme" }, credentialValues: { "credentials.apiKey": "records-key" } }));
+    } finally {
+      setPluginAppDefinitions([]);
+    }
+  });
+
+  it.each([
+    { auth: "none" as const, credentialValues: {} },
+    { auth: "api_key" as const, credentialValues: { "credentials.apiKey": "records-key" } },
+  ])("asks which one agent uses a plugin connector with agent grants ($auth)", async ({ auth, credentialValues }) => {
+    const app = pluginAppDefinition("example.records", {
+      schemaVersion: 1, slug: "records", name: "Records", description: "Look up records", categories: ["data"],
+      branding: { logoUrl: "/brands/apps/api-key-generic.svg" }, urlPatterns: [],
+      methods: [{ key: "agent", label: "Agent", transport: "plugin", auth, grantKinds: ["agent"], ownershipModes: ["customer"],
+        whenToUse: "One agent uses it.", guidanceMd: "Pick the agent.", riskTier: "S1",
+        ...(auth === "api_key"
+          ? { credentialFields: [{ key: "apiKey", label: "API key", type: "password" as const, required: true, placeholder: "key", secret: true }] }
+          : {}),
+        tools: { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" } }] } }],
+    });
+    setPluginAppDefinitions([app]);
+    try {
+      listGalleryMock.mockResolvedValue({ apps: [app] });
+      await render(undefined, false, <ConnectionSetupFlow serviceSlug={app.slug} />);
+      // The stated default must not promise every agent, and the picker is
+      // already open because the connection needs its one agent.
+      expect(container.textContent).not.toContain("available to all agents");
+      expect(container.textContent).toContain("Which agent uses this connection?");
+      expect(container.textContent).not.toContain("GitHub");
+      expect(container.textContent).not.toContain("No identity required");
+      expect(buttonByText("Connect")?.disabled).toBe(true);
+      const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+      if (auth === "api_key") await act(async () => setInputValue(key!, "records-key"));
+      await act(async () => buttonByText("Select agents")!.click());
+      await flushReact();
+      await act(async () => document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]')!.click());
+      await flushReact();
+      expect(container.textContent).toContain("available only to the chosen agent");
+      await act(async () => buttonByText("Connect")?.click());
+      await flushReact();
+      expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: app.slug,
+        connectionMethodKey: "agent", grantKind: "agent", subjectAgentId: "agent-1",
+        ...(auth === "api_key" ? { credentialValues } : {}) }));
+    } finally {
+      setPluginAppDefinitions([]);
+    }
+  });
+
   it("opens the saved AI sign-in and reuses a completed account", async () => {
     mockSearch.value = "aiLogin=saved-login";
     const setup = vi.spyOn(aiConnectionsApi, "loginSetup").mockResolvedValue({
@@ -467,6 +541,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
     await act(async () => buttonByText("View connection")?.click());
     expect(mockNavigate).toHaveBeenCalledWith("/apps/saved-account/permissions");
+  });
+
+  it("shows an unavailable state for a plugin connector the host no longer provides", async () => {
+    mockSearch.value = `source=${pluginAppSlug("example.meetings", "circleback")}`;
+    listGalleryMock.mockResolvedValue({ apps: [] });
+    await render();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("This connector is unavailable. Ask an instance admin to enable its plugin.");
+    expect(connectAppMock).not.toHaveBeenCalled();
   });
 
   it("shows an unavailable saved sign-in without creating a replacement", async () => {
@@ -2436,6 +2518,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       connectionMethodKey: "mcp-api-key",
       credentialValues: { "credentials.authorization": "gauge-test-key" },
     }));
+  });
+
+  it("connects Circleback with direct browser sign-in and shows the share warning first", async () => {
+    mockParams.appKey = "circleback";
+    listGalleryMock.mockResolvedValueOnce({ apps: [CIRCLEBACK] });
+    await render();
+    // Share and delete advice must be visible before sign-in on the only path.
+    expect(container.textContent).toContain("anyone with the link");
+    expect(container.textContent).toContain("Set share and delete actions to Ask first");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.textContent).not.toContain("API key");
+    const primary = buttonByText("Continue to Circleback");
+    expect(primary?.disabled).toBe(false);
+    await act(async () => primary!.click());
+    await vi.waitFor(() => expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "circleback",
+      connectionMethodKey: "mcp-oauth",
+    })));
   });
 
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
@@ -4497,9 +4597,22 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     return root;
   }
 
-  async function openAdvanced() {
+  // The sign-in line's own Change link. The access line below it has a
+  // Change control too, so select this one by its test hook.
+  function signInToggle(): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>('[data-testid="generic-mcp-sign-in-toggle"]');
+  }
+
+  async function openSignInOptions() {
     await act(async () => {
-      buttonContaining("Advanced authentication")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      signInToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+  }
+
+  async function chooseSignIn(title: string) {
+    await act(async () => {
+      radioContaining(title)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
   }
@@ -4664,7 +4777,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     expect(container.querySelector("#generic-mcp-name")).toBeNull();
   });
 
-  it("opens advanced authentication when the server wants a credential we can't discover", async () => {
+  it("opens the sign-in options when the server wants a credential we can't discover", async () => {
     connectAppMock.mockRejectedValue(apiError(502, "oauth_challenge", "This app needs you to sign in."));
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
@@ -4675,8 +4788,11 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     await flushReact();
 
     expect(container.textContent).toContain("This server wants a credential");
-    // The advanced section is now open, so the fields to fix it are on screen.
+    // The sign-in options are now open, with the probed key field above them,
+    // so the fields to fix it are on screen.
     expect(container.textContent).toContain("Custom headers");
+    expect(container.querySelector("#generic-mcp-key")).toBeTruthy();
+    expect(signInToggle()?.textContent).toBe("Done");
     expect(container.textContent).not.toContain("coming soon");
   });
 
@@ -4719,7 +4835,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
 
     const stepsBeforeHandoff = stepLabelsOnScreen();
-    expect(stepsBeforeHandoff).toEqual(["Pick app", "Add your key"]);
+    expect(stepsBeforeHandoff).toEqual(["Pick app", "Connect"]);
 
     await act(async () => {
       buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -4868,11 +4984,8 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   it("submits custom headers as secret-backed credential values", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
-    await openAdvanced();
-    await act(async () => {
-      buttonByText("Custom headers")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
+    await openSignInOptions();
+    await chooseSignIn("Custom headers");
 
     const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input"))
       .find((input) => input.getAttribute("aria-label") === "Header name")!;
@@ -4900,11 +5013,8 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   it("blocks a header Paperclip refuses to send before making a request", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
-    await openAdvanced();
-    await act(async () => {
-      buttonByText("Custom headers")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
+    await openSignInOptions();
+    await chooseSignIn("Custom headers");
 
     const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input"))
       .find((input) => input.getAttribute("aria-label") === "Header name")!;
@@ -4923,9 +5033,12 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   it("sends preregistered client credentials when the operator supplies them", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
-    await openAdvanced();
+    await openSignInOptions();
+    await chooseSignIn("Browser sign-in");
+    // The client fields stay behind their own link until the operator asks.
+    expect(container.querySelector("#generic-mcp-client-id")).toBeNull();
     await act(async () => {
-      buttonByText("Browser sign-in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonByText("Use your own client ID")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -4948,10 +5061,66 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     });
   });
 
+  it("states the chosen sign-in in one line once the operator presses Done", async () => {
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+
+    expect(container.textContent).toContain("Paperclip asks the server how to sign in.");
+    expect(signInToggle()?.textContent).toBe("Change");
+    // Collapsed: the options are not on screen.
+    expect(radioContaining("Custom headers")).toBeUndefined();
+
+    await openSignInOptions();
+    await chooseSignIn("Custom headers");
+    const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input"))
+      .find((input) => input.getAttribute("aria-label") === "Header name")!;
+    await act(async () => setInputValue(nameInput, "X-Api-Key"));
+    await flushReact();
+    const valueInput = Array.from(container.querySelectorAll<HTMLInputElement>("input"))
+      .find((input) => input.getAttribute("aria-label") === "Value for X-Api-Key")!;
+    await act(async () => setInputValue(valueInput, "phx_secret"));
+    await flushReact();
+
+    expect(signInToggle()?.textContent).toBe("Done");
+    await openSignInOptions();
+
+    expect(container.textContent).toContain("Signs in with 1 custom header.");
+    expect(signInToggle()?.textContent).toBe("Change");
+    expect(radioContaining("Custom headers")).toBeUndefined();
+  });
+
+  it("keeps the sign-in options open while a chosen key is still empty", async () => {
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+    await openSignInOptions();
+    await chooseSignIn("Key or token");
+
+    expect(container.querySelector("#generic-mcp-key")).toBeTruthy();
+    expect(signInToggle()?.disabled).toBe(true);
+    expect(buttonByText("Check link")?.disabled).toBe(true);
+
+    // Clicking the disabled toggle must not hide the field that explains why.
+    await openSignInOptions();
+    expect(container.querySelector("#generic-mcp-key")).toBeTruthy();
+
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>("#generic-mcp-key")!, "sk_test"));
+    await flushReact();
+    expect(signInToggle()?.disabled).toBe(false);
+    expect(buttonByText("Check link")?.disabled).toBe(false);
+  });
+
+  it("labels the server as unverified exactly once on the connect step", async () => {
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+
+    const occurrences = (container.textContent ?? "").split("Unverified server").length - 1;
+    expect(occurrences).toBe(1);
+  });
+
   it("keeps protocol jargon off the consumer path", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
-    await openAdvanced();
+    await openSignInOptions();
 
     for (const jargon of ["DCR", "Dynamic Client Registration", "CIMD", "Client ID Metadata", "RFC", "PKCE"]) {
       expect(container.textContent, jargon).not.toContain(jargon);

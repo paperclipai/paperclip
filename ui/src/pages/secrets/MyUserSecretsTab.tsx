@@ -1,29 +1,29 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CompanySecret } from "@paperclipai/shared";
-import { KeyRound, Trash2, UserRound } from "lucide-react";
+import { Check, KeyRound, MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { EmptyState } from "../../components/EmptyState";
 import { secretsApi, type MyUserSecretEntry } from "../../api/secrets";
 import { queryKeys } from "../../lib/queryKeys";
-import { cn } from "../../lib/utils";
+import { relativeTime } from "../../lib/utils";
 import { useToastActions } from "../../context/ToastContext";
 import { SetMyUserSecretDialog } from "./SetMyUserSecretDialog";
 import { SecretPathName } from "./SecretPathName";
-import {
-  myValueLabel,
-  myValueState,
-  myValueTone,
-} from "./my-value-state";
+import { myValueState } from "./my-value-state";
 import { describeError } from "@/api/errors";
 
 /**
- * Secrets → My secrets tab. Lists every company user-secret definition paired
- * with the current user's own value state, and lets the user set / update /
- * clear their value. This is the owner-facing counterpart to the admin
- * "User secret definitions" tab.
+ * Secrets → My secrets tab. Lists every secret the organization asks each
+ * member to provide, with whether the signed-in person has added their value,
+ * and lets them add, replace or remove it.
  */
 export function MyUserSecretsTab({ companyId }: { companyId: string }) {
   const queryClient = useQueryClient();
@@ -41,66 +41,61 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
     mutationFn: (secret: CompanySecret) => secretsApi.removeMyUserSecret(companyId, secret.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.myUserSecrets(companyId) });
-      pushToast({ title: "Value cleared", tone: "info" });
+      pushToast({ title: "Your value was removed", tone: "info" });
     },
     onError: (err) =>
       pushToast({
-        title: "Could not clear value",
+        title: "Couldn't remove your value",
         body: describeError(err).body,
         tone: "error",
       }),
   });
 
-  const missingCount = entries.filter(
-    (entry) => entry.definition.status === "active" && !entry.secret,
-  ).length;
+  const needsValue = (entry: MyUserSecretEntry) =>
+    entry.definition.status === "active" && !entry.secret;
+  const missingCount = entries.filter(needsValue).length;
+  // Secrets still waiting on this person come first; the rest keep the server's order.
+  const sortedEntries = [...entries].sort(
+    (a, b) => Number(needsValue(b)) - Number(needsValue(a)),
+  );
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/5 px-4 py-3 text-xs text-violet-800 dark:text-violet-200">
-        <UserRound className="h-4 w-4 mt-0.5 shrink-0" />
-        <p>
-          These are credentials only you provide. Each value is yours alone — used when you are the
-          user responsible for a run — and is never shown back to anyone, including admins.
-          {missingCount > 0 ? (
-            <span className="font-medium">
-              {" "}
-              {missingCount} required secret{missingCount === 1 ? " still needs" : "s still need"} your
-              value.
-            </span>
-          ) : null}
-        </p>
-      </div>
+    <section aria-label="My secrets" className="flex flex-col gap-4">
+      <p className="max-w-xl text-sm text-muted-foreground">
+        Values only you provide. Agents use them when they work for you.
+        {missingCount > 0 ? (
+          <span className="text-foreground">
+            {" "}
+            {missingCount} still {missingCount === 1 ? "needs" : "need"} your value.
+          </span>
+        ) : null}
+      </p>
 
-      <div>
-        {mySecretsView.kind === "error" ? (
-          <div className="py-4">
-            <QueryErrorState
-              error={mySecretsQuery.error}
-              action="load your secrets"
-              onRetry={mySecretsView.retry}
-              retrying={mySecretsView.isFetching}
+      {mySecretsView.kind === "error" ? (
+        <QueryErrorState
+          error={mySecretsQuery.error}
+          action="load your secrets"
+          onRetry={mySecretsView.retry}
+          retrying={mySecretsView.isFetching}
+        />
+      ) : entries.length === 0 && !mySecretsQuery.isPending && mySecretsView.kind !== "reconnecting" ? (
+        <EmptyState
+          icon={KeyRound}
+          message="Nothing is asked of you yet. An admin decides which secrets each member provides."
+        />
+      ) : (
+        <ul className="divide-y divide-border border-y border-border">
+          {sortedEntries.map((entry) => (
+            <MyUserSecretRow
+              key={entry.definition.id}
+              entry={entry}
+              onSet={() => setDialogFor(entry)}
+              onClear={() => entry.secret && clear.mutate(entry.secret)}
+              clearing={clear.isPending}
             />
-          </div>
-        ) : entries.length === 0 && !mySecretsQuery.isPending && mySecretsView.kind !== "reconnecting" ? (
-          <EmptyState
-            icon={KeyRound}
-            message="No user secrets are defined for this organization yet. An admin defines which credentials each member supplies."
-          />
-        ) : (
-          <ul className="space-y-2">
-            {entries.map((entry) => (
-              <MyUserSecretRow
-                key={entry.definition.id}
-                entry={entry}
-                onSet={() => setDialogFor(entry)}
-                onClear={() => entry.secret && clear.mutate(entry.secret)}
-                clearing={clear.isPending}
-              />
-            ))}
-          </ul>
-        )}
-      </div>
+          ))}
+        </ul>
+      )}
 
       <SetMyUserSecretDialog
         companyId={companyId}
@@ -111,7 +106,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
           if (!open) setDialogFor(null);
         }}
       />
-    </div>
+    </section>
   );
 }
 
@@ -129,58 +124,74 @@ function MyUserSecretRow({
   const { definition, secret } = entry;
   const state = myValueState(definition, secret);
   const disabledDefinition = definition.status !== "active";
+  const replaced = secret ? secret.latestVersion > 1 && secret.lastRotatedAt : null;
 
   return (
     <li
-      className={cn(
-        "flex items-start gap-3 rounded-md border p-3",
-        state === "not_set" && !disabledDefinition
-          ? "border-amber-500/40 bg-amber-500/5"
-          : "border-border",
-      )}
+      className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-3"
+      data-testid={`my-secret-${definition.id}`}
+      data-needs-value={!secret && !disabledDefinition ? "true" : undefined}
     >
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <SecretPathName name={definition.name} />
-          <code className="rounded bg-muted px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
-            {definition.key}
-          </code>
-          {disabledDefinition ? (
-            <Badge variant="outline" className="text-(length:--text-nano)">
-              {definition.status}
-            </Badge>
-          ) : null}
-        </div>
+      <div className="flex min-w-0 flex-1 basis-64 flex-col gap-0.5">
+        <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+          <SecretPathName name={definition.name} className="text-sm" />
+          {/* Agents point people at a secret by this key, so it stays visible. */}
+          <code className="font-mono text-xs text-muted-foreground">{definition.key}</code>
+        </span>
         {definition.description ? (
-          <p className="mt-1 text-xs text-muted-foreground">{definition.description}</p>
+          <span className="text-xs text-muted-foreground">{definition.description}</span>
         ) : null}
         {definition.usageGuidance ? (
-          <p className="mt-1 text-(length:--text-micro) text-muted-foreground/80">{definition.usageGuidance}</p>
+          <span className="text-xs text-muted-foreground">{definition.usageGuidance}</span>
+        ) : null}
+        {disabledDefinition ? (
+          <span className="text-xs text-muted-foreground">
+            Turned off by an admin. Agents won't ask for it.
+          </span>
+        ) : state === "inactive" ? (
+          <span className="text-xs text-muted-foreground">
+            Your value is turned off. Replace it to use it again.
+          </span>
         ) : null}
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
-        <Badge variant="outline" className={cn("text-(length:--text-micro)", myValueTone(state))}>
-          {myValueLabel(state)}
-        </Badge>
-        {!disabledDefinition ? (
-          <Button size="sm" variant={secret ? "outline" : "default"} onClick={onSet}>
-            {secret ? "Update" : "Set value"}
-          </Button>
-        ) : null}
-        {secret ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-muted-foreground hover:text-destructive"
-            onClick={onClear}
-            disabled={clearing}
-            title="Clear my value"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
-        ) : null}
-      </div>
+      {secret ? (
+        <span className="flex items-center gap-1">
+          <span className="mr-2 flex items-center gap-1.5 text-sm text-muted-foreground">
+            <Check className="size-3.5" aria-hidden />
+            {replaced
+              ? `Replaced ${relativeTime(replaced)}`
+              : `Added ${relativeTime(secret.createdAt)}`}
+          </span>
+          {!disabledDefinition ? (
+            <Button variant="ghost" size="sm" onClick={onSet}>
+              Replace
+            </Button>
+          ) : null}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground"
+                aria-label={`More actions for ${definition.name}`}
+                disabled={clearing}
+              >
+                <MoreHorizontal aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem variant="destructive" disabled={clearing} onSelect={onClear}>
+                Remove your value
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </span>
+      ) : !disabledDefinition ? (
+        <Button size="sm" onClick={onSet}>
+          Set value
+        </Button>
+      ) : null}
     </li>
   );
 }

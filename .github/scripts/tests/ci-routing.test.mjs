@@ -373,3 +373,74 @@ test("catalog placement retains downstream jobs and actual dispatch guard", () =
   assert.match(catalogAuthorize, /run: node tests\/runner-e2e\/chat-completion-testops-cli\.mjs guard/);
   assert.doesNotMatch(catalogAuthorize, /secrets\.|environment:/);
 });
+
+const reservedFleet = "runs-on/fleet=paperclip-ci-routing-x64/env=public-ci";
+const shortJobVars = { AWS_CI_SHORT_JOBS_ENABLED: "true" };
+const ownerRun = { id: 34892728 };
+const ownRepository = { id: 1170821064 };
+
+const notifierJob = readFileSync(new URL("../../workflows/pr-merge-review.yml", import.meta.url), "utf8")
+  .split(/^jobs:\n/m)[1];
+const notifierEvent = (workflowRun = {}) => ({
+  event_name: "workflow_run",
+  event: { workflow_run: { head_repository: ownRepository, actor: ownerRun, triggering_actor: ownerRun, ...workflowRun } },
+});
+const notifierPlacementCases = [
+  ["CODEOWNER PR run", shortJobVars, notifierEvent(), reservedFleet],
+  ["not yet enabled", {}, notifierEvent()],
+  ["AWS CI disabled", { ...shortJobVars, AWS_CI_ENABLED: "false" }, notifierEvent()],
+  ["stale snapshot", { ...shortJobVars, AWS_CI_TRUSTED_USER_IDS: "[34892728,999]" }, notifierEvent()],
+  ["community author", shortJobVars, notifierEvent({ actor: { id: 999 } })],
+  ["community rerun of an owner PR", shortJobVars, notifierEvent({ triggering_actor: { id: 999 } })],
+  ["partial ID cannot match", shortJobVars, notifierEvent({ actor: { id: 4892728 } })],
+  ["fork head", shortJobVars, notifierEvent({ head_repository: { id: 999 } })],
+  ["missing head repository", shortJobVars, notifierEvent({ head_repository: {} })],
+  ["external check run", shortJobVars, { event_name: "check_run", event: { check_run: {}, sender: ownerRun } }],
+  ["commit status", shortJobVars, { event_name: "status", event: { sender: ownerRun } }],
+  ["different repository", shortJobVars, { ...notifierEvent(), repository: "other/repo" }],
+  ["different repository ID", shortJobVars, { ...notifierEvent(), repository_id: "999" }],
+];
+
+for (const [name, vars, github, expected = "ubuntu-latest"] of notifierPlacementCases) {
+  test(`merge review notifier placement: ${name}`, () => {
+    assert.equal(routingPlacement(vars, github, notifierJob), expected);
+  });
+}
+
+const reviewJob = readFileSync(new URL("../../workflows/commitperclip-review.yml", import.meta.url), "utf8")
+  .split(/^jobs:\n/m)[1];
+const reviewEvent = (pullRequest = {}, sender = ownerRun) => ({
+  event_name: "pull_request_target",
+  event: { pull_request: { user: ownerRun, head: { repo: ownRepository }, ...pullRequest }, sender },
+});
+const reviewPlacementCases = [
+  ["CODEOWNER PR", shortJobVars, reviewEvent(), reservedFleet],
+  ["not yet enabled", {}, reviewEvent()],
+  ["AWS CI disabled", { ...shortJobVars, AWS_CI_ENABLED: "false" }, reviewEvent()],
+  ["missing admission members", { ...shortJobVars, AWS_CI_ROUTING_USER_IDS: "" }, reviewEvent()],
+  ["community author", shortJobVars, reviewEvent({ user: { id: 999 } })],
+  ["community sender on an owner PR", shortJobVars, reviewEvent({}, { id: 999 })],
+  ["owner PR from a fork", shortJobVars, reviewEvent({ head: { repo: { id: 999 } } })],
+  ["deleted fork", shortJobVars, reviewEvent({ head: { repo: {} } })],
+  ["other event", shortJobVars, { ...reviewEvent(), event_name: "pull_request" }],
+  ["different repository ID", shortJobVars, { ...reviewEvent(), repository_id: "999" }],
+];
+
+for (const [name, vars, github, expected = "ubuntu-latest"] of reviewPlacementCases) {
+  test(`commitperclip review placement: ${name}`, () => {
+    assert.equal(routingPlacement(vars, github, reviewJob), expected);
+  });
+}
+
+test("GitHub-hosted PR runs queue at most four jobs per matrix", () => {
+  const trusted = readFileSync(new URL("../../workflows/pr-trusted.yml", import.meta.url), "utf8");
+  const strategies = trusted.match(/^ {4}strategy:\n(?: {6}.*\n)+/gm) ?? [];
+  assert.equal(strategies.length, 4);
+  for (const strategy of strategies) {
+    const expression = strategy.match(/^ {6}max-parallel: \$\{\{ (.+) \}\}$/m)?.[1];
+    assert.ok(expression, "every PR matrix must bound its GitHub-hosted fan-out");
+    const limit = (runner) => vm.runInNewContext(expression, { needs: { gate: { outputs: { runner } } } });
+    assert.equal(limit("ubuntu-latest"), 4);
+    assert.equal(limit(awsRunner), 256);
+  }
+});

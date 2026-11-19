@@ -1989,7 +1989,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // A loaded host can accept a turn long before it starts it.
                 if let Some(delay) = argument(&args, "--turn-started-delay-ms") {
-                    thread::sleep(Duration::from_millis(delay.parse()?));
+                    let delay = Duration::from_millis(delay.parse()?);
+                    let started = Instant::now();
+                    if let Some(interval) = argument(&args, "--turn-started-progress-ms") {
+                        let interval = Duration::from_millis(interval.parse()?);
+                        let mut server = 0;
+                        while started.elapsed() + interval < delay {
+                            thread::sleep(interval);
+                            server += 1;
+                            send(
+                                json!({"method": "mcpServer/startupStatus/updated", "params": {
+                                    "name": format!("startup-{server}"),
+                                    "status": "failed",
+                                    "error": "fixture server unavailable"
+                                }}),
+                            )?;
+                        }
+                    }
+                    thread::sleep(delay.saturating_sub(started.elapsed()));
                 }
                 // A test can hold the start until it has detached the controller.
                 if let Some(gate) = argument(&args, "--turn-started-gate").map(PathBuf::from) {

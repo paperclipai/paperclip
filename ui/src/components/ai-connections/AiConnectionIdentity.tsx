@@ -5,6 +5,8 @@ import {
   aiMethodLabel,
   type AiConnectionSummary,
 } from "./model";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function AiConnectionIdentity({
   connection,
@@ -17,10 +19,10 @@ export function AiConnectionIdentity({
     <div className="flex min-w-0 items-start gap-3">
       <AppLogo name={provider.name} brandKey={connection.provider} logoUrl={provider.logo} size={24} />
       <div className="flex min-w-0 flex-col gap-1">
-        <span className="break-words text-sm font-medium">
+        <span className={cn("break-words text-sm font-medium", ANALYTICS_MASK_CLASS)}>
           {connection.name}
         </span>
-        <span className="text-xs text-muted-foreground">
+        <span className={cn("text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
           {provider.name} ·{" "}
           {aiMethodLabel(connection.provider, connection.method)}
           {connection.accountLabel ? ` · ${connection.accountLabel}` : ""}

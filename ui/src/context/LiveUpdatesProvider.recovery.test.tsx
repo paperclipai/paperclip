@@ -357,6 +357,40 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(pollRead).toHaveBeenCalledTimes(afterOpen);
   });
 
+  // A session restored from the saved query cache has no session id. Its first
+  // verified read is the same sign-in, so the socket stays open and nothing is
+  // refetched. Before, the new id reconnected the socket, and that open
+  // refreshed every active query, session and health included.
+  it("keeps the socket when the restored session is verified for the same user", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { userId: "viewer" } });
+    await renderPolling();
+    expect(Socket.instances).toHaveLength(1);
+    await act(async () => Socket.instances[0].onopen?.());
+    expect(container.textContent).toBe("connected");
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { id: "session", userId: "viewer" } }));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(Socket.instances).toHaveLength(1);
+    expect(container.textContent).toBe("connected");
+    expect(invalidate).not.toHaveBeenCalled();
+    // A later replacement session still needs a new connection.
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { id: "replacement", userId: "viewer" } }));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(Socket.instances).toHaveLength(2);
+  });
+
+  it("reconnects when the verified session belongs to another user", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { userId: "viewer" } });
+    await renderPolling();
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "other" }, session: { id: "other-session", userId: "other" } }));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(Socket.instances).toHaveLength(2);
+    expect(container.textContent).toBe("fallback");
+  });
+
   it.each(["DEMO-1", "issue-1"])("discovers and finishes runs with cache key %s on an unfocused non-task route", async queryRef => {
     vi.stubGlobal("WebSocket", Socket);
     vi.spyOn(document, "hasFocus").mockReturnValue(false);

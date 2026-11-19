@@ -37,6 +37,41 @@ function workspaceHref(prefix: string | null | undefined, id: unknown) {
   return prefix && typeof id === "string" ? { href: `/${encodeURIComponent(prefix)}/execution-workspaces/${encodeURIComponent(id)}` } : {};
 }
 
+function objectOrNull(value: unknown) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** The API reads that return a workspace, and the field that holds it ("" is the response itself). */
+const WORKSPACE_READ_FIELDS: Readonly<Record<string, string>> = {
+  "GET /api/issues/{id}": "currentExecutionWorkspace",
+  "GET /api/issues/{id}/workspace": "workspace",
+  "GET /api/execution-workspaces/{id}": "",
+};
+
+/** True when an agent API result may hold a workspace, so the page prefix is read only then. */
+export function apiResultMayHaveWorkspace(result: unknown) {
+  const operationId = objectOrNull(result)?.operationId;
+  return typeof operationId === "string" && Object.hasOwn(WORKSPACE_READ_FIELDS, operationId);
+}
+
+/**
+ * Adds the workspace page href to an agent's API read of a task or workspace,
+ * as get_workspace does. Without it the agent reads the missing href as "this
+ * workspace has no page" and names the workspace instead of linking it.
+ */
+export function withWorkspacePageHref<T>(result: T, prefix: string | null | undefined, companyId: string): T {
+  const response = objectOrNull(result);
+  const operationId = response?.operationId;
+  const data = objectOrNull(response?.data);
+  if (!prefix || !response || response.ok !== true || !data || typeof operationId !== "string"
+    || !Object.hasOwn(WORKSPACE_READ_FIELDS, operationId)) return result;
+  const field = WORKSPACE_READ_FIELDS[operationId]!;
+  const workspace = field ? objectOrNull(data[field]) : data;
+  if (!workspace || workspace.companyId !== companyId || typeof workspace.id !== "string") return result;
+  const linked = { ...workspace, ...workspaceHref(prefix, workspace.id) };
+  return { ...response, data: field ? { ...data, [field]: linked } : linked } as T;
+}
+
 function workspacePage(rows: Array<Record<string, unknown>>, limit: number) {
   const workspaces: Array<Record<string, unknown>> = [];
   const result = () => ({ workspaces, limit, returnedCount: workspaces.length,
