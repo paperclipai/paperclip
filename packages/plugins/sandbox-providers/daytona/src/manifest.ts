@@ -3,8 +3,9 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
 export const DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS = 300_000;
 // The bundled-plugin boot reconcile refreshes the persisted manifest for an
-// existing install only when PLUGIN_VERSION changes. A manifest change without a
-// version bump never reaches an existing install. The reconcile also reads the
+// existing install when PLUGIN_VERSION changes. Same-version help text can
+// refresh only when all behavioral fields match. Other manifest changes require
+// a version bump to reach an existing install. The reconcile also reads the
 // persisted manifest raw and does not re-run the validator, so it never
 // canonicalizes a renamed capability.
 //

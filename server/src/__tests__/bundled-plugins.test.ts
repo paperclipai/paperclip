@@ -415,6 +415,42 @@ describe("ensureBundledPlugins", () => {
     );
   });
 
+  it.each(["plugin", "driver", "setting"] as const)("refreshes only a %s description for an existing Core bundle at the same version", async (field) => {
+    const previous = { ...makeManifest(DAYTONA.pluginKey, "0.1.0"), description: "Old plugin description",
+      environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider" as const, displayName: "Daytona", description: "Old driver description",
+        configSchema: { type: "object", properties: { autoStopInterval: { type: "number", description: "Old setting description" } } } }] };
+    const manifest = structuredClone(previous);
+    if (field === "plugin") manifest.description = "New plugin description";
+    if (field === "driver") manifest.environmentDrivers[0]!.description = "New driver description";
+    if (field === "setting") manifest.environmentDrivers[0]!.configSchema.properties.autoStopInterval.description = "New setting description";
+    const { deps, loadManifest, update, installPlugin } = makeDeps({ rows: { [DAYTONA.pluginKey]: {
+      id: "row-daytona", pluginKey: DAYTONA.pluginKey, status: "ready", version: "0.1.0", manifestJson: previous,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-daytona", { version: "0.1.0", manifest });
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it.each(["capability", "entrypoint", "schema", "default", "pending-approval"] as const)("does not treat a %s change as description-only", async (change) => {
+    const previous = { ...makeManifest(DAYTONA.pluginKey, "0.1.0"), description: "Old description",
+      entrypoints: { worker: "dist/worker.js" },
+      environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider" as const, displayName: "Daytona",
+        configSchema: { type: "object", properties: { config: { type: "object", default: { description: "old runtime value" } } } } }] };
+    const manifest = structuredClone(previous); manifest.description = "New description";
+    if (change === "capability") manifest.capabilities = ["issues.read"];
+    if (change === "entrypoint") manifest.entrypoints.worker = "dist/other.js";
+    if (change === "schema") manifest.environmentDrivers[0]!.configSchema.properties.config.type = "string";
+    if (change === "default") manifest.environmentDrivers[0]!.configSchema.properties.config.default.description = "new runtime value";
+    const { deps, loadManifest, update } = makeDeps({ rows: { [DAYTONA.pluginKey]: {
+      id: "row-daytona", pluginKey: DAYTONA.pluginKey, status: change === "pending-approval" ? "upgrade_pending" : "ready",
+      version: "0.1.0", manifestJson: previous,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("does not reconcile when the persisted version already matches the bundle", async () => {
     const { deps, update } = makeDeps({
       rows: {
