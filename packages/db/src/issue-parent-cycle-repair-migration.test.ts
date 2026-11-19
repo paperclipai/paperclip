@@ -52,11 +52,17 @@ async function seed(sql: postgres.Sql) {
   const threeC = await issue(threeB);
   await sql`UPDATE issues SET parent_id = ${threeC} WHERE id = ${threeA}`;
   const hanger = await issue(threeA);
+  // 220-cycle: far beyond the 200-step walk the first revision used, so the
+  // repair must not depend on any depth bound. A child hangs below it too.
+  const bigCycle = [await issue(null)];
+  for (let step = 1; step < 220; step += 1) bigCycle.push(await issue(bigCycle[bigCycle.length - 1]));
+  await sql`UPDATE issues SET parent_id = ${bigCycle[bigCycle.length - 1]} WHERE id = ${bigCycle[0]}`;
+  const bigHanger = await issue(bigCycle[0]);
   // A healthy chain the repair must not touch.
   const chainRoot = await issue(null);
   const chainMid = await issue(chainRoot);
   const chainLeaf = await issue(chainMid);
-  return { companyId, selfId, twoA, twoB, threeA, threeB, threeC, hanger, chainRoot, chainMid, chainLeaf };
+  return { companyId, selfId, twoA, twoB, threeA, threeB, threeC, hanger, bigCycle, bigHanger, chainRoot, chainMid, chainLeaf };
 }
 
 async function parents(sql: postgres.Sql, ids: string[]) {
@@ -72,6 +78,7 @@ describePostgres("0500 issue parent cycle repair", () => {
     const members = [
       seeded.selfId, seeded.twoA, seeded.twoB,
       seeded.threeA, seeded.threeB, seeded.threeC, seeded.hanger,
+      ...seeded.bigCycle, seeded.bigHanger,
       seeded.chainRoot, seeded.chainMid, seeded.chainLeaf,
     ];
 
@@ -88,6 +95,9 @@ describePostgres("0500 issue parent cycle repair", () => {
     expect(after[seeded.threeC]).toBeNull();
     // A child hanging below a cycle keeps its (now acyclic) parent edge.
     expect(after[seeded.hanger]).toBe(seeded.threeA);
+    // A cycle longer than 200 members is fully repaired: every edge in it goes.
+    for (const id of seeded.bigCycle) expect(after[id]).toBeNull();
+    expect(after[seeded.bigHanger]).toBe(seeded.bigCycle[0]);
     // The healthy chain is untouched.
     expect(after[seeded.chainMid]).toBe(seeded.chainRoot);
     expect(after[seeded.chainLeaf]).toBe(seeded.chainMid);
@@ -96,5 +106,5 @@ describePostgres("0500 issue parent cycle repair", () => {
     await runMigrationBody(sql);
     expect(await parents(sql, members)).toEqual(after);
     expect(await inspectMigrations(connectionString)).toMatchObject({ status: "upToDate" });
-  }, 30_000);
+  }, 60_000);
 });
