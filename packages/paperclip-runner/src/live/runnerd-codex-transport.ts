@@ -7082,7 +7082,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const canMigrateLegacySkills = skillHomeStoreRoot && localStateOwner && preparesProviderLaunch
       && !freshSkillPreparation && warmRecovery === null && sourceRuntimeContext
       && !this.options.codexArgs && this.options.recoveryPurpose !== "stop_cleanup"
-      && skillHomeStoreRoot === resolve(this.#root, "..", "..", "skill-homes");
+      && skillHomeStoreRoot === resolve(dirname(dirname(this.#root)), "skill-homes");
     let migratedSkillHome: string | null = null;
     if (skillHomeStoreRoot && freshSkillPreparation) {
       // The home is content-addressed, so its path is known before it is
