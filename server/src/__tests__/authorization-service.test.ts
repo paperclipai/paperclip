@@ -25,6 +25,7 @@ import {
   authorizationService,
   canActorReadIssuePrivacy,
   issuePrivacyMode,
+  plainDelegatedUserDenial,
   type AuthorizationActor,
 } from "../services/authorization.js";
 import { logger } from "../middleware/logger.js";
@@ -564,7 +565,69 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       code: "RESPONSIBLE_USER_UNAUTHORIZED",
     });
-    expect(decision.explanation).toContain(`Responsible user ${responsibleUserId} is not authorized`);
+    expect(decision.explanation).toBe("The person this agent acts for does not have permission to change skills.");
+    expect(decision.explanation).not.toContain(responsibleUserId);
+    expect(decision.explanation).not.toContain("skill_config");
+  });
+
+  it("tells the agent that a responsible user's suggested change needs approval, not a missing permission", async () => {
+    const company = await createCompany(db, "ResponsibleUserSkillConsent");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "skills:create");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      permissionKey: "skills:suggest-changes",
+      scope: null,
+      grantedByUserId: "owner",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_missing_consent", code: "RESPONSIBLE_USER_UNAUTHORIZED" });
+    expect(decision.explanation).toBe("The person this agent acts for can propose this change, but it needs approval before it is applied.");
+  });
+
+  it.each([
+    ["deny_missing_membership", "The person this agent acts for is no longer an active member of this company."],
+    ["deny_company_boundary", "The person this agent acts for cannot act in this company."],
+    ["deny_unauthenticated", "Paperclip could not confirm who the person this agent acts for is."],
+    ["deny_missing_grant", "The person this agent acts for does not have permission to change this task."],
+    ["deny_no_grant", "The person this agent acts for does not have permission to change this task."],
+    ["deny_scope", "The person this agent acts for does not have permission to change this task."],
+    ["deny_unsupported_action", "The person this agent acts for does not have permission to change this task."],
+    ["deny_missing_consent", "The person this agent acts for can propose this change, but it needs approval before it is applied."],
+    ["deny_policy_restricted", "This company's access policy does not let the person this agent acts for change this task."],
+    ["deny_low_trust_boundary", "This company's limits for this agent do not let the person this agent acts for change this task."],
+    ["deny_agent_interaction", "Agents are not allowed to change this task in this company; a person who manages permissions can change this."],
+    ["deny_issue_private", "The person this agent acts for cannot see this private task."],
+    ["deny_project_private", "The person this agent acts for cannot see this private project."],
+    ["inbox_target_user_unresolved", "Paperclip could not tell whose inbox this is."],
+    ["inbox_management_disabled", "This person has turned off agent management of their inbox."],
+    ["inbox_agent_not_allowed", "This agent is not on the list of agents this person allows to manage their inbox."],
+  ] as const)("explains a delegated-user %s denial in plain words", (reason, expected) => {
+    const explanation = plainDelegatedUserDenial("The person this agent acts for", { reason }, "issue:mutate");
+    expect(explanation).toBe(expected);
+    expect(explanation).not.toMatch(/[a-z]+[_:][a-z]+/);
   });
 
   it("denies cross-company agent decisions before grant evaluation", async () => {
@@ -2065,6 +2128,44 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("honors a board-recorded hiring denial on a CEO instead of the CEO title", async () => {
+    const company = await createCompany(db, "CeoHireDenied");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: { canCreateAgents: false, canCreateSkills: true, ceoHiringDeniedBy: { actorType: "user", actorId: "board-user", at: "2026-11-08T00:00:00.000Z" } },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "agents:create",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission: agents:create.",
+    });
+  });
+
+  it("keeps CEO hiring when a false was saved without a board-recorded denial", async () => {
+    // Stale full-object saves, import updates and the low-trust default can
+    // all save false on a CEO without the board choosing to restrict it.
+    const company = await createCompany(db, "CeoUnrecordedFalse");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: { canCreateAgents: false, canCreateSkills: true },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "agents:create",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_legacy_agent_creator" });
+  });
+
   it("grants hire authority through the persisted new-agent default", async () => {
     const company = await createCompany(db, "DefaultHire");
     // The service create path persists the create-context default
@@ -2536,6 +2637,47 @@ describeEmbeddedPostgres("authorization service", () => {
       action: "inbox:manage",
       resource: { type: "company", companyId: company.id },
     })).resolves.toMatchObject({ allowed: false, reason: "inbox_management_disabled" });
+  });
+
+  it("explains inbox denials without raw user or agent IDs", async () => {
+    const company = await createCompany(db, "InboxDenialWording");
+    const actorAgent = await createAgent(db, company.id);
+    const disabledUserId = await createUser(db);
+    const allowlistUserId = await createUser(db);
+    await db.insert(companyMemberships).values([disabledUserId, allowlistUserId].map((principalId) => ({
+      companyId: company.id,
+      principalType: "user" as const,
+      principalId,
+      status: "active" as const,
+      membershipRole: "operator" as const,
+    })));
+    await db.insert(userInboxAgentPolicies).values([
+      { companyId: company.id, userId: disabledUserId, mode: "disabled" as const },
+      { companyId: company.id, userId: allowlistUserId, mode: "allowlist" as const, allowedAgentIds: [] },
+    ]);
+    const decideFor = (userId: string) => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: userId,
+        source: "agent_jwt" as const,
+      },
+      action: "inbox:manage" as const,
+      resource: { type: "company" as const, companyId: company.id },
+    });
+
+    const disabled = await decideFor(disabledUserId);
+    const allowlist = await decideFor(allowlistUserId);
+    expect(disabled).toMatchObject({ allowed: false, reason: "inbox_management_disabled" });
+    expect(allowlist).toMatchObject({ allowed: false, reason: "inbox_agent_not_allowed" });
+    for (const decision of [disabled, allowlist]) {
+      expect(decision.explanation).not.toContain(disabledUserId);
+      expect(decision.explanation).not.toContain(allowlistUserId);
+      expect(decision.explanation).not.toContain(actorAgent.id);
+    }
+    expect(disabled.explanation).toBe("This person has turned off agent management of their inbox.");
+    expect(allowlist.explanation).toBe("This agent is not on the list of agents this person allows to manage their inbox.");
   });
 
   it("enforces responsible-user inbox allowlists", async () => {

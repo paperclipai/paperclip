@@ -265,6 +265,28 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
     expect(childEnvOf(res).XAI_API_KEY).toMatchObject({ type: "secret_ref", secretId: secret.id });
   });
 
+  it("inherits a native OpenCode parent's OPENROUTER_API_KEY reference when the hire inherits the caller runtime", async () => {
+    const companyId = await seedCompany();
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, companyId));
+    const secret = await createCompanySecret(companyId, "openrouter-parent-key");
+    const parent = await seedParentAgent(companyId, "paperclip_runner", {});
+    await db.update(agents).set({ adapterConfig: {
+      provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", opencodePermissionMode: "allow",
+      env: { OPENROUTER_API_KEY: secretRef(secret.id, { version: "latest" }), OPENCODE_CONFIG_CONTENT: "{\"provider\":{}}" },
+    } }).where(eq(agents.id, parent.id));
+
+    const res = await hire(agentActor(companyId, parent.id), companyId, {
+      name: "OpenCode Child", role: "qa", adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.agent.status).toBe("pending_approval");
+    const [child] = await db.select().from(agents).where(eq(agents.id, res.body.agent.id));
+    const env = (child!.adapterConfig as { env?: Record<string, unknown> }).env ?? {};
+    expect(env.OPENROUTER_API_KEY).toMatchObject({ type: "secret_ref", secretId: secret.id, version: "latest" });
+    expect(env.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+  });
+
   it.each(["create", "hire"] as const)("blocks native Claude credential redirection before %s inheritance", async mode => {
     const companyId = await seedCompany();
     const secret = await createCompanySecret(companyId, "fixture-parent-credential");

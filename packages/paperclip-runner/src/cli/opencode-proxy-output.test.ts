@@ -1,5 +1,5 @@
-import { afterEach, expect, it, vi } from "vitest";
-import { createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createBackpressuredFrameWriter, createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -70,4 +70,67 @@ it("flushes preceding text before an oversized original delta without retaining 
   vi.runAllTimers();
   output.flush();
   expect(write).toHaveBeenCalledTimes(2);
+});
+
+describe("backpressured frame writer", () => {
+  function sink() {
+    const lines: string[] = [];
+    let drain: (() => void) | undefined;
+    let accepting = false;
+    return {
+      lines,
+      write(chunk: string) { lines.push(chunk); return accepting; },
+      once(_event: "drain", listener: () => void) { drain = listener; },
+      resume() { accepting = true; const listener = drain; drain = undefined; listener?.(); },
+    };
+  }
+
+  it("holds frames past the stream's buffer and delivers them in order", () => {
+    const stream = sink();
+    const writer = createBackpressuredFrameWriter(stream);
+    for (const n of [1, 2, 3]) writer.write({ n });
+    expect(stream.lines).toEqual(['{"n":1}\n']);
+    expect(writer.queuedFrames).toBe(2);
+    stream.resume();
+    expect(stream.lines).toEqual(['{"n":1}\n', '{"n":2}\n', '{"n":3}\n']);
+  });
+
+  it("drops an aborted queued frame once and keeps later frames flowing", () => {
+    const stream = sink();
+    const writer = createBackpressuredFrameWriter(stream);
+    const call = new AbortController();
+    const abandoned = vi.fn();
+    writer.write({ n: 1 });
+    writer.write({ n: 2, call: true }, { signal: call.signal, onAbandoned: abandoned });
+    writer.write({ n: 3 });
+    call.abort();
+    call.abort();
+    expect(abandoned).toHaveBeenCalledOnce();
+    stream.resume();
+    expect(stream.lines).toEqual(['{"n":1}\n', '{"n":3}\n']);
+  });
+
+  it("does not withdraw a frame already handed to the stream", () => {
+    const stream = sink();
+    const writer = createBackpressuredFrameWriter(stream);
+    const call = new AbortController();
+    const abandoned = vi.fn();
+    writer.write({ n: 1 }, { signal: call.signal, onAbandoned: abandoned });
+    call.abort();
+    expect(abandoned).not.toHaveBeenCalled();
+    expect(stream.lines).toEqual(['{"n":1}\n']);
+  });
+
+  it("refuses an already-aborted frame and drains live frames on shutdown", () => {
+    const stream = sink();
+    const writer = createBackpressuredFrameWriter(stream);
+    const abandoned = vi.fn();
+    writer.write({ n: 1 });
+    writer.write({ n: 2 }, { signal: AbortSignal.abort(), onAbandoned: abandoned });
+    writer.write({ n: 3 });
+    expect(abandoned).toHaveBeenCalledOnce();
+    writer.drain();
+    expect(stream.lines).toEqual(['{"n":1}\n', '{"n":3}\n']);
+    expect(writer.queuedFrames).toBe(0);
+  });
 });

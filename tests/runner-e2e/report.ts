@@ -24,6 +24,7 @@ import {
   upgradeRunnerResult,
 } from "./history.js";
 import { resolveRunnerE2ESource } from "./source.js";
+import { isStandardEvidenceFile } from "./evidence.js";
 import { runnerE2ESummaryLinks } from "./summary-links.js";
 import type { RunnerE2EResult } from "./types.js";
 import { gradeRetainedDependableResults, type DependableQualification } from "./dependable-qualification.js";
@@ -120,6 +121,12 @@ async function stageDashboardEvidence(
     for (const relative of entry.evidence?.files ?? []) {
       const segments = safeEvidenceRelative(relative);
       if (!segments) continue;
+      // A private cell also lists its HTML report's trace viewer program files
+      // (font, SVG, web manifest). They are not evidence: the merged report has
+      // its own authenticated viewer, and the private report seal refuses these
+      // carrier types anywhere else, losing the whole report. Apply that same
+      // carrier rule here; the cell archive still keeps the files.
+      if (!isStandardEvidenceFile(path.join("html-report", ...segments))) continue;
       const source = path.join(entry.directory, ...segments);
       const destination = path.join(output, ...baseSegments, ...segments);
       const didCopy = await mkdir(path.dirname(destination), {

@@ -1,5 +1,5 @@
 // Generated from acpx-profiles.json and cursor-distributions.json. Do not edit.
-pub(crate) const QUALIFIED_ACPX_VERSION: &str = "0.13.1";
+pub(crate) const QUALIFIED_ACPX_VERSION: &str = "0.22.0";
 pub(crate) const ACPX_DRIVER_KIND: &str = "acpx_runtime";
 
 #[derive(Debug)]
@@ -81,7 +81,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_server_package: "@agentclientprotocol/claude-agent-acp",
             agent_server_version: "0.73.0",
             agent_runtime_package: Some("@anthropic-ai/claude-agent-sdk"),
-            agent_runtime_version: Some("0.3.286"),
+            agent_runtime_version: Some("0.3.328"),
             command_digest:
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             requires_provider_policy: false,
@@ -91,7 +91,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_server_package: "@agentclientprotocol/codex-acp",
             agent_server_version: "1.6.2",
             agent_runtime_package: Some("@openai/codex"),
-            agent_runtime_version: Some("0.160.0"),
+            agent_runtime_version: Some("0.170.0"),
             command_digest:
                 "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
             requires_provider_policy: false,

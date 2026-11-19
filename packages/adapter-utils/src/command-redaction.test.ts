@@ -11,6 +11,8 @@ describe("explicit diagnostic credential forms", () => {
 });
 import {
   REDACTED_COMMAND_TEXT_VALUE,
+  collectDiagnosticEnvironmentSecrets,
+  collectHostEnvironmentTokenSecrets,
   looksLikeCredentialJwt,
   redactDiagnosticText,
   redactCommandText,
@@ -182,5 +184,71 @@ describe("redactCommandText on long runs", () => {
       expect(redactWithinTimeBudget(`${run} --token run-secret`)).toBe(`${run} --token ${REDACTED_COMMAND_TEXT_VALUE}`);
       expect(redactWithinTimeBudget(`${run}--token run-secret`)).toBe(`${run}--token ${REDACTED_COMMAND_TEXT_VALUE}`);
     }
+  });
+});
+
+
+describe("diagnostic environment secret selection", () => {
+  it("does not infer secrets from ordinary configuration values", () => {
+    expect(collectDiagnosticEnvironmentSecrets({
+      FEATURE_FLAG: "1", WORKER_COUNT: "2", MODE: "safe", REGION: "us-east-1",
+      NODE_ENV: "production", HOME: "/home/operator", PORT: "3100", MAX_TOKENS: "4096",
+      PUBLIC_KEY_PATH: "/workspace/key.pem", KEYBOARD_LAYOUT: "us",
+      SORT_KEY: "created_at", CACHE_KEY: "cache-v1", ROUTING_KEY: "jobs",
+      PARTITION_KEY: "tenant_id", IDEMPOTENCY_KEY: "operation-123", PUBLIC_KEY: "public-material",
+    })).toEqual([]);
+  });
+
+  it.each(["API_KEY", "KEY", "ACCESS_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID",
+    "CLIENT_SECRET", "PASSWORD", "AUTHORIZATION", "PRIVATE_KEY", "API_KEY_PRODUCTION", "AWS_BEARER_TOKEN_BEDROCK"])(
+    "keeps short credentials private under %s", key => {
+      expect(collectDiagnosticEnvironmentSecrets({ [key]: "1" })).toEqual(["1"]);
+    },
+  );
+
+  it("recognizes credential content and declared bindings under arbitrary names", () => {
+    const jwt = `${Buffer.from('{"alg":"HS256"}').toString("base64url")}.e30.c2ln`;
+    const pem = "-----BEGIN PRIVATE KEY-----\nprivate-canary\n-----END PRIVATE KEY-----";
+    const key = "sk-fixturecredential12345";
+    const selected = collectDiagnosticEnvironmentSecrets({ A: jwt, B: pem, C: key, D: "safe", FEATURE_FLAG: "false" }, ["D"]);
+    expect(new Set(selected)).toEqual(new Set([jwt, pem, key, "safe"]));
+  });
+
+  // Host env of a desktop agent session: short ordinary values under names
+  // the allowlist does not know. Treating "vi" as a credential redacted it
+  // inside "service" in Sentry reports.
+  it("does not treat short or bare-number host process values under unknown names as credentials", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ CHILD_EDITOR: "vi", RUN_PHASE: "RUN", FEATURE_STATE: "off",
+      SESSION_PID: "67591", XPC_FLAGS: "0x0", ASK_TOOL: "true", BATCH_SIZE: "8", LONG_NUMBER: "123456789012",
+      CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH: "1" }, [], { hostProcess: true })).toEqual([]);
+    // Credential names keep short values private, and long opaque values stay private.
+    expect(collectDiagnosticEnvironmentSecrets({ AWS_ACCESS_KEY_ID: "1", CUSTOM_BINDING: "opaque-host-secret" }, [],
+      { hostProcess: true }).sort()).toEqual(["1", "opaque-host-secret"]);
+    // An agent's configured environment keeps the fail-closed rule.
+    expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "1" })).toEqual(["1"]);
+  });
+
+  it("keeps short host values private as whole tokens", () => {
+    const env = { CHILD_EDITOR: "vi", OPAQUE_SHORT: "k9Q", RUN_PHASE: "RUN", FEATURE_STATE: "off", LEVEL: "2",
+      SESSION_PID: "67591", LONG_SECRET: "opaque-host-secret", AWS_ACCESS_KEY_ID: "1" };
+    // Substring-private values are not repeated; only flag values (booleans, 0, 1) are exempt.
+    expect(collectHostEnvironmentTokenSecrets(env)).toEqual(["67591", "k9Q", "RUN", "vi", "2"]);
+    expect(collectHostEnvironmentTokenSecrets({ SHORT_PIN: "482", COUNT_FLAG: "1", OFF_FLAG: "0", MODE_FLAG: "yes" })).toEqual(["482"]);
+    expect(collectHostEnvironmentTokenSecrets(null)).toEqual([]);
+  });
+
+  it("keeps unknown opaque values private without declarations", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "opaque-host-secret" })).toEqual(["opaque-host-secret"]);
+  });
+
+  it("does not exempt credentials on ordinary-setting names", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ SORT_KEY: "opaque-secret", FEATURE_FLAG: "1" }, ["SORT_KEY", "FEATURE_FLAG"]))
+      .toEqual(["opaque-secret", "1"]);
+  });
+
+  it("extracts encoded URL passwords and deduplicates selected values", () => {
+    const url = "postgres://user:private%20password@db.test/database";
+    expect(new Set(collectDiagnosticEnvironmentSecrets({ DATABASE_URL: url, PASSWORD: "private password" })))
+      .toEqual(new Set([url, "private%20password", "private password"]));
   });
 });

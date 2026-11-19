@@ -103,12 +103,12 @@ Manual: With the personal Coordinator workspace enabled, discuss a vague request
 until the agent suggests a task. Confirm that no execution task exists before
 acceptance. Accept it, stay in chat, and open the created card on demand. An
 explicit request to create a task may create it directly under normal authority.
-Approve a work product or answer a question in its task or Needs You, then return
+Approve a work product or answer a question in its task or Inbox, then return
 to the originating chat. Its compact update should link to the exact recorded
 decision and reviewed artifact, without needing another coordinator turn.
 Approval of artifact quality alone must not publish it or complete the task.
 
-Coordinator task clarification: create a task with only a description. When material context is missing, native task guidance asks one focused canonical question inside that task. Its actionable form is also projected into Needs You and the originating standing chat; direct user-created tasks appear in the assigned agent’s standing chat. Answer on either surface and verify the pending card/count clear and a compact recorded answer replaces it in chat. This projection is event-refreshed and does not wake another agent merely to repeat the question. Current direct-task questions survive a chat reset; their answered receipts start at the current chat boundary. The task brief remains editable context, not another stored question. Model choice and actual resumed execution still require live verification.
+Coordinator task clarification: create a task with only a description. When material context is missing, native task guidance asks one focused canonical question inside that task. Its actionable form is also projected into Inbox and the originating standing chat; direct user-created tasks appear in the assigned agent’s standing chat. Answer on either surface and verify the pending card/count clear and a compact recorded answer replaces it in chat. This projection is event-refreshed and does not wake another agent merely to repeat the question. Current direct-task questions survive a chat reset; their answered receipts start at the current chat boundary. The task brief remains editable context, not another stored question. Model choice and actual resumed execution still require live verification.
 
 ### `conference-room`
 

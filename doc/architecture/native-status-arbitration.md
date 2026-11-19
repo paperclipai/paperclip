@@ -123,6 +123,41 @@ Under that policy, a result can complete the issue when:
 This produces `completion_claim_policy_accepted`. Independently governed tools
 and effects still enforce their own authorization and approval rules.
 
+### Pull request deliverables
+
+For repository implementation work, native task contracts retain delivery
+obligations across follow-up comments. Agents register their delivery PR as a
+`pull_request` work product and include its URL in result `artifacts`. Creating
+a local commit or opening a PR does not complete that delivery.
+
+Before accepting Done, the server verifies each non-archived PR work product and
+GitHub PR artifact with the company-scoped GitHub resolver. Only a verified merge
+passes. Agent-written `status` and `metadata.state` values cannot prove a merge.
+Open, draft, closed without merge, unavailable, and malformed PR deliverables
+keep the task open. The finish tool returns corrective feedback; finalization
+uses its existing bounded incomplete-work continuation. The agent can fix review
+or CI failures, use the existing monitor for an external wait, or report a
+concrete blocker. This creates no generic human completion approval.
+
+Reassessment uses the same bounded incomplete-delivery continuation as initial
+finalization. A stable unmerged PR does not create a status-race retry deadline.
+The proposed server status controls delivery validation, including when new
+evidence completes a result that previously reported another disposition.
+The transactional commit also checks these outputs, including reassessment
+paths. Human and agent work-product updates lock their source and destination
+tasks in a stable order before changing status or identity. Provider reads occur
+before the transaction, with at most twenty PRs and a shared ten-second abort
+signal for GitHub requests. The locked transaction requires merge proof
+for every current deliverable, so a changed output requires a new assessment.
+There is no new polling worker or schema. Existing saved contracts remain valid;
+new contracts include the delivery guidance and existing unfinished results use
+the server guard. Already terminal tasks are preserved.
+
+Entering a configured review stage keeps the task open and does not require a
+merge first. Conversation responses and server-assigned completion-review runs retain their
+own lifecycle. PR URLs mentioned only in prose as review input or background
+are not declared deliverables and do not create a merge obligation.
+
 ## Decision order
 
 `arbitrateNativeStatus()` is a pure function. It evaluates higher-authority
@@ -141,7 +176,8 @@ conditions before model disposition:
 | Runner reports `needs_review` without a decision, or an incomplete completion claim | Keep work with the agent | No automatic human approval; at most one corrective continuation, then a visible recovery action |
 | Runner reports a task-wide blocker | `blocked` | Persist blocker owner and unblock action |
 | Runner reports a current-track blocker | `in_progress` | Enqueue another productive track |
-| Runner reports `yielded` with a valid continuation | `in_progress` | Enqueue the declared continuation |
+| Runner reports `yielded` / `response_wake` with no admitted response source | `in_progress` | `response_wake_waiting_for_input`: no wake; the task shows "Waiting for a reply" until a comment, answer or status change wakes it |
+| Runner reports `yielded` with another valid continuation | `in_progress` | Enqueue the declared continuation |
 | Ordinary task reports `response_wake` and blocking remaining work, without a real wait | `in_progress` | Use the bounded incomplete-work continuation, then a visible recovery error if repair was already used |
 | Completion evidence is incomplete and continuation is forbidden | Preserve | Record a finalization error and named next action |
 | Completion evidence is otherwise incomplete | `in_progress` | Enqueue a bounded, idempotent continuation |
@@ -170,6 +206,33 @@ is queued. Edited, deleted, or superseded comments do not authorize replay of an
 old response. Recovery no longer treats an old committed passive wait as healthy
 when its report admits blocking work and its Board source is still current.
 Existing recovery gates continue to protect pauses, budgets, and ownership.
+
+A `response_wake` asks for the next response; it is never a request to run
+again now. Only a directly admitted Board comment, an authorized external chat,
+an accepted plan or a governance gate gives it a specific wait record. Every
+other `response_wake` parks the task as `response_wake_waiting_for_input`.
+Recovery treats that applied decision as a durable wait while it is the issue's
+latest decision and no user comment arrived after the run started. A comment,
+an interaction answer or a status change by someone else wakes the agent through
+its normal path.
+
+Declared continuations that do enqueue a wake (`issue_status_changed` with a
+`continuationKind`) are throttle candidates in the issue rewake throttle. After
+two consecutive successful runs with no issue-visible progress, the wake waits
+for the escalating cooldown. The native status dispatcher keeps the intent
+queued and dispatches it again at the cooldown deadline; it is never dropped.
+The native status committer's own `issue.updated` record does not count as
+progress or new input. The "Waiting for a reply" execution label shows only
+while the parked decision is still the issue's latest decision and the issue
+is `in_progress`.
+
+A completion claim stays `in_progress` as `native_child_completion_pending`
+while an undelivered child-completion wake for the same issue and agent is
+queued, claimed or deferred. Only a child result saved after the finishing run
+started counts as undelivered. A result saved before that run started was
+already visible to it, so the claim completes the task and the deferred wake
+is cancelled at release instead of starting another turn. A run with no
+recorded start keeps every such wake pending.
 
 ## Transactional decision commit
 

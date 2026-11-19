@@ -96,7 +96,7 @@ it.each([
     return handle;
   });
   const getCommand = controlPlane.DurablePrpControlPlane.prototype.getCommand;
-  const commandSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "getCommand").mockImplementation(function (id) {
+  const commandSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "getCommand").mockImplementation(function (this: controlPlane.DurablePrpControlPlane, id) {
     const command = getCommand.call(this, id);
     // Hold the SDK poll until the real process has exited. The authenticated
     // shutdown receipt and its ACK remain committed in the transport journal.
@@ -112,7 +112,7 @@ it.each([
   });
   let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
   try {
-    session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+    session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
     if (kind === "shutdown") {
       await expect(session.close({ reason: "Test complete" })).resolves.toBeUndefined();
       expect(exited).toBe(true);
@@ -152,7 +152,7 @@ it.each(["local", "local pending finish", "custom local directory", "external la
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
       normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
     runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
-    onSpawn: process => { spawned = process; },
+    onSpawn: async process => { spawned = process; },
     controlPlaneRegistration: async authority => {
       if (emptyController) {
         authority.setCheckpointPersistence(async saved => { checkpoint = controlPlane.decodeDurablePrpCheckpoint(new Map(saved.records)); });
@@ -190,7 +190,7 @@ it.each(["local", "local pending finish", "custom local directory", "external la
     };
   }
   const driver = new RunnerdDotDriver(options);
-  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
   const operation = (action: ExternalProviderOperation["action"], args: Record<string, unknown>): ExternalProviderOperation => ({
     requestId: randomUUID(), bindingId: input.provider.binding.bindingId, bindingGeneration: 1, runId: input.binding.runId,
     normalizedSessionId: input.session.normalizedSessionId!, turnId: options.identity.turnId, assignmentRevision: 1,

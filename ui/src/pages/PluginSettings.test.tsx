@@ -14,11 +14,14 @@ const mockPluginsApi = vi.hoisted(() => ({
   dashboard: vi.fn(),
   logs: vi.fn(),
   getConfig: vi.fn(),
+  saveConfig: vi.fn(),
   listLocalFolders: vi.fn(),
   configureLocalFolder: vi.fn(),
 }));
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockRoute = vi.hoisted(() => ({ pluginId: "plugin-1" }));
+const mockSlots = vi.hoisted(() => ({ slots: [] as Array<Record<string, unknown>> }));
 
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
@@ -40,12 +43,12 @@ vi.mock("@/context/CompanyContext", () => ({
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
   Navigate: () => null,
-  useParams: () => ({ companyPrefix: "PAP", pluginId: "plugin-1" }),
+  useParams: () => ({ companyPrefix: "PAP", pluginId: mockRoute.pluginId }),
 }));
 
 vi.mock("@/plugins/slots", () => ({
-  PluginSlotMount: () => null,
-  usePluginSlots: () => ({ slots: [] }),
+  PluginSlotMount: ({ slot }: { slot: { id: string } }) => <div data-testid="settings-slot">{slot.id}</div>,
+  usePluginSlots: () => ({ slots: mockSlots.slots }),
 }));
 
 vi.mock("@/components/PageTabBar", () => ({
@@ -168,6 +171,139 @@ describe("PluginSettings", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    mockRoute.pluginId = "plugin-1";
+    mockSlots.slots = [];
+  });
+
+  it("shows a plugin's custom settings page when the route names the plugin by key", async () => {
+    mockRoute.pluginId = "acme.website-preview";
+    mockSlots.slots = [
+      { id: "settings", type: "settingsPage", pluginId: "plugin-1", pluginKey: "acme.website-preview" },
+      { id: "other-settings", type: "settingsPage", pluginId: "plugin-2", pluginKey: "acme.other" },
+    ];
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "acme.website-preview",
+      status: "ready",
+      manifestJson: { displayName: "Website Preview", version: "0.1.0", capabilities: [] },
+    }));
+
+    const root = await renderSettings(container);
+
+    const mounted = [...container.querySelectorAll('[data-testid="settings-slot"]')].map((node) => node.textContent);
+    expect(mounted).toEqual(["settings"]);
+    expect(container.textContent).not.toContain("This plugin does not require any settings.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  describe("generated configuration saves", () => {
+    beforeEach(() => {
+      mockPluginsApi.get.mockResolvedValue(basePlugin({
+        manifestJson: {
+          displayName: "Default configuration",
+          instanceConfigSchema: {
+            type: "object",
+            properties: { label: { type: "string", default: "Default" } },
+          },
+        },
+      }));
+    });
+
+    it("saves defaults without edits and disables saving after the row exists", async () => {
+      const saved = { configJson: { label: "Default" } };
+      mockPluginsApi.getConfig.mockResolvedValue(null);
+      let finishSave!: (value: typeof saved) => void;
+      mockPluginsApi.saveConfig.mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
+      const root = await renderSettings(container);
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+
+      expect(button.disabled).toBe(false);
+      await act(async () => { button.click(); });
+      expect(mockPluginsApi.saveConfig).toHaveBeenCalledWith("plugin-1", "company-1", { label: "Default" });
+      expect(button.disabled).toBe(true);
+
+      mockPluginsApi.getConfig.mockResolvedValue(saved);
+      await act(async () => { finishSave(saved); });
+      await flushReact();
+      await flushReact();
+      expect(button.disabled).toBe(true);
+      await act(async () => { root.unmount(); });
+    });
+
+    it.each([{}, { label: "Default" }])("keeps unchanged saved values disabled: %j", async (configJson) => {
+      mockPluginsApi.getConfig.mockResolvedValue({ configJson });
+      const root = await renderSettings(container);
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+      expect(button.disabled).toBe(true);
+      const input = container.querySelector("input")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Changed");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(button.disabled).toBe(false);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Default");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(button.disabled).toBe(true);
+      await act(async () => { root.unmount(); });
+    });
+
+    it("does not allow an initial save when configuration loading fails", async () => {
+      mockPluginsApi.getConfig.mockRejectedValue(new Error("Unavailable"));
+      const root = await renderSettings(container);
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+      expect(button.disabled).toBe(true);
+      await act(async () => { button.click(); });
+      expect(mockPluginsApi.saveConfig).not.toHaveBeenCalled();
+      await act(async () => { root.unmount(); });
+    });
+
+    it("waits for configuration loading before offering an initial save", async () => {
+      let finishLoad!: (value: null) => void;
+      mockPluginsApi.getConfig.mockImplementation(() => new Promise((resolve) => { finishLoad = resolve; }));
+      const root = await renderSettings(container);
+      expect(Array.from(container.querySelectorAll("button")).some(
+        (item) => item.textContent === "Save Configuration",
+      )).toBe(false);
+      await act(async () => { finishLoad(null); });
+      await flushReact();
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+      expect(button.disabled).toBe(false);
+      await act(async () => { root.unmount(); });
+    });
+
+    it("validates required fields before saving a missing configuration", async () => {
+      mockPluginsApi.get.mockResolvedValue(basePlugin({
+        manifestJson: {
+          displayName: "Required configuration",
+          instanceConfigSchema: {
+            type: "object",
+            properties: { label: { type: "string" } },
+            required: ["label"],
+          },
+        },
+      }));
+      mockPluginsApi.getConfig.mockResolvedValue(null);
+      const root = await renderSettings(container);
+      const button = Array.from(container.querySelectorAll("button")).find(
+        (item) => item.textContent === "Save Configuration",
+      )!;
+      expect(button.disabled).toBe(false);
+      await act(async () => { button.click(); });
+      expect(mockPluginsApi.saveConfig).not.toHaveBeenCalled();
+      await act(async () => { root.unmount(); });
+    });
   });
 
   it("routes environment-provider plugins to instance environments when they have no instance config", async () => {

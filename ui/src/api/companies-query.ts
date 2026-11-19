@@ -5,6 +5,7 @@ import { companiesApi } from "./companies";
 import { ApiError } from "./client";
 import { queryKeys } from "../lib/queryKeys";
 import { useBootstrapQuery } from "./bootstrap-query";
+import { hasUnverifiedSession } from "../lib/cached-session";
 
 export type CompanyListResult = { companies: Company[]; unauthorized: boolean };
 
@@ -56,6 +57,11 @@ const sessionQueryOptions = {
   queryFn: () => authApi.getSession(),
 } as const;
 
+/** Observe the shared session read when a surface needs error and retry state. */
+export function useAccountSessionQuery() {
+  return useQuery(sessionQueryOptions);
+}
+
 /**
  * The signed-in account, as the cache currently understands it.
  *
@@ -78,7 +84,7 @@ export function useAccountIdentity(): {
   bootstrap: BoardBootstrap | undefined;
   updatedAt: number;
 } {
-  const { data: session, isSuccess, isError, dataUpdatedAt } = useQuery(sessionQueryOptions);
+  const { data: session, isSuccess, isError, dataUpdatedAt } = useAccountSessionQuery();
   const userId = session?.user.id ?? null;
   return {
     userId, settled: isSuccess, failed: isError, updatedAt: dataUpdatedAt,
@@ -140,7 +146,7 @@ export async function resolveAccountUserId(queryClient: QueryClient): Promise<st
   // breath. The entry is still `success`, still holding the *old* user, until a
   // refetch lands; trusting it would key the new account's list to the old
   // account's id, which is the misattribution this whole file exists to prevent.
-  if (state?.status === "success" && !state.isInvalidated) {
+  if (state?.status === "success" && !state.isInvalidated && !hasUnverifiedSession(queryClient)) {
     return state.data?.user.id ?? null;
   }
   const session = await queryClient.fetchQuery({ ...sessionQueryOptions, staleTime: 0 });

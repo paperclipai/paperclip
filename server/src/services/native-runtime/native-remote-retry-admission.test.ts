@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, companies, completionContracts, databaseWorkPending, environmentLeases, reconcileDatabaseWork, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
+import { agents, agentWakeupRequests, companies, completionContracts, databaseWorkPending, environmentLeases, reconcileDatabaseWork, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
   issueTreeHolds, issueTreeHoldMembers, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
@@ -156,11 +156,12 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     const dependencies = createHeartbeatQueueTestDependencies(f.db);
     dependencies.getAgent.mockResolvedValue(agent);
     dependencies.instanceSettings.getExperimental.mockImplementation(() => instanceSettingsService(f.db).getExperimental());
-    dependencies.wakeQueue.admitWakeBehindIssueExecution.mockResolvedValue({ kind: "deferred" });
-    await createHeartbeatQueue(f.db, dependencies).enqueueWakeup(f.agentId, { source: "assignment", reason: "issue_assigned",
-      requestedByActorType: "system", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
+    expect(await createHeartbeatQueue(f.db, dependencies).enqueueWakeup(f.agentId, { source: "assignment", reason: "issue_assigned",
+      allowRunCoalescing: false, requestedByActorType: "system", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } })).toBeNull();
     expect(dependencies.executeRun).not.toHaveBeenCalled();
-    expect(dependencies.wakeQueue.admitWakeBehindIssueExecution).toHaveBeenCalledOnce();
+    const [wake] = await f.db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${f.issueId}`));
+    expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
     expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
       .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
   });
@@ -461,6 +462,46 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
         processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
   });
 
+  it("executes the one replacement attempt after the last attempt's first unanswered recovery read, and no further one", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    const [issue] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
+    const execution: NativeExecutionInputV1 = {
+      schema: "paperclip.native-execution-input.v1",
+      binding: { companyId: f.companyId, runId: f.runId, issueId: f.issueId, agentId: f.agentId, executionWorkspaceId: f.runId },
+      provider: { kind: "codex", model: "gpt-5.6-luna" },
+      task: { identifier: issue.identifier!, title: issue.title, description: null, prompt: "Continue retained work.", workMode: "standard" },
+      workspace: { cwd: environment.current.runtimeRoot, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: f.native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
+        contract: buildNativeCompletionContract(issue, { revision: contract.revision }) },
+      interactionResponses: [], credentialBindings: [],
+    };
+    await f.db.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb)
+      || ${JSON.stringify({ nativeExecutionInput: execution })}::jsonb` }).where(eq(heartbeatRuns.id, f.runId));
+    await f.db.update(nativeRunFinalizations).set({ attempt: 3, failureDetail: {
+      message: "native_session_recovery_failed: HarnessCapabilityUnavailableError: read is unavailable: Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 412 84s ago)",
+      recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true, checkpointExists: true,
+      providerEventsExist: true, recoverable: true, adoptedRunnerUnanswered: true,
+    } }).where(eq(nativeRunFinalizations.runId, f.runId));
+    provider.execute.mockReset().mockRejectedValue(new Error("replacement attempt reached the provider session"));
+    const controller = await currentNativeControllerIdentity();
+    const [claim] = await claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] });
+    expect(claim).toMatchObject({ kind: "reattach_remote_runner", providerAttempt: 4, replaceUnansweredRunner: true });
+    if (claim.kind !== "reattach_remote_runner") throw new Error("Expected the replacement claim");
+    await expect(executePaperclipNativeSession({ db: f.db, execution, runnerInstanceId: f.native.runnerInstanceId,
+      leaseOwner: claim.leaseOwner, restartRecovery: claim,
+      backend: { descriptor: async () => { throw new Error("Unexpected descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected session launch"); } },
+    })).rejects.toThrow("replacement attempt reached the provider session");
+    expect(provider.execute).toHaveBeenCalledTimes(1);
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ attempt: 4, phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null });
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] })).toEqual([]);
+  });
+
   it.each((["remote", "plugin"] as const).flatMap(storage => (["released", "retained"] as const).map(lock => [storage, lock] as const)))
   ("does not admit another failed %s retry when the persisted provider budget is already exhausted with a %s task lock", async (storage, lock) => {
     const f = await failedRemoteRun(storage);
@@ -567,6 +608,50 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     }
   });
 
+  it.each(["superseded", "released"] as const)("settles a %s bootstrap retry that lost its task lock instead of re-checking forever", async lock => {
+    const f = await failedRemoteRun("remote");
+    // A bootstrap retry follows a pre-provider failure: no checkpoint, provider session or provider events.
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const { sessionCheckpoint: _checkpoint, ...profile } = run.runnerProfileJson ?? {};
+    await f.db.update(heartbeatRuns).set({ errorCode: "provider_session_open_rejected", runnerProfileJson: profile })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await f.db.delete(nativeRunnerCheckpoints)
+      .where(and(eq(nativeRunnerCheckpoints.companyId, f.companyId), eq(nativeRunnerCheckpoints.runId, f.runId)));
+    await f.db.update(nativeRunFinalizations).set({ failureCode: "provider_session_open_rejected", failureDetail: {
+      recoveryMode: "bootstrap_retry", providerSessionEstablished: false, checkpointExists: false, providerEventsExist: false,
+    } }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (lock === "superseded") {
+      const [newer] = await f.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+        status: "running", createdAt: new Date(Date.now() + 1_000) }).returning({ id: heartbeatRuns.id });
+      await f.db.update(issues).set({ executionRunId: newer.id }).where(eq(issues.id, f.issueId));
+    }
+    const onClaim = vi.fn();
+    const attempt = (now: Date) => claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId], now, onClaim });
+    let now = new Date();
+    let passes = 0;
+    for (; passes <= SYSTEM_RECOVERY_MAX_RETRIES + 1; passes++) {
+      const [disposition] = await attempt(now);
+      expect(disposition).toMatchObject({ kind: "blocked" });
+      const [coordinator] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      if (coordinator.phase === "terminal_failure") break;
+      if (!("retryAt" in disposition) || !disposition.retryAt) throw new Error("a deferred bootstrap retry must persist its deadline");
+      expect(coordinator.nextAttemptAt).toEqual(disposition.retryAt);
+      now = disposition.retryAt;
+    }
+    expect(passes).toBe(lock === "superseded" ? 0 : SYSTEM_RECOVERY_MAX_RETRIES);
+    expect(onClaim).not.toHaveBeenCalled();
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", nextAttemptAt: null, attempt: 1, failureCode: "native_restart_recovery_blocked" });
+    expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId)))
+      .toMatchObject([{ ownerType: "board", wakePolicy: null }]);
+    const transaction = vi.spyOn(f.db, "transaction");
+    try {
+      for (const elapsed of [30_000, 3_600_000]) expect(await attempt(new Date(now.getTime() + elapsed))).toEqual([]);
+      expect(transaction).not.toHaveBeenCalled();
+    } finally { transaction.mockRestore(); }
+  });
+
   it.each(["paused", "Stop", "missing-authority"] as const)("bounds %s holds and preserves the provider and own task lock for manual reconciliation", async gate => {
     const f = await failedRemoteRun("remote");
     if (gate === "paused") await f.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
@@ -607,7 +692,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId)))
       .toMatchObject([{ ownerType: "board", wakePolicy: null,
         evidence: { automaticAdmissionExhausted: true, executorStopEvidence: "unverified", providerPid: 1386, checkpointPreserved: true },
-        nextAction: expect.stringContaining("original executor stop and state remain unverified") }]);
+        nextAction: "This run stopped before it finished. Your saved work is kept." }]);
     expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
       restartKind: "hard", runIds: [f.runId], now: new Date(now.getTime() + 3_600_000) })).toEqual([]);
   });

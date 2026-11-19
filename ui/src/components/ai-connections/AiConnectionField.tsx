@@ -27,6 +27,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function aiProviderForAdapter(
   adapterType: string,
@@ -143,7 +145,7 @@ export function AiConnectionField({
       )}
       {(compatiblePools.length > 0 || value?.mode === "router") && <label className="block space-y-1 text-sm">
         AI connection
-        <select className="block w-full rounded-md border bg-background px-3 py-2" disabled={readOnly} value={value?.mode === "router" ? value.connectionId : ""} onChange={event => {
+        <select className={cn("block w-full rounded-md border bg-background px-3 py-2", ANALYTICS_MASK_CLASS)} disabled={readOnly} value={value?.mode === "router" ? value.connectionId : ""} onChange={event => {
           if (event.target.value) changeBinding({ mode: "router", connectionId: event.target.value });
           else changeBinding({ mode: "responsible_user", provider, method });
         }}>
@@ -178,14 +180,14 @@ export function AiConnectionField({
           if (!open) setPendingAdoption(undefined);
         }}
       >
-        <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
+        <DialogContent className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl", ANALYTICS_MASK_CLASS)} onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
-            <DialogTitle>{pendingAdoption?.mode === "router" ? `Use ${accounts.data?.pools?.find(pool => pool.id === pendingAdoption.connectionId)?.name ?? "this pool"}?` : `Adopt Connections for ${agentName}`}</DialogTitle>
+            <DialogTitle className={ANALYTICS_MASK_CLASS}>{pendingAdoption?.mode === "router" ? `Use ${accounts.data?.pools?.find(pool => pool.id === pendingAdoption.connectionId)?.name ?? "this pool"}?` : `Adopt Connections for ${agentName}`}</DialogTitle>
             <DialogDescription>
               {pendingAdoption?.mode === "router" ? "Reset existing sessions that use an account outside this pool." : "Saving validates access to the selected connection. Existing sessions keep their account or require an explicit reset before adoption."}
             </DialogDescription>
           </DialogHeader>
-          {pendingAdoption?.mode !== "router" && <p className="text-sm">
+          {pendingAdoption?.mode !== "router" && <p className={cn("text-sm", ANALYTICS_MASK_CLASS)}>
             {pendingAdoption?.mode === "responsible_user"
               ? `Responsible user’s default. For you: ${pendingAccount ? aiConnectionDisplayLabel(pendingAccount) : "Not connected"}. Other users use their own default.`
               : pendingAccount && aiConnectionDisplayLabel(pendingAccount)}
@@ -213,7 +215,7 @@ export function AiConnectionField({
         </DialogContent>
       </Dialog>
       <Dialog open={connecting} onOpenChange={(open) => { if (!selectDefault.isPending) setConnecting(open); }}>
-        <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
+        <DialogContent className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl", ANALYTICS_MASK_CLASS)} onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
             <DialogTitle>{reconnecting ? "Reconnect account" : "Connect account"}</DialogTitle>
             <DialogDescription>
@@ -252,6 +254,7 @@ export function AiConnectionField({
             agentIds={agentId ? [agentId] : []}
             allAgents={allAgents}
             environmentId={environmentId}
+            loginAgentId={agentId}
             onCancel={() => setConnecting(false)}
             onComplete={(result) => {
               setSavedAccount(result);

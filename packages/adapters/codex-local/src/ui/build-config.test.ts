@@ -195,10 +195,11 @@ describe("buildPaperclipRunnerConfig", () => {
       extraArgs: "--unsafe",
     }));
 
+    // No lifecycle choice stores none; the server applies the product default.
+    expect(config).not.toHaveProperty("lifecycleMode");
     expect(config).toMatchObject({
       provider: "codex",
       codexPermissionMode: "never",
-      lifecycleMode: "per_turn",
       model: "gpt-5.4",
       modelReasoningEffort: "high",
       timeoutSec: 0,
@@ -378,7 +379,7 @@ describe("buildPaperclipRunnerConfig", () => {
   it("uses the Codex default when no model was selected", () => {
     expect(buildPaperclipRunnerConfig(makeValues({ model: "" }))).toMatchObject({
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
     });
   });
 

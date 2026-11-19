@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import type { ChatEndpoint } from "@/api/chatEndpoints";
 import { ManagedSlackSetup } from "./ManagedSlackSetup";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const api = vi.hoisted(() => ({ slackSetupOptions: vi.fn(), provisionManagedSlack: vi.fn(), authorizeSlackManager: vi.fn(), get: vi.fn() }));
 vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: api }));
@@ -26,7 +27,7 @@ beforeEach(() => {
   api.authorizeSlackManager.mockResolvedValue({ authorizationUrl: "https://slack.com/oauth" });
   navigation.mockImplementation(() => new Promise(() => {}));
 });
-afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
+afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.restoreAllMocks(); });
 async function render(overrides = {}) {
   await act(async () => { root.render(<StrictMode><QueryClientProvider client={client}><ManagedSlackSetup {...props()} {...overrides} /></QueryClientProvider></StrictMode>); });
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
@@ -126,4 +127,52 @@ it("does not silently retry an ambiguous request after refresh of setup options"
   api.provisionManagedSlack.mockRejectedValue(new Error("Request failed"));
   await render(); await render();
   expect(api.provisionManagedSlack).toHaveBeenCalledTimes(1);
+});
+
+it.each(["popup", "fallback"])("continues after manager authorization returns through the %s", async (mode) => {
+  const popup = { closed: false, opener: window, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+  popup.location.assign.mockImplementation((url: string) => { popup.location.href = url; });
+  vi.spyOn(window, "open").mockReturnValue(mode === "popup" ? popup as unknown as Window : null);
+  navigation.mockResolvedValue({ kind: "authorization", url: "https://slack.com/oauth" });
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [] });
+  const onSaved = vi.fn();
+  await render({ onSaved });
+  expect(api.authorizeSlackManager).toHaveBeenCalledTimes(1);
+
+  if (mode === "popup") {
+    // Returning focus while Slack is still open must not interrupt sign-in.
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(api.get).not.toHaveBeenCalled();
+    expect(popup.close).not.toHaveBeenCalled();
+    popup.location.href = `${window.location.origin}/UIP/apps/chat/connect?provider=slack&resume=endpoint`;
+  }
+  if (mode === "fallback") {
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+    expect(container.querySelector('a[target="_blank"]')?.textContent).toBe("Open sign-in in a new tab");
+    expect(api.provisionManagedSlack).not.toHaveBeenCalled();
+  }
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [{ grantId: "grant", workspaceName: "Paperclip" }] });
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+  expect(onSaved).toHaveBeenCalledWith(endpoint);
+  expect(api.provisionManagedSlack).not.toHaveBeenCalled();
+  const button = Array.from(container.querySelectorAll("button")).find(item => item.textContent === "Continue")!;
+  await act(async () => button.click());
+  expect(api.authorizeSlackManager).toHaveBeenCalledTimes(1);
+  expect(api.provisionManagedSlack).toHaveBeenCalledWith("endpoint", expect.objectContaining({ grantId: "grant" }));
+});
+it("keeps the chosen workspace name out of session replay in the closed picker", async () => {
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [{ grantId: "one", workspaceName: "Globex Sales" }, { grantId: "two", workspaceName: "Initech Ops" }] });
+  endpoint.setup!.slackRegistration = { status: "failed", managerGrantId: "two" } as NonNullable<ChatEndpoint["setup"]>["slackRegistration"];
+  await render();
+  const trigger = container.querySelector('[aria-label="Slack workspace"]');
+  expect(trigger?.textContent).toContain("Initech Ops");
+  expect(replayLeaks("Initech Ops", document.body)).toEqual({ rendered: true, recorded: false });
+});
+it("keeps the only workspace name out of session replay", async () => {
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [{ grantId: "grant", workspaceName: "Globex Sales" }] });
+  endpoint.setup!.slackRegistration = { status: "failed" } as NonNullable<ChatEndpoint["setup"]>["slackRegistration"];
+  await render();
+  expect(replayLeaks("Globex Sales", document.body)).toEqual({ rendered: true, recorded: false });
 });
