@@ -1,29 +1,5 @@
-import type { InfiniteData, QueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queryKeys";
-
-type Child = { id: string; parentId?: string | null; companyId: string };
-
-/** Parent hints are separately authorized by live delivery, never raw details. */
-export function refreshRecentSubtasks(
-  client: QueryClient,
-  companyId: string,
-  issueId: string | null,
-  parentIds: readonly string[] = [],
-  viewerId?: string | null,
-) {
-  const parents = new Set(parentIds);
-  if (issueId) parents.add(issueId);
-  for (const query of client.getQueryCache().findAll({
-    queryKey: [...queryKeys.issues.list(companyId), "recent-subtasks"],
-  })) {
-    if (viewerId !== undefined && query.queryKey[3] !== (viewerId ?? "__local_board__")) continue;
-    const data = query.state.data as InfiniteData<Child[]> | undefined;
-    if (parents.has(String(query.queryKey[4])) || data?.pages?.some(page =>
-      Array.isArray(page) && page.some(child => child.companyId === companyId && child.id === issueId))) {
-      void client.invalidateQueries({ queryKey: query.queryKey, exact: true });
-    }
-  }
-}
 
 export function refreshRecentTaskSummaries(
   client: QueryClient, companyId: string, issueId: string | null,

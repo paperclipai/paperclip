@@ -578,3 +578,19 @@ describe("Codex app-server driver boundary snapshots for provider-started turns"
     await session.close({ reason: "fixture complete" });
   });
 });
+
+it("keeps a refused relaunch as its own error so the caller can start ordinary recovery", async () => {
+  const first = new FakeCodexTransport();
+  const second = new FakeCodexTransport();
+  const third = new FakeCodexTransport();
+  const driver = makeDriver([first, second, third]);
+  const original = await driver.openSession({
+    runId: "provider-turn", normalizedSessionId: "provider-turn-session", workingDirectory: WORKSPACE,
+  });
+  const checkpoint = await original.snapshot();
+  await original.close({ reason: "released" });
+  second.rejectMethods.set("thread/resume", new Error("native_runner_reuse_unavailable"));
+  await expect(driver.recoverSession!(checkpoint)).rejects.toThrow(/^native_runner_reuse_unavailable$/);
+  third.rejectMethods.set("thread/resume", new Error("native_runner_other_failure"));
+  await expect(driver.recoverSession!(checkpoint)).resolves.toMatchObject({ recovered: false, reason: expect.stringContaining("native_runner_other_failure") });
+});

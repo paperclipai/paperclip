@@ -75,6 +75,26 @@ describe("release and resume task contract", () => {
     expect(environmentTaskResultSchema.safeParse({ ...result, runner: { ...runner, extra: true } }).success).toBe(false);
   });
 
+  it("relaunches as the claimant's identity only when asked, and reports the archived state", () => {
+    expect(environmentTaskResultSchema.parse({ ...description, resumeIdentityVersion: 1 })).toEqual({ ...description, resumeIdentityVersion: 1 });
+    expect(environmentTaskResultSchema.safeParse({ ...description, resumeIdentityVersion: 2 }).success).toBe(false);
+    const runner = { runId: "claimant-run", turnId: "turn-claimant-run", itemId: "item-claimant-run" };
+    const relaunch = { ...resume, runner };
+    expect(environmentTaskOperationSchema.parse(relaunch)).toEqual(relaunch);
+    for (const changed of [{ ...runner, sessionId: "other" }, { ...runner, runId: undefined }, { ...runner, turnId: "" }]) {
+      expect(environmentTaskOperationSchema.safeParse({ ...resume, runner: changed }).success).toBe(false);
+    }
+    const build = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
+    const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
+    const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState };
+    expect(parseEnvironmentTaskResult(relaunch, "task", resumed)).toEqual(resumed);
+    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState: undefined })).toThrow();
+    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, runner: undefined })).toThrow();
+    expect(() => parseEnvironmentTaskResult(resume, "task", resumed)).toThrow();
+    expect(parseEnvironmentTaskResult(relaunch, "task", { kind: "resume", taskId: "task", outcome: "unavailable" }))
+      .toEqual({ kind: "resume", taskId: "task", outcome: "unavailable" });
+  });
+
   it.each(credentials)("validates %s on resume as on submit", (_label, credential, valid) => {
     expect(environmentTaskOperationSchema.safeParse({ ...submit, credential }).success).toBe(valid);
     expect(environmentTaskOperationSchema.safeParse({ ...resume, credential }).success).toBe(valid);
