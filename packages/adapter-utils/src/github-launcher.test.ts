@@ -111,6 +111,30 @@ describe("managed GitHub launchers", () => {
     expect(result.stderr).not.toContain("broker_transport_unavailable");
     expect(result.stderr).not.toMatch(/host-token|run-capability/);
   });
+  it("asks the callback bridge, not the unreachable server address, for credentials when API calls are bridged", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-bridged-"));
+    cleanups.push(() => rm(root, {recursive:true,force:true}));
+    const bin = path.join(root,"managed"), realBin = path.join(root,"real");
+    await mkdir(bin); await mkdir(realBin);
+    await writeFile(path.join(bin,"gh"), githubLauncherSource(), {mode:0o700});
+    await writeFile(path.join(realBin,"gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({token:process.env.GH_TOKEN ?? null}));', {mode:0o700});
+    const paths: string[] = [];
+    const server = createServer((req,res) => {
+      paths.push(req.url ?? "");
+      res.setHeader("content-type","application/json");
+      res.end(JSON.stringify({status:"available",env:{GH_TOKEN:"managed-token"}}));
+    });
+    await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const {port} = server.address() as {port:number};
+    // The broker URL points at an address nothing listens on, like the server's loopback inside a pod.
+    const env = {...process.env,...githubBrokerEnvironment({},{url:"http://127.0.0.1:1",token:"run-capability"}),
+      PAPERCLIP_API_BRIDGE_MODE:"queue_v1",PAPERCLIP_API_URL:`http://127.0.0.1:${port}`,PAPERCLIP_API_KEY:"bridge-key",PATH:`${bin}:${realBin}:${process.env.PATH}`};
+    const result = await exec(path.join(bin,"gh"), [], {env});
+    expect(JSON.parse(result.stdout)).toEqual({token:"managed-token"});
+    expect(paths).toEqual(["/runtime-tools/github/credentials"]);
+    expect(result.stderr).not.toContain("broker_transport_unavailable");
+  });
   it("captures each command's identity and clears host credentials when the next person has none", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-launcher-test-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

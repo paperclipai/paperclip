@@ -49,7 +49,13 @@ async function main() {
       GIT_CONFIG_KEY_3: 'core.askPass', GIT_CONFIG_VALUE_3: '',
       GIT_CONFIG_KEY_4: 'user.useConfigOnly', GIT_CONFIG_VALUE_4: 'true',
     });
-    const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
+    // When API traffic goes through a callback bridge, the bridge address in
+    // PAPERCLIP_API_URL is the only route back to the control plane. The
+    // configured broker URL is the server's own address (often loopback), which
+    // a bridged runtime such as a network-isolated sandbox pod cannot reach.
+    const base = env.PAPERCLIP_API_BRIDGE_MODE && env.PAPERCLIP_API_URL
+      ? env.PAPERCLIP_API_URL
+      : env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
     try {
     let response;
     if (base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
