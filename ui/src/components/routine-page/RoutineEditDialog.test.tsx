@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { forwardRef, useImperativeHandle } from "react";
+import { forwardRef, useImperativeHandle, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +59,7 @@ describe("RoutineEditDialog", () => {
     draft: RoutineFormDraft = initial,
     initialFocus?: "instructions",
     webhooks: RoutineTrigger[] = [],
+    extra: Partial<ComponentProps<typeof RoutineEditDialog>> = {},
   ) {
     await act(async () => {
       root.render(
@@ -75,6 +76,7 @@ describe("RoutineEditDialog", () => {
           secrets={[]}
           onSave={onSave}
           onCreateSecret={vi.fn()}
+          {...extra}
         />,
       );
       await flush();
@@ -111,6 +113,14 @@ describe("RoutineEditDialog", () => {
     expect(document.body.textContent).toContain("Webhooks save right away.");
     await act(async () => { button("Done")!.click(); await flush(); });
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("shows a webhook error next to Done", async () => {
+    await render();
+    const hook = { id: "webhook-1", kind: "webhook", signingMode: "app_webhook", enabled: true } as RoutineTrigger;
+    await render(initial, undefined, [], { removedWebhooks: [hook], error: "Couldn't restore the webhook." });
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe("Couldn't restore the webhook.");
+    expect(button("Done")).toBeDefined();
   });
 
   it("keeps the same Add secret button after the first secret", async () => {

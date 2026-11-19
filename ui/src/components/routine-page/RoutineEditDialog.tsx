@@ -542,7 +542,11 @@ export function RoutineEditDialog({
             </>
           ) : savedAlready ? (
             <>
-              <p className="text-sm text-muted-foreground">Webhooks save right away.</p>
+              {error ? (
+                <p className="min-w-0 flex-1 text-sm text-destructive" role="alert">{error}</p>
+              ) : (
+                <p className="text-sm text-muted-foreground">Webhooks save right away.</p>
+              )}
               <Button onClick={() => onOpenChange(false)}>Done</Button>
             </>
           ) : (
