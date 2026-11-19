@@ -6,9 +6,20 @@
  * don't fail typecheck if Telegram adds new fields.
  */
 
+/**
+ * Config as the host stores it. `botToken` must be a secret binding; any
+ * other value (a literal token, a legacy secret name) is refused at use time.
+ */
+export type StoredPluginConfig = Omit<PluginConfig, "botToken"> & {
+  botToken?: unknown;
+};
+
+/** Config after `loadConfig`: the token is resolved and lives only in memory. */
 export interface PluginConfig {
-  /** Telegram bot token, or the name of a Paperclip secret holding the token. */
+  /** Resolved Telegram bot token. Never stored, logged or returned to the UI. */
   botToken?: string;
+  /** Why a stored `botToken` was refused. Set only when `botToken` is absent. */
+  botTokenError?: string;
   /** Base URL for deep links into the Paperclip dashboard. */
   paperclipBaseUrl?: string;
   /** Per-event-class on/off switches. All default true. */

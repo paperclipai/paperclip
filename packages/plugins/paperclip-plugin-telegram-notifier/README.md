@@ -35,7 +35,7 @@ The handshake requires control of *both* ends, so neither half on its own is eno
 
 The settings page works on the company selected in the dashboard. Plugin config is stored per company, so switch the company in the dashboard to configure another one.
 
-1. Install the plugin and paste your bot token in **Settings → Telegram Notifier → Telegram bot token**. After saving the token is masked (`1234567890:••••AAAA`); click the eye icon to reveal. Companies can use the same bot or different bots.
+1. Store the bot token from `@BotFather` as a company secret (**Company settings → Secrets**). Then install the plugin, select that secret in **Settings → Telegram Notifier → Telegram bot token secret**, and click **Save**. The plugin keeps only the secret reference and resolves the token when it calls Telegram; a literal token is not accepted. Companies can use the same bot or different bots.
 2. On the company card, click **Start pairing**. The plugin enters `awaiting_chat` mode for 10 minutes. Only one handshake runs at a time per instance; while another company is pairing, **Start pairing** is disabled until that window ends.
 3. Open your bot in Telegram and send any message. The bot replies with a 6-character verification code addressed to that company. In a group, the bot sends the code to the sender's private chat instead, so press **Start** in a private chat with the bot first; that sender becomes the chat's operator. If the bot cannot reach the sender privately, it posts the code in the group and the group has no operator: Approve/Decline, replies and `/unpair` from the group stay off until you pair again.
 4. Paste the code into the **Confirm pairing** input back in Paperclip. The bot sends a confirmation in Telegram, the company card shows ✅ paired. The Paperclip user who confirms is recorded as the chat's operator (see *Replies* below).
@@ -73,7 +73,7 @@ Stored per company (the host keeps one plugin config row per company):
 
 | Field | Type | Notes |
 |---|---|---|
-| `botToken` | string | Bot API token from `@BotFather`. Either the literal token (e.g. `1234567890:AAAA…`) or the name of a Paperclip secret. The plugin auto-detects literal-looking tokens, so a secret provider is not required for local-trusted setups. |
+| `botToken` | secret reference | Paperclip secret that holds the Bot API token from `@BotFather`, stored as `{ "type": "secret_ref", "secretId": "<secret uuid>" }`. A literal token is rejected on save. A literal token saved by an earlier version is never used: the plugin stops polling and sending for that company and the settings page asks for a secret. |
 | `paperclipBaseUrl` | string | Base URL used to build dashboard deep-links. Default `http://localhost:3100`. |
 | `notifyOn.{approvals,assignedToYou,comments,runFailures,budgetIncidents,wakeRequests}` | boolean | Toggle each event class. All default `true`. |
 | `morningDigest.enabled` | boolean | Daily digest opt-in. Default `false`. |
@@ -101,7 +101,7 @@ The plugin requests a deliberately narrow surface:
 - `events.subscribe` — receive the six event types listed above.
 - `jobs.schedule` — register the polling job that fetches Telegram updates, handles slash commands, and fires the morning digest.
 - `http.outbound` — call `api.telegram.org` for outbound messages and `getUpdates` long-polling.
-- `secrets.read-ref` — resolve `botToken` if it's a secret reference.
+- `secrets.read-ref` — resolve the `botToken` secret reference at use time.
 - `plugin.state.read` / `plugin.state.write` — store the per-company pairing map and per-message callback context.
 - `companies.read` — read the selected company's name for the settings card and pairing messages.
 - `agents.read` — populate the Operate-as-agent dropdown and enrich run-failure notifications.

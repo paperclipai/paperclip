@@ -100,7 +100,9 @@ import {
 import { agentAssigneeChange, asRecord, asString } from "./events.js";
 import {
   botIdFromToken,
+  botTokenConfigError,
   createTelegramClient,
+  isSecretRefBinding,
   resolveToken,
 } from "./telegram-client.js";
 import type {
@@ -109,6 +111,7 @@ import type {
   PairedChat,
   PairingState,
   PluginConfig,
+  StoredPluginConfig,
   TelegramMessage,
   TelegramUpdate,
 } from "./types.js";
@@ -118,28 +121,6 @@ import type {
 // ---------------------------------------------------------------------------
 
 /**
- * Mask a Telegram bot token for safe display.
- *
- *   1234567890:AAEX...rest    →    1234567890:••••rest
- *
- * Real tokens have the form `<digits>:<token-body>`. We keep the digit prefix
- * (the "bot ID" part is not secret) and the trailing 4 characters so the
- * operator can distinguish between accidentally-saved tokens. Anything else
- * (including secret-ref names) is masked uniformly.
- */
-function maskTokenForDisplay(token: string): string {
-  const trimmed = token.trim();
-  const m = trimmed.match(/^(\d+):(.+)$/);
-  if (m) {
-    const [, prefix, body] = m;
-    if (body.length <= 6) return `${prefix}:${"•".repeat(body.length)}`;
-    return `${prefix}:${"•".repeat(Math.max(4, body.length - 4))}${body.slice(-4)}`;
-  }
-  if (trimmed.length <= 4) return "•".repeat(trimmed.length);
-  return `${"•".repeat(Math.max(4, trimmed.length - 4))}${trimmed.slice(-4)}`;
-}
-
-/**
  * Plugin config is company-scoped: the host stores one config row per
  * company and `ctx.config.get()` needs a company outside a company-scoped
  * invocation (scheduled jobs, for example). Every caller names the company.
@@ -147,9 +128,9 @@ function maskTokenForDisplay(token: string): string {
 async function loadRawConfig(
   ctx: PluginContext,
   companyId: string,
-): Promise<PluginConfig> {
+): Promise<StoredPluginConfig> {
   const raw = await ctx.config.get(companyId);
-  return (raw ?? {}) as PluginConfig;
+  return (raw ?? {}) as StoredPluginConfig;
 }
 
 /**
@@ -161,12 +142,19 @@ async function loadConfig(
   ctx: PluginContext,
   companyId: string,
 ): Promise<PluginConfig> {
-  const config = await loadRawConfig(ctx, companyId);
-  if (!config.botToken) return config;
-  return {
-    ...config,
-    botToken: await resolveToken(ctx, config.botToken, companyId),
-  };
+  const { botToken: stored, ...config } = await loadRawConfig(ctx, companyId);
+  if (isSecretRefBinding(stored)) {
+    return { ...config, botToken: await resolveToken(ctx, stored, companyId) };
+  }
+  // A literal token saved before secret references were required is refused:
+  // without `botToken` nothing polls or sends for this company. The stored
+  // value is never logged.
+  const botTokenError = botTokenConfigError(stored);
+  if (botTokenError) {
+    ctx.logger.warn(`telegram-notifier: ${botTokenError}`, { companyId });
+    return { ...config, botTokenError };
+  }
+  return config;
 }
 
 function notifyEnabled(
@@ -2624,10 +2612,10 @@ const plugin = definePlugin({
       const companyId = requireCompanyParam(params);
       const config = await loadRawConfig(ctx, companyId);
       const state = await readPairing(ctx);
-      const tokenConfigured = !!config.botToken && config.botToken.length > 0;
-      const tokenMasked = tokenConfigured
-        ? maskTokenForDisplay(config.botToken!)
-        : null;
+      // Only whether a secret is bound and why a stored value was refused;
+      // the stored value itself never reaches the page.
+      const tokenConfigured = isSecretRefBinding(config.botToken);
+      const tokenError = botTokenConfigError(config.botToken);
       const botUsername = tokenConfigured
         ? await botUsernameFor(companyId).catch(() => undefined)
         : undefined;
@@ -2654,7 +2642,7 @@ const plugin = definePlugin({
           : undefined;
       return {
         tokenConfigured,
-        tokenMasked,
+        tokenError,
         botUsername,
         telegramUrl: botUsername ? `https://t.me/${botUsername}` : undefined,
         handshake,
@@ -2664,7 +2652,9 @@ const plugin = definePlugin({
 
     async function doStartPairing(companyId: string) {
       const config = await loadConfig(ctx, companyId);
-      if (!config.botToken) throw new Error("botToken missing in plugin config");
+      if (!config.botToken) {
+        throw new Error(config.botTokenError ?? "botToken missing in plugin config");
+      }
       const username = await ensureBotBootstrap(ctx, config);
       let targetCompanyName: string | undefined;
       try {
@@ -2798,8 +2788,9 @@ const plugin = definePlugin({
       const state = await readPairing(ctx);
       const chat = getPaired(state, companyId);
       if (!chat) throw new Error("Company has no paired chat.");
-      if (!config.botToken)
-        throw new Error("botToken missing in plugin config.");
+      if (!config.botToken) {
+        throw new Error(config.botTokenError ?? "botToken missing in plugin config.");
+      }
       const client = await createTelegramClient(ctx, config.botToken);
       await client.sendMessage({
         chatId: chat.chatId,
@@ -2865,6 +2856,11 @@ const plugin = definePlugin({
     ctx.logger.info(
       "telegram-notifier: subscribed to 6 events, registered 1 job, 6 tools, 7 actions, 4 data handlers",
     );
+  },
+
+  async onValidateConfig(config) {
+    const error = botTokenConfigError(config.botToken);
+    return error ? { ok: false, errors: [error] } : { ok: true };
   },
 
   async onHealth() {

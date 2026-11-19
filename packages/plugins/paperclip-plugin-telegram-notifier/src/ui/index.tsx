@@ -42,12 +42,41 @@ export function applyConfigPatch<T extends object>(base: T, patch: ConfigPatch):
   return next as T;
 }
 
+/** The only `botToken` shape the page reads or writes: a Paperclip secret binding. */
+export interface SecretRefBinding {
+  type: "secret_ref";
+  secretId: string;
+  version?: "latest" | number;
+}
+
+export function isSecretRefBinding(value: unknown): value is SecretRefBinding {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    && (value as { type?: unknown }).type === "secret_ref"
+    && typeof (value as { secretId?: unknown }).secretId === "string";
+}
+
+/**
+ * Drop a `botToken` that is not a secret binding (a literal token saved
+ * before secret references were required). The page never shows such a
+ * value, and the next save of any card removes it from the stored config.
+ */
+export function withoutLiteralToken<T extends { botToken?: unknown }>(config: T): T {
+  if (config.botToken === undefined || isSecretRefBinding(config.botToken)) return config;
+  const { botToken: _dropped, ...rest } = config;
+  return rest as T;
+}
+
+/** Config patch that binds the bot token to a company secret. */
+export function botTokenSecretPatch(secretId: string): { botToken: SecretRefBinding } {
+  return { botToken: { type: "secret_ref", secretId, version: "latest" } };
+}
+
 // ---------------------------------------------------------------------------
 // Shared types
 // ---------------------------------------------------------------------------
 
 interface InstanceConfig {
-  botToken?: string;
+  botToken?: SecretRefBinding;
   paperclipBaseUrl?: string;
   notifyOn?: {
     approvals?: boolean;
@@ -67,7 +96,8 @@ interface InstanceConfig {
 
 interface StatusData {
   tokenConfigured: boolean;
-  tokenMasked: string | null;
+  /** Why the stored token was refused (for example, a literal token). */
+  tokenError: string | null;
   botUsername?: string;
   telegramUrl?: string;
   handshake?: {
@@ -208,7 +238,7 @@ export function TelegramNotifierSettings(_: PluginSettingsPageProps) {
             // Remount per company so no draft or token field carries over.
             key={hostCompanyId ?? "none"}
             tokenConfigured={status.tokenConfigured}
-            tokenMasked={status.tokenMasked}
+            tokenError={status.tokenError}
             onSaved={() => {
               refreshStatus();
               refreshCompanies();
@@ -430,7 +460,7 @@ function CompanyCard(props: {
             {busy === startKey ? "Starting…" : "Start pairing"}
           </button>
           {!tokenConfigured && (
-            <span style={hint}>Save the bot token first.</span>
+            <span style={hint}>Select the bot token secret first.</span>
           )}
           {tokenConfigured && otherHandshakeInFlight && (
             <span style={hint}>
@@ -968,9 +998,11 @@ function useCompanyConfig() {
         | { configJson?: InstanceConfig }
         | InstanceConfig
         | null;
-      return body && typeof body === "object" && "configJson" in body
-        ? (body.configJson ?? {})
-        : ((body ?? {}) as InstanceConfig);
+      const stored =
+        body && typeof body === "object" && "configJson" in body
+          ? (body.configJson ?? {})
+          : ((body ?? {}) as InstanceConfig);
+      return withoutLiteralToken(stored);
     },
     [pluginId],
   );
@@ -1040,25 +1072,64 @@ function useCompanyConfig() {
 }
 
 // ---------------------------------------------------------------------------
-// BotCredentialsCard — the selected company's bot token and base URL
+// useCompanySecrets — names of the selected company's secrets (metadata only)
+// ---------------------------------------------------------------------------
+
+interface SecretOption {
+  id: string;
+  name: string;
+  status?: string;
+}
+
+function useCompanySecrets() {
+  const { companyId } = useHostContext();
+  const [secrets, setSecrets] = useState<SecretOption[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!companyId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/companies/${encodeURIComponent(companyId)}/secrets`,
+          { credentials: "same-origin", headers: { Accept: "application/json" } },
+        );
+        if (!res.ok) throw new Error(`Failed to load secrets: HTTP ${res.status}`);
+        const rows = (await res.json()) as SecretOption[];
+        if (!cancelled) setSecrets(rows.filter((r) => !r.status || r.status === "active"));
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
+
+  return { secrets, error };
+}
+
+// ---------------------------------------------------------------------------
+// BotCredentialsCard — the selected company's bot token secret and base URL
 // ---------------------------------------------------------------------------
 
 function BotCredentialsCard({
   tokenConfigured,
-  tokenMasked,
+  tokenError,
   onSaved,
 }: {
   tokenConfigured: boolean;
-  tokenMasked: string | null;
+  tokenError: string | null;
   onSaved: () => void;
 }) {
   const { config, loadError, savePatch, update } = useCompanyConfig();
+  const { secrets, error: secretsError } = useCompanySecrets();
   const testConn = usePluginAction("testBotConnection");
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState<string | null>(null);
-  const [tokenRevealed, setTokenRevealed] = useState(false);
 
   const handleSave = useCallback(async () => {
     if (!config) return;
@@ -1066,14 +1137,13 @@ function BotCredentialsCard({
     setSaveOk(null);
     setSaveError(null);
     try {
-      // Only the fields this card owns. An empty token field keeps the
-      // stored token (the placeholder says so); Disconnect clears it.
+      // Only the fields this card owns. No secret selected keeps the stored
+      // binding; Disconnect clears it.
       await savePatch({
         ...(config.botToken ? { botToken: config.botToken } : {}),
         paperclipBaseUrl: config.paperclipBaseUrl,
       });
       setSaveOk("Saved.");
-      setTokenRevealed(false);
       onSaved();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
@@ -1100,7 +1170,7 @@ function BotCredentialsCard({
     if (!config) return;
     if (
       !confirm(
-        "Clear the bot token? Notifications will stop until a new token is saved.",
+        "Clear the bot token secret? Notifications will stop until a secret is selected again.",
       )
     ) {
       return;
@@ -1110,7 +1180,7 @@ function BotCredentialsCard({
     setSaveError(null);
     try {
       await savePatch({ botToken: undefined });
-      setSaveOk("Token cleared.");
+      setSaveOk("Token secret cleared.");
       onSaved();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
@@ -1143,49 +1213,44 @@ function BotCredentialsCard({
         title="Telegram bot"
         description={
           <>
-            Bot API token from{" "}
+            Store the Bot API token from{" "}
             <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">
               @BotFather
-            </a>
-            . Either the literal token or the name of a Paperclip secret. The
-            token applies to the selected company; companies can share a bot.
+            </a>{" "}
+            as a company secret (Company settings → Secrets), then select it
+            here. A literal token is not accepted. The secret applies to the
+            selected company; companies can share a bot.
           </>
         }
       >
-        <Field
-          label={
-            tokenConfigured
-              ? "Telegram bot token (leave blank to keep current)"
-              : "Telegram bot token"
-          }
-        >
-          <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
-            <input
-              type={tokenRevealed ? "text" : "password"}
-              value={config.botToken ?? ""}
-              onChange={(e) =>
-                update((c) => ({
-                  ...c,
-                  botToken: e.target.value || undefined,
-                }))
-              }
-              placeholder={
-                tokenConfigured
-                  ? `current: ${tokenMasked ?? "••••"}`
-                  : "1234567890:AAEX..."
-              }
-              style={{ ...input, flex: 1, minWidth: 0 }}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <button
-              type="button"
-              onClick={() => setTokenRevealed((v) => !v)}
-              style={revealBtn}
-            >
-              {tokenRevealed ? "Hide" : "Show"}
-            </button>
-          </div>
+        {tokenError && <div style={errBox}>{tokenError}</div>}
+        <Field label="Telegram bot token secret">
+          <select
+            value={config.botToken?.secretId ?? ""}
+            onChange={(e) => {
+              const secretId = e.target.value;
+              update((c) =>
+                secretId
+                  ? { ...c, ...botTokenSecretPatch(secretId) }
+                  : applyConfigPatch(c, { botToken: undefined }),
+              );
+            }}
+            style={selectInput}
+          >
+            <option value="">
+              {secrets === null && !secretsError ? "Loading secrets…" : "Select a secret"}
+            </option>
+            {config.botToken &&
+              !secrets?.some((secret) => secret.id === config.botToken!.secretId) && (
+                <option value={config.botToken.secretId}>Current secret</option>
+              )}
+            {(secrets ?? []).map((secret) => (
+              <option key={secret.id} value={secret.id}>
+                {secret.name}
+              </option>
+            ))}
+          </select>
+          {secretsError && <span style={hint}>{secretsError}</span>}
         </Field>
         <Field label="Paperclip dashboard base URL">
           <input
@@ -1590,16 +1655,6 @@ const dangerBtn: React.CSSProperties = {
   background: "transparent",
   border: "1px solid var(--destructive)",
   color: "var(--destructive)",
-};
-const revealBtn: React.CSSProperties = {
-  flexShrink: 0,
-  padding: "0 14px",
-  fontSize: 13,
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--secondary)",
-  color: "var(--secondary-foreground)",
-  cursor: "pointer",
 };
 const fieldset: React.CSSProperties = {
   display: "grid",

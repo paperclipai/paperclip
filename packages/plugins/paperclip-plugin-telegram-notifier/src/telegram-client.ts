@@ -2,15 +2,14 @@
  * Thin wrapper around the Telegram Bot API.
  *
  * - All requests go through `ctx.http.fetch` so the host can audit them.
- * - Token resolution is lazy: the field stored in plugin config is treated as
- *   a Paperclip secret reference first; if no provider resolves it the value
- *   is used verbatim. This keeps local-trusted setups one-step while letting
- *   shared deployments stash the token in a real secret provider.
+ * - The token is stored only as a Paperclip secret reference. `resolveToken`
+ *   resolves it per company at use time; a literal token in config is refused
+ *   (see `botTokenConfigError`).
  * - The Telegram envelope `{ ok, result, description }` is normalized: success
  *   returns `result`, failure throws with the API description.
  */
 
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { EnvSecretRefBinding, PluginContext } from "@paperclipai/plugin-sdk";
 import { TELEGRAM_API_BASE, POLL_TIMEOUT_SEC, POLL_LIMIT, BOT_COMMANDS } from "./constants.js";
 import type {
   InlineKeyboard,
@@ -60,12 +59,11 @@ export interface TelegramClient {
   }): Promise<void>;
 }
 
+/** `token` is the resolved bot token from `loadConfig`, never a stored value. */
 export async function createTelegramClient(
   ctx: PluginContext,
-  tokenOrRef: string,
-  companyId?: string,
+  token: string,
 ): Promise<TelegramClient> {
-  const token = await resolveToken(ctx, tokenOrRef, companyId);
   const base = `${TELEGRAM_API_BASE}/bot${token}`;
 
   async function call<T>(method: string, body?: unknown): Promise<T> {
@@ -264,30 +262,40 @@ export function botIdFromToken(token: string): string {
   return match ? match[1]! : "unknown";
 }
 
-export function looksLikeBotToken(value: string): boolean {
-  return /^\d+:[A-Za-z0-9_-]{20,}$/.test(value.trim());
+const LITERAL_TOKEN_PATTERN = /\d+:[A-Za-z0-9_-]{30,}/;
+
+/** Shown to the operator when `botToken` is not a Paperclip secret reference. */
+export const BOT_TOKEN_SECRET_REQUIRED_MESSAGE =
+  "The Telegram bot token must be stored as a Paperclip secret. Create a company secret that holds the token, then select that secret in the Telegram Notifier settings. A literal token in plugin config is not accepted.";
+
+export function isSecretRefBinding(value: unknown): value is EnvSecretRefBinding {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    && (value as { type?: unknown }).type === "secret_ref"
+    && typeof (value as { secretId?: unknown }).secretId === "string";
 }
 
 /**
- * Resolve the configured token. Plugin config is company-scoped, so a secret
- * reference must be resolved for the company that owns the config row.
+ * Check a stored `botToken`. Returns the operator-facing error, or null when
+ * the value is empty or a secret reference. The message never echoes the value.
+ */
+export function botTokenConfigError(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (isSecretRefBinding(value)) return null;
+  if (typeof value === "string" && LITERAL_TOKEN_PATTERN.test(value)) {
+    return BOT_TOKEN_SECRET_REQUIRED_MESSAGE;
+  }
+  return `botToken must be a Paperclip secret reference. ${BOT_TOKEN_SECRET_REQUIRED_MESSAGE}`;
+}
+
+/**
+ * Resolve the configured secret reference for the company that owns the
+ * config row. The resolved token is returned to the caller only; it is never
+ * cached, stored or logged.
  */
 export async function resolveToken(
   ctx: PluginContext,
-  ref: string,
-  companyId?: string,
+  ref: EnvSecretRefBinding,
+  companyId: string,
 ): Promise<string> {
-  const trimmed = ref.trim();
-  // Heuristic: real Telegram bot tokens look like "<digits>:<base64ish>".
-  // If it already looks like a token, use it verbatim — saves a doomed
-  // secret-resolve call and avoids a noisy log line in local-trusted setups.
-  if (looksLikeBotToken(trimmed)) return trimmed;
-  try {
-    return await ctx.secrets.resolve(
-      trimmed,
-      companyId ? { companyId, configPath: "botToken" } : undefined,
-    );
-  } catch {
-    return trimmed;
-  }
+  return (await ctx.secrets.resolve(ref, { companyId, configPath: "botToken" })).trim();
 }

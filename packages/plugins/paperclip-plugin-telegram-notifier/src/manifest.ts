@@ -1,6 +1,9 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { JOB_KEYS, PLUGIN_ID, PLUGIN_VERSION, TOOL_NAMES } from "./constants.js";
 
+const SECRET_ID_PATTERN =
+  "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
@@ -50,9 +53,13 @@ const manifest: PaperclipPluginManifestV1 = {
       botToken: {
         type: "string",
         format: "secret-ref",
+        // The host validates a `{ type: "secret_ref", secretId }` binding by its
+        // secret id, so this pattern accepts only a bound secret: a literal
+        // token pasted through the API fails schema validation on save.
+        pattern: SECRET_ID_PATTERN,
         title: "Telegram bot token",
         description:
-          "Bot API token from @BotFather. Either the literal token (e.g. `1234567890:AAAA…`) or the name of a Paperclip secret that holds it. The plugin treats real-looking tokens as literals automatically. After saving, the value is masked — click the eye icon to reveal.",
+          "Paperclip secret that holds the Bot API token from @BotFather. Store the token as a company secret and select it here; a literal token is not accepted.",
       },
       paperclipBaseUrl: {
         type: "string",
