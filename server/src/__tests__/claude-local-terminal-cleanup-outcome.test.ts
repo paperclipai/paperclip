@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-claude-local/server";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { resolveAdapterResultOutcome } from "../services/heartbeat/adapter-result-outcome.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 async function writeLingeringSuccessClaudeCommand(
   commandPath: string,
@@ -29,7 +35,10 @@ setInterval(() => {}, 1000);
   await fs.chmod(commandPath, 0o755);
 }
 
-async function runLingeringCli(options: { resultEvent: Record<string, unknown>; lingeringChild: boolean; childIgnoresSigterm?: boolean }) {
+async function runLingeringCli(
+  options: { resultEvent: Record<string, unknown>; lingeringChild: boolean; childIgnoresSigterm?: boolean },
+  heartbeatContext?: AdapterExecutionContext,
+) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-terminal-cleanup-"));
   const workspace = path.join(root, "workspace");
   const commandPath = path.join(root, "claude");
@@ -39,7 +48,8 @@ async function runLingeringCli(options: { resultEvent: Record<string, unknown>; 
   process.env.HOME = root;
   try {
     return await execute({
-      runId: "run-claude-terminal-cleanup",
+      ...heartbeatContext,
+      runId: heartbeatContext?.runId ?? "run-claude-terminal-cleanup",
       agent: {
         id: "agent-1",
         companyId: "company-1",
@@ -57,9 +67,9 @@ async function runLingeringCli(options: { resultEvent: Record<string, unknown>; 
         timeoutSec: 30,
         graceSec: 1,
       },
-      context: {},
+      context: heartbeatContext?.context ?? {},
       authToken: "run-jwt-token",
-      onLog: async () => {},
+      onLog: heartbeatContext?.onLog ?? (async () => {}),
     });
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
@@ -179,4 +189,74 @@ describe("claude_local terminal-result cleanup run outcome", () => {
     expect(adapterResult.errorMessage).toBeTruthy();
     expect(resolveAdapterResultOutcome(adapterResult)).toBe("failed");
   }, 30_000);
+});
+
+const support = await getEmbeddedPostgresTestSupport();
+const describePostgres = support.supported ? describe : describe.skip;
+if (!support.supported) console.warn(`Skipping heartbeat terminal-result cleanup tests: ${support.reason}`);
+
+describePostgres("claude_local terminal-result cleanup through heartbeat completion", () => {
+  const adapterType = "claude_terminal_cleanup_test";
+  const fixtureByAgent = new Map<string, Parameters<typeof runLingeringCli>[0]>();
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let db: ReturnType<typeof createDb>;
+  let heartbeat: ReturnType<typeof heartbeatService>;
+
+  beforeAll(async () => {
+    temporary = await startEmbeddedPostgresTestDatabase("heartbeat-terminal-cleanup-");
+    db = createDb(temporary.connectionString);
+    await db.insert(authUsers).values({ id: "cleanup-user", name: "Cleanup fixture sponsor", email: "cleanup-sponsor@example.test",
+      createdAt: new Date(), updatedAt: new Date() });
+    heartbeat = heartbeatService(db);
+    registerServerAdapter({
+      type: adapterType, supportsLocalAgentJwt: false,
+      execute: async (input) => {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, String(input.context.issueId)));
+        return runLingeringCli(fixtureByAgent.get(input.agent.id)!, input);
+      },
+      testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
+    });
+  }, 30_000);
+  afterAll(async () => {
+    await heartbeat?.drainActiveRunExecutions();
+    unregisterServerAdapter(adapterType);
+    await db?.$client.end({ timeout: 0 });
+    await temporary?.cleanup();
+  });
+
+  async function runThroughHeartbeat(fixture: Parameters<typeof runLingeringCli>[0]) {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Cleanup fixture", issuePrefix: `C${companyId.slice(0, 6)}` });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "cleanup-user",
+      membershipRole: "operator", status: "active" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Claude Coder", adapterType, status: "idle" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Cleanup fixture", status: "todo", assigneeAgentId: agentId,
+      responsibleUserId: "cleanup-user", issueNumber: 1 });
+    fixtureByAgent.set(agentId, fixture);
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+      payload: { issueId }, contextSnapshot: { issueId } });
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    return { finished: runs.find(row => row.id === run!.id)!, runs };
+  }
+
+  it("saves a success result as succeeded with no error and no retry when cleanup stops the lingering CLI", async () => {
+    const { finished, runs } = await runThroughHeartbeat({ resultEvent: successResult, lingeringChild: true });
+
+    expect(finished.status, finished.error ?? undefined).toBe("succeeded");
+    expect(finished.errorCode).toBeNull();
+    expect(finished.error).toBeNull();
+    expect(finished.scheduledRetryAt).toBeNull();
+    expect(runs.map(row => row.id)).toEqual([finished.id]);
+  }, 60_000);
+
+  it("saves a non-success result as failed when cleanup stops the lingering CLI", async () => {
+    const { finished } = await runThroughHeartbeat({
+      resultEvent: { ...successResult, subtype: "error_max_turns", is_error: false, stop_reason: "max_turns" },
+      lingeringChild: true,
+    });
+
+    expect(finished.status).toBe("failed");
+  }, 60_000);
 });
