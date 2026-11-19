@@ -63,3 +63,17 @@ skill and reply with the phrase `scripts/run.sh` echoes.
 This used Codex's plain `read-only` sandbox, not Paperclip's filesystem policy; the
 policy's read grant for `<skill home>/.agents/skills` is covered by unit tests.
 Not measured: time to the provider's first event in a full Paperclip launch.
+
+## Repository skills: only their own folder (2026-11-19)
+
+Measured on the same WSL instance, from the skill copies sessions held before this
+change (wrapper plus the whole repository under `.paperclip-repository/`), against
+the size of each skill's own folder inside that repository:
+
+| | Before | Own folder only |
+| --- | --- | --- |
+| Largest session skill set (13 skills) | 284.2 MB | 0.1 MB |
+| All 26 distinct repository skills, one copy each | 511.4 MB | 0.4 MB |
+
+The skill homes above store each skill set once; this change makes that one copy
+small as well. The benchmark run with 296 MB per set predates it.

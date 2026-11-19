@@ -1,5 +1,7 @@
 # Shared Skill Homes for Claude (ACPX) and OpenCode — Implementation Plan
 
+> Delivery (2026-11-19): shipped as one standalone pull request from `master` (branch `perf/shared-skill-homes`), independent of PR #22152. References to #22152 below record how the work started; this branch does not contain or need its commits.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** ACPX Claude and OpenCode launches on Mac/Linux read assigned skills from the shared, sealed skill home instead of copying them per launch.

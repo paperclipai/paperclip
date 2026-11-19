@@ -1,5 +1,7 @@
 # Shared Codex Skill Homes Implementation Plan
 
+> Delivery (2026-11-19): shipped as one standalone pull request from `master` (branch `perf/shared-skill-homes`), independent of PR #22152. References to #22152 below record how the work started; this branch does not contain or need its commits.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Native Codex sessions on Mac/Linux read their assigned skills from one sealed, content-addressed skill home per skill set (passed as the app-server `HOME`) instead of copying them into every session's `CODEX_HOME/skills`.

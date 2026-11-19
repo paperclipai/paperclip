@@ -147,7 +147,9 @@ Grok and Kimi keep copying skills into their home.
 
 The same sweep removes a skill home when no session's
 `codex-home/paperclip-skill-home.json` names it and it was not launched for a day.
-Expiring a session's `codex-home` therefore releases its skill home too. A home is
+Removing a session's provider home (for example when it expires) therefore releases
+its skill home too. The sweep runs in the native runner evidence pass and looks
+again a day later. A home is
 renamed to `.retiring-<digest>.<UUID>` first and restored when a launch references
 it before the removal. Leftover `.staging-*` and `.retiring-*` directories older than
 a day and quarantined homes older than seven days are removed. The dry-run setting

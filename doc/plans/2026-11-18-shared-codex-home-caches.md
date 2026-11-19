@@ -1,5 +1,7 @@
 # Shared Codex skill homes for native sessions
 
+> Delivery (2026-11-19): shipped as one standalone pull request from `master` (branch `perf/shared-skill-homes`), independent of PR #22152. References to #22152 below record how the work started; this branch does not contain or need its commits.
+
 Status: design, awaiting user approval (2026-11-18). Nothing below is approved for
 implementation yet.
 

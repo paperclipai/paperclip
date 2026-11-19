@@ -1,5 +1,7 @@
 # Shared skill homes for Claude (ACPX) and OpenCode
 
+> Delivery (2026-11-19): shipped as one standalone pull request from `master` (branch `perf/shared-skill-homes`), independent of PR #22152. References to #22152 below record how the work started; this branch does not contain or need its commits.
+
 Status: approved and implemented (2026-11-18). Extends
 `doc/plans/2026-11-18-shared-codex-home-caches.md` (implemented for native Codex).
 
@@ -90,3 +92,25 @@ provider-neutral name only if it stays a pure rename.
 
 Exact injection point of the ACPX `_meta` (the ACPX adapter's `session/new`/load
 request), where OpenCode's marker lives, and helper names.
+
+## Repository skills: only their own folder (decided 2026-11-19)
+
+Imported repository skills used to reach agents as a generated wrapper `SKILL.md`
+plus the entire pinned repository under `.paperclip-repository/`, so a skill could
+use files elsewhere in the repository. That copy made one session's 13 skills
+296 MB. The user decided that agents receive only a repository skill's own folder:
+the original `SKILL.md` and the files below its directory, as the Agent Skills
+standard describes ("use relative paths from the skill root"). The skill library
+(listing, reading, versioning, copies, `load_skill`) keeps the whole repository;
+the audit checks what agents receive.
+
+This replaces the shared repository assets of PR #22033 (`repositories/<digest>`
+plus wrappers), which existed only because of the whole-repository copy.
+
+A scan of the 26 repository skills on the user's instance found 5 that reference
+files outside their folder: three QA skills that use a sibling skill's `references/`,
+superpowers `writing-skills` (sibling `using-superpowers/references/`), and
+`careconnections-feature-workflow` (repository-level `AGENTS.md` and `docs/`, most
+likely meant for the workspace it works in). Their sources are fixed separately;
+assigning the sibling skill does not help because runtime folders are named
+`<slug>--<hash>`.
