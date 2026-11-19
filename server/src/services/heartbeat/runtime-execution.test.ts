@@ -1,3 +1,4 @@
+import { armCrashPointForTest } from "@paperclipai/shared/crash-points";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
@@ -7,13 +8,15 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, budgetPolicies, companies, completionContracts, nativeRunResults, costEvents, agentWakeupRequests, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, budgetPolicies, companies, completionContracts, nativeRunResults, costEvents, agentWakeupRequests, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, plugins, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { createRunPreparationTiming, measureRunPhase, measureWorkspaceSyncPhase, withRunExecutionTiming } from "../execution-preparation-timing.js";
 import { recoveryPostgresSupport as support, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
+import { createPluginWorkspaceFixture } from "../../__tests__/helpers/plugin-workspaces.js";
+import type { PluginWorkspaceParams } from "@paperclipai/plugin-sdk";
 import * as pluginWorkspaces from "../plugin-workspaces.js";
 import * as legacyRecovery from "../legacy-execution-recovery.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
@@ -21,9 +24,11 @@ import { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { createRunOutputSecretStore, createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { executePaperclipNativeSession, NativeCancellationPendingRecoveryError, NativeControllerDetachedForRestartError, nativeSessionFailureSourceCode, nativeSessionFailureDisposition } from "../native-runtime/native-session-executor.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../native-runtime/native-runner-ownership.js";
 import { NativeWorkspaceFinalizationBusyError, NativeWorkspaceFinalizationOwnershipLostError } from "../native-runtime/native-workspace-finalization-ownership.js";
+import { resumeNativeWorkspaceFinalization } from "../native-runtime/native-workspace-finalizer.js";
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
 import { buildNativeExecutionInput } from "../native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
@@ -31,6 +36,9 @@ import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
+import { liveNativeFinalizationReserved } from "../native-runtime/live-native-finalization.js";
+import { onNativeWorkspaceFinalizationRelease } from "../native-workspace-finalization-notifications.js";
+import { withNativeWorkspaceFinalizationOwnership } from "../native-runtime/native-workspace-finalization-ownership.js";
 
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
@@ -407,6 +415,36 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
 
+  it.each(["returns", "throws"] as const)("keeps recovery workers off the run until the live heartbeat ends (runner %s)", async outcome => {
+    const { input } = await fixture(true);
+    let reservedDuringDispatch = false;
+    let workerOwnership: unknown;
+    vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async () => {
+      // A runner posts its accepted result here, before it returns.
+      reservedDuringDispatch = liveNativeFinalizationReserved(input.run.id);
+      workerOwnership = await withNativeWorkspaceFinalizationOwnership({ db, companyId: input.run.companyId, runId: input.run.id },
+        async () => "taken");
+      if (outcome === "throws") throw new Error("runner failed after dispatch");
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    const execution = executeHeartbeatRuntime(db, input);
+    if (outcome === "throws") await expect(execution).rejects.toThrow(); else await execution;
+    expect(reservedDuringDispatch).toBe(true);
+    expect(workerOwnership).toEqual({ acquired: false, reason: "owner_active" });
+    expect(liveNativeFinalizationReserved(input.run.id)).toBe(false);
+    expectCleanup(input);
+  });
+
+  it("still cleans up when waking the workers after the live heartbeat throws", async () => {
+    const { input } = await fixture(true);
+    const stop = onNativeWorkspaceFinalizationRelease(db, () => { throw new Error("release listener failed"); });
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).resolves.toMatchObject({ dispatched: true });
+    } finally { stop(); }
+    expect(liveNativeFinalizationReserved(input.run.id)).toBe(false);
+    expectCleanup(input);
+  });
+
   it("passes preparation renewal ownership to native dispatch", async () => {
     const { input } = await fixture(true);
     const acquired = vi.fn(async () => undefined);
@@ -415,6 +453,26 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({ onExecutionLeaseAcquired: acquired }));
     // Preparation is still protected until the native executor claims its lease.
     expect(acquired).not.toHaveBeenCalled();
+  });
+
+  it("passes current and earlier attempts' secrets and observability values to native dispatch", async () => {
+    const { input } = await fixture(true);
+    const store = createRunOutputSecretStore(db);
+    await store.registerAll(input.run.companyId, input.run.id, ["sk_test_synthetic_before_rotation"]);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_after_rotation", "1", "completed"]);
+    input.config.observability = { environment: { OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=synthetic-observability-token" } } as never;
+    await executeHeartbeatRuntime(db, input);
+    expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({
+      outputSecrets: expect.arrayContaining(["sk_test_synthetic_before_rotation", "sk_test_synthetic_after_rotation",
+        "synthetic-observability-token"]),
+    }));
+    expect((await store.valuesForRun(input.run.companyId, input.run.id)).sort())
+      .toEqual(["completed", "sk_test_synthetic_after_rotation", "sk_test_synthetic_before_rotation"]);
+    expect(await createRunSecretRedactionRegistry(db).redactionValuesForRun(input.run.companyId, input.run.id)).toEqual([]);
+    const response = { id: input.run.id, eventType: "turn.completed", contextSnapshot: (await read(input.run.id)).contextSnapshot };
+    expect(await createRunSecretRedactionRegistry(db).redactForRun(input.run.companyId, input.run.id, response))
+      .toEqual({ ...response, contextSnapshot: expect.not.objectContaining({ paperclipOutputSecretRedactions: expect.anything() }) });
+    expect(input.output.identityRedactor.redact("old sk_test_synthetic_before_rotation")).toBe("old ***REDACTED***");
   });
 
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
@@ -475,6 +533,17 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed" } }]);
     expect(input.effects.onLegacyAdapterEntered).toHaveBeenCalledOnce();
     expectCleanup(input);
+  });
+
+  it.each([false, true])("masks a bound secret in the failed workspace record and keeps the original error (native: %s)", async native => {
+    const { input, adapter } = await fixture(native);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_failure_value"]);
+    const error = new Error("provider failed near sk_test_synthetic_failure_value");
+    if (native) vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    else adapter.execute.mockRejectedValueOnce(error);
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+    expect(error.message).toBe("provider failed near sk_test_synthetic_failure_value");
+    expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed near ***REDACTED***" } }]);
   });
 
   it.each([
@@ -554,6 +623,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       name: "Plugin worktree", providerType: "plugin", providerRef: "provider:opaque-worktree", cwd: "/workspaces/plugin-only",
       mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch" }).returning();
     input.workspace.persistedExecutionWorkspace = workspace;
+    const plan = vi.spyOn(pluginWorkspaces, "resolvePluginWorkspaceFinalization").mockResolvedValue({ kind: "inspect" });
     const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockResolvedValue({ kind: "inspection",
       branchName: branch === "expected" ? "task-branch" : "other-branch", headSha: "a".repeat(40),
       hasDirtyTrackedFiles: true, hasUntrackedFiles: false, hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
@@ -566,8 +636,103 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
         await expect(result).rejects.toThrow("plugin_workspace_branch_mismatch");
         expect((await finalizations()).some(row => row.status === "succeeded")).toBe(false);
       }
-      expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id, providerRef: workspace.providerRef }), { agentId: input.agent.id, runId: input.run.id });
-    } finally { inspect.mockRestore(); }
+      expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id, providerRef: workspace.providerRef }),
+        expect.objectContaining({ agentId: input.agent.id, runId: input.run.id }));
+    } finally { inspect.mockRestore(); plan.mockRestore(); }
+  });
+
+  it.each(["lost reply", "worker unavailable", "crash before dispatch", "ambiguous placement"])("replays inline plugin finalization after %s", async failure => {
+    const { input, run } = await fixture(true);
+    const issue = input.task.issueRef!;
+    const storage = await createPluginWorkspaceFixture(db, run.companyId);
+    const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
+    await db.update(plugins).set({ manifestJson: {
+      ...plugin.manifestJson,
+      workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, finalizationVersion: 1 },
+      environmentDrivers: [{ driverKey: "portable", displayName: "Portable", configSchema: { type: "object" }, supportsTasks: true, sessionHandoffVersion: 1 }],
+    } }).where(eq(plugins.id, storage.pluginId));
+    const workspaceId = randomUUID();
+    const binding = { pluginId: storage.pluginId, projectId: storage.input.projectId, executionWorkspaceId: workspaceId,
+      projectWorkspaceId: storage.input.projectWorkspaceId, sourceRevision: "revision", workspaceRef: "provider:portable" };
+    const [workspace] = await db.insert(executionWorkspaces).values({
+      id: workspaceId, companyId: run.companyId, projectId: binding.projectId, projectWorkspaceId: binding.projectWorkspaceId,
+      sourceIssueId: issue.id, name: "Portable worktree", providerType: "plugin", providerRef: binding.workspaceRef,
+      mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch", metadata: { workspaceProvider: binding },
+    }).returning();
+    input.workspace.persistedExecutionWorkspace = workspace;
+    await input.workspace.workspaceOperationRecorder.attachExecutionWorkspaceId(workspace.id);
+    await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, issue.id));
+    const [boundRun] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, run.id)).returning();
+    input.run = boundRun;
+    await prepareNativeHeartbeatRun({ db, run: boundRun, issue, environmentLeaseId: randomUUID() });
+    const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issue.id));
+    const [accepted] = await db.insert(nativeRunResults).values({
+      companyId: run.companyId, issueId: issue.id, runId: run.id, completionContractId: contract.id,
+      serverFingerprint: "inline-finalization", canonicalSha256: "inline-finalization", schemaStatus: "accepted", resultJson: {},
+    }).returning();
+    await db.insert(nativeRunFinalizations).values({
+      companyId: run.companyId, issueId: issue.id, runId: run.id, phase: "result_accepted", resultId: accepted.id,
+    });
+    const [environment] = await db.insert(environments).values({ name: `Portable Launcher ${failure}`, driver: "plugin", config: {} }).returning();
+    const taskLease = { environmentId: environment.id, driverKey: "portable", providerLeaseId: "task-1" };
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId: run.companyId, issueId: issue.id, heartbeatRunId: run.id, executionWorkspaceId: workspace.id,
+      environmentId: environment.id, providerLeaseId: taskLease.providerLeaseId,
+      metadata: { pluginId: storage.pluginId, agentId: run.agentId, driverKey: taskLease.driverKey, runnerTaskLease: true },
+    }).returning();
+    const duplicate = failure === "ambiguous placement"
+      ? (await db.insert(environmentLeases).values({ ...lease, id: randomUUID(), providerLeaseId: "other-task" }).returning())[0]
+      : undefined;
+    let retry = false;
+    const dispatch = vi.fn(async (_pluginId: string, method: string, params: PluginWorkspaceParams) => {
+      expect(method).toBe("workspaceOperation");
+      expect(params).toMatchObject({ runId: run.id, agentId: run.agentId, taskLease, operation: { kind: "finalize" } });
+      if (!retry) {
+        expect(await finalizations()).toMatchObject([{ status: "running", metadata: { pluginWorkspaceTaskLease: taskLease } }]);
+        throw new Error("fixture reply lost");
+      }
+      return { kind: "finalized", branchName: "task-branch", headSha: "a".repeat(40) };
+    });
+    const workers = {
+      getWorker: () => retry || failure === "lost reply" ? { status: "running", supportedMethods: ["workspaceOperation"] } : undefined,
+      call: dispatch,
+    } as unknown as NonNullable<HeartbeatRuntimeExecutionInput["options"]["pluginWorkerManager"]>;
+    input.options.pluginWorkerManager = workers;
+
+    const disarm = failure === "crash before dispatch"
+      ? armCrashPointForTest("workspace.finalize.after_start_before_copyback") : undefined;
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({
+        name: "NativeWorkspaceFinalizeScheduledError", reasonCode: "workspace_sync_out_failed",
+      });
+    } finally { disarm?.(); }
+    expect(input.effects.onNativeWorkspaceFinalizeScheduled).toHaveBeenCalledOnce();
+    if (duplicate) {
+      expect(await finalizations()).toHaveLength(0);
+      await db.delete(environmentLeases).where(eq(environmentLeases.id, duplicate.id));
+    } else {
+      expect(await finalizations()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ status: "failed", metadata: expect.objectContaining({ pluginWorkspaceTaskLease: taskLease }) }),
+      ]));
+    }
+    if (failure === "crash before dispatch") {
+      expect(await finalizations()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ status: "running", metadata: expect.objectContaining({ pluginWorkspaceTaskLease: taskLease }) }),
+      ]));
+    }
+    if (failure !== "lost reply") expect(dispatch).not.toHaveBeenCalled();
+    if (failure === "worker unavailable" || duplicate) {
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0].status).toBe("active");
+    } else {
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, lease.id));
+    }
+    retry = true;
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null }).where(eq(nativeRunFinalizations.runId, run.id));
+    await expect(resumeNativeWorkspaceFinalization({ db, runId: run.id, pluginWorkerManager: workers })).resolves.toMatchObject({
+      status: "succeeded", metadata: { pluginWorkspaceTaskLease: taskLease },
+    });
+    expect(dispatch).toHaveBeenCalledTimes(failure === "lost reply" ? 2 : 1);
+    if (failure === "lost reply") expect(dispatch.mock.calls[1][2].operationId).toBe(dispatch.mock.calls[0][2].operationId);
   });
 
   it("retains the same-run retry signal without recording a failed workspace", async () => {
@@ -584,14 +749,14 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
-  it("logs a pointer to the docs when a same-run retry follows a failed attachment", async () => {
+  it("logs an explanation when a same-run retry follows a failed attachment", async () => {
     const { input, run } = await fixture(true);
     await db.update(heartbeatRuns).set({ nativeIssueId: input.task.issueId }).where(eq(heartbeatRuns.id, run.id));
     await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: input.task.issueId!, runId: run.id, phase: "retryable_failure" });
     const error = new Error('native_session_recovery_failed: Error: PRP command run.attach failed: {"result":{"message":"run.attach requires a settled Codex provider session: active_turn"}}');
     vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
     await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ name: "NativeSessionResumeScheduledError", original: error });
-    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("doc/execution-semantics.md#session-settlement-after-a-run"));
+    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("A later run may start a new provider thread."));
     expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("run.attach requires a settled Codex provider session: active_turn"));
     expectCleanup(input);
   });

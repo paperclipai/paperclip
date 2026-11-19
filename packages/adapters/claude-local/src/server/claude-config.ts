@@ -10,6 +10,7 @@ import type {
 import {
   adapterExecutionTargetUsesManagedHome,
   maybeRunSandboxInstallCommand,
+  managedRemoteHomeEnvironment,
   prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetShellCommand,
   type AdapterExecutionTarget,
@@ -236,6 +237,7 @@ export function buildRemoteClaudeConfigMaterializationCommand(input: {
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
   remoteToolShellPrefixPath?: string | null;
+  allowHostCredentials?: boolean;
 }): string {
   const prefixPath = input.remoteToolShellPrefixPath;
   const installToolShellPrefix = prefixPath
@@ -247,11 +249,11 @@ export function buildRemoteClaudeConfigMaterializationCommand(input: {
     `if [ -d ${shellQuote(input.remoteClaudeConfigSeedDir)} ]; then ` +
     `cp -R ${shellQuote(`${input.remoteClaudeConfigSeedDir}/.`)} ${shellQuote(input.remoteClaudeConfigDir)}/; ` +
     `fi; ` +
-    `for file in .credentials.json credentials.json; do ` +
+    (input.allowHostCredentials === false ? "true" : `for file in .credentials.json credentials.json; do ` +
     `if [ -n "\${HOME:-}" ] && [ -f "\${HOME}/.claude/\${file}" ] && [ ! -f ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then ` +
     `cp "\${HOME}/.claude/\${file}" ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}"; ` +
     `fi; ` +
-    `done` +
+    `done`) +
     installToolShellPrefix;
 }
 
@@ -269,6 +271,7 @@ export async function materializeRemoteClaudeConfig(input: {
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
   remoteToolShellPrefixPath?: string | null;
+  allowHostCredentials?: boolean;
   options: AdapterExecutionTargetShellOptions;
 }): Promise<{ toolShellPrefixInstalled: boolean }> {
   const result = await runAdapterExecutionTargetShellCommand(
@@ -278,6 +281,7 @@ export async function materializeRemoteClaudeConfig(input: {
       remoteClaudeConfigDir: input.remoteClaudeConfigDir,
       remoteClaudeConfigSeedDir: input.remoteClaudeConfigSeedDir,
       remoteToolShellPrefixPath: input.remoteToolShellPrefixPath,
+      allowHostCredentials: input.allowHostCredentials,
     }),
     input.options,
   );
@@ -398,6 +402,7 @@ function isNonEmptyString(value: unknown): value is string {
  * the function keeps it and skips the managed materialization.
  */
 export async function prepareSandboxClaudeProbeRuntime(input: {
+  registerCleanup?: (cleanup: () => Promise<void>) => void;
   managedAiConnection?: boolean;
   runId: string;
   target: AdapterExecutionTarget | null;
@@ -424,11 +429,13 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
   const hasExplicitClaudeConfigDir = isNonEmptyString(input.env.CLAUDE_CONFIG_DIR);
   if (
     input.targetIsRemote &&
-    adapterExecutionTargetUsesManagedHome(input.target) &&
+    adapterExecutionTargetUsesManagedHome(input.target, input.managedAiConnection) &&
     (!hasExplicitClaudeConfigDir || input.managedAiConnection)
   ) {
     let tempWorkspaceDir: string | null = null;
     let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
+    let cleanupDeferred = false;
+    const managedSsh = input.target?.kind === "remote" && input.target.transport === "ssh" && input.target.spec.useHostAuth === false && input.managedAiConnection;
     try {
       const seedDir = input.managedAiConnection ? input.env.CLAUDE_CONFIG_DIR : await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
       const managedRemoteCwd =
@@ -437,6 +444,8 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"),
       );
       preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+        privateRuntime: Boolean(managedSsh),
+        syncWorkspace: managedSsh ? false : undefined,
         runId: input.runId,
         target: input.target,
         adapterKey: "claude",
@@ -461,7 +470,9 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         path.posix.join(runtimeRootDir, "config-seed");
       const remoteClaudeConfigDir = path.posix.join(runtimeRootDir, "config");
       input.env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+      if (managedSsh) Object.assign(input.env, managedRemoteHomeEnvironment(runtimeRootDir));
       await materializeRemoteClaudeConfig({
+        allowHostCredentials: !input.managedAiConnection,
         runId: input.runId,
         target: input.target,
         remoteClaudeConfigDir,
@@ -474,6 +485,11 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
           onLog: async () => {},
         },
       });
+      if (managedSsh && input.registerCleanup) {
+        const runtime = preparedRuntime;
+        input.registerCleanup(() => runtime.restoreWorkspace());
+        cleanupDeferred = true;
+      }
       checks.push({
         code: "claude_managed_config_dir",
         level: "info",
@@ -496,7 +512,7 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         hint: "Retry the Test. If the failure repeats, check the server log for the redacted diagnostic.",
       });
     } finally {
-      await preparedRuntime?.restoreWorkspace().catch(() => undefined);
+      if (!cleanupDeferred) await preparedRuntime?.restoreWorkspace().catch(() => undefined);
       if (tempWorkspaceDir) {
         await fs.rm(tempWorkspaceDir, { recursive: true, force: true }).catch(() => undefined);
       }

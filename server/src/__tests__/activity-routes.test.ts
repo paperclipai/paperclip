@@ -9,6 +9,7 @@ const mockActivityService = vi.hoisted(() => ({
   runsForIssue: vi.fn(),
   issuesForRun: vi.fn(),
   create: vi.fn(),
+  withActorNames: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -120,6 +121,7 @@ async function requestApp(
 describe("activity routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockActivityService)) mock.mockReset();
+    mockActivityService.withActorNames.mockImplementation(async (rows: unknown[]) => rows);
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
     mockHeartbeatService.getRun.mockImplementation(() => {
       throw new Error("Run issue links must use the narrow authorization read");

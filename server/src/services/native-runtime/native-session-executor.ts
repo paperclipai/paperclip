@@ -1,9 +1,12 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
+import { settleReattachRun } from "../heartbeat/run-admission.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
-import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
+import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
+import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION, nativeSandboxDiskFullSourceCode } from "./native-sandbox-disk-full.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
@@ -23,11 +26,13 @@ import { getStartupRecoveryState } from "../../startup-recovery-state.js";
 import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, nativeHarnessBackupOwner, persistNativeHarnessBackup,
   restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
+  retainReadyNativeProviderArtifacts, NativeProviderArtifactTransferTimeoutError, nativeProviderArtifactTransferBounds,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
 import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
 import { prepareRuntimeContextSource, rehydratePinnedInstructionAsset } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
+import { nativeProviderStartedTurns, nativeProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
@@ -37,6 +42,7 @@ import { notifyExternalAgentSettlement } from "../../modules/external-agents/ind
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { registerIdleLocalWorkProbe, type IdleLocalWork } from "../idle-local-work.js";
+import { isLeavingRunStartsToReplacement, subscribeRunStartHandoverChanges } from "../run-start-handover.js";
 import type { NativeCleanupOutcome } from "./retained-native-session-cleanup.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -44,8 +50,8 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
-import { nativeProviderPackAdmissionFailureCode, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
-import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { nativeProviderPackAdmissionFailureCode, prepareNativeProviderPackAdmission, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
+import { type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
@@ -54,12 +60,16 @@ import { writeExecutionControl } from "../execution-control-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
 import { syncPluginTaskCredentialHandoff, registerPluginTaskCredentialHandoff } from "../plugin-task-credential-writeback.js";
-import { resolvePluginTaskResume } from "../environment-task-runtime.js";
+import { resolvePluginTaskResume, type PluginTaskDescription } from "../environment-task-runtime.js";
+import { assertAttachedPortableTask, readyPortableTaskSource, unlaunchedPortableTaskLease } from "../plugin-task-ownership.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
+import { findNativeFailedBeforeProviderTurn, NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE, NativeFailedBeforeProviderTurnError } from "./failed-before-provider-turn.js";
 import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
-import { retireSandboxRunnerPortHolders } from "./sandbox-runner-port-holders.js";
+import {
+  inspectSandboxSessionRunner, retireSandboxRunnerPortHolders, sandboxSessionRunnerExited, type SandboxSessionRunnerInspection,
+} from "./sandbox-runner-port-holders.js";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { agentDirectoryBusyRetryDelayMs } from "../heartbeat/agent-directory-busy.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
@@ -72,11 +82,18 @@ import { nativeCaseHandoffResult } from "./native-case-handoff.js";
 import { assertExternalNativeRunAuthority } from "./external-native-authority.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
 import {
+  createRemoteRunnerDiskReserve,
+  isSandboxDiskFullError,
+  remoteRunnerDiskReservePath,
+  remoteStagingFailure,
+  sandboxDiskFullFailure,
+} from "./remote-runner-disk-reserve.js";
+import {
   NATIVE_CONTINUITY_STATE_ENTRIES, NATIVE_SESSION_ROOT_HELD_ENTRIES, describeUnexpectedNativeSessionRootEntries,
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
-import { configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { agents } from "@paperclipai/db";
@@ -99,12 +116,14 @@ import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
 import { inferOpenAiCompatibleBiller, type AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { redactNativeFailureError } from "./native-failure-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
 import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
+import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
-import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
+import { attemptLaunchesFreshBootstrap, RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { reconcileControllerJournalWithRunner, refreshRetiredWarmOwnerProjection } from "./warm-controller-journal.js";
@@ -121,7 +140,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -161,7 +180,7 @@ import {
 import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerNeverAuthenticated, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRemoteBootstrapEvidence, nativeRunnerNeverAuthenticated, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS, localRunnerProcessReconnectGraceMs } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
@@ -204,6 +223,7 @@ import {
   applyNativeSessionGoalControl,
   inspectStagedRunAttachment,
   inspectDurablePrpCheckpointHeader,
+  inspectDurablePrpCheckpointRunner,
   inspectStagedRunAttachmentHeader,
   inspectRetainedRunInstructions,
   inspectWarmRunTransition,
@@ -228,6 +248,7 @@ import type { NativeRunnerAttachmentDownload, NativeRunnerAttachmentStage } from
 import { discoverRemoteExecutable, parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 export { parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { readRemoteUserHome } from "./remote-user-home.js";
 import { NativeRunnerIngressAcquisitionError, prepareNativeRemoteRunner, createNativeRunnerExecutionDriver, resolveRemoteRunnerTransportMode } from "./native-runner-execution-driver.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -261,6 +282,7 @@ import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeCredentialUpdateOwner, appendNativeCredentialUpdate } from "./native-credential-updates.js";
 import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
+import { RepeatedToolFailureGuard, ToolCallLoopError, toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { dispatchToolCallback, recoverToolCallback, type SemanticInputAdmission } from "../../vendor/paperclip-runner/index.js";
@@ -278,7 +300,7 @@ import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
-import { NATIVE_PROVIDER_SIDE_EFFECT_PENDING, NATIVE_PROVIDER_STATE_INCOMPATIBLE, nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { NATIVE_PROVIDER_SIDE_EFFECT_PENDING, NATIVE_PROVIDER_STATE_INCOMPATIBLE, nativeRuntimeContextsMatch, nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { clearRunProviderStateUnsaved, markAcceptedRunProviderStateUnsaved } from "./native-provider-state-unsaved.js";
 import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -286,10 +308,11 @@ import { reportRunFailure } from "../run-failure-report.js";
 import {
   REMOTE_RECOVERY_MARKER_READ_SCRIPT, REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
   REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, RemoteRunnerRecoveryError, attachRemoteRunnerRecoveryDiagnostic, boundRemoteRunnerExitEvidence,
-  describeExitedRemoteRunner, describeExitedRemoteRunnerReason, readRemoteRunnerRecoveryError, remoteRecoveryProbeReason,
+  describeExitedRemoteRunner, describeExitedRemoteRunnerReason, exitedRunnerRequestedFreshBootstrap, readRemoteRunnerRecoveryError,
+  remoteRecoveryProbeReason, runnerStateRequestsFreshBootstrap,
 } from "./remote-runner-recovery-diagnostics.js";
 import { isPluginRpcTimeout, readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_PLUGIN_STALL_BUDGET_MS, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS, remoteRunnerPluginStall, type RemoteRunnerPluginStall } from "./remote-runner-recovery-probe.js";
-import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
+import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands, waitForLiveWarmSessionOwner } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
@@ -362,6 +385,7 @@ import {
 type ActiveNativeSession = {
   session: NativeSession;
   cancelRequested: boolean;
+  admissionAbort?: AbortController;
   cancellationSettled?: Promise<void>;
   restartDetach?: Promise<void>;
 };
@@ -705,6 +729,9 @@ type WarmNativeSession = {
   pluginTaskId?: string;
   /** The sandbox that holds this owner's Runner, when it runs in one. */
   providerLeaseId?: string;
+  sandboxLeaseDb?: Db;
+  sandboxRunner?: { runner: CommandManagedRuntimeRunner; remoteCwd: string };
+  closeFailureEvidenceLogged?: boolean;
   /** A successor's retirement of this owner failed; it stays registered for its own sandbox. */
   retirementUnproven?: boolean;
   observabilityCompatibilityKey?: string;
@@ -729,11 +756,15 @@ type WarmNativeSession = {
   controllerDetachedForRestart?: boolean;
   finishRelease?: () => Promise<void>;
   closeOnReleaseReason?: string;
+  idleCloseRetries?: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
   lastActivityAt: string;
 };
 
 const WARM_CLOSE_FAILURE_DETAIL_MAX = 2_000;
+const WARM_NATIVE_SESSION_CLOSE_CONCURRENCY = 4;
+export const WARM_IDLE_CLOSE_RETRY_MS = 5_000;
+export const WARM_IDLE_CLOSE_MAX_RETRIES = 3;
 
 export function describeWarmCloseFailure(error: unknown): string {
   const describe = (value: unknown): string => {
@@ -742,8 +773,10 @@ export function describeWarmCloseFailure(error: unknown): string {
     const code = "code" in value && typeof value.code === "string" ? `${value.code}: ` : "";
     const settlement = value instanceof NativeSessionCloseUnrecoverableError && value.settlement
       ? ` ${JSON.stringify(value.settlement)}` : "";
+    const remote = readRemoteRunnerRecoveryError(value);
+    const recovery = remote ? ` [${remote.stage}/${remote.reason}${remote.runnerLifecycle ? `/${remote.runnerLifecycle}` : ""}]` : "";
     const cause = value.cause === undefined ? "" : ` (cause: ${describe(value.cause)})`;
-    return `${code}${value.message}${settlement}${cause}`;
+    return `${code}${value.message}${recovery}${settlement}${cause}`;
   };
   const text = describe(error).replaceAll(/[\r\n]+/g, " ");
   return text.length > WARM_CLOSE_FAILURE_DETAIL_MAX ? `${text.slice(0, WARM_CLOSE_FAILURE_DETAIL_MAX)}…` : text;
@@ -810,6 +843,11 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
     if (entry.instructionCopy?.runId !== options?.preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
   }
   finally { await stopping; }
+}
+
+function warmSandboxRunner(target?: AdapterExecutionTarget | null): WarmNativeSession["sandboxRunner"] {
+  return target?.kind === "remote" && target.transport === "sandbox" && target.runner && !target.runnerTask
+    ? { runner: target.runner, remoteCwd: target.remoteCwd } : undefined;
 }
 
 function sandboxProviderLeaseId(target?: AdapterExecutionTarget | null): string | null {
@@ -893,7 +931,7 @@ async function detachReleasedWarmNativeSession(entry: WarmNativeSession) {
   entry.controllerDetachedForRestart = true;
   if (!entry.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
   await entry.session.detachControllerForRestart();
-  await entry.githubAccess?.stop();
+  await entry.githubAccess?.stop({ preserveLaunchers: true });
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
@@ -901,6 +939,7 @@ function forgetWarmNativeSession(scope: string, entry: WarmNativeSession) {
   if (warmNativeSessions.get(scope) !== entry) return;
   warmNativeSessions.delete(scope);
   entry.onReleased();
+  releaseIdleSessionToolAuthority(scope);
 }
 
 const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof createPluginRunnerTaskOwner>>();
@@ -914,6 +953,21 @@ export function readNativeSessionIdleWork(): IdleLocalWork {
     ? "present" : "none";
 }
 registerIdleLocalWorkProbe(readNativeSessionIdleWork);
+
+export const WARM_HANDOFF_CLOSE_DELAY_MS = 1_000;
+
+function warmIdleCloseDelay(idleTimeoutMs: number): number {
+  return isLeavingRunStartsToReplacement() ? Math.min(idleTimeoutMs, WARM_HANDOFF_CLOSE_DELAY_MS) : idleTimeoutMs;
+}
+
+subscribeRunStartHandoverChanges(() => {
+  if (!isLeavingRunStartsToReplacement()) return;
+  for (const [sessionId, entry] of warmNativeSessions) {
+    if (entry.busy || entry.idleTimer === null) continue;
+    clearTimeout(entry.idleTimer);
+    armWarmNativeSessionIdleTimer(sessionId, entry, WARM_HANDOFF_CLOSE_DELAY_MS);
+  }
+});
 
 /**
  * How long a new run's admission waits for the warm session to stop being busy.
@@ -933,6 +987,13 @@ async function waitForWarmNativeSessionSettled(scope: string): Promise<void> {
   while (settlingNativeSessionScopes.has(scope) && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, warmSessionReleaseWait.pollMs));
   }
+  const closing = closingWarmNativeSessions.get(scope);
+  if (!closing) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    closing.catch(() => undefined),
+    new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - Date.now())); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /** Reserve the existing physical copy before heartbeat composes AGENT_HOME and
@@ -959,7 +1020,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     })) || prior.workspace.cwd !== input.workspace.cwd) return null;
   const scope = nativeSessionScopeKey(prior);
   const busyEntry = warmNativeSessions.get(scope);
-  if (busyEntry?.busy || settlingNativeSessionScopes.has(scope)) await waitForWarmNativeSessionSettled(scope);
+  if (busyEntry?.busy || settlingNativeSessionScopes.has(scope) || closingWarmNativeSessions.has(scope)) await waitForWarmNativeSessionSettled(scope);
   // Re-read after the wait: the release may have retired or replaced the session.
   const entry = warmNativeSessions.get(scope);
   if (!entry || !entry.instructionWorkingCopy?.runId || entry.environmentId !== input.environmentId) return null;
@@ -983,7 +1044,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     const adopted = await input.adopt(entry.instructionWorkingCopy.runId);
     if (!adopted) {
       await retire("warm instruction materialization cannot be handed off");
-      throw new Error("native_instruction_materialization_handoff_unavailable");
+      return null;
     }
     if (adopted.runId !== input.runId || adopted.preparationKey !== input.preparationKey) throw new Error("native_instruction_materialization_handoff_mismatch");
     entry.instructionWorkingCopy = adopted;
@@ -1069,7 +1130,7 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   return closeIdleWarmNativeSessions(input);
 }
 
-async function warmSandboxDestroyed(db: Db, entry: WarmNativeSession): Promise<boolean> {
+async function warmSandboxTerminated(db: Db, entry: WarmNativeSession): Promise<boolean> {
   if (!entry.providerLeaseId || !entry.environmentId) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, entry.companyId),
@@ -1077,8 +1138,127 @@ async function warmSandboxDestroyed(db: Db, entry: WarmNativeSession): Promise<b
     eq(environmentLeases.providerLeaseId, entry.providerLeaseId),
   ));
   const resolved = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(db, lease)));
-  return resolved.some(lease => hasRemoteTerminationReceipt(lease)
-    && (lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state === "destroyed");
+  return resolved.some(lease => {
+    if (!hasRemoteTerminationReceipt(lease)) return false;
+    const state = (lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state;
+    return state === "destroyed" || (state === "stopped" && lease.heartbeatRunId === entry.runId);
+  });
+}
+
+async function warmRunnerPortTakenBySuccessor(db: Db, entry: WarmNativeSession): Promise<boolean> {
+  if (!entry.providerLeaseId || !entry.environmentId) return false;
+  const [owner] = await db.select({ finishedAt: heartbeatRuns.finishedAt,
+    lastRunnerEventAt: sql<string | null>`(select max(owner_event.created_at)::text from ${heartbeatRunEvents} owner_event
+      where owner_event.company_id = ${entry.companyId} and owner_event.run_id = ${entry.runId}
+        and owner_event.source_event_id is not null)` }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, entry.runId), eq(heartbeatRuns.companyId, entry.companyId)));
+  if (!owner?.finishedAt || !owner.lastRunnerEventAt) return false;
+  const ownerLastRunnerEventAt = owner.lastRunnerEventAt;
+  const [successor] = await db.select({ runId: heartbeatRuns.id }).from(environmentLeases)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId), eq(heartbeatRuns.companyId, entry.companyId)))
+    .where(and(
+      eq(environmentLeases.providerLeaseId, entry.providerLeaseId),
+      eq(environmentLeases.companyId, entry.companyId),
+      eq(environmentLeases.environmentId, entry.environmentId),
+      sql`${heartbeatRuns.id} <> ${entry.runId}`,
+      sql`exists (select 1 from ${heartbeatRunEvents} launch
+        where launch.company_id = ${entry.companyId} and launch.run_id = ${heartbeatRuns.id}
+          and launch.event_type = ${PROCESS_IDENTITY_RECORDED} and launch.source_event_id is null
+          and launch.created_at > ${ownerLastRunnerEventAt}::timestamptz)`,
+      sql`exists (select 1 from ${heartbeatRunEvents} started
+        where started.company_id = ${entry.companyId} and started.run_id = ${heartbeatRuns.id}
+          and started.event_type in ('session.started', 'session.resumed') and started.source_instance_id = ${heartbeatRuns.runnerInstanceId}::text
+          and started.created_at > ${ownerLastRunnerEventAt}::timestamptz)`,
+    )).limit(1);
+  return Boolean(successor);
+}
+
+/** A failed close is complete when its Runner is proven gone, its sandbox is destroyed, the run's own sandbox lease has a stop receipt, or a later run launched its own Runner on the same sandbox. */
+async function warmCloseFailureProvesOwnerGone(entry: WarmNativeSession, error: unknown, db = entry.sandboxLeaseDb): Promise<boolean> {
+  const diagnostic = readRemoteRunnerRecoveryError(error);
+  if (diagnostic?.stage === "process_verification" && diagnostic.reason === "process_not_running") return true;
+  const runnerIdMissing = diagnostic?.stage === "process_verification" && diagnostic.reason === "process_runner_id_missing";
+  const logEvidence = Boolean(entry.sandboxRunner) && !entry.closeFailureEvidenceLogged
+    && (diagnostic !== null || error instanceof NativeSessionCloseUnrecoverableError);
+  const inspection = entry.sandboxRunner && (runnerIdMissing || logEvidence)
+    ? await inspectSandboxSessionRunner({ runner: entry.sandboxRunner.runner,
+      stateDirectory: remoteRunnerStateDirectory(entry.sandboxRunner.remoteCwd, entry.normalizedSessionId) }) : null;
+  if (logEvidence) {
+    entry.closeFailureEvidenceLogged = true;
+    logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
+      providerLeaseId: entry.providerLeaseId ?? null, ...warmCloseFailureEvidence(entry, error, inspection) },
+    "warm native session close failed; sandbox Runner evidence");
+  }
+  if (runnerIdMissing && suspendedRunnerHasExited(entry, inspection)) return true;
+  try {
+    if (db && (await warmSandboxTerminated(db, entry) || await warmRunnerPortTakenBySuccessor(db, entry))) return true;
+  } catch (proofError) {
+    logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
+    return false;
+  }
+  return db ? stopRetainedRunnerOfFinishedOwner(entry, error, db) : false;
+}
+
+function warmCloseFailureEvidence(entry: WarmNativeSession, error: unknown, inspection: SandboxSessionRunnerInspection | null) {
+  const diagnostic = readRemoteRunnerRecoveryError(error);
+  const settlement = error instanceof NativeSessionCloseUnrecoverableError ? error.settlement : undefined;
+  const suspension = settlement?.suspensionState && typeof settlement.suspensionState === "object"
+    ? settlement.suspensionState as Record<string, unknown> : null;
+  return {
+    closeStage: diagnostic?.stage ?? null,
+    closeReason: diagnostic?.reason ?? (error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null),
+    closeRunnerLifecycle: diagnostic?.runnerLifecycle ?? suspension?.runnerLifecycle ?? null,
+    runnerSuspended: settlement?.runnerSuspended ?? null,
+    runnerRetained: settlement?.runnerRetained ?? null,
+    suspendCommandStatus: suspension?.commandStatus ?? null,
+    proofWindowEnd: settlement?.proofWindowEnd ?? null,
+    sandboxRunner: inspection ? {
+      lifecycle: inspection.state?.lifecycle ?? null,
+      settled: inspection.state?.settled ?? null,
+      identityMatches: inspection.state !== null && inspection.state.runId === entry.runId
+        && inspection.state.normalizedSessionId === entry.normalizedSessionId && inspection.markerRunnerIdMatchesState,
+      markerPid: inspection.markerPid,
+      procfs: inspection.procfs,
+      unreadableProcesses: inspection.unreadableProcesses,
+      processes: inspection.processes.slice(0, 20),
+    } : "unavailable",
+  };
+}
+
+function suspendedRunnerHasExited(entry: WarmNativeSession, inspection: SandboxSessionRunnerInspection | null): boolean {
+  return inspection !== null && inspection.procfs && inspection.unreadableProcesses === 0 && inspection.state?.lifecycle === "suspended" && inspection.state.settled
+    && inspection.state.runId === entry.runId && inspection.state.normalizedSessionId === entry.normalizedSessionId
+    && inspection.markerRunnerIdMatchesState && !inspection.processes.some(process => process.carriesRunnerId);
+}
+
+export const warmRetainedRunnerStopWait = { waitMs: 10_000, pollMs: 500 };
+
+async function stopRetainedRunnerOfFinishedOwner(entry: WarmNativeSession, error: unknown, db: Db): Promise<boolean> {
+  if (!entry.sandboxRunner || !(error instanceof NativeSessionCloseUnrecoverableError)
+    || error.settlement?.runnerRetained !== true || error.settlement.runnerSuspended === true) return false;
+  const { runner, remoteCwd } = entry.sandboxRunner;
+  const runtimeRoot = posix.join(remoteCwd, ".paperclip-runtime", "paperclip-runner");
+  const sessionDirectory = createHash("sha256").update(entry.normalizedSessionId).digest("hex");
+  try {
+    await retireSandboxRunnerPortHolders({ db, companyId: entry.companyId, agentId: entry.agentId, runId: entry.runId,
+      runner, runtimeRoot, ownSessionRoot: "", providerLeaseId: entry.providerLeaseId ?? null,
+      only: { sessionDirectory, runId: entry.runId }, retireInProcess: async () => false, ...warmRetainedRunnerStopWait });
+  } catch (stopError) {
+    logger.warn({ runId: entry.runId, providerLeaseId: entry.providerLeaseId ?? null, stopFailure: describeWarmCloseFailure(stopError) },
+      "could not stop the retained Runner of a finished warm session");
+    return false;
+  }
+  if (!await sandboxSessionRunnerExited({ runner, runtimeRoot, sessionDirectory })) return false;
+  logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
+    providerLeaseId: entry.providerLeaseId ?? null },
+  "stopped the retained Runner of a finished warm session whose suspend was refused; released it without a checkpoint");
+  return true;
+}
+
+function armWarmIdleCloseRetry(sessionId: string, entry: WarmNativeSession): void {
+  if (warmNativeSessions.get(sessionId) !== entry || entry.released || (entry.idleCloseRetries ?? 0) >= WARM_IDLE_CLOSE_MAX_RETRIES) return;
+  entry.idleCloseRetries = (entry.idleCloseRetries ?? 0) + 1;
+  armWarmNativeSessionIdleTimer(sessionId, entry, WARM_IDLE_CLOSE_RETRY_MS);
 }
 
 /** Detach released owners and checkpoint unreleased owners before a controller
@@ -1110,11 +1290,9 @@ async function closeIdleWarmNativeSessions(input: {
   let busy = 0;
   let failed = 0;
   const failures: WarmNativeSessionCloseFailure[] = [];
-  for (const [sessionId, entry] of [...warmNativeSessions]) {
-    if (input.canRetire && !input.canRetire()) break;
-    if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
-      continue;
-    }
+  const retryIdleCloseAfterSweep: [string, WarmNativeSession][] = [];
+  let stopped = false;
+  const closeEntry = async (sessionId: string, entry: WarmNativeSession) => {
     if (entry.busy || entry.preparingRunId || executingRunnerdSessionScopes.has(sessionId)
       || (input.canRetire && (entry.instructionPreparationRunId || closingWarmNativeSessions.has(sessionId)))) {
       // A busy turn can complete while another idle session is checkpointing.
@@ -1122,10 +1300,10 @@ async function closeIdleWarmNativeSessions(input: {
       // owner behind after the shutdown sweep has already passed it.
       if (input.closeBusyOnRelease) entry.closeOnReleaseReason = input.reason;
       busy += 1;
-      continue;
+      return;
     }
     // The host owns retention after release; a quiet local handle needs no retirement for sleep.
-    if (input.canRetire && entry.released && !entry.closeOnReleaseReason) continue;
+    if (input.canRetire && entry.released && !entry.closeOnReleaseReason) return;
     const detach = input.detachReleased === true && entry.released === true && !entry.closeOnReleaseReason;
     if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
     // Keep a fenced owner until both retirement and stopped collection succeed.
@@ -1148,23 +1326,18 @@ async function closeIdleWarmNativeSessions(input: {
       if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
       if (!detach && error instanceof AgentDirectoryOperationBusyError) {
         busy += 1;
-        continue;
+        return;
       }
-      const destroyed = !detach && input.forceStopUnsettled && input.db
-        ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
-          logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
-          return false;
-        })
-        : false;
-      if (destroyed) {
+      if (!detach && await warmCloseFailureProvesOwnerGone(entry, error, input.db ?? entry.sandboxLeaseDb)) {
         logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
           providerLeaseId: entry.providerLeaseId ?? null, reason: input.reason, closeFailure: describeWarmCloseFailure(error) },
-        "warm native session's sandbox was already destroyed; released its owner");
+        "warm native session's Runner or sandbox is gone; released its owner");
         forgetWarmNativeSession(sessionId, entry);
         closed += 1;
-        continue;
+        return;
       }
       failed += 1;
+      if (!detach && entry.idleCloseRetries !== undefined) retryIdleCloseAfterSweep.push([sessionId, entry]);
       const forced = forcedStopFailure === undefined ? "" : `; forced Runner stop failed: ${describeWarmCloseFailure(forcedStopFailure)}`;
       failures.push({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
         providerLeaseId: entry.providerLeaseId ?? null,
@@ -1174,10 +1347,32 @@ async function closeIdleWarmNativeSessions(input: {
       if (closingWarmNativeSessions.get(sessionId) === closing) {
         closingWarmNativeSessions.delete(sessionId);
       }
+      releaseIdleSessionToolAuthority(sessionId);
     }
-    if (input.canRetire && !input.canRetire()) break;
+  };
+  const agentQueues = new Map<string, [string, WarmNativeSession][]>();
+  for (const [sessionId, entry] of [...warmNativeSessions]) {
+    if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) continue;
+    const agentKey = `${entry.companyId}:${entry.agentId}`;
+    const queue = agentQueues.get(agentKey);
+    if (queue) queue.push([sessionId, entry]); else agentQueues.set(agentKey, [[sessionId, entry]]);
   }
+  const pendingAgents = [...agentQueues.values()];
+  const closeAgentQueues = async () => {
+    for (let queue = pendingAgents.shift(); queue; queue = pendingAgents.shift()) {
+      for (const [sessionId, entry] of queue) {
+        if (stopped || (input.canRetire && !input.canRetire())) {
+          stopped = true;
+          return;
+        }
+        await closeEntry(sessionId, entry);
+      }
+    }
+  };
+  const concurrency = input.canRetire ? 1 : WARM_NATIVE_SESSION_CLOSE_CONCURRENCY;
+  await Promise.all(Array.from({ length: Math.min(concurrency, pendingAgents.length) }, closeAgentQueues));
   if (failures.length > 0) logger.warn({ reason: input.reason, failures }, "idle warm native sessions did not close");
+  for (const [sessionId, entry] of retryIdleCloseAfterSweep) armWarmIdleCloseRetry(sessionId, entry);
   return { closed, busy, failed, failures };
 }
 
@@ -1867,6 +2062,29 @@ export function nativeToolsRefreshWaitResult(input: {
   };
 }
 
+export function nativeToolCallLoopWaitResult(input: {
+  wakeId: string;
+  key: string;
+  completionContract: NativeExecutionInput["completionContract"]["contract"];
+}): PrpStructuredRunResult {
+  const ref = `wakeup:${input.wakeId}`;
+  return {
+    ...nativeToolsRefreshWaitResult(input),
+    summary: "Paperclip stopped a tool call that kept failing the same way. The task continues in a fresh session.",
+    completionClaim: {
+      contractRevision: input.completionContract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        status: "unknown",
+        evidenceRefs: [ref],
+      })),
+      remainingWork: [{ description: "Continue the task in a fresh session.", blocksCompletion: true }],
+    },
+    continuation: { kind: "same_agent", summary: "Continue the task in a fresh session.", idempotencyKey: input.key },
+  };
+}
+
 /**
  * Partial item-verdict responses deliberately leave their original durable
  * interaction pending. They are already authority-checked before entering the
@@ -2159,9 +2377,11 @@ export async function synchronizeCompletedProviderPlan(input: {
   };
 }
 
-class SessionAuthorityEpoch {
+export class SessionAuthorityEpoch {
   readonly runId: string;
   #authority: PaperclipRunnerToolAuthority;
+  // Per run: a new run gets a new epoch and starts with no remembered failures.
+  readonly #repeatedFailures = new RepeatedToolFailureGuard();
   #revoked = false;
   readonly #drainingRun?: { runId: string; capture?: (event: PrpEvent) => Promise<void> };
 
@@ -2225,9 +2445,17 @@ class SessionAuthorityEpoch {
 
   async execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     this.#assertCurrent();
+    const execute = () => this.#repeatedFailures.run(call, () => this.#authority.execute(call)).catch(async (error: unknown) => {
+      if (error instanceof ToolCallLoopError) {
+        await this.#authority.scheduleToolCallLoopContinuation?.(error).catch((scheduleError: unknown) => {
+          logger.warn({ err: scheduleError, runId: this.runId, tool: error.tool }, "tool-call loop continuation was not queued");
+        });
+      }
+      throw error;
+    });
     return dispatchToolCallback(this.runId, call.callId, async () => this.toolTrace
-      ? await this.toolTrace.execute(call, () => this.#authority.execute(call))
-      : await this.#authority.execute(call));
+      ? await this.toolTrace.execute(call, execute)
+      : await execute());
   }
 }
 
@@ -2240,6 +2468,19 @@ const executingNativeIngressAllocations = new Map<string, symbol>();
 /** Session scope -> the run releasing it after its turn (warm release and
  * hand-back), which a follow-up's instruction claim may wait for. */
 const settlingNativeSessionScopes = new Map<string, string>();
+
+function releaseIdleSessionToolAuthority(scope: string): void {
+  if (executingRunnerdSessionScopes.has(scope) || initializingSessionToolAuthorities.has(scope)
+    || settlingNativeSessionScopes.has(scope) || warmNativeSessions.has(scope) || closingWarmNativeSessions.has(scope)) return;
+  const epoch = sessionToolAuthorityEpochs.get(scope);
+  if (!epoch) return;
+  sessionToolAuthorityEpochs.delete(scope);
+  epoch.revoke();
+}
+
+export function sessionToolAuthorityCount(): number {
+  return sessionToolAuthorityEpochs.size;
+}
 
 export function nativeSessionScopeDigestIsBusy(digest: string): boolean {
   const scopes = [
@@ -2324,6 +2565,14 @@ function nativeSessionScopeKey(execution: NativeExecutionInput): string {
       identity: nativeProviderSessionScope(execution),
     },
     normalizedSessionId: nativeSessionKey(execution),
+  });
+}
+
+function nativeGitHubLauncherKey(execution: NativeExecutionInput): string {
+  return canonicalJson({
+    schema: "paperclip.native-github-launcher.v1",
+    session: nativeSessionScopeKey(execution),
+    issueId: execution.binding.issueId,
   });
 }
 
@@ -2512,6 +2761,11 @@ function scrubRunnerdQuarantineLaunchState(root: string): void {
       force: true,
     });
   }
+}
+
+function retireFailedBeforeTurnSessionRoot(execution: NativeExecutionInput): void {
+  const root = scopedRunnerdStateRoot(execution);
+  if (existsSync(root)) quarantineRunnerdStateRoot(root, "identity_indeterminate");
 }
 
 function quarantineRunnerdStateRoot(
@@ -6247,6 +6501,29 @@ async function recordPriorOwnerFenceRefusal(input: { db: Db; execution: NativeEx
   }).catch(() => undefined);
 }
 
+async function assertPluginTaskReattachmentBinding(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  restartRecovery?: NativeRestartRecoveryClaim;
+}, target: Extract<AdapterExecutionTarget, { kind: "remote" }>, identity: Record<string, unknown> | null | undefined) {
+  const claim = input.restartRecovery;
+  const leaseId = target.leaseId;
+  if (claim?.kind !== "reattach_remote_runner" || claim.remote.kind !== "plugin_task" ||
+      claim.runId !== input.execution.binding.runId || !leaseId || claim.remote.leaseId !== leaseId ||
+      !identity || !durableIdentityMatchesExecution(identity, input.execution) ||
+      typeof identity.turnId !== "string" || !identity.turnId || typeof identity.itemId !== "string" || !identity.itemId) {
+    throw new Error("native_plugin_recovery_lease_mismatch");
+  }
+  const taskId = target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined;
+  if (identity.environmentLeaseId !== leaseId) {
+    if (!taskId) throw new Error("native_plugin_recovery_lease_mismatch");
+    await assertAttachedPortableTask(input.db, {
+      companyId: input.execution.binding.companyId, leaseId, taskId, runId: claim.runId, identity,
+    });
+  }
+  return taskId;
+}
+
 async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -6283,6 +6560,7 @@ async function migrateRunnerdStateRootForExecution(input: {
   if (input.restartRecovery?.kind === "reattach_remote_runner" && !existsSync(scoped)) {
     throw new Error("runner_state_identity_mismatch: remote_reattach_root_missing");
   }
+  await captureClaimTimeRemoteBootstrapProof(input);
   await restoreRemoteBootstrapCheckpointForRecovery({ ...input, root: scoped });
   if (existsSync(scoped)) {
     if (!isSafeNativeStateDirectory(scoped)) {
@@ -6369,12 +6647,12 @@ async function migrateRunnerdStateRootForExecution(input: {
     if (input.restartRecovery?.kind === "reattach_remote_runner") {
       if (input.restartRecovery.remote.kind === "plugin_task") {
         const target = input.runnerExecutionTarget;
-        if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask
-          || target.leaseId !== input.restartRecovery.remote.leaseId || identity.environmentLeaseId !== target.leaseId
-          || !durableIdentityMatchesExecution(identity, input.execution)) {
+        if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) {
           throw new Error("native_plugin_recovery_lease_mismatch");
         }
-        await verifyPluginRunnerTaskReattachment(target.runnerTask, identity);
+        const taskId = await assertPluginTaskReattachmentBinding(input, target, identity);
+        await verifyPluginRunnerTaskReattachment(operation => target.runnerTask!(operation,
+          taskId ? { expectedTaskId: taskId } : undefined), identity);
         return;
       }
       try {
@@ -6926,6 +7204,34 @@ export function recordRemoteBootstrapRestartProof(runId: string,
   return true;
 }
 
+/**
+ * The controller checkpoint proof read before this server registers its own
+ * controller for the run. A new controller rewrites that checkpoint with its
+ * own bootstrap commands, so a later read would no longer describe what the
+ * interrupted runner received.
+ */
+const claimTimeRemoteBootstrapProofs = new Map<string, string>();
+
+export async function captureClaimTimeRemoteBootstrapProof(input: {
+  db: Pick<Db, "select">;
+  execution: NativeExecutionInput;
+  restartRecovery?: NativeRestartRecoveryClaim;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+}): Promise<void> {
+  const runId = input.execution.binding.runId;
+  claimTimeRemoteBootstrapProofs.delete(runId);
+  const target = input.runnerExecutionTarget;
+  if (input.restartRecovery?.kind !== "bootstrap_incomplete" || input.restartRecovery.runId !== runId
+    || target?.kind !== "remote" || target.transport !== "sandbox" || target.runnerTask) return;
+  const evidence = await nativeRunnerCheckpointRemoteBootstrapEvidence(input.db, input.execution.binding,
+    nativeSessionKey(input.execution));
+  if (evidence) claimTimeRemoteBootstrapProofs.set(runId, evidence.runnerInstanceId);
+}
+
+export function claimTimeRemoteBootstrapProofHolds(runId: string, runnerInstanceId: unknown): boolean {
+  return typeof runnerInstanceId === "string" && claimTimeRemoteBootstrapProofs.get(runId) === runnerInstanceId;
+}
+
 export function hasRemoteBootstrapRestartProof(runId: string): boolean {
   return provenRemoteBootstrapRestarts.has(runId);
 }
@@ -7030,6 +7336,18 @@ type RunnerdDurableIdentity = Record<string, unknown> & {
   runnerInstanceId: string;
   environmentLeaseId: string;
 };
+
+function readRunnerdControllerAckedSourceSeq(root: string): number | null {
+  const statePath = resolve(root, "control-plane", "control-plane-state.json");
+  if (!isSafeNativeStateDirectory(root) || !existsSync(statePath)) return null;
+  try {
+    const acked = record(JSON.parse(readBoundedNativeFile(statePath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
+      "runner_durable_identity_too_large").toString("utf8"))).ackedSourceSeq;
+    return typeof acked === "number" && Number.isSafeInteger(acked) && acked >= 0 ? acked : null;
+  } catch {
+    return null;
+  }
+}
 
 function readRunnerdDurableIdentity(
   root: string,
@@ -7250,6 +7568,19 @@ function nativeSessionConfigDigest(
       }),
     )
     .digest("hex")}`;
+}
+
+function matchesRemoteWarmExecution(
+  previous: NativeExecutionInput,
+  current: NativeExecutionInput,
+  toolRefreshOnResume?: boolean,
+): boolean {
+  if (nativeSessionScopeKey(previous) !== nativeSessionScopeKey(current)) return false;
+  const currentDigest = nativeSessionConfigDigest(current, "remote");
+  if (nativeSessionConfigDigest(previous, "remote") === currentDigest) return true;
+  return toolRefreshOnResume === true && "runtimeContext" in previous && "runtimeContext" in current &&
+    nativeRuntimeContextsMatch(previous.runtimeContext, current.runtimeContext, toolRefreshOnResume) &&
+    nativeSessionConfigDigest({ ...previous, runtimeContext: current.runtimeContext }, "remote") === currentDigest;
 }
 
 export function nativeControllerMigrationDescriptor(execution: NativeExecutionInput, recordedToolContractFingerprint: unknown) {
@@ -8109,6 +8440,15 @@ async function restoreDurableHarnessForExecution(db: Db, execution: NativeExecut
     downloadIdleTimeoutMs: NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS });
 }
 
+async function recordedSessionProviderArtifacts(db: Db, execution: NativeExecutionInput,
+  runId: string): Promise<NativeProviderArtifactReceipt | undefined> {
+  const [run] = await db.select({ runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, execution.binding.companyId),
+    eq(heartbeatRuns.agentId, execution.binding.agentId), eq(heartbeatRuns.nativeSessionId, nativeSessionKey(execution)))).limit(1);
+  const receipt = run?.runnerProfileJson?.nativeProviderArtifacts as NativeProviderArtifactReceipt | undefined;
+  return receipt?.schema === "paperclip.native-provider-artifacts.v1" ? receipt : undefined;
+}
+
 function harnessBackupCandidates(root: string): string[] {
   const backupRoot = harnessBackupRoot(root);
   return [resolve(backupRoot, "current"), resolve(backupRoot, "previous")];
@@ -8482,6 +8822,11 @@ function needsCoreGitHubAccess(input: Pick<Parameters<typeof executePaperclipNat
   return Boolean(input.managedGitHub && !(target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask));
 }
 
+function pluginTaskConfiguredEnvironment(environment: NodeJS.ProcessEnv | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(configuredEnvironment(environment)).flatMap(([key, value]) =>
+    key !== CONFIGURED_ENVIRONMENT_KEYS && typeof value === "string" ? [[key, value]] : []));
+}
+
 function nativeProcessReuseKey(input: Parameters<typeof executePaperclipNativeSession>[0]): string | undefined {
   const environment = input.runnerEnvironment;
   if (!input.managedGitHub && environment?.PAPERCLIP_GITHUB_BROKER_TOKEN) return undefined;
@@ -8622,7 +8967,7 @@ async function releaseWarmNativeSession(
     } finally { entry.busy = false; }
     return;
   }
-  armWarmNativeSessionIdleTimer(sessionId, entry, idleTimeoutMs);
+  armWarmNativeSessionIdleTimer(sessionId, entry, warmIdleCloseDelay(idleTimeoutMs));
 }
 
 function armWarmNativeSessionIdleTimer(
@@ -8652,12 +8997,25 @@ function armWarmNativeSessionIdleTimer(
           return;
         }
         logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
-          providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error) },
+          providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error),
+          closeAttempt: (current.idleCloseRetries ?? 0) + 1 },
         released ? "idle warm native session detach failed" : "idle warm native session close failed");
+        if (released) return;
+        return warmCloseFailureProvesOwnerGone(current, error).then(gone => {
+          if (gone) {
+            logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
+              providerLeaseId: current.providerLeaseId ?? null },
+            "warm native session's Runner or sandbox is gone; released its owner");
+            forgetWarmNativeSession(sessionId, current);
+            return;
+          }
+          armWarmIdleCloseRetry(sessionId, current);
+        });
       })
       .finally(() => {
         current.busy = false;
         if (closingWarmNativeSessions.get(sessionId) === closing) closingWarmNativeSessions.delete(sessionId);
+        releaseIdleSessionToolAuthority(sessionId);
       });
     // Admission waits for this checkpoint like a restart sweep's close.
     closingWarmNativeSessions.set(sessionId, closing);
@@ -8683,6 +9041,7 @@ export function nativeSessionFailureDisposition(
   attempt: number,
   now = new Date(),
   sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
+  options: { freshBootstrap?: boolean } = {},
 ) {
   const permanentFailure =
     // A same-run retry would meet the same unretired owner on the same sandbox;
@@ -8695,7 +9054,7 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_provider_approval_required" ||
     sourceFailureCode === "native_event_replay_conflict" ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
-    sourceFailureCode === "runner_remote_provider_verification_unavailable" ||
+    sourceFailureCode === "runner_remote_provider_verification_unavailable" && !options.freshBootstrap ||
     sourceFailureCode === "native_provider_terminal_failed" ||
     sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE ||
     sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING ||
@@ -8706,7 +9065,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_provider_usage_limit" ||
     sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED ||
     sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED ||
-    sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER;
+    sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER ||
+    sourceFailureCode === NATIVE_SANDBOX_DISK_FULL;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -8720,6 +9080,21 @@ export function nativeSessionFailureDisposition(
         : ("native_session_interrupted" as const),
     nextAttemptAt: exhausted ? null : new Date(now.getTime() + 30_000),
   };
+}
+
+export function nativeAdmittedProviderAttemptLimit(claim: NativeRestartRecoveryClaim | null | undefined): number {
+  return claim?.kind === "reattach_remote_runner" && claim.replaceUnansweredRunner === true
+    ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+}
+
+export function nativeUnansweredRunnerReplacementDisposition(
+  disposition: ReturnType<typeof nativeSessionFailureDisposition>,
+  input: { attempt: number; now: Date; adoptedRunnerUnanswered: boolean; replacing: boolean },
+): ReturnType<typeof nativeSessionFailureDisposition> {
+  if (!input.adoptedRunnerUnanswered || input.replacing || input.attempt !== NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT
+    || disposition.failureCode !== "native_session_retry_exhausted") return disposition;
+  return { phase: "retryable_failure", failureCode: "native_session_interrupted",
+    nextAttemptAt: new Date(input.now.getTime() + 30_000) };
 }
 
 export function nativeSessionRecoveryProjection(input: {
@@ -8793,6 +9168,18 @@ export function nativeRunnerExitedBeforeSessionOpen(error: unknown): boolean {
   return nativeRunnerExitConfirmed(error) && runnerExitBeforeSessionOpenMessage(error);
 }
 
+export function nativeRecoveryCommandUnanswered(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const value = error as Record<string, unknown>;
+  const message = typeof value.message === "string" ? value.message : "";
+  if (message.startsWith("native_session_recovery_failed:")
+    && /PRP command [\w.]+ timed out|runnerd exited while waiting for [\w.]+/.test(message)
+    && !/mismatch|different|identity|authority|integrity|incompatible/i.test(message)) return true;
+  if (value.code === "native_provider_recovery_deadline"
+    || /^native session provider recovery timed out after \d+ms$/.test(message)) return true;
+  return nativeRecoveryCommandUnanswered(value.cause, depth + 1);
+}
+
 /** Same provider, category and message (numbers ignored): a retry would meet the same fault. */
 export function nativeStartupFailureSignature(failure: unknown): string | null {
   const value = record(failure);
@@ -8857,7 +9244,11 @@ function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
   return runnerClosedTurnStartSession(value.cause, depth + 1);
 }
 
-export function nativeSessionFailureSourceCode(
+export function nativeSessionFailureSourceCode(error: unknown, runnerSandboxDiskFull = false) {
+  return nativeSandboxDiskFullSourceCode(classifyNativeSessionFailure(error), error, runnerSandboxDiskFull);
+}
+
+function classifyNativeSessionFailure(
   error: unknown,
 ):
   | "native_permission_declined"
@@ -8899,8 +9290,10 @@ export function nativeSessionFailureSourceCode(
   | "runner_ingress_startup_failed"
   | "local_runtime_api_listener_unavailable"
   | typeof NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE
+  | typeof NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE
   | "native_session_interrupted" {
   if (findNativePredecessorRetirementUnproven(error)) return NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE;
+  if (findNativeFailedBeforeProviderTurn(error)) return NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE;
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeGovernedWaitSettlementPendingError) return "native_governed_wait_settlement_pending";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
@@ -9177,7 +9570,9 @@ export async function nativeProviderRecoveryEvidence(input: {
     NATIVE_PROVIDER_STARTUP_REJECTED,
     "provider_session_open_timeout",
     "local_runtime_api_listener_unavailable",
-  ]).has(input.sourceFailureCode) || (input.sourceFailureCode === "runner_ingress_startup_failed"
+  ]).has(input.sourceFailureCode)
+    || input.sourceFailureCode === "runner_remote_provider_verification_unavailable" && !!input.bootstrap
+    || (input.sourceFailureCode === "runner_ingress_startup_failed"
     && !checkpointExists && !providerEventsExist && !!run?.nativeIssueId && !!run.nativeSessionId && !!run.runnerInstanceId
     && await nativeRunnerNeverAuthenticated(input.db, { companyId: run.companyId, issueId: run.nativeIssueId, runId: run.id },
       { runId: run.id, normalizedSessionId: run.nativeSessionId, runnerInstanceId: run.runnerInstanceId }));
@@ -9915,6 +10310,7 @@ async function performNativeCancellation(
       dispatched = true;
       if (!active.cancelRequested) {
         active.cancelRequested = true;
+        active.admissionAbort?.abort(new NativeCancellationPendingRecoveryError());
         active.cancellationSettled = new Promise<void>(resolve => { settleActiveCancellation = resolve; });
         try {
           if (active.session.cancel) {
@@ -10174,6 +10570,7 @@ export async function executePaperclipNativeSession(input: {
   getFreshSessionHandoff?: () => Promise<string | null>;
   /** Retire a retained transport so recovery can replace provider tool declarations. */
   refreshTools?: boolean;
+  toolRefreshOnResume?: boolean;
   db: Db;
   execution: NativeExecutionInput;
   /** Private server preparation proof; never persisted or accepted from a tool. */
@@ -10223,6 +10620,7 @@ export async function executePaperclipNativeSession(input: {
   dotWorkspaceRoot?: string;
   observability?: ProviderObservabilityLaunch;
   runnerEnvironment?: NodeJS.ProcessEnv;
+  outputSecrets?: readonly string[];
   /** Private grant materialization; never a user-configured host path. */
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
@@ -10230,6 +10628,7 @@ export async function executePaperclipNativeSession(input: {
   managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   billingIdentity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">;
   onTaskDispatched?: () => Promise<void> | void;
+  pluginTaskDescription?: PluginTaskDescription;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   /** Resolved per-run authorization; not an independent instance setting. */
   runnerIngressAuthorized?: boolean;
@@ -10475,7 +10874,7 @@ export async function executePaperclipNativeSession(input: {
     executionFailure = error;
     if (error instanceof NativeControllerRecoveryWaitingError) {
       await deferNativeControllerRecovery(input.db, { ...input.execution.binding,
-        leaseOwner: input.leaseOwner, retryAt: error.retryAt });
+        leaseOwner: input.leaseOwner, retryAt: error.retryAt, waitingForOwner: error.owner });
     }
     if (!(error instanceof NativeRunnerOwnershipUnverifiedError) && !(error instanceof NativeStartupCleanupPendingError) && startup.stopRequested && startup.executionContext?.signal.reason instanceof Error &&
         startup.executionContext.signal.reason.message === "native_session_cancelled") {
@@ -10575,6 +10974,7 @@ export async function executePaperclipNativeSession(input: {
       // Always hand the settling mark back, even if a cleanup step throws.
       const settledScope = nativeSessionScopeKey(input.execution);
       if (settlingNativeSessionScopes.get(settledScope) === runId) settlingNativeSessionScopes.delete(settledScope);
+      releaseIdleSessionToolAuthority(settledScope);
     }
   }
 }
@@ -10603,6 +11003,9 @@ async function executePaperclipNativeSessionAttempt(
   cleanupOnly = false,
   ownDiagnosticLease?: (lease: NativeDiagnosticLease) => void,
 ): Promise<AdapterExecutionResult> {
+  const attemptDiagnosticLeases: NativeDiagnosticLease[] = [];
+  const ownRunDiagnosticLease = ownDiagnosticLease;
+  ownDiagnosticLease = lease => { attemptDiagnosticLeases.push(lease); ownRunDiagnosticLease?.(lease); };
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity") {
     const candidate = resolveAntigravityCandidateAdmission({
       companyId: input.execution.binding.companyId, model: input.execution.provider.model,
@@ -10628,10 +11031,29 @@ async function executePaperclipNativeSessionAttempt(
   const stagedRestart = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyStagedAttachmentRestart(input) : null;
   const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
-  if (input.useRunnerd) await timeController("warm_restore", () => restoreWarmRunnerdController(input));
+  const target = input.runnerExecutionTarget;
+  const portableTarget = target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask ? target : undefined;
+  const companyId = input.execution.binding.companyId;
+  const portablePreparationLeaseId = input.restartRecovery?.kind === "bootstrap_incomplete"
+    ? input.restartRecovery.portablePreparationLeaseId : undefined;
+  const targetLease = portableTarget?.leaseId ? (await input.db.select({
+    metadata: environmentLeases.metadata, providerLeaseId: environmentLeases.providerLeaseId,
+    ...(portablePreparationLeaseId ? { unlaunchedPortable: unlaunchedPortableTaskLease() } : {}),
+  }).from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId), eq(environmentLeases.id, portableTarget.leaseId))))[0] : undefined;
+  if (portablePreparationLeaseId && (portableTarget?.leaseId !== portablePreparationLeaseId || targetLease?.unlaunchedPortable !== true)) {
+    throw remoteRecoveryLeaseMismatch("runner_verification", "plugin_task");
+  }
+  const replayPortablePreparation = portablePreparationLeaseId !== undefined;
+  const canRecoverWarmOwner = !input.restartRecovery || replayPortablePreparation;
+  if (input.useRunnerd) await timeController("warm_restore", () => restoreWarmRunnerdController(
+    replayPortablePreparation ? { ...input, restartRecovery: undefined } : input));
   const identityRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY);
+  const outputRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY, input.outputSecrets);
   const redactIdentityText = (text: string) => redactSensitiveText(
     identityRedactor.chunk("diagnostic", text) + identityRedactor.finish("diagnostic"),
+  );
+  const redactOutputText = (text: string) => redactSensitiveText(
+    outputRedactor.chunk("diagnostic", text) + outputRedactor.finish("diagnostic"),
   );
   if (
     input.execution.provider.kind !== "cursor_cloud" &&
@@ -10728,29 +11150,51 @@ async function executePaperclipNativeSessionAttempt(
   });
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
   let remoteWarmRecovery: RemoteWarmSessionRecovery | undefined;
-  let pluginTaskDescription: Extract<ReturnType<typeof environmentTaskResultSchema.parse>,{kind:"description"}> | undefined;
+  let pluginTaskDescription: PluginTaskDescription | undefined;
+  let portableSource: Awaited<ReturnType<typeof readyPortableTaskSource>>;
+  if (portableTarget?.runnerTask && portableTarget.leaseId) {
+    if (input.pluginTaskDescription && input.pluginTaskDescription.taskId === targetLease?.providerLeaseId) {
+      pluginTaskDescription = input.pluginTaskDescription;
+    }
+    if (targetLease?.metadata?.portableTaskPreviousLeaseId || targetLease?.metadata?.portableTaskPredecessor) {
+      const description = targetLease.metadata.portableTaskOwnershipReady === true && pluginTaskDescription
+        ? pluginTaskDescription : environmentTaskResultSchema.parse(await portableTarget.runnerTask({ kind: "describe" }));
+      if (description.kind !== "description") throw new Error("Plugin Runner description unavailable");
+      pluginTaskDescription = description;
+      portableSource = await readyPortableTaskSource(input.db, companyId, portableTarget.leaseId,
+        readRunnerdDurableIdentity(scopedRunnerdStateRoot(input.execution)), {
+          attachedRunId: input.execution.binding.runId,
+          selectedSessionId: nativeSessionKey(input.execution),
+          accountIdentity: input.managedAiAccountIdentity ?? input.managedAiCredentialIdentity,
+        });
+    }
+  }
   const cachedReleasedOwner = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
   if (cachedReleasedOwner?.released) {
-    const proof = releasedWarmRunner(readWarmNativeEnvelope(input.execution));
+    const proof = portableSource ? undefined : releasedWarmRunner(readWarmNativeEnvelope(input.execution));
     const identity = readRunnerdDurableIdentity(scopedRunnerdStateRoot(input.execution));
     const target = input.runnerExecutionTarget;
-    if (proof && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId
-      && target.sandboxLeaseAcquisition?.outcome === "created" && proof.taskId !== target.sandboxLeaseAcquisition.providerLeaseId) {
+    const source = portableSource ?? (proof && { taskId: proof.taskId, identity: proof.source });
+    if (source && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId
+      && (portableSource || target.sandboxLeaseAcquisition?.outcome === "created")
+      && source.taskId !== target.sandboxLeaseAcquisition?.providerLeaseId) {
       const ownInstructionPreparation = cachedReleasedOwner.instructionPreparationRunId === input.execution.binding.runId
         && input.instructionWorkingCopy?.runId === input.execution.binding.runId;
       if ((cachedReleasedOwner.busy && !ownInstructionPreparation)
         || cachedReleasedOwner.preparingRunId && cachedReleasedOwner.preparingRunId !== input.execution.binding.runId
         || cachedReleasedOwner.instructionPreparationRunId && !ownInstructionPreparation
         || cachedReleasedOwner.closeOnReleaseReason) throw new Error("native_session_supervisor_busy");
-      if (proof.taskId !== cachedReleasedOwner.pluginTaskId || proof.scopeDigest !== releasedWarmScope(input)
-        || canonicalJson(proof.source) !== canonicalJson(identity)) throw new Error("native_session_released_owner_scope_mismatch");
+      if (source.taskId !== cachedReleasedOwner.pluginTaskId || cachedReleasedOwner.runId !== identity?.runId ||
+          (proof && (proof.scopeDigest !== releasedWarmScope(input) || canonicalJson(proof.source) !== canonicalJson(identity)))) {
+        throw new Error("native_session_released_owner_scope_mismatch");
+      }
       const wasBusy = cachedReleasedOwner.busy;
       cachedReleasedOwner.busy = true;
       try {
-        // Only physical stop releases the cached controller; ordinary checkpoint admission still proves continuation.
-        const resumeFrom = await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
-          leaseId: target.leaseId, priorIdentity: proof.source, inspectCheckpoint: true });
-        if (resumeFrom !== proof.taskId) throw new Error("native_session_released_owner_scope_mismatch");
+        // Ordinary replacement still needs a stop receipt for the old task.
+        const resumeFrom = portableSource?.taskId ?? await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
+          leaseId: target.leaseId, priorIdentity: source.identity, inspectCheckpoint: true });
+        if (resumeFrom !== source.taskId) throw new Error("native_session_released_owner_scope_mismatch");
         try {
           await detachReleasedWarmNativeSession(cachedReleasedOwner);
         } catch (error) {
@@ -10761,7 +11205,7 @@ async function executePaperclipNativeSessionAttempt(
       } finally { cachedReleasedOwner.busy = wasBusy; }
     } else requireReleasedWarmScope(input, proof, identity);
   }
-  if (input.useRunnerd && !input.restartRecovery && !input.backend &&
+  if (input.useRunnerd && canRecoverWarmOwner && !input.backend &&
       input.runnerExecutionTarget?.kind === "remote" &&
       input.execution.session.lifecyclePolicy.mode === "warm" &&
       !idleWarmNativeSessionOwnerRunId(input)) {
@@ -10771,10 +11215,12 @@ async function executePaperclipNativeSessionAttempt(
     if (taskTarget.transport === "sandbox" && taskTarget.runnerTask && taskTarget.leaseId &&
         durableIdentityMatchesSession(identity,input.execution) && identity.runId !== input.execution.binding.runId) {
       // Inspection can replace a stopped retained task before deciding between adoption and checkpoint recovery.
-      const description = environmentTaskResultSchema.parse(await taskTarget.runnerTask({kind:"describe"}));
-      if (description.kind !== "description") throw new Error("Plugin Runner description unavailable");
-      pluginTaskDescription = description;
-      if (taskTarget.sandboxLeaseAcquisition?.outcome !== "resumed") {
+      if (!pluginTaskDescription || pluginTaskDescription.taskId !== taskTarget.sandboxLeaseAcquisition?.providerLeaseId) {
+        const description = environmentTaskResultSchema.parse(await taskTarget.runnerTask({ kind: "describe" }));
+        if (description.kind !== "description") throw new Error("Plugin Runner description unavailable");
+        pluginTaskDescription = description;
+      }
+      if (taskTarget.sandboxLeaseAcquisition?.outcome !== "resumed" && !portableSource) {
         await recoverPluginRunnerCheckpoint(input, root);
       }
     }
@@ -10784,30 +11230,45 @@ async function executePaperclipNativeSessionAttempt(
           .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, input.execution.binding.runId));
         throw new Error(describeOwnFailedAttachment(finalization?.recoveryHistory));
       }
+      await waitForLiveWarmSessionOwner({ db: input.db, execution: input.execution, priorRunId: identity.runId,
+        checkpointedAt: async () => {
+          const backup = await verifyNativeHarnessBackupStreamed({ root, execution: input.execution, runnerInstanceId: identity.runnerInstanceId });
+          return backup && runnerdAuthorityLifecycle(backup.root, identity) === "suspended" ? new Date(backup.manifest.completedAt) : null;
+        } });
       await logPostTerminalEvents(root, input.onLog);
     }
     if (durableIdentityMatchesSession(identity, input.execution) && identity.runId !== input.execution.binding.runId &&
         runnerdAuthorityLifecycleWithVerifiedBackup({ root, identity, execution: input.execution, allowVerifiedBackup: true }) !== "suspended") {
-      let releasedSource: DurableRecoveryIdentity | undefined;
+      let releasedSource = portableSource?.identity;
       remoteWarmRecovery = await inspectRemoteWarmSessionRecovery({
         db: input.db, execution: input.execution, target: input.runnerExecutionTarget, identity,
+        portableSourceTaskId: portableSource?.taskId,
         readControlState: () => record(JSON.parse(readBoundedNativeFile(
           resolve(root, "control-plane", "control-plane-state.json"), NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
           "runner_durable_identity_too_large").toString("utf8"))),
-        matchesExecution: previous => nativeSessionScopeKey(previous) === nativeSessionScopeKey(input.execution) &&
-          nativeSessionConfigDigest(previous, "remote") === nativeSessionConfigDigest(input.execution, "remote"),
+        matchesExecution: previous => matchesRemoteWarmExecution(previous, input.execution, input.toolRefreshOnResume),
         loadCheckpoint: previous => {
-          const proof = releasedWarmRunner(readWarmNativeEnvelope(previous));
-          if (proof) {
-            releasedSource = requireReleasedWarmScope(input, proof, identity);
+          if (!portableSource) {
+            const proof = releasedWarmRunner(readWarmNativeEnvelope(previous));
+            if (proof) releasedSource = requireReleasedWarmScope(input, proof, identity);
           }
           return loadWarmNativeCheckpoint(previous, nativeSessionConfigDigest(previous, "remote"), "remote");
         },
-        canReuseProcess: previous => !needsCoreGitHubAccess(input) && canReuseNativeProcess(input,
+        canReuseProcess: previous => !portableSource && !needsCoreGitHubAccess(input) &&
+          nativeSessionConfigDigest(previous, "remote") === nativeSessionConfigDigest(input.execution, "remote") && canReuseNativeProcess(input,
           record(JSON.parse(readBoundedNativeFile(nativeSessionCheckpointPath(previous),
             NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8"))).processConfigDigest),
       }) ?? undefined;
-      if (remoteWarmRecovery) remoteWarmRecovery.releasedSource = releasedSource;
+      if (remoteWarmRecovery) {
+        remoteWarmRecovery.releasedSource = releasedSource;
+        if (releasedSource) {
+          const header = await loadNativeRunnerCheckpointHeader(input.db, remoteWarmRecovery.previousExecution.binding).catch((error: unknown) => {
+            if (error instanceof Error && error.message === "native_runner_checkpoint_retired") return null;
+            throw error;
+          });
+          remoteWarmRecovery.releasedSourceRunner = header ? inspectDurablePrpCheckpointRunner(header) ?? undefined : undefined;
+        }
+      }
     }
   }
   if (input.useRunnerd) {
@@ -10859,11 +11320,25 @@ async function executePaperclipNativeSessionAttempt(
   let claimedStartupContext: NativeExecutionContext | undefined;
   let freshClaimAttempt: number | undefined;
   let scheduledResumeContinuation = false;
+  const startupContextBeforeClaim = nativeSessionStartups.get(input.execution.binding.runId)?.executionContext;
   try {
     attempt = await trace.measure(
       "native.coordinator.claim",
       () =>
-        input.db.transaction(async (tx) => {
+        // The claim locks the coordinator, then the run row. A writer holding
+        // those rows in the other order can deadlock it (40P01); a lock wait
+        // can also time out (55P03). Either rolls the claim back whole and it
+        // starts no provider work, so a fresh attempt re-reads and re-proves
+        // everything. Without it the run failed before its first turn and the
+        // task needed reconciliation.
+        retryTransientLockContention(() => input.db.transaction(async (tx) => {
+          // A rolled-back attempt may have opened a startup context; drop it.
+          if (claimedStartupContext) {
+            claimedStartupContext.finish();
+            claimedStartupContext = undefined;
+            const startup = nativeSessionStartups.get(input.execution.binding.runId);
+            if (startup) startup.executionContext = startupContextBeforeClaim;
+          }
           const coordinator = await tx
             .select()
             .from(nativeRunFinalizations)
@@ -11006,7 +11481,7 @@ async function executePaperclipNativeSessionAttempt(
             recovering?.kind,
             !recovering || !("chargesProviderAttempt" in recovering) || recovering.chargesProviderAttempt !== false,
           );
-          if (nextAttempt > 3)
+          if (nextAttempt > nativeAdmittedProviderAttemptLimit(recovering))
             throw new Error("native_session_retry_exhausted");
           const scheduledResumeDecision = await scheduledResumeContinuationAllowed(tx as unknown as Db, {
             companyId: input.execution.binding.companyId,
@@ -11032,7 +11507,7 @@ async function executePaperclipNativeSessionAttempt(
               : coordinator.controllerGeneration + 1;
           const target = input.runnerExecutionTarget;
           const retained = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
-          if (!input.restartRecovery && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId &&
+          if (canRecoverWarmOwner && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId &&
               ((retained?.pluginTaskId && idleWarmNativeSessionOwnerRunId(input) !== undefined) || remoteWarmRecovery?.releasedSource) &&
               (input.execution.provider.kind === "codex" || (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude"))) {
             claimedStartupContext = new NativeExecutionContext(input.execution, Math.min(executionLeaseTtlMs,
@@ -11078,10 +11553,8 @@ async function executePaperclipNativeSessionAttempt(
             .returning({ runId: nativeRunFinalizations.runId })
             .then((rows) => rows[0] ?? null);
           if (!claimed) throw new Error("native_session_lease_lost");
-          providerPackAdmissionSource = { runId: coordinator.runId,
-            receipt: boundRun.runnerProfileJson?.nativeProviderPackAdmission,
-            state: boundRun.runnerProfileJson?.nativeProviderPackAdmissionState,
-            artifacts: boundRun.runnerProfileJson?.nativeProviderArtifacts };
+          const providerPackAdmission = prepareNativeProviderPackAdmission(coordinator.runId, boundRun.runnerProfileJson, providerPackAdmissionEpoch);
+          providerPackAdmissionSource = providerPackAdmission.source;
           controllerGeneration = nextControllerGeneration;
           claimedStopCleanup = stopRecovery;
           await tx
@@ -11089,7 +11562,7 @@ async function executePaperclipNativeSessionAttempt(
             .set({
               nativePhase: "observed",
               nativePhaseUpdatedAt: leaseNow,
-              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(providerPackAdmissionEpoch),
+              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ ...providerPackAdmission.patch,
                 ...(claimedStartupContext ? { nativeStartupContext: { schema: "paperclip.native-startup-context.v1",
                   companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId, runId: input.execution.binding.runId,
                   contextId: claimedStartupContext.id, deadlineAtMs: claimedStartupContext.deadlineAtMs, leaseId: target?.kind === "remote" ? target.leaseId : null,
@@ -11099,7 +11572,7 @@ async function executePaperclipNativeSessionAttempt(
             })
             .where(eq(heartbeatRuns.id, coordinator.runId));
           return nextAttempt;
-        }).then(async claimedAttempt => {
+        })).then(async claimedAttempt => {
           const startup = nativeSessionStartups.get(input.execution.binding.runId);
           if (!startup) throw new Error("native_session_startup_owner_missing");
           startup.leaseOwner = leaseOwner;
@@ -11315,7 +11788,9 @@ async function executePaperclipNativeSessionAttempt(
       : "unpriced" as const;
     const billing = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
     const costUsdExact = input.execution.provider.kind !== "cursor_cloud" && typeof usage?.accountingCostUsdExact === "string" ? usage.accountingCostUsdExact : undefined;
+    const providerRequestId = typeof usage?.providerRequestId === "string" && usage.providerRequestId ? usage.providerRequestId.slice(0, 250) : undefined;
     const checkpoint: AdapterUsageCheckpoint = { usage: accountingUsage, ...billing, complete, usageBasis: "per_run", costUsdExact,
+      ...(providerRequestId ? { providerRequestId } : {}),
       model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus,
       ...(usage?.accountingUsageLost === true ? { pricingProvenance: { source: accountingCost != null || costUsdExact ? "provider_reported" as const : "unknown" as const,
         version: "accounting-receipt/v1", evidence: NATIVE_LOST_TURN_USAGE_EVIDENCE } } : {}) };
@@ -11399,6 +11874,7 @@ async function executePaperclipNativeSessionAttempt(
     },
     {
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
+      secrets: input.outputSecrets,
       assertControllerActive,
       assertRunAdmissionActive,
       taskSessionPublication: input.taskSessionPublication,
@@ -11772,7 +12248,7 @@ async function executePaperclipNativeSessionAttempt(
     executionContext = undefined;
     startupForAdmission!.executionContext = undefined;
   };
-  if (warmSessionId !== null && warmConfigDigest !== null && !input.restartRecovery) {
+  if (warmSessionId !== null && warmConfigDigest !== null && canRecoverWarmOwner) {
     const registered = warmNativeSessions.get(warmSessionId);
     const entry = registered && forgetUnretiredOwnerOnOtherSandbox(warmSessionId, registered, input.runnerExecutionTarget)
       ? undefined : registered;
@@ -11809,6 +12285,9 @@ async function executePaperclipNativeSessionAttempt(
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         !canReuseNativeProcess(input, entry.processConfigDigest) ||
+        (entry.pluginTaskId !== undefined && pluginTaskDescription?.configuredEnvironmentVersion === 1
+          && pluginTaskSessionOwners.get(entry.session)?.configuredEnvironmentDelivered() === false
+          && Object.keys(pluginTaskConfiguredEnvironment(input.runnerEnvironment)).length > 0) ||
         Boolean(entry.githubAccess) !== needsCoreGitHubAccess(input) ||
         entry.githubAccess?.ready === false ||
         (entry.githubAccess !== undefined && entry.githubAccess.duplexRequested !== adapterExecutionTargetEnablesSandboxDuplexBridge(input.runnerExecutionTarget))
@@ -11964,10 +12443,28 @@ async function executePaperclipNativeSessionAttempt(
         ),
       )
       .limit(1);
-    return refresh?.key
-      ? nativeToolsRefreshWaitResult({
-          wakeId: refresh.id,
-          key: refresh.key,
+    if (refresh?.key)
+      return nativeToolsRefreshWaitResult({
+        wakeId: refresh.id,
+        key: refresh.key,
+        completionContract: input.execution.completionContract.contract,
+      });
+    const loopKey = toolCallLoopContinuationKey(input.execution.binding.runId);
+    const [loop] = await input.db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.execution.binding.companyId),
+          eq(agentWakeupRequests.idempotencyKey, loopKey),
+          notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
+        ),
+      )
+      .limit(1);
+    return loop
+      ? nativeToolCallLoopWaitResult({
+          wakeId: loop.id,
+          key: loopKey,
           completionContract: input.execution.completionContract.contract,
         })
       : null;
@@ -11996,6 +12493,7 @@ async function executePaperclipNativeSessionAttempt(
           env: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
           resolveCredentials: (binding) => resolveGitHubOperationCredentials(input.db, binding),
           onLog: input.onLog,
+          launcherKey: nativeGitHubLauncherKey(input.execution),
         }));
         executionContext?.assertOpen();
         releaseGitHubRun = githubAccess.activate(input.execution.binding);
@@ -12059,11 +12557,15 @@ async function executePaperclipNativeSessionAttempt(
         signal: executionContext?.signal ?? new AbortController().signal,
       });
       if (!recovered?.recovered || !recovered.session) throw new Error("runner_state_identity_mismatch: remote_warm_session_unproven");
-      if (remoteWarmRecovery.reuseProcess) {
+      const movedSession = remoteWarmRecovery.portableSourceTaskId !== undefined;
+      // A portable resume already starts a new Runner. Its run attachment
+      // prepares the current tools and runtime on the verified target.
+      if (movedSession || remoteWarmRecovery.reuseProcess) {
         existingWarmSession = recovered.session;
-        await emitStartupReuse(input.onEvent, "runner", { state: "reused", reason: "verified_reuse" });
+        await emitStartupReuse(input.onEvent, "runner", movedSession
+          ? { state: "fresh", reason: "replacement" } : { state: "reused", reason: "verified_reuse" });
         await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
-        trace.setBudgetStart("warm");
+        if (!movedSession) trace.setBudgetStart("warm");
         persistedWarmSession = null;
       } else {
         await recovered.session.close({ reason: "recovered warm session requires current process configuration" });
@@ -12075,12 +12577,22 @@ async function executePaperclipNativeSessionAttempt(
           remoteWarmRecovery.previousExecution.binding, scopedRunnerdStateRoot(input.execution),
           nativeSessionKey(input.execution));
         if (!suspendedController) throw new Error("native_runner_checkpoint_missing_after_suspension");
-        persistWarmNativeCheckpoint(remoteWarmRecovery.previousExecution,
-          nativeSessionConfigDigest(remoteWarmRecovery.previousExecution, "remote"), await recovered.session.snapshot());
-        persistedWarmSession = loadWarmNativeCheckpoint(input.execution, warmConfigDigest!, "remote");
-        runnerdBackend = await createRunnerdBackend({ ...input, onDiagnosticLease: ownDiagnosticLease, providerPackAdmissionSource, recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution", onAccountingEvent: producerUsage?.capture, runnerInstanceId: effectiveRunnerInstanceId,
+        const verifiedConfigDigest = nativeSessionConfigDigest(remoteWarmRecovery.previousExecution, "remote");
+        persistWarmNativeCheckpoint(remoteWarmRecovery.previousExecution, verifiedConfigDigest, await recovered.session.snapshot());
+        persistedWarmSession = loadWarmNativeCheckpoint(input.execution, verifiedConfigDigest, "remote");
+        runnerdBackend = await createRunnerdBackend({
+          ...input,
+          pluginTaskDescription: undefined,
+          onDiagnosticLease: ownDiagnosticLease,
+          providerPackAdmissionSource,
+          recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution",
+          onAccountingEvent: producerUsage?.capture,
+          runnerInstanceId: effectiveRunnerInstanceId,
           controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? { bootId: controller.bootId } : undefined,
-          durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId, trace, toolTrace });
+          durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
+          trace,
+          toolTrace,
+        });
       }
     }
     const readRemoteCleanupLease = async () => input.runnerExecutionTarget?.kind === "remote" &&
@@ -12136,9 +12648,13 @@ async function executePaperclipNativeSessionAttempt(
           startedAtMs: nativeSessionExecuteStartedAtMs,
         });
         trace.activate(runnerSessionStartupScope);
+        const providerTurnWait = nativeProviderStartedTurns(input.execution.provider)
+          ? await nativeProviderTurnWaitOptions(input.db, input.execution.binding) : undefined;
         const runExecution = () =>
           executeNativeSession({
-            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner" || scheduledResumeContinuation,
+            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner"
+              || input.restartRecovery?.kind === "reattach_remote_runner" || scheduledResumeContinuation,
+            providerTurnWait,
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.
@@ -12175,6 +12691,8 @@ async function executePaperclipNativeSessionAttempt(
             input: runnerExecution,
             startup: executionContext && (!usesPluginTask || executionContext.pluginSupported) ? executionContext : undefined,
             remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
+            retainedRunnerReattachment: input.restartRecovery?.kind === "reattach_remote_runner"
+              && input.restartRecovery.runId === input.execution.binding.runId,
             turnTimeoutMs: input.turnTimeoutMs,
             backend:
               input.backend ??
@@ -12277,7 +12795,7 @@ async function executePaperclipNativeSessionAttempt(
               }
             },
             onPostCompletionEnrichmentFailure: async ({ stage, error }) => {
-              const detail = redactIdentityText(
+              const detail = redactOutputText(
                 error instanceof Error ? error.message : String(error),
               ).slice(-4_096);
               await input.onLog?.(
@@ -12288,7 +12806,7 @@ async function executePaperclipNativeSessionAttempt(
             onSessionQuarantined: async (reason) => {
               await input.onLog?.(
                 "stderr",
-                `[paperclip-runner] warm native session quarantined: ${redactIdentityText(reason).slice(-1_000)}\n`,
+                `[paperclip-runner] warm native session quarantined: ${redactOutputText(reason).slice(-1_000)}\n`,
               );
             },
             onContinuityBreak: async (continuity) => {
@@ -12316,6 +12834,7 @@ async function executePaperclipNativeSessionAttempt(
               );
             },
             onSession: async (session) => {
+              if (session) settleReattachRun(input.execution.binding.runId, "reached");
               input.bindAttachmentSession?.(session);
               if (session) runnerdBackend?.bindDiagnosticSession?.(session);
               if (session && input.runnerExecutionTarget?.kind === "remote"
@@ -12362,6 +12881,8 @@ async function executePaperclipNativeSessionAttempt(
                   existing.ingressOwner = ingress ? { ...input.execution.binding, ingress,
                     controllerBootId: controller.bootId, controllerGeneration } : undefined;
                   existing.session = session;
+                  existing.sandboxRunner = warmSandboxRunner(input.runnerExecutionTarget);
+                  existing.closeFailureEvidenceLogged = false;
                   existing.runId = input.execution.binding.runId;
                   existing.issueId = input.execution.binding.issueId;
                 } else
@@ -12378,6 +12899,8 @@ async function executePaperclipNativeSessionAttempt(
                     pluginTaskId: usesPluginTask && input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox"
                       ? input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId : undefined,
                     providerLeaseId: sandboxProviderLeaseId(input.runnerExecutionTarget) ?? undefined,
+                    sandboxLeaseDb: input.db,
+                    sandboxRunner: warmSandboxRunner(input.runnerExecutionTarget),
                     runId: input.execution.binding.runId,
                     issueId: input.execution.binding.issueId,
                     instructionWorkingCopy: input.instructionWorkingCopy?.checkpointWarm ? undefined : input.instructionWorkingCopy,
@@ -12417,7 +12940,7 @@ async function executePaperclipNativeSessionAttempt(
                 }
               }
               if (session) {
-                const active: ActiveNativeSession = { session, cancelRequested: false };
+                const active: ActiveNativeSession = { session, cancelRequested: false, admissionAbort: new AbortController() };
                 activeNativeSessions.set(input.execution.binding.runId, active);
                 const startup = nativeSessionStartups.get(input.execution.binding.runId);
                 const stopBeforeProviderTurn = startup?.stopRequested === true && startup.sessionPublished !== true
@@ -12515,7 +13038,21 @@ async function executePaperclipNativeSessionAttempt(
                     ?? (error instanceof Error && /^native_[a-z_]+$/.test(error.message) ? error.message : "unknown");
                   try { await input.onLog?.("stderr", `[paperclip-runner] native provider-pack admission receipt could not be saved (cause=${cause})\n`); } catch {}
                 }
-                await runnerdBackend?.providerAdmissionPersisted?.();
+                const admissionBackend: Pick<ManagedRunnerdBackend, "providerAdmissionPersisted" | "providerTurnNeverIssued"> | null =
+                  runnerdBackend ?? (input.backend as ManagedRunnerdBackend | undefined) ?? null;
+                try {
+                  await admissionBackend?.providerAdmissionPersisted?.(active.admissionAbort!.signal);
+                } catch (admissionError) {
+                  if (active.cancelRequested || active.admissionAbort!.signal.aborted
+                    || admissionBackend?.providerTurnNeverIssued?.() !== true) throw admissionError;
+                  const beforeTurn = new NativeFailedBeforeProviderTurnError(sandboxProviderLeaseId(input.runnerExecutionTarget), admissionError);
+                  const detail = admissionError instanceof NativeProviderArtifactTransferTimeoutError ? `: ${admissionError.message}` : "";
+                  logger.warn({ runId: input.execution.binding.runId, technicalCause: beforeTurn.technicalCause,
+                    err: admissionError instanceof Error ? admissionError.message : String(admissionError) },
+                    "native session failed before its first provider turn; continuing on a fresh sandbox");
+                  try { await input.onLog?.("stderr", `[paperclip-runner] the session failed before its first provider turn (cause=${beforeTurn.technicalCause}${detail})\n`); } catch {}
+                  throw beforeTurn;
+                }
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
                 if (active.cancelRequested) {
                   await active.cancellationSettled;
@@ -12607,10 +13144,7 @@ async function executePaperclipNativeSessionAttempt(
     // Preserve typed failure semantics while removing credentials before any
     // persistence, reporting, logging, or rethrow at this boundary.
     if (error instanceof Error) {
-      const originalMessage = error.message;
-      error.message = redactIdentityText(originalMessage);
-      if (error.stack) error.stack = redactIdentityText(originalMessage
-        ? error.stack.split(originalMessage).join(error.message) : error.stack);
+      error = redactNativeFailureError(error, redactIdentityText);
     } else {
       error = identityRedactor.redact(error);
     }
@@ -12656,10 +13190,10 @@ async function executePaperclipNativeSessionAttempt(
             eq(nativeRunFinalizations.runId, input.execution.binding.runId),
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
           ),
-        ), { companyId: input.execution.binding.companyId });
+        ), { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
 
       const failedAtMs = Date.now();
-      const executionFailureMessage = redactIdentityText(
+      const executionFailureMessage = redactOutputText(
         error instanceof Error ? error.message : String(error),
       ).slice(-4_096);
       if (!taskSettleScope) {
@@ -12721,7 +13255,7 @@ async function executePaperclipNativeSessionAttempt(
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
             eq(nativeRunFinalizations.attempt, attempt),
             isNull(nativeRunFinalizations.resultId),
-          )).returning({ runId: nativeRunFinalizations.runId }), { companyId: input.execution.binding.companyId });
+          )).returning({ runId: nativeRunFinalizations.runId }), { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
           if (settled) {
             await stoppedLeaseRenewal;
             if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
@@ -12737,8 +13271,10 @@ async function executePaperclipNativeSessionAttempt(
         // An unretired predecessor failed this run before it launched a Runner.
         // It is not a provider failure: the heartbeat boundary sends the next
         // attempt to a fresh sandbox, or keeps today's preservation.
-        findNativePredecessorRetirementUnproven(error)
+        findNativePredecessorRetirementUnproven(error) ||
+        findNativeFailedBeforeProviderTurn(error)
       ) {
+        if (findNativeFailedBeforeProviderTurn(error)) retireFailedBeforeTurnSessionRoot(input.execution);
         // This is not a provider failure and must not overwrite the durable
         // result/coordinator state. The heartbeat boundary will either hand an
         // already-materialized result to the finalizer or retain the durable
@@ -12750,7 +13286,8 @@ async function executePaperclipNativeSessionAttempt(
         throw error;
       }
       const now = new Date();
-      const startupClassifiedFailureCode = nativeSessionFailureSourceCode(error);
+      const startupClassifiedFailureCode = nativeSessionFailureSourceCode(error,
+        attemptDiagnosticLeases.some(lease => lease.sandboxDiskFullObserved()));
       // A timed-out session.open may still have opened a provider session
       // before its runner stopped. The same-run retry must not reuse it.
       const classifiedFailureCode = startupClassifiedFailureCode === "provider_session_open_timeout" &&
@@ -12779,7 +13316,7 @@ async function executePaperclipNativeSessionAttempt(
             : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote",
               previousStartupSignature);
       const bootstrap = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
-          && !input.restartRecovery && !retainedTransition && !remoteWarmRecovery
+          && attemptLaunchesFreshBootstrap(input.restartRecovery) && !retainedTransition && !remoteWarmRecovery
           ? {
               binding: input.execution.binding,
               identity: { runnerInstanceId: effectiveRunnerInstanceId,
@@ -12796,11 +13333,18 @@ async function executePaperclipNativeSessionAttempt(
         sourceFailureCode,
         bootstrap,
       });
-      const disposition = nativeSessionFailureDisposition(
+      const adoptedRunnerUnanswered = input.runnerExecutionTarget?.kind === "remote"
+        && input.restartRecovery?.kind === "reattach_remote_runner"
+        && input.restartRecovery.remote.kind !== "plugin_task" && nativeRecoveryCommandUnanswered(error);
+      const disposition = nativeUnansweredRunnerReplacementDisposition(nativeSessionFailureDisposition(
         attempt,
         now,
         sourceFailureCode,
-      );
+        { freshBootstrap: bootstrap !== undefined },
+      ), {
+        attempt, now, adoptedRunnerUnanswered,
+        replacing: input.restartRecovery?.kind === "reattach_remote_runner" && input.restartRecovery.replaceUnansweredRunner === true,
+      });
       const phase =
         recoveryEvidence.recoveryMode === "ambiguous_state"
           ? ("terminal_failure" as const)
@@ -12870,16 +13414,20 @@ async function executePaperclipNativeSessionAttempt(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
-      const message = redactIdentityText(
+      const message = redactOutputText(
         error instanceof Error ? error.message : String(error),
       ).slice(0, 2_000);
-      const sanitizedStderrTail = redactIdentityText(message).slice(-4_096);
+      const sanitizedStderrTail = redactOutputText(message).slice(-4_096);
       const remoteRunnerRecovery = readRemoteRunnerRecoveryError(error);
       // Set inside the transaction only when the write below genuinely
       // transitions the run into "failed". Read after the transaction
       // commits, so a rolled-back write never reports a false failure.
       let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
-      await input.db.transaction(async (tx) => {
+      // A lock timeout rolls this write back whole, so a fresh attempt is safe.
+      // Without it a briefly held row strands the run under its dead lease and
+      // the task needs reconciliation instead of its recorded recovery.
+      await retryTransientLockContention(() => input.db.transaction(async (tx) => {
+        terminalRunToReport = null;
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
         );
@@ -12898,7 +13446,7 @@ async function executePaperclipNativeSessionAttempt(
         // Issue → coordinator → run, as below. A lease that lapsed untouched
         // (host sleep) is still this owner's to settle; see the held condition.
         await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner, preResultOnly: true });
-        await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId });
+        await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         const updated = await tx
           .update(nativeRunFinalizations)
@@ -12910,7 +13458,7 @@ async function executePaperclipNativeSessionAttempt(
             recoveryState:
               phase === "retryable_failure" ? "resuming_session" : "blocked",
             failureCode,
-            failureDetail: identityRedactor.redact({
+            failureDetail: outputRedactor.redact({
               message,
               ...(providerFailure ? { providerFailure } : {}),
               ...(remoteRunnerRecovery ? { remoteRunnerRecovery } : {}),
@@ -12934,6 +13482,7 @@ async function executePaperclipNativeSessionAttempt(
                 ? { runnerExitConfirmed: true } : {}),
               ...(input.runnerExecutionTarget?.kind === "remote" && nativeRunnerExitedBeforeSessionOpen(error)
                 ? { runnerExitedBeforeSessionOpen: true } : {}),
+              ...(adoptedRunnerUnanswered ? { adoptedRunnerUnanswered: true } : {}),
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
@@ -12958,6 +13507,8 @@ async function executePaperclipNativeSessionAttempt(
                     ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
                   : sourceFailureCode === "runner_ingress_access_rejected"
                     ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
+                  : sourceFailureCode === NATIVE_SANDBOX_DISK_FULL
+                    ? NATIVE_SANDBOX_DISK_FULL_ACTION
                   : sourceFailureCode === "native_provider_terminal_failed"
                     ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
                   : sourceFailureCode === "native_governed_wait_settlement_pending"
@@ -13237,6 +13788,8 @@ async function executePaperclipNativeSessionAttempt(
                 ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
               : sourceFailureCode === "runner_ingress_access_rejected"
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
+              : sourceFailureCode === NATIVE_SANDBOX_DISK_FULL
+                ? NATIVE_SANDBOX_DISK_FULL_ACTION
               : sourceFailureCode === "native_provider_terminal_failed"
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
               : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
@@ -13273,7 +13826,7 @@ async function executePaperclipNativeSessionAttempt(
           supersedeOnIdentityChange:
             recoveryProjection.supersedeOnIdentityChange,
         });
-      }).catch(async (failure: unknown) => {
+      })).catch(async (failure: unknown) => {
         // Emit after rollback so the diagnostic sink cannot deadlock on the
         // coordinator transaction. Reporting failure cannot change fencing.
         if (failure instanceof NativePostResultFailureError) {
@@ -13369,7 +13922,8 @@ async function executePaperclipNativeSessionAttempt(
     settlingNativeSessionScopes.set(nativeSessionScopeKey(input.execution), input.execution.binding.runId);
     releaseGitHubRun?.();
     if (githubAccess && (!warmSessionId || warmNativeSessions.get(warmSessionId)?.githubAccess !== githubAccess)) {
-      await timeController("github_stop", () => githubAccess!.stop());
+      const preserveLaunchers = nativeRunsDetachingForRestart.has(input.execution.binding.runId);
+      await timeController("github_stop", () => githubAccess!.stop({ preserveLaunchers }));
     }
   }
   let postExecutionFailed = false;
@@ -13482,7 +14036,7 @@ async function executePaperclipNativeSessionAttempt(
             if (current()) {
               delete entry.finishRelease;
               entry.busy = false;
-              armWarmNativeSessionIdleTimer(scope, entry, lifecyclePolicy.idleTimeoutMs);
+              armWarmNativeSessionIdleTimer(scope, entry, warmIdleCloseDelay(lifecyclePolicy.idleTimeoutMs));
             }
           }
         };
@@ -13605,7 +14159,8 @@ async function executePaperclipNativeSessionAttempt(
     errorMessage:
       native.terminal.runTerminalState === "succeeded"
         ? null
-        : providerFailure?.errorMessage ?? `Native session ${native.terminal.runTerminalState}`,
+        : providerFailure?.errorMessage ?? explainNativeTurnFailure(unclassifiedTurnFailure)?.error
+          ?? `Native session ${native.terminal.runTerminalState}`,
     ...(providerFailure ? { errorCode: providerFailure.errorCode } : {}),
     resultJson: {
       nativeResult: native.result as unknown as Record<string, unknown>,
@@ -13632,6 +14187,8 @@ async function executePaperclipNativeSessionAttempt(
       : "unpriced",
     usageComplete: nativeAccountingComplete,
     usageBasis: "per_run",
+    ...(typeof native.usage?.providerRequestId === "string" && native.usage.providerRequestId
+      ? { providerRequestId: native.usage.providerRequestId.slice(0, 250) } : {}),
     nativeFinalization: finalization,
   };
   if (taskSettleScope) {
@@ -13717,8 +14274,9 @@ export function buildRemoteCodexLauncherCommand(
 
 export function mayUsePreinstalledRunnerArtifact(
   configuredRemoteBinaryPath: string | null | undefined,
+  configuredArtifactAvailable = false,
 ): boolean {
-  return !configuredRemoteBinaryPath?.trim();
+  return !configuredRemoteBinaryPath?.trim() || configuredArtifactAvailable;
 }
 
 const RUNNERD_BUILD_METADATA_SCHEMA =
@@ -14142,7 +14700,7 @@ export async function stageRemoteRunnerFile(input: {
     bypassSession: true,
   });
   if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_staging_failed");
+    throw remoteStagingFailure("runner_remote_staging_failed", result);
   }
 }
 
@@ -14262,7 +14820,7 @@ export async function stageRemoteRunnerDirectory(input: {
     bypassSession: true,
   });
   if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_directory_staging_failed");
+    throw remoteStagingFailure("runner_remote_directory_staging_failed", result);
   }
 }
 
@@ -14277,6 +14835,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   signal?: AbortSignal;
   trace?: NativeRunTrace;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => void | Promise<void>;
+  acceptProvenanceDifferences?: boolean;
 }): Promise<{ root: string; manifest: RemoteProviderPackManifest; source: "staged" | "preinstalled" | "uploaded" }> {
   const remoteTarget = input.target, remoteCommandRunner = input.runner;
   const configuredProviderPackRoot = input.configuredProviderPackRoot;
@@ -14284,10 +14843,10 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   const stagedRemoteProviderPackRoot = posix.join(remoteTarget.remoteCwd, ".paperclip-runtime", "paperclip-runner", "provider-pack");
   let activeRemoteProviderPackRoot: string | null = null;
   let preinstalledProviderPackRoots: string[] = [];
-  const verifyRemoteProviderPack = async (packRoot: string) => {
-    await verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner,
-      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest });
-  };
+  let selectedProviderPackManifest = expectedProviderPackManifest;
+  const verifyRemoteProviderPack = (packRoot: string, acceptProvenance = false) =>
+    verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner, cwd: remoteTarget.remoteCwd, packRoot,
+      manifest: expectedProviderPackManifest, acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true });
   const discoverPreinstalledProviderPack = async () => {
     if (!remoteTarget || !remoteCommandRunner) return [];
     const result = await remoteCommandRunner.execute({
@@ -14309,15 +14868,16 @@ export async function prepareRemoteProviderPackOnTarget(input: {
     verifyStaged: () => measureNativeRunnerSpan(
       input.trace,
       "provider_pack.verify",
-      () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+      async () => { selectedProviderPackManifest = await verifyRemoteProviderPack(stagedRemoteProviderPackRoot, true); },
     ),
-    usePreinstalled: async () => useVerifiedPreinstalledRemoteProviderPack({
+    usePreinstalled: async (onRejected) => useVerifiedPreinstalledRemoteProviderPack({
+      onRejected,
       candidates: preinstalledProviderPackRoots = await measureNativeRunnerSpan(input.trace, "provider_pack.discover", discoverPreinstalledProviderPack),
       verifyAndLink: async (preinstalledProviderPack) => {
-        await measureNativeRunnerSpan(
+        const preinstalledManifest = await measureNativeRunnerSpan(
           input.trace,
           "provider_pack.verify_preinstalled",
-          () => verifyRemoteProviderPack(preinstalledProviderPack),
+          () => verifyRemoteProviderPack(preinstalledProviderPack, true),
         );
         const escapedSource = preinstalledProviderPack.replaceAll(
           "'",
@@ -14341,11 +14901,10 @@ export async function prepareRemoteProviderPackOnTarget(input: {
           timeoutMs: 10_000,
         }));
         if (linked.exitCode !== 0 || linked.timedOut) {
-          throw new Error(
-            "runner_remote_provider_artifact_incompatible: preinstalled provider pack could not be linked",
-          );
+          throw providerPackIncompatible("link_failed", "preinstalled provider pack could not be linked");
         }
         activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+        selectedProviderPackManifest = preinstalledManifest;
         await input.onLog?.(
           "stderr",
           "[paperclip-runner] using manifest-matched preinstalled provider pack\n",
@@ -14380,9 +14939,10 @@ export async function prepareRemoteProviderPackOnTarget(input: {
           targetPath: stagedRemoteProviderPackRoot,
           mode: 0o700,
         }),
-        verifyUploaded: () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+        verifyUploaded: async () => { await verifyRemoteProviderPack(stagedRemoteProviderPackRoot); },
       });
       activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      selectedProviderPackManifest = expectedProviderPackManifest;
     },
   });
   activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
@@ -14392,7 +14952,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
       "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
     );
   }
-  return { root: activeRemoteProviderPackRoot!, manifest: expectedProviderPackManifest, source: packSource };
+  return { root: activeRemoteProviderPackRoot!, manifest: selectedProviderPackManifest, source: packSource };
 }
 
 /** Read selection identity only; verify controller contents only if upload is needed. */
@@ -14857,8 +15417,104 @@ const REMOTE_RUNNER_PROCESS_STDERR_TRIM_SCRIPT =
   `if test "\${size:-0}" -gt ${REMOTE_RUNNER_PROCESS_STDERR_TRIM_BYTES} && test -f "$log" && test ! -L "$log"; then ` +
   `tail -c ${REMOTE_RUNNER_PROCESS_STDERR_KEEP_BYTES} -- "$log" > "$log.trim" && cat -- "$log.trim" > "$log"; rm -f -- "$log.trim"; fi; done`;
 
+/**
+ * Two runnerd processes must never share one durable state directory. A Runner
+ * from an interrupted attempt (for example, launched by the previous server
+ * just before an upgrade) can still hold that state and the ingress port, and
+ * each launch overwrites the identity marker that pointed at it, so no later
+ * reattachment can adopt it and every new Runner fails to bind the port.
+ *
+ * A launch therefore stops a `paperclip-runnerd` that is still serving this
+ * exact `--state-dir`. A launch only happens after the server chose not to
+ * adopt a Runner: a same-run reattachment proves the marker's Runner gone
+ * first, or replaces a Runner that left the previous attempt's recovery read
+ * unanswered. Any other transient reattachment failure never reaches a launch.
+ *
+ * The stop runs in node ($1 the runnerd binary, $2 the state directory, then
+ * candidate PIDs):
+ * - It re-checks each candidate: argv[0] is `paperclip-runnerd`, it is not a
+ *   `reap-lineage` command, and `--state-dir` is followed by this directory.
+ * - It records processes by PID and start time: the Runner, its descendants,
+ *   and members of a process group or session that a recorded process leads
+ *   while that leader is alive (provider tools start their own sessions). It
+ *   signals a PID only while its start time still matches, so a reused PID is
+ *   never signalled, and it never signals a whole process group.
+ * - It sends TERM and waits up to 5 s, then KILL with a 2 s wait. A survivor
+ *   fails the launch with `runner_stale_state_holder_alive`.
+ * - It runs `<binary> reap-lineage` for the stopped Runner, which stops the
+ *   tools its journal recorded that have left the process tree. Any refusal
+ *   fails the launch with `runner_stale_lineage_unproven`, with two
+ *   exceptions that continue with a warning in the log. A Runner that kept no
+ *   journal has nothing more to reap once its visible lineage is gone. And
+ *   `unattributed_orphan` (reported only after every recorded process is gone)
+ *   is accepted only when every orphan it names is proven to have another
+ *   owner: this launch's own detached shell, a `paperclip-runnerd` serving a
+ *   different state directory, or that Runner's stderr trimmer. Any other
+ *   orphan could be an old tool, so the launch fails closed.
+ *
+ * A failure exits before the identity marker is written, so the existing
+ * marker is kept, and the reason goes to the process stderr log when that path
+ * is a plain file. A normal launch finds no runnerd on its state directory:
+ * its cost is one grep over /proc plus reading argv[0] of the few processes
+ * that name the directory (this launch's own subshell), and node does not
+ * start.
+ *
+ * The script is embedded in a double-quoted shell word, so it must not contain
+ * a double quote, dollar sign, backquote, or backslash.
+ */
+export const REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT = [
+  "const fs=require('fs'),cp=require('child_process');",
+  "const binary=process.argv[1],stateDir=process.argv[2],candidates=process.argv.slice(3).map(Number);",
+  "const self=[process.pid,process.ppid];",
+  "const stat=p=>{try{const s=fs.readFileSync('/proc/'+p+'/stat','utf8'),r=s.slice(s.lastIndexOf(')')+2).split(' ');",
+  "return{state:r[0],ppid:Number(r[1]),pgrp:Number(r[2]),sid:Number(r[3]),start:r[19]}}catch{return null}};",
+  "const table=()=>{const t=new Map();for(const d of fs.readdirSync('/proc')){if(String(Number(d))!==d)continue;const s=stat(d);if(s)t.set(Number(d),s)}return t};",
+  "const args=p=>{try{return fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0))}catch{return null}};",
+  "const serving=p=>{const a=args(p);return a!==null&&a[0].split('/').pop()==='paperclip-runnerd'&&a[1]!=='reap-lineage'&&a.includes('--state-dir')?a:null};",
+  "const holds=p=>{const a=serving(p);return a!==null&&a.some((v,i)=>v==='--state-dir'&&a[i+1]===stateDir)};",
+  "const otherRunner=p=>{const a=serving(p);return a!==null&&!roots.includes(p)&&!holds(p)};",
+  "const members=new Map(),roots=[];",
+  "const live=(t,p)=>{const s=t.get(p);return s!==undefined&&members.get(p)===s.start&&s.state!=='Z'&&!self.includes(p)};",
+  "const expand=t=>{for(let grew=true;grew;){grew=false;for(const[p,s]of t){if(members.has(p)||self.includes(p))continue;",
+  "if(live(t,s.ppid)||(s.pgrp!==p&&live(t,s.pgrp)&&t.get(s.pgrp).pgrp===s.pgrp)||(s.sid!==p&&live(t,s.sid)&&t.get(s.sid).sid===s.sid)){members.set(p,s.start);grew=true}}}};",
+  "const left=t=>[...members.keys()].filter(p=>live(t,p));",
+  "const t0=table();for(const p of candidates){const s=t0.get(p);if(s&&s.state!=='Z'&&!self.includes(p)&&holds(p)){roots.push(p);members.set(p,s.start)}}",
+  "if(roots.length===0)process.exit(0);",
+  "const pause=new Int32Array(new SharedArrayBuffer(4));",
+  "const stop=(sig,ms)=>{const sent=new Set(),end=Date.now()+ms;for(;;){const t=table();expand(t);const rest=left(t);if(rest.length===0)return true;if(Date.now()>=end)return false;",
+  "for(const p of rest){const k=p+':'+members.get(p);if(!sent.has(k)){sent.add(k);try{process.kill(p,sig)}catch{}}}Atomics.wait(pause,0,0,100)}};",
+  "if(!stop('SIGTERM',5000)&&!stop('SIGKILL',2000)){console.error('runner_stale_state_holder_alive: runner '+roots.join(',')+' still holds this state folder; alive: '+left(table()).join(','));process.exit(1)}",
+  "for(const p of roots){let out='';try{out=cp.execFileSync(binary,['reap-lineage','--state-dir',stateDir,'--runner-pid',String(p),'--grace-ms','1000','--deadline-ms','5000'],",
+  "{encoding:'utf8',timeout:7000,killSignal:'SIGKILL',stdio:['ignore','pipe','ignore']})}catch(e){out=String(e.stdout||'')}",
+  "let r=null;try{r=JSON.parse(out.trim().split(String.fromCharCode(10)).pop())}catch{}",
+  "if(r&&r.verified===true)continue;",
+  "if(r&&r.reason==='journal_unavailable'){console.error('runner_stale_lineage_partial: runner '+p+': journal_unavailable');continue}",
+  "const owned=x=>{const q=Number(x);if(self.includes(q))return true;const a=args(q);if(a===null)return true;",
+  "return otherRunner(q)||(a[3]==='paperclip-runner-stderr-trim'&&otherRunner(Number(a[4])))};",
+  "if(r&&r.reason==='unattributed_orphan'&&Array.isArray(r.remaining)&&r.remaining.every(owned)){console.error('runner_stale_lineage_partial: runner '+p+': unattributed_orphan owned elsewhere '+r.remaining.join(','));continue}",
+  "console.error('runner_stale_lineage_unproven: runner '+p+': '+(r?r.reason:'no reap report'));process.exit(1)}",
+  "process.exit(0)",
+].join("");
+
+const REMOTE_RUNNER_STALE_STATE_FENCE_SCRIPT =
+  'state_dir=""; previous_arg=""; for arg in "$@"; do if test "$previous_arg" = "--state-dir"; then state_dir=$arg; fi; previous_arg=$arg; done; ' +
+  'if test -n "$state_dir" && test -r /proc/self/cmdline; then stale_pids=""; ' +
+  'for stale_cmdline in $(grep -l -s -z -F -x -- "$state_dir" /proc/[0-9]*/cmdline 2>/dev/null || true); do ' +
+  'stale_pid=${stale_cmdline#/proc/}; stale_pid=${stale_pid%/cmdline}; ' +
+  'case "$stale_pid" in ""|*[!0-9]*|"$$") continue ;; esac; ' +
+  // This shell's own subshells and the grep name the directory too; only a runnerd goes on to node.
+  'stale_binary=$( { tr "\\000" "\\n" < "$stale_cmdline" | head -n 1; } 2>/dev/null ) || continue; ' +
+  'test "${stale_binary##*/}" = "paperclip-runnerd" || continue; stale_pids="$stale_pids $stale_pid"; done; ' +
+  // The same path rules as the stderr log below: never write through a symlink or into a non-file.
+  `if test -n "$stale_pids"; then fence_log="$diagnostics_directory/${REMOTE_RUNNER_PROCESS_STDERR_FILE}"; ` +
+  'if test -L "$fence_log" || { test -e "$fence_log" && test ! -f "$fence_log"; }; then fence_log=/dev/null; fi; ' +
+  `node -e "${REMOTE_RUNNER_STALE_LINEAGE_STOP_SCRIPT}" "$1" "$state_dir" $stale_pids 2>>"$fence_log" || exit 75; fi; fi; `;
+
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
-  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
+  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; ' +
+  'test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; ' +
+  REMOTE_RUNNER_STALE_STATE_FENCE_SCRIPT +
+  'started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
   REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT +
   '; then :; else process_fingerprint=""; fi; ' +
   // Bounded stderr evidence: rotate an oversized file once, then trim it in place while runnerd runs.
@@ -15053,30 +15709,110 @@ async function readRemoteRunnerExitEvidence(runner: CommandManagedRuntimeRunner,
   }
 }
 
+export interface UnansweredRunnerProgressProbe {
+  controllerAckedSourceSeq: number | null;
+  onReplace: () => void;
+  windowMs?: number;
+  pollMs?: number;
+}
+
+const UNANSWERED_RUNNER_PROGRESS_WINDOW_MS = 10_000;
+const UNANSWERED_RUNNER_PROGRESS_POLL_MS = 2_000;
+
+async function observeUnansweredRunnerProgress(input: {
+  runner: CommandManagedRuntimeRunner;
+  stateDirectory: string;
+  identity: Record<string, unknown>;
+  probe: UnansweredRunnerProgressProbe;
+  isAlive: () => Promise<boolean>;
+  recoveryDeadline: number;
+  stall: RemoteRunnerPluginStall;
+}): Promise<"progressing" | "wedged" | "exited"> {
+  const read = async () => {
+    const state = await readRemoteRunnerState({ runner: input.runner, stateDirectory: input.stateDirectory,
+      recoveryDeadline: input.recoveryDeadline, stall: input.stall }).catch(() => null);
+    if (state && REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) {
+      throw new Error("runner_remote_recovery_identity_mismatch");
+    }
+    return state;
+  };
+  const progressMarker = (state: Record<string, unknown> | null) => state ? JSON.stringify([state.generation ?? null,
+    state.reconnectCount ?? null, state.nextSourceSeq ?? null, state.ackedSourceSeq ?? null,
+    state.lastControllerCommandSeq ?? null, state.lifecycle ?? null]) : null;
+  const settle = async () => await input.isAlive() ? "progressing" as const : "exited" as const;
+  const emittedPastAck = (state: Record<string, unknown>) => {
+    const emittedSourceSeq = Number(state.nextSourceSeq) - 1;
+    return input.probe.controllerAckedSourceSeq !== null && Number.isSafeInteger(emittedSourceSeq)
+      && emittedSourceSeq > input.probe.controllerAckedSourceSeq;
+  };
+  let baseline: string | null = null;
+  const progressed = (state: Record<string, unknown> | null) => {
+    if (!state) return false;
+    if (emittedPastAck(state)) return true;
+    const marker = progressMarker(state);
+    if (baseline === null) {
+      baseline = marker;
+      return false;
+    }
+    return marker !== baseline;
+  };
+  if (progressed(await read())) return settle();
+  const end = Math.min(Date.now() + (input.probe.windowMs ?? UNANSWERED_RUNNER_PROGRESS_WINDOW_MS), input.recoveryDeadline);
+  while (Date.now() < end) {
+    await new Promise(done => setTimeout(done, Math.min(input.probe.pollMs ?? UNANSWERED_RUNNER_PROGRESS_POLL_MS, end - Date.now())));
+    if (progressed(await read())) return settle();
+  }
+  if (baseline === null) return settle();
+  return await input.isAlive() ? "wedged" : "exited";
+}
+
 export async function verifyRemoteRunnerOrSettledExit(
   input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number;
-    claim: { exitedBeforeSessionOpen?: true } },
-) {
+    claim: { exitedBeforeSessionOpen?: true; replaceUnansweredRunner?: true };
+    unansweredRunnerProgress?: UnansweredRunnerProgressProbe; admittedAttemptLimit?: number },
+): Promise<Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>> | undefined> {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
   const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
+  const target = input.target;
+  const replaceUnanswered = input.claim.replaceUnansweredRunner === true
+    && input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1
+    && target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
+  let verified: Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>>;
   try {
-    return await verifyRemoteRunnerReattachment({ ...input, recoveryDeadline, stall });
+    verified = await verifyRemoteRunnerReattachment({ ...input, recoveryDeadline, stall });
   } catch (error) {
     const diagnostic = readRemoteRunnerRecoveryError(error);
-    const target = input.target;
     const exitedBeforeSessionOpen = input.claim.exitedBeforeSessionOpen === true;
-    if (input.providerAttempt > NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT || diagnostic?.stage !== "process_verification" ||
+    const freshBootstrap = diagnostic !== null && exitedRunnerRequestedFreshBootstrap(diagnostic);
+    const attemptLimit = Math.max(input.admittedAttemptLimit ?? 0, freshBootstrap && input.claim.replaceUnansweredRunner === true
+      ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT);
+    if (input.providerAttempt > attemptLimit || diagnostic?.stage !== "process_verification" ||
         diagnostic.reason !== "process_not_running" ||
-        (!exitedBeforeSessionOpen && (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
+        (!exitedBeforeSessionOpen && !freshBootstrap &&
+          (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
         target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw error;
     const state = await readRemoteRunnerState({ runner: target.runner,
       stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline, stall });
     if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) throw error;
-    if (exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
+    if (freshBootstrap ? !runnerStateRequestsFreshBootstrap(state) : exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
       : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
     return undefined;
   }
+  if (!replaceUnanswered) return verified;
+  if (!input.unansweredRunnerProgress) return undefined;
+  const progress = await observeUnansweredRunnerProgress({ runner: target.runner!,
+    stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), identity: input.identity,
+    probe: input.unansweredRunnerProgress, isAlive: () => verified.isAlive(), stall,
+    recoveryDeadline: Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY, Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS) });
+  if (progress === "progressing") return verified;
+  if (progress === "exited") {
+    const { replaceUnansweredRunner: _replace, ...claim } = input.claim;
+    return verifyRemoteRunnerOrSettledExit({ ...input, claim, unansweredRunnerProgress: undefined,
+      admittedAttemptLimit: NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 });
+  }
+  input.unansweredRunnerProgress.onReplace();
+  return undefined;
 }
 
 function runnerStateAllowsFreshStart(state: Record<string, unknown>): boolean {
@@ -15238,6 +15974,8 @@ export function createRemoteRunnerProcessLauncher(input: {
   stateDirectory: string;
   diagnosticsDirectory: string;
   runnerInstanceId: string;
+  /** Managed sandboxes only; never on a user's own host. Outside every saved directory. */
+  diskReservePath?: string;
   ensureArtifact?: (spec: RunnerProcessLaunchSpec) => Promise<void>;
   requireProcessStartFingerprint?: boolean;
   onSpawn?: (meta: {
@@ -15250,7 +15988,11 @@ export function createRemoteRunnerProcessLauncher(input: {
   onRunnerProcessSpawned?: () => void;
 }): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
   const runner = input.runner;
+  const reserve = input.diskReservePath ? createRemoteRunnerDiskReserve(runner, input.diskReservePath) : null;
+  let launches = 0;
   return (spec) => {
+    // Every later launch replaces a runner that was lost, possibly to a full disk.
+    const relaunch = launches++ > 0;
     let exitConfirmed = false;
     // Set immediately before the launch RPC. Until then no sandbox command
     // could have started runnerd, so a staging failure proves no process.
@@ -15323,15 +16065,30 @@ export function createRemoteRunnerProcessLauncher(input: {
       };
     };
     const completion = (async () => {
+      if (relaunch) await reserve?.release();
       if (input.ensureArtifact) {
-        if (input.trace) {
-          await input.trace.measure(
-            "runner.runtime.stage",
-            () => input.ensureArtifact!(spec),
-            { parentName: "runner.session.startup" },
-          );
-        } else {
-          await input.ensureArtifact(spec);
+        const stage = () => input.trace
+          ? input.trace.measure("runner.runtime.stage", () => input.ensureArtifact!(spec),
+            { parentName: "runner.session.startup" })
+          : input.ensureArtifact!(spec);
+        let restaged = false;
+        for (;;) {
+          try {
+            await stage();
+            break;
+          } catch (error) {
+            if (!isSandboxDiskFullError(error)) throw error;
+            const released = reserve && !restaged ? await reserve.release() : "not_held";
+            if (released === "released") {
+              restaged = true;
+              continue;
+            }
+            // The reserve may still be held, so recovery may try again.
+            if (released === "failed") throw error;
+            // Nothing Paperclip owns is left to free, and no runner is
+            // running to free space, so retrying cannot succeed.
+            throw sandboxDiskFullFailure(error);
+          }
         }
       }
       if (pendingSignal) return cancelledBeforeDispatch();
@@ -15451,6 +16208,9 @@ export function createRemoteRunnerProcessLauncher(input: {
         endedAtMs: Date.now(),
         attributes: { identitySource: "remote_marker", detached: true },
       });
+      // Off the startup path. A relaunch leaves the reserve released, so one
+      // run cannot take space back from an agent that already filled the disk.
+      if (!relaunch) reserve?.hold();
 
       let supervisionUnknownSince: number | null = null;
       while (true) {
@@ -15586,6 +16346,7 @@ export function remoteCheckpointIncompleteFailure(
 export async function createRunnerdBackend(input: {
   executionContext?: NativeExecutionContext;
   casesEnabled?: boolean;
+  toolRefreshOnResume?: boolean;
   db: Db;
   providerPackAdmissionSource?: NativeProviderPackAdmissionSource;
   controllerPersistence?: { bootId: string; runnerArtifact?: { version: string; digest: string } };
@@ -15600,7 +16361,7 @@ export async function createRunnerdBackend(input: {
   remoteWarmRecovery?: Omit<RemoteWarmSessionRecovery, "revalidate"> & { revalidate: () => Promise<void> };
   retainedPluginTaskOwner?: ReturnType<typeof createPluginRunnerTaskOwner>;
   beginRetainedRunAttachment?: () => void;
-  pluginTaskDescription?: Extract<ReturnType<typeof environmentTaskResultSchema.parse>,{kind:"description"}>;
+  pluginTaskDescription?: PluginTaskDescription;
   onSpawn?: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -15789,6 +16550,7 @@ async function prepareRemoteExternalRunner({ input, target, runner, root, identi
   const launch = createRemoteRunnerProcessLauncher({ target, runner, remoteBinary,
     processIdentityPath: posix.join(runnerStateDirectory, "runner-process.identity"), stateDirectory: runnerStateDirectory,
     diagnosticsDirectory: posix.join(remoteRoot, "diagnostics"), runnerInstanceId: input.runnerInstanceId,
+    diskReservePath: remoteRunnerDiskReservePath(target),
     requireProcessStartFingerprint: true,
     onSpawn: async meta => { await input.onSpawn?.(meta); identityReady(); },
     onLog: input.onLog, trace: input.trace, onRunnerProcessSpawned: () => spawned() });
@@ -15822,8 +16584,9 @@ type ManagedRunnerdBackend = NativeSessionBackend & {
   bindManagedSession(session: NativeSession, options?: { releaseResumeOnly: true }): NativeSession;
   bindDiagnosticSession?(session: NativeSession): void;
   sessionCheckpointPersisted?(snapshot: PersistedNativeSession): void;
-  providerAdmissionPersisted?(): Promise<void>;
+  providerAdmissionPersisted?(signal?: AbortSignal): Promise<void>;
   providerAdmissionRequired?(): boolean;
+  providerTurnNeverIssued?(): boolean;
 };
 
 async function createRunnerdBackendWithinSessionClaim(
@@ -15880,23 +16643,24 @@ async function createRunnerdBackendWithinSessionClaim(
   if (nativeReview && !await getNativeReviewAssignment(input.db, {
     ...input.execution.binding, contextSnapshot: nativeReview,
   })) throw new Error("native_review_assignment_no_longer_available");
-  // Codex and OpenCode send dynamic tool calls over authenticated PRP. Keep
+  // Native harnesses send dynamic tool calls over authenticated PRP. Keep
   // the assigned gateway on the control plane instead of asking the sandbox to
   // reach the host's HTTP origin (which may be private or loopback-only).
-  const relayAssignedMcp = Boolean(pluginTask) || input.execution.provider.kind === "cursor_cloud" || input.execution.provider.kind === "opencode" || (remoteTarget !== null && input.execution.provider.kind === "codex") || input.execution.schema === "paperclip.native-execution-input.v6";
   const assignedMcpUrl = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_URL;
   const assignedMcpToken = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_TOKEN;
   const assignedMcpName = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_NAME;
   const hasAssignedMcp = Boolean(assignedMcpName || assignedMcpUrl || assignedMcpToken);
-  if (relayAssignedMcp && hasAssignedMcp && (!assignedMcpName?.trim() || !assignedMcpUrl?.trim() || !assignedMcpToken?.trim())) {
+  if (hasAssignedMcp && (!assignedMcpName?.trim() || !assignedMcpUrl?.trim() || !assignedMcpToken?.trim())) {
     throw new Error("assigned native MCP launch binding is incomplete");
   }
-  const assignedGatewayPublicId = relayAssignedMcp && assignedMcpUrl
+  const assignedGatewayPublicId = assignedMcpUrl
     ? new URL(assignedMcpUrl).pathname.match(/^\/mcp\/gateways\/([a-zA-Z0-9_-]+)$/)?.[1]
     : undefined;
-  if (relayAssignedMcp && hasAssignedMcp && !assignedGatewayPublicId) {
+  if (hasAssignedMcp && !assignedGatewayPublicId) {
     throw new Error("assigned native MCP gateway path is invalid");
   }
+  const firstPartyOnly = input.execution.provider.kind === "grok_bot";
+  const museRuntime = input.execution.provider.kind === "muse";
   let durableState: ReturnType<typeof readDurableState> | undefined;
   let pluginTaskOwner: ReturnType<typeof preparePluginTaskOwner> | undefined;
   const earlyPluginTaskOwner = pluginTask && remoteTarget?.transport === "sandbox" && input.beginRetainedRunAttachment
@@ -15905,11 +16669,12 @@ async function createRunnerdBackendWithinSessionClaim(
     : undefined;
   const [preparedEnvironment, preparedAssignedMcp, preparedPluginTaskOwner] = await Promise.allSettled([
     Promise.resolve().then(() => input.prepareRunnerEnvironment?.() ?? input.runnerEnvironment),
-    Promise.resolve().then(() => relayAssignedMcp && !nativeReview && assignedMcpUrl && assignedMcpToken
+    Promise.resolve().then(() => !nativeReview && !firstPartyOnly && !museRuntime && assignedMcpUrl && assignedMcpToken
       ? timeController("assigned_mcp", () => createAssignedMcpTools({
         gateway: getAssignedMcpGateway(input.db),
         gatewayPublicId: assignedGatewayPublicId!,
         bearerToken: assignedMcpToken,
+        companyId: input.execution.binding.companyId,
         workMode: input.execution.task.workMode,
         ...(input.execution.provider.kind === "opencode" ? { delivery: "on_demand" as const } : {}),
       }))
@@ -15946,8 +16711,8 @@ async function createRunnerdBackendWithinSessionClaim(
     workspaceBridge: input.execution.schema === "paperclip.native-execution-input.v6" && !!input.dotWorkspaceRoot,
     taskAttachmentRead: dotAttachmentActor?.config.dotAttachmentAccess === true,
     dotRuntime: input.execution.schema === "paperclip.native-execution-input.v6",
-    firstPartyOnly: input.execution.provider.kind === "grok_bot",
-    museRuntime: input.execution.provider.kind === "muse",
+    firstPartyOnly,
+    museRuntime,
     externalAuthorizingUserId: input.execution.provider.kind === "muse"
       ? await museRunnerBroker(input.db).authorizingUserIdForBinding(input.execution.provider.binding) : undefined,
     assertBridgeAuthority: input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8" ? (database = input.db) => assertExternalNativeRunAuthority(input.db, input.execution, database) : undefined,
@@ -16004,8 +16769,10 @@ async function createRunnerdBackendWithinSessionClaim(
   const recoveryUsage = input.onAccountingEvent && recoveryUsageIdentity
     ? createNativeRecoveryUsageDelivery({
         db: input.db, execution: input.execution, sourceIdentity: { ...recoveryUsageIdentity },
-        matchesExecution: previous => nativeSessionScopeKey(previous) === nativeSessionScopeKey(input.execution) &&
-          nativeSessionConfigDigest(previous, target.kind) === nativeSessionConfigDigest(input.execution, target.kind),
+        matchesExecution: previous => input.remoteWarmRecovery
+          ? matchesRemoteWarmExecution(previous, input.execution, input.toolRefreshOnResume)
+          : nativeSessionScopeKey(previous) === nativeSessionScopeKey(input.execution) &&
+            nativeSessionConfigDigest(previous, target.kind) === nativeSessionConfigDigest(input.execution, target.kind),
       })
     : undefined;
   const accountingTransportOptions = {
@@ -16061,15 +16828,19 @@ async function createRunnerdBackendWithinSessionClaim(
     const { root, durableIdentity, durableBinding } = durableState ??= readDurableState();
     const provider = input.execution.provider;
     if (provider.kind !== "codex" && provider.kind !== "opencode" && provider.kind !== "acpx") throw new Error("Plugin Runner tasks require a workspace harness");
+    if (input.restartRecovery?.kind === "reattach_remote_runner") {
+      await assertPluginTaskReattachmentBinding(input, remoteTarget, durableBinding ? durableIdentity : null);
+    }
+    let priorDescription = input.pluginTaskDescription?.taskId === remoteTarget.sandboxLeaseAcquisition?.providerLeaseId
+      ? input.pluginTaskDescription : undefined;
     if (remoteTarget.sandboxLeaseAcquisition?.outcome === "resumed" && !durableBinding && !input.retainedPluginTaskOwner && !input.remoteWarmRecovery) {
       // A new logical session (including fresh retries) cannot inherit the old process authority.
       await pluginTask({kind:"stop"});
       const stopped=environmentTaskResultSchema.parse(await pluginTask({kind:"status"}));
       if(stopped.kind!=="status" || stopped.executionStopped!==true) throw new Error("Plugin Runner termination is unconfirmed; reconcile the saved task");
       await pluginTask({kind:"complete"});
+      priorDescription = undefined;
     }
-    const priorDescription = input.pluginTaskDescription?.taskId === remoteTarget.sandboxLeaseAcquisition?.providerLeaseId
-      ? input.pluginTaskDescription : undefined;
     const description = priorDescription ?? environmentTaskResultSchema.parse(await pluginTask({ kind: "describe" }));
     if (description.kind !== "description" || description.launchPreparationVersion !== 1 || description.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner launch preparation v1 unavailable");
     const saved = durableBinding ? durableIdentity as RunnerdDurableIdentity : undefined;
@@ -16088,9 +16859,7 @@ async function createRunnerdBackendWithinSessionClaim(
       normalizedSessionId: input.remoteWarmRecovery.identity.normalizedSessionId,
       turnId: input.remoteWarmRecovery.identity.turnId, itemId: input.remoteWarmRecovery.identity.itemId,
     } : undefined;
-    if (input.restartRecovery?.kind === "reattach_remote_runner" && (!prior || !prior.turnId || !prior.itemId || prior.environmentLeaseId !== remoteTarget.leaseId)) {
-      throw new Error("native_plugin_recovery_lease_mismatch");
-    }
+
     const resumeFrom = !retainedOwner && !adopting && prior && prior.environmentLeaseId !== remoteTarget.leaseId
       ? await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: remoteTarget.leaseId!, priorIdentity: prior }) : undefined;
@@ -16100,10 +16869,16 @@ async function createRunnerdBackendWithinSessionClaim(
       home: input.managedAiCredentialHome, environment: input.runnerEnvironment ?? {},
     });
     if (credentials.needsWriteback && !input.managedAiCredentialWriteback) throw new Error("Plugin Runner credential writeback authority unavailable");
-    if (!adopting && input.managedAiCredentialWriteback && credentials.accountIdentity) {
+    // Same-lease recovery already has a writeback binding. A portable move creates a new lease.
+    if ((!adopting || input.remoteWarmRecovery?.portableSourceTaskId) && input.managedAiCredentialWriteback && credentials.accountIdentity) {
       if (!remoteTarget.leaseId) throw new Error("Plugin Runner credential lease unavailable");
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
         credentials.accountIdentity, input.managedAiCredentialWriteback);
+    }
+    const taskConfiguredEnvironment = pluginTaskConfiguredEnvironment(input.runnerEnvironment);
+    if (description.configuredEnvironmentVersion !== 1 && Object.keys(taskConfiguredEnvironment).length > 0) {
+      await input.onLog?.("stderr", `[paperclip] The environment plugin does not support configured environment variables. These variables were not set: ${
+        Object.keys(taskConfiguredEnvironment).sort().join(", ")}. Update the plugin to deliver them.\n`);
     }
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
@@ -16124,10 +16899,17 @@ async function createRunnerdBackendWithinSessionClaim(
       }),
       warmTaskVersion: description.warmTaskVersion,
       githubCredentialBrokerVersion: description.githubCredentialBrokerVersion,
+      configuredEnvironmentVersion: description.configuredEnvironmentVersion,
+      configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
+      resumeLaunchInputsVersion: description.resumeLaunchInputsVersion,
+      resumeRelaunchedRunnerVersion: description.resumeRelaunchedRunnerVersion,
+      launchDigestVersion: description.launchDigestVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
-      onResumed: async source => updateReleasedWarmRunner(input.execution, source, description.taskId, null),
+      releasedSourceRunner: input.remoteWarmRecovery?.releasedSourceRunner,
+      sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,
+      onResumed: async source => updateReleasedWarmRunner(input.execution, source, input.remoteWarmRecovery?.portableSourceTaskId ?? description.taskId, null),
       onRetired: async source => updateReleasedWarmRunner(input.execution, source, description.taskId, null),
       adoptIdentity: adoptionIdentity ?? (adopting && prior ? {
         runnerInstanceId: prior.runnerInstanceId, environmentLeaseId: prior.environmentLeaseId,
@@ -16219,6 +17001,7 @@ async function createRunnerdBackendWithinSessionClaim(
           grokEffort: "grokEffort" in provider ? provider.grokEffort : undefined,
           grokDisableWebSearch: "grokDisableWebSearch" in provider ? provider.grokDisableWebSearch : undefined,
           acpxPermissionModePinned: true } : {}),
+        ...(nativeProviderStartedTurns(provider) ? { providerStartedTurns: true } : {}),
         ...(provider.kind === "opencode" ? { opencodePermissionMode: provider.permissionMode } : {}),
         runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS, runnerProcessReconnectGraceMs: null,
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
@@ -16307,13 +17090,19 @@ async function createRunnerdBackendWithinSessionClaim(
       input.execution.provider.kind === "acpx");
   const artifactStorage = remoteTarget?.transport === "sandbox" && input.controllerPersistence
     && input.execution.provider.kind === "opencode" ? durableNativeHarnessStorage() : null;
-  const providerArtifactsSignal = () => input.executionContext?.signal
-    ? AbortSignal.any([input.executionContext.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000);
+  const providerArtifactsSignal = (stop?: AbortSignal) => {
+    const signals = [input.executionContext?.signal, stop].filter((signal): signal is AbortSignal => signal !== undefined);
+    return signals.length ? AbortSignal.any(signals) : new AbortController().signal;
+  };
   const liveProviderRecovery = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined;
   const artifactBackup = artifactStorage ? await verifyNativeHarnessBackupStreamed({ root, execution: input.execution,
     runnerInstanceId: input.runnerInstanceId }) : null;
   let providerArtifacts = artifactStorage ? artifactBackup?.manifest.providerArtifacts
     ?? input.providerPackAdmissionSource?.artifacts as NativeProviderArtifactReceipt | undefined : undefined;
+  if (artifactStorage && !providerArtifacts && durableBinding !== null && !liveProviderRecovery
+      && durableIdentityMatchesSession(durableIdentity, input.execution)) {
+    providerArtifacts = await recordedSessionProviderArtifacts(input.db, input.execution, durableIdentity.runId);
+  }
   let legacyProviderContinuity = durableBinding !== null && !providerArtifacts;
   if (providerArtifacts && artifactStorage && !liveProviderRecovery) await restoreNativeProviderArtifacts({ db: input.db, storage: artifactStorage,
     companyId: input.execution.binding.companyId, receipt: providerArtifacts,
@@ -16414,6 +17203,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // exited. The transport then relaunches it from durable state, which needs
   // the admitted provider pack's launch inputs that adoption does not.
   let relaunchesSettledRemoteRunner = false;
+  let replacesUnansweredLiveRunner = false;
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
   const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
   if (explicitRemoteCodex && remoteCodexNpmSpec) {
@@ -16553,7 +17343,7 @@ async function createRunnerdBackendWithinSessionClaim(
           requireExactIdentity: retainProviderPack || explicitProviderPackSelection,
           requireCurrentOpenCodeProxy: !retainProviderPack
             && runnerEnvironment?.PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS === "1",
-        }));
+        }), { attributes: { target: installation.root === stagedRemoteProviderPackRoot ? "workspace" : "image" } });
         if (!retainProviderPack) providerPackAuthority!.select(manifest);
         expectedProviderPackManifest = manifest;
         activeRemoteProviderPackRoot = installation.root;
@@ -16617,7 +17407,13 @@ async function createRunnerdBackendWithinSessionClaim(
         target: remoteTarget, runner: remoteCommandRunner, configuredProviderPackRoot,
         manifest: expectedProviderPackManifest, trace: input.trace, onLog: input.onLog,
         signal: sourceSignals.length ? AbortSignal.any(sourceSignals) : undefined,
+        acceptProvenanceDifferences: providerPackProvenanceReuseAllowed({ retainProviderPack, explicitProviderPackSelection,
+          authoritySelectable: providerPackAuthority !== null }),
       });
+      if (prepared.manifest.digest !== expectedProviderPackManifest.digest) {
+        providerPackAuthority!.select(prepared.manifest);
+        expectedProviderPackManifest = prepared.manifest;
+      }
       activeRemoteProviderPackRoot = prepared.root;
       providerPackVerified = true;
     }
@@ -16663,6 +17459,29 @@ async function createRunnerdBackendWithinSessionClaim(
   const restartableBootstrapState = (state: { incompleteReason: string | null; notSuspendedRunId?: string | null }) =>
     (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
     && provenOwnBootstrapRestart(state.notSuspendedRunId);
+  /**
+   * A controller detached mid-bootstrap can stop after staging launch files
+   * into the session root but before launching its Runner. The launch writes
+   * the process identity marker before the Runner starts, and the Runner
+   * writes its state file, so a real session root holding neither never had a
+   * Runner and no provider work. Only the caller's same-run claim, granted
+   * after the previous controller's lease ended, may act on this.
+   */
+  const remoteBootstrapNeverLaunchedRunner = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteSessionRoot || !remoteStateDirectory) return false;
+    const probe = await remoteCommandRunner.execute({
+      command: "sh",
+      args: ["-c",
+        // An archived authority epoch holds a real session's Runner state, so
+        // any Runner state or launch marker anywhere under the root fails closed.
+        'set -eu; test -d "$1" && test ! -L "$1" || exit 1; for path in "$2" "$3" "$1/authority-epochs"; do if test -e "$path" || test -L "$path"; then exit 1; fi; done; found=$(find "$1" \\( -name runner-state.json -o -name runner-process.identity \\) -print); test -z "$found"',
+        "paperclip-runner-unlaunched-bootstrap", remoteSessionRoot,
+        posix.join(remoteStateDirectory, "runner-state.json"), posix.join(remoteStateDirectory, "runner-process.identity")],
+      bypassSession: true,
+      timeoutMs: 10_000,
+    }).catch(() => null);
+    return probe?.exitCode === 0 && !probe.timedOut;
+  };
   const inspectOwnUnpreparedBootstrap = async (): Promise<string | null> => {
     const runId = input.execution.binding.runId;
     if (!remoteCommandRunner || !remoteStateDirectory || archivedRotationRunnerStatePath
@@ -16670,10 +17489,16 @@ async function createRunnerdBackendWithinSessionClaim(
       || harnessBackupCandidates(root).some(candidate => existsSync(resolve(candidate, "manifest.json")))) return null;
     const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory })
       .then(record, () => null);
+    if (!runnerState && await remoteBootstrapNeverLaunchedRunner()) {
+      recordRemoteBootstrapRestartProof(runId, "absent_confirmed");
+      await input.onLog?.("stdout", "[paperclip-runner] The interrupted bootstrap never started its runner; restarting the bootstrap.\n");
+      return provenOwnBootstrapRestart(runId) ? runId : null;
+    }
     if (!runnerState || runnerState.runnerInstanceId !== input.runnerInstanceId || runnerState.runId !== runId
       || runnerState.normalizedSessionId !== nativeSessionKey(input.execution)
       || typeof runnerState.lifecycle !== "string" || runnerState.lifecycle === "suspended") return null;
-    if (!hasRemoteBootstrapRestartProof(runId) && !(remoteRunnerStateNeverConnected(runnerState)
+    if (!hasRemoteBootstrapRestartProof(runId) && !((remoteRunnerStateNeverConnected(runnerState)
+      || claimTimeRemoteBootstrapProofHolds(runId, runnerState.runnerInstanceId))
       && recordRemoteBootstrapRestartProof(runId, await stopStaleRemoteRunnerBeforeBootstrap({
         execution: input.execution, runnerExecutionTarget: input.runnerExecutionTarget, identity: runnerState, onLog: input.onLog,
       })))) return null;
@@ -16759,12 +17584,16 @@ async function createRunnerdBackendWithinSessionClaim(
       throw new Error("runner_harness_state_mismatch: runner_identity");
     }
     if (runnerState.lifecycle !== "suspended") {
+      const notSuspendedRunId = typeof runnerState.runId === "string" ? runnerState.runId : null;
+      if (source === "host_preparation" && notSuspendedRunId === input.execution.binding.runId) {
+        await inspectOwnUnpreparedBootstrap();
+      }
       return {
         complete: false,
         runnerState: null,
         providerSessionIdentity: null,
         incompleteReason: "not_suspended",
-        notSuspendedRunId: typeof runnerState.runId === "string" ? runnerState.runId : null,
+        notSuspendedRunId,
       };
     }
     let providerState: Record<string, unknown>;
@@ -16816,6 +17645,13 @@ async function createRunnerdBackendWithinSessionClaim(
       providerSessionIdentity,
       incompleteReason: null,
     };
+  };
+
+  const retainsFreshBootstrapRunnerState = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteStateDirectory || !durableIdentity) return false;
+    const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory });
+    return runnerStateRequestsFreshBootstrap(runnerState)
+      && REMOTE_RUNNER_IDENTITY_FIELDS.every(field => runnerState[field] === durableIdentity[field]);
   };
 
   const claimUntouchedRemoteSession = async (): Promise<boolean> => {
@@ -17111,6 +17947,13 @@ async function createRunnerdBackendWithinSessionClaim(
                         throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" });
                       }
                     });
+                  } else if (sandboxLeaseAcquisition?.outcome === "resumed" && replacesUnansweredLiveRunner) {
+                    await input.onLog?.("stdout", "[paperclip-runner] The runner left its recovery read unanswered and made no progress; "
+                      + "the relaunch stops it and its process lineage, then restores its saved journal.\n");
+                  } else if (sandboxLeaseAcquisition?.outcome === "resumed" && !adoptedProcess && !stagedRecovery &&
+                      input.restartRecovery?.kind === "reattach_remote_runner" &&
+                      await measureNativeRunnerSpan(input.trace, "sandbox.lease.resume", retainsFreshBootstrapRunnerState)) {
+                    await input.onLog?.("stdout", "[paperclip-runner] Starting a new runner from the saved state of the runner whose connection lease ended.\n");
                   } else if (sandboxLeaseAcquisition?.outcome === "resumed") {
                     const reuseStartedAtMs = Date.now();
                     const state = await measureNativeRunnerSpan(
@@ -17349,8 +18192,10 @@ async function createRunnerdBackendWithinSessionClaim(
     )
       return false;
     const durableStorage = durableNativeHarnessStorage();
-    const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId);
-    const backupOwner = durableStorage && currentAuthority ? sessionHarnessBackupOwners.get(currentAuthority) : null;
+    const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId) ?? authorityEpoch;
+    const backupOwner = durableStorage
+      ? sessionHarnessBackupOwners.get(currentAuthority) ?? sessionHarnessBackupOwners.get(authorityEpoch) ?? null
+      : null;
     if (durableStorage && !backupOwner) throw new Error("native_harness_storage_owner_missing");
     if (backupOwner) await assertNativeHarnessBackupOwner(input.db, backupOwner);
     // Transport release also runs when provider bootstrap failed. In that case
@@ -17602,6 +18447,7 @@ async function createRunnerdBackendWithinSessionClaim(
           stateDirectory: remoteStateDirectory,
           diagnosticsDirectory: posix.join(remoteSessionRoot!, "diagnostics"),
           runnerInstanceId: input.runnerInstanceId,
+          diskReservePath: remoteRunnerDiskReservePath(remoteTarget),
           ensureArtifact: spec => {
             const sourceRun = spec.nativeRunner && spec.nativeRunner.identity.runId !== input.execution.binding.runId;
             const isolatedCodex = input.execution.provider.kind === "codex"
@@ -17641,13 +18487,11 @@ async function createRunnerdBackendWithinSessionClaim(
     lifecycleMode: input.execution.session.lifecyclePolicy.mode,
   }) : null;
   if (antigravityCredential) effectiveRunnerEnvironmentBase = antigravityCredential.environment;
-  if (relayAssignedMcp) {
-    // The server-held tool authority owns this credential. Do not deliver a
-    // duplicate HTTP MCP server or its bearer token to the remote provider.
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_NAME;
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_URL;
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_TOKEN;
-  }
+  // The server-held tool authority owns this credential. Do not deliver a
+  // duplicate HTTP MCP server or its bearer token to the provider.
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_NAME;
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_URL;
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_TOKEN;
   // This authority bit is derived only from the selected execution target.
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.
@@ -17656,21 +18500,14 @@ async function createRunnerdBackendWithinSessionClaim(
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME;
   if (preconfiguredHome) {
     if (remoteCommandRunner) {
-      const discovered = await remoteCommandRunner.execute({
-        command: "sh", args: ["-c", 'getent passwd "$(id -u)" | cut -d: -f6'],
-        bypassSession: true, timeoutMs: 10_000,
-      });
-      const home = discovered.stdout.trim();
-      if (discovered.exitCode !== 0 || discovered.timedOut || !home.startsWith("/") || /[\0\r\n]/.test(home)) {
-        throw new Error("runner_preconfigured_remote_home_unavailable");
-      }
+      const home = await readRemoteUserHome(remoteCommandRunner);
       // Paths from the controller's account cannot select a remote account's config.
       const hostPathKeys = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]);
       const configured = configuredEnvironment(effectiveRunnerEnvironmentBase);
       for (const key of hostPathKeys) delete effectiveRunnerEnvironmentBase[key];
       if (configured.PAPERCLIP_CONFIGURED_ENV_KEYS !== undefined) {
         effectiveRunnerEnvironmentBase.PAPERCLIP_CONFIGURED_ENV_KEYS = JSON.stringify(
-          Object.keys(configured).filter(key => key !== "PAPERCLIP_CONFIGURED_ENV_KEYS" && !hostPathKeys.has(key)),
+          Object.keys(configured).filter(key => key !== "PAPERCLIP_CONFIGURED_ENV_KEYS" && key !== "PAPERCLIP_SECRET_ENV_KEYS" && !hostPathKeys.has(key)),
         );
       }
       effectiveRunnerEnvironmentBase.HOME = home;
@@ -17771,6 +18608,10 @@ async function createRunnerdBackendWithinSessionClaim(
           runId: input.execution.binding.runId,
           normalizedSessionId: nativeSessionKey(input.execution),
           providerAttempt: input.restartRecovery.providerAttempt,
+          unansweredRunnerProgress: {
+            controllerAckedSourceSeq: readRunnerdControllerAckedSourceSeq(root),
+            onReplace: () => { replacesUnansweredLiveRunner = true; },
+          },
         })
       : target.kind === "local" && localRecoveryProcess
         ? {
@@ -17931,6 +18772,7 @@ async function createRunnerdBackendWithinSessionClaim(
                   ),
             }
           : {}),
+        ...(nativeProviderStartedTurns(input.execution.provider) ? { providerStartedTurns: true } : {}),
         ...(input.execution.provider.kind === "cursor_cloud" ? { cursorCloud: input.execution.provider.cursorCloud } : {}),
         ...(input.execution.provider.kind === "opencode"
           ? {
@@ -18152,9 +18994,7 @@ async function createRunnerdBackendWithinSessionClaim(
           target,
           controllerPersistence: input.controllerPersistence ? nativeRunnerCheckpointPersistence(
             input.db, input.controllerPersistence.bootId, () => {
-              const current = sessionToolAuthorityEpochs.get(sessionScopeId);
-              if (!current) throw new Error("native_session_tool_authority_unavailable");
-              return current.runId;
+              return (sessionToolAuthorityEpochs.get(sessionScopeId) ?? authorityEpoch).runId;
             }, detachNativeSessionsForRestart) : undefined,
           binding: input.remoteWarmRecovery
             ? { ...input.execution.binding, runId: input.remoteWarmRecovery.identity.runId }
@@ -18263,11 +19103,14 @@ async function createRunnerdBackendWithinSessionClaim(
   return {
     bindManagedSession: (session, options) => replacementBackend
       ? replacementBackend.bindManagedSession(session, options) : wrapManagedSession(session),
+    providerTurnNeverIssued: () => replacementBackend?.providerTurnNeverIssued
+      ? replacementBackend.providerTurnNeverIssued()
+      : runnerControlPlane !== undefined && runnerdStateHasNoProviderTurn(runnerControlPlane.store.state as unknown as Record<string, unknown>),
     providerAdmissionRequired: () => replacementBackend?.providerAdmissionRequired
       ? replacementBackend.providerAdmissionRequired()
       : Boolean(artifactStorage && (providerArtifacts || !legacyProviderContinuity && !liveProviderRecovery)),
-    providerAdmissionPersisted: artifactStorage ? async () => {
-      if (replacementBackend) return replacementBackend.providerAdmissionPersisted?.();
+    providerAdmissionPersisted: artifactStorage ? async (stop?: AbortSignal) => {
+      if (replacementBackend) return replacementBackend.providerAdmissionPersisted?.(stop);
       const backupOwner = sessionHarnessBackupOwners.get(authorityEpoch);
       if ((liveProviderRecovery || legacyProviderContinuity) && !providerArtifacts) return;
       if (!backupOwner || !expectedProviderPackManifest || !remoteCommandRunner) {
@@ -18278,11 +19121,19 @@ async function createRunnerdBackendWithinSessionClaim(
         return;
       }
       if (!openCodeLaunchArtifacts) throw new Error("native_provider_artifacts_admission_missing");
-      const signal = providerArtifactsSignal();
+      const signal = providerArtifactsSignal(stop);
       if (!remoteTarget) throw new Error("native_provider_artifacts_admission_missing");
-      providerArtifacts = await captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
-        remoteCwd: remoteTarget.remoteCwd, launch: openCodeLaunchArtifacts, manifest: expectedProviderPackManifest, signal, context: input.executionContext },
-        source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal }));
+      const launch = openCodeLaunchArtifacts, manifest = expectedProviderPackManifest;
+      crashPoint("native.provider_artifacts.before_capture", { fail: () =>
+        new NativeProviderArtifactTransferTimeoutError("upload", nativeProviderArtifactTransferBounds.minimumStepMs, 0) });
+      const reuse = () => retainReadyNativeProviderArtifacts({ db: input.db, owner: backupOwner, manifest,
+        launchRoot: launch.root, accountUid: launch.accountUid });
+      providerArtifacts = await reuse() ?? await shareNativeProviderArtifactCapture({
+        key: `${input.execution.binding.companyId}:${manifest.digest}`, signal, reuse,
+        capture: () => captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
+          remoteCwd: remoteTarget.remoteCwd, launch, manifest, signal, context: input.executionContext },
+          source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal })),
+      });
     } : undefined,
     bindDiagnosticSession: session => {
       if (replacementBackend) return replacementBackend.bindDiagnosticSession?.(session);
@@ -18519,11 +19370,15 @@ export function createRemoteNativeArtifactPreparation(input: {
         );
       }
       const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
-      if (!runnerArtifactPrepared && mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
+      const controllerArtifactAvailable = existsSync(controllerRunnerBinary);
+      if (!runnerArtifactPrepared &&
+          mayUsePreinstalledRunnerArtifact(explicitRemoteBinary, controllerArtifactAvailable)) {
         const preinstalledRunner = await measureNativeRunnerSpan(
           input.trace,
           "runner.artifact.discover",
-          () => discoverPreinstalledExecutable("paperclip-runnerd"),
+          () => explicitRemoteBinary
+            ? discoverPreinstalledExecutable("paperclip-runnerd").catch(() => null)
+            : discoverPreinstalledExecutable("paperclip-runnerd"),
         );
         if (preinstalledRunner) {
           try {
@@ -18532,7 +19387,7 @@ export function createRemoteNativeArtifactPreparation(input: {
               "runner.artifact.verify_preinstalled",
               () => verifyRemoteRunner(requiredMode, preinstalledRunner),
             );
-            if (existsSync(controllerRunnerBinary) &&
+            if (controllerArtifactAvailable &&
                 !await matchesControllerRunnerArtifact(preinstalledRunner)) {
               throw new Error("runner_remote_preinstalled_artifact_mismatch");
             }

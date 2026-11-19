@@ -2,6 +2,7 @@ import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createActionsReader } from "./github-actions-reader.mjs";
 import { deferredProducer, requestDeferredProducer, sourceAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
+import { createRunnerLossRetry } from "./cloud-readiness-runner-loss.mjs";
 
 const repository = "paperclipai/paperclip";
 const workflowPath = ".github/workflows/cloud-readiness.yml";
@@ -96,7 +97,7 @@ export { createActionsReader };
 
 export async function waitForSourceVerification(sha, {
   api, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  timeoutMs = 60 * 60_000, intervalMs = 30_000, log = console.log, rerun,
+  timeoutMs = 90 * 60_000, intervalMs = 30_000, log = console.log, rerun, retryRunnerLoss,
 } = {}) {
   assertSha(sha);
   const deadline = now() + timeoutMs;
@@ -107,8 +108,13 @@ export async function waitForSourceVerification(sha, {
       const result = await readSourceVerification(sha, api);
       if (result) return result;
     } catch (error) {
-      if (!(error instanceof SourceVerificationDeferred) || !rerun) throw error;
-      await requestDeferredProducer({ file: "cloud-readiness.yml", sha, admissionJob: sourceAdmissionJob, api, rerun, requested });
+      if (error instanceof SourceVerificationFailed && retryRunnerLoss) {
+        // A reclaimed Spot worker is not a source failure: retry its jobs.
+        if (await retryRunnerLoss({ sha, failure: error, api }) !== "retrying") throw error;
+      } else {
+        if (!(error instanceof SourceVerificationDeferred) || !rerun) throw error;
+        await requestDeferredProducer({ file: "cloud-readiness.yml", sha, admissionJob: sourceAdmissionJob, api, rerun, requested });
+      }
     }
     const remaining = deadline - now();
     if (remaining > 0) await sleep(Math.min(intervalMs, remaining));
@@ -121,11 +127,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (!process.env.GITHUB_TOKEN) throw new Error("GITHUB_TOKEN with Actions read access is required.");
     // One deadline for both layers: the reader stops retrying when the poll it
     // serves is out of time, instead of extending the wait past its timeout.
-    const timeoutMs = 60 * 60_000;
+    // Long enough for a deferred full run plus two runner-loss retries.
+    const timeoutMs = 90 * 60_000;
     const deadline = Date.now() + timeoutMs;
     const api = createActionsReader({ token: process.env.GITHUB_TOKEN, deadlineAt: () => deadline });
-    const rerun = process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_REF === "refs/heads/master" ? createReleaseRerunner(process.env.GITHUB_TOKEN) : undefined;
-    const proof = await waitForSourceVerification(process.argv[2], { api, timeoutMs, rerun });
+    const canonical = process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_REF === "refs/heads/master";
+    const rerun = canonical ? createReleaseRerunner(process.env.GITHUB_TOKEN) : undefined;
+    const retryRunnerLoss = canonical ? createRunnerLossRetry({ token: process.env.GITHUB_TOKEN }) : undefined;
+    const proof = await waitForSourceVerification(process.argv[2], { api, timeoutMs, rerun, retryRunnerLoss });
     const message = `Source verification passed for ${proof.sha}: https://github.com/${repository}/actions/runs/${proof.runId}/attempts/${proof.attempt} (job ${proof.jobId}).`;
     console.log(message);
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, `${message}\n`);

@@ -98,7 +98,7 @@ export const runtimeAgentsCases = [
     const originalInstruction = await ctx.input.api.get<InstructionFile>(`/api/agents/${worker.id}/instructions-bundle/file?path=AGENTS.md`);
     return { worker, instructionAgentId: worker.id, originalInstruction, sideContent, concurrentMarker: `Concurrent human guidance ${ctx.input.nonce}: preserve keyboard support.` };
   }, gradeRuntimeAgents, {
-    oracleVersion: "paperclip.chat-catalog.runtime.edit-instructions.v3",
+    oracleVersion: "paperclip.chat-catalog.runtime.edit-instructions.v4",
     async act(ctx, state) {
       const active = await pollUntil({ label: "Active instructions update before concurrent human revision", deadlineAt: Date.now() + 60_000,
         load: () => ctx.allRuns(), accept: runs => runs.length === 1 && runs[0]?.status === "running",

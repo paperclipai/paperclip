@@ -4,6 +4,9 @@ function secureEntryExcludesChat(clause: string): boolean {
   const excluded = clause.match(/^(.*\b(?:field|form|dialog|control|page))\s*,?\s+(?:and\s+)?(?:not|never|rather than)\s+(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)\s*$/i);
   return !!excluded && !/\b(?:chat|conversation|message|here)\b/i.test(excluded[1]!) && secureTarget.test(excluded[1]!);
 }
+const negatedDestinationBefore = /\b(?:not|never|rather than|instead of)\s+(?:be\s+)?(?:(?:pasted|sent|shared|provided|entered|typed|posted)\s+)?(?:(?:in|into|via|through|to)\s+)?(?:(?:the|this|that|your|a)\s+)?$/i;
+const capabilityHolder = /\b(?:only\s+)?(?:(?:a|an|the)\s+(?:person|human|board\s+(?:user|member|operator)|human\s+(?:board\s+)?operator|operator|admin(?:istrator)?)|someone|somebody)\s+(?:can|may)\s*$/i;
+const negatedChatDestination = /^\s*(?:,?\s*(?:and|but)\s+)?(?:(?:(?:the|this|that|your)\s+(?:key|credential|token|secret)|it|they|them)\s+)?(?:(?:should|must|do|does|will|can)\s+)?(?:not|never)\s+(?:be\s+)?(?:pasted|sent|shared|posted|typed|entered|put)\s+(?:in|into|via|through|to)\s+(?:(?:the|this|that|your|a)\s+)?(?:chat|message|conversation)\s*$/i;
 function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needsChatDestination: boolean): boolean {
   const requestPattern = needsChatDestination
     ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
@@ -17,7 +20,7 @@ function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needs
   // chat only to exclude it. A chat destination counts only when at least one is not itself negated.
   const request = clause.slice(match.index);
   if (needsChatDestination && ![...request.matchAll(/\b(?:chat|message|conversation|here)\b/gi)].some(destination =>
-    !/\b(?:not|never|rather than|instead of)\s+(?:(?:in|into|via|through|to)\s+)?(?:(?:the|this|that|your|a)\s+)?$/i.test(request.slice(0, destination.index)))) return false;
+    !negatedDestinationBefore.test(request.slice(0, destination.index)))) return false;
   const before = clause.slice(0, match.index).trim();
   return !/(?:\b(?:do|should|must|can|could|will|would)\s+not(?:\s+ask\s+(?:you\s+)?to)?|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
     && !/^\s*(?:please\s+)?(?:do not|don.t|never|you (?:should|must) not)\s+(?:(?:paste|send|share|provide|enter)\s*(?:,|or|and)\s*)*$/i.test(before);
@@ -87,7 +90,8 @@ export function unsafeCredentialTransfer(text:string):boolean {
     ??(context?part.slice(request.index+request[0].length).match(/^\s+(?:it|that|the value)\b(.*)$/i):null);
    if(!object)continue;
    const destination=object[1]!;
-   if(/\bonly\s+(?:an?\s+)?human\s+(?:board\s+)?operator\s+(?:can|may)\s*$/i.test(prefix.trim())&&!destination.trim())continue;
+   const objectText=part.slice(request.index+request[0].length,part.length-destination.length);
+   if(capabilityHolder.test(prefix.trim())&&/^(?:enter|type)$/i.test(request[0])&&!/\b(?:me|us|to)\b/i.test(objectText)&&(!destination.trim()||negatedChatDestination.test(destination)))continue;
    if(/^\s+(?:name|alias|identifier|label)\b/i.test(destination)&&!/\bvalue\b/i.test(destination))continue;
    if(/^\s+reference\b/i.test(destination)&&!/\b(?:value|key|credential|token|secret|password)\b/i.test(destination))continue;
    if(secureDestination.test(destination)||secureBefore(partStart+request.index)&&/^\s+(?:only\s+)?(?:there|on that page)(?:\s+and\s+save)?\s*$/i.test(destination))continue;
