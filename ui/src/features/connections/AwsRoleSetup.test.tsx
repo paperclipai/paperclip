@@ -108,33 +108,27 @@ describe("AwsRoleSetup", () => {
     expect(full).toContain("AccessPolicyArn=<policy ARN>");
   });
 
-  it("updates the saved role on reconnect, with CLI commands that paste as is", async () => {
-    const custom = "arn:aws:iam::123456789012:role/team/existing-ops";
-    const setup = { ...READY, savedRoleArn: custom, accessLevel: "full" } as Ready;
+  it("updates the connection's role on reconnect, checks its account, with CLI commands that paste as is", async () => {
+    const setup = { ...READY, savedRoleArn: ROLE_ARN, accessLevel: "full" } as Ready;
     await render(setup);
     expect(container.textContent).toContain("It updates the existing role");
     await act(async () => { button("Or do it by hand")?.click(); });
     expect(container.textContent).toContain("Update the role");
-    // The copyable role name is the saved role's, not the template's.
     const roleRow = [...container.querySelectorAll("div")].find((d) => d.firstElementChild?.textContent === "Role name");
-    expect(roleRow?.querySelector("code")?.textContent).toBe("existing-ops");
+    expect(roleRow?.querySelector("code")?.textContent).toBe("paperclip-conn-1");
     const cli = awsCliCommands(setup);
-    expect(cli).toContain("if aws iam get-role --role-name existing-ops");
-    expect(cli).toContain("aws iam update-assume-role-policy --role-name existing-ops");
+    expect(cli).toContain("if aws iam get-role --role-name paperclip-conn-1");
+    expect(cli).toContain("aws iam update-assume-role-policy --role-name paperclip-conn-1");
     expect(cli).toContain("|| aws iam create-open-id-connect-provider");
     expect(cli).toContain("REPLACE_WITH_POLICY_ARN");
     expect(cli).not.toMatch(/<[^<>\n]*>/);
     const prompt = awsAgentSetupPrompt(setup);
-    expect(prompt).toContain(`Update the AWS IAM role ${custom}`);
-    expect(prompt).toContain("Do not deploy the template.");
-    expect(prompt).toContain("aws iam get-role --role-name existing-ops");
-    // A role this template made is updated by deploying the same stack again.
-    const own = awsAgentSetupPrompt({ ...READY, savedRoleArn: ROLE_ARN } as Ready);
-    expect(own).toContain("creates the stack, or updates it if it already exists");
-    // A stack that owns its provider keeps it; one that reused a provider rechecks the current address.
-    expect(own).toContain("already exists and its value is true");
-    expect(own).toContain("keep true so the stack keeps owning its provider. Otherwise run `aws iam list-open-id-connect-providers`");
-    expect(own).not.toContain("Do not deploy the template.");
+    expect(prompt).toContain(`Update the AWS IAM role ${ROLE_ARN}`);
+    // The agent stops when the CLI is signed in to another account than the role's.
+    expect(prompt).toContain("The role is in account 123456789012: if the CLI uses a different account");
+    expect(prompt).toContain("creates the stack, or updates it if it already exists");
+    expect(prompt).toContain("If the stack paperclip-conn-1 already exists and its value is true");
+    expect(prompt).toContain("keep true so the stack keeps owning its provider. Otherwise run `aws iam list-open-id-connect-providers`");
   });
 
   it("asks for the access policy when the connection has full access", async () => {

@@ -22,6 +22,10 @@ const ACCESS_KEY_ID = "AKIAEXAMPLE1234567";
 const SECRET_ACCESS_KEY = "fixture-secret-access-key";
 const awsTool = (name: string, readOnlyHint: boolean) => ({ name, description: name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint } });
 
+function asConfig(config: unknown): { methodConfig: Record<string, unknown> } {
+  return config as { methodConfig: Record<string, unknown> };
+}
+
 describe("AWS connector with minted credentials", () => {
   let fixture: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -324,10 +328,16 @@ describe("AWS connector with minted credentials", () => {
       await service.finishGalleryAppConnection(org.id, connected.connectionId, {
         enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents",
       }, actor);
+      // Setup steps tell an administrator to update the saved role, so only the role named after this
+      // connection is offered: a role with any other name (in any account) could be an unrelated one.
       expect(await service.getAwsSetup(org.id, connected.connectionId)).toMatchObject({
-        available: true, issuer: `https://renamed.paperclip.app/oidc/companies/${org.id}`,
-        savedRoleArn: "arn:aws:iam::123456789012:role/paperclip-agents",
+        available: true, issuer: `https://renamed.paperclip.app/oidc/companies/${org.id}`, savedRoleArn: null,
       });
+      const ownRole = `arn:aws:iam::123456789012:role/paperclip-${connected.connectionId}`;
+      const [current] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      await db.update(toolConnections).set({ config: { ...current!.config, methodConfig: { ...asConfig(current!.config).methodConfig, roleArn: ownRole } } })
+        .where(eq(toolConnections.id, connected.connectionId));
+      expect(await service.getAwsSetup(org.id, connected.connectionId)).toMatchObject({ savedRoleArn: ownRole });
       // After the administrator registers the new address in AWS, reconnecting records it and works again.
       const reconnected = await service.connectGalleryApp(org.id, { ...roleInput, reconnectConnectionId: connected.connectionId }, actor);
       expect(reconnected.catalog).toHaveLength(2);

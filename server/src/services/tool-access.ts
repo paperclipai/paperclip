@@ -1,5 +1,5 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
-import { AWS_MCP_ISSUER_CONFIG_KEY, awsMcpMethodUsesIssuer, isAwsMcpConnection, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { AWS_MCP_ISSUER_CONFIG_KEY, AWS_ROLE_ARN_PATTERN, awsMcpMethodUsesIssuer, isAwsMcpConnection, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
 import { awsRoleSetup } from "./connectors/aws/setup.js";
 import { workloadIdentityIssuer, workloadIdentityIssuerOrigin, workloadIdentityService } from "./workload-identity.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
@@ -4034,9 +4034,12 @@ export function toolAccessService(
     return {
       available: true,
       ...setup,
-      // Only a role AWS accepted for this connection (a finished connection): the setup steps tell an
-      // AWS administrator to update this role, so a draft's unchecked value is never offered.
-      savedRoleArn: row.status !== "draft" && typeof methodConfig.roleArn === "string" && methodConfig.roleArn ? methodConfig.roleArn : null,
+      // The setup steps tell an AWS administrator to update this role, so only the role made for this
+      // connection (named after it, so no other role shares the name) on a finished connection is
+      // offered. A draft's unchecked value, or any other role, could point that update at an unrelated role.
+      savedRoleArn: row.status !== "draft" && typeof methodConfig.roleArn === "string"
+        && methodConfig.roleArn.split(":role/")[1] === setup.roleName && AWS_ROLE_ARN_PATTERN.test(methodConfig.roleArn)
+        ? methodConfig.roleArn : null,
       issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
     };
   }

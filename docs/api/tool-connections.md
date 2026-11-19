@@ -82,7 +82,7 @@ When this instance can serve the role method, the `200` response is:
 ```
 
 - `roleName` is the role the template and the agent prompt create. It is named after the connection, and CloudFormation fills in the account, so the template needs no edits.
-- `savedRoleArn` is the role ARN saved on the connection once a test succeeded, or `null`.
+- `savedRoleArn` is the role ARN saved on a finished connection when it is this connection's own role (`roleName`), or `null`. Drafts never keep a role ARN, and a role with any other name is not offered, because the setup steps tell an AWS administrator to update this role.
 - `trustPolicy` is for setting up by hand. `ACCOUNT_ID` in it stands for the customer's AWS account ID.
 - `issuerPublished` is `true` when the company's signing key is published, so AWS can validate the issuer.
 

@@ -230,7 +230,7 @@ export function AwsRoleSetup({
                 </ol>
                 <CopyRow label="Provider URL" value={ready.issuer} />
                 <CopyRow label="Audience" value={ready.audience} />
-                <CopyRow label="Role name" value={setupRoleName(ready)} />
+                <CopyRow label="Role name" value={ready.roleName} />
                 <CopyRow label="Connection subject" value={ready.subject} />
                 <CopyBlock label="Trust policy" value={JSON.stringify(ready.trustPolicy, null, 2)} />
                 <CopyBlock label="AWS CLI commands" value={awsCliCommands(ready)} />
@@ -258,7 +258,7 @@ export function AwsRoleSetup({
  * provider, and updates the role when it already exists (as on reconnect), so it can be pasted as is.
  */
 export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: true }>): string {
-  const roleName = setupRoleName(setup);
+  const { roleName } = setup;
   const policy = JSON.stringify(setup.trustPolicy, null, 2).replaceAll("ACCOUNT_ID", "${ACCOUNT_ID}");
   const accessPolicy = setup.accessLevel === "read_only" ? "arn:aws:iam::aws:policy/ReadOnlyAccess" : "REPLACE_WITH_POLICY_ARN";
   return [
@@ -280,11 +280,6 @@ export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: t
   ].join("\n");
 }
 
-/** The role to set up: the saved one when the connection already has a role (reconnect), else the connection's. */
-function setupRoleName(setup: Extract<AwsConnectionSetup, { available: true }>): string {
-  return setup.savedRoleArn?.split("/").at(-1) || setup.roleName;
-}
-
 /**
  * A prompt for the user's own agent (on a machine already signed in to AWS) to
  * deploy this connection's template and report the role ARN. It holds no
@@ -302,22 +297,20 @@ export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { availab
       : "Set up an AWS IAM role so Paperclip can connect to my AWS account. Use the AWS CLI on this computer.",
     "",
     "Steps:",
-    "1. Run `aws sts get-caller-identity` and tell me which account and identity it shows. If the CLI is not signed in, or I may want a different account, stop and ask me which profile to use.",
+    setup.savedRoleArn
+      ? `1. Run \`aws sts get-caller-identity\` and tell me which account and identity it shows. The role is in account ${setup.savedRoleArn.split(":")[4]}: if the CLI uses a different account, or is not signed in, stop and ask me which profile to use.`
+      : "1. Run `aws sts get-caller-identity` and tell me which account and identity it shows. If the CLI is not signed in, or I may want a different account, stop and ask me which profile to use.",
     `2. Choose CreateIdentityProvider. If the stack ${stack} already exists and its value is true (see \`aws cloudformation describe-stacks --stack-name ${stack}\`), keep true so the stack keeps owning its provider. Otherwise run \`aws iam list-open-id-connect-providers\`: if one already ends with ${setup.providerHost}, pass false; otherwise pass true.`,
     `3. ${policyStep}`,
-    ...(setup.savedRoleArn && setupRoleName(setup) !== setup.roleName
-      ? [`4. The role ${setup.savedRoleArn} already exists and was not made by this template. Update its trust policy with \`aws iam update-assume-role-policy\` to the one in the template (with this account's ID and the identity provider's ARN, creating the provider first if step 2 found none), and make sure AWSMCPSignInOAuthAccessPolicy and the access policy are attached. Do not deploy the template.`]
-      : [
-          "4. Save the CloudFormation template below to a file and deploy it. This creates the stack, or updates it if it already exists:",
-          `   aws cloudformation deploy --stack-name ${stack} --template-file <file> --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CreateIdentityProvider=<true|false>${setup.accessLevel === "full" ? " AccessPolicyArn=<policy ARN>" : ""}`,
-          `   If it fails because the role ${setup.roleName} already exists outside this stack, do not delete it. Instead update its trust policy with \`aws iam update-assume-role-policy\` to the trust policy in the template (with this account's ID and the identity provider's ARN), make sure AWSMCPSignInOAuthAccessPolicy and the access policy are attached, and use that role's ARN in step 5.`,
-        ]),
-    `5. Give me the role's ARN (the stack's RoleArn output, or \`aws iam get-role --role-name ${setupRoleName(setup)} --query Role.Arn --output text\`), so I can paste it into Paperclip and press Test connection.`,
+    "4. Save the CloudFormation template below to a file and deploy it. This creates the stack, or updates it if it already exists:",
+    `   aws cloudformation deploy --stack-name ${stack} --template-file <file> --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CreateIdentityProvider=<true|false>${setup.accessLevel === "full" ? " AccessPolicyArn=<policy ARN>" : ""}`,
+    `   If it fails because the role ${setup.roleName} already exists outside this stack, do not delete it. Instead update its trust policy with \`aws iam update-assume-role-policy\` to the trust policy in the template (with this account's ID and the identity provider's ARN), make sure AWSMCPSignInOAuthAccessPolicy and the access policy are attached, and use that role's ARN in step 5.`,
+    `5. Give me the role's ARN (the stack's RoleArn output, or \`aws iam get-role --role-name ${setup.roleName} --query Role.Arn --output text\`), so I can paste it into Paperclip and press Test connection.`,
     "",
     "The role trusts only this one Paperclip connection, and no AWS keys are created or shared:",
     `- Identity provider: ${setup.issuer} (audience ${setup.audience})`,
     `- Connection subject: ${setup.subject}`,
-    `- Role name: ${setupRoleName(setup)}`,
+    `- Role name: ${setup.roleName}`,
     "",
     "CloudFormation template:",
     setup.cloudFormationTemplate.trimEnd(),
