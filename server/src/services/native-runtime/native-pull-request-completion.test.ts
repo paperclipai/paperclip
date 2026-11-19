@@ -1,12 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { connectionGrants, createDb, heartbeatRuns, issues, issueWorkProducts, runIdentityContexts } from "@paperclipai/db";
+import { connectionGrants, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issues, issueWorkProducts, runIdentityContexts } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { githubCredentialsFixture } from "../../__tests__/helpers/github-credentials-fixture.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import * as githubFetch from "../github-fetch.js";
 import * as gitCredentials from "../git-credentials.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
+import { reserveSteeredIdentity } from "../run-identity.js";
 import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { verifyNativePullRequestCompletion } from "./native-pull-request-completion.js";
 
@@ -94,6 +96,34 @@ describe("native PR completion GitHub authorization", () => {
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grant.id));
     await expect(validateNativeDeliverableEvidence(db, reassessment, report)).rejects.toThrow("not been verified as merged");
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("reconciles pending steering before succeeded-run verification (acknowledged=%s)", async acknowledged => {
+    const binding = await seed();
+    await fixture.grant(binding, "A");
+    await fixture.grant(binding, "B");
+    const messageId = randomUUID();
+    await db.insert(issueComments).values({ id: messageId, companyId: binding.companyId, issueId: binding.issueId,
+      authorUserId: "B", body: "Next instruction" });
+    const pending = await reserveSteeredIdentity(db, { ...binding, messageId });
+    expect(pending?.status).toBe("pending");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, binding.runId));
+    if (acknowledged) await db.insert(heartbeatRunEvents).values({ companyId: binding.companyId, runId: binding.runId,
+      agentId: binding.agentId, seq: 1, eventType: "item.completed", sourceEventId: randomUUID(),
+      payload: { prpEvent: { turnId: "turn-1", itemId: `turn-1:steer:${messageId}`, payload: { kind: "steering_acknowledgement" } } },
+    });
+    const fetcher = vi.spyOn(githubFetch, "ghFetch").mockImplementation(async () => Response.json({ merged: true }));
+    if (acknowledged) {
+      expect(await verifyNativePullRequestCompletion(db, binding, report)).toEqual(new Set(["example/private-repo#42"]));
+      expect(new Headers(fetcher.mock.calls[0]![1]?.headers).get("authorization")).toBe("Bearer test-token-B");
+    } else {
+      await expect(verifyNativePullRequestCompletion(db, binding, report)).rejects.toThrow("not been verified as merged");
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+      expect(vault.getByName).not.toHaveBeenCalled();
+    }
+    expect((await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.id, pending!.id)))[0]!.status)
+      .toBe(acknowledged ? "accepted" : "pending");
   });
 
   it.each(["failed", "cancelled"])("does not acquire a managed completion credential for a %s run", async status => {

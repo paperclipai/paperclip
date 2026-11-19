@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { isUuidLike } from "@paperclipai/shared";
 import {
   agents,
@@ -10,7 +10,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
-import { captureRunIdentity, type RunIdentityContext } from "./run-identity.js";
+import { captureRunCompletionIdentity, captureRunIdentity, type RunIdentityContext } from "./run-identity.js";
 import {
   buildGitAuthInvocation,
   resolveManagedGitHubCredential,
@@ -137,25 +137,15 @@ export async function resolveGitHubCompletionCredentials(
   db: Db,
   input: { companyId: string; issueId: string; runId: string },
 ) {
-  const [run] = await db.select({
-    id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-    nativeIssueId: heartbeatRuns.nativeIssueId, status: heartbeatRuns.status,
-    identityContextId: heartbeatRuns.activeIdentityContextId,
-    contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
-      then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
-        'taskId', ${heartbeatRuns.contextSnapshot}->'taskId', 'projectId', ${heartbeatRuns.contextSnapshot}->'projectId',
-        'executionPolicy', ${heartbeatRuns.contextSnapshot}->'executionPolicy') else null end`,
-  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+  const [source] = await db.select({ agentId: heartbeatRuns.agentId })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
     eq(heartbeatRuns.nativeIssueId, input.issueId))).limit(1);
-  if (!run) throw forbidden("GitHub completion requires the bound task run");
-  if (!run.identityContextId) return { status: "absent" as const, env: {} as Record<string, string> };
-  if (run.status === "running") return resolveGitHubOperationCredentials(db, { ...input, agentId: run.agentId });
-  if (run.status !== "succeeded") throw forbidden("GitHub completion requires an active or succeeded run");
-  const [context] = await db.select().from(runIdentityContexts).where(and(
-    eq(runIdentityContexts.id, run.identityContextId), eq(runIdentityContexts.runId, run.id),
-    eq(runIdentityContexts.companyId, run.companyId), eq(runIdentityContexts.status, "accepted"),
-  )).limit(1);
-  if (!context) throw forbidden("GitHub completion requires the run's accepted identity");
+  if (!source) throw forbidden("GitHub completion requires the bound task run");
+  const { run, context } = await captureRunCompletionIdentity(db, { ...input, agentId: source.agentId });
+  if (!run.activeIdentityContextId && !context) return { status: "absent" as const, env: {} as Record<string, string> };
+  if (!context || context.companyId !== run.companyId || context.status !== "accepted") {
+    throw forbidden("GitHub completion requires the run's accepted identity");
+  }
   return resolveCapturedGitHubCredentials(db, run, context);
 }
 
