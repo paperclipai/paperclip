@@ -13,8 +13,8 @@ This is separate from Paperclip's first-party Telemetry and its content-free
 
 ## Capture and supported runtimes
 
-The qualified versions are Codex 0.160.0 and Claude Code through ACP bridge
-0.73.0 with Agent SDK 0.3.286. Both logs and traces use HTTP/protobuf. Prompts,
+The qualified versions are Codex 0.170.0 and Claude Code through ACP bridge
+0.73.0 with Agent SDK 0.3.328. Both logs and traces use HTTP/protobuf. Prompts,
 assistant responses and tool content default on. Additional tool details are a
 Claude Code and native OpenCode control; Codex has no equivalent switch. Codex requests up to 64 KiB
 of tool output (or zero when disabled); native event availability, truncation
