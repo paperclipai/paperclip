@@ -56,16 +56,38 @@ describeEmbeddedPostgres("createDb idle-in-transaction timeout", () => {
       idleInTransactionSessionTimeoutMs: 1_000,
       applicationName: "paperclip-idle-xact-holder",
     });
+    const swallowClosed = (reason: unknown, promise: Promise<unknown>) => {
+      if (reason && typeof reason === "object" && "code" in reason && (reason as { code?: string }).code === "CONNECTION_CLOSED") {
+        promise.catch(() => {});
+      }
+    };
+    process.on("unhandledRejection", swallowClosed);
     cleanups.push(async () => {
+      process.removeListener("unhandledRejection", swallowClosed);
       await db.$client.end({ timeout: 1 });
     });
 
-    void db.$client
-      .begin(async (tx) => {
-        await tx`select pg_advisory_xact_lock(${ADVISORY_LOCK_KEY})`;
-        await delay(30_000);
-      })
-      .catch(() => {});
+    let released = false;
+    let resolveHold!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      resolveHold = resolve;
+    });
+    const releaseHold = () => {
+      if (released) return;
+      released = true;
+      resolveHold();
+    };
+    const holder = db.$client.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(${ADVISORY_LOCK_KEY})`;
+      await hold;
+    }).then(
+      () => ({ settled: "fulfilled" as const }),
+      (error: unknown) => ({ settled: "rejected" as const, error }),
+    );
+    cleanups.push(async () => {
+      releaseHold();
+      await holder;
+    });
 
     const seenDeadline = Date.now() + 5_000;
     let pid: number | undefined;
@@ -96,6 +118,12 @@ describeEmbeddedPostgres("createDb idle-in-transaction timeout", () => {
       await delay(50);
     }
     expect(gone).toBe(true);
+
+    await expect(holder).resolves.toMatchObject({ settled: "rejected" });
+    releaseHold();
+    await delay(100);
+    const [ok] = await db.$client`select 1::int as ok`;
+    expect(ok?.ok).toBe(1);
 
     const acquired = await observer.begin(async (tx) => {
       const [row] = await tx<{ got: boolean }[]>`select pg_try_advisory_xact_lock(${ADVISORY_LOCK_KEY}) as got`;

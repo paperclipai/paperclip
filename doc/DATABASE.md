@@ -143,12 +143,15 @@ DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; def
 An idle-in-transaction session still holds the row and advisory locks it
 already took. PostgreSQL's default is to keep that session until the client
 commits, rolls back, or disconnects. Paperclip sets
-`idle_in_transaction_session_timeout` to 30 seconds on every pooled
-connection so a transaction that waits on the event loop, another pool
+`idle_in_transaction_session_timeout` to 30 seconds on the main pool and
+private pools so a transaction that waits on the event loop, another pool
 connection, or an external call cannot block issue inserts and company locks
-indefinitely. Dedicated lock connections already send keepalives against this
-timeout. Set `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=0` to restore
-PostgreSQL's default.
+indefinitely. Dedicated lock connections (`paperclip-workspace-finalization-lock`)
+omit this startup parameter, because some lock transactions hold work that
+can last longer than 30 seconds. Set
+`DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=0` to omit the parameter on
+every pool: that restores PostgreSQL's default, and it is the opt-out when a
+transaction-mode pooler rejects this GUC (`unsupported startup parameter`).
 
 The server names its main pool `paperclip:<boot id>`, so after a restart the
 sessions of each server process can be told apart in `pg_stat_activity`. When a

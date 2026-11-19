@@ -73,6 +73,17 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection connection reuse"
     expect(seen.size).toBeLessThanOrEqual(DEDICATED_CONNECTION_IDLE_MAX);
   });
 
+  it("omits idle_in_transaction_session_timeout so lock work can outlast the main-pool default", async () => {
+    const db = owner();
+    const [row] = await withDedicatedDbConnection(
+      db,
+      dedicated => dedicated.execute<{ idle_in_transaction_session_timeout: string }>(
+        sql`show idle_in_transaction_session_timeout`,
+      ),
+    );
+    expect(row?.idle_in_transaction_session_timeout).toBe("0");
+  });
+
   it("gives concurrent callers exclusive sessions, reuses them for the next burst and closes them once idle", async () => {
     const db = createDb(temporary.connectionString, { maxConnections: 2, idleTimeoutSeconds: 1 });
     owners.push(db);

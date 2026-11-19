@@ -115,12 +115,16 @@ describe("databaseClientOptionsFromEnv", () => {
     });
   });
 
-  it("sends idle-in-transaction timeout as a startup parameter, including an explicit 0", () => {
+  it("sends idle-in-transaction timeout as a startup parameter and omits an explicit 0", () => {
     expect(postgresJsOptions({ idleInTransactionSessionTimeoutMs: 30_000 })).toEqual({
       connection: { idle_in_transaction_session_timeout: "30000" },
     });
-    expect(postgresJsOptions({ idleInTransactionSessionTimeoutMs: 0 })).toEqual({
-      connection: { idle_in_transaction_session_timeout: "0" },
+    expect(postgresJsOptions({ idleInTransactionSessionTimeoutMs: 0 })).toEqual({});
+    expect(postgresJsOptions({
+      applicationName: "paperclip-workspace-finalization-lock",
+      idleInTransactionSessionTimeoutMs: 0,
+    })).toEqual({
+      connection: { application_name: "paperclip-workspace-finalization-lock" },
     });
   });
 });
@@ -161,8 +165,9 @@ describe("resolveDatabaseClientOptions", () => {
         idle_in_transaction_session_timeout: String(DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS),
       },
     });
-    expect(postgresJsOptions(resolveDatabaseClientOptions({ idleInTransactionSessionTimeoutMs: 0 }))).toMatchObject({
-      connection: { idle_in_transaction_session_timeout: "0" },
+    expect(postgresJsOptions(resolveDatabaseClientOptions({ idleInTransactionSessionTimeoutMs: 0 }))).toEqual({
+      idle_timeout: DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
+      connection: { application_name: DEFAULT_DATABASE_APPLICATION_NAME },
     });
   });
 });

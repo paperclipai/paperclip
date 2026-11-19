@@ -171,9 +171,9 @@ export interface DatabaseClientOptions {
   statementTimeoutMs?: number;
   /**
    * Connection-level `idle_in_transaction_session_timeout` in milliseconds,
-   * sent as a startup parameter (no extra round trip). `0` disables the
-   * timeout. PostgreSQL then keeps an idle transaction until the client
-   * commits, rolls back, or disconnects.
+   * sent as a startup parameter (no extra round trip). `0` omits the
+   * parameter: PostgreSQL keeps its default (disabled), and a pooler that
+   * rejects this GUC can connect. Dedicated lock connections also omit it.
    */
   idleInTransactionSessionTimeoutMs?: number;
   dedicatedConnectionMax?: number;
@@ -197,8 +197,8 @@ export const DEFAULT_DATABASE_APPLICATION_NAME = "paperclip";
  * PostgreSQL default is 0 (disabled), so a session that holds row locks and
  * then waits on the event loop, another pool connection, or a provider call
  * can block issue inserts and company locks until an operator terminates it.
- * Set `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=0` to restore the
- * PostgreSQL default.
+ * Set `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=0` to omit the
+ * startup parameter (PostgreSQL's default, and the pooler-safe opt-out).
  */
 export const DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS = 30_000;
 
@@ -279,7 +279,8 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
  * `DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS`. Everything
  * else stays at the driver default. An explicit value (including
  * `idleTimeoutSeconds: 0` and `idleInTransactionSessionTimeoutMs: 0`) always
- * wins over the default.
+ * wins over the default. `idleInTransactionSessionTimeoutMs: 0` omits the
+ * startup parameter.
  */
 export function resolveDatabaseClientOptions(options: DatabaseClientOptions): DatabaseClientOptions {
   return {
@@ -301,7 +302,10 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   const connection: Record<string, string> = {};
   if (options.applicationName !== undefined) connection.application_name = options.applicationName;
   if (options.statementTimeoutMs !== undefined) connection.statement_timeout = String(options.statementTimeoutMs);
-  if (options.idleInTransactionSessionTimeoutMs !== undefined) {
+  if (
+    options.idleInTransactionSessionTimeoutMs !== undefined
+    && options.idleInTransactionSessionTimeoutMs > 0
+  ) {
     connection.idle_in_transaction_session_timeout = String(options.idleInTransactionSessionTimeoutMs);
   }
   if (Object.keys(connection).length) driverOptions.connection = connection;
@@ -679,6 +683,7 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   } else {
     const set: DedicatedConnectionSet = dedicatedConnectionSet(() => createDbClient(url, {
       ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+      idleInTransactionSessionTimeoutMs: 0,
     }, db, set), resolved);
     dedicatedConnectionSets.set(db, set);
     trackClientEnd(db, timeoutSeconds => closeDedicatedDbConnections(db, timeoutSeconds ?? 1));
