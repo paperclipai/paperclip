@@ -524,7 +524,7 @@
     "packages/shared/src/validators/project.ts": "6ea168f5faf3161e6004ea47274f60634c77b219",
     "packages/shared/src/validators/provider-trace.ts": "b38b6200a2e51513f5dca0f8b008f2fe68175e82",
     "packages/shared/src/validators/resource-memberships.ts": "b124ac8a8f24b4dbb03ae82bcc87541f6b4ecdfd",
-    "packages/shared/src/validators/responsibility.ts": "4cb056a0d4da3622ba7ddc50fbcd9673e7de35fc",
+    "packages/shared/src/validators/responsibility.ts": "d686fd060615dbfea6097b0771084e172fc81cae",
     "packages/shared/src/validators/routine.test.ts": "1501907ade577c1ab4c4b3098397e5d080446878",
     "packages/shared/src/validators/routine.ts": "95f04abf9cbafad8ad121ece7642b8cba1a6eb36",
     "packages/shared/src/validators/runtime-exposure.test.ts": "31175388dbab9f3d5dba920cd711ea6e0e6c6ece",

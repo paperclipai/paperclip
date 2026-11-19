@@ -269,6 +269,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     conferenceRoomEnabled: experimentalInstanceSettings.enableConferenceRoomChat === true,
     statusCardsEnabled: experimentalInstanceSettings.enableStatusCards === true,
     casesEnabled: experimentalInstanceSettings.enableCases === true,
+    responsibilitiesEnabled: experimentalInstanceSettings.enableResponsibilities === true,
     // Work a routine created, the onboarding task, bar and automation conversations and status update requests are never offered as routines.
     routineSuggestionsEnabled: experimentalInstanceSettings.enableResponsibilities === true
       && issueContext?.originKind !== "routine_execution"
@@ -419,6 +420,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   // must also reach resumed turns. Rebuild it from server records each wake.
   const liveVoiceTaskPrefix = liveVoiceGuidance ? `${liveVoiceGuidance}\n\n` : "";
   context.paperclipCasesEnabled = experimentalInstanceSettings.enableCases === true;
+  context.paperclipResponsibilitiesEnabled = experimentalInstanceSettings.enableResponsibilities === true;
   const workflowCase = issueRef && experimentalInstanceSettings.enableCases
     ? await getCaseExecutionContext(db, { companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id, runId: run.id, exposeLowTrustRaw })
     : null;
