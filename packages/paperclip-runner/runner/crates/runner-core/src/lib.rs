@@ -13,6 +13,7 @@ mod acpx_tool_failure_feedback;
 mod acpx_turn_dispatch;
 mod attachment_download;
 pub mod aws_agentcore_provider;
+mod bounded_json;
 pub mod claude_managed_provider;
 pub mod codex_provider;
 mod codex_startup_trust;
