@@ -3690,7 +3690,7 @@
           "type": "string"
         },
         "responsibilityId": {
-          "description": "Only routines under this responsibility, filed directly or through its project.",
+          "description": "Only routines under this responsibility, filed directly or through its project. Needs Responsibilities on.",
           "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
           "type": "string"
         },
@@ -3709,7 +3709,7 @@
           "type": "string"
         },
         "unfiled": {
-          "description": "Only routines filed under no proposed or active responsibility, directly or through their project. Combine with status, such as active.",
+          "description": "Only routines filed under no proposed or active responsibility, directly or through their project. Combine with status, such as active. Needs Responsibilities on.",
           "type": "boolean"
         }
       },
