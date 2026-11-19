@@ -3484,8 +3484,15 @@
     {
       "idx": 499,
       "version": "7",
-      "when": 1794986130809,
-      "tag": "0499_natural_white_tiger",
+      "when": 1795048062306,
+      "tag": "0499_numerous_whizzer",
+      "breakpoints": true
+    },
+    {
+      "idx": 500,
+      "version": "7",
+      "when": 1795112596589,
+      "tag": "0500_open_celestials",
       "breakpoints": true
     }
   ]

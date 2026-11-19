@@ -328,6 +328,11 @@ const blockerIssueFields = {
   executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
 };
 
+export async function getExecutionOwnershipBlocker(db: Db, companyId: string, issueId: string): Promise<ExecutionBlocker | null> {
+  const ownership = await getConversationOwnershipBlocker(db, companyId, issueId);
+  return ownership ? { ...ownership, recoveryActionId: null } : null;
+}
+
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: {
   conversationResetCommentId?: string | null;
   /** The current issue row held under this transaction's issue lock. */
@@ -365,8 +370,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
       eq(issueComments.id, conversation.conversationBoundaryCommentId),
     )).limit(1) : [];
 
-  const ownership = await getConversationOwnershipBlocker(db, companyId, issueId);
-  if (ownership) return { ...ownership, recoveryActionId: null };
+  const ownership = await getExecutionOwnershipBlocker(db, companyId, issueId);
+  if (ownership) return ownership;
   const [action] = restoreHold ? [restoreHold] : await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),

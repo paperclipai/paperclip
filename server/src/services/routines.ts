@@ -8,7 +8,7 @@ import { verifyAppWebhook } from "./app-webhook.js";
 import { authenticateWebhookCreationRun, validateCreationRun } from "./task-creation-provenance.js";
 import crypto from "node:crypto";
 import { verifyFirefliesWebhook } from "./fireflies-webhook.js";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -28,12 +28,15 @@ import {
   pluginManagedResources,
   plugins,
   projects,
+  responsibilities,
+  responsibilityLinks,
   routineRevisions,
   routineRuns,
   routineDocuments,
   routines,
   routineTriggers,
   routineWebhookTestReceipts,
+  userWorkspacePreferences,
 } from "@paperclipai/db";
 import type {
   CreateRoutine,
@@ -1033,6 +1036,64 @@ export function routineService(
       routine: routineForDocument,
       revision: mapRoutineRevision(revision),
     };
+  }
+
+  /**
+   * Makes `schedule` the routine's one enabled schedule trigger, reusing its
+   * first one, or turns every schedule off for null. Runs under the routine's
+   * lock, so two changes cannot both add a schedule. Returns whether anything
+   * changed; the caller saves the revision.
+   */
+  async function replaceSchedule(
+    txDb: Db,
+    routine: Pick<RoutineRow, "id" | "companyId" | "responsibleUserId">,
+    requested: { cronExpression: string; timezone?: string } | null,
+    actor: Actor,
+  ) {
+    const existing = await txDb.select().from(routineTriggers)
+      .where(and(eq(routineTriggers.routineId, routine.id), eq(routineTriggers.kind, "schedule"), eq(routineTriggers.archived, false)))
+      .orderBy(desc(routineTriggers.enabled), asc(routineTriggers.createdAt), asc(routineTriggers.id));
+    const now = new Date();
+    const by = { updatedByAgentId: actor.agentId ?? null, updatedByUserId: actor.userId ?? null, updatedAt: now };
+    let changed = false;
+    const [first] = existing;
+    const keep = requested ? first?.id ?? null : null;
+    if (requested) {
+      // A time with no zone keeps the current schedule's, else is in the responsible person's own zone.
+      const known = requested.timezone || first?.timezone || null;
+      const timezone = known ?? (!routine.responsibleUserId ? null : await txDb
+        .select({ timeZone: userWorkspacePreferences.timeZone })
+        .from(userWorkspacePreferences)
+        .where(eq(userWorkspacePreferences.userId, routine.responsibleUserId))
+        .then((rows) => rows[0]?.timeZone ?? null));
+      if (!timezone) {
+        throw unprocessable("Name a time zone for this schedule: the routine has no schedule yet and its person has no time zone saved");
+      }
+      assertTimeZone(timezone);
+      const schedule = { cronExpression: requested.cronExpression, timezone };
+      const nextRunAt = nextCronTickInTimeZone(schedule.cronExpression, schedule.timezone, now);
+      if (!first) {
+        await txDb.insert(routineTriggers).values({
+          companyId: routine.companyId, routineId: routine.id, kind: "schedule", label: null, enabled: true,
+          cronExpression: schedule.cronExpression, timezone: schedule.timezone, nextRunAt,
+          createdByAgentId: actor.agentId ?? null, createdByUserId: actor.userId ?? null,
+          updatedByAgentId: actor.agentId ?? null, updatedByUserId: actor.userId ?? null,
+        });
+        changed = true;
+      } else if (!first.enabled || first.cronExpression !== schedule.cronExpression || first.timezone !== schedule.timezone) {
+        await txDb.update(routineTriggers)
+          .set({ enabled: true, cronExpression: schedule.cronExpression, timezone: schedule.timezone, nextRunAt, ...by })
+          .where(eq(routineTriggers.id, first.id));
+        changed = true;
+      }
+    }
+    // One schedule: the others are turned off (a restore can turn them back on), so it does not also run at an old time.
+    const turnOff = existing.filter((trigger) => trigger.enabled && trigger.id !== keep).map((trigger) => trigger.id);
+    if (turnOff.length > 0) {
+      await txDb.update(routineTriggers).set({ enabled: false, ...by }).where(inArray(routineTriggers.id, turnOff));
+      changed = true;
+    }
+    return changed;
   }
 
   async function assertRoutineAccess(companyId: string, routineId: string) {
@@ -2110,10 +2171,36 @@ export function routineService(
 
     list: async (
       companyId: string,
-      filters?: { projectId?: string | null },
+      filters?: {
+        projectId?: string | null;
+        /** Words in the title or description, ignoring case. */
+        query?: string;
+        status?: string;
+        assigneeAgentId?: string;
+        responsibleUserId?: string;
+        /** Filed under this responsibility, directly or through its project. */
+        responsibilityId?: string;
+        /** Filed under no proposed or active responsibility, directly or through its project. */
+        unfiled?: boolean;
+      },
     ): Promise<RoutineListItem[]> => {
       const conditions = [eq(routines.companyId, companyId)];
       if (filters?.projectId) conditions.push(eq(routines.projectId, filters.projectId));
+      if (filters?.query) {
+        const pattern = `%${filters.query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+        conditions.push(or(sql`${routines.title} ilike ${pattern}`, sql`coalesce(${routines.description}, '') ilike ${pattern}`)!);
+      }
+      if (filters?.status) conditions.push(eq(routines.status, filters.status));
+      if (filters?.assigneeAgentId) conditions.push(eq(routines.assigneeAgentId, filters.assigneeAgentId));
+      if (filters?.responsibleUserId) conditions.push(eq(routines.responsibleUserId, filters.responsibleUserId));
+      // The same "filed" rule as a responsibility's detail and its loose work: a link to the routine or to its project.
+      const filedUnder = (responsibility: SQL) => sql`exists (
+        select 1 from ${responsibilityLinks} fl
+        join ${responsibilities} fr on fr.id = fl.responsibility_id
+        where ${responsibility} and fr.company_id = ${companyId}
+          and (fl.routine_id = ${routines.id} or (${routines.projectId} is not null and fl.project_id = ${routines.projectId})))`;
+      if (filters?.responsibilityId) conditions.push(filedUnder(sql`fr.id = ${filters.responsibilityId}`));
+      if (filters?.unfiled) conditions.push(sql`not ${filedUnder(sql`fr.status in ('proposed', 'active')`)}`);
 
       const rows = await db
         .select()
@@ -2517,6 +2604,12 @@ export function routineService(
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       assertRoutineVariableDefinitions(nextVariables);
+      if (patch.schedule) {
+        if (patch.schedule.timezone) assertTimeZone(patch.schedule.timezone);
+        const cronError = validateCron(patch.schedule.cronExpression);
+        if (cronError) throw unprocessable(cronError);
+        assertScheduleCompatibleVariables(nextVariables);
+      }
       const enabledScheduleTriggers = await db
         .select({ id: routineTriggers.id })
         .from(routineTriggers)
@@ -2604,8 +2697,12 @@ export function routineService(
           updatedByUserId: actor.userId ?? null,
         };
 
+        // The schedule changes under the same lock and in the same revision as the fields.
+        // With the routine as it will be saved, so a schedule without a zone uses the new responsible person's.
+        const scheduleChanged = patch.schedule !== undefined && await replaceSchedule(txDb, candidate, patch.schedule, actor);
+        const fieldsMatch = routineCurrentFieldsMatch(locked, candidate);
         const folderChanged = patch.folderId !== undefined && locked.folderId !== candidate.folderId;
-        if (locked.latestRevisionId && routineCurrentFieldsMatch(locked, candidate)) {
+        if (locked.latestRevisionId && fieldsMatch && !scheduleChanged) {
           if (!folderChanged) return locked;
           const [updated] = await txDb
             .update(routines)
@@ -2673,7 +2770,7 @@ export function routineService(
           .returning();
         if (!updated) return null;
         const { routine } = await appendRoutineRevision(txDb, updated, actor, {
-          changeSummary: "Updated routine",
+          changeSummary: !scheduleChanged ? "Updated routine" : fieldsMatch ? "Updated schedule" : "Updated routine and schedule",
         });
         if (patch.env !== undefined) {
           await secretsSvc.syncEnvBindingsForTarget(
