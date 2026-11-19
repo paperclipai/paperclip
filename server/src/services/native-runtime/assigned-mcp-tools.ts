@@ -85,6 +85,29 @@ export function assignedToolName(name: string): string {
   return `app_${readable}_${digest}`;
 }
 
+function editDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      current[rightIndex] = Math.min(current[rightIndex - 1]! + 1, previous[rightIndex]! + 1, previous[rightIndex - 1]! + substitutionCost);
+    }
+    previous = current;
+  }
+  return previous[right.length]!;
+}
+
+function closestNames(reference: string, names: string[]): string {
+  const target = reference.trim().toLowerCase();
+  const closest = names
+    .map(name => ({ name, distance: editDistance(target, name.toLowerCase()) }))
+    .sort((a, b) => a.distance - b.distance || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .slice(0, 3)
+    .map(({ name }) => name);
+  return closest.length > 0 ? ` Closest assigned names: ${closest.join(", ")}.` : "";
+}
+
 export const ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES = 768 * 1024;
 export const ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES = 1024;
 
@@ -346,7 +369,9 @@ export async function createAssignedMcpTools(input: {
     if (hasSchemaTool) {
       const reference = resolveAssignedName(args.schemaTool as string, "schemaTool");
       const selected = authorized.find(([name]) => name === reference);
-      if (!selected) throw new Error("assigned_mcp_tool_unknown: schemaTool must match an authorized inputSchemaRef. Omit schemaTool to search assigned tools, then use an exact inputSchemaRef from the results.");
+      if (!selected) {
+        throw new Error(`assigned_mcp_tool_unknown: schemaTool must match an authorized inputSchemaRef.${closestNames(args.schemaTool as string, authorized.map(([name]) => name))} Omit schemaTool to search assigned tools, then use an exact inputSchemaRef from the results.`);
+      }
       const schema = JSON.stringify(selected[1].schema);
       const end = schemaOffset + schemaChunkCharacters;
       return {
@@ -405,7 +430,8 @@ export async function createAssignedMcpTools(input: {
         parameters = object(args.arguments);
         const resolved = resolveAssignedName(args.name, "name");
         if (!resolved) {
-          throw new Error("assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools. Search assigned tools again and use the returned name.");
+          const permitted = [...tools].filter(([, { tool }]) => permits(tool) && permits(tool, currentWorkMode)).map(([candidate]) => candidate);
+          throw new Error(`assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools.${closestNames(args.name, permitted)} Search assigned tools again and use the returned name.`);
         }
         name = resolved;
       }
