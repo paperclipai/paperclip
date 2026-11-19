@@ -1,6 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
+import * as executionBlocker from "../../../services/execution-blocker.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -26,6 +27,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import {
+  createPostgresIssueWakeAdmission,
   createPostgresWakeQueueAdapter,
   createWakeAdmissionWriter,
 } from "./postgres.js";
@@ -181,6 +183,45 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     return id;
   }
+
+  it("checks execution holds only when the scoped saved receipt exists, inside the issue admission transaction", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const formerAgentId = await seedAgent({ companyId, name: "Former owner" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const handoffRunId = await seedRun({
+      companyId, agentId: formerAgentId, status: "cancelled", errorCode: "issue_reassigned", contextSnapshot: { issueId },
+    });
+    const wakeId = await seedDeferredWake({ companyId, agentId: formerAgentId, issueId });
+    await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", status: "pending",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: handoffRunId,
+      nextAction: "Check the stopped execution.",
+    });
+
+    const blocker = vi.spyOn(executionBlocker, "getExecutionBlocker");
+    const admit = createPostgresIssueWakeAdmission(db);
+    try {
+      await admit({ companyId, issueId }, async (tx, { fresh }) => {
+        const input = { issueId, agentId, handoffRunId, checkExecutionBlocker: true };
+        const receiptScope = { kind: "exact" as const, wakeId };
+        await expect(fresh.readCommentCandidates({ ...input, receiptScope: { ...receiptScope, wakeId: randomUUID() } }))
+          .resolves.toEqual({ handoffAgentId: formerAgentId, candidates: [] });
+        expect(blocker).not.toHaveBeenCalled();
+
+        await expect(fresh.readCommentCandidates({ ...input, receiptScope }))
+          .resolves.toEqual({ handoffAgentId: formerAgentId, candidates: [] });
+        expect(blocker).toHaveBeenCalledExactlyOnceWith(tx, companyId, issueId);
+
+        await expect(fresh.readCommentCandidates({ ...input, receiptScope, checkExecutionBlocker: false }))
+          .resolves.toMatchObject({ handoffAgentId: formerAgentId, candidates: [{ id: wakeId }] });
+        expect(blocker).toHaveBeenCalledTimes(1);
+        return { kind: "skipped" };
+      });
+    } finally {
+      blocker.mockRestore();
+    }
+  });
 
   function recordReleaseRunReads() {
     const rows: unknown[][] = [];
