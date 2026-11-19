@@ -256,12 +256,14 @@ describe("server telemetry sender selection", () => {
       version: serverVersion,
       stack_id: "stack-123",
       install_hash: installHash,
+      attributed_via: "none",
       environment: "staging",
       distinct_id: "workspace:stack-123",
       $process_person_profile: false,
     });
     for (const message of posthog.captured) {
       expect(message.properties?.environment, message.event).toBe("staging");
+      if (message.event !== "$groupidentify") expect(message.properties?.attributed_via, message.event).toBe("none");
       if (message.event !== "cloud.workspace_started") expect(message.properties).not.toHaveProperty("install_hash");
     }
     expect(posthog.groups).toEqual([

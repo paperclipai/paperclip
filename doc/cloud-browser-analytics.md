@@ -240,7 +240,8 @@ captures four browser events through `ui/src/lib/analytics/onboarding-analytics.
 They follow the same consent rules as every other browser event: without a
 browser analytics config or with consent not granted, nothing is captured.
 Events from before posthog-js loads wait in a short queue (at most 50) and keep
-their original time. Withdrawing consent drops the queue.
+their original time. Withdrawing consent or a change of signed-in person drops
+the queue.
 
 | Event | When | Properties |
 | --- | --- | --- |

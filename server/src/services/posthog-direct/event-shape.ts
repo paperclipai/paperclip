@@ -225,6 +225,7 @@ export function buildWorkspaceStartedEvent(
       ...(meta.version ? { version: meta.version } : {}),
       stack_id: config.stackId,
       install_hash: input.installHash,
+      attributed_via: "none",
       ...(config.environment ? { environment: config.environment } : {}),
       $groups: { [POSTHOG_WORKSPACE_GROUP_TYPE]: config.stackId },
       distinct_id: distinctId,

@@ -7,6 +7,7 @@ import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
 import {
   captureProductAnalyticsEvent,
   resetProductAnalyticsForTest,
+  setProductAnalyticsUser,
   syncProductAnalytics,
   type ProductAnalyticsClient,
 } from "./product-analytics";
@@ -130,6 +131,29 @@ describe("browser product events", () => {
     await flush();
     captureProductAnalyticsEvent("onboarding_dismissed", { step: "create_agent" });
     expect(client.capture).not.toHaveBeenCalled();
+  });
+
+  it("drops held events when the signed-in person changes before posthog-js loads", async () => {
+    setProductAnalyticsUser({ id: "user-1", email: null, name: null });
+    syncProductAnalytics(config, "granted", { load, schedule });
+    captureProductAnalyticsEvent("onboarding_opened", { step: "create_agent" });
+    setProductAnalyticsUser(null);
+    setProductAnalyticsUser({ id: "user-2", email: null, name: null });
+    captureProductAnalyticsEvent("onboarding_opened", { step: "connect_model" });
+    scheduled!();
+    await flush();
+    expect(captured()).toEqual([["onboarding_opened", { step: "connect_model" }]]);
+    expect(client.identify).toHaveBeenCalledWith("user-2", {});
+  });
+
+  it("keeps held events when the same person is set again before posthog-js loads", async () => {
+    setProductAnalyticsUser({ id: "user-1", email: null, name: null });
+    syncProductAnalytics(config, "granted", { load, schedule });
+    captureProductAnalyticsEvent("onboarding_opened", { step: "create_agent" });
+    setProductAnalyticsUser({ id: "user-1", email: "jane@example.com", name: null });
+    scheduled!();
+    await flush();
+    expect(captured()).toEqual([["onboarding_opened", { step: "create_agent" }]]);
   });
 
   it("stops capturing after consent is withdrawn", async () => {

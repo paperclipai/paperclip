@@ -338,6 +338,7 @@ export function startProductAnalytics(
 
 /** Set (or clear, on sign-out) the signed-in user. Safe to call before posthog-js loads. */
 export function setProductAnalyticsUser(user: ProductAnalyticsUser | null): void {
+  if (wantedUser && wantedUser.id !== user?.id && state) state.queued = [];
   wantedUser = user;
   if (state?.client) applyIdentity(state.client, state.config);
 }
