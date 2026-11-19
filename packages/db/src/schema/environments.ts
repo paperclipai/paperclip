@@ -25,6 +25,12 @@ export const environments = pgTable(
       .where(
         sql`${table.driver} = 'sandbox' AND (${table.metadata} ->> 'managedByPaperclip')::boolean = true`,
       ),
+    // One row per managed-config plugin entry: the marker is the entry's
+    // "<pluginKey>:<driverKey>" pair (`ensureManagedPluginEnvironment`).
+    // Only string markers count; a cleared marker (`null` / `false`) is not one.
+    managedPluginEnvironmentIdx: uniqueIndex("environments_managed_plugin_environment_idx")
+      .on(sql`(${table.metadata} ->> 'managedPluginEnvironment')`)
+      .where(sql`jsonb_typeof(${table.metadata} -> 'managedPluginEnvironment') = 'string'`),
     nameIdx: uniqueIndex("environments_name_idx").on(table.name),
   }),
 );

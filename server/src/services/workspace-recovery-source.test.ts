@@ -9,6 +9,7 @@ import { eq, sql } from "drizzle-orm";
 import { activityLog, agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, environmentLeases, environments,
   heartbeatRuns, issueRecoveryActions, issues, workspaceOperations, completionContracts, nativeRunResults, nativeRunFinalizations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { lockWorkspaceRecoveryTestDatabase, WORKSPACE_RECOVERY_EXTERNAL_SETUP_TIMEOUT_MS } from "./__tests__/workspace-recovery-database-lock.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { inspectWorkspaceRecoverySource } from "./workspace-recovery-source.js";
 import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
@@ -19,16 +20,18 @@ import { errorHandler } from "../middleware/error-handler.js";
 describe("workspace source verification diagnostics", () => {
   let db: ReturnType<typeof createDb>;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let externalLock: ReturnType<typeof createDb> | undefined;
+  const external = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_RECOVERY_TEST_DATABASE_URL");
   beforeAll(async () => {
-    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_RECOVERY_TEST_DATABASE_URL");
     if (external) {
+      externalLock = await lockWorkspaceRecoveryTestDatabase(external);
       await applyPendingMigrations(external);
       temporary = { connectionString: external, cleanup: async () => {} };
     } else temporary = await startEmbeddedPostgresTestDatabase("source-verification-");
     db = createDb(temporary.connectionString);
     if (external) await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
-  }, 30_000);
-  afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
+  }, external ? WORKSPACE_RECOVERY_EXTERNAL_SETUP_TIMEOUT_MS : 30_000);
+  afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); await externalLock?.$client.end(); });
 
   async function seed() {
     const companyId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), actionId = randomUUID(), agentId = randomUUID();

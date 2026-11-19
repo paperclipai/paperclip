@@ -1,3 +1,5 @@
+import { connectionRemovalToast } from "@/features/connections/googleAccessRemoval";
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -53,6 +55,7 @@ import {
   type ConnectionOwnerProfile,
 } from "./connection-owner";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const BROWSE_HREF = "/apps";
 
@@ -164,20 +167,21 @@ export function Connections() {
     queryKey: ["cloud-connector", "enrollment"],
     queryFn: () => toolsApi.getCloudConnectorEnrollment(),
   });
+  const authorization = useAuthorizationWindow();
   const galleryView = useQueryView(galleryQuery);
   const applicationsView = useQueryView(applicationsQuery);
   const connectionsView = useQueryView(connectionsQuery);
   const connectorEnrollmentView = useQueryView(connectorEnrollmentQuery);
   const startConnectorEnrollment = useMutation({
     mutationFn: () => toolsApi.startCloudConnectorEnrollment(selectedCompanyId!, selectedCompany?.name),
-    onSuccess: (status) => {
-      if (status.verificationUrl) window.location.assign(status.verificationUrl);
+    onSuccess: async (status) => {
+      if (status.verificationUrl) await authorization.open(status.verificationUrl);
+      else authorization.cancel();
     },
-    onError: (error) => pushToast({
-      title: "Couldn’t reach Paperclip Cloud",
-      body: describeError(error).body,
-      tone: "error",
-    }),
+    onError: (error) => {
+      authorization.cancel();
+      pushToast({ title: "Couldn’t reach Paperclip Cloud", body: describeError(error).body, tone: "error" });
+    },
   });
 
   const deleteConnection = useMutation({
@@ -188,17 +192,14 @@ export function Connections() {
 
     }) =>
       toolsApi.archiveConnection(target.id),
-    onSuccess: (_connection, target) => {
+    onSuccess: (removed, target) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
-      pushToast({
-        title: "Connection deleted",
-        body: target.remainingConnectionCount > 0
-          ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
-          : `${target.appName} is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.`,
-        tone: "success",
-      });
+      const body = target.remainingConnectionCount > 0
+        ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
+        : `${target.appName} is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.`;
+      pushToast(connectionRemovalToast({ title: "Connection deleted", body, providerAccess: removed?.removal?.providerAccess }));
       setConnectionToDelete(null);
     },
     onError: (error) =>
@@ -318,14 +319,16 @@ export function Connections() {
 
   return (
     <div className="max-w-5xl space-y-5">
+      {authorization.fallback}
       {!(connectorEnrollmentQuery.isLoading || connectorEnrollmentView.kind === "reconnecting") ? (
         <CloudConnectorEnrollmentBanner
           status={connectorEnrollmentQuery.data}
           unavailable={connectorEnrollmentView.kind === "error"}
           busy={startConnectorEnrollment.isPending}
           onEnable={() => {
+            authorization.reserve();
             const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
-            if (verificationUrl) window.location.assign(verificationUrl);
+            if (verificationUrl) void authorization.open(verificationUrl).catch(error => pushToast({ title: "Couldn’t open sign-in", body: error.message, tone: "error" }));
             else startConnectorEnrollment.mutate();
           }}
         />
@@ -401,7 +404,7 @@ export function Connections() {
             </button>
           )}
 
-          <div className="overflow-hidden rounded-lg border border-border">
+          <div className={cn("overflow-hidden rounded-lg border border-border", ANALYTICS_MASK_CLASS)}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
@@ -460,7 +463,7 @@ export function Connections() {
                           />
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium text-foreground">{row.displayName}</span>
+                              <span className={cn("font-medium text-foreground", ANALYTICS_MASK_CLASS)}>{row.displayName}</span>
                               <ConnectionProvenanceChip connection={row.connection} />
                             </div>
                             {hint && (
@@ -549,7 +552,7 @@ export function Connections() {
           if (!open && !deleteConnection.isPending) setConnectionToDelete(null);
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
           <AlertDialogHeader>
             <AlertDialogTitle>
               Delete {connectionToDelete?.appName ?? "this"} connection?

@@ -5,6 +5,7 @@ import { createStorageProviderFromConfig } from "../src/storage/provider-registr
 import { createStorageService } from "../src/storage/service.js";
 import { skillPackageMaintenance } from "../src/services/skill-package-maintenance.js";
 import { skillInstallationMaintenance } from "../src/services/skill-installation-maintenance.js";
+import { migrateRuntimeSkillAssets } from "../src/services/native-runtime/runtime-skill-preservation.js";
 import { isCloudManagedInstance } from "../src/services/cloud-instance.js";
 import { cloudRuntimeConfigService } from "../src/services/cloud-runtime-config.js";
 import { setCloudRuntimeConfigSnapshot } from "../src/services/cloud-runtime-config-snapshot.js";
@@ -29,9 +30,10 @@ try {
   const installations = skillInstallationMaintenance(db, storage);
   const actions = { snapshots: service.migrateSnapshots, versions: service.migrateVersions,
     orphans: service.collectOrphans, deletions: service.deleteObjects,
-    installations: installations.installations, eligibility: installations.eligibility, verification: installations.verifyVersions };
+    installations: installations.installations, eligibility: installations.eligibility, verification: installations.verifyVersions,
+    "runtime-assets": (options: Parameters<typeof migrateRuntimeSkillAssets>[1]) => migrateRuntimeSkillAssets(db, options, storage) };
   const action = actions[phase as keyof typeof actions];
-  if (!action) throw new Error("--phase must be snapshots, versions, orphans, deletions, installations, eligibility, or verification");
+  if (!action) throw new Error("--phase must be snapshots, versions, orphans, deletions, installations, eligibility, verification, or runtime-assets");
   const apply = process.argv.includes("--apply");
   const result = await action({ apply, writersStopped: process.argv.includes("--writers-stopped"),
     clearLegacy: process.argv.includes("--clear-legacy"), limit, after: value("--after"), companyId: value("--company") });

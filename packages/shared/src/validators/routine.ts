@@ -84,6 +84,7 @@ export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 
 export const updateRoutineSchema = objectWithoutDefaults(createRoutineSchema).partial().extend({
   baseRevisionId: z.string().guid().optional().nullable(),
+  responsibleUserId: z.string().trim().min(1).optional(),
 });
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;
 
@@ -151,12 +152,17 @@ export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
   baseTriggerSchema.extend({
     kind: z.literal("api"),
   }),
+  // A standing check (experimental `enableResponsibilities`): never fires a run;
+  // the routine's agent carries it out on each heartbeat wake-up.
+  baseTriggerSchema.extend({
+    kind: z.literal("heartbeat"),
+  }),
 ]);
 
 export type CreateRoutineTrigger = z.infer<typeof createRoutineTriggerSchema>;
 
 export const updateRoutineTriggerSchema = z.object({
-  setupPending: z.literal(false).optional(),
+  setupPending: z.boolean().optional(),
   archived: z.boolean().optional(),
   label: z.string().trim().max(120).optional().nullable(),
   enabled: z.boolean().optional(),

@@ -12,6 +12,6 @@ export default defineConfig({
   use: {
     baseURL: process.env.PAPERCLIP_GAP_STORYBOOK_URL ?? "http://localhost:6136",
     viewport: { width: 1280, height: 900 },
-    reducedMotion: "reduce",
+    contextOptions: { reducedMotion: "reduce" },
   },
 });

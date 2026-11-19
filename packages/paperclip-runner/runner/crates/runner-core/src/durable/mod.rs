@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub use runner::{
-    run_durable_runner, CommandExecution, CommandExecutor, PolledEvent,
-    TerminalDeliveryReconciliation,
+    run_durable_runner, run_durable_runner_with_host_control, CommandExecution, CommandExecutor,
+    PolledEvent, TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
     create_private_temporary_file, open_private_regular_file, redact_sensitive_text_values,
@@ -29,6 +29,7 @@ pub const PROTOCOL: &str = "paperclip.runner";
 pub const PROTOCOL_MIN_VERSION: u64 = 1;
 pub const PROTOCOL_VERSION: u64 = 3;
 pub const BOOTSTRAP_TICKET_ENV: &str = "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET";
+pub const DEFAULT_CONTROLLER_SILENCE: Duration = Duration::from_secs(90);
 const MAX_OUTBOX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
@@ -41,6 +42,21 @@ pub fn redact_diagnostic_text(input: &str) -> String {
 /// this runner cannot adopt. The outcome is deterministic for this runner
 /// build: retrying the same restore cannot succeed.
 pub const PROVIDER_STATE_INCOMPATIBLE: &str = "provider_state_incompatible";
+
+/// The runner refused to attach a new run to a saved provider session because
+/// the durable provider profile or a protected launch argument would change.
+/// The refusal leaves the saved state unchanged and repeats on every retry.
+pub const PROVIDER_ATTACH_REFUSED: &str = "provider_attach_refused";
+
+/// The saved provider session still owns a side-effecting tool call without a
+/// recorded result. Replacing the session could repeat or lose that action.
+pub const PROVIDER_SIDE_EFFECT_PENDING: &str = "provider_side_effect_pending";
+
+/// The runner closed this run's provider session after a turn start whose
+/// prompt may have reached the provider. No later `turn.start` of the same run
+/// can reopen it; only a new run's attachment can. Resending could duplicate
+/// the prompt, so the controller stops same-run retries and offers Retry.
+pub const PROVIDER_SESSION_CLOSED: &str = "provider_session_closed";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
@@ -240,6 +256,11 @@ pub struct DurableRunnerConfig {
     pub reconnect_grace: Option<Duration>,
     /// Zero disables the total process lifetime limit.
     pub max_runtime: Duration,
+    /// The controller launched this Runner for one run (`--lifecycle-mode
+    /// per_turn`): the process exits with its run, so nothing reuses a provider
+    /// generation prepared after its turn settles.
+    pub turn_scoped: bool,
+    pub controller_silence: Duration,
 }
 
 impl DurableRunnerConfig {
@@ -293,6 +314,13 @@ impl DurableRunnerConfig {
         if self.reconnect_delay.is_zero() || self.reconnect_delay > Duration::from_secs(60) {
             return Err(DurableRunnerError::invalid(
                 "reconnect delay must be between one millisecond and 60 seconds",
+            ));
+        }
+        if self.controller_silence < Duration::from_millis(100)
+            || self.controller_silence > Duration::from_secs(3600)
+        {
+            return Err(DurableRunnerError::invalid(
+                "controller silence must be between 100 milliseconds and one hour",
             ));
         }
         if self.reconnect_grace.is_some_and(|grace| grace.is_zero()) {
@@ -420,6 +448,8 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
+            turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 

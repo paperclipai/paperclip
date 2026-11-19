@@ -63,7 +63,7 @@ it("delivers authenticated runtime activity through the real Runner bridge acros
     const firstContext = (await helper(["notification-context"])).stdout.trim();
     for (const runId of ["activity-first", "activity-next"]) {
       if (runId === "activity-next") {
-        attaching = session.attachRun!({ runId });
+        attaching = Promise.resolve(session.attachRun!({ runId }));
         await releasing;
         await vi.waitFor(async () => {
           expect((await helper(["notification-context"])).stdout.trim()).not.toBe(firstContext);
@@ -93,7 +93,7 @@ it("delivers authenticated runtime activity through the real Runner bridge acros
   } finally {
     releasePrevious();
     await attaching?.catch(() => undefined);
-    await session?.close();
+    await session?.close({ reason: "test complete" });
     await bundle.transport.close();
     await rm(root, { recursive: true, force: true });
   }

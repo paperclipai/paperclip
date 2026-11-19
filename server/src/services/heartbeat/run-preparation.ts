@@ -1,6 +1,7 @@
 import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
+import { readByEarlierTurnCommentIds } from "../queued-comment-delivery.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubConfiguredInstructionSources } from "../chat-github-review-policy.js";
@@ -69,7 +70,8 @@ import {
   toolProfiles,
 } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
-import type { ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
+import { isAiConnectionIncompatible } from "../ai-connection-runtime.js";
+import { ReviewedChatBindingNotReadyError, type ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import type {
   AdapterRuntimeMcpAccess,
@@ -162,6 +164,13 @@ export class ConfigurationIncompleteFailure extends Error {
   }
 }
 
+export function classifyManagedProjectAuthFailure(error: unknown, agentId: string): unknown {
+  if (!isAiConnectionIncompatible(error)) return error;
+  return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agentId}/runtime` },
+  });
+}
+
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",
   "issue_checked_out",
@@ -170,6 +179,7 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_reopened_via_comment",
   "issue_blockers_resolved",
   "issue_children_completed",
+  "issue_blocker_stalled",
   "issue_status_changed",
   "issue_tree_restored",
   "issue_recovery_action_restored",
@@ -819,6 +829,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByActorCompanyId?: string;
   contextSnapshot?: Record<string, unknown>;
   issueStateGuard?: {
     statuses: string[];
@@ -956,7 +967,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     .filter(
       (connection) =>
         (connection.transport === "mcp_remote" ||
-          connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
+          connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
         !allInstalledConnectionIds.has(connection.id),
     )
     .map(({ id, name }) => ({ id, name }))
@@ -980,9 +991,15 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         (connection.config?.sourceTemplateKey === "github" ||
           connection.transportConfig?.sourceTemplateKey === "github")) ||
         connection.credentialPolicy === "per_user" ||
+        // A plugin connection's health mostly reflects its worker, which the
+        // host restarts; calls fail retryably while it is down. Match the
+        // gateway, which keeps these tools discoverable.
+        connection.transport === "plugin" ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
+      // Keep this transport list equal to the native runtime assignment
+      // digest in native-runtime/runtime-context.ts.
       (connection.transport === "mcp_remote" ||
-        connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
+        connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
   );
   const assignedConnectionIds = new Set(
     assignedConnections.map((connection) => connection.id),
@@ -1760,7 +1777,12 @@ function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    if (contextSnapshot.interactionKind === "ask_user_questions") {
+      contextSnapshot.mutation = "interaction";
+    }
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
@@ -2107,7 +2129,7 @@ export async function attestReviewedExternalChatRun(input: {
           admittedIds.some((id, index) => id !== suppliedIds[index])
         )
           return { denied: "context_mismatch" };
-        try {
+        const authorize = async (): Promise<true | { answeredAtMs: number } | { denied: "question_response_missing" }> => {
           const answer =
             admittedContext.source === "issue.interaction.respond"
               ? await resolveExternalChatQuestionResponse(
@@ -2137,7 +2159,11 @@ export async function attestReviewedExternalChatRun(input: {
             input.contextSnapshot[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY] =
               answer.marker;
           return answer ? { answeredAtMs: answer.answeredAtMs } : true;
+        };
+        try {
+          return await authorize();
         } catch (error) {
+          let authorizationError = error;
           if (
             error instanceof Error &&
             error.message === "paperclip_runner_chat_attachment_binding_denied"
@@ -2182,13 +2208,25 @@ export async function attestReviewedExternalChatRun(input: {
             ) {
               return "pending_delivery";
             }
+            if (
+              admittedIds.every((id) =>
+                links.some((link) => link.commentId === id),
+              ) &&
+              links.every((link) => link.state === "processed")
+            ) {
+              try {
+                return await authorize();
+              } catch (retryError) {
+                authorizationError = retryError;
+              }
+            }
           }
           const denied =
-            error instanceof Error
-              ? CHAT_ATTACHMENT_DENIAL_REASONS.get(error.message)
+            authorizationError instanceof Error
+              ? CHAT_ATTACHMENT_DENIAL_REASONS.get(authorizationError.message)
               : undefined;
           if (denied) return { denied };
-          throw error;
+          throw authorizationError;
         }
       },
     );
@@ -2215,7 +2253,7 @@ export async function attestReviewedExternalChatRun(input: {
     if (attemptNumber < 50)
       await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("reviewed_chat_execution_binding_not_ready");
+  throw new ReviewedChatBindingNotReadyError();
 }
 
 export async function readHeartbeatWakeComments(db: Db, companyId: string, issueId: string | null, commentIds: string[]) {
@@ -2328,6 +2366,11 @@ export async function buildPaperclipWakePayload(input: {
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
   );
+  const readByEarlierTurn = issueId && input.agentId
+    ? await readByEarlierTurnCommentIds(input.db, { companyId: input.companyId, issueId, agentId: input.agentId,
+      commentIds: commentRows.filter(row => !row.deletedAt).map(row => row.id), currentRunId: input.runId ?? null })
+      .catch(() => new Set<string>())
+    : new Set<string>();
   const issueDescription = conversationMode ? null : issueSummary?.description ?? null;
   const issueDescriptionTruncated =
     issueDescription !== null &&
@@ -2396,6 +2439,7 @@ export async function buildPaperclipWakePayload(input: {
       deletedByRunId: deletedAt ? (row.deletedByRunId ?? null) : null,
       sourceTrust: row.sourceTrust ?? null,
       createdAt: row.createdAt.toISOString(),
+      ...(readByEarlierTurn.has(row.id) ? { readByEarlierTurn: true } : {}),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
         : row.authorUserId
@@ -2723,6 +2767,7 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     childIssueSummaryTruncated:
       input.contextSnapshot.childIssueSummaryTruncated === true,
+    blockerStall: input.contextSnapshot.blockerStall ?? null,
     dispositionRepair:
       buildReviewPathRecoveryDisposition(input.contextSnapshot) ??
       (input.contextSnapshot.legacyDispositionEpisode ? {

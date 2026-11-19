@@ -84,6 +84,11 @@ const {
 }));
 
 // The session lookup never answers on its own; tests set the account directly.
+vi.mock("@/context/CompanyContext", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/context/CompanyContext")>()),
+  useCompany: () => ({ selectedCompany: null }),
+}));
+
 vi.mock("../api/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/auth")>();
   return { ...actual, authApi: { ...actual.authApi, getSession: () => new Promise(() => {}) } };
@@ -452,6 +457,25 @@ describe("IssueChatThread", () => {
     restoreComposerViewportSnapshotMock.mockClear();
     shouldPreserveComposerViewportMock.mockClear();
     markdownBodyRenderMock.mockClear();
+  });
+
+  it("offers Stop for a run still waiting in line and calls the task's stop action", async () => {
+    const root = createRoot(container);
+    const onCancelRun = vi.fn(async () => {});
+    const waitingRun = {
+      id: "waiting-run", issueId: "issue-1", status: "queued", invocationSource: "assignment", triggerDetail: null,
+      startedAt: null, finishedAt: null, createdAt: "2026-11-13T12:00:00.000Z",
+      agentId: "agent-1", agentName: "Codie", adapterType: "codex_local",
+    };
+    act(() => renderIssueThread(root, { liveRuns: [waitingRun], issueStatus: "todo", onCancelRun }));
+    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
+    expect(stop).not.toBeNull();
+    await act(async () => { stop!.click(); });
+    expect(onCancelRun).toHaveBeenCalledOnce();
+
+    act(() => renderIssueThread(root, { liveRuns: [], issueStatus: "todo", onCancelRun }));
+    expect(container.querySelector('button[aria-label="Stop"]')).toBeNull();
+    act(() => root.unmount());
   });
 
   it("drops the count heading and does not use an internal scrollbox", () => {
@@ -2979,7 +3003,8 @@ describe("IssueChatThread", () => {
     } finally { act(() => root.unmount()); client.clear(); }
   });
 
-  it("resends an unconfirmed comment with the same request ID and keeps the next draft", async () => {
+  it.each(["secure context", "plain HTTP"])("resends an unconfirmed comment with the same request ID and keeps the next draft on %s", async (context) => {
+    if (context === "plain HTTP") vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const key = "resend-unconfirmed-comment";
     let rejectSend!: (error: Error) => void;
     const onAdd = vi.fn()
@@ -3002,6 +3027,7 @@ describe("IssueChatThread", () => {
       type("Typed during the outage");
       await act(async () => button("Send").click());
       type("Next thought");
+      expect(onAdd).toHaveBeenCalledOnce();
       await act(async () => rejectSend(new CommentSubmissionUnknownError()));
       expect(container.textContent).toContain("Sending when reconnected…");
       expect(JSON.parse(localStorage.getItem(`${key}:submission:v1`)!).request.body).toBe("Typed during the outage");
@@ -3014,6 +3040,7 @@ describe("IssueChatThread", () => {
       expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
     } finally {
       await act(async () => root.unmount());
+      vi.unstubAllGlobals();
     }
   });
 
@@ -4465,6 +4492,61 @@ describe("IssueAssigneePausedNotice", () => {
     });
     expect(onResume).toHaveBeenCalledTimes(1);
 
+    act(() => root.unmount());
+  });
+
+  it.each(["preparing", "verifying", "resuming"])("leaves %s recovery to the task setup status and inline connection card", lifecycleState => {
+    const root = createRoot(container);
+    const agent = { ...pausedAgent(""), pauseReason: null, lifecycleState, lifecycleError: "Connect an account" } as Agent;
+    act(() => root.render(<IssueAssigneePausedNotice agent={agent} issueStatus="todo" onResume={vi.fn()} />));
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
+    expect(container.textContent).not.toContain("is paused");
+    act(() => root.unmount());
+  });
+
+  it.each([
+    ["preparing", "computer is being prepared"],
+    ["verifying", "setup isn't finished"],
+    ["paused", "setup isn't finished"],
+  ])("shows a setup-draft agent (%s) as still being set up, not manually paused", (lifecycleState, detail) => {
+    const root = createRoot(container);
+    const agent = { ...pausedAgent("setup"), lifecycleState, urlKey: "ceo" } as unknown as Agent;
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/ONB/issues/ONB-1"]}>
+          <IssueAssigneePausedNotice agent={agent} issueStatus="todo" onResume={vi.fn()} resuming={false} />
+        </MemoryRouter>,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("paused manually");
+    expect(text).not.toContain("is paused");
+    expect(text).toContain("CEO is still being set up");
+    expect(text.toLowerCase()).toContain(detail);
+    // Resuming a setup draft is not the recovery path; finishing setup is.
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
+    if (lifecycleState !== "preparing") {
+      const finish = container.querySelector('[data-testid="issue-assignee-finish-setup"]');
+      expect(finish?.getAttribute("href")).toBe("/ONB/agents/ceo");
+    } else {
+      expect(container.querySelector('[data-testid="issue-assignee-finish-setup"]')).toBeNull();
+    }
+
+    act(() => root.unmount());
+  });
+
+  it("explains a company-archive pause instead of calling it manual", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice agent={pausedAgent("company_archived")} issueStatus="todo" onResume={vi.fn()} />,
+      );
+    });
+    expect(container.textContent).not.toContain("paused manually");
+    expect(container.textContent).toContain("company is archived");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
     act(() => root.unmount());
   });
 

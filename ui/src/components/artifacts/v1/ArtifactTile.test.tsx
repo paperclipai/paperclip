@@ -66,6 +66,7 @@ describe("the Artifacts page tiles", () => {
     expect(print?.style.height).toBe("163.33px");
     const front = container.querySelector<HTMLElement>("[data-artifact-front]");
     expect(front).not.toBeNull();
+    expect(container.querySelectorAll("[data-artifact-front]")).toHaveLength(1);
     expect(front?.contains(print)).toBe(true);
     expect(front?.style.position).toBe("absolute");
     expect(print?.style.position).toBe("");
@@ -83,6 +84,7 @@ describe("the Artifacts page tiles", () => {
     );
     const front = container.querySelector("[data-artifact-front]");
     expect(front).not.toBeNull();
+    expect(container.querySelectorAll("[data-artifact-front]")).toHaveLength(1);
     expect(front?.querySelector("[data-artifact-print]")).not.toBeNull();
   });
 

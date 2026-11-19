@@ -117,7 +117,7 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
             )
           )
             return false;
-          const credentials = await resolveCredentials(current.endpoint);
+          const credentials = await resolveCredentials(current.endpoint, undefined, ["webhookSecret"]);
           const expected = `sha256=${createHmac("sha256", credentials.webhookSecret).update(body).digest("hex")}`;
           let valid = false;
           try {
@@ -182,7 +182,9 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
         ) {
           return "ignored";
         }
-        const credentials = await resolveCredentials(current.endpoint);
+        // Read only the signing secret until the signature holds; the bound
+        // installation is read below only for events that name one.
+        const credentials = await resolveCredentials(current.endpoint, undefined, ["webhookSecret"]);
         const expected = `sha256=${createHmac("sha256", credentials.webhookSecret).update(body).digest("hex")}`;
         let signatureValid = false;
         try {
@@ -209,9 +211,13 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
         const lifecycleEvent = ["github_app_authorization", "installation", "installation_repositories"].includes(eventType ?? "");
         if (payload) {
           const incomingInstallationId = payload.installation?.id;
+          const boundInstallationId =
+            incomingInstallationId !== undefined && eventType !== "installation"
+              ? (await resolveCredentials(current.endpoint, undefined, ["installationId"])).installationId
+              : undefined;
           if (
             incomingInstallationId !== undefined &&
-            String(incomingInstallationId) !== credentials.installationId &&
+            String(incomingInstallationId) !== boundInstallationId &&
             eventType !== "installation"
           ) {
             // A dedicated endpoint represents exactly one GitHub App
@@ -231,7 +237,7 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
           if (!current.endpoint.setup.webhookVerifiedAt &&
               ["active", "verifying", "attention"].includes(current.endpoint.status) &&
               incomingInstallationId !== undefined &&
-              String(incomingInstallationId) === credentials.installationId &&
+              String(incomingInstallationId) === boundInstallationId &&
               !lifecycleEvent) {
             await recordVerifiedWebhook(current.endpoint, credentialLease, inspection.headers.get("x-github-delivery"));
           }

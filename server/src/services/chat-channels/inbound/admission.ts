@@ -1,3 +1,4 @@
+import { slackMessageMeetsMentionRequirement } from "../slack/messages.js";
 import { createTeamsDestinationAdmission } from "../microsoft-teams/destination-admission.js";
 import { createTelegramDestinationAdmission } from "../telegram/destination-admission.js";
 import { createPhotonDestinationAdmission } from "../imessage-photon/destination-admission.js";
@@ -167,10 +168,7 @@ export function createInboundAdmission(db: Db, options: InboundAdmissionOptions)
       }
       const mentionRequired =
         endpoint.provider === "slack" &&
-        currentEndpoint.requireAtMention &&
-        !thread.isDM &&
-        trigger !== "mention" &&
-        message.isMention !== true;
+        !slackMessageMeetsMentionRequirement(currentEndpoint, thread, trigger, message);
       // GitHub sends the same comment to every installed App. Subscribed
       // conversations are a fallback for unaddressed replies, not permission
       // to wake every bot when the person addresses a different recipient.

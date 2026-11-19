@@ -6,8 +6,14 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, agentConfigRevisions, activityLog, builtInManagedResources, companies, companyMemberships, connectionGrants, createDb, environments, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, agentConfigRevisions, activityLog, builtInManagedResources, companies, companyMemberships, connectionGrants, createDb, environments, issues, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { agentRoutes } from "../routes/agents.js";
+import { issueRoutes } from "../routes/issues.js";
+import * as issueServices from "../services/issues.js";
+import * as activityLogging from "../services/activity-log.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { createStorageService } from "../storage/service.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as environmentTests from "../services/agent-environment-test.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -87,6 +93,119 @@ describePostgres("agent configuration save latency", () => {
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect((await readAgent()).adapterConfig.model).toBe("gpt-5.6-luna");
     expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled(); expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("renames generated chat titles for each user while preserving custom titles and other tasks", async () => {
+    const oldTitle = `Chat with ${agent.name}`;
+    const [otherAgent] = await db.insert(agents).values({ companyId: agent.companyId, name: "Other agent" }).returning();
+    const rows = await db.insert(issues).values([
+      ...[userId, randomUUID()].map(conversationUserId => ({ companyId: agent.companyId, title: oldTitle,
+        conversationAgentId: agent.id, assigneeAgentId: agent.id, conversationUserId, conversationState: "waiting" as const, status: "in_review" })),
+      { companyId: agent.companyId, title: "A custom chat title", conversationAgentId: agent.id,
+        assigneeAgentId: agent.id, conversationUserId: randomUUID(), conversationState: "waiting", status: "in_review" },
+      { companyId: agent.companyId, title: oldTitle, assigneeAgentId: agent.id },
+      { companyId: agent.companyId, title: oldTitle, conversationAgentId: otherAgent.id,
+        assigneeAgentId: otherAgent.id, conversationUserId: userId, conversationState: "waiting", status: "in_review" },
+    ]).returning();
+    const updates: Array<{ issueId: unknown; title: unknown; committedTitle: Promise<string | undefined> }> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(agent.companyId, event => {
+      if (event.type !== "activity.logged" || event.payload.action !== "issue.updated") return;
+      updates.push({ issueId: event.payload.entityId, title: (event.payload.details as Record<string, unknown>)?.title,
+        committedTitle: db.select({ title: issues.title }).from(issues).where(eq(issues.id, String(event.payload.entityId)))
+          .then(saved => saved[0]?.title) });
+    });
+    try {
+      const response = await request(app).patch(`/api/agents/${agent.id}`).send({ name: "Renamed agent" });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+    } finally {
+      unsubscribe();
+    }
+    const saved = await db.select().from(issues).where(eq(issues.companyId, agent.companyId));
+    expect(rows.map(row => saved.find(issue => issue.id === row.id)?.title)).toEqual([
+      "Chat with Renamed agent", "Chat with Renamed agent", "A custom chat title", oldTitle, oldTitle,
+    ]);
+    expect(saved.filter(row => row.conversationAgentId === agent.id).map(row => row.conversationState))
+      .toEqual(["waiting", "waiting", "waiting"]);
+    expect(updates.map(update => ({ issueId: update.issueId, title: update.title }))).toEqual(expect.arrayContaining(
+      rows.slice(0, 2).map(row => ({ issueId: row.id, title: "Chat with Renamed agent" })),
+    ));
+    expect(updates).toHaveLength(2);
+    expect(await Promise.all(updates.map(update => update.committedTitle))).toEqual(["Chat with Renamed agent", "Chat with Renamed agent"]);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("uses the current name when a rename commits after chat creation reads the old name", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    const reached = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const realIssueService = issueServices.issueService;
+    vi.spyOn(issueServices, "issueService").mockImplementation(database => {
+      const service = realIssueService(database);
+      return { ...service, create: async (companyId, data, transaction) => {
+        if (data.conversationAgentId === agent.id) {
+          reached.resolve();
+          await resume.promise;
+        }
+        return service.create(companyId, data, transaction);
+      } };
+    });
+    app.use("/api", issueRoutes(db, createStorageService(createLocalDiskStorageProvider(path.join(home, "storage")))));
+    const creation = request(app).post(`/api/companies/${agent.companyId}/chats/${agent.id}`).send({}).then(response => response);
+    try {
+      await Promise.race([reached.promise, creation.then(response => { throw new Error(`Chat creation ended early: ${response.status} ${JSON.stringify(response.body)}`); })]);
+      const renamed = await request(app).patch(`/api/agents/${agent.id}`).send({ name: "Renamed during creation" });
+      expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+    } finally {
+      resume.resolve();
+    }
+    const response = await creation;
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.title).toBe("Chat with Renamed during creation");
+    const renamedAgain = await request(app).patch(`/api/agents/${agent.id}`).send({ name: "Renamed again" });
+    expect(renamedAgain.status, JSON.stringify(renamedAgain.body)).toBe(200);
+    expect((await db.select().from(issues).where(eq(issues.id, response.body.id)))[0].title).toBe("Chat with Renamed again");
+  });
+
+  it("keeps the agent and chat names when a configuration save is rejected", async () => {
+    const title = `Chat with ${agent.name}`;
+    const [chat] = await db.insert(issues).values({ companyId: agent.companyId, title,
+      conversationAgentId: agent.id, assigneeAgentId: agent.id, conversationUserId: userId,
+      conversationState: "waiting", status: "in_review" }).returning();
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ name: "Rejected name", runtimeConfig: { aiConnection: binding } });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect((await readAgent()).name).toBe(agent.name);
+    expect((await db.select().from(issues).where(eq(issues.id, chat.id)))[0].title).toBe(title);
+  });
+
+  it("rolls back renamed chats and publishes no updates when audit persistence fails", async () => {
+    const title = `Chat with ${agent.name}`;
+    const chats = await db.insert(issues).values([userId, randomUUID()].map(conversationUserId => ({
+      companyId: agent.companyId, title, conversationAgentId: agent.id, assigneeAgentId: agent.id,
+      conversationUserId, conversationState: "waiting" as const, status: "in_review",
+    }))).returning();
+    const realLogActivity = activityLogging.logActivity;
+    let audits = 0;
+    vi.spyOn(activityLogging, "logActivity").mockImplementation((...args) => {
+      if (args[1].details?.source === "agent_rename" && ++audits === 2) throw new Error("Fixture audit failure");
+      return realLogActivity(...args);
+    });
+    const published: unknown[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(agent.companyId, event => {
+      if (event.type === "activity.logged" && event.payload.action === "issue.updated") published.push(event);
+    });
+    try {
+      const response = await request(app).patch(`/api/agents/${agent.id}`).send({ name: "Rolled back name" });
+      expect(response.status).toBe(500);
+    } finally {
+      unsubscribe();
+    }
+    expect(audits).toBe(2);
+    expect((await readAgent()).name).toBe(agent.name);
+    const saved = await db.select().from(issues).where(eq(issues.companyId, agent.companyId));
+    expect(chats.map(chat => saved.find(row => row.id === chat.id)?.title)).toEqual([title, title]);
+    expect(published).toEqual([]);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, agent.companyId), eq(activityLog.action, "issue.updated")))).toEqual([]);
   });
 
   it("saves a roster connection edit without a runtime probe and rejects a stale retry", async () => {

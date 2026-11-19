@@ -4,6 +4,7 @@ import { posix, resolve } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import type { NativeRunTrace } from "./native-run-trace.js";
+import { remoteStagingFailure } from "./remote-runner-disk-reserve.js";
 
 type StageAsset = {
   sourcePath: string;
@@ -117,7 +118,7 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
         timeoutMs: 10_000,
       });
       if (created.exitCode !== 0 || created.timedOut) {
-        throw new Error("runner_remote_directory_staging_failed");
+        throw remoteStagingFailure("runner_remote_directory_staging_failed", created);
       }
       if (directory.name !== "codex-home") continue;
       const localDirectory = resolve(input.root, directory.name);
@@ -171,7 +172,8 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
     const directory = input.persistenceDirectories.find(entry => entry.name === "codex-home" && entry.location === "filesystem");
     if (!directory?.targetPath) throw new Error("runner_harness_state_mismatch: bootstrap_target_unavailable");
     const sourcePath = resolve(input.root, "codex-home", "skills");
-    await assertSelectedSkillsTree(sourcePath, input.runtimeContext?.source.skills.map(skill => skill.runtimeName) ?? []);
+    await measure("stage.asset.codex_skills.verify", () =>
+      assertSelectedSkillsTree(sourcePath, input.runtimeContext?.source.skills.map(skill => skill.runtimeName) ?? []));
     await measure("stage.asset.codex_skills", async () => {
       const cleared = await input.runner.execute({
         command: "node",
