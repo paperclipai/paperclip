@@ -179,9 +179,11 @@ Cancellation cleanup only settles retained work.
 **What if the Runner starts as B?** Core can rotate the session to B before
 launch: it archives A's Runner state and starts a Runner under B's identity.
 That Runner starts with fresh durable state over A's saved Codex session. It
-does not restore Codex under A's settings. It refuses every command except
-`run.attach`, and `run.attach` starts Codex once with B's settings. ACPX
-follows the same rule.
+does not restore Codex under A's settings. Until `run.attach`, it refuses
+commands that start work; snapshots and shutdown commands still work. The
+wait is saved with the Codex state, so a restart before attachment keeps it.
+`run.attach` then starts Codex once with B's settings. ACPX follows the same
+rule.
 
 Live qualification still needs to verify that restoring a provider starts no
 work, deployed storage honors fsync, and the old process has exited.

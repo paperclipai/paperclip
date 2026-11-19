@@ -399,17 +399,7 @@ fn a_fresh_runner_waits_for_run_attach_before_restoring_a_saved_session() {
     let (config, _) = dormant_source_fixture(&directory);
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
     executor.observe_fresh_durable_state();
-    assert!(poll_and_ack(&mut executor).unwrap().is_empty());
-    let refused = executor
-        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
-        .expect_err("a fresh runner must not serve the saved session before run.attach");
-    assert!(
-        refused
-            .to_string()
-            .contains("requires run.attach before commands from a new run"),
-        "unexpected refusal: {refused}"
-    );
-    assert_eq!(call_count(&directory, "process-start"), 1);
+    assert_waits_for_run_attach(&mut executor, &directory);
 
     let attached = executor
         .execute(&command(
@@ -437,6 +427,56 @@ fn a_fresh_runner_waits_for_run_attach_before_restoring_a_saved_session() {
     assert_eq!(call_count(&directory, "process-start"), 2);
     assert_eq!(call_count(&directory, "turn/start"), 2);
     executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+fn assert_waits_for_run_attach(executor: &mut NativeProviderCommandExecutor, directory: &Path) {
+    assert!(poll_and_ack(executor).unwrap().is_empty());
+    executor
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+        .expect("a snapshot reads the saved session without restoring it");
+    let refused = executor
+        .execute(&command(
+            "early-turn",
+            1,
+            "turn.start",
+            json!({"text": "Start before attachment."}),
+        ))
+        .expect_err("a fresh runner must not start work before run.attach");
+    assert!(
+        refused
+            .to_string()
+            .contains("requires run.attach before commands from a new run"),
+        "unexpected refusal: {refused}"
+    );
+    assert_eq!(call_count(directory, "process-start"), 1);
+}
+
+#[test]
+fn a_fresh_runner_restarted_before_run_attach_still_waits_for_it() {
+    let directory = temporary_directory("fresh-runner-restart");
+    let (config, _) = dormant_source_fixture(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first.observe_fresh_durable_state();
+    assert_waits_for_run_attach(&mut first, &directory);
+    drop(first);
+
+    let mut restarted = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert_waits_for_run_attach(&mut restarted, &directory);
+    let attached = restarted
+        .execute(&command(
+            "attach",
+            2,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("attach the new run after the restart");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    restarted.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
 

@@ -1349,6 +1349,8 @@ struct CodexProviderState {
     active_provider_result_fingerprint: Option<String>,
     #[serde(default)]
     active_provider_result_disposition: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    awaiting_run_attach: bool,
     #[serde(default)]
     active_terminal_tool_rejected: bool,
     last_agent_message: Option<String>,
@@ -1408,6 +1410,7 @@ impl CodexProviderState {
         let codex_usage =
             (config.provider == "codex").then(|| CodexRunUsage::new(thread_id.is_some()));
         Self {
+            awaiting_run_attach: false,
             schema: PROVIDER_STATE_SCHEMA.to_owned(),
             lifecycle: "prepared".to_owned(),
             config,
@@ -2424,6 +2427,15 @@ impl CodexCommandExecutor {
 
     fn restore_once(&mut self) -> Result<(), DurableRunnerError> {
         self.load_state_without_provider()?;
+        if let Some(mut state) = self.state.clone() {
+            if state.awaiting_run_attach {
+                self.awaiting_new_run_attach = true;
+            } else if self.awaiting_new_run_attach {
+                state.awaiting_run_attach = true;
+                self.persist_state(&state)?;
+                self.state = Some(state);
+            }
+        }
         self.retire_orphaned_startup_attempt(
             &|pid| local_process_definitely_gone(pid, false),
             &|group| local_process_definitely_gone(group, true),
@@ -3695,6 +3707,7 @@ impl CodexCommandExecutor {
         next_state
             .pending_events
             .retain(|event| event.event_type != "session.resumed");
+        next_state.awaiting_run_attach = false;
         next_state.lifecycle = if retained_provider {
             "session_open".to_owned()
         } else {
@@ -5982,7 +5995,21 @@ impl CommandExecutor for CodexCommandExecutor {
         let outcome = (|| {
             self.save_before_provider_writes(false)?;
             self.restore()?;
-            if self.awaiting_new_run_attach && command.command_type != "run.attach" {
+            if self.awaiting_new_run_attach
+                && !matches!(
+                    command.command_type.as_str(),
+                    "run.attach"
+                        | "session.snapshot"
+                        | "session.close"
+                        | "session.destroy"
+                        | "runner.drain"
+                        | "runner.suspend"
+                        | "runner.shutdown"
+                        | "turn.interrupt"
+                        | "run.cancel"
+                        | "turn.stop"
+                )
+            {
                 return Err(DurableRunnerError::invalid(
                     "Codex durable session requires run.attach before commands from a new run",
                 ));
@@ -8319,6 +8346,7 @@ done
     #[test]
     fn rejects_inconsistent_provider_state() {
         let state = CodexProviderState {
+            awaiting_run_attach: false,
             startup_attempt: None,
             schema: PROVIDER_STATE_SCHEMA.to_owned(),
             lifecycle: "turn_active".to_owned(),
