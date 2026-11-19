@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { editDistance } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES } from "../../vendor/paperclip-runner/index.js";
 import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
@@ -84,6 +83,19 @@ export function assignedToolName(name: string): string {
     : sanitize(name).slice(0, 47) || "tool";
   const digest = createHash("sha256").update(name).digest("hex").slice(0, 12);
   return `app_${readable}_${digest}`;
+}
+
+function editDistance(left: string, right: string): number {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      current[rightIndex] = Math.min(current[rightIndex - 1]! + 1, previous[rightIndex]! + 1, previous[rightIndex - 1]! + substitutionCost);
+    }
+    previous = current;
+  }
+  return previous[right.length]!;
 }
 
 function closestNames(reference: string, names: string[]): string {
