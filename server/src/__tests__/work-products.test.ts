@@ -173,11 +173,15 @@ describe("workProductService", () => {
     const insertValues = vi.fn(() => ({ returning: insertReturning }));
     const txInsert = vi.fn(() => ({ values: insertValues }));
 
+    const ownerWhere = vi.fn(async () => [{ createdByUserId: "user-1", responsibleUserId: null }]);
+    const txSelect = vi.fn(() => ({ from: vi.fn(() => ({ where: ownerWhere })) }));
+
     let transactionOpen = false;
     const tx = {
       execute: retentionReads(() => transactionOpen),
       update: txUpdate,
       insert: txInsert,
+      select: txSelect,
     };
     const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
       transactionOpen = true;
@@ -197,6 +201,7 @@ describe("workProductService", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(txUpdate).toHaveBeenCalledTimes(1);
     expect(txInsert).toHaveBeenCalledTimes(1);
+    expect(ownerWhere).toHaveBeenCalledTimes(1);
     expect(result?.id).toBe("work-product-1");
   });
 

@@ -3243,6 +3243,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
       actor: { userId: "local-board" },
       startsExecution: true,
+      task: { createdByUserId: null, responsibleUserId: null },
     });
     planApproved.mockRestore();
     expect(accepted.interaction).toMatchObject({
