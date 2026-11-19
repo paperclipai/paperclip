@@ -111,6 +111,7 @@ import {
   ne,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1834,7 +1835,7 @@ export function createToolGatewayService(
     if (scope?.connectionIds.size === 0) return [];
     // Equal gateway base names require the same short connection UUID. Include
     // these peers in the catalog snapshot so their eligible tools still affect naming.
-    let connectionScope;
+    let connectionScope: SQL | undefined;
     if (scope?.preserveToolNames) {
       const prefixes = [...new Set(Array.from(scope.connectionIds, shortStableId))];
       connectionScope = sql`split_part(${toolConnections.id}::text, '-', 1) = any(${sql.param(prefixes)}::text[])`;
