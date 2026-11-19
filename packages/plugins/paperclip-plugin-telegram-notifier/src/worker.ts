@@ -30,6 +30,7 @@
 
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import type {
+  Issue,
   PluginContext,
   PluginEvent,
   PluginJobContext,
@@ -43,6 +44,7 @@ import {
   DEFAULT_PLAN_TEMPLATE,
   JOB_KEYS,
   POLL_LOOP_DEADLINE_MS,
+  POLL_TIMEOUT_SEC,
   TOOL_NAMES,
 } from "./constants.js";
 import {
@@ -142,7 +144,15 @@ async function loadConfig(
   ctx: PluginContext,
   companyId: string,
 ): Promise<PluginConfig> {
-  const { botToken: stored, ...config } = await loadRawConfig(ctx, companyId);
+  return resolveStoredConfig(ctx, await loadRawConfig(ctx, companyId), companyId);
+}
+
+async function resolveStoredConfig(
+  ctx: PluginContext,
+  storedConfig: StoredPluginConfig,
+  companyId: string,
+): Promise<PluginConfig> {
+  const { botToken: stored, ...config } = storedConfig;
   if (isSecretRefBinding(stored)) {
     return { ...config, botToken: await resolveToken(ctx, stored, companyId) };
   }
@@ -157,8 +167,10 @@ async function loadConfig(
   return config;
 }
 
+type NotifyFlag = keyof NonNullable<PluginConfig["notifyOn"]>;
+
 function notifyEnabled(
-  config: PluginConfig,
+  config: Pick<PluginConfig, "notifyOn">,
   flag: keyof NonNullable<PluginConfig["notifyOn"]>,
 ): boolean {
   return config.notifyOn?.[flag] !== false;
@@ -319,40 +331,6 @@ async function rejectInteraction(
 }
 
 /**
- * Fetch the full prompt text of a `request_confirmation` interaction. The
- * activity-log payload that drives `approval.created` only carries metadata
- * (id, kind, status), not the prompt body, so we round-trip to the API to
- * render the body in the Telegram message.
- */
-async function fetchInteractionPrompt(
-  config: PluginConfig,
-  issueId: string,
-  interactionId: string,
-): Promise<string | undefined> {
-  const baseUrl = config.paperclipBaseUrl ?? "http://localhost:3100";
-  try {
-    const res = await fetch(
-      `${baseUrl}/api/issues/${encodeURIComponent(issueId)}/interactions`,
-      { method: "GET", headers: { Accept: "application/json" } },
-    );
-    if (!res.ok) return undefined;
-    const items = (await res.json()) as Array<{
-      id: string;
-      payload?: { prompt?: string };
-      summary?: string | null;
-      title?: string | null;
-    }>;
-    const ix = items.find((i) => i.id === interactionId);
-    if (!ix) return undefined;
-    return (
-      ix.payload?.prompt ?? ix.summary ?? ix.title ?? undefined
-    ) as string | undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * Send a `request_confirmation` notification with inline Approve / Decline
  * buttons, persist a `confirmation_decision` MessageContext keyed off the
  * sent message_id, and return the message_id for callers that want to
@@ -367,7 +345,6 @@ async function sendConfirmationToCompanyChat(
     interactionId: string;
     identifier: string;
     title: string;
-    promptText?: string;
     requestedBy?: string;
   },
 ): Promise<{ message_id: number } | undefined> {
@@ -381,7 +358,6 @@ async function sendConfirmationToCompanyChat(
     issueId: input.issueId,
     identifier: input.identifier,
     title: input.title,
-    body: input.promptText,
     requestedBy: input.requestedBy,
   });
   try {
@@ -399,7 +375,6 @@ async function sendConfirmationToCompanyChat(
         interactionId: input.interactionId,
         identifier: input.identifier,
         title: input.title,
-        promptText: input.promptText,
         requesterLabel: input.requestedBy,
         createdAt: new Date().toISOString(),
       });
@@ -440,26 +415,15 @@ async function onApprovalCreated(
     if (interactionKind !== "request_confirmation") return;
     const issueId = asString(event.entityId);
     if (!issueId || !interactionId) return;
-    let title = "Confirmation requested";
-    let identifier = asString(payload.identifier) ?? issueId.slice(0, 8);
+    // Thread-interaction events reach this lane for every issue, private
+    // ones included. Send only when the plugin may read the issue in this
+    // company (the host's `issues.get` applies issue privacy), and send only
+    // the title and link: the prompt body stays in Paperclip.
+    const issue = await ctx.issues.get(issueId, event.companyId).catch(() => null);
+    if (!issue) return;
+    const title = issue.title ?? "Confirmation requested";
+    const identifier = issue.identifier ?? issueId.slice(0, 8);
     let requestedBy: string | undefined;
-    try {
-      const issue = await ctx.issues.get(issueId, event.companyId);
-      if (issue) {
-        title = issue.title ?? title;
-        identifier = issue.identifier ?? identifier;
-      }
-    } catch {
-      /* best-effort — fall through with payload values */
-    }
-    // Activity-log payload only carries interaction metadata (id, kind,
-    // status), not the prompt body. Round-trip through the interactions
-    // endpoint to render the actual prompt in the Telegram message.
-    const promptText =
-      (await fetchInteractionPrompt(config, issueId, interactionId)) ??
-      asString(payload.bodySnippet) ??
-      asString(payload.body) ??
-      undefined;
     if (event.actorType === "agent" && event.actorId) {
       try {
         const agent = await ctx.agents.get(event.actorId, event.companyId);
@@ -478,7 +442,6 @@ async function onApprovalCreated(
       interactionId,
       identifier,
       title,
-      promptText,
       requestedBy,
     });
     return;
@@ -897,12 +860,16 @@ async function handleHandshakeMessage(
   // truth for routing.
   const existingPairing = findCompanyForChat(state, incomingChatId);
 
+  // An already-paired chat keeps its own handlers (`/new`, `/unpair`,
+  // replies, decline reasons) while another company pairs. Only `/start`,
+  // the pairing message, gets the wrong-chat hint below.
+  if (existingPairing) {
+    const isStart = /^\/start(@\w+)?(\s|$)/.test(message.text ?? "");
+    if (!isStart || !state.pairing || isHandshakeExpired(state.pairing)) return false;
+  }
+
   // No active handshake in flight.
   if (!state.pairing) {
-    if (existingPairing) {
-      // Already-paired chat messaging the bot — let slash-command handler run.
-      return false;
-    }
     await replyTo(ctx, config, incomingChatId, buildPairingNotInitiated());
     return true;
   }
@@ -1388,6 +1355,7 @@ export async function postTelegramReplyComment(
   body: string,
 ): Promise<"user" | "agent" | "plugin"> {
   if (chat.pairedByUserId && isPairingOperator(chat, message.from?.id)) {
+    const startedAt = Date.now();
     try {
       await relayComment(context.issueId, () =>
         ctx.issues.createComment(context.issueId, body, context.companyId, {
@@ -1397,11 +1365,29 @@ export async function postTelegramReplyComment(
       return "user";
     } catch (err) {
       // The user may have left the company or lost write access; keep the
-      // reply instead of dropping it.
+      // reply instead of dropping it. A failure can also come after the host
+      // saved the comment (a timeout, a later activity-log error), so check
+      // for it before writing a second copy under the agent.
       ctx.logger.warn("telegram-notifier: human-attributed comment failed", {
         companyId: context.companyId,
         err: err instanceof Error ? err.message : String(err),
       });
+      const saved = await ctx.issues
+        .listComments(context.issueId, context.companyId)
+        .then((comments) =>
+          comments.find(
+            (c) =>
+              c.authorUserId === chat.pairedByUserId &&
+              c.body === body &&
+              new Date(c.createdAt).getTime() >= startedAt - 60_000,
+          ),
+        )
+        .catch(() => undefined);
+      if (saved) {
+        // Keep the echo suppression the successful path gets.
+        relayedCommentIds.set(saved.id, Date.now() + RELAY_TTL_MS);
+        return "user";
+      }
     }
   }
   const operateAsAgentId = chat.operateAsAgentId;
@@ -1889,7 +1875,7 @@ async function pollBot(ctx: PluginContext, group: BotGroup): Promise<void> {
   const client = await createTelegramClient(ctx, group.config.botToken!);
   const deadline = Date.now() + POLL_LOOP_DEADLINE_MS;
 
-  // Long-poll loop: keep getUpdates open for ~25s at a time and process
+  // Long-poll loop: keep getUpdates open for up to POLL_TIMEOUT_SEC and process
   // anything that arrives. Exits before the next cron tick fires so two
   // jobs don't overlap. This compresses callback_query latency from up to
   // 60s (full cron gap) down to ~10s, well under Telegram's 60s expiry.
@@ -1903,7 +1889,10 @@ async function pollBot(ctx: PluginContext, group: BotGroup): Promise<void> {
 
     let updates: TelegramUpdate[];
     try {
-      updates = await client.getUpdates(offset);
+      // End the last long poll before the deadline so cycles never overlap.
+      const remainingSec = Math.floor((deadline - Date.now()) / 1000) - 1;
+      if (remainingSec < 1) break;
+      updates = await client.getUpdates(offset, Math.min(POLL_TIMEOUT_SEC, remainingSec));
     } catch (err) {
       ctx.logger.warn("telegram-notifier: getUpdates failed", {
         botId: group.botId,
@@ -1973,6 +1962,57 @@ function isWithinLastNHours(value: Date | string | null | undefined, hours: numb
  * true, the daily dedup guard is skipped so the operator can preview the
  * digest from the settings page without waiting for the scheduled hour.
  */
+const DIGEST_PAGE_SIZE = 200;
+/** Most issues read per digest section; a capped section says so. */
+export const DIGEST_SECTION_CAP = 1000;
+
+export interface DigestIssues {
+  doneYesterday: Issue[];
+  inProgress: Issue[];
+  todo: Issue[];
+  /** True when a section reached DIGEST_SECTION_CAP and may be incomplete. */
+  capped: boolean;
+}
+
+/**
+ * Read each digest section by status, page by page. One unfiltered page
+ * would be sorted by priority, so old high-priority issues could push
+ * current work and yesterday's completions out of it.
+ */
+export async function collectDigestIssues(
+  ctx: PluginContext,
+  companyId: string,
+  now: Date,
+): Promise<DigestIssues> {
+  let capped = false;
+  const readStatus = async (status: Issue["status"]): Promise<Issue[]> => {
+    const out: Issue[] = [];
+    while (out.length < DIGEST_SECTION_CAP) {
+      const page = await ctx.issues.list({
+        companyId,
+        status,
+        limit: DIGEST_PAGE_SIZE,
+        offset: out.length,
+      });
+      out.push(...page);
+      if (page.length < DIGEST_PAGE_SIZE) return out;
+    }
+    capped = true;
+    return out;
+  };
+  const [done, inProgress, todo] = await Promise.all([
+    readStatus("done"),
+    readStatus("in_progress"),
+    readStatus("todo"),
+  ]);
+  return {
+    doneYesterday: done.filter((i) => isWithinLastNHours(i.completedAt, 36, now)),
+    inProgress,
+    todo,
+    capped,
+  };
+}
+
 async function sendDigestForCompany(
   ctx: PluginContext,
   config: PluginConfig,
@@ -1991,14 +2031,14 @@ async function sendDigestForCompany(
     }
   }
 
-  let mine: Awaited<ReturnType<PluginContext["issues"]["list"]>>;
+  let digest: DigestIssues;
   try {
     // Company-wide digest, not personal. Top-of-chain operators (CEO /
     // PS Lead / PS Manager) typically don't carry tickets directly — their
     // reports do. Filtering by `assigneeAgentId == operateAsAgentId`
     // produced 0/0/0 every morning for those operators because their
     // personal queue was always empty even when the company shipped.
-    mine = await ctx.issues.list({ companyId, limit: 200 });
+    digest = await collectDigestIssues(ctx, companyId, now);
   } catch (err) {
     ctx.logger.warn("telegram-notifier: digest issue.list failed", {
       companyId,
@@ -2007,13 +2047,9 @@ async function sendDigestForCompany(
     return { sent: false, reason: "Failed to read issues." };
   }
 
-  const doneYesterday = mine.filter(
-    (i) => i.status === "done" && isWithinLastNHours(i.completedAt, 36, now),
-  );
-  const inProgress = mine.filter((i) => i.status === "in_progress");
-  const todo = mine.filter((i) => i.status === "todo");
+  const { doneYesterday, inProgress, todo, capped } = digest;
 
-  const toDigest = (i: typeof mine[number]) => ({
+  const toDigest = (i: Issue) => ({
     identifier: i.identifier ?? i.id.slice(0, 8),
     title: i.title,
     status: i.status,
@@ -2024,6 +2060,7 @@ async function sendDigestForCompany(
     doneYesterday: doneYesterday.map(toDigest),
     inProgress: inProgress.map(toDigest),
     todo: todo.map(toDigest),
+    cappedAt: capped ? DIGEST_SECTION_CAP : undefined,
   });
 
   try {
@@ -2085,17 +2122,26 @@ const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info("telegram-notifier: starting");
 
+    // Decide whether an event needs a message before resolving the bot
+    // secret: the host rate-limits secret resolution per company, and most
+    // events (an `issue.updated` without an assignment, an unpaired company)
+    // send nothing.
     const guarded =
       <T extends PluginEvent>(
+        flag: NotifyFlag,
         fn: (
           ctx: PluginContext,
           config: PluginConfig,
           event: T,
         ) => Promise<void>,
+        relevant: (event: T) => boolean = () => true,
       ) =>
       async (event: T) => {
         try {
-          const config = await loadConfig(ctx, event.companyId);
+          const stored = await loadRawConfig(ctx, event.companyId);
+          if (!notifyEnabled(stored, flag) || !relevant(event)) return;
+          if (!getPaired(await readPairing(ctx), event.companyId)) return;
+          const config = await resolveStoredConfig(ctx, stored, event.companyId);
           if (!config.botToken) return;
           await fn(ctx, config, event);
         } catch (err) {
@@ -2106,14 +2152,25 @@ const plugin = definePlugin({
         }
       };
 
-    ctx.events.on("approval.created", guarded(onApprovalCreated));
-    ctx.events.on("issue.updated", guarded(onIssueUpdated));
-    ctx.events.on("issue.comment.created", guarded(onCommentCreated));
-    ctx.events.on("agent.run.failed", guarded(onAgentRunFailed));
-    ctx.events.on("budget.incident.opened", guarded(onBudgetIncident));
+    ctx.events.on(
+      "approval.created",
+      guarded("approvals", onApprovalCreated, (event) => {
+        const kind = asString(asRecord(event.payload)?.interactionKind);
+        return !kind || kind === "request_confirmation";
+      }),
+    );
+    ctx.events.on(
+      "issue.updated",
+      guarded("assignedToYou", onIssueUpdated, (event) =>
+        agentAssigneeChange(event.payload) !== null,
+      ),
+    );
+    ctx.events.on("issue.comment.created", guarded("comments", onCommentCreated));
+    ctx.events.on("agent.run.failed", guarded("runFailures", onAgentRunFailed));
+    ctx.events.on("budget.incident.opened", guarded("budgetIncidents", onBudgetIncident));
     ctx.events.on(
       "issue.assignment_wakeup_requested",
-      guarded(onWakeupRequested),
+      guarded("wakeRequests", onWakeupRequested),
     );
 
     ctx.jobs.register(JOB_KEYS.pollUpdates, async (job) => {
@@ -2325,7 +2382,7 @@ const plugin = definePlugin({
       {
         displayName: "Get plan-approval config",
         description:
-          "Returns the configured approver and whether the calling agent must gate plans before acting. Pass `agentId` to get caller-specific resolution.",
+          "Returns the configured approver and whether the calling agent must gate plans before acting. Resolves for the calling agent unless `agentId` names another agent.",
         parametersSchema: {
           type: "object",
           properties: {
@@ -2337,17 +2394,20 @@ const plugin = definePlugin({
         const p = (params ?? {}) as { agentId?: string };
         const companyId = toolCompanyId(params, runCtx);
         if (!companyId) return { error: COMPANY_MISMATCH_ERROR };
+        // The caller is the default subject: the generated instructions call
+        // this tool without `agentId`, and a gated agent must still be told so.
+        const agentId = p.agentId || runCtx.agentId;
         const state = await readPairing(ctx);
         const config = getApprovalConfig(state, companyId);
         const approver = await resolveApprover(companyId, config);
         const enabled = config?.enabled === true;
         const requiresApproval = !!(
           enabled &&
-          p.agentId &&
-          config?.agents?.[p.agentId]?.requiresApproval
+          agentId &&
+          config?.agents?.[agentId]?.requiresApproval
         );
-        const template = p.agentId
-          ? templateForAgent(config, p.agentId)
+        const template = agentId
+          ? templateForAgent(config, agentId)
           : DEFAULT_PLAN_TEMPLATE;
         return {
           content: enabled

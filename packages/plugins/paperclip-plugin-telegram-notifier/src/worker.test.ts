@@ -8,12 +8,25 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JOB_KEYS, STATE_KEY, TOOL_NAMES } from "./constants.js";
-import { BOT_TOKEN_SECRET_REQUIRED_MESSAGE } from "./telegram-client.js";
+import {
+  BOT_TOKEN_SECRET_REQUIRED_MESSAGE,
+  clearTokenCache,
+  tokenCacheSettings,
+} from "./telegram-client.js";
 import manifest from "./manifest.js";
 import { readPairing, saveMessageContext, setApprovalConfig, setPairedChat } from "./pairing.js";
 import type { PairingState, TelegramUpdate } from "./types.js";
-import { applyConfigPatch, botTokenSecretPatch, withoutLiteralToken } from "./ui/index.js";
-import plugin, { postTelegramReplyComment, resolveUpdateConfig } from "./worker.js";
+import {
+  applyConfigPatch,
+  botTokenSecretPatch,
+  saveThenRefresh,
+  withoutLiteralToken,
+} from "./ui/index.js";
+import plugin, {
+  collectDigestIssues,
+  postTelegramReplyComment,
+  resolveUpdateConfig,
+} from "./worker.js";
 
 const TOKEN_A = "111111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TOKEN_B = "222222:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
@@ -103,8 +116,12 @@ function state(harness: TestHarness): PairingState {
     {}) as PairingState;
 }
 
+const DEFAULT_RETRY_DELAYS = [...tokenCacheSettings.retryDelaysMs];
+
 afterEach(() => {
   vi.useRealTimers();
+  clearTokenCache();
+  tokenCacheSettings.retryDelaysMs = [...DEFAULT_RETRY_DELAYS];
 });
 
 describe("poll job with company-scoped config", () => {
@@ -867,5 +884,299 @@ describe("bot token as a secret reference", () => {
     const saved = applyConfigPatch(loaded, botTokenSecretPatch(REF_A.secretId));
     expect(saved).toEqual({ botToken: REF_A, silent: true });
     expect(leaks(saved)).toBe(false);
+  });
+});
+
+describe("bot token secret resolution under load", () => {
+  const runFailed = (harness: TestHarness, companyId = "company-a") =>
+    harness.emit(
+      "agent.run.failed",
+      { runId: "run-1", agentId: "agent-1", error: "boom" },
+      { companyId, entityId: "run-1", entityType: "heartbeat_run" },
+    );
+  const rateLimited = () => {
+    const err = new Error("Rate limit exceeded for secret resolution");
+    err.name = "RateLimitExceededError";
+    return err;
+  };
+
+  it("resolves the secret once for many events within the TTL", async () => {
+    const { harness, calls, secretResolves } = await setup({ "company-a": { botToken: REF_A } });
+    await pair(harness, "company-a", "100");
+
+    for (let i = 0; i < 5; i++) await runFailed(harness);
+
+    expect(secretResolves).toHaveLength(1);
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(5);
+  });
+
+  it("does not resolve the secret for events that send nothing", async () => {
+    const { harness, calls, secretResolves } = await setup({
+      "company-a": { botToken: REF_A },
+      "company-b": { botToken: REF_B },
+    });
+    await pair(harness, "company-a", "100");
+
+    await harness.emit("issue.updated", { status: "in_progress" }, {
+      companyId: "company-a",
+      entityId: "issue-1",
+    });
+    await harness.emit("approval.created", { interactionKind: "suggest_tasks", interactionId: "ix-1" }, {
+      companyId: "company-a",
+      entityId: "issue-1",
+    });
+    await runFailed(harness, "company-b");
+
+    expect(secretResolves).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("keeps sending with the cached token when secret resolution is rate-limited", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { harness, calls } = await setup({ "company-a": { botToken: REF_A } });
+    await pair(harness, "company-a", "100");
+    await runFailed(harness);
+
+    vi.setSystemTime(Date.now() + tokenCacheSettings.ttlMs + 1);
+    harness.ctx.secrets.resolve = async () => {
+      throw rateLimited();
+    };
+    await runFailed(harness);
+
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(2);
+  });
+
+  it("retries a rate-limited resolution when nothing is cached", async () => {
+    tokenCacheSettings.retryDelaysMs = [0, 0];
+    const { harness, calls } = await setup({ "company-a": { botToken: REF_A } });
+    await pair(harness, "company-a", "100");
+    let attempts = 0;
+    harness.ctx.secrets.resolve = async () => {
+      attempts += 1;
+      if (attempts < 3) throw rateLimited();
+      return TOKEN_A;
+    };
+
+    await runFailed(harness);
+
+    expect(attempts).toBe(3);
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+  });
+
+  it("resolves again after the config names another secret", async () => {
+    const configs: Record<string, Record<string, unknown>> = { "company-a": { botToken: REF_A } };
+    const { harness, calls, secretResolves } = await setup(configs);
+    await pair(harness, "company-a", "100");
+    await runFailed(harness);
+
+    configs["company-a"] = { botToken: REF_B };
+    await runFailed(harness);
+
+    expect(secretResolves.map((r) => (r.secretRef as { secretId: string }).secretId)).toEqual([
+      REF_A.secretId,
+      REF_B.secretId,
+    ]);
+    expect(calls.filter((c) => c.method === "sendMessage").map((c) => c.botId)).toEqual([
+      "111111",
+      "222222",
+    ]);
+  });
+
+  it("drops the cached token when Telegram rejects it", async () => {
+    const { harness, secretResolves } = await setup({ "company-a": { botToken: REF_A } });
+    await pair(harness, "company-a", "100");
+    const fetchOk = harness.ctx.http.fetch;
+    harness.ctx.http.fetch = async () =>
+      new Response(JSON.stringify({ ok: false, error_code: 401, description: "Unauthorized" }), {
+        status: 401,
+      });
+    await runFailed(harness);
+    harness.ctx.http.fetch = fetchOk;
+    await runFailed(harness);
+
+    expect(secretResolves).toHaveLength(2);
+  });
+});
+
+describe("get_approval_config tool", () => {
+  it("resolves for the calling agent when no agentId is passed", async () => {
+    const { harness } = await setup({ "company-a": { botToken: REF_A } });
+    await setApprovalConfig(harness.ctx, "company-a", {
+      enabled: true,
+      approverAgentId: null,
+      agents: { "agent-1": { requiresApproval: true } },
+    });
+
+    const result = await harness.executeTool<{ data: { requiresApproval: boolean } }>(
+      TOOL_NAMES.getApprovalConfig,
+      {},
+      { companyId: "company-a", agentId: "agent-1" },
+    );
+
+    expect(result.data.requiresApproval).toBe(true);
+  });
+});
+
+describe("confirmation notifications", () => {
+  const confirmation = (harness: TestHarness, issueId: string) =>
+    harness.emit(
+      "approval.created",
+      {
+        interactionKind: "request_confirmation",
+        interactionId: "ix-1",
+        bodySnippet: "PRIVATE PROMPT TEXT",
+      },
+      { companyId: "company-a", entityId: issueId, entityType: "issue" },
+    );
+
+  it("sends only the title and link, never the prompt, and no loopback request", async () => {
+    const { harness, calls } = await setup({ "company-a": { botToken: REF_A } });
+    harness.seed({
+      issues: [
+        { id: "issue-1", companyId: "company-a", title: "Ship it", identifier: "PAP-1" } as unknown as Issue,
+      ],
+    });
+    await pair(harness, "company-a", "100");
+    const loopback = vi.spyOn(globalThis, "fetch");
+
+    await confirmation(harness, "issue-1");
+
+    const sent = calls.filter((c) => c.method === "sendMessage");
+    expect(sent).toHaveLength(1);
+    expect(String(sent[0]?.body.text)).toContain("Ship it");
+    expect(JSON.stringify(sent[0]?.body)).not.toContain("PRIVATE PROMPT");
+    expect(loopback).not.toHaveBeenCalled();
+    loopback.mockRestore();
+  });
+
+  it("sends nothing for an issue the plugin cannot read in this company", async () => {
+    const { harness, calls } = await setup({ "company-a": { botToken: REF_A } });
+    harness.seed({
+      issues: [{ id: "issue-x", companyId: "company-b", title: "Other" } as unknown as Issue],
+    });
+    await pair(harness, "company-a", "100");
+
+    await confirmation(harness, "issue-x");
+
+    expect(calls.filter((c) => c.method === "sendMessage")).toEqual([]);
+  });
+});
+
+describe("paired chats during another company's handshake", () => {
+  it("lets a paired chat use its commands while another company pairs", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { harness, calls, pendingUpdates } = await setup({
+      "company-a": { botToken: REF_A },
+      "company-b": { botToken: REF_A },
+    });
+    seedCompany(harness, "company-b");
+    await pair(harness, "company-a", "100");
+    await harness.performAction("startPairing", {}, { companyId: "company-b" });
+    pendingUpdates.set("111111", [
+      { update_id: 1, message: { message_id: 1, chat: { id: 100, type: "private" }, date: 0, text: "/status" } },
+    ]);
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+
+    const replies = calls
+      .filter((c) => c.method === "sendMessage" && c.body.chat_id === "100")
+      .map((c) => String(c.body.text));
+    expect(replies.some((t) => t.includes("Wrong chat"))).toBe(false);
+    expect(replies.length).toBeGreaterThan(0);
+    expect(state(harness).pairing?.stage).toBe("awaiting_chat");
+  });
+});
+
+describe("morning digest sections", () => {
+  it("reads every page of each section instead of one mixed page", async () => {
+    const { harness } = await setup({ "company-a": { botToken: REF_A } });
+    const issue = (id: string, status: string) =>
+      ({ id, companyId: "company-a", title: id, status }) as unknown as Issue;
+    harness.seed({
+      issues: [
+        ...Array.from({ length: 250 }, (_, i) => issue(`busy-${i}`, "in_progress")),
+        issue("todo-1", "todo"),
+        issue("todo-2", "todo"),
+        { ...issue("done-1", "done"), completedAt: new Date() } as unknown as Issue,
+      ],
+    });
+
+    const digest = await collectDigestIssues(harness.ctx, "company-a", new Date());
+
+    expect(digest.inProgress).toHaveLength(250);
+    expect(digest.todo.map((i) => i.id)).toEqual(["todo-1", "todo-2"]);
+    expect(digest.doneYesterday.map((i) => i.id)).toEqual(["done-1"]);
+    expect(digest.capped).toBe(false);
+  });
+});
+
+describe("Telegram reply fallback", () => {
+  it("does not post a second copy when the human-attributed write saved before failing", async () => {
+    const { harness } = await setup({ "company-a": { botToken: REF_A } }, ["issue.comments.read"]);
+    harness.seed({
+      issues: [{ id: "issue-1", companyId: "company-a", title: "T" } as unknown as Issue],
+      accessMembers: [
+        {
+          companyId: "company-a",
+          principalType: "user",
+          principalId: "user-1",
+          status: "active",
+          membershipRole: "owner",
+        } as unknown as PluginAccessMember,
+      ],
+    });
+    const create = harness.ctx.issues.createComment.bind(harness.ctx.issues);
+    harness.ctx.issues.createComment = async (issueId, body, companyId, options) => {
+      const comment = await create(issueId, body, companyId, options);
+      if (options?.actorUserId) throw new Error("activity log write failed");
+      return comment;
+    };
+
+    const author = await postTelegramReplyComment(
+      harness.ctx,
+      {
+        chatId: "100",
+        chatLabel: "chat",
+        pairedAt: "",
+        pairedByTelegramUserId: 42,
+        pairedByUserId: "user-1",
+        operateAsAgentId: "agent-1",
+      },
+      { message_id: 5, from: { id: 42 }, chat: { id: 100, type: "private" }, date: 0, text: "ship it" },
+      { companyId: "company-a", issueId: "issue-1" },
+      "ship it",
+    );
+
+    const comments = await harness.ctx.issues.listComments("issue-1", "company-a");
+    expect(author).toBe("user");
+    expect(comments).toHaveLength(1);
+  });
+});
+
+describe("long polling", () => {
+  it("holds each idle getUpdates open longer than the old 5s", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { harness, calls } = await setup({ "company-a": { botToken: REF_A } });
+    await pair(harness, "company-a", "100");
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+
+    const poll = calls.find((c) => c.method === "getUpdates");
+    expect(poll?.body.timeout).toBe(20);
+  });
+});
+
+describe("company edit panel save", () => {
+  it("refreshes the card data after every section saved", async () => {
+    const order: string[] = [];
+    await saveThenRefresh(
+      [
+        Promise.resolve().then(() => void order.push("save-a")),
+        undefined,
+        Promise.resolve().then(() => void order.push("save-b")),
+      ],
+      [async () => void order.push("refresh-company"), async () => void order.push("refresh-approval")],
+    );
+    expect(order).toEqual(["save-a", "save-b", "refresh-company", "refresh-approval"]);
   });
 });

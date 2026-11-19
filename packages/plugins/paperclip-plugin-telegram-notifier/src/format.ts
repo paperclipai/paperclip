@@ -209,6 +209,8 @@ export function buildMorningDigest(input: {
   todo: DigestIssue[];
   /** Maximum bullets per section before "+N more". */
   maxPerSection?: number;
+  /** Set when a section hit the per-section read cap; shown as a note. */
+  cappedAt?: number;
 }): { text: string; keyboard: InlineKeyboard } {
   const limit = input.maxPerSection ?? 6;
   const lines = [`*🌅 Good morning — ${escapeMd(input.date)}*`, ""];
@@ -246,6 +248,12 @@ export function buildMorningDigest(input: {
     input.todo,
     "Inbox is clear",
   );
+
+  if (input.cappedAt) {
+    lines.push(
+      `_Only the first ${input.cappedAt} issues per section were read; counts may be incomplete\\._`,
+    );
+  }
 
   return { text: lines.join("\n").trimEnd(), keyboard: [] };
 }

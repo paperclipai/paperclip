@@ -181,7 +181,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: TOOL_NAMES.getApprovalConfig,
       displayName: "Get plan-approval config",
       description:
-        "Returns the configured approver for the calling agent's company and whether the agent must gate plans before acting. Pass `agentId` for caller-specific resolution.",
+        "Returns the configured approver for the calling agent's company and whether the agent must gate plans before acting. Resolves for the calling agent unless `agentId` names another agent.",
       parametersSchema: {
         type: "object",
         properties: {

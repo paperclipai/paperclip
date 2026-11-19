@@ -65,14 +65,13 @@ export const PAIRING_WINDOW_TTL_MS = 10 * 60 * 1000;
 export const STATE_KEY = "pairing-state";
 
 /**
- * Polling timeout (seconds) passed to Telegram getUpdates. With long polling
- * Telegram holds the connection open for up to N seconds and returns as soon
- * as any update arrives. 5 keeps each poll short so the loop's deadline check
- * runs more often (better for clean exit before the next cron tick) without
- * meaningfully impacting freshness — Telegram still returns instantly when
- * an update is available, regardless of timeout.
+ * Longest getUpdates long poll (seconds). Telegram holds the request open
+ * until an update arrives or the timeout ends, so a longer timeout does not
+ * delay updates; it only cuts idle requests (and the state read before each)
+ * from ~11 to ~3 per minute. 20 stays under the host's 30s plugin fetch
+ * timeout. The loop shortens the last poll to end before its deadline.
  */
-export const POLL_TIMEOUT_SEC = 5;
+export const POLL_TIMEOUT_SEC = 20;
 
 /** Cap on how many updates we ingest per poll. */
 export const POLL_LIMIT = 50;
@@ -82,10 +81,9 @@ export const POLL_LIMIT = 50;
  * The plugin scheduler fires this job every minute, so we want each
  * invocation to keep the long-poll alive for almost the full minute and
  * leave ~5s headroom for clean exit before the next tick. With
- * `POLL_TIMEOUT_SEC = 5` the loop runs ~11 polls per cycle and the
- * worst-case gap between a callback tap arriving in Telegram and the bot
- * picking it up is bounded by the gap (~5s) plus one short poll interval
- * (~5s) — under ~10s typical, well below Telegram's 60s callback expiry.
+ * long polling an update is picked up as soon as Telegram has it, and an
+ * idle bot makes about three requests per cycle; the gap between two
+ * cron-fired cycles (~5s) stays well below Telegram's 60s callback expiry.
  */
 export const POLL_LOOP_DEADLINE_MS = 55_000;
 

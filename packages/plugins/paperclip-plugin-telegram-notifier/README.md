@@ -15,7 +15,7 @@ Pushes Paperclip approvals, issue assignments, comments, run failures, budget in
 | Budget | `budget.incident.opened` | 💸 subject, severity, reason | — |
 | Wake | `issue.assignment_wakeup_requested` | 🔔 identifier, title, reason | Open issue → |
 
-Most action buttons are URL deep-links into the Paperclip dashboard. The exception is plan confirmations (`request_confirmation` interactions): they carry **Approve** / **Decline** buttons that resolve the confirmation from Telegram. Only the authorized approver can press them — the Telegram user set as approver for the company, or by default the operator who paired the chat. No board API key is stored in the plugin.
+Most action buttons are URL deep-links into the Paperclip dashboard. The exception is plan confirmations (`request_confirmation` interactions): they carry **Approve** / **Decline** buttons that resolve the confirmation from Telegram. Only the authorized approver can press them — the Telegram user set as approver for the company, or by default the operator who paired the chat. A confirmation message carries the issue title and link, not the prompt text, and is sent only when the plugin may read the issue in that company. No board API key is stored in the plugin.
 
 ## Morning digest
 
@@ -25,7 +25,7 @@ Optional daily summary sent to each paired chat at a configurable hour. The dige
 - **In progress** — the company's `in_progress` issues
 - **Todo** — the company's `todo` issues
 
-Each section caps at six bullets with a `+N more` hint for longer lists. The digest piggy-backs on the same minute-tick polling job (no extra cron entry); the schedule is fully driven by config: enable, pick an hour, optionally restrict to weekdays. Times are server local time, deduped per company by `YYYY-MM-DD` so a Paperclip restart inside the digest hour won't double-send.
+Each section is read by status, up to 1000 issues, and shows six bullets with a `+N more` hint; a section that hit the 1000 cap says so. The digest piggy-backs on the same minute-tick polling job (no extra cron entry); the schedule is fully driven by config: enable, pick an hour, optionally restrict to weekdays. Times are server local time, deduped per company by `YYYY-MM-DD` so a Paperclip restart inside the digest hour won't double-send.
 
 Disabled by default — turn it on under **Plugins → Telegram Notifier → Morning digest**.
 
@@ -92,7 +92,7 @@ Six agent tools (namespaced under `paperclip.telegram-notifier`), useful for hea
 - `telegram.confirm_pairing` — completes pairing with `{ code: "XXXXXX" }` when the active handshake is for this company.
 - `telegram.unpair` — disconnects this company's chat.
 - `telegram.send_test` — sends a sample notification to this company's chat.
-- `telegram.get_approval_config` — returns the plan-approval approver and whether the agent (optional `{ agentId }`) must gate plans before acting.
+- `telegram.get_approval_config` — returns the plan-approval approver and whether the calling agent (or the agent named by the optional `{ agentId }`) must gate plans before acting.
 
 ## Capabilities
 
@@ -135,7 +135,16 @@ The plugin does not pause/resume agents or store any board API key. The only dec
 └─────────────┘     by chat → company       └────────────────┘
 ```
 
-Outbound notifications are sent only to the chat paired with the event's `companyId`, using that company's config. The poll job reads the config of each paired company (and of the company with an in-flight handshake) and polls each distinct bot once. Inbound messages and slash commands are routed via reverse lookup (Telegram chat → paired company → operate-as agent); a chat paired to a company that uses a different bot is ignored. Polling uses long-polling (`timeout=25s`) inside a 50-second loop per cron tick, so callback-button taps and replies are processed within ~10 seconds — comfortably under Telegram's 60-second `callback_query` expiry.
+Outbound notifications are sent only to the chat paired with the event's `companyId`, using that company's config. The poll job reads the config of each paired company (and of the company with an in-flight handshake) and polls each distinct bot once. Inbound messages and slash commands are routed via reverse lookup (Telegram chat → paired company → operate-as agent); a chat paired to a company that uses a different bot is ignored. Polling uses long-polling (`timeout=20s`) inside a 55-second loop per cron tick: Telegram answers as soon as an update arrives, so callback-button taps and replies are processed within seconds, well under Telegram's 60-second `callback_query` expiry.
+
+### Why the plugin polls
+
+Telegram delivers bot updates either by webhook or by `getUpdates`. A webhook needs a public HTTPS endpoint, which local-trusted and self-hosted instances usually do not have, and the plugin platform has no inbound webhook route for this plugin, so `getUpdates` is the only ingress. This is the external-source exception in `rules/sleep-aware-background-work.mdc`:
+
+- **Active scope:** only bots of companies that are paired or have a live pairing handshake. Without one, a tick reads plugin state once and stops; it makes no Telegram request and resolves no secret.
+- **Cadence:** one minute-tick job; inside it, long polls of up to 20 seconds (about three requests per idle minute per bot). Outbound notifications are event-driven and do not poll.
+- **Stop condition:** unpair every company (or clear the bot token secret) and the job stops contacting Telegram.
+- **Sleep impact:** while a company is paired, the job keeps the worker and the host awake and makes outbound network calls every minute. A paired instance cannot idle until the platform offers an inbound webhook route for plugins.
 
 ### URL fallbacks for non-public Paperclip instances
 

@@ -23,7 +23,8 @@ export interface TelegramClient {
   botId: string;
   getMe(): Promise<TelegramUser>;
   setMyCommands(): Promise<void>;
-  getUpdates(offset: number | undefined): Promise<TelegramUpdate[]>;
+  /** Long poll: Telegram answers at once when an update exists, else after `timeoutSec`. */
+  getUpdates(offset: number | undefined, timeoutSec?: number): Promise<TelegramUpdate[]>;
   sendMessage(params: {
     chatId: string;
     text: string;
@@ -73,6 +74,9 @@ export async function createTelegramClient(
       body: body ? JSON.stringify(body) : undefined,
     });
     const envelope = (await res.json()) as TelegramApiResponse<T>;
+    if (res.status === 401 || envelope.error_code === 401) {
+      invalidateCachedToken(token);
+    }
     if (!envelope.ok || envelope.result === undefined) {
       throw new Error(
         `Telegram API ${method} failed: ${envelope.description ?? `HTTP ${res.status}`}`,
@@ -89,10 +93,10 @@ export async function createTelegramClient(
     async setMyCommands() {
       await call<true>("setMyCommands", { commands: BOT_COMMANDS });
     },
-    async getUpdates(offset) {
+    async getUpdates(offset, timeoutSec = POLL_TIMEOUT_SEC) {
       return call<TelegramUpdate[]>("getUpdates", {
         offset,
-        timeout: POLL_TIMEOUT_SEC,
+        timeout: timeoutSec,
         limit: POLL_LIMIT,
         allowed_updates: ["message", "callback_query"],
       });
@@ -288,14 +292,81 @@ export function botTokenConfigError(value: unknown): string | null {
 }
 
 /**
+ * The host allows a plugin 30 secret resolutions per company per minute, so
+ * the resolved token is kept in worker memory for a short time, per company
+ * and per secret binding. It is never stored, logged or returned to the UI.
+ * The entry is dropped when the TTL ends, when the company's config names a
+ * different secret, and when Telegram rejects the token (401). A config save
+ * restarts the worker (the plugin has no `onConfigChanged`), which clears it.
+ */
+export const tokenCacheSettings = {
+  ttlMs: 5 * 60_000,
+  /** Waits between retries when the host rate-limits secret resolution. */
+  retryDelaysMs: [2_000, 10_000, 30_000],
+};
+
+interface CachedToken {
+  bindingKey: string;
+  token: string;
+  expiresAt: number;
+}
+
+const tokenCache = new Map<string, CachedToken>();
+
+function bindingKeyOf(ref: EnvSecretRefBinding): string {
+  return `${ref.secretId}@${ref.version ?? "latest"}`;
+}
+
+function isRateLimitError(err: unknown): boolean {
+  const text = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+  return /rate.?limit/i.test(text);
+}
+
+/** Drop every cached entry holding this token (Telegram rejected it). */
+export function invalidateCachedToken(token: string): void {
+  for (const [companyId, entry] of tokenCache) {
+    if (entry.token === token) tokenCache.delete(companyId);
+  }
+}
+
+export function clearTokenCache(): void {
+  tokenCache.clear();
+}
+
+/**
  * Resolve the configured secret reference for the company that owns the
- * config row. The resolved token is returned to the caller only; it is never
- * cached, stored or logged.
+ * config row, through the in-memory cache above. When the host rate-limits
+ * the resolution, an expired entry for the same secret is still used;
+ * without one the call is retried with backoff instead of being dropped.
  */
 export async function resolveToken(
   ctx: PluginContext,
   ref: EnvSecretRefBinding,
   companyId: string,
 ): Promise<string> {
-  return (await ctx.secrets.resolve(ref, { companyId, configPath: "botToken" })).trim();
+  const bindingKey = bindingKeyOf(ref);
+  const cached = tokenCache.get(companyId);
+  const sameSecret = cached?.bindingKey === bindingKey ? cached : undefined;
+  if (sameSecret && sameSecret.expiresAt > Date.now()) return sameSecret.token;
+  if (cached && !sameSecret) tokenCache.delete(companyId);
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const token = (
+        await ctx.secrets.resolve(ref, { companyId, configPath: "botToken" })
+      ).trim();
+      tokenCache.set(companyId, {
+        bindingKey,
+        token,
+        expiresAt: Date.now() + tokenCacheSettings.ttlMs,
+      });
+      return token;
+    } catch (err) {
+      if (!isRateLimitError(err)) throw err;
+      if (sameSecret) return sameSecret.token;
+      const delay = tokenCacheSettings.retryDelaysMs[attempt];
+      if (delay === undefined) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
 }

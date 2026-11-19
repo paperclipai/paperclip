@@ -347,6 +347,9 @@ export function TelegramNotifierSettings(_: PluginSettingsPageProps) {
                     setOperateAs({ companyId, agentId, agentLabel }),
                   )()
                 }
+                onSettingsSaved={async () => {
+                  await refreshCompanies();
+                }}
               />
             ))}
           </div>
@@ -365,6 +368,8 @@ export function TelegramNotifierSettings(_: PluginSettingsPageProps) {
 
 function CompanyCard(props: {
   company: CompanyRow;
+  /** Re-reads the company row after the Edit panel saved. */
+  onSettingsSaved: () => Promise<void>;
   tokenConfigured: boolean;
   handshake?: StatusData["handshake"];
   otherHandshakeInFlight: boolean;
@@ -387,9 +392,10 @@ function CompanyCard(props: {
 
   // Lifted approval-config fetch so the summary can describe the gate state
   // without the Section being expanded.
-  const { data: approval } = usePluginData<ApprovalData>("approvalConfig", {
-    companyId: company.id,
-  });
+  const { data: approval, refresh: refreshApproval } = usePluginData<ApprovalData>(
+    "approvalConfig",
+    { companyId: company.id },
+  );
 
   const [editing, setEditing] = useState(false);
 
@@ -444,6 +450,7 @@ function CompanyCard(props: {
         <CompanyEditPanel
           company={company}
           onClose={() => setEditing(false)}
+          refreshAfterSave={[props.onSettingsSaved, async () => refreshApproval()]}
         />
       )}
 
@@ -518,12 +525,26 @@ function CompanyCard(props: {
 
 type SaveSlot = MutableRefObject<(() => Promise<void>) | null>;
 
+/**
+ * Run every section's save, then re-read the data the collapsed card shows,
+ * so the summary and the next Edit start from the saved values.
+ */
+export async function saveThenRefresh(
+  saves: Array<Promise<void> | undefined>,
+  refreshes: Array<() => Promise<unknown>>,
+): Promise<void> {
+  await Promise.all(saves.filter((t): t is Promise<void> => !!t));
+  await Promise.all(refreshes.map((refresh) => refresh()));
+}
+
 function CompanyEditPanel({
   company,
   onClose,
+  refreshAfterSave,
 }: {
   company: CompanyRow;
   onClose: () => void;
+  refreshAfterSave: Array<() => Promise<unknown>>;
 }) {
   const operateAsSlot = useRef<(() => Promise<void>) | null>(null);
   const approvalSlot = useRef<(() => Promise<void>) | null>(null);
@@ -536,12 +557,10 @@ function CompanyEditPanel({
     setSaving(true);
     setError(null);
     try {
-      const tasks = [
-        operateAsSlot.current?.(),
-        approvalSlot.current?.(),
-        notifSlot.current?.(),
-      ].filter((t): t is Promise<void> => !!t);
-      await Promise.all(tasks);
+      await saveThenRefresh(
+        [operateAsSlot.current?.(), approvalSlot.current?.(), notifSlot.current?.()],
+        refreshAfterSave,
+      );
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
