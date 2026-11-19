@@ -7892,6 +7892,9 @@ export function issueRoutes(
         issueId: issue.id,
         executionWorkspaceId: issue.executionWorkspaceId ?? null,
         failureReason: `issue_terminal_${issue.status}`,
+        // A finished issue keeps a reusable Kubernetes pod until its idle TTL so a
+        // reply right after "done" resumes it; a cancelled issue still tears down at once.
+        keepIdleManagedLeases: issue.status === "done",
       });
     } catch (err) {
       logger.warn(

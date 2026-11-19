@@ -6356,6 +6356,57 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     ).resolves.toMatchObject({ status });
   });
 
+  it.each([
+    { name: "keeps an idle-reaped Kubernetes pod when the issue completes", provider: "kubernetes", adapterType: null, keepIdleManagedLeases: true, destroyed: false },
+    { name: "still destroys that pod when the caller does not ask to keep it (cancelled issue)", provider: "kubernetes", adapterType: null, keepIdleManagedLeases: false, destroyed: true },
+    { name: "destroys a reusable lease of a provider without an idle reaper", provider: "fake-plugin", adapterType: null, keepIdleManagedLeases: true, destroyed: true },
+    { name: "destroys a paperclip_runner sandbox, which owns its own lifecycle", provider: "kubernetes", adapterType: "paperclip_runner", keepIdleManagedLeases: true, destroyed: true },
+    { name: "destroys a failed lease the idle reaper no longer covers", provider: "kubernetes", adapterType: null, keepIdleManagedLeases: true, destroyed: true, leaseStatus: "failed" },
+    { name: "destroys a job-backend Kubernetes lease the plugin does not track", provider: "kubernetes", adapterType: null, keepIdleManagedLeases: true, destroyed: true, backend: "job" },
+  ] as const)("$name", async ({ provider, adapterType, keepIdleManagedLeases, destroyed, ...extra }) => {
+    const leaseStatus = ("leaseStatus" in extra ? extra.leaseStatus : "released") as "released" | "failed";
+    const backend = "backend" in extra ? extra.backend : null;
+    const { pluginId, companyId, runId, reusableLease } = await seedReusablePluginSandboxLease(adapterType, { providerKey: provider });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Completed thread", status: "done", priority: "medium" });
+    await db.update(environmentLeases).set({ issueId }).where(eq(environmentLeases.id, reusableLease.id));
+    await environmentService(db).releaseLease(reusableLease.id, leaseStatus);
+    if (backend) {
+      const row = await environmentService(db).getLeaseById(reusableLease.id);
+      await db.update(environmentLeases).set({ metadata: { ...(row?.metadata as Record<string, unknown>), backend } }).where(eq(environmentLeases.id, reusableLease.id));
+    }
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async () => undefined),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const result = await runtimeWithPlugin.destroyReusableSandboxLeases({
+      companyId,
+      issueId,
+      failureReason: "issue_terminal_done",
+      keepIdleManagedLeases,
+    });
+
+    if (destroyed) {
+      expect(result).toHaveLength(1);
+      expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.anything(), expect.anything());
+      await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+        status: "expired",
+        failureReason: "issue_terminal_done",
+      });
+    } else {
+      expect(result).toEqual([]);
+      expect(workerManager.call).not.toHaveBeenCalled();
+      await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+        status: "released",
+        leasePolicy: "reuse_by_environment",
+      });
+    }
+  });
+
   it.each(["issue", "workspace", "environment"] as const)(
     "durably claims failed reusable cleanup before %s teardown and recovers a provider failure",
     async (scope) => {
