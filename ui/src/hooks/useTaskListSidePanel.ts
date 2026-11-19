@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Issue } from "@paperclipai/shared";
-import { useSearchParams } from "@/lib/router";
+import { useNavigate, useSearchParams } from "@/lib/router";
+import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
 import {
   readSidePanelTaskRef,
   resolveTaskListSidePanelPresentation,
@@ -31,6 +32,7 @@ export function useTaskListSidePanel(adjustParams?: (next: URLSearchParams) => v
   const enabled = flagEnabled && viewport !== "full-page";
   const presentation = viewport === "overlay" ? "overlay" : "docked";
   const taskRef = enabled ? readSidePanelTaskRef(searchParams) : null;
+  useOpenSharedTaskOnPhone(flagEnabled && viewport === "full-page" ? readSidePanelTaskRef(searchParams) : null);
   const showTask = useCallback((next: string | null) => {
     setSearchParams(current => {
       const params = withSidePanelTaskRef(current, next);
@@ -41,6 +43,14 @@ export function useTaskListSidePanel(adjustParams?: (next: URLSearchParams) => v
   const openIssue = useCallback((issue: Issue) => showTask(issue.identifier ?? issue.id), [showTask]);
   const close = useCallback(() => showTask(null), [showTask]);
   return { enabled, presentation, taskRef, openIssue, close };
+}
+
+/** A shared `?task=` link on a phone has no panel, so it opens the task's full page. */
+function useOpenSharedTaskOnPhone(taskRef: string | null): void {
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (taskRef) navigate(createIssueDetailPath(taskRef), { replace: true });
+  }, [taskRef, navigate]);
 }
 
 /** The presentation for the current viewport width; it follows window resizes and device rotation. */
