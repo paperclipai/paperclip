@@ -1,6 +1,7 @@
 import type { ReleaseRecoveryBlockedNoticeKind } from "../domain/policy.js";
 import type {
   InvokableAgentSnapshot,
+  IssueAttributionSnapshot,
   IssueSnapshot,
   PostCommitEffect,
   ReleaseOutcome,
@@ -44,7 +45,7 @@ export interface WakeQueueHost {
   resolveResponsibleUserId(input: {
     companyId: string;
     contextSnapshot: Record<string, unknown>;
-    issue: IssueSnapshot;
+    issue: IssueAttributionSnapshot;
     /** From a prior `getRoutineEnv` call against the same issue; pass `{ routineId: null, env: null, responsibleUserId: null }` when the issue is not a routine execution. */
     routineEnvContext: { routineId: string | null; env: unknown; responsibleUserId: string | null };
     requestedByActorType: "user" | "agent" | "system" | null;
@@ -60,7 +61,7 @@ export interface WakeQueueHost {
    */
   getRoutineEnv(input: {
     companyId: string;
-    issue: IssueSnapshot;
+    issue: IssueAttributionSnapshot;
   }): Promise<{ routineId: string | null; env: unknown; responsibleUserId: string | null }>;
   resolveSessionBeforeForWakeup(input: {
     companyId: string;
@@ -318,6 +319,17 @@ export type WakeAdmissionActiveExecutionRun = {
 export type DurableWakeAdmissionReceipt = {
   id: string;
   requestedAt: Date;
+};
+
+export type WakeReceiptSeed = {
+  agentId: string;
+  source: string;
+  triggerDetail: string | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  requestedByActorType: string | null;
+  requestedByActorId: string | null;
+  idempotencyKey: string | null;
 };
 
 export type CoalescedDeferredAdmissionReceipt =
