@@ -371,7 +371,7 @@
     "packages/shared/src/standing-checks.ts": "7ab71e4b6984e41e1c1dfd1bddf0116041d5abf1",
     "packages/shared/src/subscriptions.ts": "ef70e63395ca967bbc30776b71560e96eb354a75",
     "packages/shared/src/summary-slot.test.ts": "5f8e222dea425f0d5bff0adb5c683087bd7cf7fb",
-    "packages/shared/src/telemetry/README.md": "36b4a57d187218ec141256d7f093c96c793ff901",
+    "packages/shared/src/telemetry/README.md": "41b9c614005d53b74b6a4c9c9a55c715e9144653",
     "packages/shared/src/telemetry/client-types.test.ts": "3b630edda4972b929ba4decd7457f226eb9cfc5b",
     "packages/shared/src/telemetry/client.test.ts": "5a95f2305a393c5b2e7750b10e0ed65da0f30cf8",
     "packages/shared/src/telemetry/client.ts": "d6534ce8aaa6f69fb2dd03e12487db024e250a96",
