@@ -11,10 +11,9 @@ import { responsibilitiesDisabledError } from "../services/responsibilities-disa
 import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
-import { responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
+import { DASHBOARD_VERSION_HEADER, responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
 import { responsibilityAreaService } from "../services/responsibility-areas.js";
 import { agentPersonInCompany, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { DASHBOARD_VERSION_HEADER } from "./responsibilities.js";
 
 const NOT_FOUND = "Area not found";
 
@@ -99,7 +98,7 @@ export function responsibilityAreaRoutes(db: Db) {
     await assertCompanyRead(req, companyId);
     const actor = getActorInfo(req);
     const person = agentPersonInCompany(req, companyId);
-    const create = () => svc.create(
+    const create = (tx: Db) => responsibilityAreaService(tx).create(
       companyId,
       req.body,
       req.actor.type !== "agent" ? { type: "board" }
@@ -112,7 +111,7 @@ export function responsibilityAreaRoutes(db: Db) {
         onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
         createdAreaIds: (result) => (result.created ? [result.area.id] : []),
       }, create)
-      : await create();
+      : await create(db);
     if (!created) {
       res.json(area);
       return;
@@ -131,10 +130,13 @@ export function responsibilityAreaRoutes(db: Db) {
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
     const writer = await assertAreaWriter(req, row.companyId);
+    // Everyone whose Dashboard shows the area gets a version they can undo.
     const updated = writer
-      ? await agentChanges.record({ companyId: row.companyId, ownerUserIds: [writer.personUserId], agentId: writer.agentId, touchedAreaIds: [row.id],
-        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId) },
-        () => svc.update(row, req.body))
+      ? await agentChanges.record({
+        companyId: row.companyId, ownerUserIds: [writer.personUserId, ...await svc.ownersInArea(row.companyId, row.id)],
+        agentId: writer.agentId, touchedAreaIds: [row.id],
+        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
+      }, (tx) => responsibilityAreaService(tx).update(row, req.body))
       : await svc.update(row, req.body);
     await logAreaMutation(req, row.companyId, "responsibility_area.updated", row.id, {
       fields: Object.keys(req.body),
@@ -162,11 +164,16 @@ export function responsibilityAreaRoutes(db: Db) {
       });
       confirmationId = card.id;
     }
-    const remove = () => svc.remove(row, { moveTo: query.moveResponsibilitiesTo ?? null });
+    const remove = (tx: Db) => responsibilityAreaService(tx).remove(row, { moveTo: query.moveResponsibilitiesTo ?? null });
+    // Moving its responsibilities changes their owners' Dashboards too.
     const removed = writer
-      ? await agentChanges.record({ companyId: row.companyId, ownerUserIds: [writer.personUserId], agentId: writer.agentId, touchedAreaIds: [row.id],
-        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId) }, remove)
-      : await remove();
+      ? await agentChanges.record({
+        companyId: row.companyId, ownerUserIds: [writer.personUserId, ...await svc.ownersInArea(row.companyId, row.id)],
+        agentId: writer.agentId,
+        touchedAreaIds: [row.id, ...(query.moveResponsibilitiesTo ? [query.moveResponsibilitiesTo] : [])],
+        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
+      }, remove)
+      : await remove(db);
     if (!removed) {
       res.status(404).json({ error: NOT_FOUND });
       return;

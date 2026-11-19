@@ -162,18 +162,15 @@ describe("responsibility tools", () => {
       loose: { projectCount: 0, openTaskCount: 0, routineCount: 0, projects: [], tasks: [], routines: [] },
     };
 
-    it("creates a responsibility under an area by title, creating the area when none has it", async () => {
+    it("creates a responsibility under an area by title, leaving the area to the server's transaction", async () => {
       const created = responsibility({ id: "88888888-8888-4888-8888-888888888888", title: "Hiring", areaId: "99999999-9999-4999-8999-999999999999", metricName: null });
       const api = fakeApi({
         [`/companies/${COMPANY}/responsibilities?includeLetGo=false`]: { body: emptyOverview },
-        [`GET /companies/${COMPANY}/responsibility-areas`]: { body: [{ id: AREA, title: "Money", status: "active" }] },
-        [`POST /companies/${COMPANY}/responsibility-areas`]: { body: { id: "99999999-9999-4999-8999-999999999999", title: "People", status: "active" } },
         [`POST /companies/${COMPANY}/responsibilities`]: { body: created, headers: { "x-paperclip-dashboard-version": "version-9" } },
       });
       const result = await callResponsibilityTool({ ...base, name: "create_responsibility", arguments: { title: "Hiring", areaTitle: "people" } }, api.fetcher);
       expect(api.calls.filter((entry) => entry.method === "POST").map((entry) => entry.body)).toEqual([
-        { title: "people" },
-        { title: "Hiring", areaId: "99999999-9999-4999-8999-999999999999" },
+        { title: "Hiring", areaTitle: "people" },
       ]);
       expect(result).toMatchObject({ created: true, responsibility: { title: "Hiring", status: "active" }, undo: expect.stringContaining("can undo it"), dashboardVersionId: "version-9" });
     });
@@ -218,12 +215,11 @@ describe("responsibility tools", () => {
 
     it("maps a cleared bar to empty metric inputs and moves to an area by title", async () => {
       const api = fakeApi({
-        [`GET /companies/${COMPANY}/responsibility-areas`]: { body: [{ id: AREA, title: "Money", status: "active" }] },
         [`PATCH /responsibilities/${RESPONSIBILITY}`]: { body: responsibility({ metricName: null }) },
       });
       await callResponsibilityTool({ ...base, name: "update_responsibility", arguments: { responsibilityId: RESPONSIBILITY, bar: null, areaTitle: "MONEY" } }, api.fetcher);
       expect(api.calls.find((entry) => entry.method === "PATCH")?.body).toEqual({
-        areaId: AREA, metricName: null, metricUnit: null, metricTarget: null, metricLow: null, metricHigh: null, metricDirection: null, metricCurrent: null,
+        areaTitle: "MONEY", metricName: null, metricUnit: null, metricTarget: null, metricLow: null, metricHigh: null, metricDirection: null, metricCurrent: null,
       });
     });
 

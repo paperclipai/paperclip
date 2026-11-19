@@ -200,6 +200,18 @@ export function agentPersonInCompany(req: Request, companyId: string): { userId:
   return membership ? { userId: req.actor.onBehalfOfUserId, role: membership.membershipRole ?? null } : null;
 }
 
+/**
+ * The writer rule for an agent on a person's responsibilities: it acts for
+ * the person its run works for and may change what that person could, so it
+ * manages that person's own responsibilities, and anyone's when that person
+ * is a company owner or admin. Returns that person's user id, or null.
+ */
+export function agentActsForResponsibilityOwner(req: Request, companyId: string, ownerUserId: string): string | null {
+  const person = agentPersonInCompany(req, companyId);
+  if (!person) return null;
+  return person.userId === ownerUserId || person.role === "owner" || person.role === "admin" ? person.userId : null;
+}
+
 export function assertBoardOrAgent(req: Request) {
   if (req.actor.type === "agent") {
     return;

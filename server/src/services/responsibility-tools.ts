@@ -361,16 +361,6 @@ async function resolveItems(call: ApiCall, items: ReadonlyArray<z.infer<typeof t
   }));
 }
 
-/** An area by its title: the live one with that name (any case), or a new one. */
-async function areaIdForTitle(call: ApiCall, companyId: string, title: string) {
-  const company = encodeURIComponent(companyId);
-  const areas = await call("GET", `/companies/${company}/responsibility-areas`) as ResponsibilityArea[];
-  const existing = areas.find((area) => area.title.trim().toLowerCase() === title.trim().toLowerCase());
-  if (existing) return { id: existing.id, created: false, status: existing.status };
-  const created = await call("POST", `/companies/${company}/responsibility-areas`, { title }) as ResponsibilityArea;
-  return { id: created.id, created: true, status: created.status };
-}
-
 function areaResult(area: ResponsibilityArea) {
   return { id: area.id, title: area.title, description: area.description, status: area.status };
 }
@@ -496,12 +486,12 @@ async function createResponsibility(call: ApiCall, companyId: string, args: unkn
       ...(filed ? { filedItems: filed.filed.length, ...undoNote(meta) } : {}),
       note: "A responsibility with this title already exists for this person; use update_responsibility to change it." };
   }
-  const area = input.areaTitle ? await areaIdForTitle(call, companyId, input.areaTitle) : null;
   const meta: ApiMeta = {};
+  // The server finds or makes the area by title in the same transaction as the create.
   const created = await call("POST", `/companies/${company}/responsibilities`, {
     title: input.title,
     ...(input.ownerUserId ? { ownerUserId: input.ownerUserId } : {}),
-    ...(input.areaId ? { areaId: input.areaId } : area ? { areaId: area.id } : {}),
+    ...(input.areaId ? { areaId: input.areaId } : input.areaTitle ? { areaTitle: input.areaTitle } : {}),
     ...(input.description !== undefined ? { description: input.description } : {}),
     ...(input.standard !== undefined ? { standard: input.standard } : {}),
     ...(input.bar ? barPatch(input.bar) : {}),
@@ -515,7 +505,6 @@ async function createResponsibility(call: ApiCall, companyId: string, args: unkn
   return {
     created: true,
     responsibility: summary(created, prefix),
-    ...(area?.created ? { createdArea: { id: area.id, title: input.areaTitle } } : {}),
     ...(filed ? { filedItems: filed.filed.length } : {}),
     ...(created.status === "proposed" && input.status !== "proposed"
       ? { note: "Saved as a proposal: this run does not work for someone who may manage this person's responsibilities, so they must confirm it." }
@@ -523,22 +512,21 @@ async function createResponsibility(call: ApiCall, companyId: string, args: unkn
   };
 }
 
-async function updateResponsibility(call: ApiCall, companyId: string, args: unknown, prefix: string | null | undefined) {
+async function updateResponsibility(call: ApiCall, args: unknown, prefix: string | null | undefined) {
   const input = updateResponsibilityToolInput.parse(args);
-  const area = input.areaTitle ? await areaIdForTitle(call, companyId, input.areaTitle) : null;
   const patch: Record<string, unknown> = {};
   for (const key of ["title", "description", "standard", "runByAgentId", "sortOrder", "healthOverride", "healthNote", "status"] as const) {
     if (input[key] !== undefined) patch[key] = input[key];
   }
   if (input.areaId !== undefined) patch.areaId = input.areaId;
-  if (area) patch.areaId = area.id;
+  // The server finds or makes the area by title in the same transaction as the change.
+  if (input.areaTitle) patch.areaTitle = input.areaTitle;
   if (input.bar !== undefined) Object.assign(patch, barPatch(input.bar));
   if (Object.keys(patch).length === 0) throw new HttpError(422, "Send at least one field to change");
   const meta: ApiMeta = {};
   const updated = await call("PATCH", `/responsibilities/${encodeURIComponent(input.responsibilityId)}`, patch, meta) as ResponsibilityWithRollup;
   return {
     responsibility: summary(updated, prefix),
-    ...(area?.created ? { createdArea: { id: area.id, title: input.areaTitle } } : {}),
     ...undoNote(meta),
     ...(input.bar !== undefined ? { barNote: BAR_NOTE } : {}),
   };
@@ -620,7 +608,7 @@ export async function callResponsibilityTool(input: {
     case "update_area": return updateArea(call, input.arguments);
     case "delete_area": return deleteArea(call, input.companyId, input.issueId, input.agentId, input.arguments);
     case "create_responsibility": return createResponsibility(call, input.companyId, input.arguments, input.companyPrefix);
-    case "update_responsibility": return updateResponsibility(call, input.companyId, input.arguments, input.companyPrefix);
+    case "update_responsibility": return updateResponsibility(call, input.arguments, input.companyPrefix);
     case "delete_responsibility": return deleteResponsibility(call, input.issueId, input.agentId, input.arguments);
     case "file_under_responsibility": return fileUnderResponsibility(call, input.arguments);
     case "remove_from_responsibility": return removeFromResponsibility(call, input.arguments);
