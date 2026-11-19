@@ -1140,7 +1140,7 @@ describe("stageCodexHomeForSync", () => {
       const command = path.join(root, "fake-codex");
       await fs.writeFile(command, `#!${process.execPath}
 const fs = require("node:fs"), path = require("node:path");
-if (process.argv.includes("--version")) { console.log("codex-cli 0.160.0"); process.exit(0); }
+if (process.argv.includes("--version")) { console.log("codex-cli 0.170.0"); process.exit(0); }
 process.stdin.resume();
 process.stdin.on("end", () => {
   const argv = process.argv.slice(2), index = argv.indexOf("--profile");

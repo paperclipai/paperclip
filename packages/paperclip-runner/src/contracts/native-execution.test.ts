@@ -462,7 +462,7 @@ describe("NativeExecutionInputV1", () => {
       agentServerVersion: "0.73.0",
       agentProfileVersion: 1,
       agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
-      agentRuntimeVersion: "0.3.286",
+      agentRuntimeVersion: "0.3.328",
     };
     const saved = {
       ...input,
@@ -734,7 +734,7 @@ describe("native task context ownership", () => {
       kind: "acpx", agent: "codex", model: "gpt-5.6-sol", permissionMode: "approve-all", mode: "architect",
       profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.22.0", agent: "codex", agentProfileVersion: 3,
         agentServerPackage: "@agentclientprotocol/codex-acp", agentServerVersion: "1.6.2",
-        agentRuntimePackage: "@openai/codex", agentRuntimeVersion: "0.160.0", commandDigest: `sha256:${"a".repeat(64)}` },
+        agentRuntimePackage: "@openai/codex", agentRuntimeVersion: "0.170.0", commandDigest: `sha256:${"a".repeat(64)}` },
     };
     const value = { ...current, session: { ...current.session, driverKind: "acpx_runtime" }, provider };
     const parsed = parseNativeExecutionInput(value);

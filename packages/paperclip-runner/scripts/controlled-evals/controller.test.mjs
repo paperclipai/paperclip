@@ -23,7 +23,7 @@ import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runn
 import { childScript, fixture, success } from './controller-fixture.mjs';
 
 test('expected ACPX profile reaches the child through function and command-line entrypoints', async t => {
-  const profile = { agent: 'claude', agentRuntimeVersion: '0.3.286' };
+  const profile = { agent: 'claude', agentRuntimeVersion: '0.3.328' };
   for (const mode of ['function', 'cli']) for (const stale of [false, true]) {
     const requests = mode === 'function' ? 1 : 0;
     const f = await fixture(t, { providerProfile: 'claude', builtAcpxProfile: profile, requests });

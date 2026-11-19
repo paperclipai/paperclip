@@ -77,11 +77,11 @@ Research date: November 18, 2026.
 
 ## Deferred items
 
-- **Provider-pack runtimes.** Codex 0.170.0, Claude Code 2.1.327 (Agent SDK
-  0.3.327), and OpenCode 1.19.6 need runner qualification. Native remote Codex
-  accepts only `>=0.149.0 <0.161.0`, so GPT-6.2 needs that window and the
-  install pin to move. The deferred Claude 2.1.286 → 2.1.308 headless-default
-  changes from the previous audit still apply.
+- **Provider-pack runtimes.** Resolved on 2026-11-19 by a follow-up pull request
+  that pins Codex 0.170.0 and Agent SDK 0.3.328 (Claude Code 2.1.328) and moves the
+  native remote Codex window to `>=0.149.0 <0.171.0`. That pull request records
+  the Claude 2.1.286 → 2.1.328 headless-default review. OpenCode 1.19.x still
+  needs its own qualification.
 - **Kimi Code 2.6.3.** The native Kimi profile binds 2.3.3 with a patched
   distribution closure. A new version needs its own qualification.
 - **GPT-6.1 Terra** is in the Codex catalog. [#18486](https://github.com/paperclipai/paperclip/pull/18486)
