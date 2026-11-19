@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, executionWorkspaces, issues, projects, type Db } from "@paperclipai/db";
+import { applyPendingMigrations, agents, companies, createDb, executionWorkspaces, issues, projects, type Db } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -16,6 +16,7 @@ const SWEEP_GUARD_TIMEOUT_MS = 20_000;
   let db: Db;
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("issue-tree-cycle-");
+    if (external) await applyPendingMigrations(external);
     const url = external ?? temporary!.connectionString;
     db = createDb(url);
     db.$client.options.onnotice = () => {};
