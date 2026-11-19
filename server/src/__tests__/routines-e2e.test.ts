@@ -1167,6 +1167,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       const trigger = await request(board).post(`/api/routines/${membersRoutine}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1", timezone: "UTC", enabled: false });
       expect(trigger.status, JSON.stringify(trigger.body)).toBe(201);
       expect((await request(forMember).patch(`/api/routine-triggers/${trigger.body.trigger.id}`).send({ enabled: true })).status).toBe(403);
+      expect((await request(forMember).delete(`/api/routine-triggers/${trigger.body.trigger.id}`)).status).toBe(403);
       expect((await request(forMember).post(`/api/routines/${membersRoutine}/run`).send({})).status).toBe(403);
       const [revision] = await db.select().from(routineRevisions).where(eq(routineRevisions.routineId, membersRoutine)).limit(1);
       expect((await request(forMember).post(`/api/routines/${membersRoutine}/revisions/${revision!.id}/restore`).send({})).status).toBe(403);
@@ -1183,6 +1184,8 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
 
     it("filters the list in the query: words, status and routines filed under no responsibility", async () => {
       const { companyId, agentId, userId } = await seedFixture();
+      await db.delete(instanceSettings);
+      await db.insert(instanceSettings).values({ experimental: { enableResponsibilities: true } });
       const filed = await personRoutine(companyId, agentId, userId, { title: "Pipeline filed" });
       const loose = await personRoutine(companyId, agentId, userId, { title: "Pipeline loose", status: "paused" });
       await personRoutine(companyId, agentId, userId, { title: "Standup" });
@@ -1195,6 +1198,14 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       expect(await list("q=PIPELINE")).toHaveLength(2);
       expect(await list("q=pipeline&unfiled=true&status=paused")).toEqual([loose]);
       expect(await list(`responsibilityId=${hiring!.id}`)).toEqual([filed]);
+
+      // The responsibility filters are part of the Responsibilities experiment; plain searches are not.
+      await db.update(instanceSettings).set({ experimental: { enableResponsibilities: false } });
+      (await import("../services/instance-settings-cache.js")).invalidateInstanceSettingsCache();
+      const off = await request(board).get(`/api/companies/${companyId}/routines?unfiled=true`);
+      expect(off.status).toBe(404);
+      expect(off.body.code).toBe("responsibilities_disabled");
+      expect(await list("q=standup")).toHaveLength(1);
     });
   });
 });

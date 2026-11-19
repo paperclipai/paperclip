@@ -1265,6 +1265,12 @@ describeEmbeddedPostgres("responsibility routes", () => {
       expect(described.headers["x-paperclip-dashboard-version"]).toBeUndefined();
       // No version is saved, so no Dashboard offers an Undo that would leave the description as it is.
       expect((await latestVersion(company.id))?.id).toBe(before?.id);
+      // Nor for a shared area's status change Undo cannot reverse, such as confirming a proposed area.
+      await db.update(responsibilityAreas).set({ status: "proposed" }).where(eq(responsibilityAreas.id, shared.body.id));
+      const confirmed = await request(app).patch(`/api/responsibility-areas/${shared.body.id}`).send({ status: "active" });
+      expect(confirmed.status).toBe(200);
+      expect(confirmed.headers["x-paperclip-dashboard-version"]).toBeUndefined();
+      expect((await latestVersion(company.id))?.id).toBe(before?.id);
 
       const mine = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Money", description: "Cash and runway" });
       await createResponsibility(board, company.id, { title: "Runway", areaId: mine.body.id });

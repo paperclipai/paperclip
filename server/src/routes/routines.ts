@@ -18,6 +18,8 @@ import {
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, instanceSettingsService, logActivity, routineService } from "../services/index.js";
+import { instanceSettingsService as experimentSettings } from "../services/instance-settings.js";
+import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import { agentPersonInCompany } from "./agent-person-authz.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, unauthorized, unprocessable, unsupportedMediaType } from "../errors.js";
@@ -200,6 +202,11 @@ export function routineRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const { q, unfiled, ...filters } = listRoutinesQuerySchema.parse(req.query);
+    // The responsibility filters read filed work, which is part of the Responsibilities experiment.
+    if ((filters.responsibilityId || unfiled === "true")
+      && (await experimentSettings(db).getExperimental()).enableResponsibilities !== true) {
+      throw responsibilitiesDisabledError();
+    }
     const result = await svc.list(companyId, { ...filters, ...(q ? { query: q } : {}), ...(unfiled === "true" ? { unfiled: true } : {}) });
     res.json(result);
   });
@@ -495,13 +502,10 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
-    if (req.actor.type === "agent") {
-      // A restore can change who runs the routine and turn it on: on a routine the agent does not run,
-      // or back to another agent, the person it acts for must be allowed to assign.
-      const runsIt = routine.assigneeAgentId === req.actor.agentId;
-      const target = runsIt ? (await svc.listRevisions(routine.id)).find((revision) => revision.id === req.params.revisionId) : undefined;
-      await assertAgentCanAssign(req, routine, runsIt && target?.snapshot.routine.assigneeAgentId === req.actor.agentId);
-    }
+    // A restore can make the agent run the routine and turn it on: on a routine it does not run, the
+    // person it acts for must be allowed to assign. (The service refuses any agent restore that would
+    // hand the routine to another agent.)
+    await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId);
     const result = await svc.restoreRevision(routine.id, req.params.revisionId as string, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -635,6 +639,8 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine trigger not found" });
       return;
     }
+    // Removing a schedule changes when the routine runs, like changing it.
+    await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId);
     const deleted = await svc.deleteTrigger(trigger.id, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
