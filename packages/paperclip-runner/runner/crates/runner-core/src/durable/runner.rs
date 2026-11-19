@@ -345,6 +345,8 @@ pub trait CommandExecutor {
         ))
     }
 
+    fn observe_fresh_durable_state(&mut self) {}
+
     /// Opt in only when semantic result delivery validates an exact durable
     /// call receipt and cannot dispatch the underlying business operation.
     /// Ordinary commands and providers without this proof remain indeterminate.
@@ -587,6 +589,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         {
             executor.defer_parked_acpx_restore()?;
         }
+    } else {
+        executor.observe_fresh_durable_state();
     }
     if recovered && state.warm_transition.is_none() {
         state.reconnect_count = state.reconnect_count.saturating_add(1);

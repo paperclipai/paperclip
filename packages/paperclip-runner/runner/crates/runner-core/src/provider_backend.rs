@@ -2024,6 +2024,7 @@ pub struct CodexCommandExecutor {
     startup_command: Option<ProviderStartupCommand>,
     startup_evidence_error: Option<DurableRunnerError>,
     recovery_pending_effects: Option<usize>,
+    awaiting_new_run_attach: bool,
     unsaved_frame_state: std::cell::Cell<bool>,
     unsaved_trace_interpretations: Vec<NormalizationTrace>,
     #[cfg(test)]
@@ -2044,6 +2045,7 @@ impl CodexCommandExecutor {
             startup_command: None,
             startup_evidence_error: None,
             recovery_pending_effects: None,
+            awaiting_new_run_attach: false,
             unsaved_frame_state: std::cell::Cell::new(false),
             unsaved_trace_interpretations: Vec::new(),
             #[cfg(test)]
@@ -2057,6 +2059,10 @@ impl CodexCommandExecutor {
         executor.opencode_launch_profile = config.opencode_launch_profile.clone();
         executor.cursor_cloud_launch_profile = config.cursor_cloud_launch_profile.clone();
         executor
+    }
+
+    pub fn await_new_run_attach(&mut self) {
+        self.awaiting_new_run_attach = true;
     }
 
     pub(crate) fn observe_recovery_state(&mut self, state: &crate::durable::DurableState) {
@@ -2563,6 +2569,9 @@ impl CodexCommandExecutor {
 
     fn restore_provider_if_needed(&mut self) -> Result<(), DurableRunnerError> {
         self.assert_startup_admitted()?;
+        if self.awaiting_new_run_attach {
+            return Ok(());
+        }
         let Some(state) = self.state.clone() else {
             return Ok(());
         };
@@ -3646,7 +3655,14 @@ impl CodexCommandExecutor {
                         ))
                     })
             }
-        } else if next_state.lifecycle == "prepared" && next_state.provider_process_generation > 0 {
+        } else if (next_state.lifecycle == "prepared"
+            || (self.awaiting_new_run_attach
+                && matches!(
+                    next_state.lifecycle.as_str(),
+                    "session_open" | "provider_exited"
+                )))
+            && next_state.provider_process_generation > 0
+        {
             // turn.stop deliberately terminates the exact old process and
             // retains a prepared, settled thread checkpoint. Rebind only its
             // validated run-scoped settings here; open_session then restores
@@ -3688,6 +3704,7 @@ impl CodexCommandExecutor {
         };
         self.persist_state(&next_state)?;
         self.state = Some(next_state);
+        self.awaiting_new_run_attach = false;
         Ok(expired_tool_calls)
     }
 
@@ -5965,6 +5982,11 @@ impl CommandExecutor for CodexCommandExecutor {
         let outcome = (|| {
             self.save_before_provider_writes(false)?;
             self.restore()?;
+            if self.awaiting_new_run_attach && command.command_type != "run.attach" {
+                return Err(DurableRunnerError::invalid(
+                    "Codex durable session requires run.attach before commands from a new run",
+                ));
+            }
             if self
                 .state
                 .as_ref()
