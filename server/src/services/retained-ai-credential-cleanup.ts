@@ -157,6 +157,9 @@ export async function retainedAiCredentialCleanupHomeInside(dir: string): Promis
   const retainedHomes: string[] = [];
   for (const entries of retained.values()) {
     for (const entry of entries) {
+      // The active retry owns this cleanup and may retire its own home after
+      // write-back. Other entries and teardown holds remain protective.
+      if (entry.executing && active.getStore()?.has(entry)) continue;
       if (entry.home) retainedHomes.push(entry.home);
     }
   }

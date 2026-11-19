@@ -3,7 +3,7 @@ import fss from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   MAX_RUN_TEMP_SOCKET_PATH_BYTES,
@@ -619,10 +619,24 @@ describe("run scratch tree removal safety", () => {
             // its place, using exclusively the fd opened before the removal:
             // the swap lands between the walker's last verification and the
             // unlink syscall.
-            concurrentChange = true;
-            const retained = `/proc/self/fd/${held.fd}`;
+            let retained = `/proc/self/fd/${held.fd}`;
+            if (mode === "paths" || !(await fs.stat(retained).then(() => true, () => false))) {
+              // macOS has no procfs. Find the moved root by the identity of
+              // the fd the writer already holds, then execute the same swap.
+              const identity = await held.stat();
+              const candidates = await fs.readdir(root);
+              let matched: string | undefined;
+              for (const candidate of candidates) {
+                const p = path.join(root, candidate);
+                const stat = await fs.lstat(p);
+                if (stat.dev === identity.dev && stat.ino === identity.ino) matched = p;
+              }
+              expect(matched).toBeDefined();
+              retained = matched!;
+            }
             await fs.rename(`${retained}/child`, `${retained}/child-saved`);
             await fs.symlink(outside, `${retained}/child`);
+            concurrentChange = true;
           }
           return base.unlinkEntry(fd, name);
         },
@@ -1949,6 +1963,66 @@ describe("VPS-789 quarantine receipt recovery", () => {
     }
   }
 
+  it("refuses a receipt replaced by a symlink between verification and opening", async () => {
+    const root = await makeIsolatedTempRoot();
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1", agentId: "agent-1", runId: runId("race791"), root,
+    }));
+    const receipt = path.join(scratch.dir, RUN_SCRATCH_QUARANTINE_RECEIPT);
+    const outside = path.join(root, "outside.json");
+    const data = JSON.stringify({ version: 1, kind: "scratch", companyId: "company-1",
+      agentId: "agent-1", runId: scratch.metadata.runId, originalName: path.basename(scratch.dir),
+      createdAt: new Date().toISOString() });
+    await fs.writeFile(receipt, data);
+    await fs.writeFile(outside, data);
+    await fs.writeFile(path.join(scratch.dir, "sentinel"), "preserve");
+    let swapped = false;
+    const swap = async () => {
+      if (swapped) return;
+      await fs.unlink(receipt);
+      await fs.symlink(outside, receipt);
+      swapped = true;
+    };
+    const originalLstat = fs.lstat;
+    const spy = vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
+      const stat = await originalLstat(...args);
+      if (args[0] === receipt) await swap();
+      return stat;
+    });
+    const base = createDefaultRunScratchWalkerOps("paths");
+    try {
+      const result = await cleanupHeartbeatRunScratch({ scratch, runTempRootOverride: root,
+        walkerOps: () => ({ ...base, lstatEntry: async (fd, name) => {
+          const stat = await base.lstatEntry(fd, name);
+          if (name === RUN_SCRATCH_QUARANTINE_RECEIPT) await swap();
+          return stat;
+        } }),
+      });
+      expect(swapped).toBe(true);
+      expect(result.removed).toBe(false);
+      expect(await fs.readFile(path.join(scratch.dir, "sentinel"), "utf8")).toBe("preserve");
+      expect((await originalLstat(receipt)).isSymbolicLink()).toBe(true);
+      expect(await fs.readFile(outside, "utf8")).toBe(data);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("does not recover existing evidence after an exclusive-write error other than EEXIST", async () => {
+    const root = await makeIsolatedTempRoot();
+    const home = path.join(root, "paperclip-ai-fixture");
+    await fs.mkdir(home);
+    await fs.writeFile(path.join(home, "sentinel"), "preserve");
+    await fs.writeFile(path.join(home, RUN_SCRATCH_QUARANTINE_RECEIPT), JSON.stringify({
+      version: 1, kind: "home", companyId: null, agentId: null, runId: null,
+      originalName: path.basename(home), createdAt: new Date().toISOString(),
+    }));
+    const base = createDefaultRunScratchWalkerOps("paths");
+    const result = await removeRunTempTree(home, { walkerOps: () => ({ ...base,
+      writeEntryExclusive: async () => { throw Object.assign(new Error("fixture access failure"), { code: "EACCES" }); },
+    }) });
+    expect(result.complete).toBe(false);
+    expect(await fs.readFile(path.join(home, "sentinel"), "utf8")).toBe("preserve");
+  });
+
   it("recovers a scratch quarantine whose rename failed after the receipt write, on retry and sweep", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-receipt-g1-"));
     cleanupDirs.add(root);
@@ -2067,6 +2141,25 @@ describe("VPS-789 quarantine receipt recovery", () => {
 // registered under the pre-quarantine name.
 describe("VPS-789 hold survives the quarantine rename", () => {
   const exists = (p: string) => fs.stat(p).then(() => true, () => false);
+
+  it("lets an active retained cleanup retire its own home while preserving a separate owner's hold", async () => {
+    const root = await makeIsolatedTempRoot();
+    const home = path.join(root, "paperclip-ai-retained");
+    await fs.mkdir(home);
+    await fs.writeFile(path.join(home, "sentinel"), "preserve");
+    const scope = { companyId: "fixture", accountKey: root };
+    const release = acquireAiCredentialTeardownHold(home);
+    retainAiCredentialCleanup({ scope, home, cleanup: async () => {
+      const result = await removeRunTempTree(home, { walkerOps: () => createDefaultRunScratchWalkerOps("paths") });
+      if (!result.complete) throw new Error("still protected");
+    } });
+    try {
+      await expect(reconcileRetainedAiCleanup(scope)).rejects.toBeDefined();
+      expect(await fs.readFile(path.join(home, "sentinel"), "utf8")).toBe("preserve");
+    } finally { release(); }
+    await reconcileRetainedAiCleanup(scope);
+    expect(await exists(home)).toBe(false);
+  });
 
   it("refuses the quarantine while a teardown hold is active, and completes it after release", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hold-g3-"));

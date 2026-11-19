@@ -6,6 +6,8 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 // Background plan observations have their own provider-fixture coverage. Runtime
 // auth tests must not send the selected fixture credentials to a real provider.
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
+import * as runScratch from "../services/run-scratch.js";
+import { acquireAiCredentialTeardownHold } from "../services/retained-ai-credential-cleanup.js";
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
@@ -361,6 +363,41 @@ describe("managed AI connections", () => {
     } finally {
       await rm(runScratchDir, { recursive: true, force: true });
     }
+  });
+
+  it("cleans portable probe homes and preparation failures without releasing another owner's hold", async () => {
+    const owner = "portable-home-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active" });
+    await create(owner, owner);
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-portable-home-"));
+    const originalRemove = runScratch.removeRunTempTree;
+    const removal = vi.spyOn(runScratch, "removeRunTempTree").mockImplementation((dir, opts) =>
+      originalRemove(dir, { ...opts, walkerOps: () => runScratch.createDefaultRunScratchWalkerOps("paths") }));
+    const config = { ...input, responsibleUserId: owner, managedHomeParent: root, config: {} };
+    try {
+      let probed: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+      await withManagedAiProbe(db, config, async runtime => { probed = runtime; });
+      expect(probed!.homeRemoved()).toBe(true);
+      expect(await fs.readdir(root)).toEqual([]);
+
+      const runtime = await prepareManagedAiRuntime(db, config);
+      const release = acquireAiCredentialTeardownHold(runtime.home!);
+      try {
+        await runtime.cleanup();
+        expect(runtime.homeRemoved()).toBe(false);
+        await expect(access(path.join(runtime.home!, "provider"))).resolves.toBeUndefined();
+      } finally { release(); }
+      await runtime.cleanup();
+      expect(runtime.homeRemoved()).toBe(true);
+      expect(await fs.readdir(root)).toEqual([]);
+
+      // Env projection enumerates the object after home creation and its hold.
+      // Fail there without mocking a named native fs export.
+      const brokenEnv = new Proxy({}, { ownKeys() { throw new Error("fixture preparation failure"); } });
+      await expect(prepareManagedAiRuntime(db, { ...config, config: { env: brokenEnv } }))
+        .rejects.toThrow("fixture preparation failure");
+      expect(await fs.readdir(root)).toEqual([]);
+    } finally { removal.mockRestore(); await rm(root, { recursive: true, force: true }); }
   });
 
   it("defers managed AI home removal while the run process group is alive", async () => {

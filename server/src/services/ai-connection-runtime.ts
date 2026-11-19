@@ -436,6 +436,9 @@ export async function prepareManagedAiRuntime(
           ? true
           : await Promise.resolve(homeRemovalGate()).catch(() => false);
         if (!removalAllowed) return;
+        // Write-back has settled before entering removeHome. Release only our
+        // teardown hold; other owners and retained cleanups still protect the tree.
+        releaseTeardownHold?.();
         // Contained removal: no symlink following, no crossing mount points.
         const removal = await removeRunTempTree(home).catch((error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return { complete: true } as const;
@@ -639,9 +642,10 @@ export async function prepareManagedAiRuntime(
       cleanup: cleanupRuntime,
     };
   } catch (error) {
+    // Preparation never handed the home to a runtime: no write-back is owed.
+    releaseTeardownHold?.();
     if (home) await removeRunTempTree(home).catch(() => undefined);
     releaseCredentialHome?.();
-    releaseTeardownHold?.();
     throw error;
   }
 }
