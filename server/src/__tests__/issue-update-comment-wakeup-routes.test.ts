@@ -84,7 +84,7 @@ vi.mock("../services/runner-goals.js", () => ({
   RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
 }));
 
-vi.mock("../services/index.js", () => ({
+const createServicesMock = vi.hoisted(() => () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1" })),
   }),
@@ -153,6 +153,7 @@ vi.mock("../services/index.js", () => ({
   }),
   workProductService: () => ({}),
 }));
+vi.mock("../services/index.js", createServicesMock);
 
 function registerModuleMocks() {
   vi.doMock("../services/external-objects.js", () => ({
@@ -162,75 +163,7 @@ function registerModuleMocks() {
     }),
   }));
 
-  vi.doMock("../services/index.js", () => ({
-    companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1" })),
-    }),
-    accessService: () => ({
-      canUser: vi.fn(async () => true),
-      decide: mockAccessDecide,
-      hasPermission: vi.fn(async () => true),
-    }),
-    agentService: () => ({
-      getById: vi.fn(async () => null),
-      resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
-        ambiguous: false,
-        agent: { id: raw },
-      })),
-    }),
-    companySkillService: () => ({
-      completeTestRunForIssue: vi.fn(async () => null),
-    }),
-    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
-    feedbackService: () => ({
-      listIssueVotesForUser: vi.fn(async () => []),
-      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-    }),
-    goalService: () => ({}),
-    heartbeatService: () => mockHeartbeatService,
-    instanceSettingsService: () => ({
-      get: vi.fn(async () => ({
-        id: "instance-settings-1",
-        general: {
-          censorUsernameInLogs: false,
-          feedbackDataSharingPreference: "prompt",
-        },
-      })),
-      listCompanyIds: vi.fn(async () => ["company-1"]),
-    }),
-    issueApprovalService: () => ({}),
-    issueReferenceService: () => ({
-      deleteDocumentSource: async () => undefined,
-      diffIssueReferenceSummary: () => ({
-        addedReferencedIssues: [],
-        removedReferencedIssues: [],
-        currentReferencedIssues: [],
-      }),
-      emptySummary: () => ({ outbound: [], inbound: [] }),
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-      syncComment: async () => undefined,
-      syncDocument: async () => undefined,
-      syncIssue: async () => undefined,
-    }),
-    issueRecoveryActionService: () => ({
-      getActiveForIssue: vi.fn(async () => null),
-      listActiveForIssues: vi.fn(async () => new Map()),
-    }),
-    issueTreeControlService: () => ({ getActivePauseHoldGate: mockPauseGate }),
-  issueService: () => mockIssueService,
-    issueThreadInteractionService: () => mockIssueThreadInteractionService,
-    logActivity: vi.fn(async () => undefined),
-    projectService: () => ({}),
-    questionResponseDeliveryService: () => ({
-      deliver: vi.fn(async () => undefined),
-    }),
-    routineService: () => ({
-      syncRunStatusForIssue: vi.fn(async () => undefined),
-    }),
-    workProductService: () => ({}),
-  }));
+  vi.doMock("../services/index.js", createServicesMock);
 }
 
 async function loadAppModules() {
