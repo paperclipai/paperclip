@@ -1479,7 +1479,7 @@ Terminal states: `done`, `cancelled`
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/api/companies/:companyId/routines` | List all routines in company |
+| GET    | `/api/companies/:companyId/routines` | List the company's routines. Optional filters, all applied before any limit: `projectId`, `q` (words in the title or description), `status`, `assigneeAgentId`, `responsibleUserId`, `responsibilityId` (filed under it, directly or through its project), `unfiled=true` (under no proposed or active responsibility); those two need Responsibilities on |
 | GET    | `/api/routines/:routineId` | Routine details including triggers |
 | POST   | `/api/companies/:companyId/routines` | Create routine (`assigneeAgentId` + `projectId` required; agents: own only) |
 | PATCH  | `/api/routines/:routineId` | Update routine (agents: own only, cannot reassign) |
@@ -1498,6 +1498,27 @@ Offer a routine after finishing recurring work (the person accepts or declines i
 POST /api/issues/{issueId}/routine-suggestions
 { "title": "Weekly competitor pricing summary", "instructions": "Check the pricing pages of Acme, Globex and Initech and summarize what changed since the last summary.", "cadence": { "frequency": "weekly", "dayOfWeek": "monday", "time": "09:00" }, "message": "Want me to put this summary together every Monday morning?" }
 ```
+
+### Areas and responsibilities
+
+A person's responsibilities are saved records, each optionally filed under an area (experimental, `enableResponsibilities`). Prefer the dedicated tools `list_responsibilities`, `get_responsibility` and `find_responsibilities_for`; these are the routes behind them. While the feature is off every route returns `404` with code `responsibilities_disabled`: report that the feature is off, not that the person has none.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/responsibilities` | One person's areas, responsibilities (with health and counts), proposals, totals and the company's work filed under no responsibility (`loose`). `ownerUserId` defaults to the person your run works for; `includeLetGo=true` adds let-go ones |
+| GET    | `/api/companies/:companyId/responsibility-areas` | The company's areas; `includeArchived=true` adds archived ones |
+| GET    | `/api/responsibilities/:responsibilityId` | One responsibility with its projects, tasks and routines (`linkId` set when filed directly) and the skills of the agents doing its work |
+| GET    | `/api/companies/:companyId/responsibility-links/lookup` | The responsibilities one item is under; send exactly one of `issueId`, `projectId`, `routineId` or `skillId` |
+| POST   | `/api/companies/:companyId/responsibilities` | Create one. Acting for the person your run works for (who may manage the owner, and who directed the run: their own chat or task, or their message woke it), a title is enough and it is active; otherwise it is a proposal with its whole bar |
+| PATCH  | `/api/responsibilities/:responsibilityId` | Change any field, as the person could; otherwise only a proposal, or `metricCurrent` on one you work under |
+| POST   | `/api/responsibilities/:responsibilityId/file` | `{ items: [{ kind: "project" \| "task" \| "routine" \| "skill", id }], moveFrom?: responsibilityId \| "all" }`: file items, optionally moving them |
+| POST   | `/api/responsibilities/:responsibilityId/unfile` | `{ items }`: unfile items by kind and id |
+| DELETE | `/api/responsibilities/:responsibilityId?confirmationId=` | Permanent. An agent sends the id of an accepted `request_confirmation` card it posted, with target `{ type: "custom", key: "responsibility-delete:<id>" }` |
+| POST   | `/api/companies/:companyId/responsibility-areas` | Create an area (or get the live one with that title) |
+| PATCH  | `/api/responsibility-areas/:areaId` | Rename, describe, reorder, archive or restore an area |
+| DELETE | `/api/responsibility-areas/:areaId?confirmationId=&moveResponsibilitiesTo=` | Permanent; card key `responsibility-area-delete:<id>`. Its responsibilities move to `moveResponsibilitiesTo`, or keep no area |
+
+An agent's change for a person is saved as a version of that person's Dashboard, where they can undo it.
 
 ### Responsibility bars
 

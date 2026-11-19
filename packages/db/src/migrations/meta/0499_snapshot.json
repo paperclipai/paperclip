@@ -1,5 +1,5 @@
 {
-  "id": "55dd14cd-23cd-40a8-a6ab-f49a89343b1b",
+  "id": "a80ac568-accd-4c40-b63a-82b870052e0a",
   "prevId": "00aaeb32-9423-4cdd-ae8d-dc721ac83170",
   "version": "7",
   "dialect": "postgresql",
@@ -51408,174 +51408,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.project_provider_authorizations": {
-      "name": "project_provider_authorizations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope_key": {
-          "name": "scope_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "grant_id": {
-          "name": "grant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authorized_by_user_id": {
-          "name": "authorized_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "project_provider_authorizations_project_provider_scope_uq": {
-          "name": "project_provider_authorizations_project_provider_scope_uq",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "scope_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "project_provider_authorizations_company_project_idx": {
-          "name": "project_provider_authorizations_company_project_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "project_provider_authorizations_company_id_companies_id_fk": {
-          "name": "project_provider_authorizations_company_id_companies_id_fk",
-          "tableFrom": "project_provider_authorizations",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "project_provider_authorizations_company_project_fk": {
-          "name": "project_provider_authorizations_company_project_fk",
-          "tableFrom": "project_provider_authorizations",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "company_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "project_provider_authorizations_company_grant_fk": {
-          "name": "project_provider_authorizations_company_grant_fk",
-          "tableFrom": "project_provider_authorizations",
-          "tableTo": "connection_grants",
-          "columnsFrom": [
-            "company_id",
-            "grant_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "project_provider_authorizations_provider_check": {
-          "name": "project_provider_authorizations_provider_check",
-          "value": "\"project_provider_authorizations\".\"provider\" ~ '^[a-z][a-z0-9-]{0,31}$'"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.project_workspaces": {
       "name": "project_workspaces",
       "schema": "",
@@ -53358,6 +53190,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "skill_id": {
+          "name": "skill_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -53448,6 +53286,28 @@
           "method": "btree",
           "with": {}
         },
+        "responsibility_links_responsibility_skill_uq": {
+          "name": "responsibility_links_responsibility_skill_uq",
+          "columns": [
+            {
+              "expression": "responsibility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "skill_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"responsibility_links\".\"skill_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "responsibility_links_project_idx": {
           "name": "responsibility_links_project_idx",
           "columns": [
@@ -53483,6 +53343,21 @@
           "columns": [
             {
               "expression": "routine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "responsibility_links_skill_idx": {
+          "name": "responsibility_links_skill_idx",
+          "columns": [
+            {
+              "expression": "skill_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -53559,6 +53434,19 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "responsibility_links_skill_id_company_skills_id_fk": {
+          "name": "responsibility_links_skill_id_company_skills_id_fk",
+          "tableFrom": "responsibility_links",
+          "tableTo": "company_skills",
+          "columnsFrom": [
+            "skill_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -53567,7 +53455,7 @@
       "checkConstraints": {
         "responsibility_links_single_target_check": {
           "name": "responsibility_links_single_target_check",
-          "value": "(\"responsibility_links\".\"project_id\" is not null)::int + (\"responsibility_links\".\"issue_id\" is not null)::int + (\"responsibility_links\".\"routine_id\" is not null)::int = 1"
+          "value": "(\"responsibility_links\".\"project_id\" is not null)::int + (\"responsibility_links\".\"issue_id\" is not null)::int + (\"responsibility_links\".\"routine_id\" is not null)::int + (\"responsibility_links\".\"skill_id\" is not null)::int = 1"
         }
       },
       "isRLSEnabled": false

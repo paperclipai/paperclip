@@ -800,6 +800,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     } catch (error) {
       await cancellation.close(isTransientRunnerRecoveryFailure(error)).catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
+      if (error instanceof Error && error.message === "native_runner_reuse_unavailable") throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
       // A Runner with no saved control-plane state for this session can never
       // resume it here. With nothing in flight, the runtime's recovery policy
