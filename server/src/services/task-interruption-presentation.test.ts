@@ -571,8 +571,6 @@ describe("automatic scheduled retry", () => {
       .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: new Date(now + 60_000).toISOString() });
   });
 
-  // Wave w-20261119T031229 (t118, t181): a due retry stays `scheduled_retry`
-  // until the dispatcher promotes it, and one 4 s sample in between showed Retry.
   it.each(["transient_failure", "native_environment_blocker"])(
     "keeps a just-due %s retry working while the dispatcher promotes it", scheduledRetryReason => {
       for (const overdueMs of [0, 1_000, 30_000, 119_000]) {
