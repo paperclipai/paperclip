@@ -19,37 +19,23 @@ export function canBrowseProjectRepositoryGrant(input: {
 
 export function mergeProjectRepository(
   repositories: Map<string, ProjectRepository>,
-  repo: { id: string; fullName: string; private?: boolean; ownerType?: ProjectRepository["ownerType"] },
+  repo: { id: string; fullName: string; private?: boolean; ownerType?: ProjectRepository["ownerType"] } &
+    ({ provider?: "github"; url?: string } | { provider: string; url: string }),
   connectionName: string,
   connectionId?: string,
 ) {
-  const previous = repositories.get(repo.id);
-  repositories.set(repo.id, {
-    ...repo, url: `https://github.com/${repo.fullName}`,
+  const id = !repo.provider || repo.provider === "github" ? repo.id : `${repo.provider}:${repo.id}`;
+  const previous = repositories.get(id);
+  repositories.set(id, {
+    ...repo, id, url: !repo.provider || repo.provider === "github" ? `https://github.com/${repo.fullName}` : repo.url!,
     connections: [...new Set([...(previous?.connections ?? []), connectionName])],
     ...(connectionId ? { connectionIds: [...new Set([...(previous?.connectionIds ?? []), connectionId])] } : {}),
   });
 }
 
-/** Prefer current provider metadata; unavailable existing selections can remain. */
-export function resolveProjectRepositorySelection(
-  ids: string[],
-  available: ProjectRepository[],
-  existing: Pick<ProjectWorkspace, "name" | "repoUrl" | "metadata">[] = [],
-): ProjectRepository[] {
-  return [...new Set(ids)].map((id) => {
-    const current = available.find((repo) => repo.id === id);
-    if (current) return current;
-    const retained = existing.find((workspace) => workspace.metadata?.githubRepositoryId === id && workspace.repoUrl);
-    if (retained) return { id, fullName: retained.name, url: retained.repoUrl!, connections: [],
-      ...(typeof retained.metadata?.githubRepositoryPrivate === "boolean" ? { private: retained.metadata.githubRepositoryPrivate } : {}) };
-    throw unprocessable("A selected GitHub repository is no longer available. Refresh repositories and try again.");
-  });
-}
+export { resolveProjectRepositorySelection } from "./project-repository-selection.js";
 
-/** Register an existing GitHub URL without assuming it is in the connection catalog.
- * No fetch or credential sharing: execution uses the normal repository access policy.
- */
+/** Normalize a legacy GitHub URL input before checking the caller's connection catalog. */
 export function normalizeProjectRepositoryUrl(value: string): { fullName: string; url: string } {
   let parsed: URL;
   try { parsed = new URL(value); } catch { throw unprocessable("Repository URL must be an HTTPS GitHub repository URL"); }

@@ -320,6 +320,12 @@ export type CompanyPortabilitySource =
   | {
       type: "github";
       url: string;
+    }
+  | {
+      type: "project_repository";
+      companyId: string;
+      workspaceId: string;
+      ref?: string;
     };
 
 export type CompanyPortabilityImportTarget =

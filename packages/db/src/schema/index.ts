@@ -30,6 +30,7 @@ export { automaticRunBrakes } from "./automatic_run_brakes.js";
 export { agentTaskSessions, agentSessionGoalActions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
+export { projectProviderAuthorizations } from "./project_provider_authorizations.js";
 export { projectMemberships } from "./project_memberships.js";
 export { projectAccessMembers } from "./project_access_members.js";
 export { documentMemberships } from "./document_memberships.js";

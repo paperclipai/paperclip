@@ -214,6 +214,35 @@ exit 1
     }
   });
 
+  it("rechecks Azure DevOps access before reusing a linked project repository checkout", async () => {
+    const source = await createLocalSourceRepo();
+    const task = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-azure-linked-"));
+    try {
+      const remote = "https://dev.azure.com/contoso/Platform/_git/linked";
+      let authorized = true;
+      const resolveGitAuth = vi.fn(async (url: string) => {
+        if (!authorized) throw new Error("Azure DevOps grant revoked");
+        return {
+          configArgs: ["-c", `url.${pathToFileURL(source).href}.insteadOf=${url}`],
+          env: {}, source: "managed_connection" as const, secretName: null,
+          repositoryAuthority: { provider: "azure-devops", url: remote },
+        };
+      });
+      const input = {
+        cwd: task, anchorRepoUrl: null, resolveGitAuth,
+        sharedBase: { companyId: "azure-linked", projectId: path.basename(task) },
+        workspaces: [{ id: "azure", repoUrl: remote, repoRef: null }],
+      };
+      const [repo] = await prepareProjectRepositoryWorkspaces(input);
+      expect(await fs.readFile(path.join(repo!.cwd, "README.md"), "utf8")).toBe("hello\n");
+      expect(await prepareProjectRepositoryWorkspaces(input)).toEqual([repo]);
+      authorized = false;
+      await expect(prepareProjectRepositoryWorkspaces(input)).rejects.toThrow("Azure DevOps connection authorization is unavailable");
+    } finally {
+      await Promise.all([source, task].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+
   it.each(["file_url", "absolute_path"] as const)("authorizes the actual %s fallback when the configured cwd is missing", async (transport) => {
     const source = await createLocalSourceRepo();
     const task = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-sibling-"));
@@ -267,6 +296,7 @@ exit 1
       await fs.writeFile(path.join(second, "secret.txt"), "private");
       const [repo] = await prepareProjectRepositoryWorkspaces({
         cwd: anchor.cwd, anchorRepoUrl: first,
+        resolveGitAuth: async () => ({ env: {}, configArgs: [], source: "managed_connection", secretName: null }),
         workspaces: [{ id: "second", cwd: second, repoUrl: "https://github.com/example/backend.git", repoRef: null }],
       });
       expect(await fs.readFile(path.join(repo!.cwd, "README.md"), "utf8")).toBe("local changes");

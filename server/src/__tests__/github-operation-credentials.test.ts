@@ -810,7 +810,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const tokenInput = {
         ...input,
         responsibleUserId: "A",
-        scope: "github_credentials" as const,
+        scope: "git_credentials" as const,
+        allowGitHub: true,
       };
       const token = createRuntimeToolsToken(tokenInput)!.token;
       const post = () => request(app).post("/runtime-tools/github/credentials");

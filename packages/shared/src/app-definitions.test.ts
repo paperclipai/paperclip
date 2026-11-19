@@ -924,7 +924,8 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(91);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(92);
+    expect(getConnectableAppDefinition("azure-devops")?.slug).toBe("azure-devops");
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1521,6 +1522,9 @@ describe("AppDefinition catalog", () => {
       "aws:aws-access-key:endpointRegion",
       "aws:aws-role:accessLevel",
       "aws:aws-role:endpointRegion",
+      "azure-devops:entra-write:organization",
+      "azure-devops:entra:organization",
+      "azure-devops:pat:organization",
       "clickhouse:mcp-oauth:serviceId",
       "honcho:mcp-api-key:workspaceId",
       "make:mcp-api-token:zone",

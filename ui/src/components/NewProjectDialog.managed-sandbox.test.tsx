@@ -92,7 +92,7 @@ describe("NewProjectDialog — source repositories across host policies", () => 
     render(settings);
 
     expect(documentText()).toContain("Source repos");
-    expect(documentText()).toContain("Add GitHub repo");
+    expect(documentText()).toContain("Add repository");
     expect(documentText()).not.toContain("Repo URL");
     expect(documentText()).not.toContain("Local folder");
     expect(localPathInput()).toBeNull();

@@ -31,12 +31,33 @@ describe("project repository access", () => {
     mergeProjectRepository(repos, { id: "10", fullName: "org/renamed", ownerType: "organization", private: true }, "Company");
     expect([...repos.values()]).toEqual([{ id: "10", fullName: "org/renamed", ownerType: "organization", url: "https://github.com/org/renamed", private: true, connections: ["Personal", "Company"] }]);
   });
+  it("constructs GitHub repository URLs from the verified repository name", () => {
+    const repos = new Map<string, ProjectRepository>();
+    mergeProjectRepository(repos, { id: "2", fullName: "org/repo", provider: "github", url: "https://evil.example/repo" }, "GitHub");
+    expect(repos.get("2")?.url).toBe("https://github.com/org/repo");
+  });
+  it("keeps repositories from different providers distinct when their provider IDs match", () => {
+    const repos = new Map<string, ProjectRepository>();
+    mergeProjectRepository(repos, { id: "10", fullName: "org/repo" }, "GitHub");
+    mergeProjectRepository(repos, { id: "10", fullName: "org/project/repo", provider: "azure-devops", url: "https://dev.azure.com/org/project/_git/repo" }, "Azure");
+    expect([...repos.values()]).toMatchObject([
+      { id: "10", url: "https://github.com/org/repo", connections: ["GitHub"] },
+      { id: "azure-devops:10", provider: "azure-devops", url: "https://dev.azure.com/org/project/_git/repo", connections: ["Azure"] },
+    ]);
+  });
   it("refreshes retained selections from discovery, falls back only for unavailable existing IDs, and rejects new unavailable IDs", () => {
     const existing = [{ name: "old/name", repoUrl: "https://github.com/old/name", metadata: { githubRepositoryId: "1" } }];
     const renamed = { id: "1", fullName: "new/name", url: "https://github.com/new/name", connections: ["Personal"] };
     expect(resolveProjectRepositorySelection(["1", "1"], [renamed], existing)).toEqual([renamed]);
     expect(resolveProjectRepositorySelection(["1"], [], existing)).toEqual([{ id: "1", fullName: "old/name", url: existing[0].repoUrl, connections: [] }]);
     expect(() => resolveProjectRepositorySelection(["2"], [], existing)).toThrow("no longer available");
+  });
+  it("retains a disconnected provider selection but rejects an unselected repository", () => {
+    const existing = [{ name: "org/project/repo", repoUrl: "https://dev.azure.com/org/project/_git/repo", metadata: {
+      repositoryId: "azure-devops:123", repositoryProvider: "azure-devops", repositoryPrivate: true,
+    } }];
+    expect(resolveProjectRepositorySelection(["azure-devops:123"], [], existing)).toEqual([{ id: "azure-devops:123", provider: "azure-devops", fullName: "org/project/repo", url: existing[0].repoUrl, private: true, connections: [] }]);
+    expect(() => resolveProjectRepositorySelection(["azure-devops:456"], [], existing)).toThrow(/no longer available/);
   });
   it("loads every PAT repository page and never follows provider-supplied URLs", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, full_name: "org/a", owner: { type: "Organization" } }]), { headers: { link: '<https://evil.test/steal>; rel="next"' } }))

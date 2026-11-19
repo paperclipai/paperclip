@@ -91,7 +91,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     try {
       await skillSourceSyncService(db).tick();
       const [saved] = await db.select().from(projectSkillSources).where(eq(projectSkillSources.id, binding!.id));
-      expect(saved!.lastError).toMatch(/Choose a GitHub connection/);
+      expect(saved!.lastError).toMatch(/Choose an authorized connection/);
       expect(saved!.active).toBe(false);
       expect(provider).not.toHaveBeenCalled();
     } finally { provider.mockRestore(); }
@@ -895,7 +895,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       responsibleUserId: 'local-board', action: 'company.skill_source_refreshed', entityType: 'company_skill_source', entityId: imported.source.id });
     await skillSourceSyncService(db).tick(new Date(Date.now() + 6 * 60_000));
     const [checked] = await db.select().from(companySkillSources).where(eq(companySkillSources.id, imported.source.id));
-    expect(checked!.lastError).toMatch(/Choose a GitHub connection/);
+    expect(checked!.lastError).toMatch(/Choose an authorized connection/);
     expect(checked!.refreshUserId).toBeNull();
     expect(checked!.lastSuccessAt).toEqual(stored!.lastSuccessAt);
     // Migrated sources may lack refreshAgentId; API-key audit responsibility
@@ -904,7 +904,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     await skillSourceSyncService(db).tick(new Date(Date.now() + 12 * 60_000));
     const [legacy] = await db.select().from(companySkillSources).where(eq(companySkillSources.id, imported.source.id));
     expect(legacy!.refreshUserId).toBeNull();
-    expect(legacy!.lastError).toMatch(/Choose a GitHub connection/);
+    expect(legacy!.lastError).toMatch(/Choose an authorized connection/);
 
   });
 

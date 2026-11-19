@@ -1841,6 +1841,8 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
 /** Stage token-free launchers next to the execution, not in shared global Git config. */
 export async function prepareGitHubOperationLaunchers(input: {
   runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
+  hostGitHub?: boolean;
+  requireGitHubConnection?: boolean;
   broker?: { url: string; token: string };
 }): Promise<Record<string, string>> {
   const remote = input.target?.kind === "remote" ? input.target : null;
@@ -1861,7 +1863,7 @@ export async function prepareGitHubOperationLaunchers(input: {
     // Remote launchers live beneath the checkout. Pin their own package scope
     // so an enclosing project's "type": "module" cannot reinterpret require().
     ["package.json", '{"type":"commonjs"}\n'],
-    ...["git", "gh"].map((name) => [name, githubLauncherSource({ brokerFile: input.broker !== undefined })] as const),
+    ...["git", "gh"].map((name) => [name, githubLauncherSource({ brokerFile: input.broker !== undefined, hostGitHub: input.hostGitHub, requireGitHubConnection: input.requireGitHubConnection })] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
     ...(input.broker ? [["broker.json", `${JSON.stringify({ url: input.broker.url, token: input.broker.token })}\n`] as const] : []),
   ]);
@@ -1889,7 +1891,8 @@ export async function prepareGitHubOperationLaunchers(input: {
     }
   }
   return { ...input.env, PATH: managedPath, ZDOTDIR: directory, BASH_ENV: `${directory}/.bashrc`,
-    GH_CONFIG_DIR: configDirectory, PAPERCLIP_GITHUB_LAUNCHER_DIR: directory };
+    GH_CONFIG_DIR: input.hostGitHub ? (input.env.GH_CONFIG_DIR ?? configDirectory) : configDirectory,
+    PAPERCLIP_GITHUB_LAUNCHER_DIR: directory };
 }
 
 function buildBridgeResponseHeaders(response: Response): Record<string, string> {

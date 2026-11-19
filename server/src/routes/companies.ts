@@ -71,6 +71,7 @@ import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
+import { resolveCompanyProjectRepository } from "../services/company-project-repository-import.js";
 
 // A company import can arrive one of two ways on the import + preview routes:
 //   • application/json — the original inline body `{ source, target, ... }`,
@@ -362,6 +363,14 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     assertCompanyAccess(req, target.companyId);
   }
 
+  async function resolveProjectImportSource<T extends { source: import("@paperclipai/shared").CompanyPortabilitySource }>(req: Request, body: T, routeCompanyId?: string): Promise<T> {
+    if (body.source.type !== "project_repository") return body;
+    if (routeCompanyId && body.source.companyId !== routeCompanyId) throw forbidden("Project repository must belong to the route company");
+    assertCompanyAccess(req, body.source.companyId);
+    const source = await resolveCompanyProjectRepository(db, req.actor, body.source);
+    return { ...body, source };
+  }
+
   async function assertSameCompanyCeoAgentOrBoard(req: Request, companyId: string, capability: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -582,7 +591,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     assertBoard(req);
     const body = companyPortabilityPreviewSchema.parse(await resolveImportPayload(req, res));
     assertImportTargetAccess(req, body.target);
-    const preview = await portability.previewImport(body);
+    const preview = await portability.previewImport(await resolveProjectImportSource(req, body));
     res.json(preview);
   });
 
@@ -627,7 +636,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
         const importBody = companyPortabilityImportSchema.parse(rawImportBody);
         assertImportTargetAccess(req, importBody.target);
         const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
-        const result = await portability.importBundle(importBody, boardUserId, {
+        const result = await portability.importBundle(await resolveProjectImportSource(req, importBody), boardUserId, {
           pauseAutomations: importBody.pauseAutomations === true,
         });
         // The import is committed. Settlement (hooks) runs before the
@@ -1036,7 +1045,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (!resolved) return;
     const body = companyPortabilityPreviewSchema.parse(resolved.rawBody);
     assertImportTargetAccess(req, body.target);
-    const preview = await portability.previewImport(body);
+    const preview = await portability.previewImport(await resolveProjectImportSource(req, body));
     res.json(preview);
   });
 
@@ -1152,7 +1161,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (body.collisionStrategy === "replace") {
       throw forbidden("Safe import route does not allow replace collision strategy");
     }
-    const preview = await portability.previewImport(body, {
+    const preview = await portability.previewImport(await resolveProjectImportSource(req, body, companyId), {
       mode: "agent_safe",
       sourceCompanyId: companyId,
     });
@@ -1170,7 +1179,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       throw forbidden("Safe import route does not allow replace collision strategy");
     }
     const actor = getActorInfo(req);
-    const result = await portability.importBundle(body, req.actor.type === "board" ? req.actor.userId : null, {
+    const result = await portability.importBundle(await resolveProjectImportSource(req, body, companyId), req.actor.type === "board" ? req.actor.userId : null, {
       mode: "agent_safe",
       actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
       actorAgentCompanyId: req.actor.type === "agent" ? req.actor.companyId : null,

@@ -98,6 +98,7 @@ export function isPrivateWebhookHttpRequest(
   url: string | undefined,
 ): boolean {
   if (!method || !url) return false;
+  if (/^\/runtime-tools\/git\/credentials(?:\/|\?|$)/i.test(url)) return true;
   let pathname = normalizePath(url);
   if (/^https?:\/\//i.test(pathname)) {
     // Do not let URL dot-segment normalization erase an explicitly supplied

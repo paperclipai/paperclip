@@ -71,7 +71,7 @@ it("dispatch retains raw trust before workspace and broker setup", () => {
     "context.executionPolicy = retainedTrust.executionPolicy",
   );
   expect(start).toBeLessThan(
-    heartbeat.indexOf('scope: "github_credentials"'),
+    heartbeat.indexOf('scope: "git_credentials"'),
   );
 });
 

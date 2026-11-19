@@ -66,6 +66,8 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     // Subscription reporting adds a later grant binding; rewind the empty
     // fixture table before recreating grants, preserving production FK checks.
     await sql`DROP TABLE IF EXISTS "ai_subscription_connections"`;
+    // Project provider authorizations are a later grant consumer in this fixture.
+    await sql`DROP TABLE IF EXISTS "project_provider_authorizations"`;
     await sql`DROP TABLE IF EXISTS "connection_grants"`;
     await sql`DROP INDEX IF EXISTS "tool_connections_company_uid_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_company_id_uq"`;
