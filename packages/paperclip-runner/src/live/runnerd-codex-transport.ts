@@ -4978,8 +4978,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       || !episode?.confirmed || episode.claimed || episode.ticket !== undefined || !this.#core
       || !recoveryIdentityMatches(episode.source, this.#core.store.state.identity)) return Promise.resolve(null);
     const source = structuredClone(episode.source);
-    const runner = structuredClone(this.#relaunchedRunnerArtifact ?? this.options.runnerArtifact
-      ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary()));
+    const runner = this.#core.expectedRunner();
     const operation = (async () => {
       const deadline = Date.now() + runnerCloseGraceMs(this.options);
       this.#controllerDetachedForRestart = true;
