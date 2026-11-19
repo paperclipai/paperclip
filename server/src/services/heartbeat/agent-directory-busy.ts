@@ -18,12 +18,22 @@ export class AgentDirectoryPreparationDeferral extends Error {
   }
 }
 
-export async function prepareWithAgentDirectoryDeferral<T>(prepare: () => Promise<T>): Promise<T> {
-  try {
-    return await prepare();
-  } catch (error) {
-    if (error instanceof AgentDirectoryOperationBusyError) throw new AgentDirectoryPreparationDeferral(error);
-    throw error;
+export const REATTACH_AGENT_DIRECTORY_WAIT_MS = 30_000;
+
+export async function prepareWithAgentDirectoryDeferral<T>(prepare: () => Promise<T>, options: {
+  waitMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+} = {}): Promise<T> {
+  const deadline = Date.now() + (options.waitMs ?? 0);
+  const sleep = options.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  for (let delayMs = 100; ; delayMs = Math.min(delayMs * 2, 2_000)) {
+    try {
+      return await prepare();
+    } catch (error) {
+      if (!(error instanceof AgentDirectoryOperationBusyError)) throw error;
+      if (Date.now() + delayMs > deadline) throw new AgentDirectoryPreparationDeferral(error);
+      await sleep(delayMs);
+    }
   }
 }
 

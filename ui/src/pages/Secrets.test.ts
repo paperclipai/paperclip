@@ -3,11 +3,13 @@
 import { describe, expect, it } from "vitest";
 import type { CompanySecretProviderConfig, SecretProviderDescriptor } from "@paperclipai/shared";
 import {
+  buildCreateVaultOptions,
   findCreateProviderReplacement,
   getAwsManagedPathPreview,
   getCreateProviderBlockReason,
   getDefaultProviderConfigId,
   getProviderConfigBlockReason,
+  parseEnvAssignment,
 } from "./Secrets";
 import type { SecretProviderHealthResponse } from "../api/secrets";
 
@@ -85,7 +87,7 @@ describe("Secrets page provider helpers", () => {
         null,
       ),
     ).toBe(
-      "Deployment default AWS Secrets Manager is not configured. Select a ready provider vault or configure the deployment default.",
+      "AWS Secrets Manager is not set up on this Paperclip server. Choose a vault that is ready, or ask your administrator to set it up.",
     );
   });
 
@@ -108,7 +110,7 @@ describe("Secrets page provider helpers", () => {
         health,
       ),
     ).toBe(
-      "Deployment default AWS Secrets Manager is not configured. Select a ready provider vault or configure the deployment default. AWS Secrets Manager provider is not ready: missing PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID.",
+      "AWS Secrets Manager is not set up on this Paperclip server. Choose a vault that is ready, or ask your administrator to set it up. AWS Secrets Manager provider is not ready: missing PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID.",
     );
   });
 
@@ -141,7 +143,7 @@ describe("Secrets page provider helpers", () => {
           status: "disabled",
         }),
       ),
-    ).toBe("This provider vault is disabled.");
+    ).toBe("This vault is disabled.");
   });
 
   it("blocks provider modes the backend does not support", () => {
@@ -203,6 +205,110 @@ describe("Secrets page provider helpers", () => {
         provider: "vault",
         status: "coming_soon",
       } as never),
-    ).toBe("This provider vault is saved as draft metadata only.");
+    ).toBe("Paperclip can't store or read secrets in this vault yet.");
+  });
+
+  it("falls back to a plain sentence when an unhealthy vault reports no message", () => {
+    expect(
+      getProviderConfigBlockReason(
+        providerConfig({ id: "aws-down", provider: "aws_secrets_manager", healthStatus: "error" }),
+      ),
+    ).toBe("Paperclip couldn't reach this vault.");
+  });
+});
+
+describe("buildCreateVaultOptions", () => {
+  const build = (
+    overrides: Partial<Parameters<typeof buildCreateVaultOptions>[0]> = {},
+  ) =>
+    buildCreateVaultOptions({
+      providers: [localProvider, awsProvider],
+      providerConfigs: [],
+      mode: "managed",
+      health: null,
+      ...overrides,
+    });
+
+  it("offers only Paperclip's own storage when nothing else is set up", () => {
+    expect(build({ providers: [localProvider, { ...awsProvider, configured: false }] })).toEqual([
+      {
+        value: "local_encrypted:",
+        provider: "local_encrypted",
+        providerConfigId: "",
+        label: "Paperclip (default)",
+        blockReason: null,
+      },
+    ]);
+  });
+
+  it("offers a provider's connected vaults in place of its built-in storage", () => {
+    const options = build({
+      providerConfigs: [
+        providerConfig({ id: "team", provider: "local_encrypted", displayName: "Team vault" }),
+        providerConfig({ id: "aws-prod", provider: "aws_secrets_manager", displayName: "prod-us-east", isDefault: true }),
+      ],
+    });
+
+    expect(options.map((option) => option.label)).toEqual([
+      "Team vault · Paperclip-encrypted (default)",
+      "prod-us-east · AWS Secrets Manager",
+    ]);
+    expect(options.map((option) => option.value)).toEqual([
+      "local_encrypted:team",
+      "aws_secrets_manager:aws-prod",
+    ]);
+    expect(options.every((option) => option.blockReason === null)).toBe(true);
+  });
+
+  it("keeps an unhealthy vault in the list with its reason and drops disabled and coming-soon ones", () => {
+    const options = build({
+      providers: [localProvider, { ...awsProvider, configured: false }],
+      providerConfigs: [
+        providerConfig({
+          id: "aws-down",
+          provider: "aws_secrets_manager",
+          displayName: "staging-eu",
+          healthStatus: "error",
+          healthMessage: "AWS denied access.",
+        }),
+        providerConfig({ id: "aws-off", provider: "aws_secrets_manager", status: "disabled" }),
+        providerConfig({ id: "aws-draft", provider: "aws_secrets_manager", status: "coming_soon" }),
+      ],
+    });
+
+    expect(options.map((option) => option.value)).toEqual(["local_encrypted:", "aws_secrets_manager:aws-down"]);
+    expect(options[1].blockReason).toBe("AWS denied access.");
+  });
+
+  it("marks Paperclip's own storage as blocked for linking instead of hiding it", () => {
+    const options = build({ mode: "external" });
+
+    expect(options[0]).toMatchObject({
+      value: "local_encrypted:",
+      blockReason: "Local encrypted (default) does not support linked external references.",
+    });
+    expect(options[1]).toMatchObject({ value: "aws_secrets_manager:", blockReason: null });
+  });
+});
+
+describe("parseEnvAssignment", () => {
+  it("splits NAME=value, with or without export and quotes", () => {
+    expect(parseEnvAssignment("GITHUB_TOKEN=ghp_abc")).toEqual({ name: "GITHUB_TOKEN", value: "ghp_abc" });
+    expect(parseEnvAssignment('  export LINEAR_API_KEY="lin_api_1"  ')).toEqual({
+      name: "LINEAR_API_KEY",
+      value: "lin_api_1",
+    });
+    expect(parseEnvAssignment("DATABASE_URL='postgres://u:p@host/db?sslmode=require'")).toEqual({
+      name: "DATABASE_URL",
+      value: "postgres://u:p@host/db?sslmode=require",
+    });
+  });
+
+  it("leaves anything that is not a single assignment alone", () => {
+    expect(parseEnvAssignment("ghp_abc")).toBeNull();
+    expect(parseEnvAssignment("A=1\nB=2")).toBeNull();
+    expect(parseEnvAssignment("1BAD=value")).toBeNull();
+    expect(parseEnvAssignment("EMPTY=")).toBeNull();
+    expect(parseEnvAssignment('EMPTY=""')).toBeNull();
   });
 });

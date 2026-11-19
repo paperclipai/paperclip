@@ -58,6 +58,16 @@ export interface OpenHarnessSessionInput {
   signal?: AbortSignal;
 }
 
+export interface RunnerAttachmentDownloadGrant {
+  url: string;
+  token: string;
+  byteSize: number;
+  sha256: string;
+  contentType: string;
+}
+
+export type DownloadRunnerAttachment = (grant: (turnId: string) => RunnerAttachmentDownloadGrant) => Promise<string | null>;
+
 export interface HarnessSessionRecoveryOptions {
   normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   /** Abort provider recovery and release any not-yet-returned provider state. */
@@ -495,6 +505,7 @@ export interface PersistedHarnessSession {
     | "same_session_only"
     | "allow_replacement_after_governed_wait"
     | "allow_replacement_after_resume_failure";
+  awaitingProviderTurn?: boolean;
 }
 
 /** Runner proof that saved provider state cannot be restored by this runner
@@ -589,6 +600,7 @@ export interface CancelledTurnSettlement {
 
 export interface HarnessSession {
   supportsTurnReasoning?(): boolean;
+  downloadAttachment?: DownloadRunnerAttachment;
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   ids(): {
     driverSessionId: string;
@@ -657,8 +669,10 @@ export interface HarnessSession {
   usage?(): Promise<Record<string, unknown> | null>;
   transcript?(): Promise<HarnessTranscriptSnapshot>;
   snapshot(): Promise<PersistedHarnessSession>;
+  boundarySnapshot?(sourceSeq: number): PersistedHarnessSession | null;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
+  retireReleasedController?(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null>;
   /** Relinquish controller authority without semantically closing the session. */
   detachControllerForRestart?(): Promise<void>;
   close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void>;

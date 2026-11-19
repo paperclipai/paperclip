@@ -37,6 +37,7 @@ export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructio
 
 export const upsertAgentInstructionsFileSchema = z.object({
   path: z.string().min(1).max(512),
+  renameTo: z.string().min(1).max(512).optional(),
   content: z.string().max(1024 * 1024),
   baseRevisionId: z.string().uuid().nullable().optional(),
   baseHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),

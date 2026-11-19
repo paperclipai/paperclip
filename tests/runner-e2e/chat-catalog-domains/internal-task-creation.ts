@@ -112,7 +112,8 @@ function creationDefinition(scenarioId: string): ChatCatalogCase {
     if (scenarioId === "tasks.website-without-project") interception = await dropChatSendAcknowledgement(ctx.input.page, ctx.scenario.query);
     return { worker, priorTasks };
   }, gradeDelegatedCreation);
-  return { ...base, observe: observeCreation, sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-creation.ts", "lost-send.ts"],
+  return { ...base, ...(scenarioId === "projects.project-work" ? { oracleVersion: "paperclip.chat-catalog.internal.project-work.v2" } : {}),
+    observe: observeCreation, sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-task-creation.ts", "lost-send.ts"],
     expectedRunCount: 3, minimumRunCount: scenarioId === "projects.project-work" ? 1 : 2,
     runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
     async act(ctx, state) {

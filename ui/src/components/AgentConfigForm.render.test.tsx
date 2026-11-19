@@ -13,10 +13,12 @@ import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, ModelDropdown, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { AgentLifecycleStatus, useAgentLifecycleStatus } from "./AgentLifecycleStatus";
 import { queryKeys } from "../lib/queryKeys";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
 import { aiConnectionsApi } from "../api/ai-connections";
+import * as ConnectionField from "./ai-connections/AiConnectionField";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { buildClaudeLocalConfig } from "@paperclipai/adapter-claude-local/ui";
@@ -1220,6 +1222,54 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
   });
 
+  it("clears dirty state when a runtime toggle is restored", async () => {
+    const dirty = vi.fn();
+    const result = await renderForm([], {}, { content: "configuration", onDirtyChange: dirty });
+    roots.push(result.root);
+    const toggle = result.container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle).toBeTruthy();
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
+  it.each([{}, { enabled: false, maxAttempts: 4, delayMs: 3000 }])("clears dirty state when continuation settings are restored (%j)", async saved => {
+    const dirty = vi.fn();
+    const result = await renderForm([], { runtimeConfig: { heartbeat: { maxTurnContinuation: saved } } }, { onDirtyChange: dirty });
+    roots.push(result.root);
+    await clickByText(result.container, "Advanced Run Policy");
+    const toggle = result.container.querySelector<HTMLButtonElement>('[aria-label="Continue after max-turn stop"]')!;
+    expect(toggle).toBeTruthy();
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
+  it("clears dirty state when the saved account binding is restored", async () => {
+    const binding = { mode: "responsible_user" as const, provider: "openai" as const, method: "api_key" as const };
+    const field = vi.spyOn(ConnectionField, "AiConnectionField").mockImplementation(({ onChange }) => <>
+      <button onClick={() => onChange({ ...binding, method: "subscription" })}>Other account</button>
+      <button onClick={() => onChange({ ...binding })}>Original account</button>
+    </>);
+    try {
+      const dirty = vi.fn();
+      const result = await renderForm([], { runtimeConfig: { aiConnection: binding } }, { onDirtyChange: dirty });
+      roots.push(result.root);
+      await act(async () => findButton(result.container, "Other account")!.click());
+      await flushReact();
+      expect(dirty).toHaveBeenLastCalledWith(true);
+      await act(async () => findButton(result.container, "Original account")!.click());
+      await flushReact();
+      expect(dirty).toHaveBeenLastCalledWith(false);
+    } finally { field.mockRestore(); }
+  });
+
   it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
     const dirty = vi.fn();
     let save: (() => void) | null = null;
@@ -2388,6 +2438,17 @@ describe("AgentConfigForm environment selector", () => {
     const urlIndex = result.container.textContent!.indexOf("https://auth.example.test/device");
     expect(codeIndex).toBeGreaterThan(-1);
     expect(urlIndex).toBeGreaterThan(codeIndex);
+  });
+
+  it("blocks the displayed login code from session replay", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(isBlockedFromReplay("WXYZ-1234", document.body)).toBe(true);
   });
 
   it("keeps the code and URL visible after a later poll returns no prompt", async () => {

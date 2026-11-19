@@ -49,6 +49,7 @@ import type {
   RoutineTrigger,
   RoutineTriggerSecretMaterial,
   RoutineVariable,
+  RoutineWebhookDelivery,
   RunRoutine,
   UpdateRoutine,
   UpdateRoutineTrigger,
@@ -69,6 +70,7 @@ import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
@@ -88,6 +90,7 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
+import { planTriggerUpdate } from "./routine-trigger-update-plan.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -163,6 +166,13 @@ type Actor = {
   actorResponsibleUserId?: string | null;
   runId?: string | null;
 };
+
+export const AGENT_UNAUTHENTICATED_WEBHOOK_ERROR =
+  "Agents can only create authenticated webhook triggers. Use signingMode \"bearer\" (the default) or a signed mode such as \"hmac_sha256\". If the sender cannot authenticate its requests, ask a person to choose an unauthenticated webhook on the board.";
+
+function assertAgentWebhookAuthenticated(actor: Actor, signingMode: string | null | undefined) {
+  if (actor.agentId && signingMode === "none") throw forbidden(AGENT_UNAUTHENTICATED_WEBHOOK_ERROR);
+}
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
@@ -1721,6 +1731,7 @@ export function routineService(
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
     rejectIdempotencyReplay?: boolean;
+    replayAgentApiReceiptsFor?: string | null;
     routineIdempotency?: boolean;
     createdByRunId?: string | null;
     executionWorkspaceId?: string | null;
@@ -1833,7 +1844,16 @@ export function routineService(
             and(
               eq(routineRuns.companyId, input.routine.companyId),
               eq(routineRuns.routineId, input.routine.id),
-              eq(routineRuns.source, input.source),
+              input.replayAgentApiReceiptsFor
+                ? or(eq(routineRuns.source, input.source), and(eq(routineRuns.source, "api"), sql`exists (
+                    select 1 from ${activityLog}
+                    where ${activityLog.companyId} = ${input.routine.companyId}
+                      and ${activityLog.entityType} = 'routine_run'
+                      and ${activityLog.entityId} = ${routineRuns.id}::text
+                      and ${activityLog.action} = 'routine.run_triggered'
+                      and ${activityLog.agentId} = ${input.replayAgentApiReceiptsFor}
+                  )`))
+                : eq(routineRuns.source, input.source),
               eq(routineRuns.idempotencyKey, input.idempotencyKey),
               idempotentRunId ? eq(routineRuns.id, idempotentRunId)
                 : input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
@@ -1999,6 +2019,7 @@ export function routineService(
           reason: "issue_assigned",
           mutation: "create",
           contextSource: "routine.dispatch",
+          responsibleUserId,
           requestedByActorType: interactionActorAgentId ? "agent" : input.actor?.userId ? "user" : input.source === "schedule" ? "system" : undefined,
           requestedByActorId: interactionActorAgentId ?? input.actor?.userId ?? null,
           requestedByActorCompanyId: interactionActorCompanyId,
@@ -2065,10 +2086,10 @@ export function routineService(
 
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
-      trackRoutineRun(telemetryClient, {
+      withTelemetryCompany(input.routine.companyId, () => trackRoutineRun(telemetryClient, {
         source: run.source,
         status: run.status,
-      });
+      }));
     }
 
     return run;
@@ -2233,7 +2254,141 @@ export function routineService(
 
     getDescriptionDocument: async (routineId: string) => getRoutineDescriptionDocument(routineId),
 
-    create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
+    /**
+     * Facts about many routines at once for the responsibilities automation
+     * read: status, agent, when it last fired, and its live triggers (enabled
+     * and not archived, oldest first) with what the view says about each: a
+     * schedule's label, time zone and next run; a webhook's address, how it
+     * is secured and when it last received a call; a standing check's kind.
+     * Also how its latest run went (`lastRun`): runs that were skipped or
+     * merged into another never ran, so they are passed over; a run that
+     * made its task and is waiting on it is still running. Two queries
+     * whatever the count.
+     */
+    automationFacts: async (companyId: string, routineIds: readonly string[]) => {
+      const facts = new Map<string, {
+        id: string;
+        title: string;
+        status: string;
+        assigneeAgentId: string | null;
+        lastTriggeredAt: Date | null;
+        /** Its latest run that ran: how it went, and when it ended (or started, while running). Null when none has. */
+        lastRun: { outcome: "succeeded" | "failed" | "running"; at: Date } | null;
+        triggers: Array<{
+          id: string;
+          kind: string;
+          label: string | null;
+          cronExpression: string | null;
+          timezone: string | null;
+          nextRunAt: Date | null;
+          webhookUrl: string | null;
+          signingMode: string | null;
+          lastDeliveryAt: string | null;
+        }>;
+      }>();
+      if (routineIds.length === 0) return facts;
+      const ids = [...new Set(routineIds)];
+      // A single-table select leaves column names unqualified, so the outer routine's id is named in full.
+      const latestRun = (column: string) => sql<string | null>`(select ${sql.raw(column)} from ${routineRuns} lr
+        where lr.routine_id = ${sql.identifier("routines")}.${sql.identifier("id")} and lr.status not in ('skipped', 'coalesced')
+        order by lr.triggered_at desc, lr.id desc limit 1)`;
+      const [routineRows, triggerRows] = await Promise.all([
+        db.select({
+          id: routines.id,
+          title: routines.title,
+          status: routines.status,
+          assigneeAgentId: routines.assigneeAgentId,
+          lastTriggeredAt: routines.lastTriggeredAt,
+          lastRunStatus: latestRun("lr.status"),
+          lastRunAt: latestRun("coalesce(lr.completed_at, lr.triggered_at)"),
+        }).from(routines)
+          .where(and(eq(routines.companyId, companyId), inArray(routines.id, ids))),
+        db.select({
+          id: routineTriggers.id,
+          routineId: routineTriggers.routineId,
+          kind: routineTriggers.kind,
+          label: routineTriggers.label,
+          cronExpression: routineTriggers.cronExpression,
+          timezone: routineTriggers.timezone,
+          nextRunAt: routineTriggers.nextRunAt,
+          publicId: routineTriggers.publicId,
+          signingMode: routineTriggers.signingMode,
+          lastWebhookDelivery: routineTriggers.lastWebhookDelivery,
+        }).from(routineTriggers)
+          .where(and(
+            eq(routineTriggers.companyId, companyId),
+            inArray(routineTriggers.routineId, ids),
+            eq(routineTriggers.enabled, true),
+            eq(routineTriggers.archived, false),
+          ))
+          .orderBy(asc(routineTriggers.createdAt), asc(routineTriggers.id)),
+      ]);
+      const triggersByRoutine = new Map<string, typeof triggerRows>();
+      for (const row of triggerRows) {
+        const list = triggersByRoutine.get(row.routineId) ?? [];
+        list.push(row);
+        triggersByRoutine.set(row.routineId, list);
+      }
+      const webhookUrl = (publicId: string | null) => {
+        if (!publicId) return null;
+        try {
+          return routineWebhookUrl(publicId);
+        } catch {
+          return null;
+        }
+      };
+      for (const { lastRunStatus, lastRunAt, ...row } of routineRows) {
+        facts.set(row.id, {
+          ...row,
+          lastRun: lastRunStatus && lastRunAt
+            ? {
+              outcome: lastRunStatus === "completed" ? "succeeded" : lastRunStatus === "failed" ? "failed" : "running",
+              at: new Date(lastRunAt),
+            }
+            : null,
+          triggers: (triggersByRoutine.get(row.id) ?? []).map((trigger) => ({
+            id: trigger.id,
+            kind: trigger.kind,
+            label: trigger.label,
+            cronExpression: trigger.cronExpression,
+            timezone: trigger.timezone,
+            nextRunAt: trigger.nextRunAt,
+            webhookUrl: trigger.kind === "webhook" ? webhookUrl(trigger.publicId) : null,
+            signingMode: trigger.kind === "webhook" ? trigger.signingMode : null,
+            lastDeliveryAt: trigger.kind === "webhook" && trigger.lastWebhookDelivery && !trigger.lastWebhookDelivery.test
+              ? trigger.lastWebhookDelivery.receivedAt
+              : null,
+          })),
+        });
+      }
+      return facts;
+    },
+
+    /** Which of `originIds` (of `originKind`) a routine that is not archived carries. */
+    liveOriginIds: async (companyId: string, originKind: string, originIds: readonly string[]): Promise<Set<string>> => {
+      if (originIds.length === 0) return new Set();
+      const rows = await db.select({ originId: routines.originId }).from(routines)
+        .where(and(
+          eq(routines.companyId, companyId),
+          eq(routines.originKind, originKind),
+          inArray(routines.originId, [...new Set(originIds)]),
+          ne(routines.status, "archived"),
+        ));
+      return new Set(rows.map((row) => row.originId).filter((id): id is string => !!id));
+    },
+
+    /**
+     * `options.origin` records where the routine came from (`origin_kind` /
+     * `origin_id`). With an origin, at most one routine that is not archived
+     * may carry it: a second create for the same origin, concurrent or later,
+     * fails with 409 `routine_origin_exists`.
+     */
+    create: async (
+      companyId: string,
+      input: CreateRoutine,
+      actor: Actor,
+      options: { origin?: { kind: string; id: string } } = {},
+    ): Promise<Routine> => {
       await assertProject(companyId, input.projectId ?? null);
       await assertRoutineFolder(companyId, input.folderId ?? null);
       await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
@@ -2265,6 +2420,24 @@ export function routineService(
         await assertAgentInteraction(tx, { companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId, operation: "assign",
           targetAgentId: input.assigneeAgentId, parentIssueId: input.parentIssueId,
           texts: [input.title, input.description ?? ""], lock: true });
+        const origin = options.origin;
+        if (origin) {
+          // Serialize creates for one origin, then refuse a second live routine for it.
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`routine-origin:${companyId}:${origin.kind}:${origin.id}`}, 0))`);
+          const [existing] = await txDb
+            .select({ id: routines.id })
+            .from(routines)
+            .where(and(
+              eq(routines.companyId, companyId),
+              eq(routines.originKind, origin.kind),
+              eq(routines.originId, origin.id),
+              ne(routines.status, "archived"),
+            ))
+            .limit(1);
+          if (existing) {
+            throw conflict("A routine already repeats this", { code: "routine_origin_exists", routineId: existing.id });
+          }
+        }
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [created] = await txDb
           .insert(routines)
@@ -2286,6 +2459,7 @@ export function routineService(
             variables,
             env,
             responsibleUserId,
+            ...(origin ? { originKind: origin.kind, originId: origin.id } : {}),
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -2537,6 +2711,7 @@ export function routineService(
       }
 
       if (input.kind === "webhook") {
+        assertAgentWebhookAuthenticated(actor, input.signingMode);
         publicId = crypto.randomBytes(12).toString("hex");
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
@@ -2621,21 +2796,56 @@ export function routineService(
         }
       }
 
+      if (patch.setupPending === true && existing.kind !== "webhook") {
+        throw unprocessable("Only webhooks can be tested");
+      }
+
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
+        const current = await txDb
+          .select({
+            signingMode: routineTriggers.signingMode,
+            enabled: routineTriggers.enabled,
+            archived: routineTriggers.archived,
+            setupPending: routineTriggers.setupPending,
+            lastWebhookDelivery: routineTriggers.lastWebhookDelivery,
+          })
+          .from(routineTriggers)
+          .where(eq(routineTriggers.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!current) return null;
+        if (existing.kind === "webhook" && current.signingMode !== "none") {
+          assertAgentWebhookAuthenticated(actor, patch.signingMode);
+        }
+        const plan = planTriggerUpdate(patch, {
+          kind: existing.kind,
+          setupPending: current.setupPending,
+          lastWebhookDelivery: current.lastWebhookDelivery ?? null,
+        });
+        if (patch.setupPending === true) {
+          if (patch.archived ?? current.archived) throw conflict("This webhook was removed");
+          if (!(patch.enabled ?? current.enabled)) throw conflict("Turn the webhook on before testing it");
+          const [lockedRoutine] = await txDb
+            .select({ status: routines.status })
+            .from(routines)
+            .where(eq(routines.id, existing.routineId));
+          if (!lockedRoutine) throw notFound("Routine not found");
+          if (lockedRoutine.status === "archived") throw conflict("This routine is archived");
+        }
+        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [updated] = await txDb
           .update(routineTriggers)
           .set({
             label: patch.label === undefined ? existing.label : patch.label,
             enabled: patch.enabled ?? existing.enabled,
-            ...(patch.setupPending === false ? { setupPending: false } : {}),
+            ...(patch.setupPending !== undefined ? { setupPending: patch.setupPending } : {}),
+            ...(plan.restoredDelivery ? { lastWebhookDelivery: plan.restoredDelivery.value } : {}),
             ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
             cronExpression,
             timezone,
             nextRunAt,
-            signingMode: patch.signingMode === undefined ? existing.signingMode : patch.signingMode,
+            signingMode: patch.signingMode === undefined ? current.signingMode : patch.signingMode,
             replayWindowSec: patch.replayWindowSec === undefined ? existing.replayWindowSec : patch.replayWindowSec,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
@@ -2650,9 +2860,7 @@ export function routineService(
           .where(eq(routines.id, existing.routineId))
           .then((rows) => rows[0] ?? null);
         if (!routine) throw notFound("Routine not found");
-        const appended = await appendRoutineRevision(txDb, routine, actor, {
-          changeSummary: `Updated ${existing.kind} trigger`,
-        });
+        const appended = await appendRoutineRevision(txDb, routine, actor, { changeSummary: plan.changeSummary });
         return { trigger: updated as RoutineTrigger, revision: appended.revision };
       });
       return result;
@@ -2779,10 +2987,8 @@ export function routineService(
       const snapshot = routineRevisionSnapshotSchema.parse(targetRevision.snapshot) as RoutineRevisionSnapshotV1;
       const routineSnapshot = snapshot.routine;
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
-
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existingRoutine.id} for update`);
         const locked = await txDb
           .select()
@@ -2797,9 +3003,16 @@ export function routineService(
         }
 
         const currentTriggers = await txDb
-          .select({ id: routineTriggers.id })
+          .select({ id: routineTriggers.id, signingMode: routineTriggers.signingMode })
           .from(routineTriggers)
           .where(and(eq(routineTriggers.companyId, locked.companyId), eq(routineTriggers.routineId, locked.id)));
+        const unauthenticatedTriggerIds = new Set(currentTriggers.filter((trigger) => trigger.signingMode === "none").map((trigger) => trigger.id));
+        for (const trigger of snapshot.triggers) {
+          if (trigger.kind === "webhook" && !unauthenticatedTriggerIds.has(trigger.id)) {
+            assertAgentWebhookAuthenticated(actor, trigger.signingMode);
+          }
+        }
+        await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const currentTriggerIds = new Set(currentTriggers.map((trigger) => trigger.id));
         const missingWebhookTriggers = snapshot.triggers
           .filter((trigger) => trigger.kind === "webhook" && !currentTriggerIds.has(trigger.id));
@@ -2947,6 +3160,7 @@ export function routineService(
         projectWorkspaceId: input.projectWorkspaceId ?? null,
         assigneeAgentId: input.assigneeAgentId ?? null,
         idempotencyKey: input.idempotencyKey,
+        replayAgentApiReceiptsFor: input.source === "manual" ? actor?.agentId ?? null : null,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:
@@ -2984,7 +3198,12 @@ export function routineService(
         if (!trigger.enabled || (!trigger.setupPending && routine.status !== "active")) throw conflict("Routine trigger is not active");
         const recordDelivery = async (status: "received" | "rejected") => {
           const receivedAt = new Date().toISOString();
-          await txDb.update(routineTriggers).set({ lastWebhookDelivery: { status, receivedAt, test: trigger.setupPending } }).where(eq(routineTriggers.id, trigger.id));
+          const last = trigger.lastWebhookDelivery;
+          // While testing, carry the last real delivery so finishing the test can restore it.
+          const delivery: RoutineWebhookDelivery = trigger.setupPending
+            ? { status, receivedAt, test: true, previous: last ? (last.test ? last.previous ?? null : last) : null }
+            : { status, receivedAt, test: false };
+          await txDb.update(routineTriggers).set({ lastWebhookDelivery: delivery }).where(eq(routineTriggers.id, trigger.id));
           await logActivity(txDb, {
             companyId: routine.companyId, actorType: "system", actorId: "routine-webhook",
             action: trigger.setupPending ? `routine.webhook_test_${status}` : `routine.webhook_${status}`,

@@ -1,11 +1,11 @@
 import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
-import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
+import { notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
 import { isAgentDirectoryPreparationWait } from "../../../services/pre-dispatch-execution-evidence.js";
 import { isUserCommentContinuationReason } from "../../../services/explicit-native-continuation.js";
-import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
+import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../lib/queued-comment-context.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
@@ -15,6 +15,7 @@ import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { recordedUserStop, userStopBoundaryAt } from "../../../services/run-cancellation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { continueFreshInTransaction, recordFreshContinuationCheck } from "../../../services/fresh-continuation-fallback.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
@@ -55,6 +56,7 @@ import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
 import { verifyBlockerStallWake } from "../../../services/recovery/blocker-stall-wakeups.js";
+import { readPredecessorRetirementFallback } from "../../../services/native-runtime/predecessor-retirement.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -100,6 +102,7 @@ import type {
 } from "../application/types.js";
 import { RunDispatchApplicationError } from "../application/types.js";
 import { parkWorkspaceBusyRetryInTx } from "./workspace-busy-wait.js";
+import { parkEnvironmentProviderWaitInTx } from "./environment-provider-wait.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
@@ -161,11 +164,25 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+async function continuesNoWorkRunOnBlockedTask(dbOrTx: Db,
+  input: { companyId: string; runId: string }): Promise<boolean> {
+  const [run] = await dbOrTx.select({ resultJson: heartbeatRuns.resultJson, retryOfRunId: heartbeatRuns.retryOfRunId })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  let fallback = readPredecessorRetirementFallback(run?.resultJson);
+  if (!fallback && run?.retryOfRunId) {
+    const [source] = await dbOrTx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, run.retryOfRunId)));
+    fallback = readPredecessorRetirementFallback(source?.resultJson);
+  }
+  return fallback?.issueStatusAtFailure === "blocked";
+}
+
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if ((retryReason === "ai_connection_busy" || retryReason === "ai_connection_pool_wait")) return "ai_connection_wait";
-  if (["native_safe_replacement", "native_provider_overloaded", "interrupted_preparation"].includes(retryReason ?? "")) return "native_safe_replacement";
+  if (["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker", "native_agent_blocker_continuation",
+    "interrupted_preparation"].includes(retryReason ?? "")) return "native_safe_replacement";
   return "other";
 }
 
@@ -430,6 +447,8 @@ export function createPostgresRunDispatchAdapter(
     if (!facts.issueFound) return { agentFound: true, facts };
 
     facts.issueStatus = issue.status;
+    facts.continuesNoWorkRunOnBlockedTask = retryReasonKind === "native_safe_replacement" && issue.status === "blocked"
+      && await continuesNoWorkRunOnBlockedTask(dbOrTx as unknown as Db, { companyId: input.companyId, runId: input.runId });
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
@@ -513,6 +532,7 @@ export function createPostgresRunDispatchAdapter(
       && typeof (preparationWait as Record<string, unknown>).kind === "string");
     facts.dependenciesBlocked =
       readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted && !preparationWaitAdmitted
+        && !facts.continuesNoWorkRunOnBlockedTask
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -685,12 +705,15 @@ export function createPostgresRunDispatchAdapter(
       && await verifyBlockerStallWake(dbOrTx as unknown as Db, { companyId: input.companyId, issueId,
         contextSnapshot: context, requestedByActorType: null })
       ? null : replacementReadiness;
+    const continuesNoWorkRun = retryReasonKind === "native_safe_replacement" && issue?.status === "blocked"
+      && await continuesNoWorkRunOnBlockedTask(dbOrTx as unknown as Db, { companyId: input.companyId, runId: input.runId });
     return {
       runId: input.runId,
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,
-      dependenciesBlocked: readiness && !readiness.isDependencyReady ? {
+      continuesNoWorkRunOnBlockedTask: continuesNoWorkRun,
+      dependenciesBlocked: readiness && !readiness.isDependencyReady && !continuesNoWorkRun ? {
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
@@ -984,6 +1007,9 @@ export function createPostgresRunDispatchAdapter(
       if (await parkWorkspaceBusyRetryInTx(tx, run, now)) {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
+      if (await parkEnvironmentProviderWaitInTx(tx, run, now)) {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
 
       const promoted = await promoteDueRetryInTx(tx as unknown as Db, {
         runId: input.runId,
@@ -1247,6 +1273,9 @@ export function createPostgresRunDispatchAdapter(
             eq(issues.executionRunId, row.id),
           ),
         );
+      if (decision.errorCode === "issue_assignee_changed") {
+        await notifyDeferredWakesForIssue(tx, { companyId: row.companyId, issueId });
+      }
 
       await appendHeartbeatRunEvent(tx as unknown as Db, {
         companyId: row.companyId,
@@ -1377,6 +1406,19 @@ export function createPostgresRunDispatchAdapter(
     return { outcome: "deferred" as const, postCommitEffects: [statusEffect(waiting, run.status)] };
   }
 
+  async function settleOlderRunHold(tx: Db, run: HeartbeatRun, issueId: string,
+    blocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>, now: Date) {
+    if (!blocker.recoveryActionId || !blocker.runId || blocker.runId === run.id) return;
+    const [issue] = await tx.select({ conversationAgentId: issues.conversationAgentId }).from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+    if (!issue || issue.conversationAgentId) return;
+    const fresh = await continueFreshInTransaction(tx, { companyId: run.companyId, runId: blocker.runId,
+      trigger: "continuation_wake", delivery: "record", now });
+    if (fresh.kind === "exact_recovery_pending")
+      await recordFreshContinuationCheck(tx, { companyId: run.companyId, actionId: blocker.recoveryActionId }, fresh, now);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
+  }
+
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -1401,7 +1443,9 @@ export function createPostgresRunDispatchAdapter(
         const deferred = await deferRetryForCleanupInTx(tx, run, issueId, input.now, executionBlocker);
         if (deferred) return deferred;
       }
-      return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+      const cancelled = await cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+      if (cancelled.outcome === "cancelled" && executionBlocker) await settleOlderRunHold(tx, run, issueId, executionBlocker, input.now);
+      return cancelled;
     };
 
     return withIssueThenRunLocks(

@@ -20,6 +20,7 @@ import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController 
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { archiveSettledFailedNativeController } from "./native-controller-archive-source.js";
 import { nativeControllerSourceDigest } from "./native-controller-source-digest.js";
+import { isVolumeFreeControllerStateOwnerEntry, volumeFreeControllerStateOwned } from "./volume-free-controller-state.js";
 
 type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date; lastRunId: string };
 
@@ -257,10 +258,15 @@ async function preservedActiveCheckpoint(db: Db, selected: Selected,
 }
 
 export async function hasLocalNativeControllerObligations(db: Db, storage?: StorageService | null): Promise<boolean> {
-  const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
+  return await findLocalNativeControllerObligation(db, storage) !== null;
+}
+
+export async function findLocalNativeControllerObligation(db: Db, storage?: StorageService | null) {
+  const base = nativeHarnessStateBase();
+  const roots = await readdir(base).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
   });
-  if (!roots.length) return false;
+  if (!roots.some(name => !isVolumeFreeControllerStateOwnerEntry(name)) || await volumeFreeControllerStateOwned(base)) return null;
   for await (const { selected, source, databaseRecoveryPreserved } of retainedSources(db, undefined, 8, true)) {
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
     if (databaseRecoveryPreserved) continue;
@@ -280,9 +286,10 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
         ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
       if (controller !== undefined && archiveStorage && await hasArchivedLegacyNativeController(db, { ...binding, storage: archiveStorage, controller, supervisor })) continue;
     }
-    if (present || await hasNativeRunnerCheckpoint(db, binding)) return true;
+    if (present) return { runId: source.id, issueId: selected.issueId, source: paths.controlFile };
+    if (await hasNativeRunnerCheckpoint(db, binding)) return { runId: source.id, issueId: selected.issueId, source: "database_checkpoint" };
   }
-  return false;
+  return null;
 }
 
 function hasMatchingControllerRecovery(selected: Selected,
@@ -402,7 +409,7 @@ function onlineControllerSourceDeferral(error: unknown): string | null {
   return null;
 }
 
-export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal; storage?: StorageService }) {
+export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal; storage?: StorageService; onOutcome?: (outcome: string) => void }) {
   const counts = { inspected: 0, imported: 0, unchanged: 0, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} as Record<string, number> };
   const defer = (reason: string) => { counts.deferred[reason] = (counts.deferred[reason] ?? 0) + 1; };
   for await (const { selected, source } of retainedSources(db, input.signal)) {
@@ -471,6 +478,7 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
         throw error;
       });
     }
+    input.onOutcome?.(outcome);
     if (outcome === "archived_failed") counts.archivedFailed++;
     else if (outcome === "imported" || outcome === "unchanged") counts[outcome]++;
     else if (outcome === "source_already_absent") counts.sourceAlreadyAbsent++;

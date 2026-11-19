@@ -1,4 +1,6 @@
 import { connectionActorUserId } from "./actor.js";
+import { AwsMcpCredentialError, isAwsMcpConnection, resolveAwsMcpAuthorization, sharedAwsMcpCredentialMinter, type AwsMcpClients } from "../connectors/aws/mcp-credentials.js";
+import { workloadIdentityService } from "../workload-identity.js";
 import type { ActorInfo } from "./types.js";
 import { oauthConfig } from "./oauth/metadata.js";
 import { remoteEndpoint } from "./connection-methods.js";
@@ -26,6 +28,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 type CredentialAccessDependencies = {
   secrets: ReturnType<typeof secretService>;
+  /** Test seam for the AWS calls behind minted AWS MCP credentials. */
+  awsMcpClients?: AwsMcpClients;
   audit: ToolAccessAudit;
   vercel: VercelCredentialService;
   resolveOAuthGrantSecret: OAuthCredentialStore["resolveOAuthGrantSecret"];
@@ -33,12 +37,42 @@ type CredentialAccessDependencies = {
   refreshOAuthGrantCredentials: ReturnType<typeof createOAuthGrantRefresh>;
 };
 
-export function createConnectionCredentialAccess(db: Db, { secrets, audit, vercel, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials }: CredentialAccessDependencies) {
+export function createConnectionCredentialAccess(db: Db, { secrets, audit, vercel, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials, awsMcpClients }: CredentialAccessDependencies) {
+  const signAwsConnectionToken = (input: { companyId: string; connectionId: string; audience: string }) =>
+    workloadIdentityService(db).signConnectionToken(input);
+  const awsMcpMinter = sharedAwsMcpCredentialMinter(db, signAwsConnectionToken, awsMcpClients);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercel;
   async function vaultGrantForConnection(
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
   ): Promise<typeof connectionGrants.$inferSelect | null> {
+    if (connection.credentialPolicy === "per_agent") {
+      const agentId = actor?.actorType === "agent" ? actor.actorId : null;
+      if (actor?.actorType === "agent" && !agentId) {
+        throw unprocessable("This connection needs the agent's authorization", {
+          code: "agent_authorization_required",
+        });
+      }
+      // Discovery has no run identity in background/operator work. Use only
+      // an unambiguous active agent grant; an agent caller must use its own.
+      const grants = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "agent"),
+        eq(connectionGrants.status, "active"),
+        ...(agentId ? [eq(connectionGrants.subjectAgentId, agentId)] : []),
+      )).limit(2);
+      if (grants.length !== 1) {
+        throw unprocessable(grants.length > 1
+          ? "This connection has multiple agent accounts. Use a separate connection for each agent."
+          : "This connection needs the agent's authorization", {
+          code: grants.length > 1 ? "agent_authorization_ambiguous" : "agent_authorization_required",
+          setupUrl: connectionSetupUrl(connection),
+          reconnectUrl: connectionReconnectUrl(connection),
+        });
+      }
+      return grants[0]!;
+    }
     const actorUserId =
       connectionActorUserId(actor);
     if (actorUserId) {
@@ -110,6 +144,40 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     return null;
   }
 
+  /** Minted at call time for AWS's hosted MCP server; shares the gateway's token cache. */
+  async function resolveAwsMcpHeaders(
+    connection: typeof toolConnections.$inferSelect,
+    actor: ActorInfo | undefined,
+    options: { forceRefresh?: boolean },
+  ): Promise<Record<string, string>> {
+    // The same grant the gateway uses, so both share one cached token and a shared connection never reads
+    // a personal key: a shared connection uses only its active default organization grant.
+    const grant = connection.credentialPolicy === "shared"
+      ? (await db.select().from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.kind, "organization"),
+          eq(connectionGrants.isDefault, true),
+          eq(connectionGrants.status, "active"),
+        )).limit(1))[0] ?? null
+      : await vaultGrantForConnection(connection, actor);
+    try {
+      return await resolveAwsMcpAuthorization({
+        minter: awsMcpMinter, connection, grant, forceRefresh: options.forceRefresh,
+        // A grant's keys may be user-owned (personal connections); read them the way other grant credentials are read.
+        readRef: async (ref) => grant
+          ? (await resolveOAuthGrantSecret(connection, grant, ref, actor, undefined)).value
+          : secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.versionSelector ?? "latest"),
+      });
+    } catch (error) {
+      if (!(error instanceof AwsMcpCredentialError)) throw error;
+      throw new HttpError(error.status, error.message, {
+        code: error.code, connectionId: connection.id,
+        ...(error.awsErrorName ? { awsError: error.awsErrorName } : {}),
+      });
+    }
+  }
+
   async function resolveCredentialHeaders(
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
@@ -119,6 +187,7 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
       const grant = await vercelGrantForConnection(connection, actor);
       return resolveVercelCredentialHeaders(connection, grant, options);
     }
+    if (isAwsMcpConnection(connection)) return resolveAwsMcpHeaders(connection, actor, options);
     let grant: typeof connectionGrants.$inferSelect | null = null;
     try {
       if (

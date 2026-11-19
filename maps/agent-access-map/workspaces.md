@@ -102,7 +102,7 @@ private sources, foreign companies, and closed records. This is automated eviden
 not live agent qualification.
 Importing an existing local task folder is an operator source-checkout command,
 not an agent API or tool: see the
-[dry-run/apply runbook](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).
+[dry-run/apply runbook](../../doc/workspace-storage.md#experimental-native-remote-workspace-storage).
 It requires deployment storage/key access and blocks unfinished writers/recovery.
 Source: [remote source admission](../../server/src/services/heartbeat/remote-workspace-source.ts)
 and [migration](../../server/src/services/remote-workspace-migration.ts).

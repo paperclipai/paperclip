@@ -20,17 +20,23 @@ import {
   issueComments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
   projects,
   projectWorkspaces,
+  toolActionDeliveries,
+  toolActionRequests,
+  toolInvocations,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -72,6 +78,7 @@ vi.mock("../adapters/index.ts", async () => {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
+import { toolActionDeliveryService } from "../services/tool-action-delivery.ts";
 import { escalateExhaustedIssueReviewPathRecovery } from "../services/recovery/review-path-recovery-escalation.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import {
@@ -79,7 +86,10 @@ import {
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
 } from "../services/issue-dependency-wakeups.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATTENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl
+  ? { supported: true, reason: undefined }
+  : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -93,8 +103,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   let db: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
+    }
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
@@ -118,6 +130,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
     await db.delete(issueRecoveryActions);
+    await db.delete(toolActionDeliveries);
+    await db.delete(toolActionRequests);
+    await db.delete(toolInvocations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -134,6 +150,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   }, 30_000);
 
@@ -482,12 +499,128 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     const feed = await attentionService(db).list(companyId, { userId: "responsible-user" });
     expect(feed.items.find((item) => item.subject.id === actions[0].id)).toMatchObject({
       sourceKind: "recovery_action",
+      inlineResolvable: false,
       relatedIssue: expect.objectContaining({ id: issueId }),
       decisionVerbs: expect.arrayContaining([
-        expect.objectContaining({ id: "resolve", label: "Resolve" }),
+        expect.objectContaining({ id: "open_recovery", label: "Open recovery" }),
       ]),
     });
   });
+
+  it("keeps a card accepted while its run settles as the review path and queues no recovery run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId, name: "Review Accept Co", issuePrefix, defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Review Agent", role: "engineer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Create the issue once approved", status: "in_review", priority: "medium",
+      assigneeAgentId: agentId, responsibleUserId: "responsible-user", issueNumber: 1, identifier: `${issuePrefix}-1`,
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId, kind: "request_confirmation", status: "accepted", createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Run the tool?" }, result: { version: 1, outcome: "accepted" }, resolvedAt: new Date(),
+    }).returning();
+    const [invocation] = await db.insert(toolInvocations).values({
+      companyId, agentId, issueId, toolName: "create_issue", approvalState: "approved", status: "pending",
+    }).returning();
+    const [request] = await db.insert(toolActionRequests).values({
+      companyId, invocationId: invocation!.id, issueId, interactionId: interaction!.id, status: "executing",
+      canonicalArgumentsHash: "hash", canonicalArgumentsSummary: { type: "object" } as never,
+      requestedByAgentId: agentId, decidedByUserId: "responsible-user", decidedAt: new Date(),
+    }).returning();
+    await db.insert(toolActionDeliveries).values({
+      actionRequestId: request!.id, companyId, issueId, interactionId: interaction!.id,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const sourceRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+    });
+    expect(sourceRun).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRun!.id)).then((rows) => rows[0]?.status))
+      .toBe("succeeded");
+    expect(await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.reason, "issue_review_path_lost"),
+    ))).toHaveLength(0);
+    expect(await db.select().from(toolActionDeliveries).where(eq(toolActionDeliveries.actionRequestId, request!.id))
+      .then((rows) => rows[0]?.deliveredAt)).toBeNull();
+
+    await db.update(toolInvocations).set({ runId: sourceRun!.id, status: "succeeded" }).where(eq(toolInvocations.id, invocation!.id));
+    await db.update(toolActionRequests).set({ status: "executed", resolvedAt: new Date() }).where(eq(toolActionRequests.id, request!.id));
+    expect(await toolActionDeliveryService(db, heartbeat).deliver(request!.id)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakes.filter((wake) => wake.idempotencyKey === `tool-action-response:${request!.id}`)).toHaveLength(1);
+    expect(wakes.filter((wake) => wake.reason === "issue_review_path_lost"
+      && wake.payload?.sourceRunId === sourceRun!.id)).toHaveLength(0);
+  });
+
+  it.each(["undelivered", "delivered_with_queued_continuation", "delivered_with_listed_wake", "pending_card", "terminated_assignee", "delivered_and_consumed"] as const)(
+    "reads the accepted tool review continuation as a review path only while it can still run (%s)",
+    async (state) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Review Path Co", issuePrefix: `R${companyId.slice(0, 6)}` });
+      await db.insert(agents).values({
+        id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local",
+        status: state === "terminated_assignee" ? "terminated" : "idle",
+      });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Review", status: "in_review", assigneeAgentId: agentId });
+      const [interaction] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId, kind: "request_confirmation", createdByAgentId: agentId,
+        payload: { version: 1, prompt: "Run the tool?" },
+        ...(state === "pending_card" ? { status: "pending" } : { status: "accepted", result: { version: 1, outcome: "accepted" }, resolvedAt: new Date() }),
+      }).returning();
+      const [invocation] = await db.insert(toolInvocations).values({ companyId, agentId, issueId, toolName: "create_issue" }).returning();
+      const [request] = await db.insert(toolActionRequests).values({
+        companyId, invocationId: invocation!.id, issueId, interactionId: interaction!.id,
+        status: state === "pending_card" ? "pending" : "executed",
+        canonicalArgumentsHash: "hash", canonicalArgumentsSummary: { type: "object" } as never, requestedByAgentId: agentId,
+      }).returning();
+      const delivered = state === "delivered_with_queued_continuation" || state === "delivered_with_listed_wake"
+        || state === "delivered_and_consumed";
+      await db.insert(toolActionDeliveries).values({
+        actionRequestId: request!.id, companyId, issueId, interactionId: interaction!.id,
+        deliveredAt: delivered ? new Date() : null,
+      });
+      if (delivered) {
+        await db.insert(agentWakeupRequests).values({
+          companyId, agentId, source: "automation", reason: "issue_commented",
+          status: state === "delivered_and_consumed" ? "completed" : "queued",
+          idempotencyKey: `tool-action-response:${request!.id}`,
+          payload: state === "delivered_with_listed_wake" ? { issueId, taskId: issueId } : {},
+        });
+      }
+
+      const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+      const attention = (await issueService(db).listReviewAttention(companyId, [issue])).get(issueId)!;
+      const continuation = state === "undelivered" || state === "delivered_with_queued_continuation"
+        || state === "delivered_with_listed_wake";
+      expect(attention.state).toBe(continuation || state === "pending_card" ? "covered" : "stalled");
+      expect(attention.paths.filter((path) => path.kind === "queued_wake")).toHaveLength(continuation ? 1 : 0);
+      expect(attention.paths.filter((path) => path.kind === "interaction")).toHaveLength(state === "pending_card" ? 1 : 0);
+    },
+  );
 
   it.each(["monitor", "completed", "reassigned", "newer_run", "other_company"] as const)(
     "does not escalate a stale review recovery after %s",
@@ -594,7 +727,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     }
     // Only the terminal run and completed wake were persisted before the crash.
     // A new service must restore the missing action without invoking the agent.
-    const singleConnectionDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const singleConnectionDb = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 1 });
     try {
       if (gap === "transaction_failure") {
         await db.execute(sql`alter table issue_comments add constraint review_repair_notice_test check (false) not valid`);

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::attachment_download::{DOWNLOAD_COMMAND, DOWNLOAD_RESULT_EVENT};
 use crate::provider_bridge::{semantic_value_digest, MAX_COMPLETION_SUMMARY_CHARS};
 
 use super::{DurableRunnerConfig, DurableRunnerError, PROTOCOL, PROTOCOL_VERSION};
@@ -90,6 +91,11 @@ impl Command {
                 "external provider operations require PRP v3",
             ));
         }
+        if self.command_type == DOWNLOAD_COMMAND && schema_version < 3 {
+            return Err(DurableRunnerError::invalid(
+                "attachment downloads require PRP v3",
+            ));
+        }
         if schema_version == 1 && self.command_type.starts_with("session.goal.") {
             return Err(DurableRunnerError::invalid(
                 "session goal commands require the paperclip.prp.command.v2 schema",
@@ -157,6 +163,7 @@ impl Command {
                 | "session.goal.set"
                 | "session.goal.clear"
                 | "external_provider.operation"
+                | DOWNLOAD_COMMAND
         ) {
             return Err(DurableRunnerError::invalid(format!(
                 "command type is not supported by PRP v{schema_version}"
@@ -624,7 +631,9 @@ impl DurableState {
 
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
-        let schema_version = if event_type.starts_with("external_provider.") {
+        let schema_version = if event_type.starts_with("external_provider.")
+            || event_type == DOWNLOAD_RESULT_EVENT
+        {
             3
         } else if matches!(
             event_type.as_str(),
@@ -1104,6 +1113,10 @@ pub struct DurableStateStore {
 }
 
 impl DurableStateStore {
+    pub fn exists(&self) -> bool {
+        fs::symlink_metadata(&self.path).is_ok()
+    }
+
     pub fn new(state_dir: &Path) -> Result<Self, DurableRunnerError> {
         if let Ok(metadata) = fs::symlink_metadata(state_dir) {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -2873,6 +2886,7 @@ mod tests {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
             turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 

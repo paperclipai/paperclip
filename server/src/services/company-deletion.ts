@@ -10,6 +10,7 @@ import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { notifyChatCompanyConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { chatCompanyDeletion } from "./chat-channels/company-deletion.js";
+import { createTailscaleCompanyDeletion } from "./connectors/tailscale/deletion.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
@@ -63,13 +64,14 @@ import {
 } from "@paperclipai/db";
 
 export async function deleteCompany(db: Db, id: string) {
+  const tailscaleDeletion = createTailscaleCompanyDeletion();
   const lifecycle = createAgentLifecycle(db);
   const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id));
   for (const agent of companyAgents) {
     await lifecycle.terminateAgent(agent.id);
     await processAgentLifecycle(db, agent.id);
   }
-  return withAccountHomeSecretMutationLock(undefined, id, () => db.transaction(async (tx) => {
+  const deleted = await withAccountHomeSecretMutationLock(undefined, id, () => db.transaction(async (tx) => {
         // Exclude accounting writers before taking child locks. KEY SHARE must
         // remain compatible: native writers can already hold a child row while
         // saving a company-scoped result. FOR UPDATE would deadlock that save.
@@ -132,6 +134,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await notifyCompanyRetentionWork(tx, id);
         await tx.delete(approvals).where(eq(approvals.companyId, id));
+        await tailscaleDeletion.deleteCompanyData(tx, id);
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
@@ -159,4 +162,6 @@ export async function deleteCompany(db: Db, id: string) {
           .returning();
         return rows[0] ?? null;
       }));
+  await tailscaleDeletion.stopNetworks();
+  return deleted;
 }

@@ -9,6 +9,43 @@ const issue = {
 };
 
 describe("heartbeat task markdown rendering", () => {
+  it("tells agents on ordinary tasks when to offer a routine, only while routine offers are enabled", () => {
+    for (const nativeRunner of [true, false]) {
+      const markdown = buildPaperclipTaskMarkdown({ issue, nativeRunner, routineSuggestionsEnabled: true })!;
+      expect(markdown).toContain("Routine offer:");
+      expect(markdown).toContain("POST /api/issues/task-1/routine-suggestions");
+      expect(markdown).toContain("Do not offer for one-off work");
+      expect(markdown).toContain("just before finish_task");
+      expect(buildPaperclipTaskMarkdown({ issue, nativeRunner })).not.toContain("Routine offer:");
+    }
+    // Chats, Ask and Plan work are not repeatable task completions.
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, conversationAgentId: "agent-1" }, routineSuggestionsEnabled: true }))
+      .not.toContain("Routine offer:");
+    for (const workMode of ["ask", "planning"]) {
+      expect(buildPaperclipTaskMarkdown({ issue: { ...issue, workMode }, routineSuggestionsEnabled: true })).not.toContain("Routine offer:");
+    }
+  });
+
+  it("carries signup context and proposal boundaries into every onboarding chat turn, greeting only on arrival", () => {
+    const input = { issue: { ...issue, conversationAgentId: "agent", description: '{"initialIdea":"Launch a newsletter"}' },
+      nativeRunner: true, coordinatorWorkspace: true, onboardingChat: true };
+    const greeting = buildPaperclipTaskMarkdown({ ...input, onboardingGreeting: true });
+    expect(greeting).toContain("Welcome turn:");
+    expect(greeting).toContain("so it streams to the user");
+    for (const includeDescription of [true, false]) {
+      const followup = buildPaperclipTaskMarkdown({ ...input, includeDescription });
+      expect(followup).toContain("Launch a newsletter");
+      expect(followup).toContain("concrete goal and clear exit criteria");
+      expect(followup).toContain("begin a structured interview only when they request");
+      expect(followup).toContain('interactionKind: "suggest_tasks"');
+      expect(followup).toContain("acceptance creates the task atomically");
+      expect(followup).toContain("omit projectId from the suggestion");
+      expect(followup).not.toContain("Coordinator task proposals:");
+      expect(followup).toContain("An explicit task-creation request authorizes creating it directly");
+      expect(followup).not.toContain("Welcome turn:");
+    }
+    expect(buildPaperclipTaskMarkdown({ issue })).not.toContain("Onboarding conversation:");
+  });
   it.each([true, false])("keeps native task clarification in the current task on full and resumed assignments (description=%s)", (includeDescription) => {
     const markdown = buildPaperclipTaskMarkdown({
       issue: { ...issue, description: "Write a blog post about our launch." },
@@ -74,11 +111,20 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue, nativeRunner: false, coordinatorWorkspace: true }))
       .not.toContain("Coordinator task proposals:");
   });
+  it("gives a standing chat real company page paths instead of a /<prefix>/ placeholder it could copy into a link", () => {
+    const chat = { id: "chat", identifier: "COM-12", title: "Chat", conversationAgentId: "ceo" };
+    const markdown = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, conferenceRoomEnabled: true, statusCardsEnabled: true, casesEnabled: true, coordinatorWorkspace: true })!;
+    expect(markdown).not.toContain("/<prefix>/");
+    expect(markdown).toContain("profile settings at /COM/company/settings/instance/profile");
+    expect(markdown).toContain("/COM/issues/<identifier>");
+    // Without an identifier the prefix is unknown, so the documented placeholder stays.
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, identifier: null } })).toContain("/<prefix>/issues/<identifier>");
+  });
   it("tells a standing chat about the Conference Room only while the experiment is enabled", () => {
     const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
     const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, conferenceRoomEnabled: true });
     expect(enabled).toContain("Conference Room:");
-    expect(enabled).toContain("[Open the Conference Room](/<prefix>/board-chat)");
+    expect(enabled).toContain("[Open the Conference Room](/RUN/board-chat)");
     expect(enabled).toContain("does not carry over this conversation's history");
     expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("board-chat");
     expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, conferenceRoomEnabled: true }))
@@ -93,10 +139,10 @@ describe("heartbeat task markdown rendering", () => {
     expect(enabled).toContain("POST /api/status-cards/{id}/refresh");
     expect(enabled).toContain("Do not sleep or poll the card. Report the outcome the response gives");
     expect(enabled).toContain("enqueued false otherwise means no run started, so say why from card.state");
-    expect(enabled).toContain("[Launch blockers](/<prefix>/status/<cardId>)");
+    expect(enabled).toContain("[Launch blockers](/RUN/status/<cardId>)");
     // The named pages are the board's real routes.
     const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
-    expect(enabled).toContain("Status page at /<prefix>/status (");
+    expect(enabled).toContain("Status page at /RUN/status (");
     expect(app).toMatch(/path="status"\s+element=\{<StatusCardsExperimentalGate>/);
     expect(app).toMatch(/path="status\/:cardId"\s+element=\{<StatusCardsExperimentalGate>/);
     expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Status Cards:");
@@ -107,8 +153,8 @@ describe("heartbeat task markdown rendering", () => {
     const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
     const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, casesEnabled: true })!;
     expect(enabled).toContain("Cases:");
-    expect(enabled).toContain("/<prefix>/cases/<case identifier>");
-    expect(enabled).toContain("[RUN-C1](/<prefix>/cases/RUN-C1)");
+    expect(enabled).toContain("/RUN/cases/<case identifier>");
+    expect(enabled).toContain("[RUN-C1](/RUN/cases/RUN-C1)");
     // The named page is the board's real route.
     const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
     expect(app).toMatch(/path="cases\/:caseIdentifier"/);

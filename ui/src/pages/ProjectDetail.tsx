@@ -1,4 +1,5 @@
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { configurationWarningMessages } from "../lib/configuration-warnings";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -467,7 +468,9 @@ export function ProjectDetail() {
   const updateProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId),
-    onSuccess: (_project, data) => {
+    onSuccess: (updated, data) => {
+      const notice = configurationWarningMessages(updated);
+      if (notice) pushToast({ title: "Project saved", body: notice, tone: "warn" });
       invalidateProject();
       if (data.visibility !== undefined) queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
@@ -599,7 +602,9 @@ export function ProjectDetail() {
     fieldSaveRequestIds.current[field] = requestId;
     setFieldState(field, "saving");
     try {
-      await projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId);
+      const updated = await projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId);
+      const notice = configurationWarningMessages(updated);
+      if (notice) pushToast({ title: "Project saved", body: notice, tone: "warn" });
       invalidateProject();
       if (data.visibility !== undefined) queryClient.invalidateQueries({ queryKey: ["issues"] });
       if (fieldSaveRequestIds.current[field] !== requestId) return;
@@ -611,7 +616,7 @@ export function ProjectDetail() {
       scheduleFieldReset(field, 3000);
       throw error;
     }
-  }, [invalidateProject, lookupCompanyId, projectLookupRef, queryClient, resolvedCompanyId, scheduleFieldReset, setFieldState]);
+  }, [invalidateProject, lookupCompanyId, projectLookupRef, pushToast, queryClient, resolvedCompanyId, scheduleFieldReset, setFieldState]);
 
   const projectBudgetSummary = useMemo(() => {
     const matched = budgetOverview?.policies.find(

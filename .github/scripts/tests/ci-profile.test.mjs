@@ -5,9 +5,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildTrace } from "../../../scripts/ci-profile/trace.mjs";
-import { sendEvents } from "../../../scripts/ci-profile/export.mjs";
-import { associatedProfilePr, ciOwners, trustedOwnerIds } from "../../../scripts/ci-profile/authorize.mjs";
+import { buildTrace, normalizeChecks, pendingChecks, traceUrl } from "../../../scripts/ci-profile/trace.mjs";
+import { sendEvents, settledChecks } from "../../../scripts/ci-profile/export.mjs";
+import { associatedOwnerPr, associatedProfilePr, ciOwners, exportMode, sampleRate, trustedOwnerIds } from "../../../scripts/ci-profile/authorize.mjs";
 
 const at = (seconds) => new Date(1_800_000_000_000 + seconds * 1000).toISOString();
 const run = {
@@ -186,6 +186,136 @@ test("label alone cannot authorize outsiders, bots, stale revisions or outsider 
   assert.equal(associatedProfilePr(run, [pr], []), undefined);
 });
 
+test("always-on export samples whole CODEOWNER runs and never needs the label", () => {
+  const pr = { user: { id: 123, type: "User" }, base: { repo: run.repository }, head: { repo: { id: 99 }, sha: "abc" }, labels: [] };
+  assert.equal(sampleRate, 10);
+  assert.equal(exportMode({ ...run, run_number: 64800, display_title: "fix: something" }), "sampled");
+  for (const number of [64801, 64805, 64809, 0, undefined, "64800"]) {
+    assert.equal(exportMode({ ...run, run_number: number, display_title: "fix: something" }), undefined);
+  }
+  assert.equal(exportMode({ ...run, run_number: 64801, display_title: "CI profile · PR #5" }), "label");
+  assert.equal(associatedOwnerPr(run, [pr], [123]), pr);
+  assert.equal(associatedProfilePr(run, [pr], [123]), undefined);
+  for (const changed of [
+    { ...pr, user: { id: 999, type: "User" } },
+    { ...pr, user: { id: 123, type: "Bot" } },
+    { ...pr, head: { ...pr.head, sha: "next" } },
+    { ...pr, head: { ...pr.head, repo: { id: 100 } } },
+    { ...pr, head: { ...pr.head, repo: null } },
+    { ...pr, base: { repo: { ...run.repository, id: 100 } } },
+  ]) assert.equal(associatedOwnerPr(run, [changed], [123]), undefined);
+  assert.equal(associatedOwnerPr({ ...run, actor: { id: 999, type: "User" } }, [pr], [123]), undefined);
+  assert.equal(associatedOwnerPr({ ...run, triggering_actor: { id: 41898282, type: "Bot" } }, [pr], [123]), undefined);
+  assert.equal(associatedOwnerPr(run, [pr], []), undefined);
+
+  const trace = buildTrace({ ...run, conclusion: "success" }, jobs, [], { sampleRate, testDetail: false });
+  assert.deepEqual([...new Set(trace.events.map((event) => event.samplerate))], [10]);
+  assert.equal(trace.events[0].data["ci.sample_rate"], 10);
+  assert.deepEqual(trace.warnings, ["Job/step timings only; no test reporter collection steps were present"]);
+  assert.equal(buildTrace(run, jobs).events[0].samplerate, 1);
+  for (const invalid of [0, 1.5, -1, "10"]) assert.throws(() => buildTrace(run, jobs, [], { sampleRate: invalid }), /sample rate/);
+});
+
+test("outside checks are spans on the run's clock, with elapsed time to the last one", () => {
+  const head = { ...run, conclusion: "success", path: ".github/workflows/pr.yml" };
+  const checks = normalizeChecks(head, {
+    checkRuns: [
+      { app: { slug: "greptile-apps" }, name: "Greptile Review", status: "completed", conclusion: "success", started_at: at(1), completed_at: at(90), output: { text: "must not leave GitHub" } },
+      { app: { slug: "github-actions" }, name: "ci / first", status: "completed", conclusion: "success", started_at: at(2), completed_at: at(12) },
+      { app: { slug: "scanner" }, name: "Scan", status: "in_progress", conclusion: null, started_at: at(1), completed_at: null },
+      { app: { slug: "scanner" }, name: "Skipped", status: "completed", conclusion: "skipped", started_at: at(9), completed_at: at(1) },
+      { app: { slug: "old" }, name: "Before this run", status: "completed", conclusion: "success", started_at: at(-600), completed_at: at(-500) },
+      { name: "no app", status: "completed", started_at: at(1), completed_at: at(2) },
+    ],
+    statuses: [
+      { context: "security/scan", state: "success", created_at: at(15) },
+      { context: "security/scan", state: "pending", created_at: at(0) },
+      { context: "slow/status", state: "pending", created_at: at(0) },
+      { context: "broken/status", state: "error", created_at: at(4) },
+      { context: "broken/status", state: "pending", created_at: at(1) },
+    ],
+    workflowRuns: [
+      { id: 42, path: ".github/workflows/pr.yml", head_sha: "abc", event: "pull_request", name: "PR", status: "completed", created_at: at(0), updated_at: at(20) },
+      { id: 50, path: ".github/workflows/review.yml", head_sha: "abc", event: "pull_request_target", name: "Review", status: "completed", conclusion: "success", run_attempt: 1, created_at: at(0), updated_at: at(40) },
+      { id: 51, path: ".github/workflows/review.yml", head_sha: "abc", event: "pull_request_target", name: "Review", status: "completed", conclusion: "failure", run_attempt: 1, created_at: at(5), updated_at: at(60) },
+      { id: 52, path: ".github/workflows/other.yml", head_sha: "other", event: "pull_request", name: "Other commit", status: "completed", created_at: at(0), updated_at: at(9) },
+      { id: 53, path: ".github/workflows/ci-profile.yml", head_sha: "abc", event: "workflow_run", name: "CI profile", status: "completed", created_at: at(0), updated_at: at(9) },
+    ],
+  });
+  assert.deepEqual(checks.map((check) => check.name).sort(),
+    ["Before this run", "Greptile Review", "Review", "Scan", "Skipped", "broken/status", "security/scan", "slow/status"]);
+  assert.deepEqual(pendingChecks(head, checks).map((check) => check.name), ["Scan", "slow/status"]);
+
+  const trace = buildTrace(head, jobs, [], { checks });
+  const spans = trace.events.filter((event) => /_check$/.test(event.data["ci.kind"]));
+  assert.deepEqual(spans.map((event) => [event.data.name, event.data["ci.kind"], event.data.duration_ms, event.data["ci.status"]]), [
+    ["Greptile Review", "external_check", 89000, "success"],
+    ["security/scan", "external_check", 15000, "success"],
+    ["broken/status", "external_check", 3000, "error"],
+    ["Review", "workflow_check", 55000, "failure"],
+  ]);
+  assert.deepEqual(spans.map((event) => event.data.error), [false, false, true, true]);
+  const root = trace.events[0].data;
+  assert.ok(spans.every((event) => event.data["trace.parent_id"] === root["trace.span_id"]));
+  assert.equal(spans[0].data["ci.finishes_after_workflow"], true);
+  assert.equal(spans[1].data["ci.finishes_after_workflow"], false);
+  assert.equal(root.duration_ms, 20000);
+  assert.equal(root["ci.workflow_ms"], 20000);
+  assert.equal(root["ci.all_checks_ms"], 90000);
+  assert.equal(root["ci.last_to_finish"], "Greptile Review");
+  assert.equal(root["ci.slowest_check"], "Greptile Review");
+  assert.equal(root["ci.slowest_check_ms"], 89000);
+  assert.equal(root["ci.check_count"], 4);
+  assert.equal(root["ci.pending_check_count"], 2);
+  assert.equal(root["ci.pending_checks"], "Scan, slow/status");
+  assert.equal(root["ci.earlier_check_count"], 1);
+  assert.equal(root["ci.profile_complete"], false);
+  assert.match(trace.warnings.join(), /2 outside checks were still running/);
+  assert.doesNotMatch(JSON.stringify(trace), /must not leave GitHub/);
+  assert.match(traceUrl("team", "test", "paperclip-ci", trace), /trace_end_ts=1800000090$/);
+
+  const alone = buildTrace(head, jobs).events[0].data;
+  assert.equal(alone["ci.all_checks_ms"], 20000);
+  assert.equal(alone["ci.last_to_finish"], "PR workflow");
+  assert.equal("ci.slowest_check" in alone, false);
+  // A rerun repeats jobs only; the push's outside checks are not its elapsed time.
+  const rerun = buildTrace({ ...head, run_attempt: 2, run_started_at: at(0) }, jobs.map((entry) => ({ ...entry, run_attempt: 2 })), [], { checks });
+  assert.equal(rerun.events[0].data["ci.check_count"], 0);
+  assert.equal(rerun.events[0].data["ci.all_checks_ms"], 20000);
+});
+
+test("export waits a bounded time for outside checks, never for other workflows", async () => {
+  const head = { ...run, path: ".github/workflows/pr.yml" };
+  const check = (completed) => ({ kind: "external_check", app: "greptile-apps", name: "Greptile Review", startedAt: at(1), completedAt: completed ? at(90) : null });
+  const pauses = [];
+  let clock = 0;
+  const now = () => clock;
+  const pause = async (ms) => { pauses.push(ms); clock += ms; };
+  let loads = 0;
+  const settled = await settledChecks(head, () => [check(++loads >= 3)], { pause, now });
+  assert.equal(settled[0].completedAt, at(90));
+  assert.deepEqual(pauses, [30_000, 30_000]);
+
+  pauses.length = 0;
+  const stuck = await settledChecks(head, () => [check(false)], { pause, now, waitMs: 90_000 });
+  assert.equal(stuck[0].completedAt, null);
+  assert.deepEqual(pauses, [30_000, 30_000, 30_000]);
+
+  // Slow GitHub responses count against the same deadline as the pauses.
+  pauses.length = 0;
+  loads = 0;
+  await settledChecks(head, () => { clock += 20_000; loads += 1; return [check(false)]; }, { pause, now, waitMs: 90_000 });
+  assert.deepEqual(pauses, [30_000, 20_000]);
+  assert.equal(loads, 3);
+
+  pauses.length = 0;
+  await settledChecks(head, () => [{ ...check(false), kind: "workflow_check" }], { pause, now });
+  await settledChecks(head, () => [{ ...check(false), startedAt: at(-600) }], { pause, now });
+  await settledChecks({ ...head, run_attempt: 2, run_started_at: at(0) }, () => [check(false)], { pause, now });
+  await settledChecks(head, () => [check(false)], { pause, now, waitMs: 0 });
+  assert.deepEqual(pauses, []);
+});
+
 test("profiling uses only infrastructure CODEOWNERS resolved at trusted master", () => {
   const source = '.github/** @owner @second\ndoc/** @outsider\n';
   assert.deepEqual(ciOwners(source), ["owner", "second"]);
@@ -295,6 +425,21 @@ test("workflow exporter runs trusted code and keeps keys out of the PR jobs", ()
   const workflow = readFileSync(new URL("../../workflows/ci-profile.yml", import.meta.url), "utf8");
   assert.match(workflow, /ref: \$\{\{ github.sha \}\}/);
   assert.match(workflow, /startsWith\(github.event.workflow_run.display_title/);
+  // The job condition keeps outside contributors' runs from starting a runner
+  // or entering the environment, and matches the exporter's sample rule.
+  const condition = workflow.split("    if: >-\n")[1].split("\n    runs-on:")[0];
+  for (const required of [
+    "github.repository_id == '1170821064'",
+    "github.event.workflow_run.event == 'pull_request'",
+    "github.event.workflow_run.path == '.github/workflows/pr.yml'",
+    "github.event.workflow_run.head_repository.full_name == 'paperclipai/paperclip'",
+    "contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.workflow_run.actor.id))",
+    "contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.workflow_run.triggering_actor.id))",
+    "endsWith(format('{0}', github.event.workflow_run.run_number), '0')",
+  ]) assert.ok(condition.includes(required), required);
+  assert.equal(condition.match(/\|\|/g).length, 1, "only label-or-sample may be an alternative");
+  assert.equal(workflow.match(/^  [a-z_]+:$/gm).filter((line) => !["  workflow_run:", "  export:"].includes(line)).length, 0);
+  assert.equal(workflow.match(/environment:/g).length, 1);
   assert.match(workflow, /environment: ci-profiling/);
   assert.doesNotMatch(workflow, /head_sha|secrets: inherit|contents: write|pull-requests: write|pnpm install/);
   const pr = readFileSync(new URL("../../workflows/pr-trusted.yml", import.meta.url), "utf8");

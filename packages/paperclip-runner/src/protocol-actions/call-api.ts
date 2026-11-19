@@ -28,7 +28,7 @@ export const callApiAction = {
   },
   "documentation": {
     "title": "Call the Paperclip API",
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For lossless helper input, use saveResponse:true on a non-sensitive GET to save nonempty responses as artifacts. Empty responses return empty:true without an artifact. Use download_artifact for artifacts up to 10 MiB; larger text artifacts require paged content reads. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. Request fields go only in body. To save a non-sensitive GET response as an artifact for a local helper, use save_api_response. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "note": "Production HTTP fallback; does not grant privileges or replace dedicated tools."
   },
   "examples": {
@@ -51,7 +51,7 @@ export const callApiAction = {
       "operationId": "call_api",
       "version": 1,
       "title": "Call the Paperclip API",
-      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For lossless helper input, use saveResponse:true on a non-sensitive GET to save nonempty responses as artifacts. Empty responses return empty:true without an artifact. Use download_artifact for artifacts up to 10 MiB; larger text artifacts require paged content reads. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. Request fields go only in body. To save a non-sensitive GET response as an artifact for a local helper, use save_api_response. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
       "exposure": "optional",
       "requiredClaims": [
         "api:call"
@@ -82,7 +82,7 @@ export const callApiAction = {
             "additionalProperties": true
           },
           "body": {
-            "description": "Request value matching the discovered schema. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string.",
+            "description": "Request value matching the discovered schema. Required when the operation has a required request body, as most POST, PUT and PATCH operations do; all request fields go here. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string.",
             "anyOf": [
               { "type": "object", "additionalProperties": true },
               { "type": "array", "items": {} },
@@ -95,10 +95,6 @@ export const callApiAction = {
           "contentType": {
             "type": "string",
             "maxLength": 120
-          },
-          "saveResponse": {
-            "description": "GET only: save complete nonempty authorized, non-sensitive response bytes as an immutable artifact even below the inline threshold. Returns artifactId, byteSize and sha256 without inline body transcription. Zero-byte success returns empty:true and no artifact. download_artifact accepts at most 10 MiB; use paged content reads for larger text artifacts. Uses existing capture limits and budgets. Cannot combine with responseText. Denied, sensitive and partial responses are not exported. Never repeats the source request.",
-            "type": "boolean"
           },
           "responseText": {
             "description": "GET only: return a bounded UTF-8 text window inline, including JSON as text, without saving another artifact. Offsets and limits are bytes. Use the returned nextOffsetBytes to continue; null means complete. Prefer reading a saved artifact for a stable snapshot. New live responses have a 1 GiB capture limit and a 4 GiB per-run capture budget. Existing larger assets remain readable in bounded pages. If a live response returns an artifact, continue on its content operation for a stable snapshot.",

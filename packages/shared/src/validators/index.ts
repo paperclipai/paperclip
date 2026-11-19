@@ -517,6 +517,7 @@ export {
   createIssueAttachmentMetadataSchema,
   issueDocumentFormatSchema,
   issueDocumentKeySchema,
+  issueDocumentBatchQuerySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   upsertIssueWatchdogSchema,
@@ -649,6 +650,29 @@ export {
 } from "./goal.js";
 
 export {
+  createResponsibilitySchema,
+  proposeResponsibilitySchema,
+  updateResponsibilitySchema,
+  linkResponsibilitySchema,
+  delegateResponsibilitySchema,
+  listResponsibilitiesQuerySchema,
+  createResponsibilityAreaSchema,
+  updateResponsibilityAreaSchema,
+  listResponsibilityAreasQuerySchema,
+  responsibilityLinkLookupQuerySchema,
+  type CreateResponsibilityArea,
+  type UpdateResponsibilityArea,
+  type ListResponsibilityAreasQuery,
+  type ResponsibilityLinkLookupQuery,
+  type CreateResponsibility,
+  type ProposeResponsibility,
+  type UpdateResponsibility,
+  type LinkResponsibility,
+  type DelegateResponsibility,
+  type ListResponsibilitiesQuery,
+} from "./responsibility.js";
+
+export {
   applyOnboardingSeedSchema,
   type ApplyOnboardingSeed,
 } from "./onboarding-seed.js";
@@ -657,14 +681,23 @@ export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
+  cancelApprovalSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
+  type CancelApproval,
   type ResubmitApproval,
   type AddApprovalComment,
 } from "./approval.js";
+
+export {
+  attentionCloseSchema,
+  attentionTransferSchema,
+  type AttentionClose,
+  type AttentionTransfer,
+} from "./attention.js";
 
 export {
   envBindingPlainSchema,
@@ -765,6 +798,8 @@ export {
   createBoardApiKeySchema,
   currentUserProfileSchema,
   authSessionSchema,
+  browserTracingConfigSchema,
+  browserAnalyticsConfigSchema,
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
@@ -786,6 +821,8 @@ export {
   type CreateBoardApiKey,
   type CurrentUserProfile,
   type AuthSession,
+  type BrowserTracingConfig,
+  type BrowserAnalyticsConfig,
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,
@@ -908,6 +945,15 @@ export {
   genericMcpOAuthClientSchema,
   type GenericMcpAuthMode,
   type GenericMcpOAuthClient,
+  MACHINE_SIGN_IN_METHODS,
+  machineSignInMethodSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
+  type MachineSignInMethod,
+  type CreateMachineSignIn,
+  type TestMachineSignIn,
+  type RotateMachineSignIn,
   reconnectToolAppSchema,
   finishToolAppSchema,
   finalizeOAuthAccessSchema,

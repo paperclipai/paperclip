@@ -2,10 +2,73 @@ import { createHash } from "node:crypto";
 
 const millis = (value) => Date.parse(value);
 const id = (value, size = 16) => createHash("sha256").update(value).digest("hex").slice(0, size);
-const failed = (status) => ["failure", "failed", "timed_out", "timedOut", "cancelled", "interrupted"].includes(status);
+// "error" is a commit status that could not complete.
+const failed = (status) => ["failure", "failed", "error", "timed_out", "timedOut", "cancelled", "interrupted"].includes(status);
 const text = (value) => typeof value === "string" && value.length <= 4096;
 
-export function buildTrace(run, jobs, records = []) {
+// Outside checks belong to the push that started this run. A check that began
+// well before the run (for example, before a later label event) is not part of
+// this run's elapsed time.
+const checkSlackMs = 60_000;
+const label = (value) => typeof value === "string" ? value.slice(0, 256) : "";
+
+// Reduce GitHub's check-run, commit-status and workflow-run listings for the
+// run's head commit to the allowlisted fields the trace needs.
+export function normalizeChecks(run, { checkRuns = [], statuses = [], workflowRuns = [] } = {}) {
+  const checks = [];
+  for (const check of checkRuns) {
+    // GitHub Actions check runs are jobs. This run's jobs are already spans,
+    // and other workflows are summarized per workflow below.
+    if (!check?.app?.slug || check.app.slug === "github-actions") continue;
+    checks.push({
+      kind: "external_check", app: label(check.app.slug), name: label(check.name),
+      status: label(check.conclusion || check.status), startedAt: check.started_at,
+      completedAt: check.status === "completed" ? check.completed_at : null,
+    });
+  }
+  const contexts = new Map();
+  for (const status of statuses) {
+    if (typeof status?.context !== "string") continue;
+    contexts.set(status.context, [...(contexts.get(status.context) || []), status]);
+  }
+  for (const [context, entries] of contexts) {
+    entries.sort((a, b) => millis(a.created_at) - millis(b.created_at));
+    const last = entries.at(-1);
+    checks.push({
+      kind: "external_check", app: "commit-status", name: label(context), status: label(last.state),
+      startedAt: entries[0].created_at, completedAt: last.state === "pending" ? null : last.created_at,
+    });
+  }
+  const workflows = new Map();
+  for (const other of workflowRuns) {
+    if (other?.id === run.id || other?.path === run.path || other?.head_sha !== run.head_sha
+      || !["pull_request", "pull_request_target"].includes(other?.event)) continue;
+    const known = workflows.get(other.path);
+    if (!known || millis(other.created_at) > millis(known.created_at)) workflows.set(other.path, other);
+  }
+  for (const other of workflows.values()) {
+    checks.push({
+      kind: "workflow_check", app: "github-actions", name: label(other.name),
+      status: label(other.conclusion || other.status),
+      startedAt: other.run_attempt > 1 ? other.run_started_at : other.created_at,
+      // GitHub exposes no completion time for a run; its last update is the closest record.
+      completedAt: other.status === "completed" ? other.updated_at : null,
+    });
+  }
+  return checks;
+}
+
+const runStart = (run) => millis(run.run_attempt === 1 ? run.created_at : run.run_started_at);
+// A rerun repeats jobs, not the outside checks, so only a first attempt owns them.
+const ownChecks = (run, checks) => run.run_attempt === 1
+  ? checks.filter((check) => !(millis(check.startedAt) < runStart(run) - checkSlackMs)) : [];
+
+export function pendingChecks(run, checks, kind = "external_check") {
+  return ownChecks(run, checks).filter((check) => check.kind === kind && !check.completedAt);
+}
+
+export function buildTrace(run, jobs, records = [], { sampleRate = 1, checks = [], testDetail = true } = {}) {
+  if (!Number.isSafeInteger(sampleRate) || sampleRate < 1) throw new Error("Invalid sample rate");
   if (run.status !== "completed" || !jobs.length || jobs.some((job) => job.status !== "completed")) {
     throw new Error("A complete workflow attempt and its full job inventory are required");
   }
@@ -15,7 +78,7 @@ export function buildTrace(run, jobs, records = []) {
   const key = `${run.repository.full_name}:${run.id}:${run.run_attempt}`;
   const traceId = id(key, 32);
   const rootId = id(`${key}:root`);
-  const start = millis(run.run_attempt === 1 ? run.created_at : run.run_started_at);
+  const start = runStart(run);
   // The attempt jobs API can relabel carried-over successful jobs with the
   // new attempt number. Their completion clocks still precede this attempt.
   const carriedJobs = run.run_attempt > 1 ? jobs.filter((job) => millis(job.completed_at) < start) : [];
@@ -39,7 +102,9 @@ export function buildTrace(run, jobs, records = []) {
   const span = (spanId, parent, name, from, to, fields) => {
     if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return;
     events.push({
-      time: new Date(from).toISOString(), samplerate: 1,
+      // Sampling selects whole runs. Every span of a selected run is kept, and
+      // this weight lets Honeycomb scale counts back to all runs.
+      time: new Date(from).toISOString(), samplerate: sampleRate,
       data: { ...shared, "trace.span_id": spanId, ...(parent ? { "trace.parent_id": parent } : {}),
         name, duration_ms: to - from, ...fields },
     });
@@ -86,6 +151,32 @@ export function buildTrace(run, jobs, records = []) {
       });
     }
   }
+
+  // Reviews, scans and other workflows on the same commit run beside this
+  // workflow. They are siblings of the jobs on the same wall clock.
+  const own = ownChecks(run, checks);
+  const stale = run.run_attempt === 1 ? checks.length - own.length : 0;
+  const pending = own.filter((check) => !check.completedAt);
+  let lastEnd = end;
+  let lastName = "PR workflow";
+  let slowest;
+  let exported = 0;
+  for (const check of own) {
+    const from = millis(check.startedAt);
+    const to = millis(check.completedAt);
+    // Skipped checks report a completion before their start; they did no work.
+    if (!check.completedAt || check.status === "skipped" || !Number.isFinite(from) || !Number.isFinite(to) || to < from) continue;
+    span(id(`${key}:check:${check.kind}:${check.app}:${check.name}`), rootId, check.name, from, to, {
+      "ci.kind": check.kind, "ci.check": check.name, "ci.check_app": check.app,
+      "ci.status": check.status, error: failed(check.status),
+      "ci.start_offset_ms": from - start,
+      "ci.finishes_after_workflow": to > end,
+    });
+    exported++;
+    if (to > lastEnd) { lastEnd = to; lastName = check.name; }
+    if (!slowest || to - from > slowest.ms) slowest = { name: check.name, ms: to - from };
+  }
+  if (pending.length) warnings.push(`${pending.length} outside checks were still running at export`);
 
   const receipts = new Set();
   const invocations = new Map();
@@ -138,7 +229,9 @@ export function buildTrace(run, jobs, records = []) {
       ...(Number.isFinite(record.setupMs) ? { "test.setup_ms": record.setupMs } : {}),
     });
   }
-  const expectedReceipts = jobs.filter((job) => job.steps?.some((step) => step.name === "Initialize CI profile"));
+  // Ordinary runs skip the collection steps, so they owe no timing artifacts.
+  const expectedReceipts = testDetail
+    ? jobs.filter((job) => job.steps?.some((step) => step.name === "Initialize CI profile")) : [];
   const missing = expectedReceipts.filter((job) => !receipts.has(job.id));
   if (missing.length) warnings.push(`Missing timing artifacts for ${missing.length} jobs`);
   // Some package scripts invoke a reporter without using the launcher. Its
@@ -160,20 +253,33 @@ export function buildTrace(run, jobs, records = []) {
     return framework && !valid.some((entry) => entry.job.id === job.id && entry.record.framework === framework);
   });
   if (expectedReceipts.length && missingTests.length) warnings.push(`Missing test detail for ${missingTests.length} test jobs (including jobs that failed before testing)`);
+  root["ci.sample_rate"] = sampleRate;
+  root["ci.workflow_ms"] = end - start;
+  // Push to the last finished check. Checks still running at export are excluded and counted.
+  root["ci.all_checks_ms"] = lastEnd - start;
+  root["ci.last_to_finish"] = lastName;
+  root["ci.check_count"] = exported;
+  root["ci.pending_check_count"] = pending.length;
+  root["ci.pending_checks"] = pending.map((check) => check.name).join(", ").slice(0, 1024);
+  root["ci.earlier_check_count"] = stale;
+  if (slowest) {
+    root["ci.slowest_check"] = slowest.name;
+    root["ci.slowest_check_ms"] = slowest.ms;
+  }
   root["ci.test_count"] = valid.filter(({ record }) => record.kind === "test").length;
   root["ci.file_count"] = valid.filter(({ record }) => record.kind === "file").length;
   root["ci.expected_invocations"] = invocations.size;
   root["ci.reported_invocations"] = [...invocations.values()].filter((value) => value.start && value.end).length;
   root["ci.profile_complete"] = warnings.length === 0 && run.run_attempt === 1;
   root["ci.coverage_warnings"] = warnings.join("; ");
-  return { traceId, events, warnings, wallMs: end - start, jobCount: jobs.length };
+  return { traceId, events, warnings, wallMs: end - start, windowMs: lastEnd - start, jobCount: jobs.length, checkCount: exported };
 }
 
 export function traceUrl(team, environment, dataset, trace) {
   const params = new URLSearchParams({
     trace_id: trace.traceId,
     trace_start_ts: String(Math.floor(Date.parse(trace.events[0].time) / 1000)),
-    trace_end_ts: String(Math.ceil((Date.parse(trace.events[0].time) + trace.wallMs) / 1000)),
+    trace_end_ts: String(Math.ceil((Date.parse(trace.events[0].time) + (trace.windowMs ?? trace.wallMs)) / 1000)),
   });
   return `https://ui.honeycomb.io/${encodeURIComponent(team)}/environments/${encodeURIComponent(environment)}/datasets/${encodeURIComponent(dataset)}/trace?${params}`;
 }

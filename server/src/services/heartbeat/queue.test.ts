@@ -2,26 +2,27 @@ import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { authUsers, agents, agentTaskSessions, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
+import { createFreshIssueRunStore, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
-import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, notifyOtherAgentsQueuedOnSettledIssue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
-import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
 import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
 import { withQueuedCommentIdsInWakePayload, withQueuedCommentIdsInRunContext } from "../issue-queued-comment-queue.js";
 import { settleConversationTurn } from "../agent-conversations.js";
 import { chatCompletionDeliveryService, recordChatCompletion, recordChatHandoff } from "../chat-completion-delivery.js";
+import { createDurableChatWakeupRequest } from "../durable-chat-wakeup.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { createHeartbeatRunControl } from "./run-control.js";
 import { callbacks as runControlCallbacks } from "./__tests__/run-control-fixtures.js";
 
 import { createHeartbeatQueueTestDependencies as callbacks } from "../../__tests__/helpers/heartbeat-queue.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
 function guardedDatabase() {
   const access = vi.fn(() => { throw new Error("Unexpected queue database access"); });
@@ -59,6 +60,19 @@ describe("heartbeat queue module boundary", () => {
     await queue[operation]("agent");
     expect(database.access).not.toHaveBeenCalled();
     expect(deps.getAgent).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("claims no queued run once run admission is closed, whatever path asks (draining or yielding server)", async () => {
+    // Release-swap wave: an old server started a delivered continuation 3 minutes after traffic
+    // had moved to its dispatching replacement, through executeRun of a queued run, which no gate covered.
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    deps.isRunAdmissionClosed = () => true;
+    const queue = createHeartbeatQueue(database.db, deps);
+    const queued = { id: "run-1", status: "queued" } as Parameters<typeof queue.claimQueuedRun>[0];
+    expect(await queue.claimQueuedRun(queued)).toBeNull();
+    expect(database.access).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
@@ -241,6 +255,89 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { ...f, agent, service };
   }
 
+  it.each([
+    ["fresh", "authorization contention"], ["busy", "authorization contention"],
+    ["fresh", "wrong locked issue"], ["busy", "wrong locked issue"],
+  ] as const)("rolls back a %s chat admission on %s without publishing", async (kind, failure) => {
+    const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
+      .where(eq(issues.id, issue.id));
+    if (kind === "busy") {
+      const [active] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+        status: "running", invocationSource: "assignment", contextSnapshot: { issueId: issue.id } }).returning();
+      await db.update(issues).set({ executionRunId: active.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() })
+        .where(eq(issues.id, issue.id));
+      deps.liveRunExecutions.has.mockImplementation((id) => id === active.id);
+    }
+    const [comment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: user.id, body: "Please continue" }).returning();
+    const id = randomUUID();
+    const authorize = vi.fn(async () => {});
+    const onAdmitted = vi.fn(async (tx: Db, { runId }: { runId: string | null }) => {
+      const [receipt] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id));
+      expect(receipt).toMatchObject({ status: kind === "fresh" ? "queued" : "deferred_issue_execution", runId });
+      expect(Boolean(runId)).toBe(kind === "fresh");
+      throw Object.assign(new Error("authorization lock was held"), { code: "55P03" });
+    });
+    const request = createDurableChatWakeupRequest({ id, companyId: company.id, issueId: issue.id, agentId: agent.id,
+      commentId: comment.id, requestedByActorType: "user", requestedByActorId: user.id, requestedAt: new Date(), authorize, onAdmitted });
+    const [otherIssue] = failure === "wrong locked issue" ? await db.insert(issues).values({
+      companyId: company.id, assigneeAgentId: agent.id, title: "Another task",
+    }).returning() : [];
+    const publishIssueActivity = vi.fn();
+    const admit = deps.wakeQueue.admitIssueWake.getMockImplementation()!;
+    deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target,
+      (tx, admission) => evaluate(tx, otherIssue ? {
+        ...admission,
+        admitFreshIssueRun: (input) => admission.admitFreshIssueRun({ ...input,
+          issue: { ...input.issue, id: otherIssue.id }, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
+        admitWakeBehindIssueExecution: (input) => admission.admitWakeBehindIssueExecution({ ...input,
+          issueId: otherIssue.id, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
+      } : admission), { ...effects, publishIssueActivity }));
+
+    const wake = queue.enqueueWakeup(agent.id, {
+      source: "assignment", triggerDetail: "system", reason: "External chat message received",
+      requestedByActorType: "user", requestedByActorId: user.id, allowRunCoalescing: false, durableChatRequest: request,
+      payload: { issueId: issue.id, commentId: comment.id, mutation: "chat_message_received" },
+    });
+    if (otherIssue) await expect(wake).rejects.toThrow(/does not match the locked/);
+    else await expect(wake).resolves.toBeNull();
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(onAdmitted).toHaveBeenCalledTimes(otherIssue ? 0 : 1);
+    expect(publishIssueActivity).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    expect(await db.select().from(agentWakeupRequests)).toEqual([]);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(kind === "fresh" ? 0 : 1);
+  });
+
+  it("uses issue changes written by durable chat authorization before admission", async () => {
+    const { user, company, agent, issue, queue } = await waitingConversationFixture();
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
+      .where(eq(issues.id, issue.id));
+    const [comment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: user.id, body: "Please continue" }).returning();
+    const requestId = randomUUID();
+    const request = createDurableChatWakeupRequest({
+      id: requestId, companyId: company.id, issueId: issue.id, agentId: agent.id, commentId: comment.id,
+      requestedByActorType: "user", requestedByActorId: user.id, requestedAt: new Date(),
+      authorize: async (tx) => {
+        await tx.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
+      },
+    });
+
+    await expect(queue.enqueueWakeup(agent.id, {
+      source: "assignment", triggerDetail: "system", reason: "External chat message received",
+      requestedByActorType: "user", requestedByActorId: user.id, durableChatRequest: request,
+      payload: { issueId: issue.id, commentId: comment.id, mutation: "chat_message_received" },
+      issueStateGuard: { assigneeAgentId: agent.id, statuses: ["todo"] },
+    })).resolves.toBeNull();
+
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
+    expect(receipt).toMatchObject({ status: "skipped", reason: "issue_state_guard_mismatch",
+      payload: { heartbeatSkip: { actualStatus: "blocked" } } });
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+  });
+
   it("admits the owner's context compaction maintenance request while its conversation waits", async () => {
     const f = await waitingCompactionFixture();
     const accepted = await f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id });
@@ -273,8 +370,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
         mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
       recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
     });
-    f.deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
-    f.deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    f.deps.wakeQueue.admitIssueWake.mockImplementation(admission.admitIssueWake);
     let releaseAvailability!: () => void;
     const bothAvailable = new Promise<void>(resolve => { releaseAvailability = resolve; });
     let arrivals = 0;
@@ -319,7 +415,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       const context = enrichWakeContextSnapshot({ contextSnapshot: { ...options.contextSnapshot },
         reason: options.reason ?? null, source, triggerDetail, payload: options.payload ?? null });
       await db.transaction(async tx => {
-        await createWakeAdmissionWriter().insertNewDeferredWake(TransactionScope.create(f.company.id, tx), {
+        await createWakeAdmissionWriter(tx, f.company.id).insertNewDeferredWake({
           companyId: f.company.id, agentId, source, triggerDetail,
           payload: { ...options.payload, manualUserWake: true, [DEFERRED_WAKE_CONTEXT_KEY]: context.contextSnapshot },
           requestedByActorType: options.requestedByActorType ?? null,
@@ -480,6 +576,88 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { company, agent, issue, wake, run };
   }
 
+  it.each([true, false])("adopts only eligible saved comments from the exact reassignment source (%s)", async (matchingIssue) => {
+    const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null,
+      conversationState: null, status: "todo" }).where(eq(issues.id, issue.id));
+    const [previousAgent] = await db.insert(agents).values({ companyId: company.id,
+      name: "Previous assignee", adapterType: "process" }).returning();
+    const [interruptedRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: previousAgent.id,
+      status: "cancelled", errorCode: "issue_reassigned", finishedAt: new Date(),
+      contextSnapshot: { issueId: matchingIssue ? issue.id : randomUUID() } }).returning();
+    const [earlier, later] = await db.insert(issueComments).values(["Earlier", "Later"].map(body => ({
+      companyId: company.id, issueId: issue.id, authorType: "user" as const, authorUserId: user.id, body,
+    }))).returning();
+    const [local, handoff, chat, interaction] = await db.insert(agentWakeupRequests).values([
+      { agentId: agent.id, commentId: later.id, requestedAt: new Date(2) },
+      { agentId: previousAgent.id, commentId: earlier.id, requestedAt: new Date(1) },
+      { agentId: agent.id, commentId: randomUUID(), requestedAt: new Date(3), idempotencyKey: `chat-inbound:${randomUUID()}` },
+      { agentId: agent.id, commentId: randomUUID(), requestedAt: new Date(4), mutation: "interaction" },
+    ].map(({ agentId, commentId, requestedAt, idempotencyKey, mutation }) => ({
+      companyId: company.id, agentId, source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedAt, idempotencyKey, requestedByActorType: "user", requestedByActorId: user.id,
+      payload: withQueuedCommentIdsInWakePayload({ issueId: issue.id, mutation }, [commentId]),
+    }))).returning();
+
+    const admit = deps.wakeQueue.admitIssueWake.getMockImplementation()!;
+    deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target, async (tx, admission) => {
+      await tx.insert(agentTaskSessions).values({ companyId: company.id, agentId: agent.id,
+        adapterType: agent.adapterType, taskKey: issue.id, sessionDisplayId: "session-available-in-admission" });
+      return evaluate(tx, admission);
+    }, effects));
+    const run = await queue.enqueueWakeup(agent.id, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned", requestedByActorType: "system",
+      payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, interruptedRunId: interruptedRun.id },
+    });
+
+    const commentIds = matchingIssue ? [earlier.id, later.id] : [later.id];
+    expect(run).toMatchObject({ status: "queued", responsibleUserId: user.id, invocationSource: "assignment",
+      sessionIdBefore: "session-available-in-admission",
+      contextSnapshot: { wakeCommentIds: commentIds, wakeCommentId: later.id,
+        queuedCommentSourceWakeIds: matchingIssue ? [handoff.id, local.id] : [local.id] } });
+    const receipts = new Map((await db.select().from(agentWakeupRequests)).map(wake => [wake.id, wake]));
+    expect(receipts.get(run!.wakeupRequestId!)).toMatchObject({ runId: run!.id, source: "assignment",
+      requestedByActorType: "system", payload: { _paperclipWakeContext: { wakeCommentIds: commentIds } } });
+    expect(receipts.get(local.id)).toMatchObject({ status: "coalesced", runId: run!.id, requestedByActorId: user.id });
+    expect(receipts.get(handoff.id)).toMatchObject(matchingIssue
+      ? { status: "coalesced", runId: run!.id, agentId: previousAgent.id }
+      : { status: "deferred_issue_execution", runId: null });
+    for (const receipt of [chat, interaction]) expect(receipts.get(receipt.id)).toEqual(receipt);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("only promotes a deferred chat receipt for its agent and binds receipts within its company", async () => {
+    const local = await fixture("queued");
+    const [foreignCompany] = await db.insert(companies).values({ name: "Other company", issuePrefix: "OC" }).returning();
+    const [foreignAgent] = await db.insert(agents).values({
+      companyId: foreignCompany.id, name: "Other agent", adapterType: "process",
+    }).returning();
+    const [foreignWake] = await db.insert(agentWakeupRequests).values({
+      companyId: foreignCompany.id, agentId: foreignAgent.id, source: "automation",
+      status: "deferred_issue_execution", payload: { original: true },
+    }).returning();
+    const [localDeferredWake] = await db.insert(agentWakeupRequests).values({
+      companyId: local.company.id, agentId: local.agent.id, source: "automation",
+      status: "deferred_issue_execution",
+    }).returning();
+
+    await db.transaction(async (tx) => {
+      const store = createFreshIssueRunStore(tx, local.company.id);
+      expect(await store.saveReceipt({
+        kind: "promote", wakeId: localDeferredWake.id, agentId: foreignAgent.id, payload: null,
+      })).toBeUndefined();
+      await store.bindReceipts({
+        wakeId: foreignWake.id, runId: local.run.id, failedChatRetryReceiptId: foreignWake.id,
+        adopted: { wakeIds: [foreignWake.id, localDeferredWake.id], payload: { replaced: true } },
+      });
+    });
+
+    const [preserved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, foreignWake.id));
+    expect(preserved).toMatchObject({ status: "deferred_issue_execution", runId: null, payload: { original: true } });
+    const [adopted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, localDeferredWake.id));
+    expect(adopted).toMatchObject({ status: "coalesced", runId: local.run.id });
+  });
+
   async function pendingPredecessorFixture() {
     const f = await fixture("queued");
     const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
@@ -497,6 +675,140 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { ...f, source, lease, successor, deps, queue: createHeartbeatQueue(db, deps) };
   }
 
+  it.each([
+    ["issue_continuation_needed", "cancelled"], ["issue_recovery_action_restored", "cancelled"], ["issue_children_completed", "cancelled"],
+    ["issue_commented", "running"],
+  ] as const)("does not start a %s run whose task another run already finished (expected %s)", async (wakeReason, expected) => {
+    // Release-swap wave t011: a delivered continuation queued while its task was open started after
+    // another run marked the task done, and took an extra turn on a finished task.
+    const f = await fixture("queued");
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
+    // A person's message wake carries the comment it answers.
+    const wakeCommentId = wakeReason === "issue_commented"
+      ? (await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorAgentId: f.agent.id,
+        body: "One more thing" }).returning())[0].id
+      : undefined;
+    const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason, ...(wakeCommentId ? { wakeCommentId } : {}) } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    const queue = createHeartbeatQueue(db, deps);
+    const claimed = await queue.claimQueuedRun(queued);
+    if (expected === "cancelled") {
+      expect(claimed).toBeNull();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id)))[0])
+        .toMatchObject({ status: "cancelled", errorCode: "issue_closed_before_start" });
+    } else {
+      // A person's message on a done task still runs (and reopens it through the normal path).
+      expect(claimed).toMatchObject({ id: queued.id, status: "running" });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id)))[0])
+        .toMatchObject({ status: "running", errorCode: null });
+    }
+  });
+
+  it.each([
+    { label: "still undelivered", delivered: false },
+    { label: "already read by the closing run", delivered: true },
+  ])("answers a person's message attached to a system continuation on a closed task once ($label)", async ({ delivered }) => {
+    // Admission can attach a deferred comment to a queued system continuation without changing its
+    // wake reason. The claim-time closed-task cancel must not consume that person's message.
+    const f = await fixture("queued");
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: "queue-test-user", body: "Can you also update the changelog?" }).returning();
+    if (delivered) {
+      // The run that closed the task received the message as its own wake input.
+      const startedAt = new Date(comment.createdAt.getTime() + 1_000);
+      await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "succeeded",
+        invocationSource: "assignment", startedAt, finishedAt: new Date(startedAt.getTime() + 1_000),
+        contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } });
+    }
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
+    const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_continuation_needed", wakeCommentIds: [comment.id] } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    // The continuation's wake is still queued and bound to the run, as admission leaves it.
+    await db.update(agentWakeupRequests).set({ status: "queued", claimedAt: null, runId: queued.id })
+      .where(eq(agentWakeupRequests.id, f.wake.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    const claimed = await createHeartbeatQueue(db, deps).claimQueuedRun(queued);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+    if (delivered) {
+      expect(claimed).toBeNull();
+      expect(runs.find(row => row.id === queued.id)).toMatchObject({ status: "cancelled", errorCode: "issue_closed_before_start" });
+      expect(runs).toHaveLength(2);
+    } else {
+      // Exactly one run answers it: this one, claimed as the person's follow-up.
+      expect(claimed).toMatchObject({ id: queued.id, status: "running" });
+      expect(runs.filter(row => row.status !== "succeeded")).toEqual([expect.objectContaining({ id: queued.id, status: "running" })]);
+    }
+  });
+
+  it("keeps the result of a continuation another dispatcher already started and finished", async () => {
+    // Two servers overlap during a swap: both read the same queued continuation; one starts it and
+    // the run closes the task before the other reaches the closed-task check with its stale copy.
+    const f = await fixture("queued");
+    const [staleQueued] = await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_continuation_needed" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const finishedAt = new Date();
+    await db.update(heartbeatRuns).set({ status: "succeeded", startedAt: finishedAt, finishedAt,
+      resultJson: { summary: "Finished by the other server" } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(staleQueued)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toMatchObject({
+      status: "succeeded", errorCode: null, resultJson: { summary: "Finished by the other server" } });
+    expect(deps.setWakeupStatus).not.toHaveBeenCalled();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+  });
+
+  it("returns the claim to the queue when run admission closes while the claim is being checked", async () => {
+    // SIGTERM (drain) or the hand-over yield can close admission during claimQueuedRun's awaited
+    // checks, after its first admission check passed. The run must stay exactly as it was.
+    const f = await fixture("queued");
+    const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_commented" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const [issueBefore] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    let admissionClosed = false;
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    deps.isRunAdmissionClosed = () => admissionClosed;
+    deps.budgets.getInvocationBlock.mockImplementation(async () => { admissionClosed = true; return null; });
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(queued)).toBeNull();
+    const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id));
+    expect(stored).toMatchObject({ status: "queued", startedAt: null, finishedAt: null, errorCode: null,
+      responsibleUserId: queued.responsibleUserId, runnerProfileJson: queued.runnerProfileJson });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]).toMatchObject({
+      executionRunId: issueBefore.executionRunId, executionLockedAt: issueBefore.executionLockedAt });
+    expect(deps.setWakeupStatus).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("returns the claim to the queue when a reattach phase begins while the claim is being checked", async () => {
+    const f = await fixture("queued");
+    const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_commented" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const [issueBefore] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    let reattachPhaseActive = false;
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    deps.isRunAdmissionClosed = () => false;
+    deps.isReattachPhaseActive = () => reattachPhaseActive;
+    deps.budgets.getInvocationBlock.mockImplementation(async () => { reattachPhaseActive = true; return null; });
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(queued)).toBeNull();
+    const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id));
+    expect(stored).toMatchObject({ status: "queued", startedAt: null, finishedAt: null, errorCode: null,
+      responsibleUserId: queued.responsibleUserId, runnerProfileJson: queued.runnerProfileJson });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]).toMatchObject({
+      executionRunId: issueBefore.executionRunId, executionLockedAt: issueBefore.executionLockedAt });
+    expect(deps.setWakeupStatus).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("keeps an automatic continuation queued while its legacy predecessor still owns cleanup", async () => {
     const { successor, lease, queue, deps, ...f } = await pendingPredecessorFixture();
     expect(await queue.claimQueuedRun(successor)).toBeNull();
@@ -508,6 +820,56 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       .where(eq(environmentLeases.id, lease.id));
     expect(await queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running" });
     expect(await queue.claimQueuedRun(successor)).toBeNull();
+  });
+
+  async function reassignedPredecessorFixture(previousStatus = "cancelled") {
+    const f = await fixture("queued");
+    await db.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(eq(issues.id, f.issue.id));
+    const [previousAgent] = await db.insert(agents).values({ companyId: f.company.id, name: "Previous owner",
+      role: "engineer", status: "idle", adapterType: "paperclip_runner", adapterConfig: {} }).returning();
+    const [previous] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: previousAgent.id,
+      status: previousStatus, runtimeMode: "native", invocationSource: "assignment", startedAt: new Date(),
+      finishedAt: previousStatus === "running" ? null : new Date(), nativeIssueId: f.issue.id,
+      errorCode: previousStatus === "cancelled" ? "issue_reassigned" : null,
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_assigned" } }).returning();
+    const [next] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_assigned" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    deps.activeRunExecutions.add(previous.id);
+    return { ...f, previousAgent, previous, next, deps, queue: createHeartbeatQueue(db, deps) };
+  }
+
+  it("keeps the new owner's run queued while the reassigned owner's stopped run still settles", async () => {
+    const f = await reassignedPredecessorFixture();
+    expect(await f.queue.claimQueuedRun(f.next)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.next.id)))[0])
+      .toMatchObject({ status: "queued", startedAt: null });
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+
+    f.deps.activeRunExecutions.delete(f.previous.id);
+    expect(await f.queue.claimQueuedRun(f.next)).toMatchObject({ id: f.next.id, status: "running" });
+  });
+
+  it("does not hold a run behind another agent's live run on the same task", async () => {
+    const f = await reassignedPredecessorFixture("running");
+    expect(await f.queue.claimQueuedRun(f.next)).toMatchObject({ id: f.next.id, status: "running" });
+  });
+
+  it("wakes queued dispatch for the task's next owner once the previous owner's execution settles", async () => {
+    const f = await reassignedPredecessorFixture();
+    let wakes = 0;
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.queuedRunDispatch, () => { wakes += 1; });
+    try {
+      expect(await notifyOtherAgentsQueuedOnSettledIssue(db, f.previous)).toBe(true);
+      await vi.waitFor(() => expect(wakes).toBeGreaterThan(0));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.next.id));
+      expect(await notifyOtherAgentsQueuedOnSettledIssue(db, f.previous)).toBe(false);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("keeps a retry queued after failed cleanup and until its local executor releases", async () => {
@@ -568,7 +930,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.source.id);
   });
 
-  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
+  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "missing-execution-key", "stale-execution-key", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
     const f = await fixture("queued");
     let admissionAgent: typeof agents.$inferSelect = { ...f.agent, adapterType, adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} };
     await db.update(agents).set({ adapterType, adapterConfig: admissionAgent.adapterConfig }).where(eq(agents.id, f.agent.id));
@@ -596,6 +958,13 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const [scanned] = await db.update(heartbeatRuns).set({ responsibleUserId: userId,
       contextSnapshot: withQueuedCommentIdsInRunContext({ issueId: f.issue.id, wakeReason: "issue_commented" }, [oldComment.id]),
     }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    if (scenario === "missing-execution-key" || scenario === "stale-execution-key") {
+      const [staleRun] = scenario === "stale-execution-key" ? await db.insert(heartbeatRuns).values({
+        companyId: f.company.id, agentId: f.agent.id, status: "succeeded", contextSnapshot: { issueId: f.issue.id },
+      }).returning() : [];
+      await db.update(issues).set({ executionRunId: staleRun?.id ?? null,
+        executionAgentNameKey: staleRun ? "previous agent name" : null }).where(eq(issues.id, f.issue.id));
+    }
     let foreignPrimary: typeof agentWakeupRequests.$inferSelect | undefined;
     if (scenario === "foreign-primary") {
       const [company] = await db.insert(companies).values({ name: "Foreign source", issuePrefix: "FOREIGN" }).returning();
@@ -605,6 +974,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     }
     if (scenario === "delete-old") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, oldComment.id));
     const deps = callbacks(db);
+    const resolveSession = vi.spyOn(deps, "resolveSessionBeforeForWakeup");
     deps.getAgent.mockResolvedValue(admissionAgent);
     deps.canStartNewExternalBotWork.mockResolvedValue(false);
     deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false, enableNativeRunner: true } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
@@ -616,8 +986,12 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
         mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
       recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
     });
-    deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
-    deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    const busyAdmission = vi.fn();
+    deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admission.admitIssueWake(target,
+      (tx, stores) => evaluate(tx, { ...stores, admitWakeBehindIssueExecution(input) {
+        busyAdmission(input.activeExecutionRun.id, input.issueExecutionAgentNameKey);
+        return stores.admitWakeBehindIssueExecution(input);
+      } }), effects));
     const queue = createHeartbeatQueue(db, deps);
     if (scenario === "running") {
       deps.canStartNewExternalBotWork.mockResolvedValue(true);
@@ -646,6 +1020,10 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       return;
     }
     expect(coalesced).toMatchObject({ id: f.run.id, status: "queued", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
+    expect(resolveSession).not.toHaveBeenCalled();
+    if (scenario === "missing-execution-key" || scenario === "stale-execution-key") {
+      expect(busyAdmission).toHaveBeenCalledExactlyOnceWith(f.run.id, f.agent.name.toLowerCase());
+    }
     const accepted = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
     expect(accepted.find(row => row.id !== f.wake.id)).toMatchObject({ status: "coalesced", runId: f.run.id, finishedAt: expect.any(Date),
       requestedByActorType: "user", requestedByActorId: incomingActorId });
@@ -1011,7 +1389,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0].status).toBe(wake.status);
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].status).toBe("todo");
     expect(deps.executeRun).not.toHaveBeenCalled();
-    expect(deps.setRunStatus).not.toHaveBeenCalled();
+    expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
   });
 
   it("admits the same queued input after the external connection is repaired", async () => {
@@ -1024,6 +1402,65 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     deps.canStartNewExternalBotWork.mockResolvedValue(true);
     expect(await queue.startNextQueuedRunForAgent(agent.id)).toEqual([expect.objectContaining({ id: run.id, status: "running" })]);
     expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(run.id);
+  });
+
+  it("starts each claimed run before claiming the next, within the agent's concurrency cap", async () => {
+    // A claim commits a 60 s legacy controller lease that only the run's own
+    // execution renews. A batch whose later claims are slow must not hold the
+    // earlier claimed runs back from executing until their leases lapse.
+    const [company] = await db.insert(companies).values({ name: "Claim batch", issuePrefix: "CB" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Busy agent", role: "engineer", status: "idle",
+      adapterType: "process", adapterConfig: {}, runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } } }).returning();
+    const queued = [];
+    for (let index = 0; index < 3; index++) {
+      const [issue] = await db.insert(issues).values({ companyId: company.id, title: `Batch task ${index}`, status: "todo",
+        assigneeAgentId: agent.id }).returning();
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "assignment",
+        status: "claimed", claimedAt: new Date() }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "queued",
+        invocationSource: "assignment", wakeupRequestId: wake.id, responsibleUserId: "queue-test-user", contextSnapshot: { issueId: issue.id },
+        createdAt: new Date(Date.now() - (3 - index) * 1_000) }).returning();
+      await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() })
+        .where(eq(issues.id, issue.id));
+      queued.push(run);
+    }
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    let releaseSecondClaim!: () => void;
+    const secondClaimMayContinue = new Promise<void>(resolve => { releaseSecondClaim = resolve; });
+    let budgetChecks = 0;
+    deps.budgets.getInvocationBlock.mockImplementation(async () => {
+      budgetChecks += 1;
+      if (budgetChecks === 2) await secondClaimMayContinue;
+      return null;
+    });
+    const admission = vi.fn(() => false);
+    deps.isRunAdmissionClosed = admission;
+    const pass = createHeartbeatQueue(db, deps).startNextQueuedRunForAgent(agent.id);
+    try {
+      await vi.waitFor(() => expect(budgetChecks).toBe(2));
+      // The first run is executing while the second claim is still in progress.
+      expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(queued[0]!.id);
+    } finally { releaseSecondClaim(); }
+    const claimed = await pass;
+    expect(claimed.map(run => run.id)).toEqual([queued[0]!.id, queued[1]!.id]);
+    expect(deps.executeRun.mock.calls.map(([runId]) => runId)).toEqual([queued[0]!.id, queued[1]!.id]);
+    // The run-start admission gate is checked before every claim, and the cap holds.
+    expect(admission.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued[2]!.id)))[0].status).toBe("queued");
+  });
+
+  it("leaves a queued run for the next server when shutdown closes admission during the queue scan", async () => {
+    const { run, agent, wake } = await fixture("queued");
+    await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user" }).where(eq(heartbeatRuns.id, run.id));
+    let admissionClosed = false;
+    const deps = callbacks(db);
+    deps.isRunAdmissionClosed = () => admissionClosed;
+    deps.getAgent.mockImplementation(async () => { admissionClosed = true; return agent; });
+    expect(await createHeartbeatQueue(db, deps).startNextQueuedRunForAgent(agent.id)).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toMatchObject({ status: "queued", startedAt: null });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0].status).toBe(wake.status);
+    expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
   it("rechecks the connection hold when Stop races the queue scan", async () => {

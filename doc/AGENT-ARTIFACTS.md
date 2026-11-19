@@ -7,16 +7,20 @@ reviewers often cannot access the agent's disk.
 
 ## Read attached files in native runs
 
-Native runs receive workspace-relative paths for the exact files admitted in
-their current wake. On Linux SSH and command-backed sandbox targets, Paperclip
-copies verified bytes through the bound lease transport before the provider
-turn starts. The agent needs no Paperclip API key to open those paths. Image
-inputs must be opened with the provider's image-capable file reader.
+Native runs receive readable paths for the exact files admitted in their
+current wake. A compatible remote Runner downloads files over HTTPS from the
+configured tenant origin using short-lived grants. The tenant verifies each
+grant against the live run and the exact authorized attachment. Runner verifies
+the size and SHA-256 and clears its local copy at turn end. Linux SSH and
+command-backed sandbox targets can also stage files through their bound
+transport when Runner download is unavailable. Image inputs must be opened
+with the provider's image-capable file reader.
 
-The same transport supports authorized historical external-chat reads. Their
+The same paths support authorized historical external-chat reads. Their
 existing conversation and source-comment checks still apply. External-chat
-history tools do not grant access to unrelated tasks or in-app conversations.
-Targets without a command transport still report attachment access as unavailable.
+history tools grant access only within the authorized conversation.
+Plugin Runner tasks require a compatible Runner build and HTTPS access to
+the tenant download endpoint.
 
 Temporary slots are isolated per staging operation. Cleanup clears the verified
 file after the turn and refuses symlinks or replacement files. Abrupt controller

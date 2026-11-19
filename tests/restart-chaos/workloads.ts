@@ -2,6 +2,7 @@ import { questionHandoffWorkload, questionSequenceWorkload } from "./question-ha
 import { l1Workload } from "./contention.js";
 import { journeyWorkloadDefinitions } from "./journeys.js";
 import { rewakeWorkloadDefinitions } from "./rewake.js";
+import { stagingMixWorkloadDefinition } from "./staging-mix.js";
 import type { OracleArtifacts, OracleResult, WorkloadId } from "./types.js";
 
 /** Deterministic bench output: sum of squares 1..240. */
@@ -20,6 +21,7 @@ export interface WorkloadDefinition {
   title(nonce: string): string;
   description(nonce: string, agents?: WorkloadAgents): string;
   followUp?(nonce: string): string;
+  startComment?(nonce: string): string;
   stopBeforeFollowUp?: boolean;
   /** Files and commands the observer must collect for the T-oracle. */
   collect: { documents: string[]; files(nonce: string): string[]; commands: Array<{ name: string; argv: string[] | ((nonce: string) => string[]) }>;
@@ -71,8 +73,9 @@ export const T1_CLOCK_SLACK_MS = 5_000;
  */
 export function withT1CrossingCheck(oracle: OracleResult, plan: { taskId: string; workload: WorkloadId; nonce: string; fault: string },
   brief: string | null | undefined, faults: ReadonlyArray<{ requestedBy: string; startedAt: number; faultId: string }>): OracleResult {
-  // A matrix baseline (K0) expects no fault, and a provider message fault (PV*) restarts nothing of its own.
-  if (plan.workload !== "T1" || plan.fault === "K0" || plan.fault.startsWith("PV")) return oracle;
+  // A matrix baseline (K0) expects no fault, a provider message fault (PV*) restarts nothing of its own, and CR5
+  // stalls the plugin at launch, before the tool loop starts (class-r.ts).
+  if (plan.workload !== "T1" || plan.fault === "K0" || plan.fault.startsWith("PV") || plan.fault === "CR5") return oracle;
   const report = parseT1Report(plan.nonce, brief);
   // A storm task (K13) has no fault of its own: the storm's faults (requested by "storm") are the ones that cross it.
   const own = faults.filter(fault => fault.requestedBy === plan.taskId || (plan.fault === "K13" && fault.requestedBy === "storm"));
@@ -255,6 +258,7 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
   L1: l1Workload,
   ...journeyWorkloadDefinitions,
   ...rewakeWorkloadDefinitions,
+  SM: stagingMixWorkloadDefinition,
   G1: {
     id: "G1",
     label: "Approval-gated action across a restart",

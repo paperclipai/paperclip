@@ -181,6 +181,15 @@ async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, 
         eq(caseHandoffs.toAgentId, run.agentId)));
     if (handoff) { actorType = handoff.actorType; actorId = handoff.actorId; }
   }
+  if (wake && actorType === "system" && reason === "issue_question_dismissed" && issueId) {
+    const dismissedId = string(record(wake.payload).dismissedInteractionId);
+    const [dismissed] = dismissedId && /^[0-9a-f-]{36}$/i.test(dismissedId)
+      ? await db.select({ userId: issueThreadInteractions.dismissedByUserId }).from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, run.companyId), eq(issueThreadInteractions.issueId, issueId),
+        eq(issueThreadInteractions.id, dismissedId), eq(issueThreadInteractions.createdByAgentId, run.agentId)))
+      : [];
+    if (dismissed?.userId) return null;
+  }
   if (wake && (actorType === "system" || !actorType) && reason !== "issue_blockers_resolved") {
     const payload = record(wake.payload), context = record(payload._paperclipWakeContext);
     const decisionId = string(payload.nativeDecisionId) ?? string(payload.nativeReviewDecisionId)

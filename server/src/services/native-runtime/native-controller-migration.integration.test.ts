@@ -24,8 +24,10 @@ import { createLocalDiskStorageProvider } from "../../storage/local-disk-provide
 import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
+import { claimVolumeFreeControllerState } from "./volume-free-controller-state.js";
+import { assertEphemeralServerData } from "../ephemeral-server-contract.js";
 
-describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
+describeEmbeddedPostgres.each(["volume_free_owner", "archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
   "active_warm", "source_scan", "active_durable", "active_durable_cold", "online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed", "durable_inline_failed",
   "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable", "stale_durable_absent",
   "stale_durable_runner", "stale_durable_session", "stale_durable_snapshot",
@@ -94,6 +96,21 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
       taskKey: f.issueId, lastRunId: f.runId }).returning();
     return { ...f, companyId, agentId, paperclipHome, runtimeRoot, paths, file, source, profile, session, queuedId, identity, snapshot };
   }
+  if (scenario === "volume_free_owner") it("starts a volume-free server over controller state it wrote itself and keeps unmarked state blocked", async () => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    expect(await claimVolumeFreeControllerState(true)).toBe("claimed");
+    const f = await fixture(0, true, true);
+    await f.db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    expect(JSON.parse(await readFile(f.file, "utf8")).schema).toBe("paperclip.runner.durable.control-plane-state.v2");
+    expect(await claimVolumeFreeControllerState(true)).toBe("owned");
+    expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
+    expect(await claimVolumeFreeControllerState(false)).toBe("released");
+    expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+    expect(await claimVolumeFreeControllerState(true)).toBe("unclaimed");
+    expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+    await expect(assertEphemeralServerData(f.db)).rejects.toThrow(`native_controllers_require_migration (run ${f.runId}`);
+    expect(await readFile(f.file, "utf8")).toBe(f.source);
+  });
   if (scenario === "active_warm") it("preserves an active warm rotation only with its exact older committed authority", async () => {
     const f = await fixture(0, true, true), controller = await currentNativeControllerIdentity();
     const binding = { companyId: f.companyId, issueId: f.issueId, runId: f.runId };

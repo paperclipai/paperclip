@@ -20,6 +20,7 @@ import {
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
+import { isOpenRouterCatalogUnavailable } from "../services/openrouter-models.js";
 import { isEndedDbPoolError } from "../database-retry.js";
 import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 
@@ -214,7 +215,9 @@ export function errorHandler(
             },
         reportableError,
       );
-      reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err));
+      // An unreachable public provider catalog still answers 503 with its
+      // retry guidance, but it is the provider's outage, not a server fault.
+      reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err) && !isOpenRouterCatalogUnavailable(err));
     }
     const secretSensitiveServerError =
       err.status >= 500 &&

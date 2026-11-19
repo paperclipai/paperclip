@@ -150,8 +150,15 @@ test.describe("Announcement placement on a new company's first task", () => {
     await page.waitForTimeout(500);
 
     const card = await box(announcement, "announcement");
-    // The docked well spans the sidebar column, so its width is the sidebar width.
-    expect(Math.round(card.width), "sidebar renders at its 208px minimum").toBe(208);
+    const sidebar = page.locator(".sidebar-shell-panel");
+    const sidebarBox = await box(sidebar, "sidebar");
+    const borderWidth = await sidebar.evaluate(element => {
+      const style = getComputedStyle(element);
+      return parseFloat(style.borderInlineStartWidth) + parseFloat(style.borderInlineEndWidth);
+    });
+    expect(Math.round(sidebarBox.width), "sidebar renders at its 208px minimum").toBe(208);
+    expect(card.width + borderWidth, "announcement fills the sidebar inside its continuous border")
+      .toBeCloseTo(sidebarBox.width, 0);
     expect.soft(card.height, "docked card keeps at most half the window height").toBeLessThanOrEqual(viewport.height / 2 + 1);
     await expect.soft(page.getByLabel("Workspace navigation").getByRole("link", { name: "Tasks" })).toBeInViewport();
     const accountTrigger = page.getByRole("button", { name: "Open account menu" });

@@ -43,6 +43,30 @@ describe("tool OAuth over local HTTP", () => {
   });
 
   it.each([
+    "/api/tools/oauth/callback",
+    "/api/tools/oauth/cloud-connector/callback",
+  ])("explains a missing sign-in state to the waiting dialog at %s", async (path) => {
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: `oauth-user-${randomUUID()}`, source: "local_implicit", isInstanceAdmin: true };
+      next();
+    });
+    app.use("/api", toolAccessRoutes(db, { deploymentMode: "local_trusted", deploymentExposure: "private", paperclipCloudConnector: null }));
+    app.use(errorHandler);
+
+    const page = await request(app).get(path)
+      .set("accept", "text/html")
+      .query({ state: `gone-${randomUUID()}`, claim_id: "claim" })
+      .expect(200);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.text).toContain('"outcome":"failed"');
+    expect(page.text).toContain('"code":"oauth_state_missing"');
+    expect(page.text).not.toContain('"interactionId"');
+
+    await request(app).get(path).query({ state: `gone-${randomUUID()}` }).expect(400);
+  });
+
+  it.each([
     { authMethod: "none", grantKind: "organization", scopeMode: "omitted_initial" },
     { authMethod: "client_secret_basic", grantKind: "organization", scopeMode: "omitted_refresh" },
     { authMethod: "none", grantKind: "user", scopeMode: "omitted_initial" },

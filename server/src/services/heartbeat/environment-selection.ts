@@ -3,7 +3,7 @@ import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./e
 import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
-import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
+import type { ExecutionWorkspace, InstanceSettings, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
@@ -38,6 +38,23 @@ import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspaceReuseRequestForIssue, WorkspaceValidationFailure } from "./workspaces.js";
 
 type Issue = typeof issues.$inferSelect;
+
+export async function resolveSshAuthenticationBeforeRouting(input: {
+  agentDefaultEnvironmentId: string | null;
+  lowTrustIssueEnvironmentId: string | null;
+  environmentsSvc: Pick<ReturnType<typeof environmentService>, "getById">;
+  instanceSettings: { get(): Promise<{
+    defaultEnvironmentId: InstanceSettings["defaultEnvironmentId"];
+    general: Pick<InstanceSettings["general"], "executionMode">;
+  }> };
+}): Promise<"host" | "managed" | null> {
+  const settings = await input.instanceSettings.get();
+  if (isExecutionForcedToKubernetes({ executionMode: settings.general.executionMode })) return null;
+  const id = input.lowTrustIssueEnvironmentId ?? input.agentDefaultEnvironmentId ?? settings.defaultEnvironmentId;
+  if (!id) return null;
+  const environment = await input.environmentsSvc.getById(id);
+  return environment?.driver === "ssh" ? environment.config.useHostAuth === false ? "managed" : "host" : null;
+}
 
 /** Selects policy and reuse inputs; lease acquisition and cleanup belong to the executor. */
 export interface HeartbeatEnvironmentSelectionInput {

@@ -98,11 +98,7 @@ export async function releaseUnadmittedTaskRetryInput(db: Db, input: { companyId
     }).where(and(eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.status, "coalesced"),
       isNull(agentWakeupRequests.runId),
       sql`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId' = ${input.retryActionId}`));
-    await tx.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date(), updatedAt: new Date() }).where(and(
-      eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, action.payload.taskRetryIntentId),
-      eq(agentWakeupRequests.reason, "task_retry"), isNull(agentWakeupRequests.runId),
-      inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
-      sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' = ${action.id}`,
-    ));
+    const { settleRefusedTaskChatRetry } = await import("../task-retry.js");
+    await settleRefusedTaskChatRetry(tx as unknown as Db, action);
   });
 }

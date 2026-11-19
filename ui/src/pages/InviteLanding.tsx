@@ -14,7 +14,8 @@ import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
 import { queryKeys } from "../lib/queryKeys";
-import { formatDate } from "../lib/utils";
+import { cn, formatDate } from "../lib/utils";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 type AuthMode = "sign_in" | "sign_up";
 type AuthFeedback = { tone: "error" | "info"; message: string };
@@ -198,13 +199,13 @@ function AwaitingJoinApprovalPanel({
         {claimSecret && claimApiKeyPath ? (
           <div className="mt-4 space-y-1 border border-zinc-800 p-3 text-xs text-zinc-400">
             <div className="text-zinc-200">Claim secret</div>
-            <div className="font-mono break-all">{claimSecret}</div>
+            <div className={cn("font-mono break-all", ANALYTICS_NO_CAPTURE_CLASS)}>{claimSecret}</div>
             <div className="font-mono break-all">POST {claimApiKeyPath}</div>
           </div>
         ) : null}
         {onboardingTextUrl ? (
           <div className="mt-4 text-xs text-zinc-400">
-            Onboarding: <span className="font-mono break-all">{onboardingTextUrl}</span>
+            Onboarding: <span className={cn("font-mono break-all", ANALYTICS_NO_CAPTURE_CLASS)}>{onboardingTextUrl}</span>
           </div>
         ) : null}
       </div>
