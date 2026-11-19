@@ -835,6 +835,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
       { resumeIdentityVersion: 1, onResumed });
     expect(owner.driver.relaunchReleasedRunner).toEqual(source);
     expect(owner.driver.adoptExistingRunner).toBeUndefined();
+    expect(owner.relaunchMayHaveStarted()).toBe(false);
     owner.launcher(relaunchSpec());
     registration.activate();
     try {
@@ -847,6 +848,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
       expect(authority.acceptRelaunchedRunner).toHaveBeenCalledExactlyOnceWith("synthetic-ticket", build, parked);
       expect(onResumed).toHaveBeenCalledExactlyOnceWith(source);
       expect(ingress.connect).toHaveBeenCalledOnce();
+      expect(owner.relaunchMayHaveStarted()).toBe(true);
     } finally { await registration.release("detach"); }
   });
 
@@ -877,6 +879,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
     try {
       await expect(registration.ready()).rejects.toThrow("native_runner_released_state_unsettled");
       expect(authority.acceptRelaunchedRunner).not.toHaveBeenCalled();
+      expect(owner.relaunchMayHaveStarted()).toBe(true);
       expect(ingress.connect).not.toHaveBeenCalled();
     } finally { await registration.release("detach"); }
   });
@@ -888,6 +891,7 @@ describe("plugin Runner relaunch as the claimant run", () => {
     try {
       await expect(registration.ready()).rejects.toThrow("native_runner_reuse_unavailable");
       expect(ingress.connect).not.toHaveBeenCalled();
+      expect(owner.relaunchMayHaveStarted()).toBe(false);
     } finally { await registration.release("detach"); }
   });
 

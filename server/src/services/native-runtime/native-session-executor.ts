@@ -13108,7 +13108,9 @@ async function executePaperclipNativeSessionAttempt(
         try {
           result = await trace.run(runnerSessionStartupScope, runExecution);
         } catch (error) {
-          if (relaunchReleased && !relaunchReleased.published) revertUnattachedRelaunchRotation(scopedRunnerdStateRoot(input.execution), relaunchReleased.source);
+          if (relaunchReleased && !relaunchReleased.published && !relaunchReleased.owner.relaunchMayHaveStarted()) {
+            revertUnattachedRelaunchRotation(scopedRunnerdStateRoot(input.execution), relaunchReleased.source);
+          }
           if (!await continueAfterUnavailableReuse(error)) throw error;
           result = await trace.run(runnerSessionStartupScope, runExecution);
         }

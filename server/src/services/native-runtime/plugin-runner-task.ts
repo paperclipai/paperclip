@@ -73,6 +73,7 @@ export function createPluginRunnerTaskOwner(input: {
   const pollMs = input.pollMs ?? 500;
   let registrationGeneration = 0;
   let registeredAuthority: DurablePrpControlPlane | null = null;
+  let relaunchProgress: "none" | "sent" | "refused" = "none";
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
   let preparedLaunchId: string | undefined;
   let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
@@ -222,6 +223,7 @@ export function createPluginRunnerTaskOwner(input: {
       throw new Error("Plugin Runner relaunch identity mismatch");
     }
     requireReleaseResume();
+    relaunchProgress = "none";
     running = pendingLaunch();
     const operation = environmentTaskOperationSchema.parse({ kind: "resume", identity: source, bootstrapTicket: native.ticket,
       ...resumeLaunchFields(),
@@ -245,6 +247,7 @@ export function createPluginRunnerTaskOwner(input: {
         if (released || stopRequested || detached) throw new Error("Plugin Runner startup cancelled");
         let result: PluginEnvironmentTaskResult;
         try {
+          relaunchProgress = "sent";
           result = await call(operation);
         } catch (error) {
           if (Date.now() >= deadline) throw error;
@@ -253,6 +256,7 @@ export function createPluginRunnerTaskOwner(input: {
         }
         if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
         if (result.outcome === "unavailable") {
+          relaunchProgress = "refused";
           const state = await call({ kind: "status" }).catch(() => undefined);
           retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
           throw new Error("native_runner_reuse_unavailable");
@@ -562,6 +566,7 @@ export function createPluginRunnerTaskOwner(input: {
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     retiredBeforeClaim: () => retiredBeforeClaim,
+    relaunchMayHaveStarted: () => relaunchProgress === "sent",
     configuredEnvironmentDelivered: () => configuredEnvironmentDelivered,
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
