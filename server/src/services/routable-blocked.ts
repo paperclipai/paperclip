@@ -1,6 +1,41 @@
-import type { IssueUnblockDescriptor } from "@paperclipai/shared";
+import type { IssueUnblockDescriptor, IssueUnblockOwner } from "@paperclipai/shared";
 
 export const ROUTABLE_BLOCKED_ROLLOUT_AT = new Date("2026-07-23T18:13:03.000Z");
+
+export function resolveRequestedUnblockDescriptor(
+  updateFields: { unblockDescriptor?: IssueUnblockDescriptor | null | undefined },
+  body: { unblockDescriptor?: IssueUnblockDescriptor | null | undefined },
+): IssueUnblockDescriptor | null {
+  const descriptor = updateFields.unblockDescriptor ?? body.unblockDescriptor ?? null;
+  return descriptor && typeof descriptor === "object" ? descriptor : null;
+}
+
+export function agentUnblockOwnerDeniedReason(input: {
+  actorType: string;
+  actorAgentId?: string | null;
+  issueAssigneeAgentId?: string | null;
+  owner: IssueUnblockOwner;
+  parentAssigneeAgentId?: string | null;
+  parentBlockedByChild?: boolean;
+}): string | null {
+  if (input.actorType !== "agent") return null;
+  if (input.owner === "board" || "userId" in input.owner) {
+    return "Agents may only name themselves as an unblock owner";
+  }
+  if ("agentId" in input.owner) {
+    if (input.actorAgentId === input.owner.agentId) return null;
+    const mayNameParentAssignee = Boolean(
+      input.issueAssigneeAgentId &&
+      input.actorAgentId === input.issueAssigneeAgentId &&
+      input.parentAssigneeAgentId &&
+      input.owner.agentId === input.parentAssigneeAgentId &&
+      input.parentBlockedByChild,
+    );
+    if (mayNameParentAssignee) return null;
+    return "Agents may only name themselves as an unblock owner";
+  }
+  return null;
+}
 
 type RoutableBlockedIssue = {
   id: string;

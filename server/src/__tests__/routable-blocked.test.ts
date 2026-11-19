@@ -1,10 +1,44 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  agentUnblockOwnerDeniedReason,
   deliverAgentUnblockNotification,
+  resolveRequestedUnblockDescriptor,
   ROUTABLE_BLOCKED_ROLLOUT_AT,
 } from "../services/routable-blocked.js";
 
 const agentId = "00000000-0000-4000-8000-000000000001";
+const parentAgentId = "00000000-0000-4000-8000-000000000003";
+
+describe("unblock descriptor helpers", () => {
+  it("reads unblockDescriptor from either update fields or request body", () => {
+    const descriptor = { owner: { agentId }, action: "Review" } as const;
+    expect(resolveRequestedUnblockDescriptor({}, { unblockDescriptor: descriptor })).toEqual(descriptor);
+    expect(resolveRequestedUnblockDescriptor({ unblockDescriptor: descriptor }, {})).toEqual(descriptor);
+    expect(resolveRequestedUnblockDescriptor({}, {})).toBeNull();
+  });
+
+  it("allows an assigned child agent to name the blocked parent assignee", () => {
+    expect(agentUnblockOwnerDeniedReason({
+      actorType: "agent",
+      actorAgentId: agentId,
+      issueAssigneeAgentId: agentId,
+      owner: { agentId: parentAgentId },
+      parentAssigneeAgentId: parentAgentId,
+      parentBlockedByChild: true,
+    })).toBeNull();
+  });
+
+  it("rejects naming the parent assignee without a parent blocker edge", () => {
+    expect(agentUnblockOwnerDeniedReason({
+      actorType: "agent",
+      actorAgentId: agentId,
+      issueAssigneeAgentId: agentId,
+      owner: { agentId: parentAgentId },
+      parentAssigneeAgentId: parentAgentId,
+      parentBlockedByChild: false,
+    })).toBe("Agents may only name themselves as an unblock owner");
+  });
+});
 
 function blockedIssue(input: {
   transitionAt?: Date | null;
