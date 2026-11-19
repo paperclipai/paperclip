@@ -1,11 +1,13 @@
 import { slackSearchConfigSchema } from "@paperclipai/shared";
 import { SLACK_NATIVE_SEARCH_LIMITATION } from "./slack-native-search.js";
 import { syncConnectionCredentialBindings } from "../connection-credential-bindings.js";
-import { randomBytes } from "node:crypto";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { createHash, randomBytes } from "node:crypto";
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
 import {
   chatEndpoints,
   chatExternalPrincipals,
+  chatSlackRegistrations,
+  companySecretVersions,
   chatIdentityLinks,
   companyMemberships,
   connectionGrants,
@@ -178,6 +180,52 @@ export function slackSearchOAuthService(
         "Slack rejected authorization. Check the app credentials and redirect URL.",
       );
     return value;
+  }
+  /**
+   * Slack's Basic Information page shows the Client Secret right next to the
+   * Signing Secret, and pasting the wrong one fails silently at authorization
+   * time. Compare hashes so the mix-up is rejected at save time.
+   */
+  async function assertNotSigningSecret(
+    companyId: string,
+    endpointId: string,
+    connection: { credentialSecretRefs: Array<{ configPath: string; secretId: string }> },
+    values: { clientId: string; clientSecret: string },
+  ) {
+    const [found] = await db
+      .select({
+        status: chatSlackRegistrations.status,
+        clientId: chatSlackRegistrations.clientId,
+        secretIds: chatSlackRegistrations.secretIds,
+      })
+      .from(chatSlackRegistrations)
+      .where(and(eq(chatSlackRegistrations.companyId, companyId), eq(chatSlackRegistrations.endpointId, endpointId)));
+    // Only a registration whose app exists describes it. Removed rows keep their
+    // client_id, and creating/uncertain/failed ones may never have produced an app.
+    const registration =
+      found && ["install", "credentials_saved", "configured"].includes(found.status) ? found : undefined;
+    if (registration?.clientId && registration.clientId !== values.clientId)
+      throw unprocessable(
+        "This Client ID does not match the Slack app registered for this connection. Copy it from the app's Basic Information page.",
+      );
+    const secretIds = new Set<string>();
+    for (const ref of connection.credentialSecretRefs ?? [])
+      if (ref.configPath === "credentials.signingSecret") secretIds.add(ref.secretId);
+    if (registration?.secretIds?.signingSecret) secretIds.add(registration.secretIds.signingSecret);
+    if (secretIds.size === 0) return;
+    // Pasted values often carry a trailing newline or space; check both forms.
+    const pasted = [...new Set([values.clientSecret, values.clientSecret.trim()])].map((value) =>
+      createHash("sha256").update(value).digest("hex"),
+    );
+    const [match] = await db
+      .select({ id: companySecretVersions.id })
+      .from(companySecretVersions)
+      .where(and(inArray(companySecretVersions.secretId, [...secretIds]), inArray(companySecretVersions.valueSha256, pasted)))
+      .limit(1);
+    if (match)
+      throw unprocessable(
+        "That value is this Slack app's Signing Secret, not its Client Secret. Copy the Client Secret from the app's Basic Information page.",
+      );
   }
   async function status(companyId: string, endpointId: string, userId: string) {
     const row = await endpoint(companyId, endpointId);
@@ -393,6 +441,7 @@ export function slackSearchOAuthService(
     ) {
       const values = slackSearchConfigSchema.parse(input);
       const row = await endpoint(companyId, endpointId);
+      await assertNotSigningSecret(companyId, endpointId, row.connection, values);
       await db.transaction(async (tx) => {
         const [connection] = await tx
           .select()

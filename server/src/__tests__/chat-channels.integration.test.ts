@@ -11181,7 +11181,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       throw new Error("Unexpected OAuth request");
     });
     const oauth = slackSearchOAuthService(db, "https://paperclip.example", oauthFetch as typeof fetch);
+    // Pasting the app's Signing Secret where the Client Secret belongs is rejected up front.
+    await expect(oauth.configure(fixture.companyId, endpoint.id, "owner-user", { clientId: "123.456", clientSecret: "test-signing-secret" })).rejects.toMatchObject({ status: 422, message: expect.stringContaining("Signing Secret") });
+    // Surrounding whitespace does not get past the guard.
+    await expect(oauth.configure(fixture.companyId, endpoint.id, "owner-user", { clientId: "123.456", clientSecret: "test-signing-secret\n" })).rejects.toMatchObject({ status: 422 });
+    // A live registration pins the Client ID; a removed one no longer does.
+    await db.insert(chatSlackRegistrations).values({
+      endpointId: endpoint.id, companyId: fixture.companyId, requestId: randomUUID(), status: "configured",
+      manifest: {}, manifestHash: "x", callbackUri: "https://paperclip.example/api/chat-slack/oauth/callback",
+      clientId: "999.999", createdByUserId: "owner-user",
+    });
+    await expect(oauth.configure(fixture.companyId, endpoint.id, "owner-user", { clientId: "123.456", clientSecret: "fixture-client-secret" })).rejects.toMatchObject({ status: 422, message: expect.stringContaining("Client ID") });
+    await db.update(chatSlackRegistrations).set({ status: "failed" }).where(eq(chatSlackRegistrations.endpointId, endpoint.id));
+    await expect(oauth.configure(fixture.companyId, endpoint.id, "owner-user", { clientId: "123.456", clientSecret: "test-signing-secret" })).rejects.toMatchObject({ status: 422, message: expect.stringContaining("Signing Secret") });
+    await db.update(chatSlackRegistrations).set({ status: "removed" }).where(eq(chatSlackRegistrations.endpointId, endpoint.id));
     await oauth.configure(fixture.companyId, endpoint.id, "owner-user", { clientId: "123.456", clientSecret: "fixture-client-secret" });
+    await db.delete(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, endpoint.id));
     const started = await oauth.start(fixture.companyId, endpoint.id, "owner-user");
     const state = new URL(started.url).searchParams.get("state")!;
     await expect(oauth.complete(state, "test-code", "other-user")).rejects.toThrow("belongs to another user");
