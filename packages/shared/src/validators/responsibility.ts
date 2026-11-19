@@ -68,6 +68,11 @@ const createResponsibilityFields = z.object({
   metricDirection: z.enum(RESPONSIBILITY_METRIC_DIRECTIONS).optional(),
   /** An area in the same company. */
   areaId: z.string().uuid().optional().nullable(),
+  /**
+   * An area by title instead of `areaId`: the live area with that title (any
+   * case), or a new one made in the same transaction. Not with `areaId`.
+   */
+  areaTitle: title.optional(),
   /** An agent in the same company that runs the work. */
   runByAgentId: z.string().uuid().optional().nullable(),
   evidence: optionalText,
@@ -147,6 +152,8 @@ export const updateResponsibilitySchema = z.object({
   /** Volume and percentage only. */
   metricDirection: z.enum(RESPONSIBILITY_METRIC_DIRECTIONS).optional().nullable(),
   areaId: z.string().uuid().optional().nullable(),
+  /** Move it to the live area with this title (any case), made in the same transaction when there is none. Not with `areaId`. */
+  areaTitle: title.optional(),
   runByAgentId: z.string().uuid().optional().nullable(),
   evidence: optionalText,
   sortOrder: sortOrder.optional(),

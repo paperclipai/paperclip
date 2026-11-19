@@ -17,6 +17,7 @@ import {
   instanceSettings,
   issueDocuments,
   issueReferenceMentions,
+  issueComments,
   issues,
   issueThreadInteractions,
   projects,
@@ -1170,6 +1171,61 @@ describeEmbeddedPostgres("responsibility routes", () => {
       expect([first.status, second.status].sort()).toEqual([200, 201]);
       expect(first.body.id).toBe(second.body.id);
       expect(await db.select().from(responsibilities).where(eq(responsibilities.companyId, company.id))).toHaveLength(1);
+    });
+
+    it("makes an area by title in the same transaction, so a refused change leaves none", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const created = await request(actingAgent(company.id, agent.id)).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Hiring", areaTitle: "People" });
+      expect(created.status).toBe(201);
+      const [people] = await db.select().from(responsibilityAreas).where(eq(responsibilityAreas.title, "People"));
+      expect(created.body.areaId).toBe(people?.id);
+      expect(people?.status).toBe("active");
+
+      // An agent acting for an operator may not change the owner's active responsibility: no area is left behind.
+      const refused = await request(actingAgent(company.id, agent.id, "other-user", "operator"))
+        .patch(`/api/responsibilities/${created.body.id}`).send({ areaTitle: "Elsewhere" });
+      expect(refused.status).toBe(403);
+      expect(await db.select().from(responsibilityAreas).where(eq(responsibilityAreas.title, "Elsewhere"))).toHaveLength(0);
+      expect((await request(actingAgent(company.id, agent.id)).patch(`/api/responsibilities/${created.body.id}`)
+        .send({ areaTitle: "People", areaId: people!.id })).status).toBe(422);
+    });
+
+    it("accepts a delete card the person answered by a verified chat reply", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const doomed = await createResponsibility(createApp(db, localBoardActor()), company.id, { title: "Old work" });
+      const chat = await db.insert(issues).values({ companyId: company.id, title: "Chat", status: "in_progress", priority: "medium" }).returning().then((r) => r[0]!);
+      const [reply] = await db.insert(issueComments).values({ companyId: company.id, issueId: chat.id, authorType: "user", authorUserId: OWNER, body: "Yes, delete it" }).returning();
+      const [card] = await db.insert(issueThreadInteractions).values({
+        companyId: company.id, issueId: chat.id, kind: "request_confirmation", status: "accepted", createdByAgentId: agent.id,
+        payload: { version: 1, prompt: "Delete it?", target: { type: "custom", key: `responsibility-delete:${doomed.id}` } },
+        result: { version: 1, outcome: "accepted", commentId: reply!.id }, resolvedByAgentId: agent.id, resolvedAt: new Date(),
+      }).returning();
+      const deleted = await request(actingAgent(company.id, agent.id)).delete(`/api/responsibilities/${doomed.id}?confirmationId=${card!.id}`);
+      expect(deleted.status).toBe(200);
+    });
+
+    it("saves a version for everyone whose responsibilities an area delete moves", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const board = createApp(db, localBoardActor());
+      const from = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Money" });
+      const to = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Finance" });
+      await createResponsibility(board, company.id, { title: "Runway", areaId: from.body.id, ownerUserId: "other-user" });
+      const chat = await db.insert(issues).values({ companyId: company.id, title: "Chat", status: "in_progress", priority: "medium" }).returning().then((r) => r[0]!);
+      const [card] = await db.insert(issueThreadInteractions).values({
+        companyId: company.id, issueId: chat.id, kind: "request_confirmation", status: "accepted", createdByAgentId: agent.id,
+        payload: { version: 1, prompt: "Delete it?", target: { type: "custom", key: `responsibility-area-delete:${from.body.id}` } },
+        resolvedByUserId: OWNER, resolvedAt: new Date(),
+      }).returning();
+      const removed = await request(actingAgent(company.id, agent.id))
+        .delete(`/api/responsibility-areas/${from.body.id}?confirmationId=${card!.id}&moveResponsibilitiesTo=${to.body.id}`);
+      expect(removed.status).toBe(200);
+      expect(await latestVersion(company.id, "other-user")).toMatchObject({ cause: "change_set", actorAgentId: agent.id });
     });
 
     it("moves an area's responsibilities when the area is deleted", async () => {
