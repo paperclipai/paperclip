@@ -61,12 +61,11 @@ describe("assistant setup from Connections", () => {
     expect(container.querySelector('[role="combobox"]')).toBeNull();
     expect(mocks.revoke).not.toHaveBeenCalled();
   });
-  it("shows the enable path while disabled, with no usable setup instructions", async () => {
-    mocks.setup.mockResolvedValue({ enabled: false, serverUrl: "https://canonical.example/mcp/paperclip" });
+  it("shows setup without an experimental-settings step", async () => {
     await render();
-    expect(container.querySelector('a[href="/company/settings/instance/experimental"]')).not.toBeNull();
-    expect(container.textContent).not.toContain("opencode mcp auth");
-    expect(container.textContent).not.toContain("https://canonical.example");
+    expect(container.querySelector('a[href="/company/settings/instance/experimental"]')).toBeNull();
+    expect(container.textContent).not.toContain("Experimental settings");
+    expect(container.textContent).toContain("opencode mcp auth");
   });
   it("only shows this organization’s grants and revokes the selected grant", async () => {
     mocks.connections.mockResolvedValue([grant, { ...grant, id: "other", companyId: "elsewhere", clientName: "Other secret client" }]);

@@ -2,6 +2,7 @@ import { questionHandoffWorkload, questionSequenceWorkload } from "./question-ha
 import { l1Workload } from "./contention.js";
 import { journeyWorkloadDefinitions } from "./journeys.js";
 import { rewakeWorkloadDefinitions } from "./rewake.js";
+import { stagingMixWorkloadDefinition } from "./staging-mix.js";
 import type { OracleArtifacts, OracleResult, WorkloadId } from "./types.js";
 
 /** Deterministic bench output: sum of squares 1..240. */
@@ -257,6 +258,7 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
   L1: l1Workload,
   ...journeyWorkloadDefinitions,
   ...rewakeWorkloadDefinitions,
+  SM: stagingMixWorkloadDefinition,
   G1: {
     id: "G1",
     label: "Approval-gated action across a restart",

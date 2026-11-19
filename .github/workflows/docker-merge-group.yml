@@ -1,0 +1,169 @@
+name: Docker merge-queue build
+
+# Build-before-merge for the standard image. While a change waits in the merge
+# queue, build the production image for the exact merge-group commit, probe it,
+# and keep it as a run artifact. When the queue fast-forwards master to that
+# commit, docker.yml pushes these exact bytes (scripts/merge-group-image.mjs)
+# instead of rebuilding them. Without a matching successful run, docker.yml
+# builds from source as before. Nothing here can publish: this workflow has no
+# registry credentials, no secrets, and read-only contents access.
+#
+# Inert until the merge queue is enabled for master: no merge_group event fires
+# before then.
+on:
+  merge_group:
+
+permissions: {}
+
+# Each merge group has its own ref; a group that the queue rebuilt replaces the
+# older run for that ref.
+concurrency:
+  group: docker-merge-group-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event.merge_group.base_ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    # GitHub-hosted runners: the protected release fleets admit only
+    # docker.yml on master.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # Same history as docker.yml, for `git describe` below.
+          fetch-depth: 0
+          filter: blob:none
+
+      # The merge queue fast-forwards master to this exact commit, so these
+      # stamps match what a master build of the same commit would carry.
+      - name: Compute build version
+        id: build-version
+        run: |
+          set -euo pipefail
+          version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Stamping build version: ${version:-<none>}"
+
+      - name: Compute tool cache epoch
+        id: tools-epoch
+        run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Refresh lockfile for Docker build context
+        run: |
+          set -euo pipefail
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ] && printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during lockfile refresh:"
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          pnpm store prune || true
+          sudo apt-get clean || true
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android /usr/local/share/boost \
+            /usr/local/share/powershell /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/Ruby || true
+          docker system prune -af || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      - name: Compute schema migration labels
+        id: schema
+        run: |
+          set -euo pipefail
+          last=$(find packages/db/src/migrations -maxdepth 1 -name '*.sql' -printf '%f\n' | LC_ALL=C sort | tail -1)
+          count=$(find packages/db/src/migrations -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')
+          echo "last=${last}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      # Same labels as a master build. The version label names master, not the
+      # temporary merge-queue branch this commit is tested on.
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          labels: |
+            org.opencontainers.image.version=master
+            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
+            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+
+      # Reads the public registry cache anonymously and writes none of it.
+      - name: Build image archive
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: production
+          build-args: |
+            PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          outputs: type=oci,dest=${{ runner.temp }}/merge-group-image/image.tar,name=paperclip-merge-group:${{ matrix.arch }}
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # PID 1 must be an init that reaps adopted orphans; see docker.yml.
+      - name: Verify PID 1 reaps orphaned processes
+        env:
+          ARCHIVE: ${{ runner.temp }}/merge-group-image/image.tar
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: paperclip-merge-group:${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker load --input "$ARCHIVE"
+          docker run --rm -i --pull never --platform "$PLATFORM" "$IMAGE" sh -s < scripts/assert-orphan-reaping.sh
+          docker image rm "$IMAGE"
+
+      # Written only after the probe passes. Promotion trusts nothing without it.
+      - name: Record the verified image
+        run: node scripts/merge-group-image.mjs record --arch "${{ matrix.arch }}" --archive "${{ runner.temp }}/merge-group-image/image.tar" --out "${{ runner.temp }}/merge-group-image/record.json"
+
+      - name: Upload the verified image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: merge-group-image-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/merge-group-image/image.tar
+            ${{ runner.temp }}/merge-group-image/record.json
+          if-no-files-found: error
+          # Layers are already compressed.
+          compression-level: 0
+          retention-days: 3

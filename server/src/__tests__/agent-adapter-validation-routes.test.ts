@@ -65,6 +65,7 @@ const mockApprovalService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockCheckProtectedKeys = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => [] as unknown[]));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
@@ -117,6 +118,10 @@ vi.mock("../services/remote-agent-profiles.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/protected-environment-keys.js", async () => ({
+    ...await vi.importActual<typeof import("../services/protected-environment-keys.js")>("../services/protected-environment-keys.js"),
+    checkAgentProtectedEnvironmentKeys: mockCheckProtectedKeys,
+  }));
   vi.doMock("../services/antigravity-connection-models.js", () => ({ antigravityConnectionModels: mockAntigravityModels }));
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
@@ -269,6 +274,8 @@ describe("agent routes adapter validation", () => {
     mockLogActivity.mockResolvedValue(undefined);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockCheckProtectedKeys.mockReset();
+    mockCheckProtectedKeys.mockResolvedValue([]);
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     mockManagedAgentProfileService.requireQualified.mockResolvedValue({
       id: "managed-primary",
@@ -1770,6 +1777,34 @@ describe("agent routes adapter validation", () => {
       code: "paperclip_runner_claude_managed_retention_required",
     });
     expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "warned"] as const)("checks a rollback's restored env and environment for protected keys (%s)", async outcome => {
+    const existing = await mockAgentService.getById();
+    const adapterConfig = { ...(existing.adapterConfig as Record<string, unknown>), env: { DESKTOP_SESSION: { type: "plain", value: "mine" } } };
+    mockAgentService.getConfigRevision.mockResolvedValue({ afterConfig: {
+      name: existing.name, role: existing.role, adapterType: existing.adapterType, adapterConfig,
+      runtimeConfig: {}, defaultEnvironmentId: "computer-env", budgetMonthlyCents: existing.budgetMonthlyCents,
+    } });
+    mockAgentService.rollbackConfigRevision.mockResolvedValue({ ...existing, adapterConfig });
+    const warning = { code: "protected_environment_variable", field: "adapterConfig.env.DESKTOP_SESSION", message: "notice" };
+    if (outcome === "rejected") {
+      const { unprocessable } = await import("../errors.js");
+      mockCheckProtectedKeys.mockRejectedValue(unprocessable("protected", { code: "protected_environment_variable" }));
+    } else mockCheckProtectedKeys.mockResolvedValue([warning]);
+    const app = await createApp();
+    const response = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post("/api/agents/11111111-1111-4111-8111-111111111111/config-revisions/33333333-3333-4333-8333-333333333333/rollback").send({}),
+    );
+    expect(mockCheckProtectedKeys).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ env: adapterConfig.env }), "computer-env");
+    if (outcome === "rejected") {
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.details).toMatchObject({ code: "protected_environment_variable" });
+      expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+    } else {
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.configurationWarnings).toEqual([warning]);
+    }
   });
 
   it("keeps an existing paperclip_runner agent editable after the flag is disabled", async () => {

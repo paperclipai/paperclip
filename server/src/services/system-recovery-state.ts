@@ -75,6 +75,7 @@ export const systemRecoverySchema = z.object({
   capturePolicyVersion: z.number().int().positive().optional(),
 });
 export type SystemRecoveryState = z.infer<typeof systemRecoverySchema>;
+type RecoveryFailure = NonNullable<SystemRecoveryState["failure"]>;
 
 export function readSystemRecovery(evidence: Record<string, unknown> | null | undefined): SystemRecoveryState | null {
   const parsed = systemRecoverySchema.safeParse(evidence?.systemRecovery);
@@ -193,23 +194,57 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
   if (evidence !== undefined && isExhaustedStopProofWait(state) && !stopProofRearmsSpent(evidence))
     return "Recovery of saved work is waiting to confirm that the previous run stopped. "
       + "Paperclip tries again automatically, and the agent will not repeat its work.";
-  const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
   if (state.failure?.cause?.label === "sandbox_disk_full")
     return "Saving the agent's files stopped because the sandbox disk is full. Paperclip deletes only inactive tool "
       + "caches it can prove safe, and that did not free enough space. Automatic recovery does not repeat a save that fails the same way. "
       + "Retry saves the files again. The agent's result is kept, and the agent will not repeat its work.";
+  const lostFiles = unrecoverableSavedFilesFailure(state);
+  if (lostFiles)
+    return `Paperclip cannot recover the unsaved files from the previous run: ${unrecoverableSavedFilesReason(lostFiles)}. `
+      + "Retry continues the task in a new workspace from its recorded work, without those files. The agent will not repeat its completed actions.";
   if (isDeterministicRecoveryRefusal(state)) {
     const code = state.failure!.code;
     // Never promise a release. A retained-file hold the fallback settles
     // (workspace-recovery-fallback) replaces this text with its own outcome.
-    return `Paperclip refused to recover the saved files: ${recoveryRefusalReasons[code] ?? "a safety check on the saved files did not pass"} `
-      + `(${code}${cause}). Automatic recovery does not repeat this check, because the same saved state gives the same result. `
+    return `Paperclip refused to recover the saved files: ${recoveryRefusalReasons[code] ?? "a safety check on the saved files did not pass"}. `
+      + "Automatic recovery does not repeat this check, because the same saved state gives the same result. "
       + "Retry runs the check again. The agent's result is saved, and the agent will not repeat its work.";
   }
-  const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
-  const outcome = state.attempts > 1 ? `stopped after ${state.attempts} attempts` : "failed";
-  return `Automatic recovery of saved work ${outcome}${reason}. `
-    + "Retry to try again; the agent will not repeat its work.";
+  const tries = state.attempts > 1 ? ` after ${state.attempts} tries` : "";
+  return `Paperclip could not recover the agent's saved files${tries}. `
+    + "Press Retry to try again; the agent will not repeat its work.";
+}
+
+export const UNVERIFIABLE_SOURCE_CODES = ["allocation_ownership_ambiguous", "source_binding_invalid", "source_unavailable", "historical_source_missing"] as const;
+export const PERMANENT_SOURCE_RETRY_CLASSES = ["service_required", "use_alternative_strategy"] as const;
+const UNRECOVERABLE_SOURCE_CODES = ["allocation_ownership_ambiguous", "source_unavailable", "historical_source_missing"] as const;
+
+export function canAdoptNativeSourceRetention(state: SystemRecoveryState) {
+  return state.state === "exhausted" && state.phase === "verify_execution" && state.attempts === 1
+    && state.retriesUsed === 0 && state.failure?.code === "source_binding_invalid"
+    && (!state.failure.sourceVerification || state.failure.sourceVerification.reason === "lease_policy_not_retained")
+    && state.preservationOperationIds.length === 0 && !state.freshAttemptRunId;
+}
+
+export function unrecoverableSavedFilesFailure(state: SystemRecoveryState | null | undefined): RecoveryFailure | null {
+  const failure = state?.failure;
+  if (!state || !failure || state.state !== "exhausted" || state.freshAttemptRunId || canAdoptNativeSourceRetention(state)) return null;
+  return (UNRECOVERABLE_SOURCE_CODES as readonly string[]).includes(failure.code)
+    && (PERMANENT_SOURCE_RETRY_CLASSES as readonly string[]).includes(failure.retryClass) ? failure : null;
+}
+
+export function savedFilesUnrecoverable(state: SystemRecoveryState | null | undefined) {
+  return unrecoverableSavedFilesFailure(state) !== null;
+}
+
+function unrecoverableSavedFilesReason(failure: RecoveryFailure) {
+  return recoveryRefusalReasons[failure.code] ?? "a safety check on the saved files did not pass";
+}
+
+export function unrecoverableSavedFilesNotice(failure: RecoveryFailure) {
+  return `Paperclip could not recover the unsaved files from the previous run: ${unrecoverableSavedFilesReason(failure)}. `
+    + "Retry continued this task in a new workspace from its recorded work: comments, documents, attachments and pushed commits. "
+    + "Files that run did not save or push are not included. Its completed actions stay recorded and are not repeated.";
 }
 
 export function isDeterministicRecoveryRefusal(state: Pick<SystemRecoveryState, "state" | "failure"> | null | undefined) {
@@ -222,4 +257,5 @@ const recoveryRefusalReasons: Partial<Record<RecoveryFailureCode, string>> = {
   snapshot_verification_failed: "the saved snapshot of the files did not pass verification",
   archive_unsafe: "the saved file archive contains entries that are not safe to apply",
   source_unavailable: "the saved files are no longer available where the run recorded them",
+  historical_source_missing: "Paperclip has no record of where the run kept the saved files",
 };

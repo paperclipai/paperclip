@@ -40,7 +40,7 @@ function SidebarIconAlignment() {
     <nav className="design-sidebar-navigation" aria-label="Mixed navigation icons">
       <SidebarSection label="Pinned">
         <PinnedNavigationList items={buildPinnedNavigationItems(pins, agents, [{ to: "/routines", label: "Routines", icon: Repeat }])}
-          rail={false} onReorder={setPins} onUnpin={key => setPins(previous => previous.filter(item => item !== key))} />
+          onReorder={setPins} onUnpin={key => setPins(previous => previous.filter(item => item !== key))} />
       </SidebarSection>
       <SidebarSection label="Recents">
         <div className="design-sidebar-recent-list">

@@ -59,6 +59,10 @@ export const agentWakeupRequests = pgTable(
       table.agentId,
       table.requestedAt,
     ),
+    companyRunIdx: index("agent_wakeup_requests_company_run_idx")
+      .on(table.companyId, table.runId)
+      .concurrently()
+      .where(sql`${table.runId} IS NOT NULL`),
     reviewPathRecoveryIdempotencyUq: uniqueIndex(
       "agent_wakeup_requests_review_path_recovery_idempotency_uq",
     )

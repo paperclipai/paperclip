@@ -739,6 +739,54 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "turn.started"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "origin": {
+                "$ref": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json#/$defs/origin"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "turn.completed"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "awaitingProviderTurn": {
+                "$ref": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json#/$defs/awaitingProviderTurn"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
     }
   ],
   "additionalProperties": true

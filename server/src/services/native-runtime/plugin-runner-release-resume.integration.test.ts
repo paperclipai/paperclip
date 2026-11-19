@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { and, eq } from "drizzle-orm";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
-import { expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { completionContracts, environmentLeases, environments, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { readRunnerdArtifactBinding, defaultCapabilityRunnerdBinary,
@@ -36,23 +36,47 @@ const { createPrivateHostControlFixture } = await import(new URL("../../../../pa
 
 const fakeAcpxSidecar = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+const adoptedIdleTimeoutMs = 10_000;
+const toolDefinitions = PaperclipRunnerToolAuthority.prototype.definitions;
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
 // The only replaced service is the external environment-task/Launcher edge.
 // Runtime, backend, owner, PRP ingress, checkpoint persistence and native Runner are real.
 describeEmbeddedPostgres("plugin Runner release/resume through the Core execution entry", () => {
+  let currentCase: { teardown?: () => Promise<void> } | undefined;
+  afterEach(async () => {
+    const finished = currentCase;
+    currentCase = undefined;
+    await finished?.teardown?.();
+  });
   const environment = nativeRestartFixture();
+  const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
+  let oldCAs: string[] = [], oldAgent = https.globalAgent;
+  beforeAll(async () => {
+    const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
+      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
+    tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
+    oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
+    const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
+    setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+  });
+  afterAll(() => {
+    https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
+  });
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
   nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted", "adopted restart"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const,
     ["codex", "cached cancellation"] as const, ["codex", "cached held claim"] as const, ["claude", "cached held claim"] as const,
     ["codex", "cached managed GitHub"] as const, ["codex", "adopted managed GitHub"] as const, ["codex", "adopted restart managed GitHub"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
+    const thisCase: { teardown?: () => Promise<void> } = {};
+    currentCase = thisCase;
     const adopted = mode.startsWith("adopted"), cancellation = mode.includes("cancellation"), heldClaimMode = mode === "cached held claim";
     const restart = mode.includes("restart");
     const qualifiedCancellation = mode === "adopted cancellation" || mode === "cached cancellation";
     const managedGitHub = mode.endsWith("managed GitHub"), brokerUrl = "https://core.example.test/api", brokerToken = (runId: string) => `fixture-broker-${runId}`;
     const preparedBrokers: Array<{ runId: string; token?: string }> = [];
-    const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}`);
+    const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}-${randomUUID().slice(0, 8)}`);
     const { db, runId, issueId, native } = first;
     const { companyId, agentId, runtimeRoot } = environment.current;
     const root = join(runtimeRoot, runId), workspace = join(root, "workspace"), home = join(root, "credential-home");
@@ -77,7 +101,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       task: { identifier: "RELEASE-ENTRY", title: issue!.title, description: null, prompt: "Complete the controlled task.", workMode: "standard" },
       workspace: { cwd: workspace, repoUrl: null, repoRef: null, branchName: null },
       session: { normalizedSessionId: native.normalizedSessionId, driverKind: harness === "codex" ? "codex_app_server" : "acpx_runtime", protocolVersion: 1,
-        lifecyclePolicy: { mode: "warm", idleTimeoutMs: adopted && !restart ? 5_000 : 60_000 } },
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: adopted && !restart ? adoptedIdleTimeoutMs : 60_000 } },
       completionContract: { id: contract!.id, sha256: contract!.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
         contract: buildNativeCompletionContract(issue!, { revision: contract!.revision }) }, interactionResponses: [], credentialBindings: [] });
     const resultFile = join(root, "result.json"), calls = join(root, "provider-calls");
@@ -91,15 +115,10 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       await writeFile(sidecarScript, "qualified fixture entry");
       await writeFile(sidecar, `#!/bin/sh\nexec ${quote(fakeAcpxSidecar)} --mode source-reconcile --profile-digest ${quote(claudeProfile.commandDigest)} --journal ${quote(calls)} --source-fault ${quote(join(root, "fault"))} --wait-completion-feedback\n`, { mode: 0o700 });
     }
-    const key = join(root, "tls.key"), certificate = join(root, "tls.crt");
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
-      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
-    const oldCAs = getCACertificates("default"), oldAgent = https.globalAgent;
-    const certificates = [...oldCAs, await readFile(certificate, "utf8")];
-    const probe = createTcpServer(); await new Promise<void>(done => probe.listen(0, "127.0.0.1", done));
+    const probe = createTcpServer(); await new Promise<void>(done => probe.listen(0, "0.0.0.0", done));
     const address = probe.address(); if (!address || typeof address === "string") throw new Error("Fixture listener unavailable");
     const runnerPort = address.port; await new Promise<void>(done => probe.close(() => done()));
-    const tls = createServer({ key: await readFile(key), cert: await readFile(certificate) });
+    const tls = createServer(tlsIdentity);
     const sockets = new Set<WebSocket>(), websocket = new WebSocketServer({ noServer: true });
     let listenPath = "";
     const wireEvents: string[] = [];
@@ -128,7 +147,6 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const releases: DurableRecoveryIdentity[] = [], claims: DurableRecoveryIdentity[] = [];
     const operationsDuringClaim: string[] = [];
     let claimHeld = false, holdPreparationFor: string | undefined, claimedDuringPreparation = false;
-    const toolDefinitions = PaperclipRunnerToolAuthority.prototype.definitions;
     const preparation = vi.spyOn(PaperclipRunnerToolAuthority.prototype, "definitions").mockImplementation(function (this: PaperclipRunnerToolAuthority) {
       const definitions = toolDefinitions.call(this);
       if (holdPreparationFor === undefined || this.binding.runId !== holdPreparationFor) return definitions;
@@ -143,6 +161,19 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const claimReply = new Promise<void>(done => { releaseClaimReply = done; });
     const heldClaim = new Promise<void>(done => { observeHeldClaim = done; });
     let pendingFollowup: Promise<unknown> | undefined;
+    let restoreAdoption: (() => void) | undefined;
+    thisCase.teardown = async () => {
+      releaseClaimReply();
+      try {
+        const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), host.close()]);
+        for (const socket of sockets) socket.terminate(); websocket.close();
+        await new Promise<void>(done => tls.close(() => done()));
+        const failures = cleanup.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Fixture cleanup failed");
+      } finally {
+        restoreAdoption?.(); preparation.mockRestore();
+      }
+    };
     const providerStarts = async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/)
       .filter(line => harness === "codex" ? line === "process-start" : JSON.parse(line).processStart).length;
     const state = async () => JSON.parse(await readFile(join(runnerRoot, "runner-state.json"), "utf8"));
@@ -243,8 +274,8 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
           sandboxLeaseAcquisition: { outcome: leaseId === leaseA ? "created" : "resumed", providerLeaseId: taskId } } });
     };
     const adoption = vi.spyOn(remoteWarmRecovery, "inspectRemoteWarmSessionRecovery");
+    restoreAdoption = () => adoption.mockRestore();
     try {
-      setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
@@ -260,7 +291,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         if (restart) {
           expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
           expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
-        } else await new Promise(done => setTimeout(done, 5_200));
+        } else await new Promise(done => setTimeout(done, adoptedIdleTimeoutMs + 200));
         expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
         expect(await proof()).toMatchObject({ source: releases[0], taskId });
       }
@@ -339,16 +370,6 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     } finally {
       releaseClaimReply();
       await pendingFollowup?.catch(() => undefined);
-      try {
-        const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), host.close()]);
-        for (const socket of sockets) socket.terminate(); websocket.close();
-        await new Promise<void>(done => tls.close(() => done()));
-        const failures = cleanup.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-        if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Fixture cleanup failed");
-      } finally {
-        adoption.mockRestore(); preparation.mockRestore();
-        https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
-      }
     }
   });
 });
