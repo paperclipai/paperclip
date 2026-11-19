@@ -395,12 +395,13 @@ export function dashboardChangesMissingDependencies(
 // Versions
 // ---------------------------------------------------------------------------
 
-/** One area as a version holds it. */
+/** One area as a version holds it. Versions saved since agents could change areas also hold its description. */
 export interface ResponsibilityDashboardSnapshotArea {
   id: string;
   title: string;
   status: string;
   sortOrder: number;
+  description?: string | null;
 }
 
 /** The projects, tasks, routines and skills filed directly under a responsibility, each sorted. */
@@ -428,6 +429,9 @@ export interface ResponsibilityDashboardSnapshotResponsibility {
   links?: ResponsibilityDashboardSnapshotLinks;
   description?: string | null;
   runByAgentId?: string | null;
+  evidence?: string | null;
+  healthOverride?: string | null;
+  healthNote?: string | null;
 }
 
 /**
@@ -440,13 +444,19 @@ export interface ResponsibilityDashboardSnapshot {
   version: 1;
   areas: ResponsibilityDashboardSnapshotArea[];
   responsibilities: ResponsibilityDashboardSnapshotResponsibility[];
-  /** Areas the change that produced this version created; empty ones stay on the dashboard until undone. */
+  /**
+   * Areas the change that produced this version created or changed; while
+   * they are not archived they stay on the dashboard (an empty one too), so
+   * the change can be undone.
+   */
   createdAreaIds: string[];
 }
 
 export const responsibilityDashboardSnapshotSchema = z.object({
   version: z.literal(1),
-  areas: z.array(z.object({ id: z.string(), title: z.string(), status: z.string(), sortOrder: z.number() })),
+  areas: z.array(z.object({
+    id: z.string(), title: z.string(), status: z.string(), sortOrder: z.number(), description: z.string().nullable().optional(),
+  })),
   responsibilities: z.array(z.object({
     id: z.string(),
     title: z.string(),
@@ -462,6 +472,9 @@ export const responsibilityDashboardSnapshotSchema = z.object({
     }).optional(),
     description: z.string().nullable().optional(),
     runByAgentId: z.string().nullable().optional(),
+    evidence: z.string().nullable().optional(),
+    healthOverride: z.string().nullable().optional(),
+    healthNote: z.string().nullable().optional(),
   })),
   createdAreaIds: z.array(z.string()).default([]),
 });
@@ -589,10 +602,12 @@ export function responsibilityDashboardChangeSummary(
   let addedAreas = 0;
   let renamedAreas = 0;
   let removedAreas = 0;
+  let describedAreas = 0;
   for (const [areaId, area] of afterAreas) {
     const was = beforeAreas.get(areaId);
     if (!was) addedAreas += 1;
     else if (was.title !== area.title) renamedAreas += 1;
+    if (was && was.description !== undefined && area.description !== undefined && was.description !== area.description) describedAreas += 1;
   }
   for (const areaId of beforeAreas.keys()) if (!afterAreas.has(areaId)) removedAreas += 1;
   let added = 0;
@@ -619,8 +634,10 @@ export function responsibilityDashboardChangeSummary(
       for (const key of after) if (!before.has(key)) filed += 1;
       for (const key of before) if (!after.has(key)) unfiled += 1;
     }
-    if ((was.description !== undefined && item.description !== undefined && was.description !== item.description)
-      || (was.runByAgentId !== undefined && item.runByAgentId !== undefined && was.runByAgentId !== item.runByAgentId)) detailed += 1;
+    // Details compare only when both versions hold them.
+    const detailChanged = (["description", "runByAgentId", "evidence", "healthOverride", "healthNote"] as const)
+      .some((key) => was[key] !== undefined && item[key] !== undefined && was[key] !== item[key]);
+    if (detailChanged) detailed += 1;
   }
   for (const itemId of beforeItems.keys()) if (!afterItems.has(itemId)) letGo += 1;
   const verbs: string[] = [];
@@ -630,6 +647,7 @@ export function responsibilityDashboardChangeSummary(
   ].filter((part): part is string => part !== null);
   if (addedParts.length > 0) verbs.push(`added ${joinWords(addedParts)}`);
   if (renamedAreas > 0) verbs.push(`renamed ${count(renamedAreas, "area", "areas")}`);
+  if (describedAreas > 0) verbs.push(`changed the description of ${count(describedAreas, "area", "areas")}`);
   if (reworded > 0) verbs.push(`reworded ${count(reworded, "responsibility", "responsibilities")}`);
   if (moved > 0) verbs.push(`moved ${count(moved, "responsibility", "responsibilities")}`);
   if (removedAreas > 0) verbs.push(`removed ${count(removedAreas, "area", "areas")}`);
