@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { summarizeStartupReuse } from "../startup-reuse.js";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +30,8 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
 });
 import {
   buildAcpxRunSummary,
+  buildSessionFingerprint,
+  buildSessionKey,
   createAcpxEngineExecutor,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
@@ -48,12 +51,13 @@ import {
   ACPX_STALLED_TOOL_TIMEOUT_MS,
 } from "./constants.js";
 import { sessionCodec } from "./session-codec.js";
-import { runChildProcess } from "../server-utils.js";
+import { resolvePaperclipInstanceRootForAdapter, runChildProcess } from "../server-utils.js";
 import { createPromptContextFixture } from "../test-fixtures/prompt-context.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
 import { createWorkspaceRestoreTeardown } from "../workspace-restore-teardown.js";
 import { withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep } from "../workspace-restore-diagnostics.js";
 import { resolveReferencedSourceIgnore } from "../sandbox-managed-runtime.js";
+import { managedAiSessionFingerprintConfig } from "../managed-ai-runtime-env.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -2177,11 +2181,11 @@ describe("shared ACPX engine runtime behavior", () => {
     );
     const changedEnv = await runExecutor(
       { ...baseConfig, env: { OPENROUTER_API_KEY: "value-2" } },
-      { context: { taskId: "issue-1", wakeReason: "issue_assigned" } },
+      { context: { taskId: "issue-1", wakeReason: "issue_assigned" }, runtime: { sessionParams: first.result.sessionParams } },
     );
     const sameEnvNewWake = await runExecutor(
       { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
-      { context: { taskId: "issue-1", wakeReason: "comment", wakeCommentId: "c-9" } },
+      { context: { taskId: "issue-1", wakeReason: "comment", wakeCommentId: "c-9" }, runtime: { sessionParams: first.result.sessionParams } },
     );
 
     const fp = (r: { result: { sessionParams?: unknown } }) =>
@@ -2191,9 +2195,11 @@ describe("shared ACPX engine runtime behavior", () => {
     // the next launch sources the latest env.
     expect(fp(first)).toBeDefined();
     expect(fp(changedEnv)).not.toBe(fp(first));
+    expect(changedEnv.result.resultJson?.sessionReset).toMatchObject({ code: "acpx_session_identity_changed" });
     // A new heartbeat with the same config env keeps the fingerprint stable, so
     // per-wake PAPERCLIP_* churn does not needlessly reset the session.
     expect(fp(sameEnvNewWake)).toBe(fp(first));
+    expect(sameEnvNewWake.result.resultJson?.sessionReset).toBeUndefined();
   });
 
   it("keeps rotated run scratch paths out of session identity while retaining user temp overrides", async () => {
@@ -4559,17 +4565,32 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     return { root, stateDir, localCwd, remoteCwd, executionTarget };
   }
 
-  it.each(["turn", "bridge"])("stages the configured agent account for SSH, resumes it, and copies back before disposal after a %s failure", async failure => {
-    const { root, stateDir, localCwd, remoteCwd } = await setupRemoteSandbox();
+  it.each(["custom", "claude", "codex", "gemini"].flatMap(agent => ["turn", "bridge"].flatMap(failure => [
+    { inPlace: false, legacySettings: false }, { inPlace: true, legacySettings: false },
+    ...(agent === "claude" ? [{ inPlace: true, legacySettings: true }] : []),
+  ].map(workspace => ({ agent, failure, ...workspace })))))(
+    "stages the configured SSH account and restores credentials after $failure failure (agent=$agent, inPlace=$inPlace, legacySettings=$legacySettings)", async ({ agent, failure, inPlace, legacySettings }) => {
+    const { root, stateDir, localCwd, remoteCwd: copyRemoteCwd } = await setupRemoteSandbox();
+    const remoteMount = path.join(root, "remote-filesystem");
+    await fs.writeFile(remoteMount, "This path is not a directory on the controller.");
+    const remoteCwd = inPlace && !legacySettings ? path.join(remoteMount, "workspace") : copyRemoteCwd;
+    const settingsPath = path.join(remoteCwd, ".claude/settings.local.json");
+    const legacyPermissions = { allow: ["Read(legacy-file)"], additionalDirectories: [path.join(root, "legacy-read-root")], defaultMode: "acceptEdits" };
+    const settingsContents = JSON.stringify({ permissions: legacyPermissions, legacySetting: "preserved" });
+    if (legacySettings) {
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      await fs.writeFile(settingsPath, settingsContents);
+    }
     const homes = await Promise.all(["first", "second", "third"].map(async name => {
       const home = path.join(root, `selected-account-${name}`);
       await fs.mkdir(path.join(home, "provider"), { recursive: true });
       return home;
     }));
     const home = path.join(homes[0]!, "provider");
-    const workspace = path.posix.join(remoteCwd, ".paperclip-runtime/runs/run-1/workspace");
-    const runtimeRootDir = path.posix.join(workspace, ".paperclip-runtime/custom");
+    const workspace = inPlace ? remoteCwd : path.posix.join(remoteCwd, ".paperclip-runtime/runs/run-1/workspace");
+    const runtimeRootDir = path.join(root, "private-runtime");
     const executionTarget = { kind: "remote", transport: "ssh", remoteCwd, spec: { useHostAuth: false, host: "ssh.example.test", port: 22, username: "agent", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+    if (inPlace) Object.assign(executionTarget, { workspaceRealization: { mode: "in_place", authoritativeRoot: remoteCwd, pathAliases: [], outboundRestorePaths: [] } });
     let copybackHome = "";
     const restore = vi.fn(async () => {
       await fs.mkdir(copybackHome, { recursive: true });
@@ -4589,7 +4610,8 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockResolvedValue({ env: { PAPERCLIP_API_URL: "http://127.0.0.1:3210", PAPERCLIP_API_KEY: "bridge-fixture" }, stop: stopControl });
     vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockResolvedValue({ agentCommand: "/fixture/agent-proxy.cjs", stop: stopProcess });
     try {
-      const configForTurn = (turn: number) => ({ agent: "custom", agentCommand: "fixture-acp-client", stateDir, cwd: localCwd,
+      const configForTurn = (turn: number) => ({ agent, agentCommand: "fixture-acp-client", stateDir, cwd: inPlace ? remoteCwd : localCwd,
+        paperclipSkillKeys: [], paperclipRuntimeSkills: [],
         managedAiConnection: { identity: `credential-revision-${turn}`, sessionIdentity: "selected-agent-account" },
         env: { CODEX_HOME: path.join(homes[turn]!, "provider"), HOME: homes[turn]!, XDG_CONFIG_HOME: path.join(homes[turn]!, "config"),
           XDG_DATA_HOME: path.join(homes[turn]!, "data"), OPENAI_API_KEY: `fixture-token-${turn}`, USER_OPTION: "kept" }, mode: "persistent" });
@@ -4598,10 +4620,52 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       const options = { authToken: "run-fixture", executionTarget, prepareRemoteManagedHome: seam, stagedRuntimes,
         onStartTurn: () => { if (failTurn) throw new Error("fixture SSH turn failed"); } };
       const result = await runExecutor(config, options);
+      let savedParams = result.result.sessionParams;
+      if (agent === "claude" && inPlace) {
+        const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+          : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)])) : value;
+        const legacyHash = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex").slice(0, 16);
+        const instanceRoot = resolvePaperclipInstanceRootForAdapter({ homeDir: process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip"), instanceId: process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default" });
+        const { commandNotes: _notes, ...skillsIdentity } = savedParams!.skills as Record<string, unknown>;
+        expect(skillsIdentity.selectedSkills).toEqual([]);
+        const legacyFingerprint = buildSessionFingerprint({
+          acpxAgent: "claude", agentCommand: "fixture-acp-client", cwd: remoteCwd, mode: "persistent",
+          permissionMode: "approve-all", nonInteractivePermissions: "deny", requestedModel: "", requestedThinkingEffort: "", fastMode: false,
+          remoteExecutionIdentity: savedParams!.remoteExecution as Record<string, unknown>,
+          additionalSourcesIdentity: [] as unknown as Record<string, unknown>, skillsIdentity, skillPromptInstructions: "",
+          paperclipClaudeSettings: {
+            allow: [...(legacySettings ? legacyPermissions.allow : []), "Bash(curl:*)", "Bash(env:*)", "Bash(env)", `Bash(${remoteCwd}/scripts/paperclip-issue-update.sh:*)`, `Bash(${remoteCwd}/scripts/paperclip:*)`].sort(),
+            additionalDirectories: [...(legacySettings ? legacyPermissions.additionalDirectories : []), stateDir, path.join(instanceRoot, "companies/company-1")].sort(),
+            defaultMode: legacySettings ? "acceptEdits" : "default",
+          },
+          mcpServers: [], secretManifestHash: legacyHash([]),
+          adapterEnvHash: legacyHash(managedAiSessionFingerprintConfig({ env: config.env, managedAiConnection: config.managedAiConnection }, config.env.HOME)),
+        });
+        const legacyParams = sessionCodec.serialize({ ...savedParams, configFingerprint: legacyFingerprint,
+          sessionKey: buildSessionKey({ companyId: "company-1", agentId: "agent-1", taskKey: "default" }, legacyFingerprint) });
+        expect(savedParams!.configFingerprint).toBe(legacyParams!.configFingerprint);
+        expect(savedParams!.sessionKey).toBe(legacyParams!.sessionKey);
+        savedParams = sessionCodec.deserialize(JSON.parse(JSON.stringify(legacyParams)));
+        if (legacySettings) await expect(fs.readFile(settingsPath, "utf8")).resolves.toBe(settingsContents);
+      }
       expect(seam).toHaveBeenCalledOnce();
       expect(seam.mock.calls[0]![0].executionTarget).toMatchObject({ kind: "remote", transport: "ssh" });
+      if (inPlace) {
+        expect(result.sessionInputs[0]?.cwd).toBe(remoteCwd);
+        const hostSpawnCwd = result.runtimeOptions[0]!.spawnCwd as string;
+        expect(hostSpawnCwd).not.toBe(remoteCwd);
+        const hostProcess = await runChildProcess("ssh-acp-host-cwd", process.execPath, ["-e", "process.stdout.write(process.cwd())"], {
+          cwd: hostSpawnCwd, env: {}, timeoutSec: 10, graceSec: 1, onLog: async () => {},
+        });
+        expect(hostProcess.exitCode).toBe(0);
+        expect(hostProcess.stdout).toBe(await fs.realpath(hostSpawnCwd));
+        await expect(fs.readFile(remoteMount, "utf8")).resolves.toBe("This path is not a directory on the controller.");
+        expect(vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0]).toMatchObject({
+          syncWorkspace: false, workspaceRemoteDir: remoteCwd, privateRuntime: true, retainRuntime: true,
+        });
+      }
       expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(expect.objectContaining({ assets: [{ key: "home", localDir: home }] }));
-      expect(result.sessionInputs[0]?.cwd).toMatch(new RegExp(`${remoteCwd}/\\.paperclip-runtime/runs/[a-f0-9]+/workspace$`));
+      if (!inPlace) expect(result.sessionInputs[0]?.cwd).toMatch(new RegExp(`${remoteCwd}/\\.paperclip-runtime/runs/[a-f0-9]+/workspace$`));
       const bridgeInput = vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mock.calls[0]![0];
       const env = typeof bridgeInput.env === "function" ? await bridgeInput.env() : bridgeInput.env;
       expect(env.CODEX_HOME).toBe(path.posix.join(runtimeRootDir, "home"));
@@ -4622,7 +4686,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(stopProcess).toHaveBeenCalledOnce();
       expect(dispose).not.toHaveBeenCalled();
       await fs.rm(homes[0]!, { recursive: true, force: true });
-      const resumed = await runExecutor(configForTurn(1), { ...options, runId: "run-2", runtime: { sessionParams: result.result.sessionParams } });
+      const resumed = await runExecutor(configForTurn(1), { ...options, runId: "run-2", runtime: { sessionParams: savedParams } });
       expect(resumed.sessionInputs[0]?.cwd).toBe(result.sessionInputs[0]?.cwd);
       expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(result.result.sessionId);
       const resumeBridge = vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mock.calls.at(-1)![0];
@@ -4654,12 +4718,34 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       else changed.env.USER_OPTION = "changed";
       const reset = await runExecutor(changed, { ...options, runId: "run-4", expectedExitCode: 1,
         runtime: { sessionParams: resumed.result.sessionParams } });
-      expect(reset.sessionInputs[0]?.cwd).not.toBe(result.sessionInputs[0]?.cwd);
+      if (inPlace) expect(reset.sessionInputs[0]?.cwd).toBe(remoteCwd);
+      else expect(reset.sessionInputs[0]?.cwd).not.toBe(result.sessionInputs[0]?.cwd);
       expect(reset.sessionInputs[0]?.resumeSessionId).not.toBe(result.result.sessionId);
       expect(seam).toHaveBeenCalledTimes(2);
       expect(restore).toHaveBeenCalledTimes(4);
       expect(dispose).toHaveBeenCalledTimes(2);
       expect(stagedRuntimes.size).toBe(0);
+      if (inPlace && failure === "turn" && ["codex", "gemini"].includes(agent)) {
+        const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+          : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)])) : value;
+        const legacyHash = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex").slice(0, 16);
+        const { commandNotes: _notes, ...legacySkills } = result.result.sessionParams!.skills as Record<string, unknown>;
+        const legacyFingerprint = buildSessionFingerprint({ acpxAgent: agent, agentCommand: "fixture-acp-client", cwd: remoteCwd,
+          mode: "persistent", permissionMode: "approve-all", nonInteractivePermissions: "deny", requestedModel: "", requestedThinkingEffort: "", fastMode: false,
+          remoteExecutionIdentity: result.result.sessionParams!.remoteExecution as Record<string, unknown>,
+          additionalSourcesIdentity: [] as unknown as Record<string, unknown>, skillsIdentity: legacySkills, skillPromptInstructions: "",
+          paperclipClaudeSettings: null, mcpServers: [], secretManifestHash: legacyHash([]),
+          adapterEnvHash: legacyHash(managedAiSessionFingerprintConfig({ env: config.env, managedAiConnection: config.managedAiConnection }, config.env.HOME)) });
+        expect(legacyFingerprint).not.toBe(result.result.sessionParams!.configFingerprint);
+        const stored = sessionCodec.serialize({ ...result.result.sessionParams, configFingerprint: legacyFingerprint,
+          sessionKey: buildSessionKey({ companyId: "company-1", agentId: "agent-1", taskKey: "default" }, legacyFingerprint) });
+        failTurn = false;
+        const upgraded = await runExecutor(configForTurn(1), { ...options, runId: "run-upgrade",
+          runtime: { sessionParams: sessionCodec.deserialize(JSON.parse(JSON.stringify(stored))) } });
+        expect(upgraded.sessionInputs[0]?.resumeSessionId).toBeUndefined();
+        expect(upgraded.result.resultJson?.sessionReset).toMatchObject({ code: "acpx_session_identity_changed" });
+        await expect(fs.readFile(remoteMount, "utf8")).resolves.toBe("This path is not a directory on the controller.");
+      }
     } finally {
       vi.mocked(prepareAdapterExecutionTargetRuntime).mockReset().mockImplementation(actual.prepareAdapterExecutionTargetRuntime);
       vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockReset().mockImplementation(actual.startAdapterExecutionTargetPaperclipBridge);

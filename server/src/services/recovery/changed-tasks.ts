@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { issues } from "@paperclipai/db";
 
 /** Tasks whose own rows changed since `since`, for the backstop between full
@@ -6,10 +6,14 @@ import { issues } from "@paperclipai/db";
  * tasks need recovery (a pause, resume, hold or configuration change). Run
  * lifecycle writes are left out: a run's finish records a heartbeat, and a run's
  * start flips the agent to running, which makes none of its other tasks
- * stranded. Every run start would otherwise re-check all of the agent's tasks
+ * stranded. Every write that settles an agent's status after its runs end
+ * (finalizeAgentStatus, abandoned-run and stranded-status reconciliation)
+ * must set last_heartbeat_at with updated_at (see settledHeartbeat), or this
+ * clause re-checks all of the agent's tasks. An agent with no heartbeat yet
+ * keeps none, so its settlement still re-checks its (new) backlog once. Every run start would otherwise re-check all of the agent's tasks
  * for two backstop windows. */
-export function changedTaskCondition(since: Date) {
-  const at = sql`${since.toISOString()}::timestamptz`;
+export function changedTaskCondition(since: Date | SQL) {
+  const at = since instanceof Date ? sql`${since.toISOString()}::timestamptz` : since;
   return sql`(${issues.updatedAt} >= ${at}
     or exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
       and (r.context_snapshot->>'issueId') = ${issues.id}::text and r.updated_at >= ${at})

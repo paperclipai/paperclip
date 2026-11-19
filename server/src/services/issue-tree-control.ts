@@ -806,7 +806,7 @@ export function issueTreeControlService(db: Db) {
       const releaseReason = input.reason ?? "Subtree resume applied.";
 
       const { hold: resumeHold } = await db.transaction(async (tx) => {
-        await notifyIssueRecovery(tx, { companyId });
+        await notifyIssueRecovery(tx, { companyId, everyTask: true });
         await notifyDeferredExecutionEligibility(tx, { companyId });
         const [createdHold] = await tx
           .insert(issueTreeHolds)
@@ -886,7 +886,7 @@ export function issueTreeControlService(db: Db) {
     }
 
     const { hold, members } = await db.transaction(async (tx) => {
-      await notifyIssueRecovery(tx, { companyId });
+      await notifyIssueRecovery(tx, { companyId, everyTask: true });
       await notifyDeferredExecutionEligibility(tx, { companyId });
       const [createdHold] = await tx
         .insert(issueTreeHolds)

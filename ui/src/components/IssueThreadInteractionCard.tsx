@@ -50,6 +50,10 @@ import { ProposalJustification } from "../pages/secrets/proposal-review";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
+import { RoutineSuggestionCard } from "@/components/RoutineSuggestionCard";
+import { BarProposalCard } from "@/components/responsibilities/BarProposalCard";
+import { AutomationProposalCard } from "@/components/responsibilities/AutomationProposalCard";
+import { DashboardChangesCard } from "@/components/responsibilities/DashboardChangesCard";
 import { QuestionForm } from "./task-chat/QuestionForm";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorTaskCommitment } from "./coordinator/CoordinatorTaskCommitment";
@@ -58,6 +62,7 @@ import { DecisionCardFooter } from "./DecisionCardFooter";
 import { ToolActionAuditHashCopy } from "./ToolActionAuditHashCopy";
 import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "./coordinator/NeedsYouCardKit";
 import { claimReviseDraftWork, clearReviseDraft, releaseReviseDraftWork, reviseDraftKey, useReviseDraft, type ReviseDraftWork } from "@/lib/revise-draft-store";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -1982,7 +1987,7 @@ function ToolActionResolution({
             </button>
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-foreground">{formattedOutput}</pre>
+            <pre className={cn("mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>{formattedOutput}</pre>
           </CollapsibleContent>
         </Collapsible>
       ) : <p className="flex items-center gap-1.5">{status}</p>}
@@ -2065,7 +2070,7 @@ function RequestToolActionCard({
     const preview = payload.previewMarkdown?.trim() ?? "";
     const previewIsLine = Boolean(preview) && !preview.includes("\n") && preview.length <= 120;
     return (
-      <div className="space-y-4 text-foreground">
+      <div className={cn("space-y-4 text-foreground", ANALYTICS_MASK_CLASS)}>
         <div className="space-y-3">
           <CompactDecisionAsk>{ask}</CompactDecisionAsk>
           <CompactDecisionNote note={compactDecisionNote(interaction, [ask, payload.previewMarkdown])} />
@@ -2074,7 +2079,7 @@ function RequestToolActionCard({
             {preview && !previewIsLine ? <DecisionPanelMarkdown markdown={preview} lead={false} externalReferences={externalReferences} /> : null}
             {isPending ? inspectableArguments ? <details>
               <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Arguments</summary>
-              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">{payload.argumentsSummaryJson}</pre>
+              <pre className={cn("mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>{payload.argumentsSummaryJson}</pre>
               <ToolActionAuditHashCopy hash={payload.argumentsHash} />
             </details> : <p className="text-xs text-muted-foreground">Request arguments are unavailable.</p> : null}
             {isPending ? (
@@ -2116,7 +2121,7 @@ function RequestToolActionCard({
   }
 
   return (
-    <div className="text-foreground">
+    <div className={cn("text-foreground", ANALYTICS_MASK_CLASS)}>
       <div className="flex items-start gap-3">
         <span role="img" aria-label={payload.appDisplayName || payload.toolDisplayName}>
           <AppLogo name={payload.appDisplayName || payload.toolDisplayName} size={36} />
@@ -2131,7 +2136,7 @@ function RequestToolActionCard({
           <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
             Arguments
           </summary>
-          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+          <pre className={cn("mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
             {payload.argumentsSummaryJson}
           </pre>
           <ToolActionAuditHashCopy hash={payload.argumentsHash} />
@@ -2885,7 +2890,7 @@ function RequestConnectionAuthorizationCard({
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground" data-testid="connection-authorization-body">{lead}</p>
           <DecisionPanel>
-            <NeedsYouPanelRow icon={<Lock />} title={connectionName && connectionName !== providerName ? `${providerName} · ${connectionName}` : providerName} meta="Not connected" />
+            <NeedsYouPanelRow icon={<Lock />} title={connectionName && connectionName !== providerName ? <>{providerName} · <span className={ANALYTICS_MASK_CLASS}>{connectionName}</span></> : providerName} meta="Not connected" />
             <NeedsYouPanelNote>{consentSentence}</NeedsYouPanelNote>
           </DecisionPanel>
         </div>
@@ -4437,7 +4442,7 @@ export function IssueThreadInteractionCard({
   if (coordinatorEnabled && !compactDecision && interaction.kind === "suggest_tasks") {
     return <InteractionAudienceContext.Provider value={audience}>
       <CoordinatorTaskCommitment interaction={interaction}>
-        <div className="p-4 space-y-3">
+        <div className={cn("p-4 space-y-3", ANALYTICS_MASK_CLASS)}>
           {interaction.status === "pending" ? <InteractionAudienceLine audience={audience} /> : null}
           <SuggestTasksCard interaction={interaction} agentMap={agentMap} currentUserId={currentUserId}
             userLabelMap={userLabelMap} onAcceptInteraction={onAcceptInteraction} onRejectInteraction={onRejectInteraction} />
@@ -4445,9 +4450,22 @@ export function IssueThreadInteractionCard({
       </CoordinatorTaskCommitment>
     </InteractionAudienceContext.Provider>;
   }
+  if (interaction.kind === "suggest_routine") {
+    return <RoutineSuggestionCard interaction={interaction} />;
+  }
+  if (interaction.kind === "propose_responsibility_bar") {
+    return <BarProposalCard interaction={interaction} />;
+  }
+
+  if (interaction.kind === "propose_automation") {
+    return <AutomationProposalCard interaction={interaction} />;
+  }
+  if (interaction.kind === "propose_dashboard_changes") {
+    return <DashboardChangesCard interaction={interaction} />;
+  }
   if (!compactDecision && interaction.kind === "connection_intent" && interaction.payload.accessRequest) {
     return (
-      <div id={`interaction-${interaction.id}`}>
+      <div className={ANALYTICS_MASK_CLASS} id={`interaction-${interaction.id}`}>
         <ConnectionIntentInteractionBody
           footerSlot={footerSlot}
           interaction={interaction}
@@ -4526,7 +4544,7 @@ export function IssueThreadInteractionCard({
     // denial with the same audience the header states (PAP-17287).
     <InteractionAudienceContext.Provider value={audience}>
       <CompactArtifactRowContext.Provider value={compactDecision ? artifactRow : null}>
-      <div data-presentation={presentationVariant} className={compactDecision ? "coordinator-decision-content space-y-4" : cn("rounded-lg border p-5 shadow-none", styles.shell)}>
+      <div data-presentation={presentationVariant} className={compactDecision ? cn("coordinator-decision-content space-y-4", ANALYTICS_MASK_CLASS) : cn("rounded-lg border p-5 shadow-none", styles.shell, ANALYTICS_MASK_CLASS)}>
         {compactDecision ? <>
           {!bodyNamesDecision ? <CompactDecisionAsk><PromptText>{compactTitle}</PromptText></CompactDecisionAsk> : null}
           {/* Questions and confirmations put the note under their ask (UI1). */}

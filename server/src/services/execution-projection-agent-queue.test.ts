@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { agentQueuedRunLine, clearAgentQueueLineCache, worktreeExecutionCutoff } from "./heartbeat/queued-run-line.js";
@@ -144,6 +144,38 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
     expect(projections.get(runIds[0]!)?.agentQueue?.queuedCount).toBe(300);
     // Generous bound for slow CI; the ordering itself is O(n log n).
     expect(elapsedMs).toBeLessThan(5_000);
+  });
+
+  it("starts work on a task tree a person created ahead of a newer person assignment, and leaves an agent's tree behind it", async () => {
+    const f = await fixture({ maxConcurrentRuns: 1, running: 1 });
+    const task = async (input: { createdByUserId?: string; parentId?: string }) => {
+      const issueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId: f.companyId, title: "Task", assigneeAgentId: f.agentId, status: "todo",
+        priority: "medium", parentId: input.parentId ?? null, createdByUserId: input.createdByUserId ?? null,
+        createdByAgentId: input.createdByUserId ? null : f.agentId });
+      return issueId;
+    };
+    const queueOn = async (issueId: string, wakeReason: string, createdMinutesAgo: number, byPerson = false) => {
+      const runId = randomUUID();
+      const wakeupRequestId = byPerson ? randomUUID() : null;
+      if (wakeupRequestId) await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId: f.companyId,
+        agentId: f.agentId, source: "assignment", reason: wakeReason, requestedByActorType: "user", requestedByActorId: "board-user" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status: "queued", issueId,
+        wakeupRequestId, createdAt: minutesAgo(createdMinutesAgo), contextSnapshot: { issueId, wakeReason } });
+      return runId;
+    };
+    const personRoot = await task({ createdByUserId: "board-user" });
+    const child = await task({ parentId: personRoot });
+    const grandchild = await task({ parentId: child });
+    const agentRoot = await task({});
+    const agentChild = await task({ parentId: agentRoot });
+    const agentTreeWork = await queueOn(agentChild, "issue_assigned", 50);
+    const subtask = await queueOn(grandchild, "issue_assigned", 40);
+    const parentResume = await queueOn(personRoot, "issue_children_completed", 30);
+    const newAssignment = await queueOn(await task({ createdByUserId: "board-user" }), "issue_assigned", 5, true);
+
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(await agentQueuedRunLine(db, issueService(db), agent!, now)).toEqual([subtask, parentResume, newAssignment, agentTreeWork]);
   });
 
   it("leaves running runs and other companies' runs out of the line", async () => {

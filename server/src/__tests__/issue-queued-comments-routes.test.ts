@@ -357,6 +357,9 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
       queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: null,
     }).expect(200);
+    const interruption = await db.select({ details: activityLog.details }).from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comments_interrupted"));
+    expect(interruption).toEqual([{ details: { queueId: seeded.wakeId, targetRunId: null } }]);
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status)
       .toBe("deferred_issue_execution");
     // Cleanup timestamps alone are not proof. A mismatched receipt is not proof either.
@@ -2261,11 +2264,14 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(steered.body.entries.map((entry: any) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
   });
 
-  it.each(["cancelled", "failed", "succeeded"] as const)("preserves queued input when the run stops during acknowledgement (%s)", async status => {
+  it.each(["cancelled", "failed", "succeeded", "different task"] as const)("preserves queued input when the run stops or changes scope during acknowledgement (%s)", async outcome => {
     const seeded = await seedQueue();
     await seedDispatchIdentity(seeded);
     steerNativeSessionMock.mockImplementationOnce(async () => {
-      await db.update(heartbeatRuns).set({ status, finishedAt: new Date(), resultJson: { terminalReceipt: "preserve" } })
+      await db.update(heartbeatRuns).set({
+        ...(outcome === "different task" ? { contextSnapshot: { issueId: randomUUID() } } : { status: outcome, finishedAt: new Date() }),
+        resultJson: { providerReceipt: "preserve" },
+      })
         .where(eq(heartbeatRuns.id, seeded.runId));
       return { turnId: "turn-that-stopped" };
     });
@@ -2279,7 +2285,9 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(wake.status).toBe("deferred_issue_execution");
     expect((wake.payload as any)._paperclipWakeContext.wakeCommentIds).toEqual(seeded.commentIds);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
-    expect(run.resultJson).toEqual({ terminalReceipt: "preserve" });
+    expect(run.resultJson).toEqual({ providerReceipt: "preserve" });
+    const [identity] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.messageId, seeded.commentIds[0]));
+    expect(identity?.status).toBe("pending");
     const activity = await db.select().from(activityLog).where(eq(activityLog.action, "issue.queued_comment_steered"));
     expect(activity).toHaveLength(0);
   });

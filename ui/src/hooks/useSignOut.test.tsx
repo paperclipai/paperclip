@@ -12,9 +12,11 @@ import { QUERY_CACHE_PREFIX, startPersistedQueryCache } from "@/lib/persisted-qu
 
 const mockAuthApi = vi.hoisted(() => ({ signOut: vi.fn() }));
 const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
+const mockResetAnalytics = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({ authApi: mockAuthApi }));
 vi.mock("@/lib/browserNavigation", () => ({ navigateTopLevel: mockNavigateTopLevel }));
+vi.mock("@/lib/analytics/product-analytics", () => ({ resetProductAnalyticsIdentity: mockResetAnalytics }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -78,6 +80,10 @@ describe("useSignOut", () => {
     try {
       await act(async () => { await captured!.mutateAsync(); });
       expect(onSignedOut).toHaveBeenCalledOnce();
+      expect(mockResetAnalytics).toHaveBeenCalledOnce();
+      if (deploymentMode === "cloud") {
+        expect(mockResetAnalytics.mock.invocationCallOrder[0]).toBeLessThan(mockNavigateTopLevel.mock.invocationCallOrder[0]!);
+      }
       expect(account.isCurrentScope()).toBe(false);
       expect(Object.keys(localStorage).filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toEqual([]);
       expect(localStorage.getItem("paperclip:private-draft")).toBe("Keep my draft");
