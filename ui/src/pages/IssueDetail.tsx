@@ -4626,7 +4626,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       receipt.confirmed = true;
       // A late receipt belongs to its original company, even after navigation.
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(receipt.companyId) });
-      queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(receipt.companyId), "recent-subtasks"] });
       if (selectedCompanyId) {
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.listMineByMe(selectedCompanyId),

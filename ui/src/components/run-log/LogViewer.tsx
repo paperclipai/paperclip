@@ -17,6 +17,7 @@ import { queryKeys } from "../../lib/queryKeys";
 import { toolsApi } from "../../api/tools";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../../adapters";
 import { cn } from "../../lib/utils";
+import { ProviderLimitMessage } from "../ProviderLimitMessage";
 import { Button } from "@/components/ui/button";
 import { RunTranscriptView, type TranscriptMode } from "../transcript/RunTranscriptView";
 import { LIVE_TRANSCRIPT_RENDER_LIMIT, MAX_LIVE_EVENTS, MAX_LIVE_LOG_LINES } from "../../lib/live-log-buffer";
@@ -563,7 +564,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           {run.error && (
             <div className="text-xs text-red-600 dark:text-red-200">
               <span className="text-red-700 dark:text-red-300">Error: </span>
-              {redactPathText(run.error, censorUsernameInLogs)}
+              <ProviderLimitMessage>{redactPathText(run.error, censorUsernameInLogs)}</ProviderLimitMessage>
             </div>
           )}
           {run.stderrExcerpt && run.stderrExcerpt.trim() && (
@@ -619,7 +620,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
                   </span>
                   <span className={cn("break-all", color)}>
                     {evt.message
-                      ? redactPathText(evt.message, censorUsernameInLogs)
+                      ? <ProviderLimitMessage>{redactPathText(evt.message, censorUsernameInLogs)}</ProviderLimitMessage>
                       : evt.payload
                         ? JSON.stringify(redactPathValue(evt.payload, censorUsernameInLogs))
                         : ""}

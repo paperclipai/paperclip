@@ -8,6 +8,7 @@ import {
   type GitHubIssueEventContext,
 } from "@paperclipai/shared";
 import {
+  githubCompleteCoverageGap,
   githubManualMessagePrompt,
   githubConfiguredInstructionSources,
   GITHUB_CONFIGURED_SKILL_GUIDANCE,
@@ -463,5 +464,41 @@ describe("GitHub finding category contract", () => {
     expect(() => validateGitHubReviewAssessment(value, context.headSha, policy)).toThrow('Accepted finding categories: ["custom-reliability"]');
     expect(() => validateGitHubReviewAssessment(value, context.headSha, { ...policy, findingCategories: [] })).toThrow("Accepted finding categories: []");
     expect(validateGitHubReviewAssessment(assessment(), context.headSha, { ...policy, findingCategories: [] }).findings).toEqual([]);
+  });
+});
+
+describe("githubCompleteCoverageGap", () => {
+  const files = ["ui/src/lib/a.ts", "ui/src/lib/b.ts", "tests/c.spec.ts", "doc/d.md"];
+  const coverage = (reviewedPaths: string[], omittedPaths: string[] = []) => ({ reviewedPaths, omittedPaths, limitations: [] });
+
+  it("accepts a complete assessment that reviewed every allowed changed file", () => {
+    expect(githubCompleteCoverageGap(files, coverage([...files].reverse()))).toBeNull();
+  });
+
+  it("names the changed files a complete assessment left out and how to correct the submission", () => {
+    // A re-review often lists only the files changed since the prior assessment.
+    const message = githubCompleteCoverageGap(files, coverage(["ui/src/lib/a.ts"]));
+    expect(message).toContain("A complete assessment must cover every non-excluded changed file");
+    expect(message).toContain("3 of 4");
+    for (const path of ["ui/src/lib/b.ts", "tests/c.spec.ts", "doc/d.md"]) expect(message).toContain(path);
+    expect(message).not.toContain("ui/src/lib/a.ts,");
+    expect(message).toContain("reviewedPaths");
+    expect(message).toContain("complete: false");
+    expect(message).toContain("omittedPaths");
+  });
+
+  it("names changed files that a complete assessment also lists as omitted", () => {
+    const message = githubCompleteCoverageGap(files, coverage(files, ["doc/d.md"]));
+    expect(message).toContain("doc/d.md");
+    expect(message).toContain("omittedPaths");
+  });
+
+  it("bounds a long list of missing files", () => {
+    const many = Array.from({ length: 60 }, (_, index) => `src/file-${index}.ts`);
+    const message = githubCompleteCoverageGap(many, coverage([]))!;
+    expect(message).toContain("60 of 60");
+    expect(message).toContain("src/file-19.ts");
+    expect(message).not.toContain("src/file-20.ts");
+    expect(message).toContain("40 more");
   });
 });

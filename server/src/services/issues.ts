@@ -3130,7 +3130,7 @@ function withdrawnForUserCondition(companyId: string, userId: string, readAt: SQ
   )`;
 }
 
-function inboxVisibleForUserCondition(companyId: string, userId: string) {
+export function inboxVisibleForUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     NOT EXISTS (
       SELECT 1

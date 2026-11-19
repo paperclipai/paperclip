@@ -37,13 +37,99 @@ export type PostHogProxyLimits = {
   maxInFlightPerClient: number;
   /** Requests in flight for the whole proxy. */
   maxInFlight: number;
+  requestDeadlineMs: number;
 };
 
 export const DEFAULT_POSTHOG_PROXY_LIMITS: PostHogProxyLimits = {
   maxBodyBytes: 64 * 1024 * 1024,
-  maxInFlightPerClient: 16,
-  maxInFlight: 256,
+  maxInFlightPerClient: 128,
+  maxInFlight: 1024,
+  requestDeadlineMs: 60_000,
 };
+
+export const POSTHOG_PROXY_MAX_IN_FLIGHT_ENV = "PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT";
+export const POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT_ENV = "PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT";
+
+const LIMIT_WARNING_INTERVAL_MS = 60_000;
+const MAX_CONFIGURED_IN_FLIGHT = 65_536;
+
+type LimitWarning = (fields: Record<string, unknown>, message: string) => void;
+
+function warnWithLogger(fields: Record<string, unknown>, message: string) {
+  logger.warn(fields, message);
+}
+
+function parseInFlightLimit(
+  env: CloudInstanceEnv,
+  name: string,
+  fallback: number,
+  warn: LimitWarning,
+): number {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = raw.trim();
+  const parsed = Number(value);
+  if (/^[1-9][0-9]*$/.test(value) && parsed <= MAX_CONFIGURED_IN_FLIGHT) return parsed;
+  warn(
+    { variable: name, defaultValue: fallback, maxValue: MAX_CONFIGURED_IN_FLIGHT },
+    `${name} is not an integer from 1 to ${MAX_CONFIGURED_IN_FLIGHT}; the PostHog proxy uses the default`,
+  );
+  return fallback;
+}
+
+export function resolvePostHogProxyLimits(
+  env: CloudInstanceEnv = process.env,
+  warn: LimitWarning = warnWithLogger,
+): PostHogProxyLimits {
+  return {
+    maxBodyBytes: DEFAULT_POSTHOG_PROXY_LIMITS.maxBodyBytes,
+    requestDeadlineMs: DEFAULT_POSTHOG_PROXY_LIMITS.requestDeadlineMs,
+    maxInFlight: parseInFlightLimit(env, POSTHOG_PROXY_MAX_IN_FLIGHT_ENV, DEFAULT_POSTHOG_PROXY_LIMITS.maxInFlight, warn),
+    maxInFlightPerClient: parseInFlightLimit(
+      env,
+      POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT_ENV,
+      DEFAULT_POSTHOG_PROXY_LIMITS.maxInFlightPerClient,
+      warn,
+    ),
+  };
+}
+
+export function posthogProxyClientKey(ip: string | undefined): string | null {
+  return ip && isPublicIpAddress(ip) ? ip : null;
+}
+
+export type PostHogProxyLimitReason = "total" | "per_client";
+
+export function createPostHogProxyLimitReporter(
+  limits: PostHogProxyLimits,
+  options: { now?: () => number; warn?: LimitWarning; intervalMs?: number } = {},
+) {
+  const now = options.now ?? Date.now;
+  const warn = options.warn ?? warnWithLogger;
+  const intervalMs = options.intervalMs ?? LIMIT_WARNING_INTERVAL_MS;
+  let lastWarnedAt: number | null = null;
+  const refused: Record<PostHogProxyLimitReason, number> = { total: 0, per_client: 0 };
+
+  return (reason: PostHogProxyLimitReason, inFlight: number) => {
+    refused[reason] += 1;
+    const at = now();
+    if (lastWarnedAt !== null && at - lastWarnedAt < intervalMs) return;
+    warn(
+      {
+        refusedAtTotalLimit: refused.total,
+        refusedAtPerClientLimit: refused.per_client,
+        inFlight,
+        maxInFlight: limits.maxInFlight,
+        maxInFlightPerClient: limits.maxInFlightPerClient,
+        sinceMs: lastWarnedAt === null ? null : at - lastWarnedAt,
+      },
+      "PostHog proxy refused requests at its in-flight limit",
+    );
+    lastWarnedAt = at;
+    refused.total = 0;
+    refused.per_client = 0;
+  };
+}
 
 const BODY_TOO_LARGE = "posthog_proxy_body_too_large";
 
@@ -131,7 +217,11 @@ export function posthogForwardRequestHeaders(
   return forwarded;
 }
 
-export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimits = DEFAULT_POSTHOG_PROXY_LIMITS) {
+export function posthogProxyRoutes(
+  ingestHost: string,
+  limits: PostHogProxyLimits = DEFAULT_POSTHOG_PROXY_LIMITS,
+  reportLimit: (reason: PostHogProxyLimitReason, inFlight: number) => void = createPostHogProxyLimitReporter(limits),
+) {
   const router = Router();
   let inFlight = 0;
   const inFlightByClient = new Map<string, number>();
@@ -158,17 +248,25 @@ export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimit
     }
 
     // Bound the work one browser, or all of them, can put on this process.
-    const client = req.ip ?? "unknown";
-    const clientInFlight = inFlightByClient.get(client) ?? 0;
-    if (inFlight >= limits.maxInFlight || clientInFlight >= limits.maxInFlightPerClient) {
+    const client = posthogProxyClientKey(req.ip);
+    const clientInFlight = client === null ? 0 : inFlightByClient.get(client) ?? 0;
+    const refusedBy: PostHogProxyLimitReason | null =
+      inFlight >= limits.maxInFlight
+        ? "total"
+        : client !== null && clientInFlight >= limits.maxInFlightPerClient
+          ? "per_client"
+          : null;
+    if (refusedBy) {
+      reportLimit(refusedBy, inFlight);
       res.setHeader("Retry-After", "1");
       res.status(429).json({ error: "too_many_requests" });
       return;
     }
     inFlight += 1;
-    inFlightByClient.set(client, clientInFlight + 1);
+    if (client !== null) inFlightByClient.set(client, clientInFlight + 1);
     res.once("close", () => {
       inFlight -= 1;
+      if (client === null) return;
       const remaining = (inFlightByClient.get(client) ?? 1) - 1;
       if (remaining > 0) inFlightByClient.set(client, remaining);
       else inFlightByClient.delete(client);
@@ -197,6 +295,11 @@ export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimit
     upstreamReq.on("timeout", () => {
       upstreamReq.destroy(new Error("posthog_proxy_timeout"));
     });
+    const deadline = setTimeout(() => {
+      if (res.headersSent || upstreamReq.destroyed) res.destroy();
+      upstreamReq.destroy(new Error("posthog_proxy_deadline"));
+    }, limits.requestDeadlineMs);
+    res.once("close", () => clearTimeout(deadline));
     upstreamReq.on("error", (err) => {
       logger.debug({ err, path: target.pathname }, "PostHog proxy request failed");
       if (!res.headersSent && bodyTooLarge) {
@@ -246,5 +349,6 @@ export function resolvePostHogProxyMount(env: CloudInstanceEnv = process.env) {
     logger.warn("PAPERCLIP_POSTHOG_HOST is not a valid URL; the PostHog proxy is off");
     return null;
   }
-  return { path: POSTHOG_PROXY_PATH, router: posthogProxyRoutes(config.host) };
+  const limits = resolvePostHogProxyLimits(env);
+  return { path: POSTHOG_PROXY_PATH, router: posthogProxyRoutes(config.host, limits), limits };
 }
