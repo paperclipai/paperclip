@@ -22,6 +22,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
 import { executionWorkspaceService } from "../services/execution-workspaces.ts";
 import { buildIndependentTaskWorkspaceSettings } from "../services/task-workspace-lineage.ts";
+import { TASK_DIRECTORY_RETENTION_KEY, TASK_DIRECTORY_RETENTION_SCHEMA } from "../services/isolated-task-directory-retention.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -434,6 +435,24 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
       expect((await readIssue(fixture.parentIssueId)).executionWorkspaceId).toBe(fixture.parentWorkspaceId);
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, fixture.parentWorkspaceId));
       expect(workspace).toMatchObject({ status: "archived", sourceIssueId: fixture.parentIssueId });
+    });
+
+    it("keeps an unrelated task's binding to a workspace closed by idle retention, which admission restores", async () => {
+      const fixture = await seedOldReleaseChild();
+      await db.update(issues).set({ parentId: null }).where(eq(issues.id, fixture.childIssueId));
+      await db.update(executionWorkspaces).set({
+        status: "archived", closedAt: new Date(), cleanupReason: "task_directory_retention",
+        metadata: { [TASK_DIRECTORY_RETENTION_KEY]: { schema: TASK_DIRECTORY_RETENTION_SCHEMA, generation: 1, removed: true, trash: "/tmp/trash" } },
+      }).where(eq(executionWorkspaces.id, fixture.parentWorkspaceId));
+      const before = await readIssue(fixture.childIssueId);
+      const runId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.childIssueId, status: "running" });
+
+      expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
+        companyId: fixture.companyId, issueId: fixture.childIssueId, runId,
+      })).toBe(false);
+      expect(await readIssue(fixture.childIssueId)).toMatchObject({
+        executionWorkspaceId: fixture.parentWorkspaceId, workspaceBindingRevision: before.workspaceBindingRevision,
+      });
     });
 
     it("never rebinds the parent, even when it is bound to its own workspace a child shares", async () => {

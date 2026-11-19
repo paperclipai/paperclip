@@ -20,7 +20,7 @@ import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, nextNe
   NESTED_CLONE_MIGRATION_RETRY_REASONS, type NestedCloneMigrationRotation } from "./nested-clone-migration.js";
 import type { StorageService } from "../storage/types.js";
 import { getStorageService } from "../storage/index.js";
-import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, gitRestorePointExpired,
+import { readGitCacheExpiration, readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, gitRestorePointExpired,
   classifyWorkspaceRestorationError, type GitCacheRestorationStep, type WorkspaceRestorationFailureKind } from "./git-workspace-restoration.js";
 
 export const GIT_RESTORE_POINT_EXPIRED_WARNING = "The saved state of this workspace expired, so it was reopened as a fresh workspace on its branch. Unpushed and uncommitted work from before it was cleaned up is no longer available.";
@@ -1525,17 +1525,19 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
  * Older releases bound a follow-up task to the realized workspace of the task
  * whose run created it. Once the owner closes, that binding can never run: the
  * reopen path would hand the owner's files to the follow-up, and without it
- * every admission fails the same way at setup.
+ * every admission fails the same way at setup. A workspace closed by idle Git
+ * cache expiration or task-directory retention is not released: admission
+ * restores it for any task bound to it, so an explicit share keeps its files.
  */
 async function bindsClosedForeignExecutionWorkspace(
   tx: DbTransaction,
   input: { companyId: string; executionWorkspaceId: string; taskId: string },
 ) {
-  const [workspace] = await tx.select({ sourceIssueId: executionWorkspaces.sourceIssueId, status: executionWorkspaces.status })
-    .from(executionWorkspaces)
+  const [workspace] = await tx.select().from(executionWorkspaces)
     .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.executionWorkspaceId)));
-  return Boolean(workspace?.sourceIssueId && workspace.sourceIssueId !== input.taskId
-    && isClosedExecutionWorkspaceStatus(workspace.status));
+  if (!workspace?.sourceIssueId || workspace.sourceIssueId === input.taskId || !isClosedExecutionWorkspaceStatus(workspace.status)) return false;
+  return !readGitCacheExpiration(workspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved
+    && readTaskDirectoryRetention(workspace) === null;
 }
 
 /**
