@@ -43,6 +43,13 @@ export function healthFailureHttpStatus(failure: {
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
+  if (failure.code === "connector_offline" || failure.code === "connector_revoked" || failure.code === "connector_busy") return 503;
+  if (failure.code === "connector_timeout") return 504;
+  if (
+    failure.code === "connector_not_found" ||
+    failure.code === "connector_upstream_unknown" ||
+    failure.code === "connector_upstream_unauthorized"
+  ) return 422;
   return 502;
 }
 
@@ -81,6 +88,10 @@ export function sanitizeHttpFailure(error: unknown): {
     }
     if (typeof code === "string" && code.startsWith("remote_http_")) {
       return { status: "error", message: error.message, code };
+    }
+    if (typeof code === "string" && code.startsWith("connector_")) {
+      // An offline connector is a degraded dependency, not a broken connection.
+      return { status: code === "connector_offline" ? "degraded" : "error", message: error.message, code };
     }
     if (isOAuthEndpointRejection(error)) {
       return { status: "error", message: error.message, code: String(code) };

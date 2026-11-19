@@ -50,18 +50,6 @@ export function AppsSidebar() {
         </div>
         {developerTabs.length > 0 ? (
           <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
-            <div
-              data-slot="contextual-sidebar-section-label"
-              className={contextualSidebarStyles.sectionLabel}
-            >
-              Developer
-            </div>
-            <p
-              data-slot="contextual-sidebar-section-description"
-              className={contextualSidebarStyles.sectionDescription}
-            >
-              Advanced setup for developers.
-            </p>
             <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
               {developerTabs.map((tab) => (
                 <SidebarNavItem

@@ -49,7 +49,7 @@ export function createToolCatalogReader(db: Db, options: { catalogCacheTtlMs?: n
         })
       );
       const cacheExpired = nativeCatalogChanged || restCatalogChanged || (
-        connection.transport === "mcp_remote" &&
+        (connection.transport === "mcp_remote" || connection.transport === "connector") &&
         connection.status !== "archived" &&
         (rows.length === 0 ||
           !connection.lastCatalogRefreshAt ||

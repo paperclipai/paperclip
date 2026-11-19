@@ -130,6 +130,13 @@ import {
   notFound,
   unprocessable,
 } from "../errors.js";
+import {
+  connectorTarget,
+  mcpConnectorHub,
+  McpConnectorRelayError,
+  type McpConnectorHub,
+} from "./mcp-connector-hub.js";
+import { mcpConnectorService } from "./mcp-connectors.js";
 import { isUniqueViolation } from "../db-errors.js";
 
 import { forgetMcpHttpSessions } from "./mcp-http.js";
@@ -171,6 +178,8 @@ type ToolAccessServiceOptions = {
   remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
   /** Smaller reviewed catalog for deterministic discovery fixtures. */
   composioAppToolkits?: readonly string[];
+  /** Outbound MCP connector sessions (`transport: "connector"`). Defaults to the process-wide hub. */
+  mcpConnectorHub?: McpConnectorHub;
   /** Test seam for the centrally registered Gmail OAuth broker. */
   paperclipCloudConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
@@ -741,6 +750,46 @@ export function toolAccessService(
   const secrets = secretService(db);
   const remoteHttp = createToolRemoteHttp(options);
   const { allowPrivateRemoteEndpoints, assertRemoteHttpUrlAllowed, fetchRemoteHttpUrl, assertRemoteEndpointAllowed, assertRemoteConnectionEndpointsAllowed, requestRemoteHttpEndpoint } = remoteHttp;
+  const connectorHub = options.mcpConnectorHub ?? mcpConnectorHub;
+  const mcpConnectors = mcpConnectorService(db, { hub: connectorHub });
+
+  /**
+   * Byte transport for `transport: "connector"`. The request goes to the
+   * connector session by upstream name; this server never dials the upstream.
+   */
+  async function requestConnector(connection: typeof toolConnections.$inferSelect, init: RequestInit): Promise<Response> {
+    try {
+      return await connectorHub.request({ companyId: connection.companyId, ...connectorTarget(connection.config), init });
+    } catch (error) {
+      if (error instanceof McpConnectorRelayError) throw new HttpError(error.status, error.message, { code: error.code });
+      throw error;
+    }
+  }
+
+  async function assertConnectorConnectionConfig(
+    companyId: string,
+    config: Record<string, unknown>,
+    credentialRefs: McpConnectionCredentialRef[] = [],
+  ) {
+    if (credentialRefs.some((ref) => ref.placement !== "header")) {
+      throw badRequest("Connector connections accept header credentials only", { code: "connector_credential_placement" });
+    }
+    for (const key of ["url", "endpoint", "remoteUrl"]) {
+      if (config[key] !== undefined) {
+        // The upstream URL lives only in the connector's local config.
+        throw badRequest("Connector connections address an upstream by name, not by URL", { code: "connector_url_not_allowed" });
+      }
+    }
+    try {
+      connectorTarget(config);
+    } catch (error) {
+      if (error instanceof McpConnectorRelayError) {
+        throw badRequest("Connector connections need a connectorId and an upstream name", { code: error.code });
+      }
+      throw error;
+    }
+    await mcpConnectors.assertConnectionTarget(companyId, config);
+  }
   const { assertOAuthEndpointUrl, safeOAuthEndpointUrl } = createOAuthEndpointPolicy(allowPrivateRemoteEndpoints);
   const { oauthEndpointsForConnection, discoverOAuthEndpoints, preflightConnectionMetadata } = createOAuthDiscovery({
     fetchRemoteHttpUrl, assertRemoteEndpointAllowed, assertOAuthEndpointUrl, safeOAuthEndpointUrl,
@@ -850,7 +899,7 @@ export function toolAccessService(
   const { ensureRuntimeSlot } = runtimeSlots;
   const defaultCatalogAccess = createCatalogDefaultAccess(db);
   const { enableCatalogEntriesByDefault, upsertAskFirstPolicies } = defaultCatalogAccess;
-  const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
+  const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, requestConnector, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
   const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
   const publishCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
@@ -4781,6 +4830,8 @@ export function toolAccessService(
       ]);
       if (transport === "mcp_remote")
         await assertRemoteConnectionEndpointsAllowed(config);
+      if (transport === "connector")
+        await assertConnectorConnectionConfig(companyId, config, input.credentialRefs);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
       assertLocalStdioCanBeEnabled(transport, input.enabled ?? false, config);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
@@ -4789,7 +4840,7 @@ export function toolAccessService(
         applicationNamespace = app.applicationKey ?? app.name;
         await assertConnectorConnectionSetupEnabled({ config }, applicationNamespace);
         if (
-          (transport === "mcp_remote" && app.type !== "mcp_http") ||
+          ((transport === "mcp_remote" || transport === "connector") && app.type !== "mcp_http") ||
           (transport === "local_stdio" && app.type !== "mcp_stdio")
         ) {
           throw unprocessable(
@@ -4803,7 +4854,7 @@ export function toolAccessService(
             companyId,
             applicationKey: normalizeKey(input.applicationName ?? input.name),
             name: input.applicationName ?? input.name,
-            type: isBrowserUseConnection({ transport, config }) || nativeProviderCatalogFor({ transport, config }) || restConnectorFor({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+            type: isBrowserUseConnection({ transport, config }) || nativeProviderCatalogFor({ transport, config }) || restConnectorFor({ transport, config }) ? "rest_api" : transport === "mcp_remote" || transport === "connector" ? "mcp_http" : "mcp_stdio",
             status: "active",
             metadata: {},
           })
@@ -4899,6 +4950,12 @@ export function toolAccessService(
       }
       if (existing.transport === "mcp_remote")
         await assertRemoteConnectionEndpointsAllowed(config);
+      if (existing.transport === "connector")
+        await assertConnectorConnectionConfig(
+          existing.companyId,
+          config,
+          input.credentialRefs ?? existing.credentialRefs,
+        );
       if (existing.transport === "local_stdio")
         await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(
