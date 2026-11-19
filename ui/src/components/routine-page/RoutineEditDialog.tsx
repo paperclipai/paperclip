@@ -229,7 +229,7 @@ export function RoutineEditDialog({
             <Label>Instructions</Label>
             {/* The frame owns the border and the drag handle; the editor scrolls inside it. */}
             <div
-              className="h-48 min-h-32 resize-y overflow-y-auto rounded-md border border-border px-3 py-2 focus-within:border-ring"
+              className="paperclip-routine-instructions h-48 min-h-32 resize-y overflow-y-auto rounded-md border border-border px-3 py-2 focus-within:border-ring"
               onClick={(event) => {
                 if (event.target === event.currentTarget) editorRef.current?.focus();
               }}
