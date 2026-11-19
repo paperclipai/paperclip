@@ -2,6 +2,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { matchRoutes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   CatalogTeam,
@@ -103,10 +104,25 @@ describe("TeamCatalog routes", () => {
   it("round-trips file paths containing literal tildes", () => {
     const route = teamRoute("paperclipai/bundled/test/team", "agents/a~b/AGENTS.md");
 
-    expect(route).toBe("/teams-catalog/paperclipai%2Fbundled%2Ftest%2Fteam/files/agents%7Ea~b%7EAGENTS.md");
     expect(parseTeamRoute(route.replace("/teams-catalog/", ""))).toEqual({
       catalogRef: "paperclipai/bundled/test/team",
       filePath: "agents/a~b/AGENTS.md",
+    });
+  });
+
+  it.each([
+    "skills/content-calendar/SKILL.md",
+    "agents/a~b/AGENTS.md",
+    "notes/100% ready.md",
+    "notes/literal%7Evalue.md",
+    "notes/选题计划.md",
+  ])("preserves %s through React Router", (filePath) => {
+    const route = teamRoute("team-no-deps", filePath);
+    const matches = matchRoutes([{ path: "/teams-catalog/*" }], route);
+
+    expect(parseTeamRoute(matches![0].params["*"])).toEqual({
+      catalogRef: "team-no-deps",
+      filePath,
     });
   });
 
@@ -268,9 +284,8 @@ describe("TeamCatalog install preview path", () => {
     vi.clearAllMocks();
   });
 
-  async function renderPage() {
+  async function renderPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -291,6 +306,62 @@ describe("TeamCatalog install preview path", () => {
     // summary grid counts
     expect(document.body.textContent).toContain("Agents");
     expect(document.body.textContent).toContain("Projects");
+  });
+
+  it("loads nested file content using the path from React Router", async () => {
+    const filePath = "skills/content-calendar/SKILL.md";
+    const matches = matchRoutes([{ path: "/teams-catalog/*" }], teamRoute("team-no-deps", filePath));
+    currentRoute = matches![0].params["*"]!;
+    mockTeamCatalogApi.catalogFile.mockResolvedValue({ content: "Weekly editorial calendar" });
+
+    await renderPage();
+    await flushReact();
+
+    expect(mockTeamCatalogApi.catalogFile).toHaveBeenCalledWith("team-no-deps", filePath);
+    expect(container.textContent).toContain("Weekly editorial calendar");
+  });
+
+  it("shows file request failures instead of leaving a loading placeholder", async () => {
+    const matches = matchRoutes([{ path: "/teams-catalog/*" }], teamRoute("team-no-deps", "TEAM.md"));
+    currentRoute = matches![0].params["*"]!;
+    mockTeamCatalogApi.catalogFile.mockRejectedValue(Object.assign(new Error("catalog_file_not_found"), { status: 404 }));
+
+    await renderPage();
+    await flushReact();
+
+    expect(container.querySelector('[role="alert"]')?.textContent)
+      .toContain("This item doesn’t exist or was moved.");
+  });
+
+  it.each([429, 503])("keeps a loaded preview after a transient %s refresh failure", async (status) => {
+    currentRoute = matchRoutes([{ path: "/teams-catalog/*" }], teamRoute("team-no-deps", "TEAM.md"))![0].params["*"]!;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockTeamCatalogApi.catalogFile.mockResolvedValue({ content: "Readable cached team file" });
+    await renderPage(client);
+    await flushReact();
+    expect(container.textContent).toContain("Readable cached team file");
+    mockTeamCatalogApi.catalogFile.mockRejectedValue(Object.assign(new Error("temporarily_unavailable"), { status }));
+    await act(async () => { await client.refetchQueries({ type: "active" }); });
+    await flushReact();
+    expect(mockTeamCatalogApi.catalogFile).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Readable cached team file");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it.each([403, 404])("shows a real %s refresh error instead of cached file content", async (status) => {
+    currentRoute = matchRoutes([{ path: "/teams-catalog/*" }], teamRoute("team-no-deps", "TEAM.md"))![0].params["*"]!;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockTeamCatalogApi.catalogFile.mockResolvedValue({ content: "Previously readable file" });
+    await renderPage(client);
+    await flushReact();
+    expect(container.textContent).toContain("Previously readable file");
+    mockTeamCatalogApi.catalogFile.mockRejectedValue(Object.assign(new Error("private_internal_error_code"), { status }));
+    await act(async () => { await client.refetchQueries({ type: "active" }); });
+    await flushReact();
+    expect(mockTeamCatalogApi.catalogFile).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Previously readable file");
+    expect(container.textContent).not.toContain("private_internal_error_code");
   });
 
   it("opens the installer, fetches the preview, and submits the install", async () => {

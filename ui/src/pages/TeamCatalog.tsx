@@ -207,12 +207,12 @@ function titleCase(slug: string): string {
 }
 
 function encodeTeamFilePath(filePath: string): string {
-  return filePath.split("/").map(encodeURIComponent).join("%7E");
+  return btoa(encodeURIComponent(filePath)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 function decodeTeamFilePath(encoded: string | undefined): string | null {
   if (!encoded) return null;
-  return encoded.split("%7E").map(decodeURIComponent).join("/");
+  return decodeURIComponent(atob(encoded.replaceAll("-", "+").replaceAll("_", "/")));
 }
 
 type ParsedRoute = { catalogRef: string | null; filePath: string | null };
@@ -678,6 +678,9 @@ export function TeamDetailPane({
   onInstall,
   canInstall,
   fileContent,
+  fileError,
+  onFileRetry,
+  fileRetrying,
   installed,
 }: {
   team: CatalogTeam;
@@ -686,6 +689,9 @@ export function TeamDetailPane({
   onInstall: () => void;
   canInstall: boolean;
   fileContent: string | null;
+  fileError?: unknown;
+  onFileRetry?: () => void;
+  fileRetrying?: boolean;
   installed?: InstalledCatalogTeam | null;
 }) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -847,7 +853,15 @@ export function TeamDetailPane({
                 </button>
               </div>
               <div className="max-h-96 overflow-auto p-3">
-                {fileContent === null ? (
+                {fileError ? (
+                  <QueryErrorState
+                    error={fileError}
+                    size="inline"
+                    action="load the team file"
+                    onRetry={onFileRetry}
+                    retrying={fileRetrying}
+                  />
+                ) : fileContent === null ? (
                   <Skeleton className="h-32 w-full" />
                 ) : selectedPath.endsWith(".md") ? (
                   <div className="prose prose-sm prose-neutral max-w-none dark:prose-invert">
@@ -2342,6 +2356,7 @@ export function TeamCatalog() {
     queryFn: () => teamCatalogApi.catalogFile(selectedTeam!.id, selectedFilePath!),
     enabled: Boolean(selectedTeam && selectedFilePath),
   });
+  const fileView = useQueryView(fileQuery);
 
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
@@ -2597,7 +2612,10 @@ export function TeamCatalog() {
                 }
                 onInstall={() => setInstallOpen(true)}
                 canInstall={canInstall}
-                fileContent={fileQuery.data?.content ?? null}
+                fileContent={fileView.data?.content ?? null}
+                fileError={fileView.kind === "error" ? fileView.error : null}
+                onFileRetry={fileView.retry}
+                fileRetrying={fileView.isFetching}
                 installed={installedById.get(selectedTeam.id) ?? null}
               />
             ) : (
