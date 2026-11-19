@@ -1027,6 +1027,14 @@ async function startServerWithDatabaseTeardown(
         retention,
         filenamePrefix: "paperclip",
         verifyBeforePrune: verifyCheckpoint ? verifyIdleDatabaseBackup : undefined,
+        // The in-process engine builds the dump on this thread and stalls every request while it runs
+        // (prod, 2026-11-19: ~3 minutes, RSS 2.8 -> 15 GB), so say so loudly the moment it is chosen.
+        onPgDumpFallback: (reason) => {
+          logger.warn(
+            { backupDir: config.databaseBackupDir, trigger, reason },
+            `${label} database backup: pg_dump failed; falling back to the in-process JavaScript engine, which blocks the event loop for the length of the dump`,
+          );
+        },
       });
       if (verifyCheckpoint) {
         if (trigger !== "idle") await clearIdleBackupWakeRequired(config.databaseBackupDir);
@@ -1046,6 +1054,7 @@ async function startServerWithDatabaseTeardown(
           backupFile: result.backupFile,
           sizeBytes: result.sizeBytes,
           prunedCount: result.prunedCount,
+          engine: result.engine,
           backupDir: config.databaseBackupDir,
           retention,
           trigger,

@@ -29,6 +29,12 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /**
+   * Called as soon as `auto` abandons pg_dump for the in-process JavaScript engine, before that
+   * engine starts, with a single-line, credential-redacted reason. The JavaScript engine builds
+   * the dump on the calling thread, so a caller that cares about its event loop should log this.
+   */
+  onPgDumpFallback?: (reason: string) => void;
   /** Optional durability gate. A rejected archive must not prune history. */
   verifyBeforePrune?: (backupFile: string) => Promise<void>;
 };
@@ -37,6 +43,8 @@ export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+  /** The engine that produced this archive. "javascript" runs in the calling process's event loop. */
+  engine: "pg_dump" | "javascript";
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -377,7 +385,15 @@ export function buildPgDumpInvocation(
   connectTimeout: number,
   source: NodeJS.ProcessEnv = process.env,
 ): { args: string[]; env: NodeJS.ProcessEnv; credentialInArgv: boolean } {
-  const baseArgs = ["--format=plain", "--clean", "--if-exists", "--no-owner", "--no-privileges"];
+  // --enable-row-security: pg_dump defaults to row_security=off, which makes it FAIL ("query would be
+  // affected by row-level security policy for table ...") for any role that is not a superuser/BYPASSRLS
+  // role while a table has RLS enabled, as the application role does in production. With this flag
+  // pg_dump reads under the connecting role's normal RLS visibility, which is exactly what the
+  // JavaScript engine sees (it runs plain SELECTs as the same role). A role with BYPASSRLS would be
+  // the stricter way to dump every row regardless of policy; this keeps the two engines equivalent.
+  const baseArgs = [
+    "--format=plain", "--clean", "--if-exists", "--no-owner", "--no-privileges", "--enable-row-security",
+  ];
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue;
@@ -610,6 +626,18 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
   };
 }
 
+/** One line, with any postgres connection URL (user:password@host) redacted. */
+function describePgDumpFailure(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const redacted = raw
+    .replace(/postgres(?:ql)?:\/\/[^\s"']+/gi, "postgres://[redacted]")
+    .replace(/password=\S+/gi, "password=[redacted]");
+  const lines = redacted.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  // pg_dump's useful line is the error, not the trailing hints/warnings.
+  const errorLine = lines.find((line) => /\berror\b/i.test(line)) ?? lines[0] ?? "unknown error";
+  return errorLine.slice(0, 500);
+}
+
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
   const filenamePrefix = opts.filenamePrefix ?? "paperclip";
   const retention = opts.retention;
@@ -654,6 +682,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           throw error;
         }
         effectiveBackupEngine = "javascript";
+        try {
+          opts.onPgDumpFallback?.(describePgDumpFailure(error));
+        } catch { /* a logging callback must never fail the backup */ }
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         sqlClosed = false;
       }
@@ -665,7 +696,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         const sizeBytes = statSync(backupFile).size;
         await opts.verifyBeforePrune?.(backupFile);
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
-        return { backupFile, sizeBytes, prunedCount };
+        return { backupFile, sizeBytes, prunedCount, engine: "pg_dump" };
       }
     }
 
@@ -1155,6 +1186,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       backupFile,
       sizeBytes,
       prunedCount,
+      engine: "javascript",
     };
   } catch (error) {
     await writer.abort();
