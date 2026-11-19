@@ -98,6 +98,40 @@ describe("responsibility tools", () => {
     expect(result).toMatchObject({ ownerUserId: "someone", areas: [], withoutArea: [], guidance: expect.stringContaining("no responsibilities yet") });
   });
 
+  it("scopes totals to one area, hides archived areas unless asked, and notices hidden proposals", async () => {
+    const ARCHIVED = "99999999-0000-4000-8000-000000000001";
+    const overview = (overrides: Record<string, unknown> = {}) => ({
+      ownerUserId: "owner",
+      areas: [
+        { id: AREA, title: "Money", description: null, status: "active" },
+        { id: ARCHIVED, title: "Old", description: null, status: "archived" },
+      ],
+      responsibilities: [
+        responsibility(),
+        responsibility({ id: "66666666-6666-4666-8666-666666666667", title: "Legacy", areaId: ARCHIVED, rollup: rollup({ health: "behind" }) }),
+      ],
+      proposed: [],
+      totals: { byHealth: { behind: 1, at_risk: 0, on_track: 1, not_measured: 0 }, openTasks: 9, agentTasks: 0, userTasks: 0, blockedTasks: 2, projects: 4, lateProjects: 1 },
+      loose: { projectCount: 0, openTaskCount: 0, routineCount: 0, projects: [], tasks: [], routines: [] },
+      ...overrides,
+    });
+    const api = fakeApi({ [`/companies/${COMPANY}/responsibilities?includeLetGo=false`]: { body: overview() } });
+    const all = await callResponsibilityTool({ ...base, name: "list_responsibilities", arguments: {} }, api.fetcher) as Record<string, any>;
+    expect(all.areas.map((area: { id: string }) => area.id)).toEqual([AREA]);
+    expect(all.withoutArea.map((row: { title: string }) => row.title)).toEqual(["Legacy"]);
+    expect(all.totals).toMatchObject({ scope: "person", active: 2, openTasks: 9 });
+
+    const one = await callResponsibilityTool({ ...base, name: "list_responsibilities", arguments: { areaId: AREA } }, api.fetcher) as Record<string, any>;
+    expect(one.totals).toEqual({ scope: "area", active: 1, proposed: 0, letGo: 0, activeByHealth: { behind: 0, at_risk: 0, on_track: 1, not_measured: 0 } });
+    expect(one).not.toHaveProperty("uncoveredWork");
+
+    const onlyProposals = fakeApi({ [`/companies/${COMPANY}/responsibilities?includeLetGo=false`]: {
+      body: overview({ responsibilities: [], proposed: [responsibility({ status: "proposed" })] }),
+    } });
+    const hidden = await callResponsibilityTool({ ...base, name: "list_responsibilities", arguments: { includeProposed: false } }, onlyProposals.fetcher);
+    expect(hidden).toMatchObject({ guidance: expect.stringContaining("1 proposed responsibilities, hidden") });
+  });
+
   it("reads one responsibility with its filed items and latest status report", async () => {
     const api = fakeApi({
       [`/responsibilities/${RESPONSIBILITY}`]: { body: {
