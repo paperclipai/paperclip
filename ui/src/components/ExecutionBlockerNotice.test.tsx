@@ -26,6 +26,20 @@ describe("ordinary task interruption", () => {
   const render = async (presentation = failed, options: { canRetry?: boolean; optimistic?: boolean; takingLonger?: boolean; error?: Error } = {}) => {
     await act(async () => root.render(<ExecutionBlockerNotice presentation={presentation} canRetry onRetry={retry} {...options} />));
   };
+  it("names the incompatible Runner and keeps the next check visible", async () => {
+    await render({ ...failed, state: "retry_scheduled", nextRetryAt: new Date(Date.now() + 30_000).toISOString(),
+      retryWait: { reason: "runner_acpx_profile_incompatible", message: "Waiting for a compatible Runner." }, canRetry: false });
+    expect(container.textContent).toContain("Waiting for a compatible Runner.");
+    expect(container.textContent).toContain("Checking again in");
+    expect(container.querySelector("[data-testid=task-execution-retry]")).toBeNull();
+    await render({ ...failed, state: "retry_scheduled", nextRetryAt: new Date(Date.now() + 30_000).toISOString(),
+      retryWait: { reason: "runner_acpx_profile_incompatible", message: "A compatible Runner is available." }, canRetry: true });
+    const retryButton = container.querySelector<HTMLButtonElement>("[data-testid=task-execution-retry]")!;
+    expect(retryButton.textContent).toBe("Retry");
+    await act(async () => retryButton.click());
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it("offers one Retry without delegating infrastructure chores", async () => {
     await render();
     expect(container.textContent).toContain("Couldn’t finish this attempt. Your message is saved.");

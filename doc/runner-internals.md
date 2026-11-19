@@ -415,6 +415,20 @@ The batch permits at most 16 files and 1 MiB of shell input. Launcher staging
 keeps its 15-second deadline. Run `packages/adapter-utils/src/github-launcher-environment.test.ts`
 and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contracts.
 
+### Local ACPX Runner compatibility
+
+The local Runner reports a digest for each built-in ACPX profile in its build
+metadata. Paperclip compares the selected profile before it sends preparation
+commands. An older Runner can report an incompatible profile when it rejects
+preparation. The existing task recovery route then checks the installed Runner
+every 30 seconds while the task waits.
+
+When the selected profile matches, the recovery route can continue the task from
+saved work. The task shows the reason for the wait and the next check. Retry
+runs the same recovery decision. Task ownership, workspace preservation, budgets,
+and approvals still apply. Runner compatibility recovery admits up to 12
+continuations per company in a rolling hour.
+
 ### Native runner restart recovery
 
 An explicit Retry can continue a recovered setup failure that began as a

@@ -317,6 +317,23 @@ function admitTaskRetry(input: TaskRetryRequest) {
         latest.agentId !== issue.assigneeAgentId || input.observedRunId !== latest.id) {
       return { requestId: null, accepted: false, stale: true, observedRunId: latest?.id ?? null, chatActionId: undefined };
     }
+    const { RUNNER_ACPX_PROFILE_INCOMPATIBLE } = await import("./continuation-cause.js");
+    if (latest.errorCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE) {
+      const { continueFreshInTransaction } = await import("./fresh-continuation-fallback.js");
+      const result = await continueFreshInTransaction(db, { companyId: issue.companyId, runId: latest.id,
+        trigger: "recovery_refused" });
+      const receipt = { requestId: null, stale: false, observedRunId: latest.id, chatActionId: undefined };
+      if (result.kind === "continued") {
+        await persistActivity(db, { companyId: issue.companyId, ...automaticRetryActor(input),
+          action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
+          details: { recoveryActionId: result.recoveryActionId, strategy: "runner_compatibility" } });
+      }
+      if (result.kind === "continued" || result.kind === "already_continued") return { ...receipt, accepted: true };
+      if (result.kind === "successor_exists") return { ...receipt, accepted: false, alreadyMovedOn: true };
+      throw conflict(result.kind === "backoff" && result.reason === RUNNER_ACPX_PROFILE_INCOMPATIBLE
+        ? "Waiting for a compatible Runner. Paperclip will check again automatically."
+        : "Paperclip is still checking whether this task can safely continue.", { code: RUNNER_ACPX_PROFILE_INCOMPATIBLE });
+    }
     if (input.retryAction === "move_forward" && !["queued", "running"].includes(latest.status) &&
         !(await undeliveredContinuation(tx, { companyId: issue.companyId, issueId: issue.id })))
       return { requestId: null, accepted: false, stale: false, alreadyMovedOn: true, observedRunId: latest.id, chatActionId: undefined };

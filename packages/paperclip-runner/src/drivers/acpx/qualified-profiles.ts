@@ -1,5 +1,5 @@
 import { ACPX_DRIVER_KIND, ACPX_DRIVER_PROTOCOL_VERSION, QUALIFIED_ACPX_VERSION, QUALIFIED_ACPX_PROFILE_DATA } from "./generated-profiles.js";
-export { ACPX_DRIVER_KIND, ACPX_DRIVER_PROTOCOL_VERSION, QUALIFIED_ACPX_VERSION } from "./generated-profiles.js";
+export { ACPX_DRIVER_KIND, ACPX_DRIVER_PROTOCOL_VERSION, ACPX_RELEASE_PROFILE_DIGESTS, QUALIFIED_ACPX_VERSION } from "./generated-profiles.js";
 
 import type { NativeAcpxAgent, NativeAcpxProfileSnapshot } from "../../contracts/native-execution.js";
 

@@ -59,7 +59,8 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   const step = !optimistic && presentation?.responsibility === "system" && presentation.recoveryStep
     && ["working", "retry_scheduled"].includes(presentation.state) ? recoveryStepText[presentation.recoveryStep] : null;
   const seconds = Math.max(0, Math.ceil((Date.parse(presentation?.nextRetryAt ?? "") - Date.now()) / 1000));
-  const retryIn = `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`;
+  const countdown = seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`;
+  const retryIn = `Trying again in ${countdown}…`;
   if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
     // Saved-work recovery is what the task waits for, so name it over the
     // generic automatic-retry line while keeping the provider explanation.
@@ -138,7 +139,9 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
       )}>
         {presentation.state === "failed" && <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />}
         <span className="min-w-0 flex-1">{presentation.state === "retry_scheduled"
-          ? step ? `${step}. ${retryIn}`
+          ? presentation.retryWait?.reason === "runner_acpx_profile_incompatible"
+            ? <>{presentation.retryWait.message} {seconds > 0 ? `Checking again in ${countdown}…` : "Checking again…"} </>
+            : step ? `${step}. ${retryIn}`
             : presentation.setupFailure ? `${presentation.setupFailure.message}. ${retryIn}` : retryIn
           : presentation.retryWait ? presentation.retryWait.message
           : presentation.workspaceFailure

@@ -43,7 +43,10 @@ export const PERMANENT_FAILURE_CODES = [
   "low_trust_requires_sandbox_environment", "low_trust_runtime_services_denied",
 ] as const;
 
+export const RUNNER_ACPX_PROFILE_INCOMPATIBLE = "runner_acpx_profile_incompatible";
+
 export const RESTART_CLASS_FAILURE_CODES = [
+  RUNNER_ACPX_PROFILE_INCOMPATIBLE,
   "native_restart_recovery_blocked", "native_continuation_requires_reconciliation", "native_session_interrupted",
   "native_runner_process_exited", "server_shutdown_interrupted", "process_lost", "controller_lease_lost",
   "execution_finalization_deadline_exceeded", "local_runtime_api_listener_unavailable",

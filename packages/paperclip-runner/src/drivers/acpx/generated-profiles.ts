@@ -3,6 +3,17 @@ export const QUALIFIED_ACPX_VERSION = "0.22.0" as const;
 export const ACPX_DRIVER_KIND = "acpx_runtime" as const;
 export const ACPX_DRIVER_PROTOCOL_VERSION = 1 as const;
 
+export const ACPX_RELEASE_PROFILE_DIGESTS = {
+  "antigravity": "sha256:0a6ed8999c183b2412f4f4172dfc7be672be257e8cf31cc252c62bd37c9a2f18",
+  "grok": "sha256:b0e507ac768a44472e9d70439f02ccf13828bfa06045330e0b0861834327d18e",
+  "pi": "sha256:c3e08f17e436672da69276b664564633040257a722d51117f47d3b3d2be65666",
+  "cursor": "sha256:d4fff78f5948f257addc7888d45f2b1cd7efa171991ec79705956789cbe7a3b9",
+  "copilot": "sha256:13b2b09d4d6ab5e78d1f6b5bddf131f783a6e0fb0bb550b85f7eab59951d9ceb",
+  "claude": "sha256:46efbe51efcfff53262af90ff4143b7a6dbffa3600e94d221d3af8cc5b5f418c",
+  "codex": "sha256:12554690ef84cc99d690616dcac19f2bdd80c3046959a74e8555f9d3bac793e9",
+  "kimi": "sha256:278896da3ae5ed4827607a3e28bff41e83d0225928eec2a78c59758b8d1ee365"
+} as const;
+
 export const QUALIFIED_ACPX_PROFILE_DATA = {
   "antigravity": {
     "driverKind": "acpx_runtime",
