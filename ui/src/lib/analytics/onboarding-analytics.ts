@@ -58,9 +58,8 @@ export function useOnboardingAnalytics(input: {
     );
   }, []);
 
-  const launched = useCallback(() => {
+  const finished = useCallback(() => {
     session.current = null;
-    captureOnboardingStepCompleted("launch", "succeeded");
   }, []);
 
   const { open, step } = input;
@@ -89,5 +88,5 @@ export function useOnboardingAnalytics(input: {
     if (viewed) captureProductAnalyticsEvent(ONBOARDING_ANALYTICS_EVENTS.stepViewed, stepProperties(viewed));
   }, [open, step]);
 
-  return { opened, dismissed, launched };
+  return { opened, dismissed, finished };
 }

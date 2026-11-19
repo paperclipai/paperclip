@@ -1897,8 +1897,9 @@ function OnboardingWizardInner({
     captureOnboardingStepCompleted("review");
     try {
       await agentChatsApi.startOnboarding(createdCompanyId, createdAgentId);
-      onboardingAnalytics.launched();
+      captureOnboardingStepCompleted("launch", "succeeded");
       if (!stillTheSameCompany(createdCompanyId)) return;
+      onboardingAnalytics.finished();
       const prefix = createdCompanyPrefix;
       const agentId = createdAgentId;
       // Route sync preserves this explicit destination over page memory.

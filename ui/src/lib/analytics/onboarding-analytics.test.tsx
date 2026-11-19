@@ -159,7 +159,8 @@ describe("onboarding funnel events", () => {
     wizard.rerender({ open: true, step: 4, connectOutcome: "api_key" });
     wizard.rerender({ open: true, step: 5, connectOutcome: "api_key" });
     captureOnboardingStepCompleted("review");
-    act(() => wizard.result.current.launched());
+    captureOnboardingStepCompleted("launch", "succeeded");
+    act(() => wizard.result.current.finished());
     wizard.rerender({ open: false, step: 1, connectOutcome: "subscription" });
 
     expect(captured()).toEqual([
