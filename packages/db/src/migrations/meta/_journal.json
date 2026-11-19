@@ -3480,6 +3480,13 @@
       "when": 1794977210244,
       "tag": "0498_quiet_hardball",
       "breakpoints": true
+    },
+    {
+      "idx": 506,
+      "version": "7",
+      "when": 1795081384511,
+      "tag": "0506_project_provider_authorizations",
+      "breakpoints": true
     }
   ]
 }
