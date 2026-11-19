@@ -131,30 +131,24 @@ describe("SidebarRecentTasks", () => {
     expect(container.textContent).not.toContain("Recent Tasks");
     expect(container.textContent).not.toContain("Open or create a task");
   });
-  it("keeps actions on both parent and nested child rows", async () => {
+  it("keeps actions on independent parent and child rows in recent order", async () => {
     const parent = { id: "parent", companyId: "company-1", title: "Parent", identifier: "PAP-1", status: "todo" as const, updatedAt: new Date(1), subtaskCount: 1, isParticipantForMe: true };
-    recordRecentTask(parent, "user-1");
-    mockIssuesApi.summaries.mockResolvedValue([parent]);
-    mockIssuesApi.listCompact.mockResolvedValue([{ id: "child", companyId: "company-1", parentId: "parent", title: "Child", identifier: "PAP-2", status: "todo" }] as never);
+    const child = { ...parent, id: "child", parentId: parent.id, title: "Child", identifier: "PAP-2", subtaskCount: 0 };
+    recordRecentTask(parent, "user-1", 1);
+    recordRecentTask(child, "user-1", 2);
+    mockIssuesApi.summaries.mockResolvedValue([parent, child]);
+
     await render();
+
+    const links = [...container.querySelectorAll("a")];
+    expect(links.map(link => link.getAttribute("href"))).toEqual(["/issues/PAP-2", "/issues/PAP-1"]);
+    expect(links[0]!.parentElement?.parentElement).toBe(links[1]!.parentElement?.parentElement);
+    expect(mockIssuesApi.listCompact).not.toHaveBeenCalled();
     expect(container.querySelector('[aria-label="More actions for Parent"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="More actions for Child"]')).not.toBeNull();
     await openActions("Child");
     expect(menuItem("Rename")).toBeDefined();
     expect(menuItem("Archive")).toBeDefined();
     expect(menuItem("Pause/Restart")).toBeDefined();
-  });
-  it("shows every task once in a four-level recent chain", async () => {
-    const tasks = ["a", "b", "c", "d"].map((id, index) => ({
-      id, companyId: "company-1", identifier: `TASK-${id}`, title: `Task ${id}`, status: "todo" as const, updatedAt: new Date(index + 1),
-      parentId: index ? ["a", "b", "c"][index - 1] : null, subtaskCount: index < 3 ? 1 : 0, isParticipantForMe: true,
-    }));
-    tasks.forEach(task => recordRecentTask(task, "user-1"));
-    mockIssuesApi.summaries.mockResolvedValue(tasks);
-    mockIssuesApi.listCompact.mockImplementation(async (_company, filters) => tasks.filter(task => task.parentId === filters?.parentId));
-    await render();
-    expect(container.querySelectorAll("a")).toHaveLength(4);
-    for (const id of ["a", "b", "c", "d"]) expect(container.querySelectorAll(`a[href="/issues/TASK-${id}"]`)).toHaveLength(1);
   });
 
   it("renders refreshed task text and live state without shifting for a status icon", async () => {
@@ -309,7 +303,7 @@ describe("SidebarRecentTasks", () => {
     expect(container.textContent).toContain("Idle");
   });
 
-  it("archives a task from the inbox without hiding or removing the recent task", async () => {
+  it("removes a recent task after archiving it from the inbox", async () => {
     const issue = {
       id: "issue-1",
       companyId: "company-1",
@@ -336,14 +330,11 @@ describe("SidebarRecentTasks", () => {
 
     expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledWith("issue-1");
     expect(mockIssuesApi.update).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Recent Tasks");
-    expect(container.querySelector('a[href="/issues/PAP-1"]')?.textContent).toContain(
-      "Archive me",
-    );
+    expect(container.querySelector('a[href="/issues/PAP-1"]')).toBeNull();
     expect(readRecentTasks(
       getRecentTasksStorageKey("company-1", "user-1"),
       "company-1",
-    )).toHaveLength(1);
+    )).toEqual([]);
   });
 
   it("refreshes task activity after a rename", async () => {

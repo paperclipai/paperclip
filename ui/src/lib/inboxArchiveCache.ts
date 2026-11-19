@@ -241,6 +241,7 @@ export function invalidateInboxIssueQueries(queryClient: QueryClient, companyId:
       queryClient.invalidateQueries({ queryKey }),
     ),
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(companyId) }),
   ]);
 }
 

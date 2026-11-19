@@ -3128,7 +3128,7 @@ function withdrawnForUserCondition(companyId: string, userId: string, readAt: SQ
   )`;
 }
 
-function inboxVisibleForUserCondition(companyId: string, userId: string) {
+export function inboxVisibleForUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     NOT EXISTS (
       SELECT 1
@@ -8593,7 +8593,7 @@ export function issueService(db: Db) {
         conditions.push(isNull(issues.conversationAgentId));
         // Explicit child navigation includes waiting chat tasks, just like
         // readable-child counts. Ambient lists still omit idle conversations.
-        if (!filters?.parentId && !filters?.parentIds && !filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
+        if (!filters?.parentId && !filters?.parentIds && !filters?.descendantOf && !filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
           conditions.push(nonIdleSlackIssueCondition());
         }
       }

@@ -265,6 +265,22 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
   });
 
+  it("does not repeat a run that filled its sandbox disk on a fresh sandbox of the same size", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "sandbox_disk_full" });
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 }))
+      .toMatchObject({ outcome: "not_scheduled", reason: expect.stringContaining("disk") });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it("still retries a runner that exited for another reason", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "native_runner_process_exited" });
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 })).toMatchObject({ outcome: "scheduled" });
+  });
+
   it.each(["restore_unsafe_archive", "restore_lock_timeout"])("keeps the existing retry budget for %s", async (classification) => {
     const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
     const now = new Date("2026-04-20T12:00:00.000Z");
