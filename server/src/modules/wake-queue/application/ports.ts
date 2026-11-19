@@ -321,6 +321,17 @@ export type DurableWakeAdmissionReceipt = {
   requestedAt: Date;
 };
 
+export type WakeReceiptSeed = {
+  agentId: string;
+  source: string;
+  triggerDetail: string | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  requestedByActorType: string | null;
+  requestedByActorId: string | null;
+  idempotencyKey: string | null;
+};
+
 export type CoalescedDeferredAdmissionReceipt =
   Omit<DurableWakeAdmissionReceipt, "id" | "requestedAt"> &
   Partial<Pick<DurableWakeAdmissionReceipt, "id" | "requestedAt">> & {
