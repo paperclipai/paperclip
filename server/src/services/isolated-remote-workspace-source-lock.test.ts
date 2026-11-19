@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { IsolatedRepositorySourceBusy, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
-import { withIndependentWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { withIndependentWorkspaceSourceLocks, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -58,6 +58,30 @@ describePostgres("workspace source ownership during preparation", () => {
     expect(await preparation).toEqual({ value: "prepared" });
     await expect(withIsolatedRepositorySourceLock(db, companyId, issueId, async () => "next", true))
       .resolves.toBe("next");
+  });
+
+  it("bounds the project-key wait added inside a scope that holds only issue keys", async () => {
+    const companyId = randomUUID(), issueId = randomUUID(), projectId = randomUUID();
+    let entered!: () => void, releaseHolder!: () => void;
+    const holderEntered = new Promise<void>(resolve => { entered = resolve; });
+    const holderFree = new Promise<void>(resolve => { releaseHolder = resolve; });
+    const holder = withIndependentWorkspaceSourceLocks(db, { companyId, projectIds: [projectId] },
+      async () => { entered(); await holderFree; return "held"; })
+      .then(value => ({ value }), error => ({ error }));
+    try {
+      await holderEntered;
+      const outcome = await Promise.race([
+        withIndependentWorkspaceSourceLocks(db, { companyId, issueIds: [issueId] }, async () =>
+          withWorkspaceSourceLocks(db, { companyId, projectIds: [projectId] }, async () => "acquired"),
+          false, { waitMs: 300 }).then(value => ({ value }), error => ({ error })),
+        delay(4000).then(() => ({ timedOut: true as const })),
+      ]);
+      expect(outcome).toHaveProperty("error");
+      expect((outcome as { error: unknown }).error).toBeInstanceOf(IsolatedRepositorySourceBusy);
+    } finally {
+      releaseHolder();
+      await holder;
+    }
   });
 
   it("releases a failed preparation and preserves the original failure", async () => {
