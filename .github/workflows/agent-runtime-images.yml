@@ -47,6 +47,19 @@ jobs:
   build-and-sign:
     runs-on: ubuntu-22.04
     steps:
+      - name: Reject the reserved latest version
+        # Only push runs from master may move :latest (see the alias step). A
+        # manual build with version=latest would push :latest directly from any
+        # branch, outside the push runs' concurrency group.
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$(printf '%s' "${REQUESTED_VERSION}" | tr '[:upper:]' '[:lower:]')" = "latest" ]; then
+            echo "::error::'latest' is reserved for automated master builds; pick another version tag."
+            exit 1
+          fi
+
       - name: Wait for earlier manual builds
         # Serialize manual builds of the same version in start order so two
         # dispatches for e.g. "dev" can't interleave their pushes and leave the
