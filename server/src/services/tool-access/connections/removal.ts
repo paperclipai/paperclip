@@ -685,5 +685,5 @@ async function removeConnection(
       },
     };
   }
-  return removeConnection;
+  return Object.assign(removeConnection, { classifyConnectionSecrets });
 }

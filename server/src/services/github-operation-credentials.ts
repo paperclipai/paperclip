@@ -14,6 +14,7 @@ import { captureRunIdentity, type RunIdentityContext } from "./run-identity.js";
 import {
   buildGitAuthInvocation,
   resolveManagedGitHubCredential,
+  type GitHubIdentitySource,
 } from "./git-credentials.js";
 import { secretService } from "./secrets.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
@@ -21,7 +22,7 @@ import { isLowTrustQuarantined } from "./source-trust.js";
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
-  source?: "personal" | "dedicated";
+  source?: GitHubIdentitySource;
   login?: string;
   reason?: string;
   connectionId?: string;

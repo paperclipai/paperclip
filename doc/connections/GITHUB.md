@@ -70,6 +70,12 @@ A self-hosted instance needs one Paperclip Cloud approval before its first
 managed connection. After approval, setup returns to the connect screen and continues to
 GitHub without another instance approval or a service restart.
 
+To connect without Paperclip Cloud, choose **Use a GitHub personal access token**
+on the enrollment screen, enter a fine-grained PAT, and select which agents may
+use it. The token is stored in the instance's secret system and sent to GitHub
+for authorized requests. The same option is available when managed GitHub sign-in
+is unavailable. A PAT connection does not provide the Cloud webhook inbox.
+
 If an unapproved enrollment link expires, return to setup and select
 **Continue**. Paperclip asks the server for a valid link. The server reuses a
 live pending enrollment or replaces an expired one; this does not revoke or
@@ -90,13 +96,27 @@ and webhook binding uses the same order:
 2. The active personal GitHub grant owned by the run's `responsibleUserId`.
 3. For automated work without a responsible user, a personal grant only when
    an existing standing delegation names the agent.
-4. Legacy `GH_TOKEN`/`GITHUB_TOKEN` only when no managed GitHub connection is
+4. A shared company GitHub grant (organization identity) on a connection
+   installed for the company or this agent.
+5. Legacy `GH_TOKEN`/`GITHUB_TOKEN` only when no managed GitHub connection is
    configured for the company.
 
-An unavailable or ambiguous managed identity fails visibly. It never falls
-through to another person, an organization credential, or a legacy token.
-Agent grants are company-scoped, have exactly one `subjectAgentId`, cannot be
-organization defaults, and are installed only for that agent.
+Only the first tier that has a grant is considered, so identities in different
+tiers never conflict. An unavailable or ambiguous managed identity fails
+visibly. It never falls through to another person, an organization credential,
+or a legacy token. Agent grants are company-scoped, have exactly one `subjectAgentId`,
+cannot be organization defaults, and are installed only for that agent.
+
+Both connection methods serve every operation above. A sign-in grant proves its
+repository reach through GitHub App installations. A personal access token
+(advanced) grant reaches whatever the token's own scope allows, which GitHub
+enforces on every operation. For example, cloning needs **Contents: Read** and
+pushing needs **Contents: Read and write** on a fine-grained token. At setup
+and reconnect, Paperclip reads the token's account from GitHub's `GET /user`
+and stores only its ID and login. That account authors managed commits and lets
+two connections for the same account de-duplicate. A token connected before
+this was recorded learns its account on first use. If GitHub is unreachable,
+the token still works, and commits then need a configured repository identity.
 
 The connection installation is the credential owner's consent boundary. A
 personal setup may target every agent or a selected set, and runtime resolution

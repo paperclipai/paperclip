@@ -101,6 +101,7 @@ import { COGNEE_STDIO_TEMPLATE } from "./cognee-connection.js";
 import { isRemoteMcpConnectorMethod, type AwsConnectionSetup } from "@paperclipai/shared";
 
 import { githubBotRequest } from "./chat-github-client.js";
+import { loadGitHubTokenAccount, recordGitHubTokenAccount } from "./github-token-account.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import {
   emitConnectionCreated,
@@ -2401,6 +2402,9 @@ export function toolAccessService(
       [];
     const credentialRefs: McpConnectionCredentialRef[] = [];
     const createdSecretIds: string[] = [];
+    // The exact version each credential was written as, so a token's account is
+    // bound to the token this setup submitted, not whatever version is current.
+    const writtenSecretVersions = new Map<string, number>();
     const createdDefinitionIds: string[] = [];
     // Personal consent belongs to the authenticated responsible user. A delegated
     // agent is recorded separately and never becomes the account owner.
@@ -2474,6 +2478,7 @@ export function toolAccessService(
       current: typeof connectionGrants.$inferSelect;
     } | null = null;
     let personalPublicSetupEstablished = false;
+    let replacedGrantSecretRefs: CreateToolConnection["credentialSecretRefs"] = [];
 
     try {
       const credentialFields =
@@ -2513,6 +2518,7 @@ export function toolAccessService(
         const { secret } = written;
         if (written.definitionId) createdDefinitionIds.push(written.definitionId);
         createdSecretIds.push(secret.id);
+        writtenSecretVersions.set(secret.id, secret.latestVersion);
         credentialSecretRefs.push({
           secretId: secret.id,
           versionSelector: "latest",
@@ -2862,7 +2868,9 @@ export function toolAccessService(
         // Without sign-in, the agent's grant is written here, carrying the
         // API key when the method has one. The grant alone gives no tools:
         // the agent still needs an install of the active connection.
-        if (createsAgentGrantAtConnect) {
+        // A credential supplied at connect time (a personal access token) also
+        // belongs on the agent's grant.
+        if (createsAgentGrantAtConnect || credentialSecretRefs.length > 0) {
           const mutation = await agentGrants.upsertConnectAgentGrant({
             companyId,
             connectionId: connectionRow.id,
@@ -2871,6 +2879,9 @@ export function toolAccessService(
             actor,
           });
           if (revivedConnectionPrevious) revivedGrantMutation = mutation;
+          // The replaced credential is deleted only after setup succeeds (below):
+          // a failed setup rolls the grant back to it.
+          replacedGrantSecretRefs = mutation.previous?.credentialSecretRefs ?? [];
         }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
@@ -3100,10 +3111,28 @@ export function toolAccessService(
             ),
           )
         : await refreshCatalog(catalogConnectionId, actor, refreshOptions);
+      // Only a verified setup learns the token's account, so a failed or
+      // rolled-back attempt never calls GitHub or writes grant metadata.
+      await recordPastedGitHubTokenAccount(
+        connectionRow,
+        galleryEntry?.slug,
+        credentialSecretRefs,
+        credentialValues,
+        writtenSecretVersions,
+      );
       const [application] = await db
         .select()
         .from(toolApplications)
         .where(eq(toolApplications.id, applicationRow.id));
+      // Setup is verified and nothing below can roll it back, so a credential
+      // the agent's grant no longer uses can go, unless something else (another
+      // grant, connection, or consumer) still resolves it. Deleting it earlier
+      // would let a rollback restore a grant that points at a deleted secret.
+      await removeReplacedGrantSecrets(
+        connectionRow,
+        replacedGrantSecretRefs,
+        credentialSecretRefs,
+      ).catch(() => undefined);
       return {
         connectionId: refresh.connection.id,
         application: toApplication(application),
@@ -3783,6 +3812,96 @@ export function toolAccessService(
   }
 
   /**
+   * A pasted GitHub personal access token has no GitHub App installation metadata, so
+   * learn the account it authenticates as (`GET /user`) and store it on every grant that
+   * holds the token. That lets several connections for one account de-duplicate and
+   * authors managed commits. Best effort: setup never fails on this lookup, and a failed
+   * lookup clears an account recorded for a token this one replaced.
+   */
+  async function recordPastedGitHubTokenAccount(
+    connection: typeof toolConnections.$inferSelect,
+    sourceTemplateKey: unknown,
+    credentialSecretRefs: CreateToolConnection["credentialSecretRefs"],
+    credentialValues: Record<string, string | undefined>,
+    writtenSecretVersions: ReadonlyMap<string, number>,
+  ) {
+    if (sourceTemplateKey !== "github") return;
+    const token = credentialValues["credentials.authorization"]?.trim();
+    const tokenRef = credentialSecretRefs.find(
+      (ref) => ref.configPath === "credentials.authorization",
+    );
+    if (!token || !tokenRef) return;
+    const grants = await db
+      .select()
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+        ),
+      );
+    const holders = grants.filter((grant) =>
+      grant.credentialSecretRefs.some((ref) => ref.secretId === tokenRef.secretId),
+    );
+    if (holders.length === 0) return;
+    // Bind the account to the version this token was written as. Reading the
+    // current version instead could label an older submitted token with a
+    // concurrent reconnect's version; the conditional write below then rejects
+    // the record whenever this version is no longer current.
+    const writtenVersion = writtenSecretVersions.get(tokenRef.secretId);
+    if (writtenVersion === undefined) return;
+    const binding = { secretId: tokenRef.secretId, secretVersion: writtenVersion };
+    const account = await loadGitHubTokenAccount(token).catch(() => null);
+    for (const grant of holders) {
+      await recordGitHubTokenAccount(db, grant, account, binding).catch(() => null);
+    }
+  }
+
+  /**
+   * Delete secrets a grant no longer references after its credential was replaced,
+   * when nothing else references them: not this connection or its other grants, and
+   * nothing `classifyConnectionSecrets` finds outside it. Ambiguity keeps the secret.
+   */
+  async function removeReplacedGrantSecrets(
+    connection: typeof toolConnections.$inferSelect,
+    previousRefs: CreateToolConnection["credentialSecretRefs"],
+    nextRefs: CreateToolConnection["credentialSecretRefs"],
+  ) {
+    const kept = new Set(nextRefs.map((ref) => ref.secretId));
+    const replaced = previousRefs
+      .map((ref) => ref.secretId)
+      .filter((secretId) => !kept.has(secretId));
+    if (replaced.length === 0) return;
+    const [current] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection.id))
+      .limit(1);
+    const sameConnectionGrants = await db
+      .select({ credentialSecretRefs: connectionGrants.credentialSecretRefs })
+      .from(connectionGrants)
+      .where(
+        and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+        ),
+      );
+    const stillReferenced = new Set([
+      ...(current?.credentialRefs ?? []).map((ref) => ref.secretId),
+      ...(current?.credentialSecretRefs ?? []).map((ref) => ref.secretId),
+      ...sameConnectionGrants.flatMap((grant) =>
+        (grant.credentialSecretRefs ?? []).map((ref) => ref.secretId),
+      ),
+    ]);
+    const { owned } = await removeConnection.classifyConnectionSecrets(
+      connection,
+      replaced.filter((secretId) => !stillReferenced.has(secretId)),
+    );
+    for (const secretId of owned) await secrets.remove(secretId);
+  }
+
+
+  /**
    * Replace the credential(s) on an existing connection and re-run the health
    * check — the "Replace key" / reconnect flow (M7, PAP-10859). Rotates the
    * secret in place when a ref already exists so the connection keeps its
@@ -3878,6 +3997,7 @@ export function toolAccessService(
       ...(connection.credentialRefs ?? []),
     ];
 
+    const writtenSecretVersions = new Map<string, number>();
     const updated = await db.transaction(async (tx) => {
       await tx.select({ id: connectionGrants.id }).from(connectionGrants)
         .where(and(eq(connectionGrants.companyId, companyId), eq(connectionGrants.connectionId, connection.id)))
@@ -3903,6 +4023,7 @@ export function toolAccessService(
           label: field.label, value, ownerUserId: personalIdentity?.subjectUserId,
           existingRef: existing, actor: actorForSecret(actor),
         });
+        writtenSecretVersions.set(secret.id, secret.latestVersion);
         const nextRef = { secretId: secret.id, versionSelector: "latest" as const,
           configPath: field.configPath, required: field.required ?? true, label: field.label };
         const refIndex = credentialSecretRefs.findIndex((ref) => ref.configPath === field.configPath);
@@ -3977,6 +4098,13 @@ export function toolAccessService(
         grantIdentity ? credentialSecretRefs : []);
       return nextConnection;
     });
+    await recordPastedGitHubTokenAccount(
+      updated,
+      sourceTemplateKey,
+      credentialSecretRefs,
+      input.credentialValues,
+      writtenSecretVersions,
+    );
     const health = await checkConnectionHealth(updated.id, actor);
     const refresh = await refreshCatalog(updated.id, actor, {
       enableAllByDefault: true,

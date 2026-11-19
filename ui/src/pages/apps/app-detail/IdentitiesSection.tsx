@@ -175,12 +175,14 @@ export function IdentitiesSection({
 
   if (credentialPolicy === "per_agent") {
     const github = agentGrant?.providerTenant?.github;
+    // A personal access token has no GitHub App installation, only its account.
+    const login = github?.login ?? agentGrant?.providerTenant?.githubAccount?.login;
     return (
       <section className="space-y-5">
         <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
         <p className="text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
         <IdentityRow
-          title={github ? <span className={ANALYTICS_MASK_CLASS}>@{github.login}</span> : "Dedicated GitHub account"}
+          title={login ? <span className={ANALYTICS_MASK_CLASS}>@{login}</span> : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}
           detail={dedicatedAgent ? (
             <Link
