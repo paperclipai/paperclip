@@ -17239,8 +17239,8 @@ async function createRunnerdBackendWithinSessionClaim(
     : await resolvePaperclipRunnerBinaryAsync();
   const localAcpxProvider = !remoteTarget && !input.restartRecovery && input.execution.provider.kind === "acpx"
     ? input.execution.provider : null;
-  if (localAcpxProvider && await timeController("runner_acpx_profile",
-    () => localAcpxRunnerCompatibility(localAcpxProvider.agent, controllerRunnerBinary)) === "incompatible") {
+  if (localAcpxProvider
+    && await localAcpxRunnerCompatibility(localAcpxProvider.agent, controllerRunnerBinary) === "incompatible") {
     throw new Error(RUNNER_ACPX_PROFILE_INCOMPATIBLE);
   }
   const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
