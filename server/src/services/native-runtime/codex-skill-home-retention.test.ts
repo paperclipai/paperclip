@@ -139,6 +139,17 @@ describe("Codex skill home retention", () => {
     expect((await readdir(storeRoot)).filter((name) => name.startsWith(".retiring-"))).toEqual([]);
   });
 
+  it("restores a retiring home reserved by a legacy recovery before it has a marker", async () => {
+    const { storeRoot, sessionsRoot } = await fixture();
+    const id = digest("b");
+    const path = await home(storeRoot, id, NOW - 72 * HOUR);
+    const result = await sweepCodexSkillHomes({ storeRoot, sessionsRoot, now: NOW }, {
+      afterRetire: async () => at(join(storeRoot, `${id}.last-used`), NOW),
+    });
+    expect(result).toMatchObject({ removed: 0, kept: 1, nextDueAt: NOW + 24 * HOUR });
+    expect(await exists(join(path, ".agents", "skills", "alpha", "SKILL.md"))).toBe(true);
+  });
+
   it("removes stale staging and retiring leftovers and old quarantine entries", async () => {
     const { storeRoot, sessionsRoot } = await fixture();
     for (const name of [".staging-old", ".retiring-old"]) {

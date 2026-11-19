@@ -196,7 +196,10 @@ export async function sweepCodexSkillHomes(
       // A sweep that stopped mid-retirement leaves `.retiring-<digest>.*`.
       const digest = RETIRING_PATTERN.exec(name)?.[1];
       const home = digest ? path.join(input.storeRoot, digest) : null;
-      if (digest && home && referenced.has(digest) && !(await fs.lstat(home).catch(missing))) {
+      const lastUsed = digest ? await modifiedAt(path.join(input.storeRoot, `${digest}.last-used`)) : null;
+      if (digest && home && (referenced.has(digest) || (lastUsed !== null && lastUsed >= usedBefore))
+        && !(await fs.lstat(home).catch(missing))) {
+        if (lastUsed !== null && lastUsed >= usedBefore) due(lastUsed + graceMs);
         await fs.rename(target, home);
       } else {
         await removeCodexSkillHomeTree(target);
@@ -238,8 +241,10 @@ export async function sweepCodexSkillHomes(
     await fs.rename(home, retiring);
     await dependencies.afterRetire?.(digest);
     referenced = await referencedDigests(input.sessionsRoot, input.acpxSessionsRoot);
-    if (referenced.has(digest)) {
-      // A launch referenced it meanwhile. If that launch already republished it,
+    const usedWhileRetiring = await modifiedAt(lastUsedFile);
+    if (referenced.has(digest) || (usedWhileRetiring !== null && usedWhileRetiring >= usedBefore)) {
+      if (usedWhileRetiring !== null && usedWhileRetiring >= usedBefore) due(usedWhileRetiring + graceMs);
+      // A launch referenced or reserved it meanwhile. If that launch already republished it,
       // its fresh copy wins and this one is discarded.
       if (await fs.lstat(home).catch(missing)) await removeCodexSkillHomeTree(retiring);
       else await fs.rename(retiring, home);

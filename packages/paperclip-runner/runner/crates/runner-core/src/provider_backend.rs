@@ -495,21 +495,29 @@ fn local_process_definitely_gone(_id: u32, _group: bool) -> bool {
 }
 
 fn codex_shared_skills_path(state_dir: &Path, home: &Path, codex_home: &Path) -> Option<PathBuf> {
+    if !state_dir.is_absolute() || !home.is_absolute() || !codex_home.is_absolute() {
+        return None;
+    }
     let session = state_dir.parent()?;
-    let store = session.parent()?.parent()?.join("skill-homes");
+    let store = session
+        .parent()?
+        .parent()?
+        .canonicalize()
+        .ok()?
+        .join("skill-homes");
     let digest = home.file_name()?.to_str()?;
-    if !store.is_absolute()
-        || home.parent()? != store
-        || digest.len() != 64
+    if digest.len() != 64
         || !digest
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        || codex_home != session.join("codex-home")
+        || codex_home.file_name()?.to_str()? != "codex-home"
+        || codex_home.canonicalize().ok()? != session.canonicalize().ok()?.join("codex-home")
     {
         return None;
     }
-    let skills = home.join(".agents").join("skills");
-    (skills.canonicalize().ok().as_ref() == Some(&skills)).then_some(skills)
+    let skills = home.join(".agents").join("skills").canonicalize().ok()?;
+    let expected = store.join(digest).join(".agents").join("skills");
+    (skills == expected).then_some(skills)
 }
 
 fn codex_recovery_read_args(args: &[String], state_dir: &Path) -> Vec<String> {
@@ -535,25 +543,44 @@ fn codex_recovery_read_args(args: &[String], state_dir: &Path) -> Vec<String> {
 #[cfg(test)]
 #[test]
 fn codex_recovery_reads_only_the_sealed_skills_of_a_local_session() {
-    let root = std::env::temp_dir().canonicalize().unwrap()
-        .join(format!("paperclip-shared-recovery-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        "paperclip-shared-recovery-{}",
+        uuid::Uuid::new_v4()
+    ));
     let scope = root.join("durable-sessions").join("session");
     let state = scope.join("runner");
     let private_home = scope.join("codex-home");
     let shared = root.join("skill-homes").join("a".repeat(64));
     let skills = shared.join(".agents").join("skills");
     std::fs::create_dir_all(&skills).unwrap();
+    std::fs::create_dir_all(&private_home).unwrap();
     assert_eq!(
         codex_shared_skills_path(&state, &shared, &private_home),
         Some(skills.clone())
     );
     assert!(codex_shared_skills_path(&state, &shared, &root.join("other-home")).is_none());
     assert!(codex_shared_skills_path(&state, &root, &private_home).is_none());
+    #[cfg(unix)]
+    {
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let linked_scope = alias.join("durable-sessions").join("session");
+        assert_eq!(
+            codex_shared_skills_path(
+                &linked_scope.join("runner"),
+                &alias.join("skill-homes").join("a".repeat(64)),
+                &linked_scope.join("codex-home"),
+            ),
+            Some(skills.clone())
+        );
+        let redirected = root.join("skill-homes").join("b".repeat(64));
+        std::os::unix::fs::symlink(&shared, &redirected).unwrap();
+        assert!(codex_shared_skills_path(&state, &redirected, &private_home).is_none());
+    }
 
     let args = vec![
         "-c".to_owned(),
-        "permissions.paperclip-runner-workspace-only.filesystem={\"/private\"=\"none\"}"
-            .to_owned(),
+        "permissions.paperclip-runner-workspace-only.filesystem={\"/private\"=\"none\"}".to_owned(),
         "app-server".to_owned(),
     ];
     let extra = crate::attachment_download::codex_runtime_read_args(&args, &[skills.clone()]);

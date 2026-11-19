@@ -335,6 +335,9 @@ export async function resolveLegacyCodexSkillHome(input: {
   try {
     if (!lstatSync(oldSkills).isDirectory()) return null;
     const entries = readdirSync(oldSkills).filter(name => name !== ".system").sort();
+    const digest = codexSkillHomeDigest(input.context);
+    await mkdir(input.storeRoot, { recursive: true, mode: 0o700 });
+    await touchCodexSkillHome(input.storeRoot, digest);
     const home = (await ensureCodexSkillHome(input)).home;
     if (input.retire && home !== input.expectedHome) return null;
     const sharedSkills = join(home, ".agents", "skills");
