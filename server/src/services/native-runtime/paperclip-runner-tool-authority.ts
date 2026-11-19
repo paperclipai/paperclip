@@ -51,6 +51,7 @@ import { handoffPlanContext } from "./handoff-plan-context.js";
 import { callCreateSkillTool, callUpdateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
 import { callResponsibilityTool, isResponsibilityTool, RESPONSIBILITY_TOOL_NAMES, responsibilityToolsDisabledError } from "../responsibility-tools.js";
+import { callRoutineTool, ROUTINE_TOOL_NAMES } from "../routine-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -160,7 +161,7 @@ const IMPLEMENTED_OPERATIONS = new Set([
   "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "create_skill", "update_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_agents", "get_agent", "list_approvals", "get_approval", "get_approval_context",
-  ...RESPONSIBILITY_TOOL_NAMES,
+  ...RESPONSIBILITY_TOOL_NAMES, ...ROUTINE_TOOL_NAMES,
 ]);
 
 /** Closed first-party native Muse profile. No connector, generic API, credential or workspace grants. */
@@ -981,6 +982,14 @@ export class PaperclipRunnerToolAuthority {
         return callResponsibilityTool({ name: call.tool, arguments: input, apiUrl, token,
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
           companyPrefix: await this.#companyPagePrefix() });
+      }
+      case "list_routines":
+      case "update_routine": {
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = this.#apiToken(context);
+        if (!apiUrl || !token) throw new Error("Routine tool authentication is unavailable");
+        return callRoutineTool({ name: call.tool, arguments: input, apiUrl, token,
+          companyId: this.binding.companyId, companyPrefix: await this.#companyPagePrefix() });
       }
       case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());
       case "hire_agent": {

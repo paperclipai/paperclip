@@ -287,6 +287,7 @@ To change them, you act for the person your run works for when they directed it:
 - `create_area`, `update_area` (rename, describe, reorder, archive or restore) and `delete_area`.
 - `create_responsibility` (a title is enough; `areaTitle` reuses or creates the area; `fileItems` files work under it), `update_responsibility` (title, sentence, metric as `bar`, area, the agent that runs it, health override, or status such as `let_go`) and `delete_responsibility`.
 - `file_under_responsibility` files projects, tasks and routines in one step; `moveFrom` (a responsibility ID, or `all`) makes it a move. `remove_from_responsibility` unfiles items; no link IDs are needed.
+- To map routines to responsibilities, read them with `list_routines` (`unfiled: true` lists those under no responsibility; add `status: "active"` for the running ones), then file them; `update_routine` also changes a routine's schedule, agent or instructions (see `references/routines.md`).
 
 Each change is saved as a version in the person's Dashboard history, where they can undo it; say so when you report what you changed. Prefer what can be undone: archive an area or let a responsibility go instead of deleting it. A delete is permanent, so the first call posts a confirmation card and returns `awaiting_confirmation`: tell the person, then stop; when they accept you are woken, and the same call deletes. Otherwise (a task someone else made for them, a routine, or no person), your changes are saved as proposals for a person to confirm.
 

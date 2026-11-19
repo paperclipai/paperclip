@@ -68,6 +68,8 @@ export type CapabilitySemanticOperationId =
   | "delete_responsibility"
   | "file_under_responsibility"
   | "remove_from_responsibility"
+  | "list_routines"
+  | "update_routine"
   | "create_task"
   | "handoff_case"
   | "read_case"

@@ -1479,7 +1479,7 @@ Terminal states: `done`, `cancelled`
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/api/companies/:companyId/routines` | List all routines in company |
+| GET    | `/api/companies/:companyId/routines` | List the company's routines. Optional filters, all applied before any limit: `projectId`, `q` (words in the title or description), `status`, `assigneeAgentId`, `responsibleUserId`, `responsibilityId` (filed under it, directly or through its project), `unfiled=true` (under no proposed or active responsibility); those two need Responsibilities on |
 | GET    | `/api/routines/:routineId` | Routine details including triggers |
 | POST   | `/api/companies/:companyId/routines` | Create routine (`assigneeAgentId` + `projectId` required; agents: own only) |
 | PATCH  | `/api/routines/:routineId` | Update routine (agents: own only, cannot reassign) |

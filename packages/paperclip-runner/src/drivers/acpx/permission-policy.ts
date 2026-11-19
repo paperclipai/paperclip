@@ -28,6 +28,8 @@ const AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS = new Set([
   // every change is an undoable Dashboard version, and a delete waits for their card.
   "create_area", "update_area", "delete_area", "create_responsibility", "update_responsibility",
   "delete_responsibility", "file_under_responsibility", "remove_from_responsibility",
+  // Routines the agent runs, or the person it works for is responsible for; each change is a routine revision.
+  "update_routine",
 ]);
 
 export const CLAUDE_SELF_SCHEDULING_TOOLS: readonly string[] = Object.freeze(["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]);

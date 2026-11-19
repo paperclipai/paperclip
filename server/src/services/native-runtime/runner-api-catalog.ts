@@ -58,6 +58,10 @@ function dedicatedTools(method: string, path: string): string[] {
   if (/\/companies\/\{[^}]+\}\/agent-hires$/.test(path) && method === "POST") return ["hire_agent"];
   if (/\/projects$/.test(path)) return method === "GET" ? ["list_projects"] : method === "POST" ? ["create_project"] : [];
   if (/\/project-repositories$/.test(path) && method === "GET") return ["list_project_repositories"];
+  if (/\/companies\/\{[^}]+\}\/routines$/.test(path) && method === "GET") return ["list_routines"];
+  if (/\/routines\/\{[^}]+\}$/.test(path) && method === "PATCH") return ["update_routine"];
+  if (/\/routines\/\{[^}]+\}\/triggers$/.test(path) && method === "POST") return ["update_routine"];
+  if (/\/routine-triggers\/\{[^}]+\}$/.test(path) && method === "PATCH") return ["update_routine"];
   if (/\/companies\/\{[^}]+\}\/responsibilities$/.test(path)) return method === "GET" ? ["list_responsibilities"] : method === "POST" ? ["create_responsibility"] : [];
   if (/\/companies\/\{[^}]+\}\/responsibility-areas$/.test(path)) return method === "GET" ? ["list_responsibilities"] : method === "POST" ? ["create_area"] : [];
   if (/\/responsibility-areas\/\{[^}]+\}$/.test(path)) return method === "PATCH" ? ["update_area"] : method === "DELETE" ? ["delete_area"] : [];

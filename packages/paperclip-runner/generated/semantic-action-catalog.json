@@ -3659,6 +3659,213 @@
   {
     "allowedModes": [
       "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List the company's routines (recurring work an agent runs on a schedule, webhook or request) with their agent, project, responsible person, schedules and last run. Filter by words, status, agent, project, person, a responsibility, or unfiled for routines under no responsibility; every filter applies before the limit.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeAgentId": {
+          "description": "Only routines this agent runs.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Default 50.",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "projectId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "query": {
+          "description": "Words in the title or instructions.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "responsibilityId": {
+          "description": "Only routines under this responsibility, filed directly or through its project. Needs Responsibilities on.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "responsibleUserId": {
+          "description": "Only routines this person is responsible for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "unfiled": {
+          "description": "Only routines filed under no proposed or active responsibility, directly or through their project. Combine with status, such as active. Needs Responsibilities on.",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_routines",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "routines:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List routines",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a routine: its title, instructions, agent, project, status (active, paused, archived) or priority; set its schedule in plain terms (no cron), or null to turn its schedule off; and file it under a responsibility. You may change your own routines, and those the person who directed your run (their own chat or task, or their message woke you) is responsible for; on a routine you do not run, changing its agent, turning it on or changing its schedule needs that person to be allowed to assign work. The routine and its schedule change together as one routine revision the person can restore from the routine's history; filing is saved separately in their Dashboard history (see filedUnder.undo).",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "assigneeAgentId": {
+          "description": "The agent that runs it.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileUnder": {
+          "description": "A responsibility ID to file the routine under.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "instructions": {
+          "description": "What each run should do, written out in full.",
+          "maxLength": 200000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        },
+        "projectId": {
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "routineId": {
+          "description": "Routine ID from list_routines.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "schedule": {
+          "additionalProperties": false,
+          "description": "When it runs, in the person's local time. null turns its schedule off.",
+          "properties": {
+            "dayOfMonth": {
+              "description": "For monthly.",
+              "maximum": 28,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "dayOfWeek": {
+              "description": "For weekly.",
+              "enum": [
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday"
+              ],
+              "type": "string"
+            },
+            "frequency": {
+              "enum": [
+                "daily",
+                "weekdays",
+                "weekly",
+                "monthly"
+              ],
+              "type": "string"
+            },
+            "time": {
+              "description": "24-hour HH:MM.",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+              "type": "string"
+            },
+            "timezone": {
+              "description": "IANA zone such as Europe/Berlin. Default: the routine's current schedule zone, else the person's own time zone.",
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "frequency",
+            "time"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "routineId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_routine",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update routine",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "skill_test"
     ],
     "description": "Create a project after considering existing projects and available repositories. repositoryIds and repositoryUrls accept multiple existing repositories. Use HTTPS GitHub repositoryUrls when an accessible repo is not in the catalog; this registers project repositories, not remote GitHub repositories. Non-code projects may omit repositories. Cannot combine repositoryIds/repositoryUrls with workspace. Reuse the idempotency key on retries.",
