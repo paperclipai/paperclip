@@ -7284,9 +7284,9 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string },
-    targetStatus?: string,
+    nextStatus: string,
   ) {
-    if (req.actor.type !== "agent" || issue.status !== "blocked" || isClosedIssueStatus(targetStatus)) return true;
+    if (req.actor.type !== "agent" || issue.status !== "blocked" || nextStatus === "blocked" || isClosedIssueStatus(nextStatus)) return true;
     const hold = await getExecutionBlocker(db, issue.companyId, issue.id);
     if (!hold?.recoveryActionId) return true;
     res.status(409).json({
@@ -7300,7 +7300,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1],
-    options: { resumeIntent?: boolean; targetStatus?: string } = {},
+    options: { resumeIntent?: boolean } = {},
   ) {
     if (
       await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
@@ -7359,7 +7359,6 @@ export function issueRoutes(
         });
         return false;
       }
-      if (!(await assertAgentMayLeaveBlocked(req, res, issue, options.targetStatus))) return false;
     }
 
     if (req.actor.type !== "agent") return true;
@@ -14932,7 +14931,7 @@ export function issueRoutes(
       if (
         resumeRequested !== true &&
         agentStatusTransitionRequiresResumeAuthority &&
-        !(await assertExplicitResumeIntentAllowed(req, res, existing, { targetStatus: updateFields.status }))
+        !(await assertExplicitResumeIntentAllowed(req, res, existing))
       ) {
         return;
       }
@@ -15196,6 +15195,7 @@ export function issueRoutes(
       }
 
       const nextStatus = updateFields.status ?? existing.status;
+      if (!(await assertAgentMayLeaveBlocked(req, res, existing, nextStatus))) return;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
         throw unprocessable("unblockDescriptor requires blocked status");
       }
@@ -17133,7 +17133,7 @@ export function issueRoutes(
 
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
-      if (req.body.expectedStatuses.includes("blocked") && !(await assertAgentMayLeaveBlocked(req, res, issue))) return;
+      if (req.body.expectedStatuses.includes("blocked") && !(await assertAgentMayLeaveBlocked(req, res, issue, "in_progress"))) return;
 
       // Reopen the closed isolated workspace only after the run-id gate passes. A
       // rejected checkout must not rebuild and republish the workspace as active.
@@ -19525,6 +19525,12 @@ export function issueRoutes(
           .json({ error: "Issue follow-up blocked by unresolved blockers" });
         return;
       }
+      if (
+        effectiveMoveToTodoRequested &&
+        !hasUnresolvedFirstClassBlockers &&
+        !(await assertAgentMayLeaveBlocked(req, res, issue, "todo"))
+      )
+        return;
       if (
         !(await assertCrossIssueInfluenceWithinRunCap(
           req,
