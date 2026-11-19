@@ -155,7 +155,7 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
   });
   it("binds the archive payload and scope to the checked preservation owner", async () => {
     const f = await fixture(), signal = AbortSignal.timeout(15_000);
-    const owner = await settledNativeHarnessBackupOwner(f.db, { ...f, sessionId: f.normalizedSessionId,
+    const { owner } = await settledNativeHarnessBackupOwner(f.db, { ...f, sessionId: f.normalizedSessionId,
       manifestSha256: f.stamp.manifestSha256, signal });
     expect(owner).not.toBeNull();
     const put = vi.spyOn(f.storage, "putFile");

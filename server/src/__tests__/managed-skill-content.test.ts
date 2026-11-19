@@ -741,6 +741,27 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     expect((await maintenance.eligibility({ id: skill.id })).results[0]).toMatchObject({ status: "version_backed" });
   });
 
+  it("cancels a stalled pinned catalog download when the budget expires", async () => {
+    const companyId = await company(), catalog = listCatalogSkills().find(entry => entry.source)!;
+    const [skill] = await db.insert(companySkills).values({ companyId, key: `catalog-${randomUUID()}`, slug: `catalog-${randomUUID().slice(0, 8)}`,
+      name: "Remote catalog", markdown: "# stale row", sourceType: "catalog", sourceLocator: path.join(root, `catalog-missing-${randomUUID()}`),
+      sourceRef: catalog.contentHash, fileInventory: catalog.files.map(({ path, kind }) => ({ path, kind })),
+      metadata: { sourceKind: "catalog", catalogId: catalog.id, originHash: catalog.contentHash, installedHash: catalog.contentHash, userModifiedAt: null },
+    }).returning();
+    const budget = new AbortController();
+    const download = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      budget.abort(new Error("budget spent"));
+    }));
+    try {
+      await expect(skillInstallationMaintenance(db).installations({ id: skill.id, apply: true, signal: budget.signal }))
+        .rejects.toThrow("budget spent");
+    } finally { download.mockRestore(); }
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].currentVersionId).toBeNull();
+  });
+
   it("stops at an aborted budget instead of reporting the installation as blocked", async () => {
     const companyId = await company(), directory = path.join(root, `aborted-conversion-${randomUUID()}`);
     await fs.mkdir(directory);

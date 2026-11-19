@@ -217,12 +217,10 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
       const providerLeaseId = await verifiedSourceLease(db, source, run, signal);
       if (!providerLeaseId) return "source_unverified";
       try {
-        let unsettled = "owner_unsettled";
-        const owner = await settledNativeHarnessBackupOwner(db, { companyId: run.companyId, issueId: run.issueId,
+        const { owner, reason } = await settledNativeHarnessBackupOwner(db, { companyId: run.companyId, issueId: run.issueId,
           runId: source.runId, sessionId: run.sessionId, runnerInstanceId: run.runnerId, scopeDigest: source.scopeDigest,
-          root: source.root, manifestSha256: source.manifestSha256, providerLeaseId, signal,
-          onUnsettled: reason => { unsettled = reason; } });
-        if (!owner) return `source_${unsettled}`;
+          root: source.root, manifestSha256: source.manifestSha256, providerLeaseId, signal });
+        if (!owner) return `source_${reason}`;
         await persistNativeHarnessBackup({ db, storage: input.storage, owner, root: source.root,
           scopeDigest: source.scopeDigest, signal, maxArchiveBytes: source.archiveLimit });
         return "published";
