@@ -1672,18 +1672,25 @@ impl AcpxCommandExecutor {
         )?;
         let started = if state.descriptor.builtin_quota_pool_capability.is_some() {
             AcpxProviderSession::start_with_preparation(&config, &mut |preparation| {
-                let current = self.state.as_mut().ok_or_else(|| {
+                let retained = self.state.as_ref().ok_or_else(|| {
                     crate::local_runner::LocalRunnerError::invalid(
                         "ACPX provider state is unavailable",
                     )
                 })?;
-                if current.bootstrap_preparation.is_some() {
+                if retained.bootstrap_preparation.is_some() || state.bootstrap_preparation.is_some()
+                {
                     return Err(crate::local_runner::LocalRunnerError::invalid(
                         "ACPX bootstrap preparation is already retained",
                     ));
                 }
-                current.bootstrap_preparation = Some(preparation.clone());
-                self.save_state().map_err(|error| {
+                // Record the preparation on the state this provider is started
+                // for. A run.attach relaunch starts from a staged state that is
+                // committed only after the start; the preparation must be
+                // durable with that state's quota capability before commit, so
+                // a failed start still fences the prepared provider.
+                let mut prepared = state.clone();
+                prepared.bootstrap_preparation = Some(preparation.clone());
+                self.commit_staged_state(prepared).map_err(|error| {
                     crate::local_runner::LocalRunnerError::invalid(error.to_string())
                 })
             })
