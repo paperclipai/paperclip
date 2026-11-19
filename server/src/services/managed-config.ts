@@ -95,7 +95,10 @@ export const MANAGED_ENVIRONMENT_DRIVERS = ["sandbox", "plugin"] as const;
  *   including `instanceDefault`.
  */
 export const MANAGED_CONFIG_CAPABILITIES_SCHEMA_VERSION = 1;
-export const MANAGED_CONFIG_CAPABILITIES = ["pluginEnvironments"] as const;
+export const MANAGED_CONFIG_CAPABILITIES = [
+  "pluginEnvironments",
+  "pluginEnvironmentRunnerLifecycleMode",
+] as const;
 export type ManagedConfigCapability = (typeof MANAGED_CONFIG_CAPABILITIES)[number];
 
 function supportsCapability(capability: ManagedConfigCapability): boolean {
@@ -126,6 +129,7 @@ export interface ManagedPluginEnvironmentSpec {
   driverKey: string;
   /** Driver config, validated by the plugin at ensure time; never carries secrets. */
   driverConfig: Readonly<Record<string, unknown>>;
+  runnerLifecycleMode?: "warm" | "per_turn";
   /**
    * Fill the instance default with this environment when the default is
    * unset (or names the local environment or a deleted one), before the
@@ -230,6 +234,7 @@ const PLUGIN_ENTRY_KEYS = [
   "pluginKey",
   "driverKey",
   "driverConfig",
+  "runnerLifecycleMode",
   "instanceDefault",
 ] as const;
 /** Same rule as the plugin environment config schema in `environment-config.ts`. */
@@ -367,6 +372,10 @@ function parseManagedEnvironmentsSection(
     }
     pluginDrivers.add(pair);
     const driverConfig = readSecretFreeObject(entry.driverConfig, `${at}.driverConfig`);
+    const runnerLifecycleMode = entry.runnerLifecycleMode;
+    if (runnerLifecycleMode !== undefined && runnerLifecycleMode !== "warm" && runnerLifecycleMode !== "per_turn") {
+      fail(`"${at}.runnerLifecycleMode" must be "warm" or "per_turn"`);
+    }
     if (entry.instanceDefault !== undefined && typeof entry.instanceDefault !== "boolean") {
       fail(`"${at}.instanceDefault" must be a boolean when present (got ${describeJsonValue(entry.instanceDefault)})`);
     }
@@ -387,6 +396,7 @@ function parseManagedEnvironmentsSection(
         pluginKey,
         driverKey,
         driverConfig: Object.freeze(driverConfig),
+        ...(runnerLifecycleMode ? { runnerLifecycleMode } : {}),
         instanceDefault,
       }) as ManagedPluginEnvironmentSpec,
     );

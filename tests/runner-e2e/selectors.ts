@@ -27,6 +27,19 @@ export interface RunnerSelectorOptions {
 
 export class RunnerSelectorError extends Error {}
 
+/**
+ * CI passes the selected cell here rather than as `--id`. Every agent can read
+ * another process's argv in /proc, and the cell id names the case under test.
+ */
+export const RUNNER_SELECTED_ID_ENV = "PAPERCLIP_RUNNER_E2E_SELECTED_ID";
+
+/** Adds the environment's selected cell to the arguments and removes it from the environment. */
+export function selectorArgumentsWithEnvironment(args: readonly string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  const selected = env[RUNNER_SELECTED_ID_ENV]?.trim();
+  delete env[RUNNER_SELECTED_ID_ENV];
+  return selected ? [...args, "--id", selected] : [...args];
+}
+
 function valueFor(args: string[], index: number, flag: string): string {
   const value = args[index + 1];
   if (!value || value.startsWith("--"))

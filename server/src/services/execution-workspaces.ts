@@ -39,10 +39,12 @@ import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSq
 import type { SQL } from "drizzle-orm";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
-import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_PLUGIN_HINT, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
 import {
   clearTerminalWorkspaceRetry, readTerminalWorkspaceRetry, recordTerminalWorkspaceFailure, terminalWorkspaceFailure,
   TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
+  clearTerminalWorkspaceHold, readTerminalWorkspaceHold, recordTerminalWorkspaceHold, terminalWorkspaceRecheckDelayMs,
+  TERMINAL_WORKSPACE_HOLD_KEY, type TerminalWorkspaceHold,
 } from "./terminal-workspace-retry.js";
 import {
   deleteWorkspaceCompactionTrash,
@@ -269,6 +271,33 @@ export function clearMetadataReopenPendingConsumption(
   return next;
 }
 
+/** What a kept provider workspace's inspection depends on, apart from its lifecycle generation and the remote. */
+function terminalHoldFingerprint(workspace: typeof executionWorkspaces.$inferSelect,
+  issueTree: Array<{ id: string; status: string; completedAt: Date | null; cancelledAt: Date | null; updatedAt: Date }>,
+  deliveryCandidate: { operationId: string; headSha: string; destinationRef: string } | null) {
+  return createHash("sha256").update(JSON.stringify([
+    workspace.updatedAt.toISOString(), workspace.status, workspace.providerRef, workspace.repoUrl, workspace.branchName, workspace.baseRef,
+    readWorkspaceProviderBinding(workspace.metadata) ?? null,
+    deliveryCandidate && [deliveryCandidate.operationId, deliveryCandidate.headSha, deliveryCandidate.destinationRef],
+    issueTree.map(issue => [issue.id, issue.status, issueTerminalTimestamp(issue)?.toISOString() ?? null] as const)
+      .sort((a, b) => a[0].localeCompare(b[0])),
+  ])).digest("hex");
+}
+
+function terminalWorkspaceTargetFilter(targets: TerminalWorkspaceTargets) {
+  const ids = (values: string[]) => sql.join(values.map(id => sql`${id}::uuid`), sql`, `);
+  const byWorkspace = targets.workspaceIds.length ? sql`${executionWorkspaces.id} in (${ids(targets.workspaceIds)})` : undefined;
+  const byIssue = targets.issueIds.length ? sql`(${executionWorkspaces.sourceIssueId} in (
+      with recursive ancestry(id, parent_id) as (
+        select id, parent_id from ${issues} where id in (${ids(targets.issueIds)})
+        union
+        select parent.id, parent.parent_id from ${issues} parent inner join ancestry on parent.id = ancestry.parent_id
+      ) select id from ancestry)
+    or ${executionWorkspaces.id} in (select execution_workspace_id from ${issues}
+      where id in (${ids(targets.issueIds)}) and execution_workspace_id is not null))` : undefined;
+  return or(byWorkspace, byIssue) ?? sql`false`;
+}
+
 const workspaceSourceKeys = ["providerType", "cwd", "providerRef", "projectId", "projectWorkspaceId", "sourceIssueId", "mode", "strategyType", "branchName", "repoUrl", "baseRef"] as const;
 
 function preserveWorkspaceMetadataForPatch(
@@ -294,13 +323,14 @@ function preserveWorkspaceMetadataForPatch(
     }
     if (patch.metadata !== undefined) {
       nextPatch.metadata = { ...nextPatch.metadata };
-      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderDestinationRef", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
+      for (const key of ["workspaceProvider", "workspaceProviderOwner", "workspaceProviderSource", "workspaceProviderPreparationPlacement", "workspaceProviderDestinationRef", "workspaceProviderBaseSha", "workspaceProviderRemoved", "workspaceProviderBranchMode", "workspaceProviderRemoval", "workspaceProviderRetired", "workspaceProviderRestoration", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince"] as const) {
         if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
         else delete nextPatch.metadata[key];
       }
     }
   }
-  const coreOwnedKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner", TERMINAL_WORKSPACE_RETRY_KEY] as const;
+  const coreOwnedKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner", TERMINAL_WORKSPACE_RETRY_KEY,
+    TERMINAL_WORKSPACE_HOLD_KEY] as const;
   if (patch.metadata !== undefined && (patch.metadata !== null || coreOwnedKeys.some(key => current.metadata?.[key] !== undefined))) {
     nextPatch.metadata = { ...(nextPatch.metadata ?? patch.metadata) };
     for (const key of coreOwnedKeys) {
@@ -1241,6 +1271,11 @@ function toExecutionWorkspace(
   runtimeServices: WorkspaceRuntimeService[] = [],
   deliveryState: ExecutionWorkspaceDeliveryState = "unknown",
 ): ExecutionWorkspace {
+  let metadata = row.metadata ?? null;
+  if (metadata?.workspaceProviderPreparationPlacement !== undefined) {
+    metadata = { ...metadata };
+    delete metadata.workspaceProviderPreparationPlacement;
+  }
   return {
     id: row.id,
     companyId: row.companyId,
@@ -1265,7 +1300,7 @@ function toExecutionWorkspace(
     cleanupEligibleAt: row.cleanupEligibleAt ?? null,
     cleanupReason: row.cleanupReason ?? null,
     config: readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null),
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    metadata,
     runtimeServices,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -1501,10 +1536,50 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
   });
 }
 
+/**
+ * Clears a task's binding to a relative's execution workspace that an older
+ * release created, so its next run realizes its own workspace from the project
+ * base. The relative and the shared workspace are never changed. Does nothing
+ * while another run of the task (other than `runId`) is running or its earlier
+ * run still owns workspace finalization or recovery. Runs inside the caller's
+ * transaction; returns whether the binding was released.
+ */
+export async function releaseAncestorWorkspaceBinding(tx: DbTransaction, input: { companyId: string; issueId: string; runId?: string }) {
+  const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+  if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
+  if (!await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
+    return false;
+  }
+  const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), input.runId ? ne(heartbeatRuns.id, input.runId) : undefined,
+    or(eq(heartbeatRuns.nativeIssueId, input.issueId),
+      sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
+    eq(heartbeatRuns.status, "running"),
+  )).limit(1);
+  if (holder) return false;
+  if (await hasPendingTaskWorkspaceRecovery(tx, { companyId: input.companyId, issueId: input.issueId, excludeRunId: input.runId })) return false;
+  const selection = task.workspaceSelection;
+  await notifyStatusCardIssueChange(tx, task.companyId);
+  await tx.update(issues).set({
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    // Without a project workspace the old settings described the relative's
+    // task files; the project's defaults apply instead, as for a top-level task.
+    executionWorkspaceSettings: task.projectWorkspaceId
+      ? buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings)
+      : null,
+    ...(selection?.selection.kind === "existing" ? { workspaceSelection: null } : {}),
+    workspaceBindingRevision: task.workspaceBindingRevision + 1,
+    updatedAt: new Date(),
+  }).where(eq(issues.id, task.id));
+  return true;
+}
+
 // Compaction trash older than this belongs to no compaction in progress: the
 // move and the guard finish in one short transaction.
 const WORKSPACE_COMPACTION_TRASH_STALE_MS = 60 * 60 * 1000;
 const WORKSPACE_COMPACTION_TRASH_PURGE_INTERVAL_MS = 30 * 60 * 1000;
+const TERMINAL_HOLD_RESET_LIMIT = 65_536;
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   const destroyRemoteLease: DestroyRemoteWorkspaceLease = input => opts.destroyRemoteWorkspaceLease
@@ -1746,36 +1821,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .from(issues).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, issues.executionWorkspaceId))
       .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1);
     if (!candidate || candidate.sourceIssueId === input.issueId) return false;
-    return db.transaction(async tx => {
-      const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
-      if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
-      if (!await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
-        return false;
-      }
-      const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
-        or(eq(heartbeatRuns.nativeIssueId, input.issueId),
-          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
-        eq(heartbeatRuns.status, "running"),
-      )).limit(1);
-      if (holder) return false;
-      if (await hasPendingTaskWorkspaceRecovery(tx, { ...input, excludeRunId: input.runId })) return false;
-      const selection = task.workspaceSelection;
-      await notifyStatusCardIssueChange(tx, task.companyId);
-      await tx.update(issues).set({
-        executionWorkspaceId: null,
-        executionWorkspacePreference: null,
-        // Without a project workspace the old settings described the relative's
-        // task files; the project's defaults apply instead, as for a top-level task.
-        executionWorkspaceSettings: task.projectWorkspaceId
-          ? buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings)
-          : null,
-        ...(selection?.selection.kind === "existing" ? { workspaceSelection: null } : {}),
-        workspaceBindingRevision: task.workspaceBindingRevision + 1,
-        updatedAt: new Date(),
-      }).where(eq(issues.id, task.id));
-      return true;
-    });
+    return db.transaction(tx => releaseAncestorWorkspaceBinding(tx, input));
   }
 
   async function bindTaskWorkspace(companyId: string, issueId: string, workspaceId: string, patch: TaskWorkspaceBindingPatch = {}) {
@@ -1908,6 +1954,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // when a sweep reaches the end of the candidate set.
   let terminalSweepCursor: { updatedAt: string; id: string } | null = null;
   const terminalInspections = new Map<string, { revision: string; issueIds: Set<string>; nextAt: number; parked?: boolean }>();
+  // A `workspace:` or `issue:` hint ends the persisted inspection holds it names
+  // that were checked at or before the hint. A sweep visit clears such a hold
+  // from the row, so an entry is dropped once a full rotation that started after
+  // it completes. A hint without a scope ends every hold.
+  const terminalHoldResets = new Map<string, number>();
+  let terminalHoldResetAllAt = Number.NEGATIVE_INFINITY;
+  let terminalHoldRotationStartedAt: number | null = null;
   const terminalWorkspaceDeadlines = new Map<string, number>();
   const isolatedRehomeDeadlines = new Map<string, number>();
   const isolatedRehomeNotBefore = new Map<string, number>();
@@ -2205,6 +2258,82 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
   }
 
+  type IssueTreeRow = Awaited<ReturnType<typeof listWorkspaceIssueTree>>[number];
+
+  async function readPageIssueTrees(workspaces: Array<Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">>) {
+    const trees = new Map<string, IssueTreeRow[]>();
+    const roots = workspaces.filter(workspace => workspace.sourceIssueId)
+      .map(workspace => ({ companyId: workspace.companyId, issueId: workspace.sourceIssueId! }));
+    if (roots.length === 0) return trees;
+    const rows = await retryIdempotentDatabaseOperation(() => db
+      .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId, status: issues.status,
+        completedAt: issues.completedAt, cancelledAt: issues.cancelledAt, updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(sql<boolean>`(${issues.companyId}, ${issues.id}) IN (
+        WITH RECURSIVE issue_tree(company_id, id) AS (
+          SELECT (root->>'companyId')::uuid, (root->>'issueId')::uuid FROM jsonb_array_elements(${JSON.stringify(roots)}::jsonb) root
+          UNION
+          SELECT child.company_id, child.id FROM ${issues} child
+          JOIN issue_tree parent ON child.parent_id = parent.id AND child.company_id = parent.company_id
+        )
+        SELECT company_id, id FROM issue_tree
+      )`));
+    const byId = new Map(rows.map(row => [row.id, row]));
+    const children = new Map<string, typeof rows>();
+    for (const row of rows) {
+      if (!row.parentId) continue;
+      const siblings = children.get(row.parentId);
+      if (siblings) siblings.push(row); else children.set(row.parentId, [row]);
+    }
+    for (const workspace of workspaces) {
+      const root = workspace.sourceIssueId ? byId.get(workspace.sourceIssueId) : undefined;
+      if (!root || root.companyId !== workspace.companyId) { trees.set(workspace.id, []); continue; }
+      const tree: IssueTreeRow[] = [];
+      const seen = new Set<string>();
+      const stack = [root];
+      while (stack.length) {
+        const row = stack.pop()!;
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        tree.push({ id: row.id, status: row.status, completedAt: row.completedAt, cancelledAt: row.cancelledAt, updatedAt: row.updatedAt });
+        for (const child of children.get(row.id) ?? []) if (child.companyId === workspace.companyId) stack.push(child);
+      }
+      trees.set(workspace.id, tree);
+    }
+    return trees;
+  }
+
+  async function readPageLinkedIssueIds(workspaces: Array<Pick<ExecutionWorkspaceRow, "id" | "companyId">>) {
+    const linked = new Map<string, string[]>();
+    if (workspaces.length === 0) return linked;
+    const rows = await db.select({ id: issues.id, workspaceId: issues.executionWorkspaceId }).from(issues).where(and(
+      inArray(issues.companyId, [...new Set(workspaces.map(workspace => workspace.companyId))]),
+      inArray(issues.executionWorkspaceId, workspaces.map(workspace => workspace.id))));
+    for (const row of rows) {
+      if (!row.workspaceId) continue;
+      const ids = linked.get(row.workspaceId);
+      if (ids) ids.push(row.id);
+      else linked.set(row.workspaceId, [row.id]);
+    }
+    return linked;
+  }
+
+  async function readPageActiveRunWorkspaces(workspaces: Array<Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">>) {
+    if (workspaces.length === 0) return new Set<string>();
+    const pairs = workspaces.map(workspace => ({ id: workspace.id, companyId: workspace.companyId, sourceIssueId: workspace.sourceIssueId }));
+    const rows = await db.execute<{ id: string }>(sql`SELECT workspace.id::text AS id
+      FROM jsonb_to_recordset(${JSON.stringify(pairs)}::jsonb) AS workspace(id uuid, "companyId" uuid, "sourceIssueId" uuid)
+      WHERE EXISTS (
+        SELECT 1 FROM ${issues} linked
+        JOIN ${heartbeatRuns} live_run ON live_run.company_id = linked.company_id
+          AND live_run.id IN (linked.checkout_run_id, linked.execution_run_id)
+          AND live_run.status IN ('queued', 'running')
+        WHERE linked.company_id = workspace."companyId"
+          AND (linked.execution_workspace_id = workspace.id OR linked.id = workspace."sourceIssueId")
+      )`);
+    return new Set(rows.map(row => row.id));
+  }
+
   async function workspaceHasActiveRun(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">) {
     const linkedIssues = await db
       .select({
@@ -2256,6 +2385,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     isWriteTarget: (fresh: FenceableWorkspaceRow) => boolean;
     onSkip: () => T;
     skipLog?: { event: string; message: string };
+    sweepOwned?: boolean;
     write: (context: { tx: DbTransaction; fresh: FenceableWorkspaceRow }) => Promise<T>;
   }): Promise<T> {
     return withExecutionWorkspaceLifecycleLock(db, input.workspaceId, async (tx) => {
@@ -2288,7 +2418,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
         return input.onSkip();
       }
-      await measureRunPhase("workspace.notification", () => notifyTerminalWorkspaceWork(tx, `workspace:${input.workspaceId}`));
+      if (!input.sweepOwned) await measureRunPhase("workspace.notification", () => notifyTerminalWorkspaceWork(tx, `workspace:${input.workspaceId}`));
       return input.write({ tx, fresh });
     });
   }
@@ -2308,11 +2438,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // snapshot.
   async function clearReopenPendingConsumptionUnderLock(
     workspaceId: string,
-    options: { expectedGeneration: number; requireStaleSinceBefore?: Date },
+    options: { expectedGeneration: number; requireStaleSinceBefore?: Date; sweepOwned?: boolean },
   ): Promise<boolean> {
     return fenceLifecycleGenerationWrite<boolean>({
       workspaceId,
       expectedGeneration: options.expectedGeneration,
+      sweepOwned: options.sweepOwned,
       isWriteTarget: (fresh) => {
         if (!metadataHasReopenPendingConsumption(fresh.metadata)) return false;
         if (options.requireStaleSinceBefore) {
@@ -2593,6 +2724,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return fenceLifecycleGenerationWrite<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }>({
       workspaceId: workspace.id,
       expectedGeneration: capturedGeneration,
+      sweepOwned: true,
       isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
       skipLog: {
         event: "execution_workspace.cleanup_skipped",
@@ -2724,6 +2856,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return fenceLifecycleGenerationWrite<boolean>({
       workspaceId: input.workspaceId,
       expectedGeneration: input.capturedGeneration,
+      sweepOwned: true,
       isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
       skipLog: {
         event: "execution_workspace.cleanup_failed_write_skipped",
@@ -2754,10 +2887,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
+      ids?: string[];
     },
   ) {
     const conditions = [eq(executionWorkspaces.companyId, companyId)];
     if (filters?.readCondition) conditions.push(filters.readCondition);
+    if (filters?.ids) conditions.push(inArray(executionWorkspaces.id, filters.ids));
     if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
     if (filters?.projectWorkspaceId) {
       conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
@@ -3044,6 +3179,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
+      ids?: string[];
     }, pagination?: { limit: number; cursor?: string }) => {
       const conditions = buildListConditions(companyId, filters);
       if (pagination?.cursor) conditions.push(gt(executionWorkspaces.id, pagination.cursor));
@@ -3500,7 +3636,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     // `compact: false` skips workspace compaction and compaction-trash deletion
     // for this sweep only. Pending compactions keep their deadlines, so a later
     // sweep runs them.
-    sweepTerminalWorkspaces: async (limit = 50, signal?: AbortSignal, options: { compact?: boolean; allowRemoteDeliveryChecks?: boolean } = {}) => {
+    sweepTerminalWorkspaces: async (limit = 50, signal?: AbortSignal, options: { compact?: boolean; allowRemoteDeliveryChecks?: boolean; targets?: TerminalWorkspaceTargets } = {}) => {
       // Skip this sweep while another sweep runs. A concurrent sweep would share
       // the cursor and the boundary and could corrupt the rotation state. A
       // skipped tick is safe: the next tick runs the sweep with intact state.
@@ -3549,14 +3685,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       // predicate uses the same (updatedAt, id) order as the query, so each
       // sweep advances past the rows it already inspected instead of re-reading
       // the oldest ineligible candidates.
-      const cursor = terminalSweepCursor;
+      const targets = options.targets;
+      const cursor = targets ? null : terminalSweepCursor;
       // Freeze an upper bound on updatedAt at the start of each rotation. Without
       // a bound, a steady stream of newer candidates keeps every page full, so
       // the cursor never reaches the end and never resets, and older candidates
       // that became eligible are never revisited. The frozen bound makes the
       // rotation cover a finite set, so the cursor always reaches a short page.
-      if (!cursor) {
+      if (!targets && !cursor) {
         terminalSweepBoundary = now();
+        terminalHoldRotationStartedAt = terminalSweepBoundary.getTime();
         terminalWorkspaceDeadlines.clear();
         isolatedRehomeDeadlines.clear();
         nestedCloneMigrationDeadlines.clear();
@@ -3588,20 +3726,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const cursorFilter = cursor
         ? sql`(${executionWorkspaces.updatedAt}, ${executionWorkspaces.id}) > (${cursor.updatedAt}::timestamptz, ${cursor.id}::uuid)`
         : undefined;
-      const scanFilter = and(baseCandidateFilter, boundaryFilter, cursorFilter);
-      const candidates = await db
+      const scanFilter = targets ? and(baseCandidateFilter, terminalWorkspaceTargetFilter(targets))
+        : and(baseCandidateFilter, boundaryFilter, cursorFilter);
+      const candidateQuery = db
         .select({ workspace: executionWorkspaces, cursorAt: sql<string>`${executionWorkspaces.updatedAt}::text` })
         .from(executionWorkspaces)
         .where(scanFilter)
-        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
-        .limit(limit);
+        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id));
+      const candidates = await (targets ? candidateQuery : candidateQuery.limit(limit));
       // Advance the cursor to this page's last row. A short page means the scan
       // reached the end of the bounded candidate set, so reset the cursor and
       // the bound to start a new rotation on the next sweep.
-      if (candidates.length < limit) {
+      const rotationCompleted = !targets && candidates.length < limit;
+      const completedRotationStartedAt = terminalHoldRotationStartedAt;
+      if (rotationCompleted) {
         terminalSweepCursor = null;
         terminalSweepBoundary = null;
-      } else {
+      } else if (!targets) {
         const lastCandidate = candidates[candidates.length - 1]!;
         terminalSweepCursor = { updatedAt: lastCandidate.cursorAt, id: lastCandidate.workspace.id };
       }
@@ -3621,7 +3762,27 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         compacted: 0,
         compactionFailed: 0,
       };
+      if (targets) for (const id of [...targets.workspaceIds, ...candidates.map(candidate => candidate.workspace.id)]) terminalWorkspaceDeadlines.delete(id);
       const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectWorkspace>>();
+      const pageWorkspaces = candidates.map(candidate => candidate.workspace);
+      const [pageIssueTrees, pageActiveRunWorkspaces, pageLinkedIssueIds] = await Promise.all([
+        readPageIssueTrees(pageWorkspaces), readPageActiveRunWorkspaces(pageWorkspaces),
+        readPageLinkedIssueIds(pageWorkspaces.filter(workspace => workspace.metadata?.[TERMINAL_WORKSPACE_HOLD_KEY] !== undefined))]);
+      // Clear a persisted hold that a hint or a malformed record has ended, so
+      // the reset survives this process and the hint entry can be pruned.
+      const releaseEndedTerminalHold = async (target: ExecutionWorkspaceRow) => {
+        const hold = target.metadata?.[TERMINAL_WORKSPACE_HOLD_KEY] as { checkedAt?: unknown } | undefined;
+        if (hold === undefined) return target;
+        const checkedAt = typeof hold?.checkedAt === "string" ? Date.parse(hold.checkedAt) : Number.NaN;
+        const issueIds = [...(pageIssueTrees.get(target.id) ?? []).map(issue => issue.id), ...(pageLinkedIssueIds.get(target.id) ?? [])];
+        const resetAt = Math.max(terminalHoldResetAllAt, terminalHoldResets.get(`workspace:${target.id}`) ?? Number.NEGATIVE_INFINITY,
+          ...issueIds.map(id => terminalHoldResets.get(`issue:${id}`) ?? Number.NEGATIVE_INFINITY));
+        if (Number.isFinite(checkedAt) && resetAt < checkedAt) return target;
+        await clearTerminalWorkspaceHold(db, target.id);
+        const metadata = { ...target.metadata };
+        delete metadata[TERMINAL_WORKSPACE_HOLD_KEY];
+        return { ...target, metadata };
+      };
       const backOffTerminalWorkspace = async (snapshot: ExecutionWorkspaceRow, failure: TerminalWorkspaceFailure) => {
         const [target] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, snapshot.id));
         if (!target) return;
@@ -3632,6 +3793,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         terminalWorkspaceDeadlines.set(target.id, Date.parse(retry.retryAt));
         logger.warn({ event: "execution_workspace.terminal_cleanup_retry", executionWorkspaceId: target.id, sourceIssueId: target.sourceIssueId,
           failures: retry.failures, retryAt: retry.retryAt, failure: retry.failure }, "terminal workspace cleanup failed; a later sweep retries");
+      };
+      const setTerminalWorkspaceDeadline = (workspaceId: string, recheckAt: number | null, compactionAt: number | null) => {
+        const nextAt = Math.min(recheckAt ?? Number.POSITIVE_INFINITY, compactionAt ?? Number.POSITIVE_INFINITY);
+        if (Number.isFinite(nextAt)) terminalWorkspaceDeadlines.set(workspaceId, nextAt);
+        else terminalWorkspaceDeadlines.delete(workspaceId);
       };
       const settleTerminalWorkspaceRetry = async (target: ExecutionWorkspaceRow) => {
         if (target.metadata?.[TERMINAL_WORKSPACE_RETRY_KEY] !== undefined) await clearTerminalWorkspaceRetry(db, target.id);
@@ -3666,8 +3832,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       };
 
       for (const candidate of candidates) {
-        let workspace = candidate.workspace;
         signal?.throwIfAborted();
+        let workspace = await releaseEndedTerminalHold(candidate.workspace);
         // Trash deletion is part of compaction, so a sweep that skips compaction
         // also leaves leftover trash for a later sweep.
         if (options.compact !== false) await purgeCompactionTrashIfDue(workspace);
@@ -3747,7 +3913,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           await expireTaskDirectory(workspace, now());
           continue;
         }
-        const issueTree = await listWorkspaceIssueTree(workspace);
+        const issueTree = workspace.sourceIssueId === candidate.workspace.sourceIssueId
+          ? pageIssueTrees.get(workspace.id) ?? await listWorkspaceIssueTree(workspace) : await listWorkspaceIssueTree(workspace);
         const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId);
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
@@ -3763,7 +3930,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const expirationTree = usingIssueIds ? issueTree.filter(issue => usingIssueIds.has(issue.id)) : issueTree;
         if (!sourceIssue || expirationTree.some(issue => !TERMINAL_ISSUE_STATUSES.has(issue.status))) {
           if (reopenPending) {
-            await clearReopenPendingConsumptionUnderLock(workspace.id, {
+            await clearReopenPendingConsumptionUnderLock(workspace.id, { sweepOwned: true,
               expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
                 workspace.metadata as Record<string, unknown> | null,
               ),
@@ -3872,9 +4039,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedBackoff += 1;
           continue;
         }
-        if (await workspaceHasActiveRun(workspace)) {
+        if (pageActiveRunWorkspaces.has(workspace.id)) {
           if (reopenPending) result.skippedReopened += 1;
           else result.skippedActiveRun += 1;
+          terminalWorkspaceDeadlines.delete(workspace.id);
           continue;
         }
         if (remoteWorkspace && isClosedExecutionWorkspaceStatus(workspace.status)) {
@@ -3913,6 +4081,21 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
         }
         if (deliveryCandidate && options.allowRemoteDeliveryChecks === false) {
+          result.skippedBackoff += 1;
+          continue;
+        }
+        // Each inspection of a provider workspace is a provider operation. Skip
+        // it while an earlier inspection kept the workspace and nothing that
+        // could change that answer has changed.
+        const pendingCompactionAt = compactionPending && compactedTerminalAt.get(workspace.id) !== latestTerminalAt ? compactionDueAt : null;
+        const holdGeneration = readExecutionWorkspaceLifecycleGeneration(workspace.metadata);
+        const holdFingerprint = workspace.providerType === "plugin" && !reopenPending
+          && !workspace.metadata?.workspaceProviderRemoval && !workspace.metadata?.workspaceProviderRestoration
+          ? terminalHoldFingerprint(workspace, issueTree, deliveryCandidate) : null;
+        const priorHold = holdFingerprint ? readTerminalWorkspaceHold(workspace.metadata, holdGeneration) : null;
+        if (priorHold && priorHold.fingerprint === holdFingerprint
+          && (priorHold.recheckAt === null || Date.parse(priorHold.recheckAt) > now().getTime())) {
+          setTerminalWorkspaceDeadline(workspace.id, priorHold.recheckAt === null ? null : Date.parse(priorHold.recheckAt), pendingCompactionAt);
           result.skippedBackoff += 1;
           continue;
         }
@@ -3989,6 +4172,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           ? JSON.stringify([workspace.companyId, workspacePath, workspace.baseRef, workspace.branchName, createdByRuntime])
           : `workspace:${workspace.id}`;
         let inspection = readinessByWorkingTree.get(readinessKey);
+        const inspectionStartedAt = now().getTime();
         if (!inspection) {
           inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
           readinessByWorkingTree.set(readinessKey, inspection);
@@ -4020,7 +4204,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             // a later terminal cycle can archive the workspace again. Pass the
             // generation from this snapshot, so the clear skips a newer reopen that
             // raised the generation and installed its own fence after this read.
-            await clearReopenPendingConsumptionUnderLock(workspace.id, {
+            await clearReopenPendingConsumptionUnderLock(workspace.id, { sweepOwned: true,
               expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
                 workspace.metadata as Record<string, unknown> | null,
               ),
@@ -4029,17 +4213,32 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
+        const keepReason = assessment.workspaceDirty ? "local_data" as const
+          : assessment.deliveryState !== "merged_via_pr" && assessment.deliveryState !== "merged_by_ancestry" ? "unmerged" as const : null;
+        if (keepReason && holdFingerprint) {
+          const headSha = git?.headSha ?? null;
+          const checks = priorHold?.reason === keepReason && priorHold.fingerprint === holdFingerprint && priorHold.headSha === headSha
+            ? priorHold.checks + 1 : 1;
+          const recheckAt = keepReason === "unmerged" ? inspectionStartedAt + terminalWorkspaceRecheckDelayMs(checks) : null;
+          const hold: TerminalWorkspaceHold = { generation: holdGeneration, fingerprint: holdFingerprint, reason: keepReason, headSha, checks,
+            checkedAt: new Date(inspectionStartedAt).toISOString(), recheckAt: recheckAt === null ? null : new Date(recheckAt).toISOString() };
+          await recordTerminalWorkspaceHold(db, workspace.id, hold);
+          setTerminalWorkspaceDeadline(workspace.id, recheckAt, pendingCompactionAt);
+        }
+        if (keepReason === "local_data") {
           result.skippedUndelivered += 1;
           continue;
         }
-        if (
-          assessment.deliveryState !== "merged_via_pr"
-          && assessment.deliveryState !== "merged_by_ancestry"
-        ) {
+        if (keepReason === "unmerged") {
           if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
           result.skippedUndelivered += 1;
           continue;
+        }
+        if (workspace.metadata?.[TERMINAL_WORKSPACE_HOLD_KEY] !== undefined) {
+          await clearTerminalWorkspaceHold(db, workspace.id);
+          const metadata = { ...workspace.metadata };
+          delete metadata[TERMINAL_WORKSPACE_HOLD_KEY];
+          workspace = { ...workspace, metadata };
         }
         // Hold the archive during the cooldown window. The anchor is the most
         // recent terminal timestamp across the issue tree. A person can reopen
@@ -4092,7 +4291,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // the rebuilt worktree. Pass this snapshot's generation and re-confirm
           // staleness against the fresh row under the lock, so a newer reopen that
           // raised the generation or refreshed the timestamp keeps its live fence.
-          const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id, {
+          const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id, { sweepOwned: true,
             expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
               workspace.metadata as Record<string, unknown> | null,
             ),
@@ -4113,8 +4312,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
           continue;
         }
-        if (await workspaceHasActiveRun(workspace)) {
+        if (pageActiveRunWorkspaces.has(workspace.id)) {
           result.skippedActiveRun += 1;
+          terminalWorkspaceDeadlines.delete(workspace.id);
           continue;
         }
         result.eligible += 1;
@@ -4286,11 +4486,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           });
         }
       }
+      if (rotationCompleted && completedRotationStartedAt !== null) {
+        for (const [key, at] of terminalHoldResets) if (at < completedRotationStartedAt) terminalHoldResets.delete(key);
+        if (terminalHoldResetAllAt < completedRotationStartedAt) terminalHoldResetAllAt = Number.NEGATIVE_INFINITY;
+      }
       return result;
       } catch (error) {
-        terminalSweepCursor = previousCursor;
-        terminalSweepBoundary = previousBoundary;
-        terminalSweepRescanRequested = true;
+        if (!options.targets) {
+          terminalSweepCursor = previousCursor;
+          terminalSweepBoundary = previousBoundary;
+          terminalSweepRescanRequested = true;
+        }
         throw error;
       } finally {
         terminalSweepInProgress = false;
@@ -4299,8 +4505,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
     hasTerminalWorkspaceSweepContinuation: () => terminalSweepCursor !== null || terminalSweepRescanRequested,
 
-    terminalWorkspaceWorkSettled: (hints?: ReadonlySet<string>) => {
-      if (terminalSweepInProgress || terminalSweepCursor !== null) terminalSweepRescanRequested = true;
+    terminalWorkspaceWorkSettled: (hints?: ReadonlySet<string>, options: { targeted?: boolean } = {}) => {
+      if ((terminalSweepInProgress || terminalSweepCursor !== null) && !options.targeted) {
+        terminalSweepRescanRequested = true;
+      }
       pullRequestStateCache.clear();
       if (opts.taskDirectoryRetention) {
         if (!hints) taskDirectoryRowSkips.clear();
@@ -4313,12 +4521,46 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           else for (const [id, skip] of taskDirectoryRowSkips) if (`issue:${skip.issueId}` === hint) taskDirectoryRowSkips.delete(id);
         }
       }
+      // A provider refresh (activation, upgrade, capability change, company
+      // re-enablement) can change how any plugin workspace inspects, and holds
+      // apply only to plugin workspaces, so it ends every hold.
+      const resetAt = now().getTime();
+      if (!hints || hints.has(TERMINAL_WORKSPACE_PLUGIN_HINT)) terminalHoldResetAllAt = resetAt;
+      for (const hint of hints ?? []) {
+        if (!hint.startsWith("workspace:") && !hint.startsWith("issue:")) continue;
+        if (terminalHoldResets.size >= TERMINAL_HOLD_RESET_LIMIT) {
+          terminalHoldResets.clear();
+          terminalHoldResetAllAt = resetAt;
+          break;
+        }
+        terminalHoldResets.set(hint, resetAt);
+      }
       if (!hints) { terminalInspections.clear(); return; }
       for (const [id, inspection] of terminalInspections) {
         if (hints.has(`workspace:${id}`) || [...inspection.issueIds].some(issueId => hints.has(`issue:${issueId}`))) {
           terminalInspections.delete(id);
         }
       }
+    },
+
+    listPluginTerminalWorkspaceIds: async () => {
+      const rows = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.providerType, "plugin"),
+        sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
+        or(and(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]), isNull(executionWorkspaces.closedAt)),
+          and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+            sql`(${executionWorkspaces.metadata}->>'workspaceProviderRemoved') IS DISTINCT FROM 'true'`)),
+      ));
+      return rows.map(row => row.id);
+    },
+
+    takeDueTerminalWorkspaceTargets: (): { workspaceIds: string[]; rotation: boolean } => {
+      const at = now().getTime();
+      const due = (deadlines: Map<string, number>) => [...deadlines].filter(([, deadline]) => deadline <= at).map(([id]) => id);
+      const workspaceKey = (key: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+      const migrations = [...due(isolatedRehomeDeadlines), ...due(nestedCloneMigrationDeadlines)];
+      const rotation = due(taskDirectoryDeadlines).length > 0 || migrations.some(key => !workspaceKey(key));
+      return { workspaceIds: [...new Set([...due(terminalWorkspaceDeadlines), ...migrations.filter(workspaceKey)])], rotation };
     },
 
     nextTerminalWorkspaceSweepAt: async () => {

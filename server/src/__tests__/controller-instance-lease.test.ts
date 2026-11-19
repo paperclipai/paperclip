@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, controllerInstances, createDb, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, companies, controllerInstanceLeaseDb, controllerInstances, createDb, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import {
-  controllerInstanceLeaseEnabled, proveControllerInstance, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
+  RENEW_STATEMENT_TIMEOUT_MS, controllerInstanceLeaseEnabled, proveControllerInstance, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
   resetControllerInstanceLeaseForTests, stopControllerInstanceLease, tickControllerInstanceLease,
 } from "../services/controller-instance-lease.js";
 import { currentControllerBootId, currentControllerProcessStamp, currentProcessSpaceHash } from "../services/controller-process-identity.js";
@@ -13,6 +13,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../services/environment-lease-
 import { proveOwnerGone, type LocalOwnerStamp } from "../services/owner-proof.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 import { beginIdleTrackedWork, readTaskDrain } from "../services/task-admission.js";
+import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "../services/native-runtime/native-restart-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -93,6 +94,24 @@ suite("controller instance lease: a replaced container's records are provable", 
     expect(await proveOwnerGone(stampOf(live))).toEqual({ verdict: "alive", reason: "controller_lease_held" });
   });
 
+  it("tracks native preparation before a runner exists and proves a fenced foreign controller", async () => {
+    const replaced = await otherBoot({ expiredMsAgo: 600_000 });
+    await startHere({}, false);
+    const owner = await currentNativeControllerIdentity();
+    await tickControllerInstanceLease();
+    expect(await db.select().from(controllerInstances).where(eq(controllerInstances.bootId, owner.bootId))).toEqual([]);
+    currentControllerProcessStamp();
+    await tickControllerInstanceLease();
+    expect(await db.select().from(controllerInstances).where(eq(controllerInstances.bootId, owner.bootId))).toHaveLength(1);
+    const decision = await evaluateNativeControllerTakeover({ now: new Date(), owner: {
+      controllerBootId: replaced, controllerPid: 7, controllerHostHash: "old-container",
+      controllerProcessStartedAt: new Date(minutesAgo(15)), updatedAt: new Date(minutesAgo(10)),
+      leaseOwner: "old-preparation", leaseExpiresAt: new Date(minutesAgo(5)),
+    }, isProcessAlive: () => { throw new Error("A foreign PID must not be inspected locally"); } });
+    expect(decision).toEqual({ allowed: true, reason: "controller_fenced" });
+    expect(await proveControllerInstance(db, replaced, null)).toBe("fenced");
+  });
+
   it("keeps an owner alive (and watched) through the grace, and for work written after an idle lapse", async () => {
     const justExpired = await otherBoot({ expiredMsAgo: 5_000 });
     const resumed = await otherBoot({ expiredMsAgo: 600_000 });
@@ -162,6 +181,31 @@ suite("controller instance lease: a replaced container's records are provable", 
     } finally { vi.useRealTimers(); }
   });
 
+  it("keeps renewing while this boot runs a remote workspace save", async () => {
+    let now = 0;
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
+    try {
+      await startHere({ now: () => now }, false);
+      currentControllerProcessStamp();
+      await tickControllerInstanceLease();
+      now = 120_000;
+      vi.setSystemTime(Date.now() + 120_000);
+      const invocation = randomUUID();
+      const owner = { bootId: currentControllerBootId(), pid: process.pid, hostHash: currentProcessSpaceHash(), processStartedAt: null };
+      await db.insert(workspaceOperations).values({ companyId, phase: "remote_workspace_snapshot", status: "running",
+        metadata: { boundary: "final", epoch: 1, saveWork: { schema: "paperclip.remote-workspace-save-work.v1", activeIds: [invocation],
+          unknown: false, quiescedAt: null, owners: { [invocation]: owner } } } });
+      beginIdleTrackedWork()();
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("live");
+      await db.delete(workspaceOperations);
+      await db.update(controllerInstances).set({ leaseExpiresAt: sql`now()` });
+      await tickControllerInstanceLease();
+      expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("expired");
+    } finally { vi.useRealTimers(); }
+  });
+
   it("keeps renewing while this boot runs a legacy run", async () => {
     vi.useFakeTimers({ toFake: ["Date"], now: new Date() });
     try {
@@ -179,6 +223,91 @@ suite("controller instance lease: a replaced container's records are provable", 
       await db.delete(agents);
     } finally { vi.useRealTimers(); }
   });
+
+  it("renews on its own connection while the main pool is saturated (deploy overlap traffic switch)", async () => {
+    // One main-pool connection, held by a slow statement: before the fix the renewal
+    // waited behind it, timed out, and five such timeouts made a healthy server exit.
+    const busy = createDb(temporary!.connectionString, { maxConnections: 1 });
+    try {
+      registerControllerInstanceDb(busy);
+      const lost = vi.fn();
+      registerControllerInstanceLeaseWork(busy, coordinator, { onLost: lost });
+      currentControllerProcessStamp();
+      await tickControllerInstanceLease();
+      // Drizzle queries are lazy: attach a continuation so the statement starts now.
+      const hold = busy.execute(sql`select pg_sleep(12)`).then(() => undefined);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const [before] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
+        .where(eq(controllerInstances.bootId, currentControllerBootId()));
+      currentControllerProcessStamp();
+      const started = Date.now();
+      await tickControllerInstanceLease();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      const [after] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
+        .where(eq(controllerInstances.bootId, currentControllerBootId()));
+      expect(after.renewedAt!.getTime()).toBeGreaterThan(before.renewedAt!.getTime());
+      expect(lost).not.toHaveBeenCalled();
+      await hold;
+    } finally {
+      await stopControllerInstanceLease(busy);
+      await busy.$client.end({ timeout: 5 });
+    }
+  }, 30_000);
+
+  it("has the server cancel a renewal blocked on a row lock, and renews on the same connection next time", async () => {
+    // Five renewals failed 15 s apart: a client-timed-out statement kept running on the
+    // single lease connection and every next renewal queued behind it.
+    const lockDb = createDb(temporary!.connectionString, { maxConnections: 1 });
+    // Resolving twice is harmless, so the normal path and the cleanup both release.
+    let release: () => void = () => {};
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let holder: Promise<unknown> = Promise.resolve();
+    try {
+      registerControllerInstanceDb(db);
+      registerControllerInstanceLeaseWork(db, coordinator, { onLost: vi.fn() });
+      currentControllerProcessStamp();
+      await tickControllerInstanceLease();
+      const lease = controllerInstanceLeaseDb(db);
+      const backend = async () => (await lease.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>)[0]!.pid;
+      const pidBefore = await backend();
+      const [before] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
+        .where(eq(controllerInstances.bootId, currentControllerBootId()));
+      let locked!: () => void;
+      const lockTaken = new Promise<void>(resolve => { locked = resolve; });
+      holder = lockDb.transaction(async tx => {
+        await tx.execute(sql`select 1 from controller_instances where boot_id = ${currentControllerBootId()} for update`);
+        locked();
+        await released;
+      });
+      await lockTaken;
+      currentControllerProcessStamp();
+      const started = Date.now();
+      await tickControllerInstanceLease();
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(RENEW_STATEMENT_TIMEOUT_MS - 500);
+      expect(elapsed).toBeLessThan(RENEW_STATEMENT_TIMEOUT_MS + 1_500);
+      // Cancelled by the server, not left running behind the client timeout.
+      const running = await db.execute(sql`select count(*)::int as count from pg_stat_activity
+        where application_name = 'paperclip-controller-instance-lease' and state = 'active'`) as unknown as Array<{ count: number }>;
+      expect(running[0]!.count).toBe(0);
+      release();
+      await holder;
+      currentControllerProcessStamp();
+      const next = Date.now();
+      await tickControllerInstanceLease();
+      expect(Date.now() - next).toBeLessThan(2_000);
+      const [after] = await db.select({ renewedAt: controllerInstances.renewedAt }).from(controllerInstances)
+        .where(eq(controllerInstances.bootId, currentControllerBootId()));
+      expect(after.renewedAt!.getTime()).toBeGreaterThan(before.renewedAt!.getTime());
+      expect(await backend()).toBe(pidBefore);
+    } finally {
+      // Free the controller row before the stop record writes it.
+      release();
+      await holder.catch(() => undefined);
+      await stopControllerInstanceLease(db);
+      await lockDb.$client.end({ timeout: 5 });
+    }
+  }, 40_000);
 
   it("proves a cleanly stopped boot gone at once", async () => {
     const stopped = await otherBoot({ liveForMs: 60_000 });
@@ -396,7 +525,7 @@ suite("controller instance lease: a replaced container's records are provable", 
     expect(lost).toHaveBeenCalledWith("fenced");
   });
 
-  it("records a graceful stop, and is off on a volume-exclusive Railway deployment or when disabled", async () => {
+  it("records a graceful stop and keeps native preparation fencing on volume-exclusive deployments", async () => {
     await startHere();
     await stopControllerInstanceLease(db);
     expect(await proveControllerInstance(db, currentControllerBootId(), null)).toBe("stopped");
@@ -410,7 +539,7 @@ suite("controller instance lease: a replaced container's records are provable", 
     expect(controllerInstanceLeaseEnabled()).toBe(true);
     vi.stubEnv("RAILWAY_VOLUME_ID", "v");
     vi.stubEnv("RAILWAY_VOLUME_MOUNT_PATH", "/data");
-    expect(controllerInstanceLeaseEnabled()).toBe(false);
+    expect(controllerInstanceLeaseEnabled()).toBe(true);
     vi.stubEnv("PAPERCLIP_CONTROLLER_INSTANCE_LEASE", "on");
     expect(controllerInstanceLeaseEnabled()).toBe(true);
     vi.unstubAllEnvs();

@@ -80,6 +80,9 @@ pub enum AcpxProviderStateEvent {
         status: AcpxTurnStatus,
         error: Option<Value>,
     },
+    ProviderTurnStarted {
+        turn_id: String,
+    },
     Process(Value),
     Goal(Value),
     Diagnostic {
@@ -153,10 +156,6 @@ impl AcpxProviderState {
 
     pub fn active_turn_id(&self) -> Option<&str> {
         self.scope.active_turn_id()
-    }
-
-    pub(crate) fn has_settled_turns(&self) -> bool {
-        self.scope.has_settled_turns()
     }
 
     pub(crate) fn validate_new_turn_identity(&self, turn_id: &str) -> Result<(), LocalRunnerError> {

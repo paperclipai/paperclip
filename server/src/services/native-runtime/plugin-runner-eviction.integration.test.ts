@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { eq } from "drizzle-orm";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
-import { expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { completionContracts, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, plugins, agents } from "@paperclipai/db";
 import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { readRunnerdArtifactBinding, defaultCapabilityRunnerdBinary,
@@ -38,22 +38,45 @@ const { createPrivateHostControlFixture } = await import(new URL("../../../../pa
 
 const fakeAcpxSidecar = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+const detachedIdleTimeoutMs = 10_000;
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
 // The only replaced service is the external environment-task/Launcher edge.
 // Runtime, backend, owner, PRP ingress, checkpoint persistence and native Runner are real.
 describeEmbeddedPostgres("plugin Runner eviction through the Core execution entry", () => {
+  let currentCase: { teardown?: () => Promise<void> } | undefined;
+  afterEach(async () => {
+    const finished = currentCase;
+    currentCase = undefined;
+    await finished?.teardown?.();
+  });
   const environment = nativeRestartFixture();
+  const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
+  let oldCAs: string[] = [], oldAgent = https.globalAgent;
+  beforeAll(async () => {
+    const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
+      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
+    tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
+    oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
+    const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
+    setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+  });
+  afterAll(() => {
+    https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
+  });
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
   nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "after inspection", "bare unavailable", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).flatMap(mode =>
     (["retired", "abrupt"] as const).map(exit => [harness, mode, exit] as const)))])("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
+    const thisCase: { teardown?: () => Promise<void> } = {};
+    currentCase = thisCase;
     const detached = mode === "detached" || mode === "missing state" || mode === "foreign state";
     const denied = mode.startsWith("missing") || mode.endsWith("state");
     const unavailableResume = mode === "after inspection" || mode === "bare unavailable";
     const reusesLease = mode === "reused lease" || unavailableResume;
     const instructionCopy = (id: string) => ({ runId: id, root: workspace, preparationKey: "unchanged-fixture-instructions", hasChanges: async () => false, collectStopped: async () => {} });
-    const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}-${exit}`);
+    const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}-${exit}-${randomUUID().slice(0, 8)}`);
     const { db, runId, issueId, native } = first;
     const { companyId, agentId, runtimeRoot } = environment.current;
     const root = join(runtimeRoot, runId), workspace = join(root, "workspace"), home = join(root, "credential-home");
@@ -82,7 +105,7 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
       task: { identifier: "RELEASE-ENTRY", title: issue!.title, description: null, prompt: "Complete the controlled task.", workMode: "standard" },
       workspace: { cwd: workspace, repoUrl: null, repoRef: null, branchName: null },
       session: { normalizedSessionId: native.normalizedSessionId, driverKind: harness === "codex" ? "codex_app_server" : "acpx_runtime", protocolVersion: 1,
-        lifecyclePolicy: { mode: "warm", idleTimeoutMs: detached ? 5_000 : 60_000 } },
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: detached ? detachedIdleTimeoutMs : 60_000 } },
       completionContract: { id: contract!.id, sha256: contract!.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
         contract: buildNativeCompletionContract(issue!, { revision: contract!.revision }) }, interactionResponses: [], credentialBindings: [] });
     const resultFile = join(root, "result.json"), calls = join(root, "provider-calls");
@@ -98,15 +121,10 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
     }
     const providerPidFile = join(root, "provider.pid"), codexWrapper = join(root, "codex");
     await writeFile(codexWrapper, `#!/bin/sh\necho $$ > '${providerPidFile}'\nexec '${fakeCodexAppServer}' "$@"\n`, { mode: 0o700 });
-    const key = join(root, "tls.key"), certificate = join(root, "tls.crt");
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
-      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
-    const oldCAs = getCACertificates("default"), oldAgent = https.globalAgent;
-    const certificates = [...oldCAs, await readFile(certificate, "utf8")];
-    const probe = createTcpServer(); await new Promise<void>(done => probe.listen(0, "127.0.0.1", done));
+    const probe = createTcpServer(); await new Promise<void>(done => probe.listen(0, "0.0.0.0", done));
     const address = probe.address(); if (!address || typeof address === "string") throw new Error("Fixture listener unavailable");
     const runnerPort = address.port; await new Promise<void>(done => probe.close(() => done()));
-    const tls = createServer({ key: await readFile(key), cert: await readFile(certificate) });
+    const tls = createServer(tlsIdentity);
     const sockets = new Set<WebSocket>(), websocket = new WebSocketServer({ noServer: true });
     let listenPath = "";
     const wireEvents: string[] = [];
@@ -138,6 +156,14 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
     const releases: DurableRecoveryIdentity[] = [], claims: DurableRecoveryIdentity[] = [];
     let handle: RunnerProcessHandle | undefined, submissions = 0, cleaning = false, sourceReadRequests = 0, sourceReadResponses = 0;
     let pendingFollowup: Promise<unknown> | undefined;
+    thisCase.teardown = async () => {
+      cleaning = true;
+      const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), ...[...hosts.values()].map(host => host.close())]);
+      for (const socket of sockets) socket.terminate(); websocket.close();
+      await new Promise<void>(done => tls.close(() => done()));
+      const failures = cleanup.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Fixture cleanup failed");
+    };
     let inspectedLive = false, resumeAttempts = 0, acquisitions = 0, evictRetained: (() => Promise<void>) | undefined;
     const providerStarts = async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/)
       .filter(line => harness === "codex" ? line === "process-start" : JSON.parse(line).processStart).length;
@@ -278,14 +304,13 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
         runnerExecutionTarget: target });
     };
     try {
-      setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
       expect(await proof()).toMatchObject({ source: releases[0], taskId: taskA });
       const providerSessionId = (await supervisor()).snapshot.providerSessionId;
       expect(providerSessionId).toEqual(expect.any(String));
-      if (detached) await new Promise(done => setTimeout(done, 5_200));
+      if (detached) await new Promise(done => setTimeout(done, detachedIdleTimeoutMs + 200));
       expect(readNativeSessionIdleWork()).toBe("none");
       await reconcileNativeFinalizations(db, [runId]);
       const evict = async () => {
@@ -296,7 +321,9 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
           expect((await state()).lifecycle).toBe("suspended");
         } else {
           const providerPids: number[] = harness === "codex" ? [Number(await readFile(providerPidFile, "utf8"))]
-            : (await readFile(calls, "utf8")).trim().split(/\r?\n/).flatMap(line => { const entry = JSON.parse(line); return [entry.processStart, entry.childPid].filter(Number.isInteger); });
+            : (await readFile(calls, "utf8")).trim().split(/\r?\n/).flatMap(line => { const entry = JSON.parse(line); return [entry.processStart, entry.childPid].filter(Number.isInteger); })
+              .filter(pid => { try { process.kill(pid, 0); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; } });
+          expect(providerPids.length).toBeGreaterThan(0);
           const nativePid = handles.get(taskA)!.child.pid!;
           for (const pid of providerPids) {
             const [parent, group] = execFileSync("ps", ["-p", String(pid), "-o", "ppid=", "-o", "pgid="], { encoding: "utf8" }).trim().split(/\s+/).map(Number);
@@ -393,15 +420,6 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
     } finally {
       cleaning = true;
       await pendingFollowup?.catch(() => undefined);
-      try {
-        const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), ...[...hosts.values()].map(host => host.close())]);
-        for (const socket of sockets) socket.terminate(); websocket.close();
-        await new Promise<void>(done => tls.close(() => done()));
-        const failures = cleanup.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-        if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Fixture cleanup failed");
-      } finally {
-        https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
-      }
     }
   });
 });

@@ -1,14 +1,15 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { readTaskListSortParams, taskListOrderToIssueSort, type TaskListSort } from "@/lib/task-list";
 import { useDeferredValue, useEffect, useRef, useState, type ReactNode } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { TaskCancellationDismissedError, useTaskCancellation } from "@/hooks/useTaskCancellation";
 import { ListChecks, SearchX } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { attentionApi } from "@/api/attention";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import { EmptyState } from "@/components/EmptyState";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { TaskList, type TaskListItem } from "@/components/TaskList";
@@ -129,8 +130,8 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     getNextPageParam: (last, _pages, offset) => last.hasNextPage ? offset + pageSize : undefined,
     enabled: !!companyId && !needsAttention,
   });
-  const attention = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!),
-    queryFn: () => attentionApi.taskIndex(companyId!), enabled: !!companyId && needsAttention });
+  const attention = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!, userId),
+    queryFn: () => attentionApi.taskIndex(companyId!), enabled: !!companyId && !!userId && needsAttention });
   // Resolve every pending task in bounded index batches, including tasks outside
   // the first list page. Keep full task enrichment out of the collection read.
   const attentionIds = needsAttention ? attention.data?.taskIds ?? [] : [];
@@ -150,7 +151,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     enabled: !!companyId,
   })) });
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId!), queryFn: () => agentsApi.list(companyId!), enabled: !!companyId });
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }), queryFn: () => projectsApi.list(companyId!, { includeArchived: true }), enabled: !!companyId });
+  const projects = useQuery({ ...companyProjectsQuery(companyId!, { includeArchived: true }), enabled: !!companyId });
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(companyId!), queryFn: () => accessApi.listUserDirectory(companyId!), enabled: !!companyId });
   const labels = useQuery({ queryKey: queryKeys.issues.labels(companyId!), queryFn: () => issuesApi.listLabels(companyId!), enabled: !!companyId });
   const sharedLiveRuns = useSharedPollingQuery({ companyId, resourceKey: "live-runs", queryKey: queryKeys.liveRuns(companyId!), enabled: !!companyId, refetchInterval: false, leaderOnly: true });
@@ -245,12 +246,13 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     if (next.get("view") !== "needs_attention") next.set("view", "all");
     navigate({ search: next.toString(), hash: location.hash }, { replace: true });
   };
-  const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
+  const cancelTask = useTaskCancellation();
+  const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => data.status === "cancelled" ? cancelTask(id, data) : issuesApi.update(id, data),
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: queryKeys.attention(companyId!) }); },
   });
   const error = (needsAttention ? attention.error ?? attentionTasks.find(task => task.error)?.error : tasks.error)
     ?? (view === "unread" ? parentContext.error : null)
-    ?? agents.error ?? projects.error ?? directory.error ?? labels.error ?? update.error
+    ?? agents.error ?? projects.error ?? directory.error ?? labels.error ?? (update.error instanceof TaskCancellationDismissedError ? null : update.error)
     ?? (collection.filters.liveOnly ? liveRuns.error : null);
   const pending = (needsAttention ? attention.isPending || attentionTasks.some(task => task.isPending) : tasks.isPending)
     || (view === "unread" && parentIds.length > 0 && parentContext.isPending)
@@ -292,7 +294,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
         items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
         preferenceLocation={userId ? { companyId, collectionKey: `coordinator-tasks:${userId}` } : undefined}
         collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
-        sort={sort} onSortChange={setSort}
+        sort={sort} onSortChange={setSort} preloadCompanyId={collection.layout === "list" ? companyId : null}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
         ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}

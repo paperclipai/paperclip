@@ -146,14 +146,14 @@ function reviewPolicyDeniedDecision(
     status: 403,
     code: "review_policy_denied",
     message: requesterKnown
-      ? "Review policy `not_creator` requires someone other than the writer who moved the issue into `in_review` to approve or reject it."
-      : "Review policy `not_creator` requires a different writer, but the review requester could not be determined.",
+      ? "Whoever sent this task for review cannot also approve or reject it; someone else must submit the verdict."
+      : "Someone other than whoever sent this task for review must decide it, and Paperclip could not tell who sent it.",
     details: {
       policy: "not_creator",
       allowedActor: "writer_other_than_review_requester",
       remediation: requesterKnown
-        ? "Have another writer with issue write access submit the verdict, or change reviewPolicy to `anyone`."
-        : "Change reviewPolicy to `anyone`, or move the issue out of and back into `in_review` to record a requester before another writer submits the verdict.",
+        ? "Have someone else with access to this task submit the verdict, or let anyone review it by setting the task's review policy to anyone."
+        : "Let anyone review it by setting the task's review policy to anyone, or move the task out of review and back into review so Paperclip records who sent it, then have someone else submit the verdict.",
     },
   };
 }
@@ -181,6 +181,21 @@ function relayedHumanDecisionAllowed(
     && input.interaction.effectiveResolverPolicySource === "requested"
     && !additionalRestriction
     && (!input.interaction.addresseeUserId || input.interaction.addresseeUserId === userId);
+}
+
+/**
+ * Denial for a human-only card addressed to one person. Agents relay it in
+ * chat, so it names who resolves the card. Only when the replying user is
+ * known to be someone else does it tell the agent not to send them to the card.
+ */
+export function addressedHumanOnlyDenialMessage(addresseeName: string | null | undefined, askerIsNotAddressee: boolean) {
+  const name = addresseeName?.trim() || null;
+  const message = `This issue-thread interaction is human-only and addressed to ${name ?? "one person, its addressee (addresseeUserId)"}. `
+    + `Only ${name ?? "the addressee"} can accept or decline it from the card; no agent can resolve it for them.`;
+  if (!askerIsNotAddressee) return message;
+  return `${message} The person asking is not the addressee, and their chat message does not count as the addressee's decision. `
+    + `This denial is final. Tell them the card waits on ${name ?? "the addressee"}, name ${name ? "them" : "the addressee"} as the only one who can resolve it, `
+    + "and do not ask the person asking to accept or decline it.";
 }
 
 /**
@@ -284,6 +299,19 @@ export function evaluateIssueThreadInteractionResolverAudience(
   if (effectiveResolverPolicy === "human_only") {
     if (relayedHumanDecisionAllowed(input, persistedPolicy, additionalRestriction)) {
       return { allowed: true, effectiveResolverPolicy, reason: "allow_relayed_human" };
+    }
+    const addresseeUserId = input.interaction.addresseeUserId;
+    if (addresseeUserId && input.actor.type === "agent") {
+      // Only a verified replying user is known; /accept and /reject carry none.
+      const askerIsNotAddressee = Boolean(input.actor.relayedHumanUserId) && input.actor.relayedHumanUserId !== addresseeUserId;
+      return {
+        allowed: false,
+        effectiveResolverPolicy,
+        status: 403,
+        code: "interaction_human_only",
+        message: addressedHumanOnlyDenialMessage(null, askerIsNotAddressee),
+        details: { addresseeUserId, askerIsNotAddressee },
+      };
     }
     return {
       allowed: false,

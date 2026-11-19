@@ -11,6 +11,7 @@ const mockAgentService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   list: vi.fn(async () => []),
   buildRunOutputSilence: vi.fn(),
+  buildRunOutputSilences: vi.fn(),
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
@@ -20,6 +21,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
+  reportAssignedWorkInvariant: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -27,6 +29,7 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 const mockNativeReviewAssignment = vi.hoisted(() => vi.fn());
+const mockRejectedModelRetryRefusal = vi.hoisted(() => vi.fn());
 
 const mockExecutionProjection = vi.hoisted(() => ({
   executionProjectionForRun: vi.fn(async () => null),
@@ -83,6 +86,10 @@ const mockChatRunRetries = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/native-runtime/model-rejected-retry.js", async () => ({
+    ...(await vi.importActual<typeof import("../services/native-runtime/model-rejected-retry.js")>("../services/native-runtime/model-rejected-retry.js")),
+    rejectedModelRetryRefusal: mockRejectedModelRetryRefusal,
+  }));
   vi.doMock("../services/native-runtime/native-review-participant.js", async () => ({
     ...(await vi.importActual<typeof import("../services/native-runtime/native-review-participant.js")>("../services/native-runtime/native-review-participant.js")),
     getNativeReviewAssignment: mockNativeReviewAssignment,
@@ -301,6 +308,7 @@ describe("agent live run routes", () => {
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockNativeReviewAssignment.mockReset().mockResolvedValue(null);
+    mockRejectedModelRetryRefusal.mockReset().mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: true,
@@ -337,6 +345,7 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.buildRunOutputSilences.mockImplementation(async (runs: unknown[]) => runs.map(() => null));
     mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
       ...run,
       currentStatusMessage: null,
@@ -653,6 +662,48 @@ describe("agent live run routes", () => {
     });
   });
 
+  it.each([
+    ["was never written", async () => { throw Object.assign(Error("missing"), { name: "NoSuchKey" }); }, 404],
+    ["cannot be read from storage", async () => { throw Error("storage offline"); }, 500],
+  ] as const)("answers an object run log that %s", async (_case, getObject, status) => {
+    const { createObjectRunLogStore } = await vi.importActual<typeof import("../services/object-run-log-store.js")>("../services/object-run-log-store.js");
+    const store = createObjectRunLogStore({
+      provider: {
+        id: "s3",
+        getObject,
+        putObject: async () => { throw Error("unused"); },
+        putObjectConditional: async () => { throw Error("unused"); },
+        headObject: async () => ({ exists: false }),
+        deleteObject: async () => undefined,
+        listObjects: async () => ({ keys: [] }),
+      },
+      keyPrefix: "logs",
+      assertWriterAuthority: async () => undefined,
+    });
+    const handle = { store: "s3_segments" as const, logRef: "company-1/agent-1/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      logStore: handle.store, logRef: handle.logRef,
+    });
+    mockHeartbeatService.readLog.mockImplementation(async () => store.read(handle));
+
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(status);
+    if (status === 404) expect(res.body).toEqual({ error: "Run log not found" });
+  });
+
+  it("does not read an object run log for another company", async () => {
+    const res = await requestApp(await createApp({}, {
+      type: "board", userId: "board-user", companyIds: ["company-2"], source: "session", isInstanceAdmin: false,
+    }), (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log"));
+
+    expect(res.status).toBe(404);
+    expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+  });
+
   it.each(["skill_test", "task_bridge"])(
     "denies %s keys from company-wide run and workspace logs",
     async (kind) => {
@@ -732,6 +783,23 @@ describe("agent live run routes", () => {
     expect(mockWorkspaceOperationService.listForRun).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "workspace-one");
   });
 
+  it("lets a board operator read the assigned-work invariant for their company only", async () => {
+    mockHeartbeatService.reportAssignedWorkInvariant.mockResolvedValue({ checked: 3, violationCount: 1, violations: { no_pending_path: 1 } });
+    const board = await request(await createApp()).get("/api/companies/company-1/assigned-work-invariant");
+    expect(board.status).toBe(200);
+    expect(board.body).toMatchObject({ checked: 3, violationCount: 1 });
+    expect(mockHeartbeatService.reportAssignedWorkInvariant).toHaveBeenCalledWith("company-1", { readCondition: expect.anything() });
+
+    mockHeartbeatService.reportAssignedWorkInvariant.mockClear();
+    const member = { type: "board", userId: "member-1", companyIds: ["company-1"], source: "session", isInstanceAdmin: false };
+    const otherCompany = await request(await createApp({}, member)).get("/api/companies/company-2/assigned-work-invariant");
+    expect(otherCompany.status).toBe(403);
+    const agent = await request(await createApp({}, { type: "agent", agentId: routeAgentId, companyId: "company-1" }))
+      .get("/api/companies/company-1/assigned-work-invariant");
+    expect(agent.status).toBe(403);
+    expect(mockHeartbeatService.reportAssignedWorkInvariant).not.toHaveBeenCalled();
+  });
+
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
       id: `run-${index}`,
@@ -772,9 +840,9 @@ describe("agent live run routes", () => {
     expect(res.body).toHaveLength(50);
     expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
     expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
-      50,
-    );
+    expect(mockHeartbeatService.buildRunOutputSilence).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.buildRunOutputSilences).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.buildRunOutputSilences.mock.calls[0]![0]).toHaveLength(50);
   });
 
   it("treats explicit zero or invalid live run limit as the capped default", async () => {
@@ -1084,6 +1152,19 @@ describe("agent live run routes", () => {
       expect(JSON.stringify(mockHeartbeatService.wakeup.mock.calls)).not.toContain("forged");
     });
 
+    it("refuses a retry while the rejected model is still selected and starts no run", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      mockRejectedModelRetryRefusal.mockResolvedValue({ message: 'The provider rejected the model "bad/model", and it is still selected.',
+        details: { code: "native_provider_model_still_unavailable", setting: "agent_model", rejectedModel: "bad/model", agentId: routeAgentId, issueId: failedChatIssueId } });
+      const res = await requestApp(await createApp(fixture.db), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body).toMatchObject({ error: expect.stringContaining("still selected"),
+        details: { code: "native_provider_model_still_unavailable", setting: "agent_model", rejectedModel: "bad/model" } });
+      expect(mockRejectedModelRetryRefusal).toHaveBeenCalledExactlyOnceWith(fixture.db, expect.objectContaining({
+        failedRun: expect.objectContaining({ id: failedChatRunId }), issue: expect.objectContaining({ id: failedChatIssueId }) }));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
     it.each(["agent-caller", "denied-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context", "stale", "resolved", "changed-reviewer"])(
       "rejects an ineligible exact review retry (%s)", async scenario => {
         let actor: Record<string, unknown> | undefined;
@@ -1159,7 +1240,7 @@ describe("agent live run routes", () => {
         type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
       }), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
       expect(res.status).toBe(409);
-      expect(res.body).toMatchObject({ error: expect.stringContaining("cleanup and reconciliation") });
+      expect(res.body).toMatchObject({ error: expect.stringContaining("still shutting down") });
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
       expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
     });

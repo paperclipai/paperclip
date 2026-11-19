@@ -27,7 +27,7 @@
 //
 // Usage: node scripts/typecheck-layers.mjs [--declarations-only]
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
@@ -251,16 +251,40 @@ export function declarationsConfig(layers) {
   };
 }
 
+function planServerLayers(serverRoot) {
+  const sourceFiles = listSourceFiles(serverRoot);
+  return planLayers(new Map(sourceFiles.map((file) => [file, readFileSync(path.join(serverRoot, file), "utf8")])));
+}
+
+export function listLayers(serverRoot) {
+  return planServerLayers(serverRoot).map((layer) => ({ name: layer.name, emitsDeclarations: emitsDeclarations(layer) }));
+}
+
+function checkOneLayer({ serverRoot, name, run, log, logError }) {
+  const config = path.join(OUTPUT_DIRECTORY, `tsconfig.${name}.json`);
+  if (!existsSync(path.join(serverRoot, config))) {
+    logError(`typecheck:layers: ${config} does not exist. Run typecheck-layers.mjs --declarations-only first.`);
+    return 2;
+  }
+  log(`typecheck:layers: ${name}`);
+  const { status, signal } = run(["-p", config], { cwd: serverRoot });
+  if (signal) {
+    logError(`typecheck:layers: ${name}: compiler terminated by ${signal} (tsc -p ${config}, cwd: ${serverRoot})`);
+    return status || 1;
+  }
+  return status;
+}
+
 export function typecheckLayers({
   serverRoot,
   declarationsOnly = false,
+  layer: only,
   run = runTsc,
   log = console.log,
+  logError = console.error,
 }) {
-  const sourceFiles = listSourceFiles(serverRoot);
-  const layers = planLayers(
-    new Map(sourceFiles.map((file) => [file, readFileSync(path.join(serverRoot, file), "utf8")])),
-  );
+  if (only) return checkOneLayer({ serverRoot, name: only, run, log, logError });
+  const layers = planServerLayers(serverRoot);
   const planned = new Set(layers.map((layer) => layer.name));
   const emptyLayers = new Set(["below", "cycle", "above", "tests"].filter((name) => !planned.has(name)));
 
@@ -288,7 +312,10 @@ export function typecheckLayers({
     const config = path.join(OUTPUT_DIRECTORY, `tsconfig.${layer.name}.json`);
     const { status, signal } = run(["-p", config], { cwd: serverRoot });
     // A killed process leaves no declarations, so later layers would only add noise.
-    if (signal) return status || 1;
+    if (signal) {
+      logError(`typecheck:layers: ${layer.name}: compiler terminated by ${signal} (tsc -p ${config}, cwd: ${serverRoot})`);
+      return status || 1;
+    }
     // Later layers still run after type errors. Each file is checked in one
     // layer, so this reports everything a single tsc run would.
     if (status !== 0) exitCode = status;
@@ -297,8 +324,21 @@ export function typecheckLayers({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = typecheckLayers({
-    serverRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
-    declarationsOnly: process.argv.includes("--declarations-only"),
-  });
+  const args = process.argv.slice(2);
+  const layerIndex = args.indexOf("--layer");
+  const layer = layerIndex === -1 ? undefined : args[layerIndex + 1];
+  const rest = args.filter((_, index) => layerIndex === -1 || (index !== layerIndex && index !== layerIndex + 1));
+  const valid =
+    rest.every((arg) => arg === "--declarations-only") &&
+    (layerIndex === -1 || (Boolean(layer) && !layer.startsWith("--") && rest.length === 0));
+  if (!valid) {
+    console.error("Usage: node scripts/typecheck-layers.mjs [--declarations-only | --layer <name>]");
+    process.exitCode = 2;
+  } else {
+    process.exitCode = typecheckLayers({
+      serverRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+      declarationsOnly: args.includes("--declarations-only"),
+      layer,
+    });
+  }
 }

@@ -1,8 +1,8 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { controllerInstances, type Db } from "@paperclipai/db";
+import { controllerInstanceLeaseDb, controllerInstanceLeaseDbWithoutStatementTimeout, controllerInstances, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import {
-  currentControllerBootId, currentControllerDeployment, currentProcessSpaceHash, onControllerStamp,
+  currentControllerBootId, currentProcessSpaceHash, onControllerStamp,
 } from "./controller-process-identity.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -20,6 +20,8 @@ const STAMP_COMMIT_GRACE_MS = CONTROLLER_LEASE_TTL_MS;
 const SETTLE_RECHECK_MIN_MS = 5_000;
 /** A renewal that has not answered within this bound counts as failed. */
 const RENEW_TIMEOUT_MS = 10_000;
+/** Server-side cancel for a renewal statement, below the client timeout. */
+export const RENEW_STATEMENT_TIMEOUT_MS = 8_000;
 const RETRY_MS = 5_000;
 
 export type ControllerInstanceState = "live" | "grace" | "expired" | "fenced" | "stopped";
@@ -54,14 +56,8 @@ type LeaseState = {
 let state: LeaseState | null = null;
 let registeredDb: Db | null = null;
 
-/** A Railway deployment with an exclusive volume proves a replaced deployment on its own; every
- * other host (Docker, Kubernetes, Fly, a stateless Railway service, a rebooted machine) needs the
- * lease to prove a replaced process. PAPERCLIP_CONTROLLER_INSTANCE_LEASE=on|off overrides this. */
 export function controllerInstanceLeaseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const setting = env.PAPERCLIP_CONTROLLER_INSTANCE_LEASE;
-  if (setting === "off") return false;
-  if (setting === "on") return true;
-  return currentControllerDeployment(env)?.exclusiveVolume !== true;
+  return env.PAPERCLIP_CONTROLLER_INSTANCE_LEASE !== "off";
 }
 
 function exitOnLostLease(reason: "fenced" | "lease_lost") {
@@ -78,6 +74,10 @@ function holdsStampedWorkSql(bootId: string) {
         and metadata->'pendingCleanupController'->>'bootId' = ${bootId}))
     or exists (select 1 from sandbox_creation_operations where state = 'pending' and metadata->'creationController'->>'bootId' = ${bootId})
     or exists (select 1 from workspace_operations where status in ('running', 'pending') and metadata->'finalizeOwner'->>'bootId' = ${bootId})
+    or exists (select 1 from workspace_operations where status = 'running' and metadata->'commandOwner'->>'bootId' = ${bootId})
+    or exists (select 1 from workspace_operations, jsonb_each(case when jsonb_typeof(metadata#>'{saveWork,owners}') = 'object'
+        then metadata#>'{saveWork,owners}' else '{}'::jsonb end) as save_owner(invocation_id, stamp)
+      where status in ('running', 'pending') and phase = 'remote_workspace_snapshot' and save_owner.stamp->>'bootId' = ${bootId})
     or exists (select 1 from agents where lifecycle_operation->'leaseHolder'->>'bootId' = ${bootId})
     or exists (select 1 from native_run_finalizations where lease_owner is not null
       and lease_holder->>'token' = lease_owner and lease_holder->>'bootId' = ${bootId})
@@ -97,14 +97,29 @@ function renewInDatabase(db: Db): (stampedRecently: boolean) => Promise<RenewRes
     const records = holdsStampedWorkSql(bootId);
     const holds = sql`(${stampedRecently} or ${records})`;
     const expires = sql`now() + ${`${CONTROLLER_LEASE_TTL_MS} milliseconds`}::interval`;
-    const rows = await db.execute(sql`
+    // Its own connection: a busy main pool (request bursts at a traffic switch,
+    // a replacement's startup pass) must not delay the proof that this boot is
+    // alive. One statement per renewal, so an idle boot's last check stays a
+    // single round trip. The connection's own statement_timeout (below the
+    // client timeout) makes the server cancel a slow renewal, so it never holds
+    // the connection the next renewal needs.
+    const renew = (lease: Db) => lease.execute(sql`
       insert into controller_instances (boot_id, process_space, pid, lease_expires_at)
       values (${bootId}, ${currentProcessSpaceHash()}, ${process.pid}, ${expires})
       on conflict (boot_id) do update set
         lease_expires_at = case when ${holds} then ${expires} else controller_instances.lease_expires_at end,
         renewed_at = case when ${holds} then now() else controller_instances.renewed_at end
       where controller_instances.fenced_at is null and controller_instances.stopped_at is null
-      returning epoch, ${holds} as holds, ${records} as records`) as unknown as Array<{ epoch: string | number; holds: boolean; records: boolean }>;
+      returning epoch, ${holds} as holds, ${records} as records`) as unknown as Promise<Array<{ epoch: string | number; holds: boolean; records: boolean }>>;
+    let rows: Awaited<ReturnType<typeof renew>>;
+    try {
+      rows = await renew(controllerInstanceLeaseDb(db, { statementTimeoutMs: RENEW_STATEMENT_TIMEOUT_MS }));
+    } catch (error) {
+      // A connection pooler may refuse the startup parameter: renew without it.
+      if (!/unsupported startup parameter/i.test(error instanceof Error ? error.message : String(error))) throw error;
+      logger.warn({ err: error }, "controller instance lease connection refused statement_timeout; renewing without it");
+      rows = await renew(controllerInstanceLeaseDbWithoutStatementTimeout(db));
+    }
     const row = rows[0];
     if (!row) return "fenced";
     if (state) state.epoch = Number(row.epoch);

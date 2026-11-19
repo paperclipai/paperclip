@@ -6,6 +6,7 @@ import { logger } from "../middleware/logger.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js";
+import { abandonedPreparedRemoteWorkspaceExists } from "./remote-workspace-abandoned-preparation.js";
 
 /**
  * `legacy_interrupted_preparation_hold`: a run a graceful shutdown interrupted
@@ -19,9 +20,11 @@ import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js
  *
  * Only holds the system recorded itself are listed: an operator decision (an
  * owner-gone attestation, an explicit user continuation, an assigned owner) is
- * never reopened, and a workspace-restore hold (restore failure or recovery
- * evidence) belongs to restore recovery, not to this kind. A run with a lease still cleaning up is not listed yet; the
- * next pass lists it once the lease settles.
+ * never reopened. A workspace-restore hold (restore failure or recovery
+ * evidence) belongs to restore recovery, unless the workspace already retired
+ * the run's exact prepared epoch (`isAbandonedPreparedRemoteWorkspace`): then
+ * nothing is left to restore and this kind settles it. A run with a lease still
+ * cleaning up is not listed yet; the next pass lists it once the lease settles.
  */
 export function heldInterruptedPreparationWhere() {
   return and(inArray(heartbeatRuns.status, ["interrupted", "failed"]), eq(heartbeatRuns.runtimeMode, "legacy"),
@@ -32,8 +35,9 @@ export function heldInterruptedPreparationWhere() {
       and hold.status = 'resolved' and hold.outcome = 'blocked' and hold.owner_user_id is null
       and hold.evidence->'automaticRecovery'->>'policy' = 'preserve_without_replay_v1'
       and hold.evidence->'automaticRecovery'->>'replay' = 'blocked'
-      and not (hold.evidence ?| array['executionReconciliation', ${OWNER_GONE_ATTESTATION_KEY}, 'explicitUserContinuation',
-        'workspaceRestoreFailure', 'workspaceRestoreRecovery']))`,
+      and not (hold.evidence ?| array['executionReconciliation', ${OWNER_GONE_ATTESTATION_KEY}, 'explicitUserContinuation'])
+      and (not (hold.evidence ?| array['workspaceRestoreFailure', 'workspaceRestoreRecovery'])
+        or ${abandonedPreparedRemoteWorkspaceExists()}))`,
     sql`not exists (select 1 from environment_leases lease where lease.company_id = ${heartbeatRuns.companyId}
       and lease.heartbeat_run_id = ${heartbeatRuns.id}
       and (lease.released_at is null or lease.status = 'pending_cleanup' or lease.cleanup_status = 'failed'))`);

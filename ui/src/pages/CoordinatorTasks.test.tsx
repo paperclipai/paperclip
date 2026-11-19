@@ -273,9 +273,9 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(mocks.list).toHaveBeenCalledExactlyOnceWith("company", expect.objectContaining({ ids: [pending.id], projection: "index" }), expect.anything());
     // Canonical attention invalidation refreshes the complete task membership.
     // No parallel status-based queue is involved.
-    flushSync(() => client.setQueryData(coordinatorAttentionTasksQueryKey("company"), { taskIds: [pending.id] }));
+    flushSync(() => client.setQueryData(coordinatorAttentionTasksQueryKey("company", "person"), { taskIds: [pending.id] }));
     await vi.waitFor(() => expect(host.querySelectorAll("[data-task-id]")).toHaveLength(1));
-    flushSync(() => client.setQueryData(coordinatorAttentionTasksQueryKey("company"), { taskIds: [] }));
+    flushSync(() => client.setQueryData(coordinatorAttentionTasksQueryKey("company", "person"), { taskIds: [] }));
     await vi.waitFor(() => expect(host.textContent).toContain("No tasks need a decision."));
   });
   it("filters live tasks and updates when a run finishes, excluding terminal tasks with stale runs", async () => {

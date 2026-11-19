@@ -1,3 +1,4 @@
+import { instanceSettingsService } from "./instance-settings.js";
 import { idleMcpWorkQuery } from "./public-mcp/idle-work-query.js";
 import type { McpWakeAdmission } from "./public-mcp/wake-admission.js";
 import { pendingBudgetEvaluationWorkQuery } from "./budget-evaluation-work.js";
@@ -17,7 +18,7 @@ import { sql, type SQLWrapper } from "drizzle-orm";
 import { createIdleSleepDiagnostics, type IdleSleepDiagnosticSink, type IdleSleepDiagnostics } from "./idle-sleep-diagnostics.js";
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
-import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
+import { pendingBudgetRunCancellationExistsQuery } from "./heartbeat/budget-cancellation.js";
 import { nativeResponsePresentationPendingQuery } from "./native-runtime/native-response-presentation-query.js";
 import { passiveIdleConversation } from "./conversation-idle-proof.js";
 import { idleChatHistoryChecks } from "./chat-channels/idle-history-proof.js";
@@ -98,6 +99,11 @@ const WORK_CHECKS = [
     ('preparing', 'verifying', 'pausing', 'resuming', 'terminating', 'cleaning_up')`),
   workCheck("decision_invocations", `SELECT 1 FROM decision_invocations WHERE status = 'running'`),
   workCheck("prompt_injection_invocations", `SELECT 1 FROM prompt_injection_invocations WHERE status = 'running'`),
+  // A pending provider task (MCP Tasks) is polled: the provider cannot wake
+  // Paperclip, so the instance stays awake until the task is settled.
+  // Only while the MCP Tasks setting is on; off, nothing polls these rows.
+  workCheck("tool_mcp_tasks", `SELECT 1 FROM tool_mcp_tasks WHERE next_poll_at IS NOT NULL`),
+  workCheck("responsibility_summary_invocations", `SELECT 1 FROM responsibility_summary_invocations WHERE status = 'running'`),
   // Persistent machine credentials can receive work without a human opening
   // the instance. They need an ingress wake contract before we can sleep.
   workCheck("agent_api_keys", incomingWakeWorkQuery("agent_api_keys")!),
@@ -398,6 +404,7 @@ export async function readIdleSleepSafety(
     let scheduledWake: ScheduledWake | undefined;
     const blocked = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+      const mcpTasksEnabled = (await instanceSettingsService(db).getExperimentalReadOnly(tx)).enableMcpTasks;
       if (options.incomingWake?.incomingWake) {
         if (!ownerId || ownerId !== before.ownerId) return undefined;
         incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db, inspectionNow: now() });
@@ -434,6 +441,8 @@ export async function readIdleSleepSafety(
         (!scheduledRoutines || check.reason !== "routines")
         && (!scheduledIssueMonitors || check.reason !== "issues"))
         .map(check => {
+          if (check.reason === "tool_mcp_tasks") return { ...check,
+            query: sql`SELECT 1 FROM tool_mcp_tasks WHERE next_poll_at IS NOT NULL AND ${mcpTasksEnabled}` };
           const replacement = deadlineProof?.blocked === false ? deadlineWorkReplacement(check.reason) : undefined;
           const mcp = incomingProof?.mcp;
           const mcpRetryQuery = mcp && deadlineProof?.blocked === false && deadlineProof.mcp === mcp.schedule
@@ -443,7 +452,7 @@ export async function readIdleSleepSafety(
         });
       checks.push(workCheck("agents.company_hold", sql`SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()}`));
-      checks.push(workCheck("heartbeat_runs.budget_cancellation", sql`SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()}`));
+      checks.push(workCheck("heartbeat_runs.budget_cancellation", pendingBudgetRunCancellationExistsQuery()));
       checks.push(workCheck("native_response_presentation", nativeResponsePresentationPendingQuery()));
       // Only the current worker's owned runtime drain can exempt a plugin.
       // Missing workers, old SDKs, and newly installed plugins still block.

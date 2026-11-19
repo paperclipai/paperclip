@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,7 +20,13 @@ import {
   wrapRunnerdLaunch,
   gitStorePaths,
   RUNNERD_LAUNCH_APIS,
+  instanceRunStatePaths,
+  opencodeSessionDirectoryName,
+  prepareRunnerdLaunchSandbox,
+  probeRunScopedSandbox,
+  runnerdLaunchSandbox,
 } from "./agent-filesystem-sandbox.js";
+import { RUNNER_SELECTED_ID_ENV, parseRunnerSelectors, selectorArgumentsWithEnvironment } from "./selectors.js";
 import { runnerMatrix } from "./catalog.js";
 
 const repositoryRoot = "/work/paperclip";
@@ -110,6 +116,140 @@ describe("agent filesystem sandbox selection", () => {
     expect(parseAgentFilesystemSandboxConfig(JSON.stringify(config))).toEqual(config);
     expect(parseAgentFilesystemSandboxConfig(undefined)).toBeNull();
     expect(() => parseAgentFilesystemSandboxConfig(JSON.stringify({ hidden: ["relative"], required: true }))).toThrow(/malformed/);
+  });
+});
+
+describe("run-scoped runnerd sandbox", () => {
+  const instanceRoot = `${temporaryRoot}/paperclip-home/instances/runner-e2e-1`;
+  const runner = `${instanceRoot}/runtime/paperclip-runner`;
+  const config = { hidden: ["/work/paperclip/tests"], required: true, instanceRoot };
+
+  it("keeps the instance root in the attempt's sandbox configuration", () => {
+    expect(agentFilesystemSandboxConfig({ ...base, instanceRoot })?.instanceRoot).toBe(instanceRoot);
+    expect(agentFilesystemSandboxConfig({ ...base, instanceRoot: "/tmp/home/instances/x" })?.instanceRoot).toBeUndefined();
+    const parsed = parseAgentFilesystemSandboxConfig(JSON.stringify(config));
+    expect(parsed).toEqual(config);
+    expect(() => parseAgentFilesystemSandboxConfig(JSON.stringify({ ...config, instanceRoot: "relative" }))).toThrow(/malformed/);
+  });
+
+  it("hides every run's state and keeps only the launch's own durable session, OpenCode session and trace", () => {
+    const trace = `${instanceRoot}/data/provider-traces/4b1c.ndjson`;
+    const launch = runnerdLaunchSandbox(config, [
+      "--connect-url", "ws://127.0.0.1:1/durableRecovery/connect",
+      "--state-dir", `${runner}/durable-sessions/abc123/runner`,
+      "--run-id", "run-1", "--session-id", "ses:own/1",
+    ], { PAPERCLIP_OPENCODE_RUNTIME_DIR: `${runner}/opencode`, PAPERCLIP_PROVIDER_TRACE_PATH: trace });
+    expect(launch.hidden).toEqual([
+      "/work/paperclip/tests",
+      `${runner}/durable-sessions`,
+      `${runner}/runner`,
+      `${runner}/control-plane`,
+      `${runner}/opencode`,
+      `${instanceRoot}/data/run-logs`,
+      `${instanceRoot}/data/provider-traces`,
+      `${instanceRoot}/data/backups`,
+      `${instanceRoot}/db`,
+      `${instanceRoot}/secrets`,
+    ]);
+    expect(launch.exposed).toEqual([`${runner}/durable-sessions/abc123`, `${runner}/opencode/ses_own_1`, trace]);
+    expect(launch.exposedFiles).toEqual([trace]);
+    expect(launch.precreated).toEqual([`${runner}/acpx`, ...["companies", "projects", "workspaces", "runtime-context-assets", "skills", "runtime/provider-packs"].map((name) => `${instanceRoot}/${name}`)]);
+    expect(launch.required).toBe(true);
+  });
+
+  it("keeps a Codex runner's own state directory and exposes nothing it was not given", () => {
+    const launch = runnerdLaunchSandbox(config, ["--state-dir", `${runner}/runner/run-9`, "--run-id", "run-9"], {
+      PAPERCLIP_PROVIDER_TRACE_PATH: `${instanceRoot}/elsewhere/trace.ndjson`,
+    });
+    expect(launch.exposed).toEqual([`${runner}/runner/run-9`]);
+    // A state directory naming the shared root itself, or escaping it, exposes nothing.
+    expect(runnerdLaunchSandbox(config, ["--state-dir", `${runner}/durable-sessions`], {}).exposed).toEqual([]);
+    expect(runnerdLaunchSandbox(config, ["--state-dir", `${runner}/durable-sessions/../control-plane`], {}).exposed).toEqual([]);
+    expect(runnerdLaunchSandbox(config, ["--state-dir", "relative/runner"], {}).exposed).toEqual([]);
+  });
+
+  it("adds nothing without an instance root", () => {
+    const launch = runnerdLaunchSandbox({ hidden: ["/h"], required: false }, ["--state-dir", `${runner}/durable-sessions/a/runner`], {});
+    expect(launch).toEqual({ hidden: ["/h"], exposed: [], exposedFiles: [], precreated: [], required: false });
+  });
+
+  it("names the OpenCode session directory as the driver does", () => {
+    expect(opencodeSessionDirectoryName("ses_1:x/y")).toBe("ses_1_x_y");
+    expect(opencodeSessionDirectoryName("a".repeat(200))).toBe("a".repeat(120));
+    expect(opencodeSessionDirectoryName("..")).toBeNull();
+    const driver = readFileSync(path.join(import.meta.dirname, "../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.ts"), "utf8");
+    const body = /export function opencodeRuntimeSessionDirectoryName\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(driver)?.[1] ?? "";
+    expect(body.replace(/\s+/g, "")).toContain('.replace(/[^a-zA-Z0-9._-]/g,"_").slice(0,120)');
+  });
+
+  it("creates the launch's own entries before runnerd starts and passes them as exposures", async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-sandbox-run-")));
+    try {
+      const instance = path.join(root, "home", "instances", "i");
+      const paths = instanceRunStatePaths(instance);
+      const trace = path.join(paths.providerTraces, "t.ndjson");
+      const calls: unknown[][] = [];
+      const fake = ((...args: unknown[]) => { calls.push(args); return { pid: 3 }; }) as unknown as typeof import("node:child_process").spawn;
+      const spawn = wrapRunnerdSpawn(fake, { hidden: ["/work/paperclip/tests"], required: true, instanceRoot: instance }, "/usr/bin/python3");
+      const state = path.join(paths.durableSessions, "scope", "runner");
+      spawn("/r/paperclip-runnerd", ["--state-dir", state, "--session-id", "own"], { env: { PAPERCLIP_PROVIDER_TRACE_PATH: trace } });
+      expect(statSync(path.join(paths.durableSessions, "scope")).isDirectory()).toBe(true);
+      expect(statSync(path.join(paths.opencode, "own")).mode & 0o777).toBe(0o700);
+      expect(statSync(trace).isFile()).toBe(true);
+      expect(existsSync(paths.acpx)).toBe(true);
+      const args = calls[0]![1] as string[];
+      expect(args).toEqual(expect.arrayContaining(["--hide", paths.durableSessions, "--expose", path.join(paths.durableSessions, "scope"), "--expose", trace]));
+      expect(args.slice(args.indexOf("--"))).toEqual(["--", "/r/paperclip-runnerd", "--state-dir", state, "--session-id", "own"]);
+      // Creating an exposed trace never truncates one the run already wrote.
+      const launch = runnerdLaunchSandbox({ hidden: [], required: true, instanceRoot: instance }, [], { PAPERCLIP_PROVIDER_TRACE_PATH: trace });
+      await writeFile(trace, "frame\n");
+      prepareRunnerdLaunchSandbox(launch);
+      expect(await readFile(trace, "utf8")).toBe("frame\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects exposures that are missing, outside every hidden path, or that would reveal one", async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-sandbox-expose-")));
+    try {
+      const hidden = path.join(root, "sessions");
+      await mkdir(path.join(hidden, "own", "inner"), { recursive: true });
+      const run = (...args: string[]) => {
+        try {
+          execFileSync(pythonExecutable(), ["-I", "-S", agentFilesystemSandboxHelper, ...args, "--", "/bin/true"], { stdio: "pipe" });
+          return 0;
+        } catch (error) {
+          return (error as { status: number }).status;
+        }
+      };
+      expect(run("--hide", hidden, "--expose", path.join(hidden, "missing"))).toBe(2);
+      expect(run("--hide", hidden, "--expose", root)).toBe(2);
+      expect(run("--hide", hidden, "--expose", hidden)).toBe(2);
+      expect(run("--hide", path.join(hidden, "own", "inner"), "--hide", hidden, "--expose", path.join(hidden, "own"))).toBe(2);
+      expect(run("--hide", hidden, "--expose", "relative")).toBe(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("selected cell outside the command line", () => {
+  it("reads the selected cell from the environment and removes it", () => {
+    const env: NodeJS.ProcessEnv = { [RUNNER_SELECTED_ID_ENV]: " chat-features.runner-opencode.local.agents.change-manager " };
+    const args = selectorArgumentsWithEnvironment([], env);
+    expect(args).toEqual(["--id", "chat-features.runner-opencode.local.agents.change-manager"]);
+    expect(env[RUNNER_SELECTED_ID_ENV]).toBeUndefined();
+    expect(parseRunnerSelectors(args).ids).toEqual(["chat-features.runner-opencode.local.agents.change-manager"]);
+    expect(selectorArgumentsWithEnvironment(["--", "--id", "x"], {})).toEqual(["--", "--id", "x"]);
+  });
+
+  it("is what CI passes instead of --id", async () => {
+    for (const workflow of ["runner-full-stack-e2e.yml", "chat-catalog-testops-case.yml"]) {
+      const source = await readFile(path.join(import.meta.dirname, "../../.github/workflows", workflow), "utf8");
+      expect(source).toContain(`${RUNNER_SELECTED_ID_ENV}: \${{`);
+      expect(source).not.toMatch(/test:e2e:runner -- --id "\$\{\{/);
+    }
   });
 });
 
@@ -230,5 +370,24 @@ describe.skipIf(!landlock)("Landlock agent sandbox on this host", () => {
     expect(attemptOutput).not.toContain("secret");
     expect(attemptOutput).toContain("workspace=ok");
     expect(attemptOutput).toContain("control=blocked");
+  });
+
+  it("keeps a run's own session and trace and denies every other run's state, the database and secrets", async () => {
+    const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "agent-sandbox-run-scope-")));
+    roots.push(root);
+    const home = path.join(root, "attempt", "paperclip-home");
+    await mkdir(path.join(home, "instances", "i"), { recursive: true });
+    await mkdir(path.join(root, "attempt", "artifacts-private"));
+    const config = { hidden: [path.join(root, "attempt", "artifacts-private")], required: true, instanceRoot: path.join(home, "instances", "i") };
+    const probe = probeRunScopedSandbox(config, pythonExecutable(), process.env);
+    expect(probe.failures).toEqual([]);
+    expect(probe.result).toMatchObject({
+      "run:otherDurableSession": "denied", "run:durableSessionListing": "denied", "run:ownDurableSession": "allowed",
+      "run:otherOpencodeSession": "denied", "run:ownOpencodeSession": "allowed", "run:otherRunLog": "denied",
+      "run:databaseWal": "denied", "run:secrets": "denied", "run:controlPlaneState": "denied",
+      "run:otherProviderTrace": "denied", "run:ownProviderTrace": "allowed", "run:harnessEnviron": "denied",
+    });
+    // The fixture instance is removed after the probe.
+    expect((await readdir(home)).filter((name) => name.startsWith(".agent-sandbox-probe-"))).toEqual([]);
   });
 });

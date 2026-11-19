@@ -5,7 +5,7 @@ import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizati
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { canonicalProviderPackJson, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
-import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, recordNativeProviderPackAdmission,
+import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, prepareNativeProviderPackAdmission, recordNativeProviderPackAdmission,
   rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack } from "./native-provider-pack-admission.js";
 
 const hash = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -32,6 +32,41 @@ function receiptDb(receipt: unknown, state: unknown = verified): Db {
 }
 
 describe("provider pack admission identity", () => {
+  it("reattaches after a previous claim was interrupted before its admission callback", async () => {
+    const original = sessionFixture(); remember(original.session);
+    const receipt = admittedNativeProviderPack(original.session, initial)!;
+    const profile = { nativeProviderPackAdmission: receipt, nativeProviderPackAdmissionState: verified };
+    const first = prepareNativeProviderPackAdmission(initial.runId, profile, randomUUID());
+    // The claim commits, then snapshot/drain fails before the callback. The
+    // replacement controller has only persisted data, not the first's locals.
+    const pending = JSON.parse(JSON.stringify({ ...profile, ...first.patch }));
+    expect(pending.nativeProviderPackAdmissionState.state).toBe("pending");
+    const second = prepareNativeProviderPackAdmission(initial.runId, pending, randomUUID());
+    const recovered = sessionFixture();
+    await expect(rememberRecoveredNativeProviderPack(receiptDb(receipt, pending.nativeProviderPackAdmissionState), recovered.session,
+      { identity: initial, sourceRunId: initial.runId, ...binding, source: second.source })).resolves.toBe(true);
+    expect(admittedNativeProviderPack(recovered.session, initial)).toEqual(receipt);
+  });
+  it.each(["unknown", "missing", "different receipt", "different run", "different runner", "different lease"])(
+    "does not reuse a pending recovery proof with %s", async change => {
+      const original = sessionFixture(); remember(original.session);
+      const receipt = admittedNativeProviderPack(original.session, initial)!;
+      const profile = { nativeProviderPackAdmission: receipt, nativeProviderPackAdmissionState: verified };
+      const first = prepareNativeProviderPackAdmission(initial.runId, profile, randomUUID());
+      const pending = JSON.parse(JSON.stringify({ ...profile, ...first.patch }));
+      if (change === "unknown") pending.nativeProviderPackAdmissionState.state = "unknown";
+      if (change === "missing") delete pending.nativeProviderPackAdmissionRecovery;
+      if (change === "different receipt") pending.nativeProviderPackAdmission.providerPackDigest = hash("replacement");
+      if (change === "different run") pending.nativeProviderPackAdmissionRecovery.runId = "other-run";
+      const next = prepareNativeProviderPackAdmission(initial.runId, pending, randomUUID());
+      const recovered = sessionFixture();
+      await expect(rememberRecoveredNativeProviderPack(receiptDb(null), recovered.session, {
+        identity: initial, sourceRunId: initial.runId, ...binding, source: next.source,
+        ...(change === "different runner" ? { runnerInstanceId: "replacement" } : {}),
+        ...(change === "different lease" ? { environmentLeaseId: "replacement" } : {}),
+      })).resolves.toBe(false);
+      expect(admittedNativeProviderPack(recovered.session, initial)).toBeNull();
+    });
   it("does not publish selected configuration before successful session admission", async () => {
     const { session } = sessionFixture();
     expect(admittedNativeProviderPack(session, initial)).toBeNull();
@@ -105,6 +140,31 @@ describe("provider pack admission identity", () => {
       { identity: initial, sourceRunId: initial.runId, ...binding })).resolves.toBe(false);
     expect(admittedNativeProviderPack(recovered.session, initial)).toBeNull();
   });
+  it.each([
+    ["source_state_pending", {}, { ...verified, state: "pending" }],
+    ["source_state_unknown", {}, { ...verified, state: "unknown" }],
+    ["source_state_missing", {}, null],
+    ["runner_instance_differs", { runnerInstanceId: "other-runner" }, verified],
+    ["environment_lease_differs", { runnerEnvironmentLeaseId: "other-lease" }, verified],
+    ["receipt_invalid", { sessionId: "foreign" }, verified],
+  ] as const)("names the refused check %s without admitting", async (reason, change, state) => {
+    const source = sessionFixture(); remember(source.session);
+    const saved = { ...admittedNativeProviderPack(source.session, initial)!, ...change };
+    const recovered = sessionFixture();
+    const onRefused = vi.fn();
+    await expect(rememberRecoveredNativeProviderPack(receiptDb(saved, state), recovered.session,
+      { identity: initial, sourceRunId: initial.runId, ...binding, onRefused })).resolves.toBe(false);
+    expect(onRefused).toHaveBeenCalledExactlyOnceWith(reason);
+    expect(admittedNativeProviderPack(recovered.session, initial)).toBeNull();
+  });
+  it("reports nothing when the saved admission is reused", async () => {
+    const source = sessionFixture(); remember(source.session);
+    const recovered = sessionFixture();
+    const onRefused = vi.fn();
+    await expect(rememberRecoveredNativeProviderPack(receiptDb(admittedNativeProviderPack(source.session, initial)), recovered.session,
+      { identity: initial, sourceRunId: initial.runId, ...binding, onRefused })).resolves.toBe(true);
+    expect(onRefused).not.toHaveBeenCalled();
+  });
   it("uses only the exact same-run locked pre-invalidation source snapshot", async () => {
     const source = sessionFixture(); remember(source.session);
     const saved = admittedNativeProviderPack(source.session, initial)!;
@@ -153,6 +213,32 @@ describe("provider pack admission PostgreSQL fencing", () => {
     const changed = typeof f.claim[key] === "number" ? 99 : randomUUID();
     await expect(recordNativeProviderPackAdmission(db, { ...f, claim: { ...f.claim, [key]: changed } as typeof f.claim })).resolves.toBe(false);
     expect((await read(f.identity.runId)).runnerProfileJson).toEqual(f.profile);
+  });
+  it("republishes admission after two persisted interrupted claims without admitting a different Runner", async () => {
+    const f = await fixture();
+    await expect(recordNativeProviderPackAdmission(db, f)).resolves.toBe(true);
+    for (let i = 0; i < 2; i++) {
+      const prior = (await read(f.identity.runId)).runnerProfileJson!;
+      const claim = prepareNativeProviderPackAdmission(f.identity.runId, prior, randomUUID());
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { ...prior, ...claim.patch } }).where(eq(heartbeatRuns.id, f.identity.runId));
+    }
+    const prior = (await read(f.identity.runId)).runnerProfileJson!;
+    const claim = prepareNativeProviderPackAdmission(f.identity.runId, prior, randomUUID());
+    const recovered = sessionFixture(f.identity);
+    await expect(rememberRecoveredNativeProviderPack(db, recovered.session, {
+      identity: f.identity, sourceRunId: f.identity.runId, ...binding, source: claim.source,
+      runnerInstanceId: "replacement",
+    })).resolves.toBe(false);
+    await expect(rememberRecoveredNativeProviderPack(db, recovered.session, {
+      identity: f.identity, sourceRunId: f.identity.runId, ...binding, source: claim.source,
+    })).resolves.toBe(true);
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...prior, ...claim.patch } }).where(eq(heartbeatRuns.id, f.identity.runId));
+    await expect(recordNativeProviderPackAdmission(db, { ...f, session: recovered.session,
+      admissionEpoch: claim.patch.nativeProviderPackAdmissionState.admissionEpoch })).resolves.toBe(true);
+    const final = (await read(f.identity.runId)).runnerProfileJson!;
+    expect(final.nativeProviderPackAdmissionState).toMatchObject({ state: "verified" });
+    expect(final.nativeProviderPackAdmission).toEqual(prior.nativeProviderPackAdmission);
+    expect(final.nativeProviderPackAdmissionRecovery).toBeNull();
   });
   it("rejects an expired claim and a terminal run", async () => {
     const f = await fixture();
@@ -226,6 +312,81 @@ describe("provider pack admission PostgreSQL fencing", () => {
     } finally { release(); await owner; }
     await expect(recordNativeProviderPackAdmission(db, f)).resolves.toBe(true);
   });
+  it.each([false, true])("waits for a concurrent run-event append's run-row lock instead of losing the admission (waitForClaim: %s)", async waitForClaim => {
+    // Staging failure: a run-event append locks the run row
+    // (FOR NO KEY UPDATE, as appendHeartbeatRunEvent does) for milliseconds. A
+    // NOWAIT admission write failed, left the state pending, and artifact
+    // retention then failed the run as native_provider_artifacts_admission_unverified.
+    const f = await fixture();
+    let release!: () => void, acquired!: () => void;
+    const holding = new Promise<void>(resolve => { acquired = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const append = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)).for("no key update");
+      acquired(); await gate;
+    });
+    await holding;
+    let settled = false;
+    const recording = recordNativeProviderPackAdmission(db, { ...f, waitForClaim } as Parameters<typeof recordNativeProviderPackAdmission>[1])
+      .then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+    try {
+      // Release only after the admission is proven to wait on the run row, so
+      // the old NOWAIT code cannot pass by running after the append commits.
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ waiting: boolean }>(sql`select exists(select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and state = 'active'
+            and query like '%heartbeat_runs%') as waiting`);
+        expect(settled || row.waiting).toBe(true);
+      }, { timeout: 800 });
+    } finally { release(); await append; }
+    expect(await recording).toEqual({ value: true });
+    expect((await read(f.identity.runId)).runnerProfileJson?.nativeProviderPackAdmissionState)
+      .toEqual({ ...f.profile.nativeProviderPackAdmissionState, state: "verified" });
+  });
+  it("keeps the admission when a checkpoint write holds the claim longer than one lock wait", async () => {
+    // Staging run 3f317172 (OpenCode, fresh Daytona sandbox): the pack upload
+    // and runner start succeeded, the runner began writing durable checkpoints,
+    // and the admission write lost one 1000 ms lock wait on the coordinator row
+    // a checkpoint transaction held. The state stayed pending, artifact
+    // retention failed the run as native_provider_artifacts_admission_unverified
+    // and the task rested blocked before its first turn.
+    const f = await fixture();
+    let release!: () => void, acquired!: () => void;
+    const holding = new Promise<void>(resolve => { acquired = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const checkpoint = db.transaction(async tx => {
+      await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.identity.runId)).for("update");
+      acquired(); await gate;
+    });
+    await holding;
+    const recording = recordNativeProviderPackAdmission(db, { ...f, waitForClaim: true } as Parameters<typeof recordNativeProviderPackAdmission>[1])
+      .then(value => ({ value }), error => ({ error }));
+    // Longer than one lock wait, shorter than the bounded retry window.
+    const held = setTimeout(release, 1_600);
+    try {
+      expect(await recording).toEqual({ value: true });
+    } finally { clearTimeout(held); release(); await checkpoint; }
+    expect((await read(f.identity.runId)).runnerProfileJson?.nativeProviderPackAdmissionState)
+      .toEqual({ ...f.profile.nativeProviderPackAdmissionState, state: "verified" });
+  });
+  it("gives up after the bounded retry window while the claim stays held", async () => {
+    const f = await fixture();
+    let release!: () => void, acquired!: () => void;
+    const holding = new Promise<void>(resolve => { acquired = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const checkpoint = db.transaction(async tx => {
+      await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.identity.runId)).for("update");
+      acquired(); await gate;
+    });
+    await holding;
+    const started = Date.now();
+    try {
+      await expect(recordNativeProviderPackAdmission(db, { ...f, waitForClaim: true } as Parameters<typeof recordNativeProviderPackAdmission>[1]))
+        .rejects.toMatchObject({ cause: { code: "55P03" } });
+      expect(Date.now() - started).toBeLessThan(15_000);
+    } finally { release(); await checkpoint; }
+    expect((await read(f.identity.runId)).runnerProfileJson).toEqual(f.profile);
+  }, 30_000);
   it.each([false, true])("waits within the durable-capture bound and rechecks the claim after its lock (revoked: %s)", async revoked => {
     const f = await fixture();
     let release!: () => void, acquired!: () => void;

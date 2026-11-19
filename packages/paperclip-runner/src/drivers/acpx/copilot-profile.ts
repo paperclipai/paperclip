@@ -1,4 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
+import { acpxInstructionsAdmissionError } from "./admission-diagnostics.js";
 
 /** This is an admission candidate, not a claim of live qualification. */
 export const COPILOT_VERSION = "1.0.88" as const;
@@ -11,7 +12,7 @@ export const COPILOT_TASK_ORIENTATION_INSTRUCTIONS = "At the start of every task
 export function composeCopilotSystemInstructions(instructions: string): string {
   const composed = `${instructions}\n\n# Paperclip task orientation\n${COPILOT_TASK_ORIENTATION_INSTRUCTIONS}`;
   if (composed.includes("\0") || Buffer.byteLength(`${composed}\n`) > 32 * 1024) {
-    throw new Error("Provider runtime instructions exceed their bounded size");
+    throw acpxInstructionsAdmissionError("Provider runtime instructions exceed their bounded size");
   }
   return composed;
 }

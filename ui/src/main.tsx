@@ -8,13 +8,17 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
+import { ProductAnalyticsGate } from "./components/ProductAnalyticsGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
+import { LinkPreviewProvider } from "./context/LinkPreviewContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
+import { TaskCancellationProvider } from "./context/TaskCancellationContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
+import { applyLiveEventFreeQueryDefaults } from "./lib/live-reconcile";
 import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
 import { ToastProvider, useToastActions, type ToastInput } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
@@ -28,8 +32,9 @@ import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
-import { captureBrowserException } from "./lib/sentry";
+import { captureQueryException } from "./lib/sentry";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
+import { adoptHardLoadChatBootstrap } from "./lib/issue-chat-bootstrap";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
@@ -63,7 +68,7 @@ function MutationErrorToastBridge() {
 const queryClient = createAppQueryClient(
   {
     connectivity,
-    reportError: (error) => captureBrowserException(error),
+    reportError: (error, queryKey) => captureQueryException(error, queryKey),
     notifyMutationError: ({ title, body }) => pushMutationErrorToast?.({ title, body, tone: "error" }),
   },
   {
@@ -79,12 +84,16 @@ const queryClient = createAppQueryClient(
     },
   },
 );
+// Instance and personal preference reads have no live events; see live-reconcile.ts.
+applyLiveEventFreeQueryDefaults(queryClient);
 // Outages pause queries and replayable mutations instead of failing them, and
 // live queries refresh once when the server answers again.
 bindConnectivity(queryClient, connectivity);
 startPersistedQueryCache(queryClient, {
   buildId: typeof __PAPERCLIP_BUILD_COMMIT__ === "string" ? __PAPERCLIP_BUILD_COMMIT__ : null,
 });
+// Readers that start before the task page mounts share a hard load's bootstrap.
+adoptHardLoadChatBootstrap(queryClient);
 window.addEventListener("load", () => {
   startServiceWorkerUpdates({
     canReload: () => connectivity.getSnapshot().status === "online"
@@ -107,6 +116,12 @@ function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
   return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</VoiceCallProvider>;
 }
 
+function CompanyLinkPreviews({ children }: { children: React.ReactNode }) {
+  const { selectedCompanyId } = useCompany();
+  const { userId, settled } = useAccountIdentity();
+  return <LinkPreviewProvider companyId={settled ? selectedCompanyId : null} userId={userId}>{children}</LinkPreviewProvider>;
+}
+
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Paperclip root element is missing");
 
@@ -115,6 +130,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <SentryGate />
+        <ProductAnalyticsGate />
         <ThemeProvider>
           <BrowserRouter>
             <CompanyProvider>
@@ -129,7 +145,9 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
-                                <DesignSandboxProvider><CompanyVoiceCalls><App /></CompanyVoiceCalls></DesignSandboxProvider>
+                                <TaskCancellationProvider>
+                                <DesignSandboxProvider><CompanyVoiceCalls><CompanyLinkPreviews><App /></CompanyLinkPreviews></CompanyVoiceCalls></DesignSandboxProvider>
+                                </TaskCancellationProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

@@ -4,6 +4,7 @@ import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db"
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { canonicalProviderPackJson, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { assertNativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { isTransientLockContention, postgresErrorCode } from "../transient-lock-contention.js";
 
 type Selection = {
   admittedRunId: string;
@@ -30,17 +31,49 @@ const admitted = new WeakMap<NativeSession, Readonly<Selection>>();
 const digest = /^sha256:[a-f0-9]{64}$/;
 type NativeRunIdentity = ReturnType<NativeSession["identity"]>;
 
-export type NativeProviderPackAdmissionSource = { runId: string; receipt: unknown; state: unknown; artifacts?: unknown };
+export type NativeProviderPackAdmissionRefusal = "session_identity_unavailable" | "session_identity_differs"
+  | "source_state_pending" | "source_state_unknown" | "source_state_missing" | "receipt_missing"
+  | "runner_instance_differs" | "environment_lease_differs" | "receipt_invalid";
+
+export type NativeProviderPackAdmissionSource ={ runId: string; receipt: unknown; state: unknown; artifacts?: unknown };
 
 export function nativeProviderPackAdmissionPending(admissionEpoch: string) {
   return { schema: "paperclip.native-provider-pack-admission-state.v1" as const, state: "pending" as const, admissionEpoch };
 }
 
+/** Called under the executor's claim lock, before provider admission. */
+export function prepareNativeProviderPackAdmission(runId: string, profile: Record<string, unknown> | null | undefined, admissionEpoch: string) {
+  const receipt = profile?.nativeProviderPackAdmission;
+  let state = profile?.nativeProviderPackAdmissionState;
+  const saved = profile?.nativeProviderPackAdmissionRecovery as Record<string, unknown> | null | undefined;
+  const receiptDigest = receipt && typeof receipt === "object" && !Array.isArray(receipt)
+    ? `sha256:${createHash("sha256").update(canonicalProviderPackJson(receipt)).digest("hex")}` : null;
+  // A pending claim has not selected a different pack. It can carry forward
+  // the exact verified proof that the previous claim captured under its lock.
+  // Unknown state means selection was refused and must never regain that proof.
+  if (admissionState(state, "pending")
+    && saved?.schema === "paperclip.native-provider-pack-admission-recovery.v1"
+    && Object.keys(saved).sort().join(",") === "receiptDigest,runId,schema,state"
+    && saved.runId === runId && receiptDigest !== null && saved.receiptDigest === receiptDigest
+    && verifiedState(saved.state)) state = saved.state;
+  const recovery = receiptDigest !== null && verifiedState(state)
+    ? { schema: "paperclip.native-provider-pack-admission-recovery.v1", runId, receiptDigest, state } : null;
+  return {
+    source: { runId, receipt, state, artifacts: profile?.nativeProviderArtifacts },
+    patch: { nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(admissionEpoch),
+      nativeProviderPackAdmissionRecovery: recovery },
+  };
+}
+
 function verifiedState(value: unknown): boolean {
+  return admissionState(value, "verified");
+}
+
+function admissionState(value: unknown, expected: "pending" | "verified"): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const state = value as Record<string, unknown>;
   return Object.keys(state).sort().join(",") === "admissionEpoch,schema,state"
-    && state.schema === "paperclip.native-provider-pack-admission-state.v1" && state.state === "verified"
+    && state.schema === "paperclip.native-provider-pack-admission-state.v1" && state.state === expected
     && typeof state.admissionEpoch === "string" && /^[a-f0-9-]{36}$/.test(state.admissionEpoch);
 }
 
@@ -82,19 +115,30 @@ export async function rememberRecoveredNativeProviderPack(db: Db, session: Nativ
   runnerInstanceId: string;
   environmentLeaseId: string;
   source?: NativeProviderPackAdmissionSource;
+  /** Diagnostics only: names the check that refused the saved admission. */
+  onRefused?: (reason: NativeProviderPackAdmissionRefusal) => void | Promise<void>;
 }): Promise<boolean> {
   admitted.delete(session);
-  if (typeof session.identity !== "function") return false;
-  if (canonicalProviderPackJson(session.identity()) !== canonicalProviderPackJson(input.identity)) return false;
+  const refuse = async (reason: NativeProviderPackAdmissionRefusal) => {
+    try { await input.onRefused?.(reason); } catch { /* diagnostics never change admission */ }
+    return false;
+  };
+  if (typeof session.identity !== "function") return refuse("session_identity_unavailable");
+  if (canonicalProviderPackJson(session.identity()) !== canonicalProviderPackJson(input.identity)) return refuse("session_identity_differs");
   const source = input.source?.runId === input.sourceRunId ? input.source : (await db.select({
     receipt: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmission'`,
     state: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmissionState'`,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, input.identity.companyId),
     eq(heartbeatRuns.agentId, input.identity.agentId), eq(heartbeatRuns.runtimeMode, "native"))).limit(1))[0];
-  if (!verifiedState(source?.state)) return false;
+  if (!verifiedState(source?.state)) {
+    const state = source?.state && typeof source.state === "object" ? (source.state as Record<string, unknown>).state : undefined;
+    return refuse(state === "pending" ? "source_state_pending" : state === "unknown" ? "source_state_unknown" : "source_state_missing");
+  }
   const value = source?.receipt;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return refuse("receipt_missing");
   const receipt = value as Record<string, unknown>;
+  if (receipt.runnerInstanceId !== input.runnerInstanceId) return refuse("runner_instance_differs");
+  if (receipt.runnerEnvironmentLeaseId !== input.environmentLeaseId) return refuse("environment_lease_differs");
   const keys = new Set(["schema", "stage", "authority", "companyId", "agentId", "runId", "sessionId", "runnerInstanceId",
     "runnerEnvironmentLeaseId", "providerPackDigest", "opencodeProxySha256", "sourceRevision", "inheritedFromRunId"]);
   if (Object.keys(receipt).some(key => !keys.has(key)) || receipt.schema !== "paperclip.native-provider-pack-admission.v1"
@@ -103,7 +147,7 @@ export async function rememberRecoveredNativeProviderPack(db: Db, session: Nativ
     || receipt.sessionId !== input.identity.sessionId || receipt.runnerInstanceId !== input.runnerInstanceId
     || receipt.runnerEnvironmentLeaseId !== input.environmentLeaseId || !digest.test(String(receipt.providerPackDigest))
     || !digest.test(String(receipt.opencodeProxySha256)) || !/^[a-f0-9]{40}$/.test(String(receipt.sourceRevision))
-    || (receipt.inheritedFromRunId !== undefined && (typeof receipt.inheritedFromRunId !== "string" || !receipt.inheritedFromRunId))) return false;
+    || (receipt.inheritedFromRunId !== undefined && (typeof receipt.inheritedFromRunId !== "string" || !receipt.inheritedFromRunId))) return refuse("receipt_invalid");
   return rememberSelection(session, { admittedRunId: String(receipt.inheritedFromRunId ?? receipt.runId),
     companyId: input.identity.companyId, agentId: input.identity.agentId, sessionId: input.identity.sessionId,
     runnerInstanceId: input.runnerInstanceId, environmentLeaseId: input.environmentLeaseId,
@@ -123,17 +167,48 @@ export function admittedNativeProviderPack(session: NativeSession, identity: Nat
     ...(admittedRunId === actual.runId ? {} : { inheritedFromRunId: admittedRunId }) };
 }
 
-export async function recordNativeProviderPackAdmission(db: Db, input: {
+type AdmissionInput = {
   session: NativeSession;
   identity: NativeRunIdentity;
   admissionEpoch: string;
   claim: { leaseOwner: string; attempt: number; controllerGeneration: number; controllerBootId: string };
   waitForClaim?: boolean;
-}): Promise<boolean> {
+};
+
+/** Attempts of one admission write while its claim is contended. */
+export const NATIVE_PROVIDER_PACK_ADMISSION_ATTEMPTS = 5;
+
+export const nativeProviderPackAdmissionFailureCode = postgresErrorCode;
+
+/**
+ * Saves the session's verified provider-pack admission on its run row. A run
+ * that waits for its claim retries a contended write: the runner's durable
+ * checkpoint writes hold the same coordinator row, and on a loaded database one
+ * can outlast a single lock wait. Each attempt is a new transaction that
+ * re-proves the claim, the run and the admission epoch, so a retry never
+ * admits anything the first attempt would have refused. Only contention is
+ * retried; a stale claim still returns false and other errors still throw.
+ */
+export async function recordNativeProviderPackAdmission(db: Db, input: AdmissionInput): Promise<boolean> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await recordNativeProviderPackAdmissionOnce(db, input);
+    } catch (error) {
+      if (!input.waitForClaim || attempt >= NATIVE_PROVIDER_PACK_ADMISSION_ATTEMPTS
+        || !isTransientLockContention(error)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+    }
+  }
+}
+
+async function recordNativeProviderPackAdmissionOnce(db: Db, input: AdmissionInput): Promise<boolean> {
   const receipt = admittedNativeProviderPack(input.session, input.identity);
   return db.transaction(async tx => {
+    // Bounds every lock wait below, including the run-row lock. A run-event
+    // append holds that row FOR UPDATE for milliseconds; NOWAIT there lost the
+    // admission and then failed the run as admission_unverified.
+    await tx.execute(sql`select set_config('lock_timeout', '1000ms', true)`);
     if (input.waitForClaim) {
-      await tx.execute(sql`select set_config('lock_timeout', '1000ms', true)`);
       await assertNativeRunnerCheckpointOwner(tx, { companyId: input.identity.companyId,
         issueId: input.identity.issueId, runId: input.identity.runId, authorityRunId: input.identity.runId,
         bootId: input.claim.controllerBootId, leaseOwner: input.claim.leaseOwner,
@@ -151,7 +226,7 @@ export async function recordNativeProviderPackAdmission(db: Db, input: {
       eq(heartbeatRuns.id, input.identity.runId), eq(heartbeatRuns.companyId, input.identity.companyId),
       eq(heartbeatRuns.agentId, input.identity.agentId), eq(heartbeatRuns.nativeIssueId, input.identity.issueId),
       eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "running"),
-    )).for("update", { noWait: true }).limit(1);
+    )).for("update").limit(1);
     if (!run) return false;
     const current = run.profile?.nativeProviderPackAdmissionState as Record<string, unknown> | undefined;
     if (current?.schema !== "paperclip.native-provider-pack-admission-state.v1" || current.admissionEpoch !== input.admissionEpoch
@@ -163,6 +238,7 @@ export async function recordNativeProviderPackAdmission(db: Db, input: {
         === canonicalProviderPackJson({ ...receipt, inheritedFromRunId: null }));
     if (verified && current.state === "verified") return true;
     const patch = { ...(verified && previous == null ? { nativeProviderPackAdmission: receipt } : {}),
+      ...(run.profile?.nativeProviderPackAdmissionRecovery != null ? { nativeProviderPackAdmissionRecovery: null } : {}),
       nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(input.admissionEpoch), state: verified ? "verified" : "unknown" } };
     const saved = await tx.update(heartbeatRuns).set({
       runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
