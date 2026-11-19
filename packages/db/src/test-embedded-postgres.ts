@@ -15,7 +15,13 @@ import {
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
 import { ownTestPostgres, TestPostgresShutdownError, type TestPostgresInstance } from "./test-postgres-owner.js";
-import { checkTestPostgresAdmin, startTestPostgresDatabase, testPostgresAdminUrl } from "./test-postgres-admin.js";
+import postgres from "postgres";
+import {
+  checkTestPostgresAdmin,
+  QUIET_TEST_DATABASE_SQL,
+  startTestPostgresDatabase,
+  testPostgresAdminUrl,
+} from "./test-postgres-admin.js";
 
 // Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
 // test that starts an embedded Postgres cluster and runs migrations. Measured
@@ -154,6 +160,12 @@ async function createEmbeddedPostgresTestInstanceAt(dataDir: string) {
   }), dataDir);
 
   return { dataDir, port, instance, getRecentLogs: () => logBuffer.getRecentLogs() };
+}
+
+async function quietTestDatabase(adminUrl: string, databaseName: string): Promise<void> {
+  const sql = postgres(adminUrl, { max: 1, onnotice() {} });
+  try { await sql.unsafe(QUIET_TEST_DATABASE_SQL(databaseName)); }
+  finally { await sql.end({ timeout: 1 }); }
 }
 
 function adminConnectionStringFor(port: number): string {
@@ -667,6 +679,7 @@ export async function startEmbeddedPostgresTestDatabase(
     // Both calls are no-ops on a template copy and keep the returned database
     // identical to the fresh path even if the template were ever stale.
     await ensurePostgresDatabase(adminConnectionStringFor(port), "paperclip");
+    await quietTestDatabase(adminConnectionStringFor(port), "paperclip");
     const connectionString = databaseConnectionStringFor(port);
     await applyPendingMigrations(connectionString);
 

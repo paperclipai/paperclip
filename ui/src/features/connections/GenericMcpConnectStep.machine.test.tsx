@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { newCustomHeaderRow } from "@/pages/apps/generic-mcp-connect";
 import { GenericMcpConnectStep } from "./GenericMcpConnectStep";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 
 vi.mock("@/api/tools", () => ({ toolsApi: {} }));
 vi.mock("@/pages/apps/AppLogo", () => ({ AppLogo: () => null }));
@@ -65,5 +66,27 @@ describe("Machine sign-in in the custom server step", () => {
   it("is not offered for personal connections", async () => {
     await render(null);
     expect(container.textContent).not.toContain("Machine sign-in");
+  });
+});
+
+describe("Session replay in the custom server step", () => {
+  it("blocks the server link, which can carry an API key, from session replay", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <GenericMcpConnectStep
+          link="https://mcp.example/mcp?api_key=mcpk_Zt4wR8pLq2" name="" needsKey={false} keyValue="" onKeyChange={() => undefined}
+          authMode="auto" onAuthModeChange={() => undefined} headers={[newCustomHeaderRow()]} onHeadersChange={() => undefined}
+          oauthClientId="" onOAuthClientIdChange={() => undefined} oauthClientSecret="" onOAuthClientSecretChange={() => undefined}
+          advancedOpen={false} onAdvancedOpenChange={() => undefined} guidance={null} submitting={false}
+          onBack={() => undefined} onConnect={() => undefined} machineSignIn={null}
+        />,
+      );
+    });
+    expect(isBlockedFromReplay("mcpk_Zt4wR8pLq2", container)).toBe(true);
+    act(() => root.unmount());
+    container.remove();
   });
 });

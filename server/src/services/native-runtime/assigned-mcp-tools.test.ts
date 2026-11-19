@@ -86,6 +86,51 @@ describe("assigned MCP runner tools", () => {
     expect(f.executeTool).not.toHaveBeenCalled();
   });
 
+  it("resolves a gateway name or unique display name to the assigned alias without widening authorization", async () => {
+    const sql = { ...descriptor("braintrust:sql_query"), displayName: "sql_query" };
+    const first = { ...descriptor("mcp.first:search"), displayName: "search" };
+    const second = { ...descriptor("mcp.second:search", "write"), displayName: "search" };
+    const write = { ...descriptor("braintrust:add_to_dataset", "write"), displayName: "add_to_dataset" };
+    const f = fixture([sql, first, second, write]);
+    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "sql_query" } }) as { tools: Array<{ name: string }> };
+    const alias = page.tools[0]!.name;
+    for (const schemaTool of [alias, sql.name, sql.displayName, ` ${sql.displayName} `]) {
+      await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool } }))
+        .resolves.toEqual({ name: alias, schemaJson: JSON.stringify(sql.parametersSchema), nextSchemaOffset: null });
+    }
+    for (const name of [sql.name, sql.displayName]) {
+      await assigned.execute({ tool: callName, arguments: { name, arguments: { query: "fixture" } } });
+    }
+    expect(f.executeTool.mock.calls.map(([call]) => call.tool)).toEqual([sql.name, sql.name]);
+    await expect(assigned.execute({ tool: callName, arguments: { name: "unassigned", arguments: {} } }))
+      .rejects.toThrow("assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools");
+    await expect(assigned.execute({ tool: callName, arguments: { name: "search", arguments: {} } }))
+      .rejects.toThrow("assigned_mcp_tool_unknown: name matches more than one assigned tool");
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: "search" } }))
+      .rejects.toThrow("assigned_mcp_tool_unknown: schemaTool matches more than one assigned tool");
+    await expect(assigned.execute({ tool: callName, arguments: { name: write.displayName, arguments: {} } }, "planning"))
+      .rejects.toThrow("paperclip_runner_tool_mode_denied");
+    f.listToolsForNamedGateway.mockResolvedValue([first]);
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: sql.name } }))
+      .rejects.toThrow("assigned_mcp_tool_unknown");
+    await expect(assigned.execute({ tool: callName, arguments: { name: "newly:granted", arguments: {} } }))
+      .rejects.toThrow("assigned_mcp_tool_unknown");
+    expect(f.executeTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a name that is one tool's gateway name and another tool's display name", async () => {
+    const read = { ...descriptor("sql_query"), displayName: "Read rows" };
+    const write = { ...descriptor("warehouse:write_rows", "write"), displayName: "sql_query" };
+    const f = fixture([read, write]);
+    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    await expect(assigned.execute({ tool: callName, arguments: { name: "sql_query", arguments: {} } }))
+      .rejects.toThrow("assigned_mcp_tool_unknown: name matches more than one assigned tool");
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: "sql_query" } }))
+      .rejects.toThrow("assigned_mcp_tool_unknown: schemaTool matches more than one assigned tool");
+    expect(f.executeTool).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "on_demand"] as const)("advertises usable page limits through MCP discovery (%s)", async delivery => {
     const f = fixture(Array.from({ length: 25 }, (_, i) => descriptor(`operation_${i}`)));
     const assigned = await createAssignedMcpTools({ ...f, delivery });

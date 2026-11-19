@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { attentionCardKind, attentionCardType, type AttentionCardType, type AttentionItem } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /**
  * The parts every Needs You card is built from (PAP-775, Paper "A · Compact
@@ -90,5 +91,5 @@ export function NeedsYouPanelRow({ icon, title, meta, onOpen, href, label }: {
 
 /** The small grey line at the bottom of a panel. */
 export function NeedsYouPanelNote({ children }: { children: ReactNode }) {
-  return <p data-needs-you-note className="text-xs leading-4.5 text-muted-foreground">{children}</p>;
+  return <p data-needs-you-note className={cn("text-xs leading-4.5 text-muted-foreground", ANALYTICS_MASK_CLASS)}>{children}</p>;
 }

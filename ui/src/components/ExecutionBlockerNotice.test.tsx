@@ -38,6 +38,14 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector("a, details, input, textarea")).toBeNull();
     expect(container.textContent).not.toMatch(/service attention|process|receipt|workspace/i);
   });
+  it("asks the person to help a blocked agent and offers Retry", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "unblock" });
+    expect(container.textContent).toContain("needs your help to continue");
+    expect(container.textContent).not.toMatch(/blocker_|native|owner kind/i);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-execution-retry"]')!.click());
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
   it("keeps the failure visible and names the gate while a saved Retry waits on the budget", async () => {
     await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false });
     const notice = container.querySelector('[data-testid="task-execution-waiting"]');

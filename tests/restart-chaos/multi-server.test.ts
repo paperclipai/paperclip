@@ -145,4 +145,11 @@ describe("checkCrossServer", () => {
     // The same runner recorded again (a re-attach) is one executor.
     expect(checkCrossServer({ runs, events: [recorded(1, 1), recorded(1, 5)], windows: [A] }).violations).toEqual([]);
   });
+
+  it("does not charge sandbox runner relaunches, which never record local stop evidence", () => {
+    const remote = (pid: number, at: number) => ({ runId: "r1", kind: "recorded" as const, pid, at, targetKind: "remote" as const });
+    const runs = [run({ errorCode: null, status: "succeeded" })];
+    expect(checkCrossServer({ runs, events: [remote(65122, 1), remote(57393, 5), remote(49664, 9)], windows: [A] }).violations)
+      .toEqual([]);
+  });
 });
