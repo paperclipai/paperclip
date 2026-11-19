@@ -25,7 +25,7 @@ const LEVEL_OPTIONS: RadioCardOption[] = [
   {
     value: "attention",
     title: "Needs attention",
-    description: "Failed runs, warnings, approvals, join requests, and requests that need you.",
+    description: "Failed runs, warnings, join requests, and requests that need you.",
   },
   {
     value: "all",

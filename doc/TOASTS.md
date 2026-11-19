@@ -81,7 +81,7 @@ quiet until the server provides eligibility.
 
 Profile settings include an opt-in **Desktop notifications** control. Off is
 the default. **Needs attention** mirrors error and warning toasts plus join
-requests, approvals, and requests that need you. **All** mirrors every in-app
+requests and requests that need you. **All** mirrors every in-app
 toast that already passed the live-update gates above. Paperclip uses the
 browser Notification API only while this tab is hidden, and only after this
 browser grants permission. Enabling Needs attention or All also keeps the live
