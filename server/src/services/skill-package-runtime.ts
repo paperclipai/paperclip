@@ -100,6 +100,16 @@ export function skillPackageRuntime(db: Db) {
   }
   async function materialize(version: StoredSkillVersion, directory: string) {
     const files = await measureRunPhase("skills.repository.read", () => agentFiles(version));
+    return writeVersionFiles(version, directory, files);
+  }
+  /**
+   * The library copy: what `inventory` lists and `readFile` (and so `load_skill`)
+   * serves, including a repository skill's whole pinned repository. Audits scan it.
+   */
+  async function materializeLibrary(version: StoredSkillVersion, directory: string) {
+    return writeVersionFiles(version, directory, await projection(version));
+  }
+  async function writeVersionFiles(version: StoredSkillVersion, directory: string, files: ProjectedFile[]) {
     const parent = path.dirname(directory);
     await ensureSkillCacheDirectory(parent, true);
     if (await measureRunPhase("skills.version.verify", () => verifySkillPackageDirectory(directory, files), { fileCount: files.length })) return directory;
@@ -137,5 +147,5 @@ export function skillPackageRuntime(db: Db) {
   async function agentInventory(version: StoredSkillVersion) {
     return (await agentFiles(version)).map(({ path, kind }) => ({ path, kind }));
   }
-  return { inventory, agentInventory, materialize, readFile };
+  return { inventory, agentInventory, materialize, materializeLibrary, readFile };
 }

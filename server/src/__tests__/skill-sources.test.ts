@@ -612,8 +612,9 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect(audit?.verdict).not.toBe('fail');
     expect(audit?.codes).not.toContain('inventory_mismatch');
     expect(audit?.codes).not.toContain('non_text_file');
-    // The audit covers what agents get: only the skill folder, not the shared repository files.
-    expect(audit?.findings.some(finding => finding.path?.includes('assets/data.bin') || finding.path?.includes('shared/check.sh'))).toBe(false);
+    // load_skill serves the whole pinned repository, so the audit covers it too.
+    expect(audit?.findings.some(finding => finding.path === '.paperclip-repository/assets/data.bin' && finding.code === 'asset_trust')).toBe(true);
+    expect(audit?.findings.some(finding => finding.path === '.paperclip-repository/shared/check.sh' && finding.code === 'script_trust')).toBe(true);
     const v1 = (await skills.getVersion(companyId, main.id, main.currentVersionId!))!;
     const helper = installed.imported.find(skill => skill.name === 'helper')!;
     expect((await skills.getVersion(companyId, helper.id, helper.currentVersionId!))?.repositorySnapshotId).toBe(v1.repositorySnapshotId);

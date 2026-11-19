@@ -3632,13 +3632,26 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       return withSkillVersionCacheLock(db, companyId, async () => {
         const version = await readVersionMetadata(companyId, skill.id, versionId);
         if (!version) throw unprocessable("Installed skill version is unavailable.");
+        if (version.repositorySnapshotId) {
+          // Agents receive only the skill's folder, but load_skill serves the whole
+          // pinned repository, so the audit scans that library copy.
+          const libraryCopy = path.resolve(resolveManagedSkillsRoot(companyId), "__audit__", `${version.id}-${randomUUID()}`);
+          try {
+            await packageRuntime.materializeLibrary(version, libraryCopy);
+            return await auditInstalledSkillBytes({
+              ...skill, sourceType: "local_path", sourceLocator: libraryCopy,
+              fileInventory: await packageRuntime.inventory(version),
+            });
+          } finally {
+            await fs.rm(libraryCopy, { recursive: true, force: true });
+          }
+        }
         const sourceLocator = await materializeVersionSnapshot(companyId, skill, version);
         return auditInstalledSkillBytes({
           ...skill,
           sourceType: "local_path",
           sourceLocator,
-          // Audit what agents get: a repository skill delivers only its own folder.
-          fileInventory: version.repositorySnapshotId || version.packageSnapshotId
+          fileInventory: version.packageSnapshotId
             ? await packageRuntime.agentInventory(version) : await packages.versionFiles(version),
         });
       });

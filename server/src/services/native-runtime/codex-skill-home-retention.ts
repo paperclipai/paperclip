@@ -7,6 +7,8 @@ import { readCodexSkillHomeMarker, removeCodexSkillHomeTree } from "../../vendor
 import { sweepAbandonedSkillStaging } from "./skill-staging-retention.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** A failed sweep looks again after this long, so unresolved cleanup is retried. */
+const RETRY_MS = 60 * 60 * 1000;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const SCOPE_PATTERN = /^[a-f0-9]{64}$/;
 const RETIRING_PATTERN = /^\.retiring-([a-f0-9]{64})\./;
@@ -65,6 +67,7 @@ export async function sweepSharedSkillStorage(input: {
     } catch (err) {
       result.failed++;
       logger.warn({ err }, "native harness expiration skipped Codex skill homes");
+      due(input.now + RETRY_MS);
     }
   }
   if (stagingRoots.length > 0) {
@@ -79,6 +82,7 @@ export async function sweepSharedSkillStorage(input: {
     } catch (err) {
       result.failed++;
       logger.warn({ err }, "native harness expiration skipped abandoned skill staging");
+      due(input.now + RETRY_MS);
     }
   }
   return result;

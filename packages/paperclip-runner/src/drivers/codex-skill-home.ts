@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
-import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { NativeProviderStateIncompatibleError } from "../contracts/native-session-backend.js";
@@ -362,13 +362,30 @@ export async function writeCodexSkillHomeMarker(codexHome: string, digest: strin
   }
 }
 
+/** A marker holds a schema and a digest; anything larger was not written by the runner. */
+const MAX_MARKER_BYTES = 4096;
+
+/**
+ * Reads the skill home a provider home references. The provider home belongs to
+ * the agent process, so a link, a non-regular file or an oversized file is
+ * treated as no marker rather than followed or read in full.
+ */
 export async function readCodexSkillHomeMarker(codexHome: string): Promise<string | null> {
   let raw: string;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    raw = await readFile(join(codexHome, MARKER_FILE), "utf8");
+    handle = await open(join(codexHome, MARKER_FILE), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > MAX_MARKER_BYTES) return null;
+    const buffer = Buffer.alloc(MAX_MARKER_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > MAX_MARKER_BYTES) return null;
+    raw = buffer.subarray(0, bytesRead).toString("utf8");
   } catch (error) {
-    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
+    if (["ENOENT", "ENOTDIR", "ELOOP", "EMLINK"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
     throw error;
+  } finally {
+    await handle?.close();
   }
   try {
     const value = JSON.parse(raw) as { schema?: unknown; digest?: unknown };

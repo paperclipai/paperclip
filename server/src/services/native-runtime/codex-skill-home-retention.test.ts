@@ -236,6 +236,18 @@ describe("shared skill storage sweep", () => {
     expect(result).toMatchObject({ failed: 0, nextDueAt: null });
   });
 
+  it("retries in an hour when a sweep fails", async () => {
+    const { root, sessionsRoot } = await fixture();
+    const unreadableStore = join(root, "store-is-a-file");
+    await writeFile(unreadableStore, "");
+    const result = await sweepSharedSkillStorage({
+      stateBase: sessionsRoot, stateBaseOverridden: false, acpxSessionsRoot: join(root, "acpx", "acpx"),
+      skillHomeStoreRoot: unreadableStore, skillStagingRoots: [],
+      now: NOW, dryRun: false, maxRemovals: 50, shouldContinue: () => true,
+    });
+    expect(result).toMatchObject({ failed: 1, nextDueAt: NOW + HOUR });
+  });
+
   it("comes back at once when its removal budget runs out", async () => {
     const { root, storeRoot, sessionsRoot } = await fixture();
     for (const id of ["a", "b"]) await home(storeRoot, digest(id), NOW - 72 * HOUR);

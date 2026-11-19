@@ -273,4 +273,18 @@ describe("Codex skill home store", () => {
     await writeFile(join(codexHome, "paperclip-skill-home.json"), "{not json");
     await expect(readCodexSkillHomeMarker(codexHome)).resolves.toBeNull();
   });
+
+  it("ignores a marker an agent replaced with a link or an oversized file", async () => {
+    const { root } = await fixture();
+    const codexHome = join(root, "codex-home");
+    const elsewhere = join(root, "elsewhere.json");
+    await mkdir(codexHome, { recursive: true });
+    await writeFile(elsewhere, JSON.stringify({ schema: "paperclip.codex-skill-home-ref.v1", digest: digestOf("e") }));
+    await symlink(elsewhere, join(codexHome, "paperclip-skill-home.json"));
+    await expect(readCodexSkillHomeMarker(codexHome)).resolves.toBeNull();
+    await rm(join(codexHome, "paperclip-skill-home.json"));
+    await writeFile(join(codexHome, "paperclip-skill-home.json"),
+      JSON.stringify({ schema: "paperclip.codex-skill-home-ref.v1", digest: digestOf("e"), padding: "x".repeat(64 * 1024) }));
+    await expect(readCodexSkillHomeMarker(codexHome)).resolves.toBeNull();
+  });
 });
