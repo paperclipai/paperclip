@@ -33,6 +33,7 @@ fn config(state_dir: PathBuf) -> DurableRunnerConfig {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(1),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     }
 }
 

@@ -28,6 +28,28 @@ const manifest = (revision: string): ProviderPackIdentity => {
 };
 
 describe("installed provider pack compatibility", () => {
+  it("finishes both startup checks when a gateway recovers between verification attempts", async () => {
+    vi.useFakeTimers();
+    try {
+      const expected = manifest("b");
+      const availableAt = Date.now() + 1_000;
+      const execute = vi.fn(async (request: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => {
+        if (Date.now() < availableAt) throw new Error("Request failed with status code 502");
+        return { exitCode: 0, signal: null, pid: null, startedAt: null, timedOut: false, stderr: "",
+          stdout: request.args?.[0] === "--version" ? `${expected.payload.pins.opencode}\n` : "verified" };
+      });
+      const verification = verifyRemoteProviderPack({ runner: { execute }, cwd: "/workspace",
+        packRoot: "/workspace/provider-pack", manifest: expected }).then(value => ({ value }), error => ({ error }));
+      await vi.advanceTimersByTimeAsync(999);
+      expect(execute).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await verification).toEqual({ value: expected });
+      expect(execute).toHaveBeenCalledTimes(3);
+      expect(execute.mock.calls[2][0].args).toEqual(["--version"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("reuses a protected pack across app revisions without executing verification commands", async () => {
     const installed = manifest("a");
     const current = structuredClone(installed);

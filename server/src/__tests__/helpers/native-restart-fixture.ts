@@ -112,7 +112,7 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
       throw new Error("Expected restart recovery TCP listener");
     }
     apiUrl = `http://127.0.0.1:${address.port}`;
-    setupRunnerPrpWebSocketServer(server, { apiUrl });
+    setupRunnerPrpWebSocketServer(server);
 
     const db = createDb(temporary.connectionString);
     try {

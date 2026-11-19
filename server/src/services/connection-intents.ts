@@ -540,12 +540,16 @@ export function connectionIntentService(db: Db) {
         && (aiOnly ? connection.connectionPurpose === "ai" : connection.connectionPurpose !== "ai"));
       // Indexed descriptions can contain private workspace metadata, including
       // for catalog providers. Check each configured connection's audience first.
+      const reauthorizationRequired: ToolConnection[] = [];
       const catalogs = await Promise.all(matching.map(async (connection) => {
         const { grants } = await access.listConnectionGrants(connection.id, run.companyId);
-        const authorized = grants.some((grant) => grant.status === "active" && (
+        const audience = grants.filter((grant) =>
           grant.kind === "organization" || (grant.kind === "user" && grant.subjectUserId === run.responsibleUserId)
-          || (grant.kind === "agent" && grant.subjectAgentId === agent.id)
-        ));
+          || (grant.kind === "agent" && grant.subjectAgentId === agent.id));
+        const authorized = audience.some((grant) => grant.status === "active");
+        // A rejected refresh marks the grant. Name only connections in this
+        // caller's audience so the agent can report the exact human action.
+        if (!authorized && audience.some((grant) => grant.status === "needs_reauthorization")) reauthorizationRequired.push(connection);
         const entries = authorized ? await indexedCatalog(connection.id, run.companyId) : [];
         authorizedCatalogs.set(connection.id, entries);
         return entries;
@@ -581,6 +585,7 @@ export function connectionIntentService(db: Db) {
         state: ready ? "ready" : (denied && !isRemoteMcpConnectorId(service)) || !app.available || !app.methods.length ? "unavailable"
           : matching.length ? "needs_user_action" : "available",
         reason: ready ? "Connection is installed and usable by this agent" : denied ? "Ask the responsible user to grant this agent access with connection_request" : !app.available ? "Connection is disabled or unavailable"
+          : reauthorizationRequired.length ? `"${reauthorizationRequired[0]!.name}" must be signed in again. A person who manages this connection must reconnect it on its app page`
           : matching.some((connection) => isToolConnectionAttentionHealth(connection.healthStatus)) ? "Connection needs attention"
           : matching.length ? "Review identity and access for this agent" : "Connect this service to continue",
         connectionId: ready?.id ?? null,

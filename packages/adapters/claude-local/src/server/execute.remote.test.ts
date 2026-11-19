@@ -121,8 +121,10 @@ describe("claude remote execution", () => {
     };
   }
 
-  it.each([undefined, "acp"])("admits managed SSH ACP through the public execution entry (engine=%s)", async engine => {
+  it.each([undefined, "acp"].flatMap(engine => (["copy", "in_place"] as const).map(mode => ({ engine, mode }))))(
+    "admits managed SSH ACP through the public execution entry (engine=$engine, workspace=$mode)", async ({ engine, mode }) => {
     const ctx = managedSshAcpContext(engine);
+    ctx.executionTarget.workspaceRealization.mode = mode;
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>("@paperclipai/adapter-utils/server-utils");
     const bin = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-client-probe-"));
     cleanupDirs.push(bin);
@@ -150,13 +152,12 @@ describe("claude remote execution", () => {
     }
   });
 
-  it.each(["host auth", "legacy auth", "missing account", "in-place", "confinement", "missing SSH client"])("rejects unsupported SSH ACP at the public execution entry: %s", async reason => {
+  it.each(["host auth", "legacy auth", "missing account", "confinement", "missing SSH client"])("rejects unsupported SSH ACP at the public execution entry: %s", async reason => {
     const ctx = managedSshAcpContext("acp");
     const originalResolve = ensureCommandResolvable.getMockImplementation()!;
     if (reason === "host auth") ctx.executionTarget.spec.useHostAuth = true;
     if (reason === "legacy auth") ctx.executionTarget.spec.useHostAuth = undefined;
     if (reason === "missing account") delete ctx.config.managedAiConnection;
-    if (reason === "in-place") ctx.executionTarget.workspaceRealization.mode = "in_place";
     if (reason === "confinement") ctx.config.filesystemScope = "workspace";
     const previousPath = process.env.PATH;
     if (reason === "missing SSH client") {
@@ -268,12 +269,16 @@ describe("claude remote execution", () => {
     }
   });
 
-  it("uses the agent's subscription in a private SSH home without reading the SSH user's Claude login", async () => {
+  it.each(["copy", "in_place"] as const)("uses the agent's subscription in a private SSH home without reading the SSH user's Claude login (workspace=%s)", async mode => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-selected-ssh-"));
     cleanupDirs.push(rootDir);
-    const workspaceDir = path.join(rootDir, "workspace");
+    const remoteMount = path.join(rootDir, "remote-filesystem");
+    const workspaceDir = mode === "in_place" ? path.join(remoteMount, "workspace") : path.join(rootDir, "workspace");
     const providerHome = path.join(rootDir, "selected-provider");
-    await mkdir(workspaceDir);await mkdir(providerHome);
+    if (mode === "in_place") await writeFile(remoteMount, "The SSH workspace is not a local directory.");
+    else await mkdir(workspaceDir);
+    await mkdir(providerHome);
+    const remoteCwd = mode === "in_place" ? workspaceDir : "/remote/workspace";
     const logs: string[] = [];
     await execute({
       runId: "selected-subscription", agent: { id: "agent-1", companyId: "company-1", name: "Configured agent", adapterType: "claude_local", adapterConfig: {} },
@@ -281,16 +286,26 @@ describe("claude remote execution", () => {
       config: { engine: "cli", command: "claude", managedAiConnection: { provider: "anthropic", method: "subscription", identity: "selected-account" },
         env: { HOME: rootDir, CLAUDE_CONFIG_DIR: providerHome, CLAUDE_CODE_OAUTH_TOKEN: "selected-agent-token", ANTHROPIC_API_KEY: "" } },
       context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
-      executionTransport: { remoteExecution: { useHostAuth: false, host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: false } },
+      executionTarget: { kind: "remote", transport: "ssh", remoteCwd,
+        spec: { useHostAuth: false, host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: remoteCwd, remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: false },
+        workspaceRealization: { mode, authoritativeRoot: remoteCwd, pathAliases: [], outboundRestorePaths: [] } },
       onLog: async (_stream, chunk) => { logs.push(chunk); },
     });
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({ localDir: providerHome, remoteDir: "/tmp/paperclip-ssh-runtime.claude/config-seed" }));
-    const providerCall = runChildProcess.mock.calls.find(call => call[2].includes("--print")) as unknown as [string, string, string[], { env: Record<string, string> }];
-    expect(providerCall[3].env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: "selected-agent-token", CLAUDE_CONFIG_DIR: "/tmp/paperclip-ssh-runtime.claude/config", HOME: "/tmp/paperclip-ssh-runtime.claude", ANTHROPIC_API_KEY: "" });
+    const providerCall = runChildProcess.mock.calls.find(call => call[2].includes("--print")) as unknown as [string, string, string[], { env: Record<string, string>; cwd: string }];
+    expect(providerCall[3].env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: "selected-agent-token", HOME: "/tmp/paperclip-ssh-runtime.claude", ANTHROPIC_API_KEY: "" });
+    if (mode === "copy") expect(providerCall[3].env.CLAUDE_CONFIG_DIR).toBe("/tmp/paperclip-ssh-runtime.claude/config");
+    else expect(path.posix.relative(remoteCwd, providerCall[3].env.CLAUDE_CONFIG_DIR!)).toMatch(/^\.paperclip-runtime\/claude\/conversations\/[a-f0-9]+\/[a-f0-9]+$/);
     const materialize = runSshCommand.mock.calls.find(call => call[1].includes("config-seed"));
     expect(materialize?.[1]).not.toContain(".claude/\u0024{file}");
     expect(runSshCommand).toHaveBeenCalledWith(expect.anything(), "rm -rf -- '/tmp/paperclip-ssh-runtime.claude'", expect.anything());
     expect(logs.join("")).not.toContain("selected-agent-token");
+    if (mode === "in_place") {
+      expect(providerCall[3].cwd).toBe(remoteCwd);
+      expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+      expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
+      expect(await readFile(remoteMount, "utf8")).toBe("The SSH workspace is not a local directory.");
+    }
   });
 
   it("removes the selected account's SSH home when Claude setup fails before launch", async () => {

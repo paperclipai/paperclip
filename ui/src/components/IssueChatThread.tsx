@@ -1,4 +1,5 @@
 import { createUuid } from "@/lib/uuid";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
@@ -6709,7 +6710,7 @@ export function IssueChatThread({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
-        <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+        <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4", ANALYTICS_MASK_CLASS)}>
           {resolvedShowJumpToLatest ? (
             <div className="flex justify-end">
               <button

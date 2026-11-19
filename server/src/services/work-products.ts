@@ -1,9 +1,9 @@
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { notifyApprovalQueueWork } from "./approval-work-notifications.js";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
+import { executionWorkspaces, heartbeatRunEvents, issues, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
@@ -19,9 +19,19 @@ import {
   type GitHubCommitDiffDetailsResolver,
 } from "./github-commit-details.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
+import { emitArtifactCreatedAfterCommit } from "./product-telemetry.js";
+import { logger } from "../middleware/logger.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 type WorkProductTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function lockWorkProductIssues(tx: WorkProductTransaction, scopes: Array<{ companyId: string; issueId: string }>) {
+  const unique = [...new Map(scopes.map(scope => [`${scope.companyId}:${scope.issueId}`, scope])).values()];
+  const rows = await tx.select({ id: issues.id }).from(issues).where(or(...unique.map(scope =>
+    and(eq(issues.id, scope.issueId), eq(issues.companyId, scope.companyId)))))
+    .orderBy(issues.id).for("update");
+  if (rows.length !== unique.length) throw unprocessable("Work product tasks must exist in their bound companies.");
+}
 
 async function validateExecutionWorkspace(
   tx: WorkProductTransaction,
@@ -296,7 +306,7 @@ export function workProductService(
               ),
             );
         }
-        return await tx
+        const created = await tx
           .insert(issueWorkProducts)
           .values({
             ...data,
@@ -305,16 +315,36 @@ export function workProductService(
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (created) {
+          const task = await tx.transaction(async (read) => (await read
+            .select({ createdByUserId: issues.createdByUserId, responsibleUserId: issues.responsibleUserId })
+            .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))))[0] ?? null)
+            .catch((err: unknown) => {
+              logger.warn({ err, issueId }, "failed to read task owner for artifact telemetry");
+              return null;
+            });
+          emitArtifactCreatedAfterCommit({ companyId, type: created.type, provider: created.provider, creationFlow: "direct",
+            task, runOwnerUserId: null });
+        }
+        return created;
       });
       return row ? toIssueWorkProduct(row) : null;
     },
 
     update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>, actorAgentId?: string | null) => {
       const row = await db.transaction(async (tx) => {
+        const [location] = await tx.select({ companyId: issueWorkProducts.companyId, issueId: issueWorkProducts.issueId })
+          .from(issueWorkProducts).where(eq(issueWorkProducts.id, id));
+        if (!location) return null;
+        await lockWorkProductIssues(tx, [location, {
+          companyId: patch.companyId ?? location.companyId, issueId: patch.issueId ?? location.issueId,
+        }]);
         const existing = await tx
           .select()
           .from(issueWorkProducts)
-          .where(eq(issueWorkProducts.id, id))
+          .where(and(eq(issueWorkProducts.id, id), eq(issueWorkProducts.companyId, location.companyId),
+            eq(issueWorkProducts.issueId, location.issueId)))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
         await assertAgentInteraction(tx, { companyId: existing.companyId, actorAgentId, operation: "edit", issueId: existing.issueId,

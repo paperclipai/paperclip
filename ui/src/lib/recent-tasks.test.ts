@@ -54,6 +54,40 @@ describe("recent task persistence", () => {
     expect(entries.filter((entry) => entry.id === "4")).toHaveLength(1);
   });
 
+  it("refreshes machine updates without moving a task above more recent personal work", () => {
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    recordRecentTask(issue("older"), "user-1", 10);
+    recordRecentTask(issue("newer"), "user-1", 20);
+    updateRecentTaskSnapshots(storageKey, "company-1", [{
+      ...issue("older"), title: "Agent finished", status: "done", updatedAt: new Date(100),
+    }]);
+    recordRecentTask({ ...issue("older"), title: "Agent finished", status: "done", updatedAt: new Date(100) }, "user-1");
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id)).toEqual(["newer", "older"]);
+    expect(readRecentTasks(storageKey, "company-1")[1]).toMatchObject({
+      title: "Agent finished", status: "done", recordedAt: 10, snapshotUpdatedAt: 100,
+    });
+  });
+
+  it("migrates v2 history once without accepting old-tab machine promotions", () => {
+    const key = getRecentTasksStorageKey("company-1", "user-1");
+    const oldKey = "paperclip.recentTasks.v2:company-1:user-1";
+    localStorage.setItem(oldKey, JSON.stringify([{ ...issue("1"), recordedAt: 10 }]));
+    migrateRecentTasks(key, "company-1");
+    localStorage.setItem(oldKey, JSON.stringify([{ ...issue("2"), recordedAt: 100 }]));
+    migrateRecentTasks(key, "company-1");
+    expect(readRecentTasks(key, "company-1").map(entry => entry.id)).toEqual(["1"]);
+  });
+
+  it("seeds passive visits below existing history independently of machine update times", () => {
+    const key = getRecentTasksStorageKey("company-1", "user-1");
+    recordRecentTask(issue("personal"), "user-1", 10);
+    recordRecentTask({ ...issue("first-visit"), updatedAt: new Date(100) }, "user-1");
+    recordRecentTask({ ...issue("second-visit"), updatedAt: new Date(1_000) }, "user-1");
+    expect(readRecentTasks(key, "company-1").map(entry => entry.id)).toEqual(["personal", "first-visit", "second-visit"]);
+    recordRecentTask(issue("second-visit"), "user-1", 20);
+    expect(readRecentTasks(key, "company-1").map(entry => entry.id)).toEqual(["second-visit", "personal", "first-visit"]);
+  });
+
   it("refreshes conversation readiness when review or delivery changes without a task edit", () => {
     const task = { ...issue("1"), status: "in_review" as const, externalConversationState: "waiting" as const };
     recordRecentTask(task, "user-1");
@@ -142,7 +176,7 @@ describe("recent task persistence", () => {
         id: "2",
         title: "Updated task",
         status: "in_progress",
-        recordedAt: 3,
+        recordedAt: 2,
       }),
     ]);
   });
@@ -191,7 +225,7 @@ describe("recent task persistence", () => {
     const storageKey = getRecentTasksStorageKey("company-1", "user-1");
     const older = { ...issue("1"), title: "Old title", updatedAt: new Date(10) };
     const newer = { ...issue("1"), title: "New title", status: "done" as const, updatedAt: new Date(20) };
-    recordRecentTask(older, "user-1");
+    recordRecentTask(older, "user-1", 10);
     updateRecentTaskSnapshots(storageKey, "company-1", [newer]);
     const setItem = vi.spyOn(storageMethods, "setItem");
     const listener = vi.fn();
@@ -203,7 +237,7 @@ describe("recent task persistence", () => {
         updateRecentTaskSnapshots(storageKey, "company-1", [newer]);
       }
       expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({
-        title: "New title", status: "done", snapshotUpdatedAt: 20, recordedAt: 20,
+        title: "New title", status: "done", snapshotUpdatedAt: 20, recordedAt: 10,
       });
       expect(setItem).not.toHaveBeenCalled();
       expect(listener).not.toHaveBeenCalled();

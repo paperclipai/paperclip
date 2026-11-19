@@ -20,6 +20,8 @@ import {
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   isGoogleWorkspaceScopeGrant,
+  googleWorkspaceProfileWithinSubmittedScopes,
+  googleWorkspaceSubmittedScopesIn,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -158,7 +160,7 @@ const BROKER_REJECTION_REASONS = new Set([
   "REQUEST_EXPIRED", "REQUEST_REPLAYED", "SIGNATURE_REJECTED",
   "AUDIENCE_MISMATCH", "OPERATION_MISMATCH", "PAYLOAD_MISMATCH",
   "MALFORMED_REQUEST", "UNSUPPORTED_ALGORITHM", "RATE_LIMITED",
-  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED",
+  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED", "REVOCATION_NOT_AVAILABLE",
   "SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_IDENTITY_CHANGED",
   "SLACK_ENROLLMENT_CHANGED", "SLACK_ENROLLMENT_UNSETTLED", "SLACK_ENROLLMENT_DISABLED",
   "SLACK_COMPANY_MISMATCH", "SLACK_EVENTS_UNAVAILABLE",
@@ -166,6 +168,12 @@ const BROKER_REJECTION_REASONS = new Set([
   "SLACK_FORM_RETIREMENT_CHANGED", "SLACK_FORM_RETIREMENT_PROOF_MISSING", "SLACK_FORM_CUSTODY_CHANGED", "SLACK_FORM_RETIREMENT_SIGNER_UNAVAILABLE", "SLACK_FORM_CANONICAL_FACT_CHANGED", "SLACK_FORM_CANONICAL_FACT_BUDGET_CHANGED", "SLACK_FORM_CANONICAL_FACT_PENDING",
 ]);
 const UNKNOWN_BROKER_REASON = "UNKNOWN_BROKER_ERROR";
+
+export const PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES = [
+  "revoked", "other_connections_remain", "provider_revocation_failed",
+  "binding_not_known", "provider_revocation_disabled", "revocation_in_progress",
+] as const;
+export type PaperclipCloudGrantRevocationOutcome = typeof PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES[number];
 
 async function readBrokerRejectionReason(response: Response): Promise<string> {
   if (response.bodyUsed || response.body?.locked) return UNKNOWN_BROKER_REASON;
@@ -299,6 +307,7 @@ export function createPaperclipCloudConnector(input: {
     operation: PaperclipCloudConnectorOperation,
     claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string; eventWakeVersion?: 0 | 1 },
     secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement" | "enrollment" | "operation"; value: string },
+    timeoutMs = 15_000,
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
     const issuedAt = Math.floor(now() / 1000);
@@ -342,7 +351,7 @@ export function createPaperclipCloudConnector(input: {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: encodedBody,
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE");
@@ -396,6 +405,7 @@ export function createPaperclipCloudConnector(input: {
     if (credentials.profile !== profile) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
+    if (profile === "workspace.all") credentials.scopes = googleWorkspaceSubmittedScopesIn(credentials.scopes);
     if (!(profile === "workspace.all" ? isGoogleWorkspaceScopeGrant(credentials.scopes) : sameStringSet(credentials.scopes, definition.scopes))) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }
@@ -521,6 +531,9 @@ export function createPaperclipCloudConnector(input: {
     },
     async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
+      if (!paperclipCloudConnectorConsentAllowed(profile)) {
+        throw new PaperclipCloudConnectorError("This permission set is not offered through Paperclip's Google app", "CONNECTOR_CONFIG_INVALID");
+      }
       const response = await call("session", { ...values, profile });
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid session", "CONNECTOR_BAD_RESPONSE");
@@ -582,8 +595,13 @@ export function createPaperclipCloudConnector(input: {
         profile,
       );
     },
-    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string }) {
-      await call("revoke", { ...values, profile: values.profile ?? "gmail.draft" }, { field: "token", value: values.token });
+    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string; timeoutMs?: number }): Promise<{ outcome?: PaperclipCloudGrantRevocationOutcome }> {
+      const { timeoutMs, ...claims } = values;
+      const response = await call("revoke", { ...claims, profile: claims.profile ?? "gmail.draft" }, { field: "token", value: claims.token }, timeoutMs);
+      const outcome = (response as ConnectorResponse & { outcome?: unknown }).outcome;
+      return typeof outcome === "string" && (PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES as readonly string[]).includes(outcome)
+        ? { outcome: outcome as PaperclipCloudGrantRevocationOutcome }
+        : {};
     },
     async setWebhookBinding(values: {
       subject: string;
@@ -735,7 +753,8 @@ export function appWithPaperclipCloudConnectorAvailability(
   const enabledProfiles = new Set(profiles);
   const methods = app.methods.filter((method) =>
     !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
-    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile))
+    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile)
+      && paperclipCloudConnectorConsentAllowed(method.connectorProfile))
   );
   return {
     ...app,
@@ -746,6 +765,10 @@ export function appWithPaperclipCloudConnectorAvailability(
       platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
     },
   };
+}
+
+export function paperclipCloudConnectorConsentAllowed(profile: string): boolean {
+  return !isGoogleWorkspaceConnectorProfileId(profile) || googleWorkspaceProfileWithinSubmittedScopes(profile);
 }
 
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;

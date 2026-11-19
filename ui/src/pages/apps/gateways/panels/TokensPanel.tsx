@@ -30,6 +30,7 @@ import {
   type TokenStatus,
 } from "../gateway-helpers";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 const DEFAULT_ACTIONS: ToolMcpGatewayTokenAction[] = ["tools/list", "tools/call"];
 const TOKEN_PAGE_SIZE = 10;
@@ -310,7 +311,7 @@ export function TokensPanel({
             </Button>
           </div>
           <div className="flex items-center gap-2">
-            <code className="min-w-0 flex-1 truncate rounded bg-muted px-3 py-2 font-mono text-xs text-foreground">
+            <code className={cn("min-w-0 flex-1 truncate rounded bg-muted px-3 py-2 font-mono text-xs text-foreground", ANALYTICS_NO_CAPTURE_CLASS)}>
               {revealed ? created.token : maskedTokenLabel(created)}
             </code>
             {revealed ? (

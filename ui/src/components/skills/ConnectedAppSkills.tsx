@@ -9,6 +9,8 @@ import { useToastActions } from "../../context/ToastContext";
 import { formatBytes } from "../../lib/issue-output";
 import { queryKeys } from "../../lib/queryKeys";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 const STATUS_LABEL: Record<CompanyMcpSkill["status"], string> = {
   pending_review: "Needs review",
@@ -129,7 +131,7 @@ export function ConnectedAppSkillsList({ skills, pendingSkillId, preview, onPrev
                 preview?.error ? <p className="text-sm text-destructive">{preview.error}</p>
                   : preview?.loading || !previewCurrent ? <p className="text-sm text-muted-foreground">Loading instructions…</p>
                     // Shown as text: the content comes from the app and is never rendered as a page.
-                    : <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-xs">{preview?.markdown}</pre>
+                    : <pre className={cn("max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-xs", ANALYTICS_MASK_CLASS)}>{preview?.markdown}</pre>
               ) : null}
             </li>
           );
