@@ -33,7 +33,7 @@ try {
    if (fs.existsSync(target)) continue;
    fs.mkdirSync(target);
    created.push({path:relative,kind:'skill'});
-   fs.cpSync(path.join(source,name),target,{recursive:true,force:false,errorOnExist:true});
+   for (const child of fs.readdirSync(path.join(source,name))) fs.cpSync(path.join(source,name,child),path.join(target,child),{recursive:true,force:false,errorOnExist:true});
   }
  }
  const rules = fs.existsSync(path.join(assets,'Agents.md')) ? path.join(assets,'Agents.md')
