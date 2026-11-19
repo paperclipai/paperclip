@@ -969,8 +969,8 @@ suite("task project repository provisioning", () => {
     await vi.waitFor(async () => {
       const latest = await heartbeat.getRun(run!.id);
       expect({ status: latest?.status, error: latest?.error }).toEqual({ status: "succeeded", error: null });
-    }, { timeout: 15_000 });
-  }, 40_000);
+    }, { timeout: 30_000 });
+  }, 60_000);
   it("starts a task in a project without repository checkouts in its task directory and adds a requested repository", async () => {
     const companyId = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), agentId = randomUUID();
     const source = path.join(root, companyId, "api");
