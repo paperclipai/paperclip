@@ -36,6 +36,7 @@ import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
 import { useTx } from "@/i18n/tx";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 type ToolActivity = Extract<Activity, { kind: "tool" }>;
@@ -431,7 +432,7 @@ function ActivityDetailsBody({ item }: { item: Activity }) {
       ) : null}
       {item.blockedReason ? <p className="text-destructive">Blocked: {item.blockedReason}</p> : null}
       {item.detail ? (
-        <pre className="whitespace-pre-wrap break-words font-mono">
+        <pre className={cn("whitespace-pre-wrap break-words font-mono", ANALYTICS_MASK_CLASS)}>
           {item.detail}
         </pre>
       ) : null}

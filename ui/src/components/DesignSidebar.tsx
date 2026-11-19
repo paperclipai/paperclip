@@ -3,7 +3,7 @@ import { Boxes, CircleCheck, CirclePlus, FolderOpen, History, LayoutDashboard, M
 import { useCompany } from "@/context/CompanyContext";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
-import { SidebarNavExpandedProvider, SidebarNavItem } from "./SidebarNavItem";
+import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarSection } from "./SidebarSection";
 import { RecentTaskNavItem, recentTaskPathRef } from "./RecentTaskNavItem";
 import { TruncatedTextMarqueeProvider } from "./TruncatedText";
@@ -21,7 +21,7 @@ export function DesignSidebar({ onNewTask, recentTasks = [] }: { onNewTask: () =
   const companyRecentTasks = recentTasks.filter(task => task.companyId === selectedCompany?.id);
   const handleRecentScroll = useScrollbarWhileScrolling();
   return (
-    <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><SidebarNavExpandedProvider>
+    <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider>
       <div className="design-sidebar">
         <div className="design-sidebar-brand">
           <SidebarCompanyMenu showChevron={false} />
@@ -53,8 +53,8 @@ export function DesignSidebar({ onNewTask, recentTasks = [] }: { onNewTask: () =
             </SidebarSection>
           </div> : null}
         </nav>
-        <div className="design-sidebar-account"><SidebarAccountMenu forceExpanded /></div>
+        <div className="design-sidebar-account"><SidebarAccountMenu /></div>
       </div>
-    </SidebarNavExpandedProvider></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>
+    </TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>
   );
 }

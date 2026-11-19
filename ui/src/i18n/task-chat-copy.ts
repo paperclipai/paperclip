@@ -13,7 +13,7 @@ export function composerPlaceholder(
   if (mobile) {
     if (mode === "planning") return ru ? `План с ${agentName}…` : `Plan with ${agentName}…`;
     if (mode === "ask") return ru ? `Спросить ${agentName}…` : `Ask ${agentName}…`;
-    return ru ? `Сообщение для ${agentName}…` : `Message ${agentName}…`;
+    return ru ? `Работа с ${agentName}` : `Work with ${agentName}`;
   }
   switch (mode) {
     case "planning":
@@ -25,9 +25,7 @@ export function composerPlaceholder(
         ? `Вопрос для ${agentName} — только чтение, ничего не запускается…`
         : `Ask ${agentName} a question — read-only, nothing runs…`;
     default:
-      return ru
-        ? `Сообщение для ${agentName} — опишите, что нужно сделать…`
-        : `Message ${agentName} — describe what you want done…`;
+      return ru ? `Работа с ${agentName}` : `Work with ${agentName}`;
   }
 }
 

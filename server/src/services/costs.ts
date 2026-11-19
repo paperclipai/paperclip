@@ -64,7 +64,7 @@ export async function getMonthlySpendTotal(
 
 export async function createCostEventInTransaction(db: Db, companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId" | "receiptHash" | "costCents"> & { costCents: MoneyInput }, publications: ActivityPublication[] = [], actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId">,
   options: { deferBudgetEvaluation?: boolean } = {}) {
-  const parsed = ((data.usageKind === "decision" || data.usageKind === "fast_response" || data.usageKind === "prompt_injection") ? createServiceCostEventSchema : createCostEventSchema).safeParse({ ...data, occurredAt: data.occurredAt.toISOString() });
+  const parsed = ((data.usageKind === "decision" || data.usageKind === "fast_response" || data.usageKind === "prompt_injection" || data.usageKind === "responsibility_summary") ? createServiceCostEventSchema : createCostEventSchema).safeParse({ ...data, occurredAt: data.occurredAt.toISOString() });
   if (!parsed.success) throw unprocessable("Invalid cost receipt", parsed.error.flatten());
   const values = {
     ...parsed.data,
@@ -132,7 +132,7 @@ export async function createCostEventInTransaction(db: Db, companyId: string, da
   if (!options.deferBudgetEvaluation) await queueBudgetEvaluation(db, { companyId, agentId: event.agentId, projectId: event.projectId });
   await logActivity(db, {
     companyId, actorType: actor?.actorType ?? "system", actorId: actor?.actorId ?? "cost_accounting", agentId: actor?.agentId ?? event.agentId,
-    ...((event.usageKind === "decision" || event.usageKind === "fast_response" || event.usageKind === "prompt_injection") ? { responsibleUserIdOverride: event.responsibleUserId } : {}),
+    ...((event.usageKind === "decision" || event.usageKind === "fast_response" || event.usageKind === "prompt_injection" || event.usageKind === "responsibility_summary") ? { responsibleUserIdOverride: event.responsibleUserId } : {}),
     runId: event.heartbeatRunId, action: "cost.reported", entityType: "cost_event", entityId: event.id,
     details: { costCents: event.costCents, costCentsExact: values.costCents, model: event.model, costStatus: event.costStatus },
   }, publications);

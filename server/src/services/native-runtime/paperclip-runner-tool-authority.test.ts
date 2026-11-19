@@ -32,6 +32,7 @@ import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { TOOL_CALL_LOOP_HINT, ToolCallLoopError } from "./repeated-tool-failure-guard.js";
+import { cancelStoppedRunContinuation } from "./native-tool-receipt-limit.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
@@ -1636,6 +1637,53 @@ describe("PaperclipRunnerToolAuthority", () => {
       },
     });
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+  });
+
+  it("queues no tool-call loop continuation for a run a person stopped, and cancels one queued before the Stop", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
+    const key = `agent_tool_call_loop:${runId}`;
+    const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId"], 400, "refused");
+    await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(true);
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const stopped = { ...before!, resultJson: { ...before!.resultJson, cancelledByActorType: "user", cancelledByUserId: "board-user" } };
+    await db.update(heartbeatRuns).set({ resultJson: stopped.resultJson }).where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(cancelStoppedRunContinuation(db, stopped, key)).resolves.toBe(1);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key)))
+        .map(row => row.status)).toEqual(["cancelled"]);
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+      await expect(authority.scheduleToolCallLoopContinuation(loop)).resolves.toBe(false);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(0);
+    } finally {
+      await db.update(heartbeatRuns).set({ resultJson: before!.resultJson }).where(eq(heartbeatRuns.id, runId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    }
+  });
+
+  it("orders the loop continuation's locks task first, like Stop, so a concurrent Stop wins without a deadlock", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
+    const key = `agent_tool_call_loop:${runId}`;
+    const loop = new ToolCallLoopError("call_api", 6, 6, ["operationId"], 400, "refused");
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    let holdingTask!: () => void;
+    const taskLocked = new Promise<void>(resolve => { holdingTask = resolve; });
+    try {
+      const stop = db.transaction(async tx => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+        holdingTask();
+        await new Promise(resolve => setTimeout(resolve, 300));
+        await tx.update(heartbeatRuns).set({ resultJson: { ...before!.resultJson, cancelledByActorType: "user", cancelledByUserId: "board-user" } })
+          .where(eq(heartbeatRuns.id, runId));
+      });
+      await taskLocked;
+      const scheduled = authority.scheduleToolCallLoopContinuation(loop);
+      await expect(stop).resolves.toBeUndefined();
+      await expect(scheduled).resolves.toBe(false);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(0);
+    } finally {
+      await db.update(heartbeatRuns).set({ resultJson: before!.resultJson }).where(eq(heartbeatRuns.id, runId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key));
+    }
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {

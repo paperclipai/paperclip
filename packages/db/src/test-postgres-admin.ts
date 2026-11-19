@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { applyPendingMigrations, closeRegisteredClients } from "./client.js";
 
+export const QUIET_TEST_DATABASE_SQL = (databaseName: string) =>
+  `ALTER DATABASE "${databaseName}" SET client_min_messages = warning`;
+
 export function testPostgresAdminUrl(): string | undefined {
   const value = process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim();
   if (!value) return undefined;
@@ -41,6 +44,7 @@ export async function startTestPostgresDatabase(adminUrl: string): Promise<{
   })();
   try {
     await admin.unsafe(`CREATE DATABASE "${name}"${template ? ` TEMPLATE "${template}"` : ""}`);
+    await admin.unsafe(QUIET_TEST_DATABASE_SQL(name));
     await applyPendingMigrations(connectionString);
     return { connectionString, cleanup };
   } catch (error) {

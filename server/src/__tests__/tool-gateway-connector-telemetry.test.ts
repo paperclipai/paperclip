@@ -29,12 +29,13 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
 
 // Proposal wrappers drop unregistered names inside the real client, so the
 // integration assertions use a client double that reports the proposed event
 // as registered. `track` observes exactly what the emitter would hand the
 // real client after schema adoption.
-const track = vi.fn();
+const track = vi.fn((..._args: unknown[]) => scopedTelemetryCompanyId());
 const isRegisteredEventName = vi.fn(() => true);
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: () => ({ track, isRegisteredEventName }),
@@ -236,6 +237,11 @@ async function createRemoteMcpTool(db: Db, companyId: string) {
   return { application: application!, connection: connection!, catalogEntry: catalogEntry! };
 }
 
+function scopesOf(name: string) {
+  return track.mock.calls.flatMap(([eventName], index) =>
+    eventName === name ? [track.mock.results[index]?.value] : []);
+}
+
 async function settledEvents(expectedCount: number) {
   await vi.waitFor(() => {
     expect(
@@ -336,6 +342,7 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
       status: "succeeded",
       origin: "agent",
     });
+    expect(scopesOf("connection.invoked")).toEqual([f.company.id]);
   }, 30_000);
 
   it("emits a single failed event when post-success audit work throws (no contradictory pair)", async () => {

@@ -59,6 +59,7 @@ import {
 } from "../components/FileTree";
 import { describeError } from "@/api/errors";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
@@ -572,7 +573,7 @@ function ExportPreviewPane({
             <img src={imageSrc} alt={selectedFile} className="max-h-(--sz-480px) max-w-full object-contain" />
           </div>
         ) : textContent !== null ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{textContent}</code>
           </pre>
         ) : (

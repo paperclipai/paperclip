@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, companies, completionContracts, databaseWorkPending, environmentLeases, reconcileDatabaseWork, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
+import { agents, agentWakeupRequests, companies, completionContracts, databaseWorkPending, environmentLeases, reconcileDatabaseWork, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
   issueTreeHolds, issueTreeHoldMembers, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
@@ -156,11 +156,12 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     const dependencies = createHeartbeatQueueTestDependencies(f.db);
     dependencies.getAgent.mockResolvedValue(agent);
     dependencies.instanceSettings.getExperimental.mockImplementation(() => instanceSettingsService(f.db).getExperimental());
-    dependencies.wakeQueue.admitWakeBehindIssueExecution.mockResolvedValue({ kind: "deferred" });
-    await createHeartbeatQueue(f.db, dependencies).enqueueWakeup(f.agentId, { source: "assignment", reason: "issue_assigned",
-      requestedByActorType: "system", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
+    expect(await createHeartbeatQueue(f.db, dependencies).enqueueWakeup(f.agentId, { source: "assignment", reason: "issue_assigned",
+      allowRunCoalescing: false, requestedByActorType: "system", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } })).toBeNull();
     expect(dependencies.executeRun).not.toHaveBeenCalled();
-    expect(dependencies.wakeQueue.admitWakeBehindIssueExecution).toHaveBeenCalledOnce();
+    const [wake] = await f.db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${f.issueId}`));
+    expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
     expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
       .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
   });

@@ -30,6 +30,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { createCodexTaskEnvelope } from "../../contracts/codex.js";
+import { PRP_BLOCKER_ALREADY_REPORTED_MESSAGE, PRP_RESULT_ALREADY_ACCEPTED_MESSAGE } from "../../contracts/completion-result.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironmentProjection } from "../../configured-environment.js";
 import { localIntegrityBoundaryGolden } from "../../../test-support/local-integrity-boundary-golden.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
@@ -2864,6 +2865,54 @@ describe("OpenCodeServerDriver", () => {
     const evidence = files.find((name) => name.endsWith("fake-revision-repair.json"));
     expect(evidence).toBeDefined();
     expect(JSON.parse(await readFile(join(root, evidence!), "utf8"))).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining('Use contractRevision "approval-v2"') }] } });
+    await session.close({ reason: "test" });
+  });
+
+  it("tells a provider that a turn's accepted blocker is final when it later tries to finish", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-block-finish-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture, environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" } });
+    const session = await driver.openSession({ runId: "block-then-finish", normalizedSessionId: "block-then-finish", workingDirectory: workspace });
+    await session.startTurn({ message: { role: "user", text: "block-result finish-after-block" } });
+    const events = await collectTurnEvents(session.events());
+    const results = events.filter((event) => event.eventType === "run.result.proposed");
+    expect(results).toHaveLength(1);
+    expect(results[0].payload).toMatchObject({ reportedWorkDisposition: "blocked" });
+    const files = await readdir(root, { recursive: true });
+    const evidence = files.find((name) => name.endsWith("fake-finish-after-block.json"));
+    expect(evidence).toBeDefined();
+    expect(JSON.parse(await readFile(join(root, evidence!), "utf8"))).toMatchObject({ result: { isError: true,
+      content: [{ text: expect.stringContaining(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE) }] } });
+    expect(JSON.stringify(JSON.parse(await readFile(join(root, evidence!), "utf8")))).not.toContain("continues this environment or tool blocker");
+    await session.close({ reason: "test" });
+  });
+
+  it("tells a provider that a turn's accepted done result is final when it reports again", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-finish-finish-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture, environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" } });
+    const session = await driver.openSession({ runId: "finish-then-finish", normalizedSessionId: "finish-then-finish", workingDirectory: workspace });
+    await session.startTurn({ message: { role: "user", text: "finish-after-finish" } });
+    const events = await collectTurnEvents(session.events());
+    const results = events.filter((event) => event.eventType === "run.result.proposed");
+    expect(results).toHaveLength(1);
+    expect(results[0].payload).toMatchObject({ reportedWorkDisposition: "done", summary: "Fake provider completed the task." });
+    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    const files = await readdir(root, { recursive: true });
+    const evidence = files.find((name) => name.endsWith("fake-finish-after-finish.json"));
+    expect(evidence).toBeDefined();
+    const calls = JSON.parse(await readFile(join(root, evidence!), "utf8"));
+    expect(calls.first.result.isError).not.toBe(true);
+    expect(calls.repeated.result.isError).not.toBe(true);
+    for (const rejected of [calls.rejected, calls.rejectedBlock]) {
+      expect(rejected).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining(PRP_RESULT_ALREADY_ACCEPTED_MESSAGE) }] } });
+      expect(rejected.result.content[0].text).toContain("Do not call paperclip_finish or paperclip_block again in this turn");
+      expect(rejected.result.content[0].text).toContain("end the turn");
+    }
     await session.close({ reason: "test" });
   });
 

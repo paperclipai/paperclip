@@ -319,6 +319,7 @@ function AssigneeIdentityAvatar({
   return null;
 }
 
+
 type ComposerAttachment = {
   id: string;
   attachmentId?: string;
