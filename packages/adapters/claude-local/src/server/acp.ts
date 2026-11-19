@@ -34,6 +34,7 @@ import type {
   AcpxTerminalSessionFailure,
   AcpxTerminalFailureClassification,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import { projectAcpxInheritedHostEnvironment } from "@paperclipai/adapter-utils/acpx-engine/inherited-host-env";
 import {
   asBoolean,
   asNumber,
@@ -187,13 +188,15 @@ export function resolveClaudeAcpBillingIdentity(
 }
 
 /**
- * The env that decides Claude auth for an ACP run: a non-empty adapter-config
- * value wins; otherwise the host value counts when the target inherits it.
+ * The env that decides Claude auth for an ACP run is the env the ACP engine
+ * launches: the allowlisted host projection, overlaid with the adapter-config
+ * env. A host value outside the allowlist never reaches Claude, so it does not
+ * count here either.
  */
-function claudeAcpAuthEnv(envConfig: Record<string, unknown>, considerHostEnv: boolean): Record<string, unknown> {
-  const authEnv: Record<string, unknown> = considerHostEnv ? { ...process.env } : {};
+function claudeAcpAuthEnv(envConfig: Record<string, unknown>, inheritHostEnvironment: boolean): Record<string, unknown> {
+  const authEnv: Record<string, unknown> = projectAcpxInheritedHostEnvironment(process.env, "claude", inheritHostEnvironment);
   for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string" && value.trim()) authEnv[key] = value;
+    if (typeof value === "string") authEnv[key] = value;
   }
   return authEnv;
 }
