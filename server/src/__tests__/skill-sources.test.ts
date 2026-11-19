@@ -613,7 +613,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect(audit?.codes).not.toContain('inventory_mismatch');
     expect(audit?.codes).not.toContain('non_text_file');
     // The audit covers what agents get: only the skill folder, not the shared repository files.
-    expect(audit?.findings.some(finding => finding.path.includes('assets/data.bin') || finding.path.includes('shared/check.sh'))).toBe(false);
+    expect(audit?.findings.some(finding => finding.path?.includes('assets/data.bin') || finding.path?.includes('shared/check.sh'))).toBe(false);
     const v1 = (await skills.getVersion(companyId, main.id, main.currentVersionId!))!;
     const helper = installed.imported.find(skill => skill.name === 'helper')!;
     expect((await skills.getVersion(companyId, helper.id, helper.currentVersionId!))?.repositorySnapshotId).toBe(v1.repositorySnapshotId);

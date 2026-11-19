@@ -401,6 +401,10 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     await fs.writeFile(path.join(home, ".agents", "skills", "alpha", "SKILL.md"), "skill");
     const old = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
     await fs.utimes(home, old, old);
+    const recentHome = path.join(skillHomeStoreRoot, "b".repeat(64));
+    await fs.mkdir(path.join(recentHome, ".agents", "skills", "beta"), { recursive: true });
+    const recent = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+    await fs.utimes(recentHome, recent, recent);
     // Production runs tick() only from the evidence worker (duty "evidence").
     const evidence = nativeHarnessBackupExpirationService(db, {
       duty: "evidence", stateBase, skillHomeStoreRoot, closedForDays: 7, now, isSessionBusy: () => false,
@@ -409,10 +413,19 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(result).toMatchObject({ skillHomesRemoved: 1, failed: 0 });
     expect(result.skillHomeReclaimedBytes).toBeGreaterThan(0);
     expect(await exists(home)).toBe(false);
-    // The worker comes back for skill homes even when no other evidence is due.
-    const next = evidence.nextEvidenceAt();
-    expect(next).not.toBeNull();
-    expect(next!).toBeLessThanOrEqual(now.getTime() + 24 * 60 * 60 * 1000);
+    expect(await exists(recentHome)).toBe(true);
+    // The worker comes back when the kept home's grace period ends, also when no other evidence is due.
+    expect(evidence.nextEvidenceAt()).toBe(recent.getTime() + 24 * 60 * 60 * 1000);
+  });
+
+  it("schedules no skill-home pass when no skill storage needs cleanup", async () => {
+    if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
+    const evidence = nativeHarnessBackupExpirationService(db, {
+      duty: "evidence", stateBase, skillHomeStoreRoot: path.join(stateBase, "empty-store"), skillStagingRoots: [],
+      closedForDays: 7, now, isSessionBusy: () => false,
+    });
+    await evidence.tick();
+    expect(evidence.nextEvidenceAt()).toBeNull();
   });
 
   it("removes skill staging an interrupted launch left in a provider home in the same pass", async () => {

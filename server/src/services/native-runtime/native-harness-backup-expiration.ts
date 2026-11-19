@@ -18,7 +18,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { assessSessionRetention } from "./native-session-retention-blockers.js";
 import { sweepSharedSkillStorage } from "./codex-skill-home-retention.js";
-import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
+import { nativeAcpxSessionsRoot, nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
 import { nativeSessionScopeDigestIsBusy } from "./native-session-executor.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -60,6 +60,8 @@ export type NativeHarnessBackupExpirationOptions = {
   stateBase?: string;
   /** Shared skill homes; defaults to the sibling of the default state base. */
   skillHomeStoreRoot?: string;
+  /** ACPX session homes, scanned for Claude skill-home references and staging. */
+  acpxSessionsRoot?: string;
   /** Session roots whose provider homes may hold abandoned skill staging. */
   skillStagingRoots?: string[];
   shouldContinue?: () => boolean;
@@ -805,10 +807,14 @@ export function nativeHarnessBackupExpirationService(
       // only through the evidence worker, so this runs in its passes and asks it
       // to come back, also when no other evidence is due.
       if (evidencePass) {
+        const stateBaseOverridden = Boolean(options.stateBase ?? defaults.stateBase);
         const shared = await sweepSharedSkillStorage({
-          stateBase: base, stateBaseOverridden: Boolean(options.stateBase ?? defaults.stateBase),
+          stateBase: base, stateBaseOverridden,
+          acpxSessionsRoot: options.acpxSessionsRoot ?? defaults.acpxSessionsRoot
+            ?? (stateBaseOverridden ? path.resolve(base, "..", "acpx", "acpx") : nativeAcpxSessionsRoot()),
           skillHomeStoreRoot: options.skillHomeStoreRoot ?? defaults.skillHomeStoreRoot,
-          skillStagingRoots: options.skillStagingRoots ?? defaults.skillStagingRoots, now, dryRun, maxRemovals,
+          skillStagingRoots: options.skillStagingRoots ?? defaults.skillStagingRoots, now, dryRun,
+          maxRemovals: Math.max(0, maxRemovals - result.candidates - result.evidenceCandidates), shouldContinue,
         });
         const { failed, nextDueAt, ...counts } = shared;
         Object.assign(result, counts);

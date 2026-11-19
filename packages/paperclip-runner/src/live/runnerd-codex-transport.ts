@@ -3987,8 +3987,16 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
   return environment;
 }
 
+/** Set by the runner from the server-provided store only, never from configured environment. */
+const RUNNER_SKILL_HOME_ENVIRONMENT_KEYS = ["PAPERCLIP_SKILL_HOME_STORE_ROOT", "PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR"] as const;
+
 export function createCapabilityRunnerdProviderEnvironment(input: Parameters<typeof createCapabilityRunnerdProviderEnvironmentBase>[0]): NodeJS.ProcessEnv {
-  return applyProviderObservabilityEnvironment(createCapabilityRunnerdProviderEnvironmentBase(input), input.options.observability, input.provider === "acpx");
+  const environment = input.options.environment ? { ...input.options.environment } : undefined;
+  for (const name of RUNNER_SKILL_HOME_ENVIRONMENT_KEYS) delete environment?.[name];
+  return applyProviderObservabilityEnvironment(
+    createCapabilityRunnerdProviderEnvironmentBase({ ...input, options: { ...input.options, environment } }),
+    input.options.observability, input.provider === "acpx",
+  );
 }
 
 const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([

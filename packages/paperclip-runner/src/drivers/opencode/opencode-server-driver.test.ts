@@ -2109,6 +2109,41 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it.skipIf(process.platform === "win32")("allows reading the shared skill home under its resolved path when the store is reached through a link", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-linked-skills-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-linked-skills-workspace-"));
+    const skillRoot = join(root, "skill-source");
+    const instructionRoot = join(root, "instruction-source");
+    const realStore = join(root, "real", "skill-homes");
+    const linkedParent = join(root, "store-link");
+    roots.push(root, workspace);
+    await mkdir(skillRoot, { recursive: true });
+    await mkdir(instructionRoot, { recursive: true });
+    await mkdir(realStore, { recursive: true });
+    await symlink(join(root, "real"), linkedParent);
+    await writeFile(join(skillRoot, "SKILL.md"), "# Assigned\n");
+    await writeFile(join(instructionRoot, "AGENTS.md"), "Instructions\n");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      systemInstructions: PAPERCLIP_EXECUTION_PROMPT,
+      runtimeContext: runtimeContext(skillRoot, instructionRoot),
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key", PAPERCLIP_SKILL_HOME_STORE_ROOT: join(linkedParent, "skill-homes") },
+    });
+    const session = await driver.openSession({ runId: "run-linked", normalizedSessionId: "linked", workingDirectory: workspace });
+    try {
+      const config = JSON.parse(await readFile(join(root, "linked", "config", "opencode", "opencode.json"), "utf8"));
+      const skillPath = config.skills?.paths?.[0] as string;
+      expect(config.permission.external_directory[`${skillPath}/**`]).toBe("allow");
+      expect(config.permission.external_directory[`${await realpath(skillPath)}/**`]).toBe("allow");
+    } finally {
+      await session.close({ reason: "test" });
+      await removeCodexSkillHomeTree(realStore);
+    }
+  });
+
   it.skipIf(process.platform === "win32")("lists the shared skill home in skills.paths instead of copying skills into HOME", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-shared-skills-"));

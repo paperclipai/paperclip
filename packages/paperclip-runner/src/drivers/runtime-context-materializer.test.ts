@@ -183,12 +183,12 @@ describe("runtime context materialization", () => {
     const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     await utimes(join(root, ".paperclip-skills-staging-a"), old, old);
     await expect(removeAbandonedSkillStaging(root, { olderThanMs: 24 * 60 * 60 * 1000, dryRun: true }))
-      .resolves.toEqual({ removed: 0, candidates: 1, bytes: 4 });
+      .resolves.toEqual({ removed: 0, candidates: 1, bytes: 4, nextDueAt: null, truncated: false });
     await expect(removeAbandonedSkillStaging(root, { olderThanMs: 24 * 60 * 60 * 1000 }))
-      .resolves.toEqual({ removed: 1, candidates: 1, bytes: 4 });
+      .resolves.toEqual({ removed: 1, candidates: 1, bytes: 4, nextDueAt: null, truncated: false });
     expect(await readdir(root)).toEqual(["skills"]);
     await expect(removeAbandonedSkillStaging(join(root, "missing"), { olderThanMs: 0 }))
-      .resolves.toEqual({ removed: 0, candidates: 0, bytes: 0 });
+      .resolves.toEqual({ removed: 0, candidates: 0, bytes: 0, nextDueAt: null, truncated: false });
   });
 
   it("preserves a managed provider while excluding ambient auth, hooks, and tool configuration", async () => {

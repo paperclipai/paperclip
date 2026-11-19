@@ -2753,7 +2753,9 @@ async function startRuntime(input: {
   }
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   // Sealed read-only on disk; the agent may read a skill's supporting files.
-  if (sharedSkillsPath) externalDirectories[`${sharedSkillsPath}/**`] = "allow";
+  if (sharedSkillsPath) {
+    for (const root of new Set([sharedSkillsPath, await realpath(sharedSkillsPath)])) externalDirectories[`${root}/**`] = "allow";
+  }
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
   const providerRoute = modelProvider === "openrouter"

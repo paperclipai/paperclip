@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { sweepCodexSkillHomes } from "./codex-skill-home-retention.js";
+import { sweepCodexSkillHomes, sweepSharedSkillStorage } from "./codex-skill-home-retention.js";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 10, 18, 12);
@@ -176,6 +176,73 @@ describe("Codex skill home retention", () => {
   it("does nothing when the store does not exist", async () => {
     const { root, sessionsRoot } = await fixture();
     await expect(sweepCodexSkillHomes({ storeRoot: join(root, "missing"), sessionsRoot, now: NOW }))
-      .resolves.toEqual({ removed: 0, reclaimedBytes: 0, kept: 0, candidates: 0 });
+      .resolves.toEqual({ removed: 0, reclaimedBytes: 0, kept: 0, candidates: 0, nextDueAt: null, truncated: false });
+  });
+
+  it("asks to come back when an unreferenced home's grace period ends", async () => {
+    const { storeRoot, sessionsRoot } = await fixture();
+    await home(storeRoot, digest("a"), NOW - 2 * HOUR);
+    await home(storeRoot, digest("b"), NOW - 5 * HOUR);
+    await expect(sweepCodexSkillHomes({ storeRoot, sessionsRoot, now: NOW }))
+      .resolves.toMatchObject({ nextDueAt: NOW - 5 * HOUR + 24 * HOUR, truncated: false });
+  });
+
+  it("schedules nothing for homes that sessions still reference", async () => {
+    const { storeRoot, sessionsRoot } = await fixture();
+    await home(storeRoot, digest("a"), NOW - 72 * HOUR);
+    await reference(sessionsRoot, digest("1"), digest("a"));
+    await expect(sweepCodexSkillHomes({ storeRoot, sessionsRoot, now: NOW }))
+      .resolves.toMatchObject({ nextDueAt: null, truncated: false });
+  });
+
+  it("reports unfinished work at the removal limit", async () => {
+    const { storeRoot, sessionsRoot } = await fixture();
+    for (const id of ["a", "b"]) await home(storeRoot, digest(id), NOW - 72 * HOUR);
+    await expect(sweepCodexSkillHomes({ storeRoot, sessionsRoot, now: NOW, maxRemovals: 1 }))
+      .resolves.toMatchObject({ removed: 1, truncated: true });
+  });
+
+  it("removes nothing once it is asked to stop", async () => {
+    const { storeRoot, sessionsRoot } = await fixture();
+    const path = await home(storeRoot, digest("a"), NOW - 72 * HOUR);
+    await expect(sweepCodexSkillHomes({ storeRoot, sessionsRoot, now: NOW, shouldContinue: () => false }))
+      .resolves.toMatchObject({ removed: 0, truncated: true });
+    expect(await exists(path)).toBe(true);
+  });
+});
+
+describe("shared skill storage sweep", () => {
+  it("finds Claude references in the ACPX sessions root it is given, apart from the state base", async () => {
+    const { root, storeRoot, sessionsRoot } = await fixture();
+    const acpxSessionsRoot = join(root, "instance", "runtime", "paperclip-runner", "acpx", "acpx");
+    const path = await home(storeRoot, digest("a"), NOW - 72 * HOUR);
+    await mkdir(join(acpxSessionsRoot, "session-1", "claude-home"), { recursive: true });
+    await writeFile(join(acpxSessionsRoot, "session-1", "claude-home", "paperclip-skill-home.json"),
+      JSON.stringify({ schema: "paperclip.codex-skill-home-ref.v1", digest: digest("a") }));
+    const result = await sweepSharedSkillStorage({
+      stateBase: sessionsRoot, stateBaseOverridden: false, acpxSessionsRoot,
+      now: NOW, dryRun: false, maxRemovals: 50, shouldContinue: () => true,
+    });
+    expect(result.skillHomesRemoved).toBe(0);
+    expect(await exists(path)).toBe(true);
+  });
+
+  it("schedules no pass when there is nothing to clean up", async () => {
+    const { root, sessionsRoot } = await fixture();
+    const result = await sweepSharedSkillStorage({
+      stateBase: sessionsRoot, stateBaseOverridden: false, acpxSessionsRoot: join(root, "acpx", "acpx"),
+      now: NOW, dryRun: false, maxRemovals: 50, shouldContinue: () => true,
+    });
+    expect(result).toMatchObject({ failed: 0, nextDueAt: null });
+  });
+
+  it("comes back at once when its removal budget runs out", async () => {
+    const { root, storeRoot, sessionsRoot } = await fixture();
+    for (const id of ["a", "b"]) await home(storeRoot, digest(id), NOW - 72 * HOUR);
+    const result = await sweepSharedSkillStorage({
+      stateBase: sessionsRoot, stateBaseOverridden: false, acpxSessionsRoot: join(root, "acpx", "acpx"),
+      now: NOW, dryRun: false, maxRemovals: 1, shouldContinue: () => true,
+    });
+    expect(result).toMatchObject({ skillHomesRemoved: 1, nextDueAt: NOW });
   });
 });

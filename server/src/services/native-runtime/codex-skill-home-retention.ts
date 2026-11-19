@@ -14,18 +14,26 @@ const QUARANTINE_RETENTION_MS = 7 * DAY_MS;
 
 /**
  * Runs the shared skill-home sweep and the abandoned-staging sweep for one
- * evidence pass and returns when the next pass should look again. A caller
- * that moved the state base (tests) names its store and roots explicitly, so a
- * sweep never reaches storage outside the state it was given.
+ * evidence pass and returns when the next pass must look again: the earliest
+ * real deadline among what it kept (a grace period or staging age ending), now
+ * when it stopped with work left, or null when nothing is pending. Homes that
+ * sessions still reference wait for those sessions to go; the evidence pass that
+ * removes them sweeps again. A caller that moved the state base (tests) names
+ * its store and roots explicitly, so a sweep never reaches storage outside the
+ * state it was given.
  */
 export async function sweepSharedSkillStorage(input: {
   stateBase: string;
   stateBaseOverridden: boolean;
+  /** Where ACPX keeps its sessions (`runtime/paperclip-runner/acpx/acpx`); it does not follow the state base. */
+  acpxSessionsRoot: string;
   skillHomeStoreRoot?: string;
   skillStagingRoots?: string[];
   now: number;
   dryRun: boolean;
+  /** Removals this pass may still make. */
   maxRemovals: number;
+  shouldContinue: () => boolean;
 }): Promise<{
   skillHomesRemoved: number;
   skillHomeReclaimedBytes: number;
@@ -34,22 +42,26 @@ export async function sweepSharedSkillStorage(input: {
   failed: number;
   nextDueAt: number | null;
 }> {
-  const acpxSessionsRoot = path.resolve(input.stateBase, "..", "acpx", "acpx");
+  const acpxSessionsRoot = input.acpxSessionsRoot;
   const storeRoot = input.skillHomeStoreRoot
     ?? (input.stateBaseOverridden ? null : path.resolve(input.stateBase, "..", "skill-homes"));
   const stagingRoots = input.skillStagingRoots ?? (input.stateBaseOverridden ? [] : [input.stateBase, acpxSessionsRoot]);
   const result = {
     skillHomesRemoved: 0, skillHomeReclaimedBytes: 0, abandonedSkillStagingRemoved: 0, abandonedSkillStagingBytes: 0,
-    failed: 0, nextDueAt: storeRoot || stagingRoots.length > 0 ? input.now + DAY_MS : null,
+    failed: 0, nextDueAt: null as number | null,
+  };
+  const due = (at: number | null) => {
+    if (at !== null) result.nextDueAt = Math.min(result.nextDueAt ?? at, at);
   };
   if (storeRoot) {
     try {
       const swept = await sweepCodexSkillHomes({
-        storeRoot, sessionsRoot: input.stateBase, now: input.now, dryRun: input.dryRun, maxRemovals: input.maxRemovals,
-        ...(input.stateBaseOverridden ? {} : { acpxSessionsRoot }),
+        storeRoot, sessionsRoot: input.stateBase, now: input.now, dryRun: input.dryRun,
+        maxRemovals: input.maxRemovals, shouldContinue: input.shouldContinue, acpxSessionsRoot,
       });
       result.skillHomesRemoved = swept.removed;
       result.skillHomeReclaimedBytes = swept.reclaimedBytes;
+      due(swept.truncated ? input.now : swept.nextDueAt);
     } catch (err) {
       result.failed++;
       logger.warn({ err }, "native harness expiration skipped Codex skill homes");
@@ -57,9 +69,13 @@ export async function sweepSharedSkillStorage(input: {
   }
   if (stagingRoots.length > 0) {
     try {
-      const swept = await sweepAbandonedSkillStaging({ sessionRoots: stagingRoots, now: input.now, dryRun: input.dryRun });
+      const swept = await sweepAbandonedSkillStaging({
+        sessionRoots: stagingRoots, now: input.now, dryRun: input.dryRun,
+        maxRemovals: Math.max(0, input.maxRemovals - result.skillHomesRemoved), shouldContinue: input.shouldContinue,
+      });
       result.abandonedSkillStagingRemoved = swept.removed;
       result.abandonedSkillStagingBytes = swept.bytes;
+      due(swept.truncated ? input.now : swept.nextDueAt);
     } catch (err) {
       result.failed++;
       logger.warn({ err }, "native harness expiration skipped abandoned skill staging");
@@ -73,6 +89,10 @@ export type CodexSkillHomeSweepResult = {
   reclaimedBytes: number;
   kept: number;
   candidates: number;
+  /** When a kept, unreferenced home or leftover becomes removable; null when none will. */
+  nextDueAt: number | null;
+  /** Removable homes were left because of the removal limit or a stop request. */
+  truncated: boolean;
 };
 
 function missing(error: NodeJS.ErrnoException): null {
@@ -138,13 +158,20 @@ export async function sweepCodexSkillHomes(
     graceMs?: number;
     dryRun?: boolean;
     maxRemovals?: number;
+    shouldContinue?: () => boolean;
   },
   dependencies: { afterRetire?: (digest: string) => Promise<void> } = {},
 ): Promise<CodexSkillHomeSweepResult> {
-  const result: CodexSkillHomeSweepResult = { removed: 0, reclaimedBytes: 0, kept: 0, candidates: 0 };
+  const result: CodexSkillHomeSweepResult = {
+    removed: 0, reclaimedBytes: 0, kept: 0, candidates: 0, nextDueAt: null, truncated: false,
+  };
   const graceMs = input.graceMs ?? DAY_MS;
   const maxRemovals = input.maxRemovals ?? 50;
   const usedBefore = input.now - graceMs;
+  const due = (at: number) => {
+    result.nextDueAt = Math.min(result.nextDueAt ?? at, at);
+  };
+  const stopped = () => input.shouldContinue?.() === false;
   const names = await fs.readdir(input.storeRoot).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -156,7 +183,12 @@ export async function sweepCodexSkillHomes(
     const target = path.join(input.storeRoot, name);
     if (name.startsWith(".staging-") || name.startsWith(".retiring-")) {
       const changed = await modifiedAt(target);
+      if (changed !== null && changed >= usedBefore) due(changed + graceMs);
       if (input.dryRun || changed === null || changed >= usedBefore) continue;
+      if (stopped()) {
+        result.truncated = true;
+        continue;
+      }
       // A sweep that stopped mid-retirement leaves `.retiring-<digest>.*`.
       const digest = RETIRING_PATTERN.exec(name)?.[1];
       const home = digest ? path.join(input.storeRoot, digest) : null;
@@ -172,9 +204,10 @@ export async function sweepCodexSkillHomes(
   for (const name of await fs.readdir(quarantine).catch(() => [] as string[])) {
     const target = path.join(quarantine, name);
     const changed = await modifiedAt(target);
-    if (!input.dryRun && changed !== null && changed < input.now - QUARANTINE_RETENTION_MS) {
-      await removeCodexSkillHomeTree(target);
-    }
+    if (changed === null) continue;
+    if (changed >= input.now - QUARANTINE_RETENTION_MS) due(changed + QUARANTINE_RETENTION_MS);
+    else if (stopped()) result.truncated = true;
+    else if (!input.dryRun) await removeCodexSkillHomeTree(target);
   }
 
   for (const digest of names.filter((name) => DIGEST_PATTERN.test(name)).sort()) {
@@ -182,12 +215,18 @@ export async function sweepCodexSkillHomes(
     const lastUsedFile = path.join(input.storeRoot, `${digest}.last-used`);
     const lastUsed = (await modifiedAt(lastUsedFile)) ?? (await modifiedAt(home));
     if (lastUsed === null) continue;
-    if (referenced.has(digest) || lastUsed >= usedBefore) {
+    if (referenced.has(digest)) {
       result.kept++;
       continue;
     }
+    if (lastUsed >= usedBefore) {
+      result.kept++;
+      due(lastUsed + graceMs);
+      continue;
+    }
     result.candidates++;
-    if (input.dryRun || result.removed >= maxRemovals) {
+    if (input.dryRun || result.removed >= maxRemovals || stopped()) {
+      if (!input.dryRun) result.truncated = true;
       result.kept++;
       continue;
     }

@@ -593,6 +593,11 @@ export class AcpxRuntimeHost {
       if (options.agent !== "antigravity") assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
       admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
+      if (launchEnvironment.PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR !== undefined) {
+        // Only the shared skill home prepared below names Claude's plugin directory.
+        const { PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR: _ignored, ...rest } = launchEnvironment;
+        launchEnvironment = Object.freeze(rest);
+      }
       let claudeSkillNamespace: string | undefined;
       // This copy is registered by the authenticated controller for its company,
       // agent and run. Environment/config values cannot widen the grant. Each

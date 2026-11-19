@@ -53,7 +53,7 @@ describe("abandoned skill staging retention", () => {
 
     const result = await sweepAbandonedSkillStaging({ sessionRoots: [durable, acpx], now: NOW });
 
-    expect(result).toEqual({ removed: 2, candidates: 2, bytes: 2000 });
+    expect(result).toEqual({ removed: 2, candidates: 2, bytes: 2000, nextDueAt: NOW - 2 * 60 * 60 * 1000 + DAY, truncated: false });
     expect(await exists(codexOld)).toBe(false);
     expect(await exists(claudeOld)).toBe(false);
     expect(await exists(claudeRecent)).toBe(true);
@@ -68,7 +68,20 @@ describe("abandoned skill staging retention", () => {
     const result = await sweepAbandonedSkillStaging({
       sessionRoots: [durable, join(root, "missing")], now: NOW, dryRun: true,
     });
-    expect(result).toEqual({ removed: 0, candidates: 1, bytes: 1000 });
+    expect(result).toEqual({ removed: 0, candidates: 1, bytes: 1000, nextDueAt: null, truncated: false });
     expect(await exists(old)).toBe(true);
+  });
+
+  it("stops at its removal budget and when asked to stop", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-skill-staging-"));
+    roots.push(root);
+    const durable = join(root, "durable-sessions");
+    const first = await staging(join(durable, "c".repeat(64), "codex-home"), "one", 2 * DAY);
+    const second = await staging(join(durable, "d".repeat(64), "codex-home"), "two", 2 * DAY);
+    await expect(sweepAbandonedSkillStaging({ sessionRoots: [durable], now: NOW, maxRemovals: 1 }))
+      .resolves.toMatchObject({ removed: 1, truncated: true });
+    expect([await exists(first), await exists(second)].filter(Boolean)).toHaveLength(1);
+    await expect(sweepAbandonedSkillStaging({ sessionRoots: [durable], now: NOW, shouldContinue: () => false }))
+      .resolves.toMatchObject({ removed: 0, truncated: true });
   });
 });

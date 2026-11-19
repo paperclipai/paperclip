@@ -5,7 +5,15 @@ import { removeAbandonedSkillStaging } from "../../vendor/paperclip-runner/index
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type SkillStagingSweepResult = { removed: number; candidates: number; bytes: number };
+export type SkillStagingSweepResult = {
+  removed: number;
+  candidates: number;
+  bytes: number;
+  /** When the youngest kept staging becomes old enough to remove. */
+  nextDueAt: number | null;
+  /** Old staging was left because of the removal budget or a stop request. */
+  truncated: boolean;
+};
 
 async function directories(parent: string): Promise<string[]> {
   const entries = await fs.readdir(parent, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
@@ -26,17 +34,23 @@ export async function sweepAbandonedSkillStaging(input: {
   now: number;
   olderThanMs?: number;
   dryRun?: boolean;
+  maxRemovals?: number;
+  shouldContinue?: () => boolean;
 }): Promise<SkillStagingSweepResult> {
-  const result: SkillStagingSweepResult = { removed: 0, candidates: 0, bytes: 0 };
+  const result: SkillStagingSweepResult = { removed: 0, candidates: 0, bytes: 0, nextDueAt: null, truncated: false };
+  const maxRemovals = input.maxRemovals ?? Infinity;
   for (const sessionRoot of input.sessionRoots) {
     for (const session of await directories(sessionRoot)) {
       for (const home of await directories(session)) {
         const swept = await removeAbandonedSkillStaging(home, {
           olderThanMs: input.olderThanMs ?? DAY_MS, now: input.now, dryRun: input.dryRun,
+          maxRemovals: maxRemovals - result.removed, shouldContinue: input.shouldContinue,
         });
         result.removed += swept.removed;
         result.candidates += swept.candidates;
         result.bytes += swept.bytes;
+        result.truncated ||= swept.truncated;
+        if (swept.nextDueAt !== null) result.nextDueAt = Math.min(result.nextDueAt ?? swept.nextDueAt, swept.nextDueAt);
       }
     }
   }

@@ -3375,6 +3375,40 @@ it.skipIf(process.platform === "win32").each([
   expect(environment.PAPERCLIP_SKILL_HOME_STORE_ROOT).toBe(expected);
 });
 
+it.skipIf(process.platform === "win32").each([
+  ["acpx", "claude", {}, "/state/skill-homes"],
+  ["acpx", "claude", { runnerFilesystemRoot: "/remote/root" }, undefined],
+  ["acpx", "claude", { homeMode: "preconfigured" as const }, undefined],
+  ["opencode", undefined, {}, "/state/skill-homes"],
+  ["opencode", undefined, { runnerFilesystemRoot: "/remote/root" }, undefined],
+] as const)("ignores agent-configured skill home paths for %s %s (%o)", (provider, agent, extra, expected) => {
+  // Agent adapter env reaches the runner through the configured projection.
+  const configured = {
+    PATH: "/bin",
+    ...configuredEnvironmentProjection({
+      PAPERCLIP_SKILL_HOME_STORE_ROOT: "/attacker/store",
+      PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR: "/attacker/plugin",
+    }),
+  };
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider,
+    options: {
+      provider, ...(agent ? { acpxAgent: agent } : {}), codexSkillHomeStoreRoot: "/state/skill-homes", ...extra,
+      environment: configured,
+    },
+    identity: {
+      runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1",
+      normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1",
+    },
+    codexHome: "/isolated/codex-home",
+    runtimeContextPath: "/isolated/runtime-context.json",
+    hasRuntimeContext: true,
+    ...(provider === "acpx" ? { acpxSidecarPath: "/package/dist/cli/acpx-runtime-sidecar.cjs" } : {}),
+  });
+  expect(environment.PAPERCLIP_SKILL_HOME_STORE_ROOT).toBe(expected);
+  expect(environment.PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR).toBeUndefined();
+});
+
 it("passes the configured Codex API key only through the provider process environment", () => {
   const environment = createCapabilityRunnerdProviderEnvironment({
     provider: "codex",

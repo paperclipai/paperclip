@@ -217,9 +217,16 @@ async function treeBytes(path: string): Promise<number> {
  */
 export async function removeAbandonedSkillStaging(
   parent: string,
-  options: { olderThanMs: number; now?: number; dryRun?: boolean },
-): Promise<{ removed: number; candidates: number; bytes: number }> {
-  const result = { removed: 0, candidates: 0, bytes: 0 };
+  options: {
+    olderThanMs: number;
+    now?: number;
+    dryRun?: boolean;
+    /** Removals allowed in this call; the rest is reported as `truncated`. */
+    maxRemovals?: number;
+    shouldContinue?: () => boolean;
+  },
+): Promise<{ removed: number; candidates: number; bytes: number; nextDueAt: number | null; truncated: boolean }> {
+  const result = { removed: 0, candidates: 0, bytes: 0, nextDueAt: null as number | null, truncated: false };
   const names = await readdir(parent).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT" || error.code === "ENOTDIR") return [] as string[];
     throw error;
@@ -229,7 +236,17 @@ export async function removeAbandonedSkillStaging(
     if (!name.startsWith(SKILL_STAGING_PREFIX)) continue;
     const path = join(parent, name);
     const info = await lstat(path).catch(() => null);
-    if (!info?.isDirectory() || info.mtimeMs >= before) continue;
+    if (!info?.isDirectory()) continue;
+    if (info.mtimeMs >= before) {
+      // Still young: due once it is old enough to belong to no live launch.
+      const dueAt = info.mtimeMs + options.olderThanMs;
+      result.nextDueAt = result.nextDueAt === null ? dueAt : Math.min(result.nextDueAt, dueAt);
+      continue;
+    }
+    if (!options.dryRun && (options.shouldContinue?.() === false || result.removed >= (options.maxRemovals ?? Infinity))) {
+      result.truncated = true;
+      continue;
+    }
     result.candidates++;
     result.bytes += await treeBytes(path);
     if (options.dryRun) continue;

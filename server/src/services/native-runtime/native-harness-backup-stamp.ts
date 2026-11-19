@@ -28,6 +28,14 @@ export function nativeHarnessStateBase(): string {
   );
 }
 
+/**
+ * Where ACPX keeps its session homes. It stays under the instance runtime
+ * directory when `PAPERCLIP_RUNNER_STATE_DIR` moves the durable sessions.
+ */
+export function nativeAcpxSessionsRoot(): string {
+  return resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", "acpx", "acpx");
+}
+
 function stateRootFromDigest(digest: string): string | null {
   if (!/^[0-9a-f]{64}$/.test(digest)) return null;
   const base = nativeHarnessStateBase();
