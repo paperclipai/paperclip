@@ -248,6 +248,11 @@ describeEmbeddedPostgres("product telemetry emit sites", () => {
       { event: "artifact.created", dims: { artifactType: "preview_url", provider: "custom", creationFlow: "direct" }, companyId },
     ]);
     expect(JSON.stringify(sent("artifact.created"))).not.toContain("acme");
+    expect(people.filter((entry) => entry.event === "artifact.created").map((entry) => entry.person)).toEqual([null, null]);
+    const owned = await seedIssue({ createdByUserId: "creator-1" });
+    people.length = 0;
+    await workProductService(db).createForIssue(owned, companyId, { type: "branch", provider: "github", title: "Branch", status: "active" });
+    expect(people).toEqual([{ event: "artifact.created", person: { userId: "creator-1", attributedVia: "task_creator" } }]);
   });
 
   it("emits model.connected for a new model connection and not for its reconnect", async () => {

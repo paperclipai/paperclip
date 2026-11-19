@@ -189,10 +189,12 @@ export function emitArtifactCreatedAfterCommit(input: {
   provider: string;
   creationFlow: "direct" | "promotion" | "run_deliverable";
   task: { createdByUserId: string | null; responsibleUserId: string | null } | null;
+  runOwnerUserId: string | null | undefined;
 }): void {
   const personSources = {
     taskCreatedByUserId: input.task?.createdByUserId,
     taskAssignedByUserId: input.task?.responsibleUserId,
+    runOwnerUserId: input.runOwnerUserId,
   };
   emitAfterCommit(input.companyId, personSources, "artifact.created", (client) =>
     trackArtifactCreated(client, {

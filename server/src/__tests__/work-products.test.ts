@@ -182,6 +182,7 @@ describe("workProductService", () => {
       update: txUpdate,
       insert: txInsert,
       select: txSelect,
+      transaction: async (read: (input: unknown) => Promise<unknown>) => read(tx),
     };
     const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
       transactionOpen = true;
@@ -202,6 +203,29 @@ describe("workProductService", () => {
     expect(txUpdate).toHaveBeenCalledTimes(1);
     expect(txInsert).toHaveBeenCalledTimes(1);
     expect(ownerWhere).toHaveBeenCalledTimes(1);
+    expect(result?.id).toBe("work-product-1");
+  });
+
+  it("keeps the new work product when the telemetry owner read fails", async () => {
+    const insertedRow = createWorkProductRow();
+    const txInsert = vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(async () => [insertedRow]) })) }));
+    let transactionOpen = false;
+    const tx = {
+      execute: retentionReads(() => transactionOpen),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      insert: txInsert,
+      transaction: vi.fn(async () => { throw new Error("owner read failed"); }),
+    };
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
+
+    const result = await workProductService({ transaction } as any).createForIssue("issue-1", "company-1", {
+      type: "pull_request", provider: "github", title: "PR 1", status: "open", reviewState: "draft", isPrimary: false,
+    });
+
+    expect(tx.transaction).toHaveBeenCalledTimes(1);
     expect(result?.id).toBe("work-product-1");
   });
 

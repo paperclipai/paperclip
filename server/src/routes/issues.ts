@@ -12799,7 +12799,7 @@ export function issueRoutes(
         return;
       }
       emitArtifactCreatedAfterCommit({ companyId: product.companyId, type: product.type, provider: product.provider, creationFlow: "promotion",
-        task: issue });
+        task: issue, runOwnerUserId: actor.actorType === "user" ? actor.actorId : null });
 
       await logActivity(db, {
         companyId: issue.companyId,

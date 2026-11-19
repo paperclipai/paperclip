@@ -14554,7 +14554,7 @@ export function issueService(db: Db) {
           : [];
         if (artifactWorkProduct) {
           emitArtifactCreatedAfterCommit({ companyId: issue.companyId, type: "artifact", provider: "paperclip", creationFlow: "run_deliverable",
-            task: issue });
+            task: issue, runOwnerUserId: input.createdByUserId });
         }
 
         if (
