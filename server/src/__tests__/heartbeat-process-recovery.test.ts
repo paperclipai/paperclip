@@ -3722,9 +3722,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         contextSnapshot: expect.objectContaining({ errorFamily: "provider_quota" }) })]);
       expect(outcome.retryRunIds).toEqual([retries[0].id]);
     } else {
+      // A dispatched run is not certified as quota preparation. A graceful
+      // shutdown continues it in the server-restart lane instead.
       expect(interrupted.resultJson).not.toHaveProperty("executionRecovery");
-      expect(retries).toEqual([]);
-      expect(outcome.retryRunIds).toEqual([]);
+      expect(interrupted.resultJson).not.toHaveProperty("errorFamily");
+      expect(retries).toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryReason: "server_restart" })]);
+      expect(outcome.retryRunIds).toEqual([retries[0].id]);
     }
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });

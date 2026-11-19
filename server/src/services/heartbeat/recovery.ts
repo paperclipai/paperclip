@@ -2991,7 +2991,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                   processLossDiagnostic,
                   ...(restartInterruptedBeforeDispatch
                     ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-                        ...(hasProviderQuotaRetryBudget(run) ? { errorFamily: "provider_quota" } : {}) }
+                        ...(hasProviderQuotaRetryBudget(settledRun) ? { errorFamily: "provider_quota" } : {}) }
                     : {}),
                 },
                 errorCode: "process_lost",
