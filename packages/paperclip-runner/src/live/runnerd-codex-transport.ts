@@ -235,6 +235,22 @@ function assertSuspendedRunnerState(
   }
 }
 
+export function isSettledReleasedRunnerCut(
+  state: Record<string, unknown>,
+  expected: DurableRecoveryIdentity,
+): boolean {
+  if (state.schema !== "paperclip.runner.durable.state.v1" || !recoveryIdentityMatches(state, expected)) return false;
+  if (state.lifecycle === "suspended") return true;
+  return state.lifecycle === "ready"
+    && Array.isArray(state.outbox) && state.outbox.length === 0
+    && Number.isSafeInteger(state.nextSourceSeq) && state.ackedSourceSeq === Math.max(0, Number(state.nextSourceSeq) - 1)
+    && state.warmTransition === undefined
+    && (state.pendingTerminalDelivery ?? null) === null
+    && (state.pendingProviderCleanup ?? null) === null
+    && Object.values(record(state.processedCommands)).every(command =>
+      !["pending", "indeterminate"].includes(String(record(command).status)));
+}
+
 function assertRealDirectory(path: string): void {
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -401,6 +417,7 @@ function latestArchivedControlPlaneState(
  * placement shares one rotation path.
  */
 interface RunnerStateArchive {
+  archivedByLaunch?: true;
   /** Read the live Runner state before its control plane is archived. */
   read: () => Promise<Record<string, unknown>>;
   /**
@@ -501,13 +518,14 @@ async function rotateAuthorityEpoch(
       priorIdentity,
     );
   } else {
-    assertSuspendedRunnerState(await runnerState.read(), priorIdentity);
+    if (!runnerState.archivedByLaunch) assertSuspendedRunnerState(await runnerState.read(), priorIdentity);
     if (!existsSync(activeControlPlane)) {
       throw new Error("native_runner_authority_archive_incomplete");
     }
     assertRealDirectory(activeControlPlane);
     renameSync(activeControlPlane, archivedControlPlane);
   }
+  if (runnerState.archivedByLaunch) return resumedState ?? controlPlaneState;
   const archivedRunnerState = await runnerState.archive({
     archiveKey: basename(archive).replace(/^epoch-/, ""),
     priorIdentity,
@@ -4954,6 +4972,29 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return operation.finally(() => { if (this.#attachmentOperation === pending) this.#attachmentOperation = null; });
   }
 
+  retireReleasedController(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null> {
+    const episode = this.#releaseEpisode;
+    if (this.#detachPromise || this.#closePromise || this.#closed || this.#attachmentOperation !== null
+      || !episode?.confirmed || episode.claimed || episode.ticket !== undefined || !this.#core
+      || !recoveryIdentityMatches(episode.source, this.#core.store.state.identity)) return Promise.resolve(null);
+    const source = structuredClone(episode.source);
+    const runner = structuredClone(this.#relaunchedRunnerArtifact ?? this.options.runnerArtifact
+      ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary()));
+    const operation = (async () => {
+      const deadline = Date.now() + runnerCloseGraceMs(this.options);
+      this.#controllerDetachedForRestart = true;
+      this.#closed = true;
+      this.#resolveClosedSignal();
+      this.#turnStartAdmission?.resolve(false);
+      this.#controlPlaneCheckpoint = null;
+      await this.#retireControllerForRecovery(deadline, "keep_task");
+      this.#handle = null;
+      this.#diagnostic("released controller retired; the host keeps the stopped runner's task");
+    })();
+    this.#detachPromise = operation;
+    return operation.then(() => ({ source, runner }));
+  }
+
   async #claimReleasedRunner(claimantRunId: string): Promise<void> {
     const episode = this.#releaseEpisode;
     const pair = this.options.releaseResume;
@@ -5675,7 +5716,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
-  async #retireControllerForRecovery(deadline: number): Promise<void> {
+  async #retireControllerForRecovery(deadline: number, route: "detach" | "keep_task" = "detach"): Promise<void> {
     this.#stopPump();
     if (this.#adoptedRunnerMonitor !== null)
       clearInterval(this.#adoptedRunnerMonitor);
@@ -5683,7 +5724,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#core?.disconnectActiveRunner();
     const release = this.#controlPlaneRelease;
     this.#controlPlaneRelease = null;
-    await Promise.resolve(release?.("detach")).catch((error: unknown) => {
+    await Promise.resolve(route === "detach" ? release?.("detach") : release?.()).catch((error: unknown) => {
       this.#diagnostic(
         `controller route release failed during retirement: ${String(error)}`,
       );
@@ -6486,7 +6527,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   /** Runner state held by an external Runner host (a plugin task or a sandbox). */
-  #externalRunnerStateArchive(): RunnerStateArchive {
+  #externalRunnerStateArchive(source: Record<string, unknown>): RunnerStateArchive {
+    const relaunched = this.options.relaunchReleasedRunner;
+    if (relaunched) {
+      if (!this.options.runnerProcessLauncher || !recoveryIdentityMatches(controlPlaneIdentity(source), relaunched)) {
+        throw new Error("native_runner_released_source_mismatch");
+      }
+      const unavailable = () => Promise.reject(new Error("native_runner_released_state_archived_by_launch"));
+      return { archivedByLaunch: true, read: unavailable, archive: unavailable };
+    }
     const { readRunnerState, prepareExternalRunnerState, archiveExternalRunnerState } = this.options;
     if (readRunnerState === undefined || archiveExternalRunnerState === undefined) {
       throw new Error("native_runner_prp_run_rotation_unavailable");
@@ -7003,7 +7052,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#root,
           rotationSource,
           desiredIdentity,
-          localStateOwner ? localRunnerStateArchive(this.#root) : this.#externalRunnerStateArchive(),
+          localStateOwner ? localRunnerStateArchive(this.#root) : this.#externalRunnerStateArchive(rotationSource),
         );
       } catch (error) {
         // Locally owned state is preserved aside for operator recovery.
