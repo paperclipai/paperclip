@@ -31,6 +31,7 @@ function env(overrides: Record<string, string | undefined>): ExecutionPolicyBoot
 const bootstrap: ExecutionPolicyBootstrap = {
   executionMode: "kubernetes",
   kubernetesConfig: { inCluster: true, backend: "job" },
+  applyOverOperatorEdits: false,
 };
 
 // `applyExecutionPolicyBootstrap` constructs its services internally from the
@@ -38,7 +39,7 @@ const bootstrap: ExecutionPolicyBootstrap = {
 const fakeDb = {} as never;
 
 describe("parseExecutionPolicyBootstrapEnv", () => {
-  it("returns null when no execution mode is set (default unrestricted)", () => {
+  it("disables bootstrap when no execution mode is set", () => {
     expect(parseExecutionPolicyBootstrapEnv(env({}))).toBeNull();
   });
 
@@ -120,6 +121,53 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     expect(parsed?.kubernetesConfig.timeoutMs).toBeUndefined();
   });
 
+  it("defaults applyOverOperatorEdits to false and keeps the flag out of the stored config", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+    expect(parsed?.applyOverOperatorEdits).toBe(false);
+    expect(parsed?.kubernetesConfig).not.toHaveProperty("applyOverOperatorEdits");
+  });
+
+  it.each([
+    ["true", true], ["1", true], [" YES ", true],
+    ["false", false], ["0", false], [" NO ", false],
+  ])("parses authoritative flag %j as %j without storing it in provider config", (value, expected) => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: value }),
+    );
+    expect(parsed?.applyOverOperatorEdits).toBe(expected);
+    expect(parsed?.kubernetesConfig).not.toHaveProperty("applyOverOperatorEdits");
+  });
+
+  it.each(["sometimes", "", " "])("rejects authoritative flag %j", (value) => {
+    expect(() =>
+      parseExecutionPolicyBootstrapEnv(
+        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: value }),
+      ),
+    ).toThrow(/PAPERCLIP_K8S_CONFIG_AUTHORITATIVE/);
+  });
+
+  it("falls back to out-of-cluster access and leaves list syntax validation to the provider", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({
+      PAPERCLIP_EXECUTION_MODE: "kubernetes",
+      PAPERCLIP_K8S_IN_CLUSTER: "sometimes",
+      PAPERCLIP_K8S_EGRESS_ALLOW_FQDNS: " not a hostname, , example.com ",
+      PAPERCLIP_K8S_EGRESS_ALLOW_CIDRS: " not a CIDR, , ",
+    }));
+    expect(parsed?.kubernetesConfig).toEqual({
+      inCluster: false,
+      egressAllowFqdns: ["not a hostname", "example.com"],
+      egressAllowCidrs: ["not a CIDR"],
+    });
+  });
+
+  it.each([undefined, "", "any"])("ignores Kubernetes variables when execution mode is %j", (mode) => {
+    expect(parseExecutionPolicyBootstrapEnv(env({
+      PAPERCLIP_EXECUTION_MODE: mode,
+      PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "invalid",
+      PAPERCLIP_K8S_BACKEND: "invalid",
+    }))).toBeNull();
+  });
+
   it("throws when PAPERCLIP_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {
     expect(() =>
       parseExecutionPolicyBootstrapEnv(
@@ -149,6 +197,27 @@ describe("applyExecutionPolicyBootstrap", () => {
 
     expect(result).toEqual({ executionMode: "kubernetes", companiesConfigured: 3 });
     expect(ensureKubernetesEnvironment).toHaveBeenCalledTimes(3);
+    expect(ensureKubernetesEnvironment).toHaveBeenCalledWith(
+      "c1",
+      bootstrap.kubernetesConfig,
+      { applyOverOperatorEdits: false },
+    );
+  });
+
+  it("passes applyOverOperatorEdits through to every managed environment ensure", async () => {
+    listCompanyIds.mockResolvedValue(["c1", "c2"]);
+    ensureKubernetesEnvironment.mockResolvedValue({ id: "env" });
+
+    await applyExecutionPolicyBootstrap(fakeDb, { ...bootstrap, applyOverOperatorEdits: true });
+
+    expect(ensureKubernetesEnvironment).toHaveBeenCalledTimes(2);
+    for (const companyId of ["c1", "c2"]) {
+      expect(ensureKubernetesEnvironment).toHaveBeenCalledWith(
+        companyId,
+        bootstrap.kubernetesConfig,
+        { applyOverOperatorEdits: true },
+      );
+    }
   });
 
   it("throws when at least one company fails, after attempting every company", async () => {
