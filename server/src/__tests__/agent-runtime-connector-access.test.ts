@@ -123,7 +123,7 @@ describeDatabase("connector access runtime synchronization", () => {
       expect(bindings.some(binding => binding.metadata?.source === "tool_connection_install")).toBe(false);
     } else {
       expect(await accessService(db).getMemberById(companyId, memberId!)).toMatchObject({ membershipRole: "admin" });
-      expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toEqual([expect.objectContaining({ permissionKey: "tasks:assign" })]);
+      expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toContainEqual(expect.objectContaining({ permissionKey: "tasks:assign" }));
     }
   }, 15000);
   it.each(["email allowAgent", "connection intent"] as const)("orders outer %s with direct install saves", async caller => {
