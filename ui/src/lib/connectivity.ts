@@ -25,6 +25,7 @@
 import { createContext, createElement, useContext, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { apiFetch } from "@/api/client";
 import { isConnectivityError, isTransientError, parseRetryAfter } from "@/api/errors";
+import { intentionalAbortReason } from "./intentional-abort";
 
 export type ConnectivityStatus = "online" | "reconnecting" | "offline";
 
@@ -304,7 +305,7 @@ export function createConnectivityStore(options: ConnectivityStoreOptions = {}):
  */
 export async function probeServerHealth(): Promise<ProbeResult> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(intentionalAbortReason()), PROBE_TIMEOUT_MS);
   try {
     const res = await apiFetch("/api/health", {
       credentials: "include",
