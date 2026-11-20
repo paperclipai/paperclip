@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, agentWakeupRequests, approvals, companies, createDb, heartbeatRuns,
+  agents, agentWakeupRequests, approvals, companies, connectionIntentDeliveries, createDb, heartbeatRuns,
   issueApprovals, issueRecoveryActions, issueRelations, issueThreadInteractions, issues, type Db,
 } from "@paperclipai/db";
 import { collectDispositionRepairSourceState, readDispositionRepairDurableWaitingState } from "../services/recovery/disposition-repair.js";
@@ -68,6 +68,32 @@ const pendingExecution = { status: "pending", currentStageId: null, currentStage
     await db.update(approvals).set({ status: "revision_requested" }).where(eq(approvals.id, approved.id));
     expect(await read()).toEqual({ hasDurableWaitingPath: true, durablePathReason: "approval" });
     expect((await collectDispositionRepairSourceState(db, { issue: f.issue })).fingerprint).not.toBe(full.fingerprint);
+  });
+
+  it("treats an undelivered connection-intent continuation as a durable wait", async () => {
+    const f = await fixture(), other = await fixture();
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
+    const [current] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    const payload = { version: 1, requestingAgentId: f.agentId, serviceSlug: "github" };
+    const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issue.id,
+      kind: "connection_intent", status: "accepted", resolvedAt: new Date(), payload }).returning();
+    const [otherCard] = await db.insert(issueThreadInteractions).values({ companyId: other.companyId, issueId: other.issue.id,
+      kind: "connection_intent", status: "accepted", resolvedAt: new Date(), payload }).returning();
+    // Another issue's undelivered continuation must not hold this issue.
+    await db.insert(connectionIntentDeliveries).values({ interactionId: otherCard.id, companyId: other.companyId });
+    expect(await readDispositionRepairDurableWaitingState(db, { issue: current }))
+      .toEqual({ hasDurableWaitingPath: false, durablePathReason: null });
+
+    // The card is accepted and its continuation wake is not yet queued.
+    await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId });
+    const waiting = { hasDurableWaitingPath: true, durablePathReason: "connection_delivery" };
+    expect(await readDispositionRepairDurableWaitingState(db, { issue: current })).toEqual(waiting);
+    expect(await collectDispositionRepairSourceState(db, { issue: current })).toMatchObject({ ...waiting, hasActiveExecutionPath: false });
+
+    await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, card.id));
+    expect(await readDispositionRepairDurableWaitingState(db, { issue: current }))
+      .toEqual({ hasDurableWaitingPath: false, durablePathReason: null });
+    expect((await collectDispositionRepairSourceState(db, { issue: current })).hasDurableWaitingPath).toBe(false);
   });
 
   it.each(["user_owner", "blocker", "monitor", "execution_stage", "interaction", "approval"] as const)(
