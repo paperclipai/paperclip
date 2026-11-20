@@ -23,8 +23,8 @@ import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js"
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { restartRecoveryMeasurementFor, speedBudgetAdapter } from "./native-speed-budgets.js";
 import { getStartupRecoveryState } from "../../startup-recovery-state.js";
-import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, nativeHarnessBackupOwner, persistNativeHarnessBackup,
-  restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
+import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS,
+  nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
   retainReadyNativeProviderArtifacts, NativeProviderArtifactTransferTimeoutError, nativeProviderArtifactTransferBounds,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
@@ -119,7 +119,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { redactNativeFailureError } from "./native-failure-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
-import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
+import { createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent } from "./native-provider-failure.js";
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
@@ -7197,9 +7197,19 @@ export function noteRemoteBootstrapRestartProven(runId: string, stopped: "absent
   provenRemoteBootstrapRestarts.set(runId, stopped);
 }
 
+type RemoteBootstrapRestartProofOutcome = Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>;
+const REMOTE_BOOTSTRAP_RESTART_PROOF_OUTCOME_LIMIT = 1_000;
+const remoteBootstrapRestartProofOutcomes = new Map<string, RemoteBootstrapRestartProofOutcome>();
+
 export function recordRemoteBootstrapRestartProof(runId: string,
-  stopped: Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>): boolean {
+  stopped: RemoteBootstrapRestartProofOutcome): boolean {
   provenRemoteBootstrapRestarts.delete(runId);
+  remoteBootstrapRestartProofOutcomes.delete(runId);
+  remoteBootstrapRestartProofOutcomes.set(runId, stopped);
+  if (remoteBootstrapRestartProofOutcomes.size > REMOTE_BOOTSTRAP_RESTART_PROOF_OUTCOME_LIMIT) {
+    const oldest = remoteBootstrapRestartProofOutcomes.keys().next().value;
+    if (oldest !== undefined) remoteBootstrapRestartProofOutcomes.delete(oldest);
+  }
   if (stopped !== "absent_confirmed" && stopped !== "stopped" && stopped !== "killed") return false;
   provenRemoteBootstrapRestarts.set(runId, stopped);
   return true;
@@ -7239,6 +7249,21 @@ export function hasRemoteBootstrapRestartProof(runId: string): boolean {
 
 export function takeRemoteBootstrapRestartProof(runId: string): boolean {
   return provenRemoteBootstrapRestarts.delete(runId);
+}
+
+export function remoteBootstrapRestartRefusalDiagnostic(input: {
+  restartKind: string | null;
+  sameRun: boolean;
+  providerUnopened: boolean;
+  runId: string;
+}): string {
+  if (input.restartKind !== "bootstrap_incomplete") return "";
+  const proof = hasRemoteBootstrapRestartProof(input.runId)
+    ? "held"
+    : remoteBootstrapRestartProofOutcomes.get(input.runId) ?? "not_recorded";
+  remoteBootstrapRestartProofOutcomes.delete(input.runId);
+  return `; bootstrap_restart=${input.sameRun ? "same_run" : "other_run"},`
+    + `provider=${input.providerUnopened ? "unopened" : "opened"},proof=${proof}`;
 }
 
 export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
@@ -9024,19 +9049,7 @@ function armWarmNativeSessionIdleTimer(
   entry.idleTimer.unref();
 }
 
-/** Classify only a committed provider terminal, never model prose or tool output. */
-export function nativeProviderUsageLimitFromEvent(
-  event: Pick<PrpEvent, "sourceKind" | "eventType" | "payload">,
-): boolean {
-  const payload = record(event.payload);
-  if (event.sourceKind !== "runner" || event.eventType !== "turn.failed" || payload.status !== "failed") return false;
-  const error = record(payload.error);
-  if (error.codexErrorInfo === "usageLimitExceeded") return true;
-  // ACP harnesses type the same exhausted allowance as a provider failure.
-  // Context, turn and configured budget limits stay ordinary terminals.
-  const category = readProviderFailure(error.providerFailure)?.category;
-  return category === "quota_exhausted" || category === "rate_limit";
-}
+export { nativeProviderUsageLimitFromEvent };
 
 export function nativeSessionFailureDisposition(
   attempt: number,
@@ -13412,7 +13425,7 @@ async function executePaperclipNativeSessionAttempt(
           ? sourceFailureCode
           : disposition.failureCode;
       const providerFailure = providerFailureFromError(error);
-      const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry"
+      const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry" || remoteStartupRejection
         ? nativeStartupFailureSignature(providerFailure) : null;
       const startupRejectedAction = repeatedRemoteStartupFailure && providerFailure
         ? nativeRepeatedStartupFailureAction(providerFailure.message) : NATIVE_PROVIDER_STARTUP_REJECTED_ACTION;
@@ -17688,7 +17701,13 @@ async function createRunnerdBackendWithinSessionClaim(
           notSuspendedRunId: input.execution.binding.runId,
         };
       }
-      throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)})`);
+      const restartRefusal = source === "host_preparation" ? remoteBootstrapRestartRefusalDiagnostic({
+        restartKind: input.restartRecovery?.kind ?? null,
+        sameRun: runnerState.runId === input.execution.binding.runId,
+        providerUnopened: remoteProviderStateNeverOpened(input.execution, providerState),
+        runId: input.execution.binding.runId,
+      }) : "";
+      throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)}${restartRefusal})`);
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
       root,
@@ -18395,7 +18414,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 if (durableStorage && backupOwner) {
                   await persistNativeHarnessBackup({ db: input.db, storage: durableStorage, owner: backupOwner,
                     scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), root: pendingRoot,
-                    signal: AbortSignal.timeout(300_000) });
+                    transferIdleTimeoutMs: NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS });
                 }
                 // Without durable storage the local publication below is the
                 // save; its result is uncertain once it starts, so keep the

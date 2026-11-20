@@ -536,6 +536,12 @@ describe("buildBrowserSentryInitOptions", () => {
     expect(options.tracesSampleRate).toBe(0);
   });
 
+  it("ignores only Firefox for iOS's injected-script errors", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+
+    expect(buildBrowserSentryInitOptions(DSN).ignoreErrors).toEqual(["__firefox__"]);
+  });
+
   it("adds diagnostics without a transaction filter", async () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 
@@ -678,6 +684,69 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
     }
   });
 
+  describe("posthog-js request timeouts", () => {
+    function postHogTimeoutError(message = "PostHog request timed out after 3000ms"): Error {
+      const error = new Error(message);
+      Object.defineProperty(error, "name", { value: "AbortError" });
+      return error;
+    }
+
+    async function initCountingSentry() {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      const Sentry = await import("@sentry/browser");
+      const send = vi.fn(async () => ({}));
+      Sentry.init({
+        ...buildBrowserSentryInitOptions(DSN, "production"),
+        transport: () => ({ send, flush: async () => true }),
+      });
+      const sentEvents = () => send.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]))
+        .filter((envelope) => envelope.includes("\"type\":\"event\""));
+      return { Sentry, sentEvents };
+    }
+
+    function rejectUnhandled(reason: unknown) {
+      window.onunhandledrejection?.call(window, { reason } as PromiseRejectionEvent);
+    }
+
+    it("drops posthog-js's own timeout when it escapes as an unhandled rejection", async () => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        rejectUnhandled(postHogTimeoutError());
+        rejectUnhandled(postHogTimeoutError("PostHog request timed out"));
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(0);
+      } finally {
+        await Sentry.close();
+      }
+    });
+
+    it.each([
+      ["another AbortError", () => Object.assign(new Error("The user aborted a request."), { name: "AbortError" })],
+      ["the same text on a plain Error", () => new Error("PostHog request timed out after 3000ms")],
+      ["a string reason with the same text", () => "PostHog request timed out after 3000ms"],
+    ])("still reports %s", async (_label, makeReason) => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        rejectUnhandled(makeReason());
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(1);
+      } finally {
+        await Sentry.close();
+      }
+    });
+
+    it("still reports the same error when Paperclip code captures it", async () => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        Sentry.captureException(postHogTimeoutError());
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(1);
+      } finally {
+        await Sentry.close();
+      }
+    });
+  });
+
   it.each([
     ["staging", "staging"],
     ["production", "production"],
@@ -730,6 +799,24 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
     // `HttpContext` is the only default integration that writes
     // `event.request`. With it removed, the field never appears.
     expect((captured as unknown as Record<string, unknown>).request).toBeUndefined();
+  });
+
+  it.each([
+    ["TypeError", "undefined is not an object (evaluating 'window.__firefox__.reader')"],
+    ["ReferenceError", "Can't find variable: __firefox__"],
+  ])("drops a global %s from Firefox for iOS's injected scripts and keeps the app's own errors", async (type, message) => {
+    const captured: Array<Record<string, unknown>> = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    try {
+      const injected = type === "TypeError" ? new TypeError(message) : new ReferenceError(message);
+      window.onerror?.call(window, `${type}: ${message}`, "https://example.test/MYB/decisions", 1, 19, injected);
+      window.onerror?.call(window, "TypeError: app failure", "https://example.test/assets/index.js", 1, 1, new TypeError("app failure"));
+      await Sentry.flush(2000);
+      expect(captured.map((event) => (event.exception as { values: Array<{ value: string }> }).values[0]?.value))
+        .toEqual(["app failure"]);
+    } finally {
+      await Sentry.close();
+    }
   });
 
   it("an event captured after a console call and a fetch call carries no breadcrumb", async () => {

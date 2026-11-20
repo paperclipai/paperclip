@@ -1865,6 +1865,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
   });
 
+  it.each([
+    { name: "a rejected AI selection keeps its owner action", selectionFailure: "ai_connection_credential_not_shared", errorCode: "configuration_incomplete" },
+    { name: "an unclassified AI preparation error stays a retryable lease loss", selectionFailure: undefined, errorCode: "controller_lease_lost" },
+  ] as const)("records a lease lost during AI selection: $name", async ({ selectionFailure, errorCode }) => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 37_725, renewalPendingMs: 29_418, deadlineLateMs: 52, renewalCount: 2 }));
+    await f.completion.failRunSetup(f.setup(new ConfigurationIncompleteFailure("This credential is not shared with the responsible user", {
+      configurationIncomplete: { reason: "ai_connection_unavailable", ...(selectionFailure ? { selectionFailure } : {}) } })));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode,
+      error: "This credential is not shared with the responsible user", resultJson: {
+        configurationIncomplete: { reason: "ai_connection_unavailable" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        controllerLeaseLoss: { cause: "renewal_deadline", renewalPendingMs: 29_418, renewalCount: 2 },
+        cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
   it("does not make a lease loss retryable once provider work has started", async () => {
     const f = await fixture();
     f.controller.abort(new LegacyControllerLeaseLostError("renewal_error"));

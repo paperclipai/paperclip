@@ -24,6 +24,7 @@ import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "../workspace-source-restriction.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
 import { hasCommittedNativePlanWait } from "../native-runtime/native-plan-wait.js";
 import { hasCommittedNativeConversationTurnWait, hasCommittedNativeResponseWakeWait } from "../native-runtime/native-response-wake-wait.js";
 import { listExternalReviewWaits } from "../native-runtime/external-review-wait.js";
@@ -173,6 +174,7 @@ import {
 } from "./successful-run-handoff.js";
 import {
   SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
+  PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION,
   sandboxProviderPluginRemedy,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
@@ -2802,6 +2804,8 @@ export function recoveryService(
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === RESTRICTED_WORKSPACE_SOURCE_REASON
                       ? "Retry the task."
+                      : readConfigurationIncompletePayload(input.latestRun)?.reason === PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE
+                      ? PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION
                       : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
                       ? `The plugin that starts this agent's sandbox is not running. To fix it, ${sandboxProviderPluginRemedy(

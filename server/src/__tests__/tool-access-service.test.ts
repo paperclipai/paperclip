@@ -8794,6 +8794,57 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
+  it("answers a rate-limited managed GitHub sign-in start with 429 and retry guidance", async () => {
+    const company = await createCompany(db);
+    const userId = `github-rate-limited-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGitHubConnector(company.id, userId);
+    connector.startAuthorization = vi.fn(async () => {
+      throw new PaperclipCloudConnectorError(
+        "Paperclip Cloud connector rejected the request (operation=session, status=429, reason=RATE_LIMITED)",
+        "CONNECTOR_REQUEST_FAILED",
+        429,
+        Date.now() + 30_000,
+        "RATE_LIMITED",
+      );
+    });
+    const githubDefinition = getConnectableAppDefinition("github")!;
+    const previousOwnershipAvailability =
+      githubDefinition.ownershipAvailability;
+    githubDefinition.ownershipAvailability = {
+      ...previousOwnershipAvailability,
+      platform_shared: true,
+    };
+    try {
+      const app = createRouteApp(
+        db,
+        boardSessionActor(company.id, "owner", userId),
+        undefined,
+        { paperclipCloudConnector: connector },
+      );
+      const connected = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({
+          galleryKey: "github",
+          connectionMethodKey: "managed",
+          grantKind: "user",
+          name: "GitHub",
+        });
+
+      expect(connector.startAuthorization).toHaveBeenCalled();
+      expect(connected.status).toBe(429);
+      expect(connected.body).toMatchObject({
+        error: "GitHub sign-in is busy right now. Try again in a moment.",
+        code: "paperclip_cloud_connector_rate_limited",
+      });
+      expect(connected.body.details.retryAfterSeconds).toBeGreaterThan(0);
+      expect(connected.body.details.retryAfterSeconds).toBeLessThanOrEqual(30);
+      expect(JSON.stringify(connected.body)).not.toContain("RATE_LIMITED");
+    } finally {
+      githubDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
   it.each(["user", "organization"] as const)("builds one Workspace catalog from actual partial consent for a %s grant", async (grantKind) => {
     const company = await createCompany(db);
     const userId = `workspace-member-${randomUUID()}`;

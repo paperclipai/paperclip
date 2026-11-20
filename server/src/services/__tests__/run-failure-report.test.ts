@@ -724,6 +724,20 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(run).toEqual(saved);
   });
 
+  it.each(["configuration_incomplete", "controller_lease_lost"] as const)(
+    "decides a credential denial that coincided with a lease loss by its recorded code: %s", async (errorCode) => {
+      await seedCompanyAndAgent();
+      const run = aiSelectionRun({ errorCode, error: "This credential is not shared with the responsible user" });
+      Object.assign(run.resultJson!, {
+        controllerLeaseLoss: { cause: "renewal_deadline", renewalCount: 2, renewalPendingMs: 29_418 },
+        cancellation: { source: "controller_lease", expected: false, reason: "Legacy controller lease lost (renewal_deadline)" },
+      });
+      (run.resultJson!.configurationIncomplete as Record<string, unknown>).selectionFailure = "ai_connection_credential_not_shared";
+      await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(errorCode === "controller_lease_lost" ? 1 : 0);
+    },
+  );
+
   it.each([undefined, null, {}, [], "", "database_error", "ai_connection_busy"])(
     "reports AI connection wrappers without a known selection cause: %j", async (selectionFailure) => {
       await seedCompanyAndAgent();
@@ -932,6 +946,34 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   ])("reports AI-connection-required markers without an exact pre-dispatch outcome: %j", async (overrides) => {
     await seedCompanyAndAgent();
     await reportRunFailure(db, aiConnectionRequiredRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  function projectStorageEnvironmentRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: { reason: "project_storage_environment_incompatible", actionUrl: "/agents/fixture/runtime" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a run refused for incompatible project workspace storage actionable on the task", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, projectStorageEnvironmentRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { executionStage: "executing" },
+    { errorCode: "setup_failed" },
+    { resultJson: { configurationIncomplete: { reason: "project_storage_environment_incompatible" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+  ])("reports project storage markers without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, projectStorageEnvironmentRun(overrides), { phase: "setup" });
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
 
