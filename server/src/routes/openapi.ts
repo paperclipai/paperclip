@@ -1500,7 +1500,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   // Cancelling a question is board-only (routes/issues.ts rejects agent actors). Withdraw is not listed here: its
   // route admits the card's creator agent and the task's assignee, so agents withdraw their own pending card there.
   "POST /api/issues/{id}/interactions/{interactionId}/cancel",
-  "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
   "PUT /api/companies/{companyId}/prompt-injection-prevention",
   "GET /api/companies/{companyId}/prompt-injection-prevention/models",
