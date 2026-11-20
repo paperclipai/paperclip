@@ -23,15 +23,18 @@ vi.mock("../services/case-access.js", () => ({
   canActorReadCase: async (_db: unknown, _actor: unknown, record: { id: string }) => record.id !== "hidden-case",
 }));
 function database(onPredicate: (kind: "where" | "join", condition: SQL) => void = () => {}) {
-  return { select: (fields: Record<string, unknown>) => {
+  return { select: (fields: Record<string, unknown> = {}) => {
     let table = "";
     const query = {
       from: (value: Parameters<typeof getTableName>[0]) => { table = getTableName(value); return query; },
       innerJoin: (_table: unknown, condition: SQL) => { onPredicate("join", condition); return query; },
       where: (condition: SQL) => { onPredicate("where", condition); return query; },
+      then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(table === "instance_settings"
+        ? [{ id: "settings", general: { censorUsernameInLogs: false }, experimental: {} }] : []).then(resolve),
       limit: async () => {
         if (table === "issues") return [{ id: "task", identifier: "PAP-1234", title: "Fix task notifications" }];
         if (table === "company_memberships") return fields.name ? [{ name: "Alex Example", image: "/alex.png" }] : [{ id: "membership" }];
+        if (table === "issue_comments") return [{ body: "Ready for review" }];
         if (table === "agents") return [{ name: "Coder", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "bubblegum-sky" } }];
         return [];
       },
@@ -46,7 +49,7 @@ describe("authenticated activity notifications", () => {
     const pending = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
     const db = database(), select = db.select;
-    db.select = fields => {
+    db.select = (fields = {}) => {
       const query = select(fields);
       if (fields.identifier) {
         const limit = query.limit;
@@ -86,7 +89,7 @@ describe("authenticated activity notifications", () => {
     const db = database();
     const select = db.select;
     const identifierRead = vi.fn();
-    db.select = fields => {
+    db.select = (fields = {}) => {
       if (fields.identifier) {
         identifierRead();
         if (identifierRead.mock.calls.length <= 3) throw new Error("Identifier lookup unavailable");
@@ -311,7 +314,6 @@ describe("authenticated activity notifications", () => {
         details: { title: "Secret new title", hiddenAt: null },
       } });
       await third;
-      // Rename flags and the persisted title are allowed; arbitrary activity text stays off the socket.
       expect(messages[2].payload.taskIdentityChanged).toBe(true);
       expect(messages[2].payload.notificationDetails).toEqual({ titleChanged: true });
       if (deploymentMode === "authenticated") expect(JSON.stringify(messages[2].payload)).not.toContain("Secret new title");
@@ -333,9 +335,9 @@ describe("activity profile query boundaries", () => {
     expect(await activityToastIdentity(db as never, "company-A", {
       action: "issue.updated", entityType: "issue", entityId: "task-A", actorType: "system",
     })).toMatchObject({ issueIdentifier: "PAP-1234" });
-    expect(predicates).toEqual([
-      { sql: '("issues"."company_id" = $1 and "issues"."id" = $2)', params: ["company-A", "task-A"] },
-    ]);
+    expect(predicates[0]).toEqual({ sql: '("issues"."company_id" = $1 and "issues"."id" = $2)', params: ["company-A", "task-A"] });
+    expect(predicates).toHaveLength(2);
+    expect(predicates[1].params).toEqual(["company-A", "task-A", "task-A"]);
   });
 
   it("requires the exact company, human actor, and active membership before reading a person profile", async () => {

@@ -291,9 +291,16 @@ export function setupLiveEventsWebSocketServer(
         || !(await canActorReadCase(db, context!.actor, { id: event.payload.entityId, companyId: event.companyId })))) return null;
       if (context!.actor.source === "local_implicit") {
         if (event.type === "activity.logged" && event.payload.entityType === "issue") {
+          const identity = await activityToastIdentity(db, event.companyId, event.payload);
+          const details = event.payload.details && typeof event.payload.details === "object" && !Array.isArray(event.payload.details)
+            ? event.payload.details as Record<string, unknown> : {};
           return { ...event, payload: { ...event.payload,
+            ...(event.payload.action === "issue.comment_added" ? { details: { ...details,
+              changes: undefined,
+              issueTitle: "issueTitle" in identity ? identity.issueTitle : undefined,
+              bodySnippet: "notificationDetails" in identity ? identity.notificationDetails?.bodySnippet : undefined } } : {}),
             taskIdentityChanged: issueActivityChangesTaskIdentity(event.payload.action, event.payload.details),
-            ...await activityToastIdentity(db, event.companyId, event.payload),
+            ...identity,
             ...await recentSubtaskParents(db, context!.actor, event.companyId, event.payload, reads) } };
         }
         if (event.type === "heartbeat.run.status" || event.type === "heartbeat.run.queued") {
@@ -367,8 +374,6 @@ export function setupLiveEventsWebSocketServer(
           : event;
       }
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;
-      // Company-wide invalidations carry no arbitrary task details. Task-read
-      // authorization permits the narrow notification projection below.
       if (event.type === "activity.logged") return { ...event, payload: {
         action: payload.action, entityType: payload.entityType, entityId: payload.entityId,
         // A handoff can attach the first case to a task. Its already-authorized
@@ -379,7 +384,6 @@ export function setupLiveEventsWebSocketServer(
         ...(payload.entityType === "issue"
           ? { taskIdentityChanged: issueActivityChangesTaskIdentity(payload.action, payload.details) }
           : {}),
-        // The task read check above authorizes notification content, but not arbitrary details.
         ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
         ...await recentSubtaskParents(db, context!.actor, event.companyId, payload, reads),
       } };

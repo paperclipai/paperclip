@@ -9,7 +9,6 @@ function includes(values: readonly string[], value: unknown): value is string {
   return typeof value === "string" && values.includes(value);
 }
 
-/** A closed projection of already-redacted activity, after task authorization. */
 export function activityToastDetails(action: unknown, value: unknown): Record<string, unknown> {
   const details = record(value) ?? {};
   const result: Record<string, unknown> = {};

@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { redactActivityDetails } from "../services/activity-log.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -16,7 +17,7 @@ import { WebSocket } from "ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agentApiKeys, agents, authUsers, companies, companyMemberships, createDb,
-  heartbeatRuns, issueAccessGrants, issues, type Db,
+  heartbeatRuns, issueAccessGrants, issueComments, issues, type Db,
 } from "@paperclipai/db";
 import * as schema from "@paperclipai/db/schema/index";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
@@ -292,6 +293,68 @@ describe("live-event run read boundaries", () => {
       await Promise.all([...wss.clients].map(client => { const closed = new Promise<void>(resolve => client.on("close", resolve)); client.terminate(); return closed; }));
       await new Promise<void>((resolve, reject) => (wss as typeof wss & { close(callback: (error?: Error) => void): void }).close(error => error ? reject(error) : resolve()));
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it.each(["authenticated", "local_trusted"] as const)("redacts full saved notification text before preview truncation (%s)", async deploymentMode => {
+    const companyId = randomUUID(), viewer = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Notification redaction", issuePrefix: `NR${companyId.slice(0, 6)}` });
+    await db.insert(authUsers).values({ id: viewer, name: "Fixture viewer", email: `${viewer}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: viewer, membershipRole: "operator", status: "active" });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Notification fixture", adapterType: "process" }).returning();
+    const registered = "ordinary-notification-credential-value";
+    await db.insert(issues).values({ id: issueId, companyId, title: `Review ${registered}` });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId,
+      contextSnapshot: { issueId }, status: "running" }).returning();
+    const registry = createRunSecretRedactionRegistry(db);
+    await registry.register(companyId, run.id, registered);
+    const previousCensor = (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs;
+    await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: true });
+    let failRedaction = false;
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query) {
+      if (failRedaction && query.startsWith("select ") && query.includes("paperclipSecretRedactions")) throw new Error("fixture secret registry unavailable");
+    } } }) as Db;
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, observedDb, { deploymentMode,
+      resolveCloudActor: async () => ({ userId: viewer, companyIds: [companyId] }) });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
+    const deliver = async (commentId: string, body: string) => {
+      const message = once(socket, "message");
+      publishLiveEvent({ companyId, type: "activity.logged", payload: { action: "issue.comment_added", entityType: "issue", entityId: issueId,
+        actorType: "agent", actorId: agent.id, details: { commentId, bodySnippet: body.slice(0, 120), issueTitle: `Review ${registered}`,
+          changes: { description: { from: registered, to: body } } } } });
+      const [bytes] = await message;
+      return JSON.parse(bytes.toString()).payload;
+    };
+    try {
+      await once(socket, "open");
+      for (const body of [`Review ${registered} now`, `${"x".repeat(110)} ${registered} now`, `${homedir()}/notify.txt Authorization: Bearer header-fixture-value`]) {
+        const [comment] = await db.insert(issueComments).values({ companyId, issueId, body, authorAgentId: agent.id }).returning();
+        const payload = await deliver(comment.id, body);
+        const expected = await redactActivityDetails(db, await registry.redactForIssue(companyId, issueId, { issueTitle: `Review ${registered}`, bodySnippet: body }));
+        expect(payload.issueTitle).toBe(expected?.issueTitle);
+        expect(payload.notificationDetails.bodySnippet).toBe(expected?.bodySnippet);
+        expect(JSON.stringify(payload)).not.toContain(registered);
+        expect(JSON.stringify(payload)).not.toContain(registered.slice(0, 9));
+      }
+      const foreignIssueId = randomUUID();
+      await db.insert(issues).values({ id: foreignIssueId, companyId, title: "Other task" });
+      const [foreign] = await db.insert(issueComments).values({ companyId, issueId: foreignIssueId, body: registered }).returning();
+      expect((await deliver(foreign.id, registered)).notificationDetails).not.toHaveProperty("bodySnippet");
+      const [deleted] = await db.insert(issueComments).values({ companyId, issueId, body: registered, deletedAt: new Date() }).returning();
+      expect((await deliver(deleted.id, registered)).notificationDetails).not.toHaveProperty("bodySnippet");
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId, body: registered }).returning();
+      failRedaction = true;
+      const refused = await deliver(comment.id, registered);
+      expect(refused.issueTitle).toBeNull();
+      expect(refused.notificationDetails).not.toHaveProperty("bodySnippet");
+      expect(JSON.stringify(refused)).not.toContain(registered);
+    } finally {
+      await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: previousCensor });
+      socket.terminate();
+      wss.close();
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 

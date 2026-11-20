@@ -1145,7 +1145,11 @@ function describeIssueUpdate(
   if (!details) return null;
   const changes: string[] = [];
   const statusLabel = (status: string) => status === "todo" ? "to do" : status.replace(/_/g, " ");
-  if (typeof details.status === "string") {
+  if (details.reopened === true) {
+    const from = readString(details.reopenedFrom) ?? readString(details.statusFrom);
+    const to = readString(details.status);
+    changes.push(`reopened${from ? ` from ${statusLabel(from)}` : " the task"}${to ? ` to ${statusLabel(to)}` : ""}`);
+  } else if (typeof details.status === "string") {
     changes.push(typeof details.statusFrom === "string"
       ? `changed status from ${statusLabel(details.statusFrom)} to ${statusLabel(details.status)}`
       : `changed status to ${statusLabel(details.status)}`);
@@ -1155,10 +1159,6 @@ function describeIssueUpdate(
     changes.push("reassigned the task");
   } else if (details.assignment === "unassigned" || details.assigneeAgentId === null || details.assigneeUserId === null) {
     changes.push("unassigned the task");
-  }
-  if (details.reopened === true) {
-    const from = readString(details.reopenedFrom);
-    changes.push(from ? `reopened from ${statusLabel(from)}` : "reopened the task");
   }
   if (details.titleChanged === true || typeof details.title === "string") changes.push("changed the title");
   if (details.descriptionChanged === true || typeof details.description === "string") changes.push("changed the description");
@@ -1237,7 +1237,6 @@ function buildActivityToast(
 
   const changeDesc = describeIssueUpdate(details);
   if (action === "issue.updated") {
-    // A paired comment carries the changes and comment together.
     if (details?.source === "comment" || !changeDesc) return null;
     return {
       actor: toastActor,

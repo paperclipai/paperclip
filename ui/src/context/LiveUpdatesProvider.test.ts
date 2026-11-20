@@ -2271,6 +2271,14 @@ describe("activity toast attribution", () => {
     expect(toast?.title).toBe("Fix task notifications");
     expect(toast?.body).toBe("Alex Example changed status from in progress to done: Finished the fix");
   });
+  it("reports a projected reopen once and retains other changes and the comment", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, action: "issue.comment_added", notificationDetails: {
+      commentId: "reopen-comment", bodySnippet: "One more fix", reopened: true, reopenedFrom: "done",
+      status: "todo", statusFrom: "done", priority: "high", descriptionChanged: true,
+    } }, viewer);
+    expect(toast?.body).toBe("Alex Example reopened from done to to do, set priority to high, changed the description: One more fix");
+    expect(toast?.body).not.toContain("changed status");
+  });
   it("includes reopen context and uses a clear fallback when the comment is unavailable", () => {
     expect(build(new QueryClient(), "company", { ...payload, action: "issue.comment_added", notificationDetails: { reopened: true, reopenedFrom: "done", bodySnippet: "One more fix" } }, viewer)?.body)
       .toBe("Alex Example reopened from done: One more fix");

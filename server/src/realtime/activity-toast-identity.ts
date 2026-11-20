@@ -1,11 +1,13 @@
-import { and, eq } from "drizzle-orm";
-import { agents, authUsers, companyMemberships, issues, type Db } from "@paperclipai/db";
+import { and, eq, isNull } from "drizzle-orm";
+import { agents, authUsers, companyMemberships, issueComments, issues, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { redactActivityDetails } from "../services/activity-log.js";
+import { sanitizeRecord } from "../redaction.js";
 import { activityToastDetails } from "./activity-toast-details.js";
 
 const TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
 
-/** Called only after the viewer can read the activity's task. Never copy arbitrary details. */
 export async function activityToastIdentity(
   db: Db,
   companyId: string,
@@ -33,9 +35,33 @@ export async function activityToastIdentity(
       logger.warn({ err, companyId, issueId }, "task toast identifier lookup failed");
     }
   }
+  const details = payload.details && typeof payload.details === "object" && !Array.isArray(payload.details)
+    ? payload.details as Record<string, unknown> : {};
+  let notificationDetails = activityToastDetails(payload.action, { ...details, bodySnippet: undefined });
+  if (issueId) {
+    try {
+      let bodySnippet: string | undefined;
+      if (payload.action === "issue.comment_added" && typeof details.commentId === "string") {
+        const [comment] = await db.select({ body: issueComments.body }).from(issueComments)
+          .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+            eq(issueComments.id, details.commentId), isNull(issueComments.deletedAt))).limit(1);
+        bodySnippet = comment?.body;
+      }
+      if (issueTitle || bodySnippet) {
+        const registeredSafe = await createRunSecretRedactionRegistry(db).redactForIssue(companyId, issueId, { issueTitle, bodySnippet });
+        const safe = bodySnippet
+          ? await redactActivityDetails(db, registeredSafe)
+          : sanitizeRecord(registeredSafe);
+        issueTitle = typeof safe?.issueTitle === "string" ? safe.issueTitle : null;
+        notificationDetails = activityToastDetails(payload.action, { ...details, bodySnippet: safe?.bodySnippet });
+      }
+    } catch (err) {
+      issueTitle = null;
+      logger.warn({ err, companyId, issueId }, "task notification content redaction failed");
+    }
+  }
   const identity = { ...actorIdentity, ...(issueId ? {
-    issueIdentifier, issueTitle,
-    notificationDetails: activityToastDetails(payload.action, payload.details),
+    issueIdentifier, issueTitle, notificationDetails,
   } : {}) };
   if (!actorId) return identity;
 
