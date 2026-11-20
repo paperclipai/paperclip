@@ -527,6 +527,24 @@ const support = externalDatabaseUrl
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
       expect(action.status).toBe("active");
     });
+    it.each([["an ordinary run", false, 1], ["an exact chat Retry", true, 0]] as const)(
+      "replaces a provider terminal failure only without consumed chat Retry authority (%s)", async (_label, chatRetry, expected) => {
+        const source = await seed();
+        if (chatRetry) {
+          const [failed] = await db.insert(heartbeatRuns).values({ companyId: source.companyId, agentId: source.agentId,
+            status: "failed", contextSnapshot: { issueId: source.issueId }, createdAt: new Date(Date.now() - 60_000) }).returning();
+          const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
+          await db.update(heartbeatRuns).set({ retryOfRunId: failed!.id, contextSnapshot: { ...current!.contextSnapshot,
+            retryOfRunId: failed!.id, taskRetryRequestId: randomUUID(),
+            chatFailedRunRetry: { version: 1, actionId: randomUUID(), failedRunId: failed!.id } } })
+            .where(eq(heartbeatRuns.id, source.runId));
+        }
+        invalidateNativeReplacementDiscovery(db);
+        await reconcileSafeNativeReplacements(db);
+        const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+        expect(successors).toHaveLength(expected);
+        for (const successor of successors) expect(successor.contextSnapshot).not.toHaveProperty("chatFailedRunRetry");
+      });
     async function seedUnprovenOwner(finishedAgoMs: number) {
       const source = await seed();
       await db.update(heartbeatRuns).set({ finishedAt: sql`now() - ${finishedAgoMs}::integer * interval '1 millisecond'`,

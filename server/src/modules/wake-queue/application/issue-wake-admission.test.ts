@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { admitIssueWake, type IssueWakeAdmissionEffects, type IssueWakeAdmissionOutcome } from "./issue-wake-admission.js";
+import { admitIssueWake, createIssueWakePreflight, type IssueWakeAdmissionEffects, type IssueWakeAdmissionOutcome } from "./issue-wake-admission.js";
 
 const queuedRun = { id: "run", companyId: "company", agentId: "agent", status: "queued",
   invocationSource: "assignment", triggerDetail: null, wakeupRequestId: "wake" };
@@ -22,6 +22,55 @@ function recordEffects(trace: string[]): IssueWakeAdmissionEffects<Run> {
     dispatch: async () => { trace.push("dispatch"); },
   };
 }
+
+describe("issue wake preflight", () => {
+  const input = {
+    companyId: "company",
+    issueId: "issue",
+    agentId: "agent",
+    reason: null,
+    wakeReason: null,
+    taskRetryActorId: null,
+    hasIndependentConversationWakeCause: false,
+  };
+  const activeConversation = {
+    conversationAgentId: "agent",
+    conversationUserId: "owner",
+    conversationState: "active",
+    status: "in_progress",
+    originKind: null,
+  };
+  const onboardingTask = {
+    ...activeConversation,
+    conversationAgentId: null,
+    conversationUserId: null,
+    conversationState: null,
+    originKind: "onboarding_first_task",
+  };
+
+  it.each([
+    { label: "onboarding completion", issue: onboardingTask, reasons: { reason: "issue_children_completed" },
+      result: { kind: "eligible", onboardingCompletion: true } },
+    { label: "onboarding context fallback", issue: onboardingTask, reasons: { wakeReason: "issue_children_completed" },
+      result: { kind: "eligible", onboardingCompletion: false } },
+    { label: "execution context fallback", issue: activeConversation, reasons: { wakeReason: "issue_children_completed" },
+      result: { kind: "skipped" } },
+    { label: "explicit reason over execution context", issue: activeConversation,
+      reasons: { reason: "issue_commented", wakeReason: "issue_children_completed" },
+      result: { kind: "eligible", onboardingCompletion: false } },
+  ])("handles $label", async ({ issue, reasons, result }) => {
+    const preflight = createIssueWakePreflight(async () => issue);
+    await expect(preflight({ ...input, ...reasons })).resolves.toEqual(result);
+  });
+
+  it("requires the owner of a conversation for a manual start or retry", async () => {
+    const preflight = createIssueWakePreflight(async () => activeConversation);
+    await expect(preflight({ ...input, manualUserWake: true, requestedByActorId: "someone-else" }))
+      .resolves.toEqual({ kind: "conversation_owner_required", action: "start" });
+    await expect(preflight({ ...input, taskRetryActorId: "someone-else", reason: "issue_children_completed" }))
+      .resolves.toEqual({ kind: "conversation_owner_required", action: "retry" });
+  });
+});
 
 describe("issue wake admission handoff", () => {
   it("waits for commit before publishing or dispatching and leaves telemetry in the background", async () => {

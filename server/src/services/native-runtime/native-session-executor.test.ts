@@ -3188,6 +3188,10 @@ describe("remote provider pack manifest", () => {
         await driver.mock.calls.at(-1)![0].checkpoint!("settled");
         expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
         expect(harnessStorage.persistNativeHarnessBackup).toHaveBeenCalledTimes(1);
+        // The per-turn backup is bounded by transfer inactivity, not a fixed total time.
+        const [persisted] = vi.mocked(harnessStorage.persistNativeHarnessBackup).mock.calls[0]!;
+        expect(persisted.transferIdleTimeoutMs).toBe(harnessStorage.NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS);
+        expect(persisted.signal).toBeUndefined();
         expect(checkpointReadResets).toBe(0);
         expect(inspectionResets).toBe(0);
         return;
@@ -16053,6 +16057,35 @@ describe("native session bounded recovery", () => {
       const deterministic = confirmed({ category: "authentication", retryability: "requires_action" });
       expect(nativeSessionFailureSourceCode(deterministic)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
     });
+
+    it("waits out a remote startup rate limit or quota as a usage-limit hold, not a board Retry", () => {
+      // Staging PAPERCLIP-BACKEND-8Z: an account-wide Claude 429 refused session.open, the same-run
+      // retry met it again after the cooldown, and the repeat ended as a startup rejection.
+      const limit = (fields: Record<string, unknown>) => startupFailure({ provider: "anthropic", httpStatus: 429,
+        message: "API error: 429 This request would exceed your account's rate limit. Please try again later · model not changed",
+        ...fields });
+      const confirmed = (fields: Record<string, unknown>) =>
+        Object.defineProperty(sessionOpenFailure(limit(fields)), "runnerExitConfirmed", { value: true, enumerable: false });
+      for (const fields of [{ category: "rate_limit" }, { category: "quota_exhausted", retryability: "requires_action" }]) {
+        const first = confirmed(fields);
+        expect(nativeSessionFailureSourceCode(first)).toBe("provider_session_open_rejected");
+        // The first refusal still retries the same run after the cooldown.
+        expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected", first, true))
+          .toBe("provider_session_open_rejected");
+        // The repeat, or a refusal whose runner exit is unproven, waits for the reset.
+        const previous = nativeStartupFailureSignature(limit(fields));
+        const repeated = nativeRemoteStartupRejectionCode("provider_session_open_rejected", confirmed(fields), true, previous);
+        const unproven = nativeRemoteStartupRejectionCode("provider_session_open_rejected", sessionOpenFailure(limit(fields)), true);
+        for (const code of [repeated, unproven]) {
+          expect(code).toBe("native_provider_usage_limit");
+          const disposition = nativeSessionFailureDisposition(2, new Date(), code);
+          expect(disposition).toEqual({ phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: null });
+        }
+      }
+      // A local target keeps its bounded same-run retries.
+      expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected",
+        sessionOpenFailure(limit({ category: "rate_limit" })), false)).toBe("provider_session_open_rejected");
+    });
   });
 
   it("stops same-run retries for an operator while a saved side-effecting call has no result", () => {
@@ -22840,6 +22873,7 @@ describe("runnerd provider runtime wiring", () => {
     { outcome: "created", scenario: "interrupted_bootstrap_unopened", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened_active_turn", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened_unproven", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unopened_stop_unproven", homeMode: "isolated" },
   ])(
     "bootstraps only an untouched provider session in a $outcome workspace lease: $scenario ($homeMode)", async ({ outcome, scenario, homeMode }) => {
     const remoteCwd = join(isolatedStateDirectory, "remote");
@@ -23058,6 +23092,15 @@ describe("runnerd provider runtime wiring", () => {
       "interrupted_bootstrap_unprepared_backup"].includes(scenario)) {
       noteRemoteBootstrapRestartProven(execution.binding.runId, "stopped");
     }
+    if (scenario === "interrupted_bootstrap_unopened_stop_unproven") {
+      expect(recordRemoteBootstrapRestartProof(execution.binding.runId, "stop_unproven")).toBe(false);
+    }
+    const refusedRestart = {
+      interrupted_bootstrap_unopened_unproven: "same_run,provider=unopened,proof=not_recorded",
+      interrupted_bootstrap_unopened_stop_unproven: "same_run,provider=unopened,proof=stop_unproven",
+      interrupted_bootstrap_unopened_other_run: "other_run,provider=unopened,proof=held",
+      interrupted_bootstrap_unopened_active_turn: "same_run,provider=opened,proof=held",
+    }[scenario];
     if (scenario === "interrupted_bootstrap" || scenario === "interrupted_bootstrap_unopened" || scenario === "interrupted_bootstrap_unprepared"
       || scenario === "interrupted_bootstrap_unprepared_unrecorded" || scenario === "interrupted_bootstrap_connected_checkpoint_proven") {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
@@ -23121,7 +23164,9 @@ describe("runnerd provider runtime wiring", () => {
       await expect(options.prepareExternalRunnerState()).rejects.toThrow(
         outcome === "replacement" ? "runner_harness_backup_unavailable"
           : scenario.startsWith("interrupted_bootstrap_unprepared") ? "runner_harness_state_mismatch: resumed_unavailable"
-          : "runner_harness_state_mismatch",
+          : refusedRestart
+            ? `runner_harness_state_mismatch: provider_identity_incomplete (identity_binding; bootstrap_restart=${refusedRestart})`
+            : "runner_harness_state_mismatch",
       );
       expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(false);
       expect(syncIn).not.toHaveBeenCalled();

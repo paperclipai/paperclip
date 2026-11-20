@@ -1,5 +1,6 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
-import { AWS_MCP_ISSUER_CONFIG_KEY, awsMcpMethodUsesIssuer, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { AWS_MCP_ISSUER_CONFIG_KEY, AWS_ROLE_ARN_PATTERN, awsMcpMethodUsesIssuer, isAwsMcpConnection, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { awsRoleSetup } from "./connectors/aws/setup.js";
 import { workloadIdentityIssuer, workloadIdentityIssuerOrigin, workloadIdentityService } from "./workload-identity.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
@@ -97,7 +98,7 @@ import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, pap
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
 import { COGNEE_STDIO_TEMPLATE } from "./cognee-connection.js";
-import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { isRemoteMcpConnectorMethod, type AwsConnectionSetup } from "@paperclipai/shared";
 
 import { githubBotRequest } from "./chat-github-client.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -2256,9 +2257,9 @@ export function toolAccessService(
           }
         : { templateId: method?.defaults?.templateKey };
     // The issuer an AWS role is asked to trust, recorded so a later change of this instance's address
-    // gets a clear message instead of a role refusal. A draft being resumed keeps the issuer recorded at
-    // the draft step; any other setup or reconnect records the current address (the one now in AWS).
-    const recordedAwsIssuer = !input.reconnectConnectionId && retainedConnection?.status === "draft"
+    // gets a clear message instead of a role refusal. Testing a draft keeps the issuer recorded at the
+    // draft step; saving the draft again, any other setup, or a reconnect records the current address.
+    const recordedAwsIssuer = !input.reconnectConnectionId && !input.saveDraft && retainedConnection?.status === "draft"
       ? asRecord(retainedConnection.config)[AWS_MCP_ISSUER_CONFIG_KEY]
       : undefined;
     const awsIssuerOrigin = workloadIdentityIssuerOrigin();
@@ -2271,7 +2272,11 @@ export function toolAccessService(
           ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
-          methodConfig: normalizedMethodConfig?.values ?? {},
+          methodConfig: input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry.slug, method?.key)
+            // A role ARN is only kept once AWS accepted it in a test, so an unchecked ARN never reaches
+            // the setup steps (which tell an AWS administrator to update that role).
+            ? Object.fromEntries(Object.entries(normalizedMethodConfig?.values ?? {}).filter(([key]) => key !== "roleArn"))
+            : normalizedMethodConfig?.values ?? {},
           ...(galleryEntry.slug === "google-workspace" && retainedConnection?.status === "draft"
             ? { workspaceSetup: retainedConnection.config.workspaceSetup }
             : {}),
@@ -4000,6 +4005,45 @@ export function toolAccessService(
     return preflightConnectionMetadata(app, method, method.defaults, serverUrl, () => options.now?.() ?? new Date());
   }
 
+  /** The values and template a customer needs to create an AWS role for this connection. */
+  async function getAwsSetup(
+    companyId: string, connectionId: string, options: { accessLevel?: "read_only" | "full" } = {},
+  ): Promise<AwsConnectionSetup> {
+    const [row] = await db.select().from(toolConnections)
+      .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
+    if (!row) throw notFound("Tool connection not found");
+    if (!isAwsMcpConnection(row) || row.config.connectionMethodKey !== "aws-role") {
+      throw unprocessable("This connection does not use an AWS role.", { code: "aws_role_setup_unavailable" });
+    }
+    // Without a usable public address Paperclip cannot sign, so a recorded issuer would only look usable.
+    const origin = workloadIdentityIssuerOrigin();
+    if (!origin.available) return { available: false, reason: origin.reason };
+    const issuer = workloadIdentityIssuer(origin.origin, companyId);
+    // Paperclip signs only as its current address, so a draft set up for an older one could never pass
+    // the test: it is saved again first. Reconnecting a connection records the current address, so it
+    // gets setup for that address.
+    const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
+    if (row.status === "draft" && typeof recorded === "string" && recorded !== issuer) {
+      return { available: false, reason: "address_changed" };
+    }
+    const methodConfig = asRecord(row.config.methodConfig);
+    const setup = awsRoleSetup({
+      issuer, connectionId: row.id,
+      accessLevel: options.accessLevel ?? (methodConfig.accessLevel === "full" ? "full" : "read_only"),
+    });
+    return {
+      available: true,
+      ...setup,
+      // The setup steps tell an AWS administrator to update this role, so only the role made for this
+      // connection (named after it, so no other role shares the name) on a finished connection is
+      // offered. A draft's unchecked value, or any other role, could point that update at an unrelated role.
+      savedRoleArn: row.status !== "draft" && typeof methodConfig.roleArn === "string"
+        && methodConfig.roleArn.split(":role/")[1] === setup.roleName && AWS_ROLE_ARN_PATTERN.test(methodConfig.roleArn)
+        ? methodConfig.roleArn : null,
+      issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
+    };
+  }
+
   return {
     /** Identity-only verification: no bot installation/repository access required. */
     verifyPersonalGitHubIdentity: async (companyId: string, connectionId: string, userId: string) => {
@@ -4108,6 +4152,7 @@ export function toolAccessService(
     rotateMachineSignIn: clientCredentials.rotateMachineSignIn,
     completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
     getMachineSignIn: clientCredentials.getMachineSignIn,
+    getAwsSetup,
 
     reconnectGalleryApp: withPluginApps(reconnectGalleryApp),
 

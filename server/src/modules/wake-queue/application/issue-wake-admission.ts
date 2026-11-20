@@ -1,4 +1,50 @@
+import { canActorRetryConversation, isConversation, isConversationExecutionWake, isWaitingConversation } from "../../../lib/conversation-wake-policy.js";
 import type { RunSummary } from "./types.js";
+
+type ConversationWakeIssue = {
+  conversationAgentId: string | null;
+  conversationUserId: string | null;
+  conversationState: string | null;
+  status: string;
+  originKind: string | null;
+};
+
+export function createIssueWakePreflight(readIssue: (companyId: string, issueId: string) => Promise<ConversationWakeIssue | null>) {
+  return async function preflightIssueWake(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    reason: string | null;
+    wakeReason: string | null;
+    requestedByActorId?: string | null;
+    manualUserWake?: boolean;
+    taskRetryActorId: string | null;
+    hasIndependentConversationWakeCause: boolean;
+  }): Promise<
+    | { kind: "eligible"; onboardingCompletion: boolean }
+    | { kind: "skipped" }
+    | { kind: "conversation_owner_required"; action: "start" | "retry" }
+  > {
+    const issue = await readIssue(input.companyId, input.issueId);
+    if (input.taskRetryActorId && issue && !canActorRetryConversation(issue, input.taskRetryActorId)) {
+      return { kind: "conversation_owner_required", action: "retry" };
+    }
+    const onboardingCompletion = input.reason === "issue_children_completed" && issue?.originKind === "onboarding_first_task";
+    if (issue && isConversation(issue)) {
+      if (input.reason === "onboarding_chat_greeting" && (issue.originKind !== "onboarding_chat"
+        || issue.conversationUserId !== input.requestedByActorId)) return { kind: "skipped" };
+      if (input.manualUserWake && issue.conversationUserId !== input.requestedByActorId) {
+        return { kind: "conversation_owner_required", action: "start" };
+      }
+      if (isConversationExecutionWake(issue, input.reason ?? input.wakeReason)
+        || input.agentId !== issue.conversationAgentId
+        || (isWaitingConversation(issue) && !input.hasIndependentConversationWakeCause)) {
+        return { kind: "skipped" };
+      }
+    }
+    return { kind: "eligible", onboardingCompletion };
+  };
+}
 
 export type IssueWakeAdmissionOutcome<Run> =
   | { kind: "queued" | "coalesced" | "replayed"; run: Run }

@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionRouterBindingSchema, aiConnectionSourceSlug } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -111,11 +111,21 @@ function sourceSlugForApplication(application: ToolApplication | undefined) {
   return text(application?.metadata?.sourceTemplateKey) ?? text(application?.metadata?.galleryKey);
 }
 
+function aiBindingMatchesService(provider: string, serviceSlug: string) {
+  return provider === serviceSlug || aiConnectionCatalogSlug(provider) === serviceSlug;
+}
+
+/** AI intents saved before a provider had its own catalog entry still name the provider. */
+function intentCatalogSlug(payload: { serviceSlug: string; purpose?: string }) {
+  return payload.purpose === "ai" ? aiConnectionCatalogSlug(payload.serviceSlug) : payload.serviceSlug;
+}
+
 function sourceSlugForConnection(
   connection: ToolConnection,
   applications: ReadonlyMap<string, ToolApplication>,
 ) {
-  const source = text(connection.config?.sourceTemplateKey)
+  const source = aiConnectionSourceSlug(connection)
+    ?? text(connection.config?.sourceTemplateKey)
     ?? text(connection.transportConfig?.sourceTemplateKey)
     ?? sourceSlugForApplication(applications.get(connection.applicationId));
   return source && getAppStoreDefinition(source) ? source : `connection:${connection.id}`;
@@ -323,7 +333,7 @@ export function connectionIntentService(db: Db) {
       // account. Legacy direct-account cards remain readable across upgrades.
       if (!options.agentSetupOperationId && aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).success) return null;
       const managed = await queuedSetupManagedAgent(agent, client);
-      return managed?.binding.provider === serviceSlug ? managed : null;
+      return managed && aiBindingMatchesService(managed.binding.provider, serviceSlug) ? managed : null;
     }
     const router = aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
     if (router) {
@@ -336,12 +346,12 @@ export function connectionIntentService(db: Db) {
       if (!source || !isAiAuthenticationFailure(source.errorCode) || source.status !== "failed" || evidence?.poolId !== router.connectionId || !taskKey) return null;
       const [pin] = await client.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, companyId), eq(aiConnectionTaskPins.poolId, router.connectionId), eq(aiConnectionTaskPins.agentId, agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
       const binding = pin?.selection.binding;
-      if (!pin || binding?.provider !== serviceSlug || JSON.stringify(evidence.binding) !== JSON.stringify(binding)) return null;
+      if (!pin || !binding || !aiBindingMatchesService(binding.provider, serviceSlug) || JSON.stringify(evidence.binding) !== JSON.stringify(binding)) return null;
       return { agent, binding, adapterConfig: { ...agent.adapterConfig, ...pin.selection.runtimeConfig }, requiresAdoption: false };
     }
     const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
     const binding = saved ?? options.fallback;
-    return binding?.provider === serviceSlug ? { agent, binding, adapterConfig: agent.adapterConfig, requiresAdoption: !saved } : null;
+    return binding && aiBindingMatchesService(binding.provider, serviceSlug) ? { agent, binding, adapterConfig: agent.adapterConfig, requiresAdoption: !saved } : null;
   }
 
   async function usableConnectionForAgent(input: {
@@ -448,7 +458,7 @@ export function connectionIntentService(db: Db) {
 
   async function resolveService(service: string, companyId: string, userId: string, agentId: string, purpose?: "ai" | "channel") {
     if (!service.startsWith("connection:")) {
-      const app = getAppStoreDefinition(service);
+      const app = getAppStoreDefinition(purpose === "ai" ? aiConnectionCatalogSlug(service) : service);
       if (!app) throw notFound("Connection service was not found");
       if (app.experimentalFeatureKey && !isConnectorFeatureEnabled(app, await instanceSettingsService(db).getExperimental())) {
         throw notFound("Connection service was not found");
@@ -984,7 +994,8 @@ export function connectionIntentService(db: Db) {
     const outcomeId = context.run.contextSnapshot?.interactionId;
     if (typeof outcomeId === "string") {
       const [outcome] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.id, outcomeId), eq(issueThreadInteractions.companyId, context.run.companyId), eq(issueThreadInteractions.issueId, context.issue.id)));
-      if (outcome?.kind === "connection_intent" && outcome.status === "rejected" && connectionIntentPayloadSchema.parse(outcome.payload).serviceSlug === app.slug && connectionIntentPayloadSchema.parse(outcome.payload).purpose === options.purpose) {
+      const declined = outcome?.kind === "connection_intent" && outcome.status === "rejected" ? connectionIntentPayloadSchema.parse(outcome.payload) : null;
+      if (declined && intentCatalogSlug(declined) === app.slug && declined.purpose === options.purpose) {
         throw conflict("The user declined this connection. Pursue alternatives; do not request it again in this continuation.");
       }
     }
@@ -1260,7 +1271,7 @@ export function connectionIntentService(db: Db) {
       if (sourceSlugForConnection(
         selectedConnection,
         new Map([[selectedApplication.id, selectedApplication]]),
-      ) !== payload.serviceSlug) {
+      ) !== intentCatalogSlug(payload)) {
         throw notFound("Connection does not match this intent");
       }
       if (selectedConnection.status !== "active" || !selectedConnection.enabled || isToolConnectionAttentionHealth(selectedConnection.healthStatus)) {
@@ -1296,7 +1307,7 @@ export function connectionIntentService(db: Db) {
             throw conflict("The agent changed during validation. Reload the task and try again.");
           }
           const binding = options.validatedAdoption.binding;
-          if (binding.provider !== payload.serviceSlug || binding.mode !== "responsible_user") throw conflict("Invalid legacy adoption binding");
+          if (!aiBindingMatchesService(binding.provider, payload.serviceSlug) || binding.mode !== "responsible_user") throw conflict("Invalid legacy adoption binding");
           const updated = await updateAgentConfigurationInTransaction(txDb, agent.id, {
             runtimeConfig: { ...agent.runtimeConfig, aiConnection: binding },
           }, { recordRevision: { createdByUserId: userId, source: "patch" } });
@@ -1475,7 +1486,7 @@ export function connectionIntentService(db: Db) {
         eq(issueThreadInteractions.sourceRunId, run.id),
         operationId ? sql`${issueThreadInteractions.payload}->>'agentSetupOperationId' = ${operationId}` : undefined,
         sql`${issueThreadInteractions.payload}->>'agentSetup' = 'true'`,
-        sql`${issueThreadInteractions.payload}->>'serviceSlug' = ${binding.provider}`,
+        sql`${issueThreadInteractions.payload}->>'serviceSlug' in (${binding.provider}, ${aiConnectionCatalogSlug(binding.provider)})`,
       )).limit(1);
       if (pending) continue;
       if (!await canActorReadIssuePrivacy(db, { type: "board", userId: verificationUserId, ignoreInstanceAdmin: true }, issue)) continue;
