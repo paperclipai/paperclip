@@ -1,5 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { agents, authUsers, companyMemberships, issueComments, issues, type Db } from "@paperclipai/db";
+import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { redactActivityDetails } from "../services/activity-log.js";
@@ -48,7 +49,7 @@ export async function activityToastIdentity(
         bodySnippet = comment?.body;
       }
       if (issueTitle || bodySnippet) {
-        const registeredSafe = await createRunSecretRedactionRegistry(db).redactForIssue(companyId, issueId, { issueTitle, bodySnippet });
+        const registeredSafe = await createRunSecretRedactionRegistry(db).redactForIssueNotification(companyId, issueId, { issueTitle, bodySnippet });
         const safe = bodySnippet
           ? await redactActivityDetails(db, registeredSafe)
           : sanitizeRecord(registeredSafe);
@@ -88,4 +89,16 @@ export async function activityToastIdentity(
     return { ...identity, actorName: user?.name, actorImage: user?.image };
   }
   return identity;
+}
+
+export function createActivityToastIdentity(db: Db) {
+  const identities = new WeakMap<LiveEvent, Promise<Awaited<ReturnType<typeof activityToastIdentity>>>>();
+  return (event: LiveEvent) => {
+    let identity = identities.get(event);
+    if (!identity) {
+      identity = activityToastIdentity(db, event.companyId, event.payload);
+      identities.set(event, identity);
+    }
+    return identity;
+  };
 }

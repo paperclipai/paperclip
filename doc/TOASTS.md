@@ -79,8 +79,18 @@ existing company-scoped identifier lookup. Comment previews read the complete
 non-deleted comment by company, task, and comment ID. Task-registered secrets are
 redacted from the complete title/comment before the preview is shortened, using
 the same task redaction registry as HTTP reads. Activity text also retains its
-pattern-based credential and configured username redaction. Registry reads select
-only secret metadata from task run history, not full run contexts. Missing comments
+pattern-based credential and configured username redaction. The notification
+path uses the existing task-context indexes in two ordered reads, each limited to
+129 rows. It accepts at most 128 distinct runs, 64 unique secrets and 64 KiB of
+unique encrypted material, with a 16 KiB registry limit per run. Exceeding a limit
+omits free text; the browser can use a previously loaded task title. HTTP history
+reads retain their existing redaction behavior.
+
+Authorized viewers share one identity/redaction promise for the same published
+event. Each viewer still passes its own access check before reading that result.
+The shared result contains redacted text and expires with the event object. Each
+new event reads fresh redaction data; no plaintext secret values are cached.
+Registry reads select only secret metadata, not full run contexts. Missing comments
 and read/redaction failures omit the preview; they never reuse the event snippet.
 If the optional task-identity lookup fails, the event still arrives. The browser uses a cached
 title or `Task`; task identifiers remain in navigation links. Permission-check

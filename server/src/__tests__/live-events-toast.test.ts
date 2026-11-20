@@ -29,6 +29,7 @@ function database(onPredicate: (kind: "where" | "join", condition: SQL) => void 
       from: (value: Parameters<typeof getTableName>[0]) => { table = getTableName(value); return query; },
       innerJoin: (_table: unknown, condition: SQL) => { onPredicate("join", condition); return query; },
       where: (condition: SQL) => { onPredicate("where", condition); return query; },
+      orderBy: () => query,
       then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(table === "instance_settings"
         ? [{ id: "settings", general: { censorUsernameInLogs: false }, experimental: {} }] : []).then(resolve),
       limit: async () => {
@@ -336,8 +337,9 @@ describe("activity profile query boundaries", () => {
       action: "issue.updated", entityType: "issue", entityId: "task-A", actorType: "system",
     })).toMatchObject({ issueIdentifier: "PAP-1234" });
     expect(predicates[0]).toEqual({ sql: '("issues"."company_id" = $1 and "issues"."id" = $2)', params: ["company-A", "task-A"] });
-    expect(predicates).toHaveLength(2);
-    expect(predicates[1].params).toEqual(["company-A", "task-A", "task-A"]);
+    expect(predicates).toHaveLength(3);
+    expect(predicates[1].params).toEqual(["company-A", "task-A"]);
+    expect(predicates[2].params).toEqual(["company-A", "task-A"]);
   });
 
   it("requires the exact company, human actor, and active membership before reading a person profile", async () => {
