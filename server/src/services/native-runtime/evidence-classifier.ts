@@ -1,5 +1,6 @@
 import { and, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { resolveNativeBlockerOwner } from "./blocker-owner.js";
 import {
   approvals,
   caseHandoffs,
@@ -74,6 +75,8 @@ export interface NativeEvidenceAssessment {
     unblockAction: string;
     boardOwned: boolean;
     ownerKind?: NativeBlockerOwnerKind;
+    /** The agent the report named as unblock owner, when it resolved to one. */
+    ownerAgentId?: string | null;
     scope: "current_track" | "task_wide";
   } | null;
   continuation: {
@@ -398,6 +401,10 @@ export async function classifyNativeEvidence(input: {
     actionableAttentionRequests.push(request);
   }
 
+  const resolvedOwner = reported === "blocked"
+    ? await resolveNativeBlockerOwner(input.db, { companyId: input.companyId, owner: blocker.owner })
+    : { kind: "unspecified" as const };
+
   return {
     objectiveClaimSatisfied: claim.objectiveSatisfied === true,
     objectiveSatisfied: claim.objectiveSatisfied === true && allCriteriaSatisfied,
@@ -426,8 +433,12 @@ export async function classifyNativeEvidence(input: {
     blocker: reported === "blocked" && typeof blocker.unblockAction === "string"
       ? {
           unblockAction: blocker.unblockAction,
-          boardOwned: ["board", "user"].includes(String(blockerOwner.kind)) || blockerOwner.owner === "board",
+          // A person owner is acted on by the board. An agent name that
+          // cannot be resolved stays visible to the board rather than
+          // silently falling back to the reporting agent.
+          boardOwned: resolvedOwner.kind === "board" || resolvedOwner.kind === "unresolved",
           ownerKind: nativeBlockerOwnerKind(blockerOwner),
+          ownerAgentId: resolvedOwner.kind === "agent" ? resolvedOwner.agentId : null,
           scope: blocker.scope === "task_wide" ? "task_wide" : "current_track",
         }
       : null,

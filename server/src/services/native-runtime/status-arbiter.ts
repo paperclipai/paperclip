@@ -103,6 +103,12 @@ export interface NativeStatusDecision {
   } | null;
   effects: NativeStatusEffect[];
   blockerOwnerKind?: string;
+  /**
+   * Hand the task to this agent with the status. Set when a blocked report
+   * names another agent as unblock owner: only the assignee can be woken on
+   * a task, so the owner must hold it to act on the blocker.
+   */
+  handoffAgentId?: string;
 }
 
 /**
@@ -203,6 +209,15 @@ export function supersedeHandedOffDecision(
     unblockDescriptor: null,
     effects,
   };
+}
+
+/** The saved unblock owner: the agent the report named, the board, or the reporting agent. */
+function blockerOwner(
+  blocker: NativeEvidenceAssessment["blocker"],
+  agentId: string,
+): { agentId: string } | "board" {
+  if (blocker?.ownerAgentId) return { agentId: blocker.ownerAgentId };
+  return blocker?.boardOwned ? "board" : { agentId };
 }
 
 /** Pure authority boundary: model prose is evidence, never a status command. */
@@ -518,9 +533,7 @@ export function arbitrateNativeStatus(input: {
     input.hasUnresolvedIssueBlockers === true &&
     (["done", "blocked"].includes(input.assessment.reportedDisposition) || unfinishedResponseWait || input.assessment.continuation?.kind === "monitor")
   ) {
-    const owner = input.assessment.blocker?.boardOwned
-      ? ("board" as const)
-      : { agentId: input.agentId };
+    const owner = blockerOwner(input.assessment.blocker, input.agentId);
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "blocked",
@@ -711,9 +724,8 @@ export function arbitrateNativeStatus(input: {
     input.assessment.reportedDisposition === "blocked" &&
     input.assessment.blocker
   ) {
-    const owner = input.assessment.blocker.boardOwned
-      ? ("board" as const)
-      : { agentId: input.agentId };
+    const owner = blockerOwner(input.assessment.blocker, input.agentId);
+    const namedAgentOwner = typeof owner === "object" && owner.agentId !== input.agentId ? owner : null;
     if (input.assessment.blocker.scope === "task_wide") {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -721,6 +733,7 @@ export function arbitrateNativeStatus(input: {
         toStatus: "blocked",
         reasonCode: "task_wide_blocker_bound",
         blockerOwnerKind: input.assessment.blocker.ownerKind,
+        ...(namedAgentOwner ? { handoffAgentId: namedAgentOwner.agentId } : {}),
         unblockDescriptor: {
           owner,
           action: input.assessment.blocker.unblockAction,
@@ -731,12 +744,26 @@ export function arbitrateNativeStatus(input: {
             owner,
             action: input.assessment.blocker.unblockAction,
           },
-          {
-            kind: "notify_owner",
+          // A named agent owner is woken by its blocker binding; do not
+          // also wake the reporting agent to repeat the blocked work.
+          ...(namedAgentOwner ? [] : [{
+            kind: "notify_owner" as const,
             agentId: input.agentId,
             reason: "task_wide_blocker_bound",
-          },
+          }]),
         ],
+      };
+    }
+    if (namedAgentOwner) {
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "blocked",
+        toStatus: "blocked",
+        reasonCode: "current_track_blocker_waiting",
+        blockerOwnerKind: input.assessment.blocker.ownerKind,
+        handoffAgentId: namedAgentOwner.agentId,
+        unblockDescriptor: { owner, action: input.assessment.blocker.unblockAction },
+        effects: [{ kind: "bind_blocker", owner, action: input.assessment.blocker.unblockAction }],
       };
     }
     return {

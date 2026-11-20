@@ -2405,6 +2405,11 @@ export async function commitNativeStatusDecision(input: {
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
           unblockDescriptor: input.decision.unblockDescriptor,
+          // A blocker naming another agent hands it the task, so its blocker
+          // wake is delivered. Only the reporting assignee can hand it off.
+          ...(input.decision.handoffAgentId && !issue.assigneeUserId &&
+            originRun?.agentId && issue.assigneeAgentId === originRun.agentId
+            ? { assigneeAgentId: input.decision.handoffAgentId } : {}),
           actorAgentId: originRun?.agentId ?? null,
           actorUserId: null,
         },

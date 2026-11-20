@@ -90,6 +90,7 @@ import {
 import * as activityLog from "../services/activity-log.js";
 import { dismissObsoleteNativePolicyReviews, registerObsoletePolicyReviewWork } from "../services/native-runtime/obsolete-policy-reviews.js";
 import { issueService } from "../services/issues.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -3330,6 +3331,54 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect((await issueThreadInteractionService(db).getById(seeded.interaction.id))!.status).toBe("pending");
     await dismissAutomaticCompletionReviews(db, seeded.issueId);
     expect((await issueThreadInteractionService(db).getById(seeded.interaction.id))!.status).toBe("cancelled");
+  }, 30_000);
+
+  it.each([
+    { scope: "current_track", owner: { kind: "agent", name: "ESCD" }, saved: () => ({ agentId: delegateAgentId }) },
+    { scope: "task_wide", owner: { kind: "agent", name: "Eligible status corpus delegate" }, saved: () => ({ agentId: delegateAgentId }) },
+    { scope: "task_wide", owner: { kind: "user", name: "Avery Example" }, saved: () => "board" },
+  ])("saves the unblock owner a $scope blocked report names ($owner.kind $owner.name) and wakes an agent owner", async ({ scope, owner, saved }) => {
+    const seeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `named-blocker-owner-${randomUUID()}` });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const result = stored!.resultJson.result as { completionClaim: Record<string, unknown> };
+    const named = {
+      ...result,
+      reportedWorkDisposition: "blocked",
+      completionClaim: { ...result.completionClaim, objectiveSatisfied: false,
+        remainingWork: [{ description: "Review the release notes draft.", blocksCompletion: true }] },
+      blocker: { reasonCode: "review_required", owner, unblockAction: "Review the release notes draft.", scope },
+    };
+    await db.update(nativeRunResults).set({ resultJson: { ...stored!.resultJson, result: named } })
+      .where(eq(nativeRunResults.id, seeded.resultId!));
+    await expect(nativeCompletionFeedback(db, seeded.runId, named as never)).resolves.toContain("Blocker report accepted");
+
+    await finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded" });
+    const issue = (await issueService(db).getById(seeded.issueId))!;
+    expect(issue.status).toBe("blocked");
+    expect(issue.unblockDescriptor).toEqual(expect.objectContaining({ owner: saved() }));
+    // Only the assignee's wake is dispatched, so a named agent owner must hold the task.
+    expect(issue.assigneeAgentId).toBe(owner.kind === "agent" ? delegateAgentId : agentId);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    const ownerWakes = wakes.filter((wake) => (wake.payload as Record<string, unknown> | null)?.issueId === seeded.issueId && wake.agentId === delegateAgentId);
+    expect(ownerWakes).toHaveLength(owner.kind === "agent" ? 1 : 0);
+    if (owner.kind !== "agent") return;
+    // Dispatch admits the owner's wake instead of skipping it as another
+    // assignee's, or as a wake with no committed source.
+    await db.update(issues).set({ responsibleUserId: "corpus-board-user" }).where(eq(issues.id, seeded.issueId));
+    await heartbeatService(db).dispatchPendingNativeStatusWakeups({ companyId, requestId: ownerWakes[0]!.id });
+    const [dispatched] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, ownerWakes[0]!.id));
+    expect({ status: dispatched!.status, error: dispatched!.error }).toEqual({ status: "coalesced", error: null });
+  }, 30_000);
+
+  it("rejects a blocker owner agent name that matches no agent, before saving the block", async () => {
+    const seeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `unknown-blocker-owner-${randomUUID()}` });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const result = stored!.resultJson.result as Record<string, unknown>;
+    await expect(nativeCompletionFeedback(db, seeded.runId, {
+      ...result, reportedWorkDisposition: "blocked",
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "Nonexistent Reviewer" }, unblockAction: "Review the draft.", scope: "task_wide" },
+    } as never)).rejects.toThrow("matches no agent in this company");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toHaveLength(0);
   }, 30_000);
 
   it("withdraws obsolete policy reviews, restores the prior status, and is idempotent", async () => {
