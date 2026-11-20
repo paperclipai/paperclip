@@ -10871,6 +10871,158 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(await resolveConnectorAssignments(db, continued)).toEqual([]);
     await expect(executeSlackTool(db, continued, "slack_history", { channel: "CCONTINUE" }, provider as typeof fetch)).rejects.toThrow();
   });
+  describe("personal Slack search links the Slack identity on connect", () => {
+    const FULL_SCOPE = "search:read.public,search:read.private,search:read.files,im:history,im:read,mpim:history,mpim:read";
+    const SEARCH_SCOPE = "search:read.public,search:read.private,search:read.files";
+    async function linkSetup() {
+      await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+      const fixture = await seedCompany();
+      const { endpoint } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
+      const now = new Date();
+      const addUser = async (id: string, role: string | null) => {
+        await db.insert(authUsers).values({ id, name: id, email: `${id}@example.com`, emailVerified: true, createdAt: now, updatedAt: now }).onConflictDoNothing();
+        if (role) await db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "user", principalId: id, status: "active", membershipRole: role });
+      };
+      const signIn = { slackUserId: "UJAN", team: "T-PAPERCLIP", scope: SEARCH_SCOPE };
+      const slack = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/auth.test")) return Response.json({ ok: true, user_id: signIn.slackUserId, team_id: signIn.team, user: "jan" });
+        if (url.endsWith("/oauth.v2.access")) {
+          return Response.json({ ok: true, team: { id: signIn.team }, authed_user: { id: signIn.slackUserId, access_token: "xoxp-link-test", refresh_token: "xoxe-link-test", expires_in: 3600, scope: signIn.scope } });
+        }
+        throw new Error(`Unexpected Slack request ${url}`);
+      });
+      const { slackSearchOAuthService } = await import("../services/connectors/slack-search-oauth.js");
+      const oauth = slackSearchOAuthService(db, "https://paperclip.example", slack as typeof fetch);
+      await oauth.configure(fixture.companyId, endpoint.id, "owner-user", { clientId: "123.456", clientSecret: "fixture-client-secret" });
+      const start = (userId: string, options?: { includeDms?: boolean }) => oauth.start(fixture.companyId, endpoint.id, userId, options);
+      const complete = (url: string, userId: string) => oauth.complete(new URL(url).searchParams.get("state")!, "code", userId);
+      const connect = async (userId: string, options?: { includeDms?: boolean }) => complete((await start(userId, options)).url, userId);
+      const links = () => db.select({ link: chatIdentityLinks, principal: chatExternalPrincipals }).from(chatIdentityLinks)
+        .innerJoin(chatExternalPrincipals, eq(chatExternalPrincipals.id, chatIdentityLinks.principalId))
+        .where(eq(chatIdentityLinks.endpointId, endpoint.id));
+      const linkSlackUser = async (slackUserId: string, paperclipUserId: string | null, status: "linked" | "pending" | "revoked" = "linked") => {
+        const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: "T-PAPERCLIP", externalId: slackUserId }).onConflictDoNothing().returning();
+        const found = principal ?? (await db.select().from(chatExternalPrincipals).where(and(eq(chatExternalPrincipals.companyId, fixture.companyId), eq(chatExternalPrincipals.externalId, slackUserId))))[0]!;
+        const [link] = await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: found.id, paperclipUserId, status, confirmedAt: status === "linked" ? now : null, confirmationTokenHash: status === "pending" ? "pending-token-hash" : null, expiresAt: status === "pending" ? new Date(Date.now() + 3_600_000) : null }).returning();
+        return link;
+      };
+      return { fixture, endpoint, oauth, addUser, signIn, start, complete, connect, links, linkSlackUser, slack };
+    }
+
+    it("links an unlinked company operator to the Slack user who signs in, and records it", async () => {
+      const t = await linkSetup();
+      await t.addUser("jan-user", "operator");
+      await expect(t.oauth.status(t.fixture.companyId, t.endpoint.id, "jan-user")).resolves.toMatchObject({ linked: false, connected: false });
+      await t.connect("jan-user");
+      await expect(t.oauth.status(t.fixture.companyId, t.endpoint.id, "jan-user")).resolves.toMatchObject({ linked: true, connected: true, dmAccess: false });
+      const rows = await t.links();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ link: { paperclipUserId: "jan-user", status: "linked" }, principal: { externalId: "UJAN", providerAccountId: "T-PAPERCLIP", isBot: false, kind: "user" } });
+      const audit = await db.select().from(activityLog).where(and(eq(activityLog.companyId, t.fixture.companyId), eq(activityLog.action, "chat.slack_identity.linked_via_search_connect")));
+      expect(audit).toMatchObject([{ actorId: "jan-user", entityId: t.endpoint.id }]);
+    });
+
+    it("refuses someone who is not an active operator before sending them to Slack", async () => {
+      const t = await linkSetup();
+      await t.addUser("viewer-user", "viewer");
+      await t.addUser("outsider-user", null);
+      await expect(t.start("viewer-user")).rejects.toMatchObject({ status: 403 });
+      await expect(t.start("outsider-user")).rejects.toMatchObject({ status: 403 });
+      expect(await t.links()).toHaveLength(0);
+    });
+
+    it("refuses when the person stops being an operator before the sign-in completes", async () => {
+      const t = await linkSetup();
+      await t.addUser("jan-user", "operator");
+      const started = await t.start("jan-user");
+      await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, t.fixture.companyId), eq(companyMemberships.principalId, "jan-user")));
+      await expect(t.complete(started.url, "jan-user")).rejects.toMatchObject({ status: 403 });
+      expect(await t.links()).toHaveLength(0);
+    });
+
+    it("refuses a Slack sign-in from another workspace or that is not a Slack user id, and links nothing", async () => {
+      const t = await linkSetup();
+      await t.addUser("jan-user", "operator");
+      t.signIn.team = "T-OTHER";
+      await expect(t.connect("jan-user")).rejects.toMatchObject({ status: 403 });
+      t.signIn.team = "T-PAPERCLIP";
+      t.signIn.slackUserId = "not-a-slack-id";
+      await expect(t.connect("jan-user")).rejects.toMatchObject({ status: 403 });
+      expect(await t.links()).toHaveLength(0);
+    });
+
+    it("never takes over a Slack user who is linked to a different person", async () => {
+      const t = await linkSetup();
+      await t.addUser("jan-user", "operator");
+      await t.linkSlackUser("UJAN", "owner-user");
+      await expect(t.connect("jan-user")).rejects.toMatchObject({ status: 409 });
+      const rows = await t.links();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.link).toMatchObject({ paperclipUserId: "owner-user", status: "linked" });
+      await expect(t.oauth.status(t.fixture.companyId, t.endpoint.id, "jan-user")).resolves.toMatchObject({ linked: false, connected: false });
+    });
+
+    it("refuses a different Slack user for a person who is already linked, and leaves their link alone", async () => {
+      const t = await linkSetup();
+      await t.addUser("jan-user", "operator");
+      const original = await t.linkSlackUser("UOTHER", "jan-user");
+      await expect(t.connect("jan-user")).rejects.toMatchObject({ status: 403 });
+      const rows = await t.links();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.link).toMatchObject({ id: original!.id, paperclipUserId: "jan-user", status: "linked" });
+    });
+
+    it("refuses when the person was linked to someone else between starting and finishing", async () => {
+      const t = await linkSetup();
+      await t.addUser("jan-user", "operator");
+      const started = await t.start("jan-user");
+      await t.linkSlackUser("UOTHER", "jan-user");
+      await expect(t.complete(started.url, "jan-user")).rejects.toMatchObject({ status: 403 });
+      expect((await t.links()).map(row => row.principal.externalId)).toEqual(["UOTHER"]);
+    });
+
+    it("leaves an already linked person's link untouched when they connect", async () => {
+      const t = await linkSetup();
+      await t.addUser("jan-user", "operator");
+      const original = await t.linkSlackUser("UJAN", "jan-user");
+      await t.connect("jan-user");
+      const rows = await t.links();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.link).toMatchObject({ id: original!.id, status: "linked", paperclipUserId: "jan-user" });
+      expect(rows[0]!.link.confirmedAt?.getTime()).toBe(original!.confirmedAt?.getTime());
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, t.fixture.companyId), eq(activityLog.action, "chat.slack_identity.linked_via_search_connect")))).toHaveLength(0);
+    });
+
+    it("completes a link the Slack user had left pending or revoked", async () => {
+      for (const status of ["pending", "revoked"] as const) {
+        const t = await linkSetup();
+        await t.addUser("jan-user", "operator");
+        await t.linkSlackUser("UJAN", status === "revoked" ? null : null, status);
+        await t.connect("jan-user");
+        const rows = await t.links();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.link).toMatchObject({ paperclipUserId: "jan-user", status: "linked", confirmationTokenHash: null, expiresAt: null, revokedAt: null });
+      }
+    });
+
+    it("still honors the opt-in to DM reading when linking", async () => {
+      const t = await linkSetup();
+      await t.addUser("jan-user", "operator");
+      t.signIn.scope = FULL_SCOPE;
+      const started = await t.start("jan-user", { includeDms: true });
+      expect(new URL(started.url).searchParams.get("user_scope")).toBe(FULL_SCOPE);
+      await t.complete(started.url, "jan-user");
+      await expect(t.oauth.status(t.fixture.companyId, t.endpoint.id, "jan-user")).resolves.toMatchObject({ linked: true, connected: true, dmAccess: true });
+      // Without the opt-in, scopes Slack carries over from an earlier authorization are not recorded: DM reading stays off.
+      const t2 = await linkSetup();
+      await t2.addUser("jan-user", "operator");
+      t2.signIn.scope = FULL_SCOPE;
+      await t2.connect("jan-user");
+      await expect(t2.oauth.status(t2.fixture.companyId, t2.endpoint.id, "jan-user")).resolves.toMatchObject({ linked: true, connected: true, dmAccess: false });
+    });
+  });
+
   it("binds Slack tools to the admitted linked request, recovers its provenance and revokes retained access", async () => {
     const { resolveConnectorAssignments, executeConnectorTool, applyConnectorSkills, prepareConnectorSkillDelivery } = await import("../services/connector-runtime.js");
     const { executeSlackTool } = await import("../services/connectors/slack.js");

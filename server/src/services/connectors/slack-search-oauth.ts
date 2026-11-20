@@ -7,7 +7,7 @@ import {
 import { SLACK_NATIVE_SEARCH_LIMITATION } from "./slack-native-search.js";
 import { syncConnectionCredentialBindings } from "../connection-credential-bindings.js";
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import {
   chatEndpoints,
   chatExternalPrincipals,
@@ -134,7 +134,8 @@ export function slackSearchOAuthService(
       throw notFound("Active Slack connection not found");
     return row;
   }
-  async function linked(companyId: string, endpointId: string, userId: string) {
+  /** The connector plus this person's linked Slack user on it, or `null` when they have not linked one. */
+  async function identityState(companyId: string, endpointId: string, userId: string) {
     const row = await endpoint(companyId, endpointId);
     const [identity] = await db
       .select({ principal: chatExternalPrincipals })
@@ -168,9 +169,164 @@ export function slackSearchOAuthService(
           eq(chatExternalPrincipals.isBot, false),
         ),
       );
-    if (!identity)
+    return { row, slackUserId: identity?.principal.externalId ?? null };
+  }
+  async function linked(companyId: string, endpointId: string, userId: string) {
+    const { row, slackUserId } = await identityState(companyId, endpointId, userId);
+    if (!slackUserId)
       throw forbidden("Link your Slack identity to this connection first");
-    return { ...row, slackUserId: identity.principal.externalId };
+    return { ...row, slackUserId };
+  }
+  /** Only an active, non-viewer member may link a Slack identity (the same people the task tools accept). */
+  async function assertCanSelfLink(companyId: string, userId: string) {
+    const [member] = await db
+      .select({ status: companyMemberships.status, role: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+        ),
+      );
+    if (member?.status !== "active" || member.role === "viewer")
+      throw forbidden(
+        "Only an active company operator can connect Slack search and link their Slack account",
+      );
+  }
+  /**
+   * Links the Slack user that just signed in to this person on this connector. Runs inside the callback's
+   * transaction, with the same advisory-lock ordering the confirmation flow uses, so a failure later in the
+   * callback rolls the link back. Refuses to take over an identity that belongs to someone else.
+   */
+  async function linkSignedInSlackIdentity(
+    tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
+    input: {
+      companyId: string;
+      endpointId: string;
+      workspaceId: string;
+      userId: string;
+      slackUserId: string;
+      handle: string | null;
+    },
+  ) {
+    const { companyId, endpointId, workspaceId, userId, slackUserId } = input;
+    // Lock order matches the confirmation flow (principal advisory lock, then the link row, then the
+    // membership row), so a link and a confirmation for the same Slack user cannot deadlock.
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`chat-identity-user:${companyId}:${endpointId}:${userId}`}, 0))`,
+    );
+    const [principal] = await tx
+      .insert(chatExternalPrincipals)
+      .values({
+        companyId,
+        provider: "slack",
+        providerAccountId: workspaceId,
+        externalId: slackUserId,
+        kind: "user",
+        displayName: input.handle,
+        handle: input.handle,
+        isBot: false,
+        lastSeenAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [
+          chatExternalPrincipals.companyId,
+          chatExternalPrincipals.provider,
+          chatExternalPrincipals.providerAccountId,
+          chatExternalPrincipals.externalId,
+        ],
+        set: { lastSeenAt: new Date(), updatedAt: new Date() },
+      })
+      .returning();
+    if (!principal || principal.isBot || principal.kind !== "user")
+      throw unprocessable("Only a human Slack user can be linked");
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`chat-identity:${companyId}:${principal.id}`}, 0))`,
+    );
+    const [existing] = await tx
+      .select({ status: chatIdentityLinks.status, paperclipUserId: chatIdentityLinks.paperclipUserId })
+      .from(chatIdentityLinks)
+      .where(
+        and(
+          eq(chatIdentityLinks.endpointId, endpointId),
+          eq(chatIdentityLinks.principalId, principal.id),
+        ),
+      )
+      .for("update");
+    const [member] = await tx
+      .select({ status: companyMemberships.status, role: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+        ),
+      )
+      .for("update");
+    if (member?.status !== "active" || member.role === "viewer")
+      throw forbidden(
+        "Only an active company operator can connect Slack search and link their Slack account",
+      );
+    const [otherIdentity] = await tx
+      .select({ id: chatIdentityLinks.id })
+      .from(chatIdentityLinks)
+      .where(
+        and(
+          eq(chatIdentityLinks.companyId, companyId),
+          eq(chatIdentityLinks.endpointId, endpointId),
+          eq(chatIdentityLinks.paperclipUserId, userId),
+          eq(chatIdentityLinks.status, "linked"),
+          ne(chatIdentityLinks.principalId, principal.id),
+        ),
+      )
+      .limit(1);
+    if (otherIdentity)
+      throw conflict(
+        "Your Paperclip account is already linked to a different Slack user on this connection",
+        { code: "chat_identity_user_already_linked" },
+      );
+    if (existing?.status === "linked") {
+      if (existing.paperclipUserId !== userId)
+        throw conflict(
+          "This Slack user is linked to a different Paperclip account",
+          { code: "chat_identity_link_conflict" },
+        );
+      return { linkedNow: false };
+    }
+    const now = new Date();
+    await tx
+      .insert(chatIdentityLinks)
+      .values({
+        companyId,
+        endpointId,
+        principalId: principal.id,
+        paperclipUserId: userId,
+        status: "linked",
+        confirmedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [chatIdentityLinks.endpointId, chatIdentityLinks.principalId],
+        set: {
+          paperclipUserId: userId,
+          status: "linked",
+          confirmationTokenHash: null,
+          expiresAt: null,
+          confirmedAt: now,
+          revokedAt: null,
+          updatedAt: now,
+        },
+      });
+    await logActivity(tx as unknown as Db, {
+      companyId,
+      actorType: "user",
+      actorId: userId,
+      action: "chat.slack_identity.linked_via_search_connect",
+      entityType: "chat_endpoint",
+      entityId: endpointId,
+    });
+    return { linkedNow: true };
   }
   async function credential(
     companyId: string,
@@ -273,7 +429,7 @@ export function slackSearchOAuthService(
       );
   }
   async function status(companyId: string, endpointId: string, userId: string) {
-    const row = await endpoint(companyId, endpointId);
+    const { row, slackUserId: linkedSlackUserId } = await identityState(companyId, endpointId, userId);
     const config = configSchema.safeParse(
       object(row.connection.config).slackSearch,
     );
@@ -303,6 +459,9 @@ export function slackSearchOAuthService(
         ))
     );
     return {
+      // Whether this person's Paperclip account is linked to a Slack user on this connection. Connecting
+      // personal Slack search links it when it is not.
+      linked: linkedSlackUserId !== null,
       configured: config.success,
       clientId: config.success ? config.data.clientId : null,
       redirectUri: publicBaseUrl ? redirectUri() : null,
@@ -600,7 +759,11 @@ export function slackSearchOAuthService(
       const requestedScopes = options.includeDms === true
         ? ALLOWED_PERSONAL_SCOPES
         : SLACK_SEARCH_USER_SCOPES;
-      const row = await linked(companyId, endpointId, userId);
+      const current = await identityState(companyId, endpointId, userId);
+      // An unlinked member may connect: the Slack sign-in proves which Slack user they are, and completing it
+      // links that user to them. Anyone who could not be linked is refused before being sent to Slack.
+      if (current.slackUserId === null) await assertCanSelfLink(companyId, userId);
+      const row = { ...current.row, slackUserId: current.slackUserId };
       const config = configSchema.parse(
         object(row.connection.config).slackSearch,
       );
@@ -613,6 +776,7 @@ export function slackSearchOAuthService(
         codeVerifier: JSON.stringify({
           endpointId,
           slackUserId: row.slackUserId,
+          linkOnComplete: row.slackUserId === null,
           workspaceId: row.endpoint.providerAccountId,
           clientRevision: config.revision,
           redirect,
@@ -654,17 +818,23 @@ export function slackSearchOAuthService(
           "Slack search authorization expired or belongs to another user",
         );
       const binding = object(JSON.parse(pending.codeVerifier));
-      const row = await linked(
+      const current = await identityState(
         pending.companyId,
         String(binding.endpointId),
         userId,
       );
+      // Link-on-connect applies only when this person was unlinked when they started and still is.
+      const linkOnComplete = binding.linkOnComplete === true && current.slackUserId === null;
+      if (current.slackUserId === null && !linkOnComplete)
+        throw forbidden("Link your Slack identity to this connection first");
+      if (linkOnComplete) await assertCanSelfLink(pending.companyId, userId);
+      const row = { ...current.row, slackUserId: current.slackUserId };
       const config = configSchema.parse(
         object(row.connection.config).slackSearch,
       );
       if (
         row.connection.id !== pending.connectionId ||
-        row.slackUserId !== binding.slackUserId ||
+        (row.slackUserId ?? null) !== (binding.slackUserId ?? null) ||
         row.endpoint.providerAccountId !== binding.workspaceId ||
         config.revision !== binding.clientRevision ||
         redirectUri() !== binding.redirect
@@ -681,13 +851,22 @@ export function slackSearchOAuthService(
         redirect_uri: redirectUri(),
       });
       const user = object(tokens.authed_user);
+      // The user Slack just authenticated: the linked one, or (when linking) a real Slack user in this workspace.
+      const slackUserId = linkOnComplete
+        ? typeof user.id === "string" && /^[UW][A-Z0-9]+$/.test(user.id)
+          ? user.id
+          : null
+        : row.slackUserId;
       if (
         object(tokens.team).id !== binding.workspaceId ||
-        user.id !== binding.slackUserId ||
+        !slackUserId ||
+        user.id !== slackUserId ||
         typeof user.access_token !== "string"
       )
         throw forbidden(
-          "Authorize the same Slack user and workspace that you linked in Paperclip",
+          linkOnComplete
+            ? "Slack did not return a user in the connected workspace"
+            : "Authorize the same Slack user and workspace that you linked in Paperclip",
         );
       const granted = String(user.scope ?? "").split(",");
       const requested = Array.isArray(pending.requestedScopes)
@@ -707,7 +886,7 @@ export function slackSearchOAuthService(
         fetchImpl,
       )("auth.test");
       if (
-        identity.user_id !== row.slackUserId ||
+        identity.user_id !== slackUserId ||
         identity.team_id !== row.endpoint.providerAccountId
       )
         throw forbidden(
@@ -741,6 +920,15 @@ export function slackSearchOAuthService(
           throw forbidden(
             "Slack search authorization was disconnected or expired",
           );
+        if (linkOnComplete)
+          await linkSignedInSlackIdentity(tx, {
+            companyId: pending.companyId,
+            endpointId: row.endpoint.id,
+            workspaceId: row.endpoint.providerAccountId!,
+            userId,
+            slackUserId,
+            handle: typeof identity.user === "string" ? identity.user : null,
+          });
         await slackSearchOAuthService(
           tx as unknown as Db,
           publicBaseUrl,
@@ -749,7 +937,7 @@ export function slackSearchOAuthService(
           pending.companyId,
           row.endpoint.id,
           userId,
-          row.slackUserId,
+          slackUserId,
         );
         const context = {
           dbClient: tx,
@@ -799,7 +987,7 @@ export function slackSearchOAuthService(
             slackSearch: {
               endpointId: row.endpoint.id,
               workspaceId: row.endpoint.providerAccountId!,
-              slackUserId: row.slackUserId,
+              slackUserId,
               clientRevision: config.revision,
             },
             oauth: {

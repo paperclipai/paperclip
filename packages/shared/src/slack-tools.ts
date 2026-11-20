@@ -486,6 +486,8 @@ export interface SlackSearchStatus {
   clientId: string | null;
   redirectUri: string | null;
   connected: boolean;
+  /** Whether this person's Paperclip account is linked to a Slack user on this connection. Connecting links it when not. */
+  linked?: boolean;
   nativeSearchAvailable: boolean;
   /** True only when this person opted in to DM reading and Slack granted the DM scopes. */
   dmAccess?: boolean;

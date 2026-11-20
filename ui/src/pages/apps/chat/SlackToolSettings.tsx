@@ -200,6 +200,12 @@ export function SlackSearchView({
         </div>
       ) : (
         <div className="space-y-3">
+          {status.linked === false && (
+            <p className="text-sm text-muted-foreground">
+              Your Slack account isn’t linked to this connection yet.
+              Connecting Slack search will sign you in to Slack and link it.
+            </p>
+          )}
           <div className="flex items-start gap-2">
             <input
               id={`${id}-dms`}

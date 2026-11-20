@@ -53,6 +53,18 @@ describe("SlackSearchView DM reading opt-in", () => {
     expect(onConnect).toHaveBeenLastCalledWith({ includeDms: true });
   });
 
+  it("tells an unlinked person that connecting also links their Slack account, and still lets them connect", async () => {
+    const onConnect = render({ ...base, linked: false });
+    expect(container.textContent).toContain("isn’t linked to this connection yet");
+    await click(button("Connect Slack search"));
+    expect(onConnect).toHaveBeenCalledWith({ includeDms: false });
+  });
+
+  it("does not mention linking for a person who is already linked", () => {
+    render({ ...base, linked: true });
+    expect(container.textContent).not.toContain("isn’t linked");
+  });
+
   it("shows DM reading as off and offers to allow it when connected without it", async () => {
     const onConnect = render({ ...base, connected: true, dmAccess: false });
     expect(container.textContent).toContain("Agents cannot read your direct messages");
