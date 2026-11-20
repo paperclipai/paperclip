@@ -488,6 +488,54 @@ describe("OnboardingWizard — which step it lands on", () => {
     expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
   });
 
+  it("lets the customer clear the organization name after coming back to it", async () => {
+    // The name backfill fills an empty name from the created company. On step 1
+    // an empty name is the customer clearing the field, so a backfill there
+    // put the old name back as soon as the last character was deleted.
+    const companiesBefore = companyState.companies;
+    companyState.companies = [
+      ...companiesBefore,
+      { id: "company-created", name: "Initech", issuePrefix: "INI" },
+    ];
+    mockCompaniesApi.create.mockResolvedValue({
+      id: "company-created",
+      name: "Initech",
+      issuePrefix: "INI",
+    });
+    try {
+      routerState.pathname = "/onboarding";
+      await render();
+      await settle();
+
+      setControlledValue(document.body.querySelector("#onboarding-company-name")!, "Initech");
+      await settle();
+      const button = (label: string) =>
+        [...document.body.querySelectorAll("button")].find(
+          (candidate) => candidate.textContent?.trim() === label,
+        )!;
+      await act(async () => {
+        button("Continue").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      expect(currentStep()).toBe("agent");
+
+      await act(async () => {
+        button("Back").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      const nameInput = () =>
+        document.body.querySelector("#onboarding-company-name") as HTMLInputElement;
+      expect(nameInput().value).toBe("Initech");
+
+      setControlledValue(nameInput(), "");
+      await settle();
+
+      expect(nameInput().value).toBe("");
+    } finally {
+      companyState.companies = companiesBefore;
+    }
+  });
+
   it("applies the step again when the wizard is re-opened", async () => {
     // Same guard, from the other side: closing and re-opening is a new
     // request, so a freeze that outlived the open would be its own defect. It
