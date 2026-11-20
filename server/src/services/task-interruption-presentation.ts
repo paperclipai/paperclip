@@ -230,10 +230,12 @@ function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | 
  * owner settles that gate. Without one, the task Retry (explicit continuation)
  * proves the old session stopped and continues in a fresh session. */
 export function projectTaskInterruption(issue: ProjectionIssue, input: ProjectionState, now = Date.now()): TaskInterruptionPresentation | null {
-  if (input.question && !["done", "cancelled"].includes(issue.status) && !["running", "queued"].includes(input.run?.status ?? ""))
-    return { intentId: input.wait?.id ?? null, responsibility: "user", state: "waiting_for_user", userAction: "question",
-      canRetry: false, nextRetryAt: null, sourceRunIds: input.run ? [input.run.id] : [], observedRunId: input.run?.id ?? null };
   const presentation = projectTaskInterruptionState(issue, input, now);
+  if (input.question && !["done", "cancelled"].includes(issue.status) && !["running", "queued"].includes(input.run?.status ?? "")
+      && presentation?.responsibility !== "user")
+    return { intentId: input.wait?.id ?? null, responsibility: "user", state: "waiting_for_user", userAction: "question",
+      canRetry: presentation?.canRetry === true && presentation.retryAction !== "move_forward" && !input.wait && !input.retryWait,
+      nextRetryAt: null, sourceRunIds: input.run ? [input.run.id] : [], observedRunId: input.run?.id ?? null };
   if (!presentation?.canRetry || input.run?.errorCode !== NATIVE_SESSION_CLEANUP_QUARANTINED || !input.cleanupSettling)
     return presentation;
   return { ...presentation, canRetry: false };

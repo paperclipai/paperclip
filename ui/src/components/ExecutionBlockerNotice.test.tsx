@@ -46,12 +46,19 @@ describe("ordinary task interruption", () => {
     expect(retry).toHaveBeenCalledOnce();
   });
 
-  it("names the pending question without offering Retry or repeating a historical provider failure", async () => {
-    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "question", canRetry: false,
+  it.each([false, true])("names the question without repeating a historical failure (manual Retry=%s)", async canRetry => {
+    const presentation = { ...failed, responsibility: "user" as const, state: "waiting_for_user" as const, userAction: "question" as const, canRetry,
       providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
-        category: "rate_limit", httpStatus: 429, retryability: "unknown", message: "API error: 429" } });
+        category: "rate_limit", httpStatus: 429, retryability: "unknown", message: "API error: 429" } } satisfies TaskInterruptionPresentation;
+    await render(presentation);
     expect(container.textContent).toContain("Respond to the pending question to continue.");
     expect(container.textContent).not.toMatch(/429|rate limit|failed/i);
+    expect(Boolean(container.querySelector("button"))).toBe(canRetry);
+    if (canRetry) {
+      await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+      expect(retry).toHaveBeenCalledOnce();
+    }
+    await render(presentation, { canRetry: false });
     expect(container.querySelector("button")).toBeNull();
   });
 

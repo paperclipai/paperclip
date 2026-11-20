@@ -2650,15 +2650,16 @@ describe("FailedRunInboxRow", () => {
     container.remove();
   });
 
-  it("shows the pending question instead of the run's historical provider error", () => {
+  it.each([false, true])("shows the question over historical errors and preserves manual Retry=%s", canRetry => {
     const root = createRoot(container);
     const issue = createIssue({ interruption: { intentId: null, responsibility: "user", state: "waiting_for_user",
-      nextRetryAt: null, canRetry: false, userAction: "question", sourceRunIds: ["run-1"], observedRunId: "run-1" } });
+      nextRetryAt: null, canRetry, userAction: "question", sourceRunIds: ["run-1"], observedRunId: "run-1" } });
     act(() => root.render(<FailedRunInboxRow run={createFailedRun({ issueId: issue.id, error: "API error: 429" })}
       issueById={new Map([[issue.id, issue]])} agentName="Worker" issueLinkState={null}
       onDismiss={() => {}} onRetry={() => {}} isRetrying={false} />));
     expect(container.textContent).toContain("Respond to the pending question");
-    expect(container.textContent).not.toMatch(/429|Retry/);
+    expect(container.textContent).not.toContain("429");
+    expect(container.textContent?.includes("Retry")).toBe(canRetry);
     act(() => root.unmount());
   });
 

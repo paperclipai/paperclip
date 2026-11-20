@@ -108,6 +108,9 @@ Assigned-work reconciliation leaves active question waits quiet, and the
 existing interaction-resolution notification makes them eligible for another
 check. The task and inbox show an active question as the current blocker,
 while older provider failures remain in run history.
+After a failed attempt, the question notice preserves an available manual
+Retry; automatic recovery still waits. Existing saved input prevents a
+duplicate Retry, and other current user gates retain their precedence.
 
 A provider-limit hold before provider work is scheduling, so it does not send
 a cancellation toast for every held task. Its durable retry rechecks provider

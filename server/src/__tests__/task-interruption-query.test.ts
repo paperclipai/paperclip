@@ -49,13 +49,13 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       payload: { version: 1, supersedeOnUserComment: false, questions: [{ id: "scope", prompt: "Choose the scope",
         selectionMode: "single", required: true, options: [{ id: "small", label: "Small" }, { id: "full", label: "Full" }] }] } }).returning();
     const presentations = await taskInterruptionPresentations(db, companyId, tasks);
-    expect(presentations.get(tasks[0].id)).toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
+    expect(presentations.get(tasks[0].id)).toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: true });
     expect(presentations.get(tasks[0].id)?.providerFailure).toBeUndefined();
     expect(presentations.get(tasks[1].id)).toMatchObject({ state: "failed", providerFailure: { httpStatus: 429 } });
     const [approval] = await db.insert(approvals).values({ companyId, type: "approve_ceo_strategy", status: "pending", payload: {} }).returning();
     await db.insert(issueApprovals).values({ companyId, issueId: tasks[1].id, approvalId: approval.id });
     const gated = await taskInterruptionPresentations(db, companyId, tasks);
-    expect(gated.get(tasks[0].id)).toMatchObject({ userAction: "question", canRetry: false });
+    expect(gated.get(tasks[0].id)).toMatchObject({ userAction: "question", canRetry: true });
     expect(gated.get(tasks[1].id)).toMatchObject({ userAction: "approval", canRetry: false });
     await db.update(issueThreadInteractions).set({ dismissedAt: new Date() }).where(eq(issueThreadInteractions.id, question.id));
     expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "failed", canRetry: true });
@@ -65,7 +65,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "failed", canRetry: true });
     await db.update(issueThreadInteractions).set({ dismissedAt: new Date(), payload: sql`${issueThreadInteractions.payload} || '{"toolAction":{}}'::jsonb` })
       .where(eq(issueThreadInteractions.id, question.id));
-    expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
+    expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "waiting_for_user", userAction: "question" });
     await db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.id, question.id));
     expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "failed", providerFailure: { httpStatus: 429 } });
     const [historical] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, tasks[0].id));
