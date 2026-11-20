@@ -201,8 +201,7 @@ this field, the provider must:
 - Move the source Runner state (`runner-state.json`) out of the Runner state
   directory into an archive, so that the Runner creates new state.
 - Start the Runner as the claimant identity with the fresh `bootstrapTicket`.
-- Return `runner: { version, digest }` on the `resumed` result. A provider may
-  also return `archivedState`, the archived Runner state; Core does not read it.
+- Return `runner: { version, digest }` on the `resumed` result.
 
 The provider is the authority on whether a park exists. It relaunches only from
 the source's settled cut, and Core does not check that cut again. That cut is the
