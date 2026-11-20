@@ -8,6 +8,8 @@ import { describeEmbeddedPostgres, nativeRestartFixture } from "../__tests__/hel
 import { createMaintenanceS3Boundary } from "../__tests__/helpers/maintenance/s3-boundary.js";
 import { withMaintenanceProvider } from "../__tests__/helpers/maintenance/server-harness.js";
 import { migrateRunEvidence } from "./run-evidence-migration.js";
+import { migrateRunEvidencePage } from "./run-evidence-migration-page.js";
+import { createObjectRunLogStore } from "./object-run-log-store.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { createObjectByteJournal } from "./object-byte-journal.js";
 import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
@@ -84,6 +86,21 @@ describeEmbeddedPostgres("online native historical log preservation", () => {
       expect(result.items).toMatchObject([{ id: f.runId, state: "migrated", historicalArchive: true, bytes: f.bytes.length }]);
       expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
         .toMatchObject({ logStore: "s3_archive", logRef: `${f.companyId}/${f.agentId}/${f.runId}.archive` });
+    });
+  });
+
+  it("clears a retained local log through the page shared by preparation and background work", async () => {
+    await withSource(async f => {
+      const result = await migrateRunEvidencePage(f.db, { kinds: ["log"], limit: 1 });
+      expect(result.items).toMatchObject([{ id: f.runId, state: "migrated", historicalArchive: true }]);
+      const [after] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(after.logStore).toBe("s3_archive");
+      expect(after.status).toBe("failed");
+      await rm(f.file);
+      const reader = createObjectRunLogStore({ ...storage.resolveRunEvidenceStorage()!,
+        assertWriterAuthority: async () => { throw new Error("archive is read-only"); } });
+      expect((await readRecoverableRunLog(f.db, reader, { store: "s3_archive", logRef: after.logRef! })).content)
+        .toBe(f.bytes.toString());
     });
   });
 

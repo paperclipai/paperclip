@@ -62,6 +62,7 @@ export function createHeartbeatQueueTestDependencies(db: Db): QueueTestDependenc
     instanceSettings: { getExperimental: vi.fn<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>() },
     runDispatch: createRunDispatch(db),
     wakeQueue: {
+      preflightIssueWake: vi.fn(admission.preflightIssueWake),
       admitIssueWake: vi.fn(admission.admitIssueWake),
     },
     activeRunExecutions: new Set<string>(),
