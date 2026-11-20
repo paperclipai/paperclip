@@ -2455,6 +2455,28 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each([
+    { status: "succeeded", answered: true, disclosed: false },
+    { status: "succeeded", answered: false, disclosed: true },
+    { status: "failed", answered: true, disclosed: true },
+  ])("discloses an omitted $status run only when its answer is not visible (answered: $answered)", async ({ status, answered, disclosed }) => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const latest = { runId: "latest", status: "succeeded", agentId: "agent-1", createdAt: new Date().toISOString() };
+    const older = { ...latest, runId: "older", status };
+    const answer = createIssueComment({ id: "answer", authorType: "agent", authorAgentId: "agent-1", authorUserId: null,
+      body: "Earlier answer", createdByRunId: answered ? "older" : "unrelated" });
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [answer], latestCommentId: answer.id, hasMore: false });
+    mockActivityApi.recentRunsForIssue.mockResolvedValue([latest, older]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      expect(props?.linkedRuns).toMatchObject([latest]);
+      expect(props?.comments).toMatchObject([{ id: "answer" }]);
+      expect(Boolean(props?.historyControl)).toBe(disclosed);
+    });
+  });
+
   it.each([false, true])("refreshes admission with latest comments (compact chat: %s)", async compact => {
     const interruption: NonNullable<Issue["interruption"]> = { intentId: "retry", responsibility: "system", state: "failed",
       nextRetryAt: null, canRetry: true, userAction: null, sourceRunIds: ["failed-run"], observedRunId: "failed-run",

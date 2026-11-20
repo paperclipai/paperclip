@@ -15,6 +15,11 @@ import { queryKeys } from "@/lib/queryKeys";
 export interface RecentIssueRunWindow {
   runs: RunForIssue[];
   hasEarlierRuns: boolean;
+  /**
+   * The newest omitted run, when known. The chat compares it with the visible
+   * comments: an omitted run whose answer is already shown hides nothing.
+   */
+  earlierRun?: Pick<RunForIssue, "runId" | "status"> | null;
 }
 
 export function recentIssueActivityQueryKey(issueRef: string) {
@@ -92,7 +97,7 @@ export async function fetchRecentIssueRunWindow(
     const existingRunIds = new Set(recent.map((run) => run.runId));
     previous = previous.filter((run) => existingRunIds.has(run.runId));
   }
-  return buildRecentIssueRunWindow(recent, previous, !reconciledFullHistory && previousWindow?.hasEarlierRuns === true);
+  return buildRecentIssueRunWindow(recent, previous, reconciledFullHistory ? false : previousWindow?.hasEarlierRuns === true, reconciledFullHistory ? null : previousWindow?.earlierRun);
 }
 
 /**
@@ -103,17 +108,22 @@ export function buildRecentIssueRunWindow(
   recent: RunForIssue[],
   previous: RunForIssue[] = [],
   previouslyHadEarlierRuns = false,
+  previousEarlierRun?: RecentIssueRunWindow["earlierRun"],
 ): RecentIssueRunWindow {
   // The second row refreshes a just-finished predecessor. Start with only
   // the latest run, then keep every run observed while this task is open.
   const visible = new Set([...previous.map((run) => run.runId), ...recent.slice(0, 1).map((run) => run.runId)]);
-  return {
+  const omitted = recent.find((run) => !visible.has(run.runId));
+  const retained = recent.length >= 2 && previouslyHadEarlierRuns;
+  const window: RecentIssueRunWindow = {
     runs: [...new Map([...previous, ...recent].filter((run) => visible.has(run.runId)).map((run) => [run.runId, run])).values()],
     // A first run is already visible. The disclosure needs evidence of an
     // omitted run, and must retain that evidence as later turns arrive.
-    hasEarlierRuns: recent.some((run) => !visible.has(run.runId))
-      || (recent.length >= 2 && previouslyHadEarlierRuns),
+    hasEarlierRuns: !!omitted || retained,
   };
+  const earlierRun = omitted ? { runId: omitted.runId, status: omitted.status } : retained ? previousEarlierRun : undefined;
+  if (earlierRun) window.earlierRun = earlierRun;
+  return window;
 }
 
 /** Prefetched answers for live state stay usable only briefly. */

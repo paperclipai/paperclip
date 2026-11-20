@@ -1672,7 +1672,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     ...(Array.isArray(linkedRunHistory) ? linkedRunHistory : linkedRunHistory?.runs ?? []),
     ...(conversationMode && !historyExpanded ? commentRuns.data ?? [] : []),
   ].map(run => [run.runId, run])).values()], [linkedRunHistory, conversationMode, historyExpanded, commentRuns.data]);
-  const hasEarlierRuns = !Array.isArray(linkedRunHistory) && linkedRunHistory?.hasEarlierRuns === true;
+  const earlierRun = Array.isArray(linkedRunHistory) ? undefined : linkedRunHistory?.earlierRun;
+  // Most tasks have several runs, and the compact window shows only the
+  // latest. An omitted run whose answer is already on screen hides nothing.
+  const hasEarlierRuns = !Array.isArray(linkedRunHistory) && linkedRunHistory?.hasEarlierRuns === true && !(
+    earlierRun?.status === "succeeded" && comments.some(comment =>
+      comment.authorType === "agent" && !comment.deletedAt && comment.body.trim() &&
+      (comment.createdByRunId ?? comment.derivedCreatedByRunId) === earlierRun.runId)
+  );
   const resolvedActivity = useMemo(
     () => [...new Map([...(activity ?? []), ...(inputFacts.data ?? [])].map((event) => [event.id, event])).values()],
     [activity, inputFacts.data],
