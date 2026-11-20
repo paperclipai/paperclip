@@ -321,7 +321,7 @@ export function SkillStudio() {
         ? [
             { label: "Skills", href: "/skills" },
             { label: "Studio", href: "/skills/studio" },
-            { label: skill.name },
+            { label: skill.name, literal: true },
           ]
         : [
             { label: "Skills", href: "/skills" },

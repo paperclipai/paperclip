@@ -3,6 +3,7 @@ import { Check, Search, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { cn } from "../lib/utils";
+import { useTx } from "@/i18n/tx";
 import { useMobileEntityPickerViewportStyle } from "../hooks/useMobileEntityPickerViewportStyle";
 
 export interface InlineEntityOption {
@@ -98,6 +99,12 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
     },
     ref,
   ) {
+    const tx = useTx();
+    const placeholderText = tx(placeholder);
+    const noneLabelText = tx(noneLabel);
+    const searchPlaceholderText = tx(searchPlaceholder);
+    const emptyMessageText = tx(emptyMessage);
+    const mobileTitleText = tx(mobileTitle ?? placeholder);
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [highlightedIndex, setHighlightedIndex] = useState(0);
@@ -111,11 +118,11 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     const allOptions = useMemo<InlineEntityOption[]>(() => {
       if (hideNone) return orderItemsBySelectedAndRecent([...options], value, recentOptionIds);
-      const baseOptions = [{ id: "", label: noneLabel, searchText: noneLabel }, ...options];
+      const baseOptions = [{ id: "", label: noneLabelText, searchText: noneLabelText }, ...options];
       const ordered = orderItemsBySelectedAndRecent(baseOptions, value, recentOptionIds);
       if (noneAtTop) return [baseOptions[0]!, ...ordered.filter((option) => option.id)];
       return noneAtEnd ? [...ordered.filter((option) => option.id), baseOptions[0]!] : ordered;
-    }, [hideNone, noneAtEnd, noneAtTop, noneLabel, options, recentOptionIds, value]);
+    }, [hideNone, noneAtEnd, noneAtTop, noneLabelText, options, recentOptionIds, value]);
 
     const filteredOptions = useMemo(() => {
       const term = query.trim().toLowerCase();
@@ -192,12 +199,12 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           >
             {renderTriggerValue
               ? renderTriggerValue(currentOption)
-              : (currentOption?.label ?? <span className="text-muted-foreground">{placeholder}</span>)}
+              : (currentOption?.label ?? <span className="text-muted-foreground">{placeholderText}</span>)}
           </button>
         </PopoverTrigger>
         <PopoverContent
           data-mobile-entity-picker=""
-          aria-label={mobileTitle ?? placeholder}
+          aria-label={mobileTitleText}
           align="start"
           side="bottom"
           collisionPadding={16}
@@ -223,7 +230,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           }}
         >
           <div data-mobile-entity-picker-header="" className="hidden items-center justify-between border-b border-border px-4 py-3">
-            <span className="text-base font-semibold text-foreground">{mobileTitle ?? placeholder}</span>
+            <span className="text-base font-semibold text-foreground">{mobileTitleText}</span>
             <button
               type="button"
               className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -241,7 +248,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             <input
               ref={inputRef}
               className="min-w-0 flex-1 bg-transparent py-2 text-base outline-none placeholder:text-muted-foreground/60 md:text-sm"
-              placeholder={searchPlaceholder}
+              placeholder={searchPlaceholderText}
               value={query}
               onChange={(event) => {
                 setQuery(event.target.value);
@@ -286,7 +293,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           </div>
           <div data-mobile-entity-picker-list="" className="max-h-56 overflow-y-auto overscroll-contain py-1 touch-pan-y">
             {filteredOptions.length === 0 ? (
-              <p className="px-2 py-2 text-xs text-muted-foreground">{emptyMessage}</p>
+              <p className="px-2 py-2 text-xs text-muted-foreground">{emptyMessageText}</p>
             ) : (
               filteredOptions.map((option, index) => {
                 const isSelected = option.id === value;

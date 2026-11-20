@@ -6,6 +6,7 @@ type IssueDetailSource = "issues" | "inbox";
 type IssueDetailBreadcrumb = {
   label: string;
   href: string;
+  literal?: boolean;
 };
 
 export type IssueDetailHeaderSeed = {
@@ -165,9 +166,10 @@ export function createIssueDetailLocationState(
   label: string,
   href: string,
   source?: IssueDetailSource,
+  literal?: boolean,
 ): IssueDetailLocationState {
   return {
-    issueDetailBreadcrumb: { label, href },
+    issueDetailBreadcrumb: literal ? { label, href, literal: true } : { label, href },
     issueDetailSource: source,
   };
 }

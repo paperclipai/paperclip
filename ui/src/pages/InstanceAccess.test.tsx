@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { CompanyProvider, useCompany } from "@/context/CompanyContext";
+import { LOCALE_STORAGE_KEY } from "@/i18n/preference";
 import { queryKeys } from "@/lib/queryKeys";
 import { InstanceAccess } from "./InstanceAccess";
 
@@ -159,5 +160,25 @@ describe("InstanceAccess read resilience", () => {
     await act(async () => button("Retry")!.click());
     await eventually(() => expect(button("Save organization access")).toBeDefined());
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+  });
+
+  it("reads instance access labels from the Russian dictionary", async () => {
+    localStorage.setItem(LOCALE_STORAGE_KEY, "ru");
+    try {
+      await renderPage();
+      await eventually(() => {
+        expect(container.textContent).toContain("Доступ инстанса");
+        expect(container.textContent).toContain("Поиск пользователей");
+        expect(container.textContent).toContain("Доступ к компаниям");
+        expect(container.textContent).toContain("Текущие участия");
+        expect(button("Сохранить доступ к компаниям")).toBeDefined();
+      });
+      expect(container.querySelector("input")?.getAttribute("placeholder")).toBe("Поиск по имени или почте");
+      expect(container.textContent).toContain("Admin");
+      expect(container.textContent).not.toContain("Instance Access");
+      expect(container.textContent).not.toContain("Search users");
+    } finally {
+      localStorage.removeItem(LOCALE_STORAGE_KEY);
+    }
   });
 });

@@ -120,7 +120,7 @@ export function PluginPage() {
     }
     setBreadcrumbs([
       { label: "Plugins", href: "/company/settings/instance/plugins" },
-      { label: pageSlot.pluginDisplayName },
+      { label: pageSlot.pluginDisplayName, literal: true },
     ]);
   }, [pageSlot, pluginRouteSplat, setBreadcrumbs, routeSidebarActive]);
 

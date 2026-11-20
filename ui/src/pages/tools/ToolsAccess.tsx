@@ -40,7 +40,7 @@ export function ToolsAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Company", href: "/dashboard", literal: Boolean(selectedCompany?.name) },
       { label: "Apps", href: "/apps" },
       ...(advanced
         ? [{ label: "Advanced setup" }]

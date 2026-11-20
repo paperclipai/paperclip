@@ -4,6 +4,7 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { translateTextNode, useTx, withTranslatedTextProps } from "@/i18n/tx"
 
 function Dialog({
   ...props
@@ -118,27 +119,35 @@ function DialogFooter({
 
 function DialogTitle({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Title>) {
+  const tx = useTx()
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
       className={cn("text-lg leading-none font-semibold", className)}
-      {...props}
-    />
+      {...withTranslatedTextProps(tx, props)}
+    >
+      {translateTextNode(tx, children)}
+    </DialogPrimitive.Title>
   )
 }
 
 function DialogDescription({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Description>) {
+  const tx = useTx()
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
       className={cn("text-muted-foreground text-sm", className)}
-      {...props}
-    />
+      {...withTranslatedTextProps(tx, props)}
+    >
+      {translateTextNode(tx, children)}
+    </DialogPrimitive.Description>
   )
 }
 

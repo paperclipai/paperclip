@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { LOCALE_STORAGE_KEY } from "@/i18n/preference";
 import { InvitesSection } from "./InvitesSection";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -404,5 +405,33 @@ describe("InvitesSection", () => {
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
 
     await act(async () => root.unmount());
+  });
+
+  it("reads invite labels from the Russian dictionary", async () => {
+    localStorage.setItem(LOCALE_STORAGE_KEY, "ru");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      const root = await renderSection(queryClient);
+      expect(container.textContent).toContain("Пригласить человека");
+      expect(container.textContent).toContain("Выберите роль");
+      expect(container.textContent).toContain("Наблюдатель");
+      expect(container.textContent).toContain("Оператор");
+      expect(container.textContent).toContain("Администратор");
+      expect(container.textContent).toContain("Владелец");
+      expect(container.textContent).toContain("История приглашений");
+      expect(container.textContent).toContain("Кто пригласил");
+      expect(container.textContent).toContain("Открыть запрос");
+      expect(container.textContent).toContain("Показать ещё");
+      expect(container.textContent).toContain("Каждая ссылка приглашения одноразовая.");
+      expect(container.textContent).not.toContain("Invite a person");
+      expect(container.textContent).not.toContain("Choose a role");
+      const createButton = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Создать приглашение",
+      );
+      expect(createButton).toBeTruthy();
+      await act(async () => root.unmount());
+    } finally {
+      localStorage.removeItem(LOCALE_STORAGE_KEY);
+    }
   });
 });

@@ -1,4 +1,5 @@
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
+import { useTx } from "@/i18n/tx";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -23,9 +24,10 @@ export function SortablePinnedRow({ id, label, disabled = false, className, hand
   id: string; label: string; disabled?: boolean; handleClassName: string; handleIconClassName: string;
   children: ReactNode | ((handle: ReactNode) => ReactNode);
 }) {
+  const tx = useTx();
   const sortable = useSortable({ id, disabled, transition: null });
   const handle = !disabled && <button ref={sortable.setActivatorNodeRef} type="button" {...sortable.attributes} {...sortable.listeners}
-    aria-label={`Reorder pinned ${label}`} title={`Drag to reorder ${label}`}
+    aria-label={`${tx("Reorder pinned")} ${label}`} title={`${tx("Drag to reorder")} ${label}`}
     className={cn("absolute top-1/2 flex -translate-y-1/2 touch-none cursor-grab items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity active:cursor-grabbing hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:opacity-100", handleClassName)}>
     <GripVertical aria-hidden className={handleIconClassName} />
   </button>;

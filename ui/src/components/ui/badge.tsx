@@ -3,6 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { translateTextNode, useTx, withTranslatedTextProps } from "@/i18n/tx"
 
 const badgeVariants = cva(
   "inline-flex items-center justify-center rounded-full border border-transparent px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive transition-(--tp-color-box-shadow) overflow-hidden",
@@ -30,9 +31,11 @@ function Badge({
   className,
   variant = "default",
   asChild = false,
+  children,
   ...props
 }: React.ComponentProps<"span"> &
   VariantProps<typeof badgeVariants> & { asChild?: boolean }) {
+  const tx = useTx()
   const Comp = asChild ? Slot.Root : "span"
 
   return (
@@ -40,8 +43,10 @@ function Badge({
       data-slot="badge"
       data-variant={variant}
       className={cn(badgeVariants({ variant }), className)}
-      {...props}
-    />
+      {...withTranslatedTextProps(tx, props)}
+    >
+      {asChild ? children : translateTextNode(tx, children)}
+    </Comp>
   )
 }
 

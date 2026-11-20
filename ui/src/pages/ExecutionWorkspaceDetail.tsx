@@ -920,9 +920,9 @@ export function ExecutionWorkspaceDetail() {
     if (!workspace) return;
     const crumbs = [
       { label: "Projects", href: "/projects" },
-      ...(project ? [{ label: project.name, href: `/projects/${projectRef}` }] : []),
+      ...(project ? [{ label: project.name, href: `/projects/${projectRef}`, literal: true }] : []),
       ...(project ? [{ label: "Workspaces", href: `/projects/${projectRef}/workspaces` }] : []),
-      { label: workspace.name },
+      { label: workspace.name, literal: true },
     ];
     setBreadcrumbs(crumbs);
   }, [setBreadcrumbs, workspace, project, projectRef]);

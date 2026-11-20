@@ -1,9 +1,11 @@
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
+import { useTx, withTranslatedTextProps } from "@/i18n/tx"
 import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy"
 
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
+  const tx = useTx()
   return (
     <input
       type={type}
@@ -16,7 +18,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
         type === "password" && ANALYTICS_NO_CAPTURE_CLASS,
         className
       )}
-      {...props}
+      {...withTranslatedTextProps(tx, props)}
     />
   )
 }

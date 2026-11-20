@@ -20,6 +20,7 @@ import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabl
 import { useCompanyHomePath } from "@/hooks/useCompanyHomePath";
 import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { Badge } from "@/components/ui/badge";
+import { useTx } from "@/i18n/tx";
 
 interface MobileBottomNavProps {
   visible: boolean;
@@ -51,6 +52,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const inboxBadge = useInboxBadge(coordinatorWorkspaceEnabled ? null : selectedCompanyId);
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   const attentionCount = useCoordinatorAttentionCount(selectedCompanyId, coordinatorWorkspaceEnabled);
+  const tx = useTx();
   // Home is the company home (Responsibilities when that experiment is on).
   // Coordinator has no Home tab; it gains one only while Responsibilities is home.
   const { path: homePath } = useCompanyHomePath();
@@ -110,7 +112,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
       )}
       data-visible={visible}
       inert={!visible}
-      aria-label="Mobile navigation"
+      aria-label={tx("Mobile navigation")}
     >
       <div
         className="grid h-16 px-1"
@@ -133,7 +135,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
                 )}
               >
                 <Icon className="h-(--sz-18px) w-(--sz-18px)" />
-                <span className="truncate">{item.label}</span>
+                <span className="truncate">{tx(item.label)}</span>
               </button>
             );
           }
@@ -163,7 +165,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
                       </Badge>
                     )}
                   </span>
-                  <span className="truncate">{item.label}</span>
+                  <span className="truncate">{tx(item.label)}</span>
                 </>
               )}
             </NavLink>

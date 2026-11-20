@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useConnectivity, useConnectivityStore, type ConnectivityStatus } from "@/lib/connectivity";
 import { cn } from "@/lib/utils";
+import { useTx } from "@/i18n/tx";
 
 export type QueryViewKind = "loading" | "ready" | "stale" | "reconnecting" | "error";
 
@@ -138,8 +139,11 @@ const NOT_RETRYABLE: ReadonlySet<ErrorKind> = new Set(["auth", "forbidden", "not
  * from `describeError` and a Retry button. Never renders a raw error code.
  */
 export function QueryErrorState({ error, size = "panel", action, onRetry, retrying = false, className }: QueryErrorStateProps) {
+  const tx = useTx();
   const kind = classifyError(error);
-  const { title, body } = describeError(error, { action });
+  const described = describeError(error, { action });
+  const title = tx(described.title);
+  const body = tx(described.body);
   const retryButton = onRetry && !NOT_RETRYABLE.has(kind) ? (
     <Button
       type="button"
@@ -149,7 +153,7 @@ export function QueryErrorState({ error, size = "panel", action, onRetry, retryi
       disabled={retrying}
     >
       <RefreshCcw aria-hidden="true" className={cn(retrying && "animate-spin")} />
-      {retrying ? "Retrying…" : "Retry"}
+      {retrying ? tx("Retrying…") : tx("Retry")}
     </Button>
   ) : null;
 
