@@ -616,6 +616,69 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
     }
   });
 
+  describe("posthog-js request timeouts", () => {
+    function postHogTimeoutError(message = "PostHog request timed out after 3000ms"): Error {
+      const error = new Error(message);
+      Object.defineProperty(error, "name", { value: "AbortError" });
+      return error;
+    }
+
+    async function initCountingSentry() {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      const Sentry = await import("@sentry/browser");
+      const send = vi.fn(async () => ({}));
+      Sentry.init({
+        ...buildBrowserSentryInitOptions(DSN, "production"),
+        transport: () => ({ send, flush: async () => true }),
+      });
+      const sentEvents = () => send.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]))
+        .filter((envelope) => envelope.includes("\"type\":\"event\""));
+      return { Sentry, sentEvents };
+    }
+
+    function rejectUnhandled(reason: unknown) {
+      window.onunhandledrejection?.call(window, { reason } as PromiseRejectionEvent);
+    }
+
+    it("drops posthog-js's own timeout when it escapes as an unhandled rejection", async () => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        rejectUnhandled(postHogTimeoutError());
+        rejectUnhandled(postHogTimeoutError("PostHog request timed out"));
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(0);
+      } finally {
+        await Sentry.close();
+      }
+    });
+
+    it.each([
+      ["another AbortError", () => Object.assign(new Error("The user aborted a request."), { name: "AbortError" })],
+      ["the same text on a plain Error", () => new Error("PostHog request timed out after 3000ms")],
+      ["a string reason with the same text", () => "PostHog request timed out after 3000ms"],
+    ])("still reports %s", async (_label, makeReason) => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        rejectUnhandled(makeReason());
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(1);
+      } finally {
+        await Sentry.close();
+      }
+    });
+
+    it("still reports the same error when Paperclip code captures it", async () => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        Sentry.captureException(postHogTimeoutError());
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(1);
+      } finally {
+        await Sentry.close();
+      }
+    });
+  });
+
   it.each([
     ["staging", "staging"],
     ["production", "production"],

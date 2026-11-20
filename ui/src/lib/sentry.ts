@@ -191,6 +191,18 @@ function enqueueCapture(
   });
 }
 
+const POSTHOG_REQUEST_TIMEOUT_MESSAGE = /^PostHog request timed out(?: after \d+ms)?$/;
+
+export function isPostHogRequestTimeout(reason: unknown): boolean {
+  try {
+    return reason instanceof Error
+      && reason.name === "AbortError"
+      && POSTHOG_REQUEST_TIMEOUT_MESSAGE.test(reason.message);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build the `Sentry.init` options object. A pure function, split out from
  * `initBrowserErrorMonitoring` so a test can call it with the real
@@ -217,7 +229,10 @@ export function buildBrowserSentryInitOptions(
         value.mechanism?.type === "onunhandledrejection"
         || value.mechanism?.type === "auto.browser.global_handlers.onunhandledrejection",
       ) ?? false;
-      if (isUnhandledRejection && isIntentionalAbortReason(hint.originalException)) {
+      if (
+        isUnhandledRejection
+        && (isIntentionalAbortReason(hint.originalException) || isPostHogRequestTimeout(hint.originalException))
+      ) {
         takeRejectionEventSnapshot(classifyRejectionReason(hint.originalException));
         return null;
       }
