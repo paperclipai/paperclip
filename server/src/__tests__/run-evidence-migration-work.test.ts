@@ -2,7 +2,7 @@ import type { Db } from "@paperclipai/db";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { readRunEvidenceMigrationDeferrals, registerRunEvidenceMigrationWork } from "../services/run-evidence-migration-work.js";
+import { registerRunEvidenceMigrationWork } from "../services/run-evidence-migration-work.js";
 
 const state = vi.hoisted(() => ({
   provider: "s3",
@@ -143,10 +143,8 @@ it("archives a settled native log whose canonical coverage is unproven and repor
     apply: true, runId: "settled", kinds: ["log"], limit: 1, preserveSettledNativeFiles: true }));
   expect(state.migrate).toHaveBeenNthCalledWith(3, expect.anything(), expect.objectContaining({
     runId: "unsettled", preserveSettledNativeFiles: true }));
-  expect(readRunEvidenceMigrationDeferrals()).toEqual({
-    "run_logs:native_log_archive_source_unsettled": 1,
-    "provider_traces:migration_failed": 1,
-  });
+  expect(state.warn).toHaveBeenCalledWith(expect.objectContaining({ id: "unsettled", reason: "native_log_archive_source_unsettled" }), expect.any(String));
+  expect(state.warn).not.toHaveBeenCalledWith(expect.objectContaining({ id: "settled" }), expect.any(String));
   expect(state.probe!()).toBe("present");
 });
 it("retains startup work during drain and retries a failed sweep before becoming quiet", async () => {

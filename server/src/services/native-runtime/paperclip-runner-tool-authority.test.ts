@@ -2,6 +2,7 @@ import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { RESPONSIBILITY_TOOL_NAMES } from "../responsibility-tools.js";
 import { createServer } from "node:http";
 import { createPaperclipHttpServer } from "../../http/server.js";
 import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
@@ -190,6 +191,19 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.delete(agents).where(eq(agents.id, claudeId));
   });
 
+  it("advertises the responsibility tools only while the instance has them on", async () => {
+    const tools = [...RESPONSIBILITY_TOOL_NAMES];
+    const off = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    expect(off.definitions().map(tool => tool.name)).not.toEqual(expect.arrayContaining([tools[0]]));
+    // A hidden tool called by name says the feature is off, so the agent does not report an empty list.
+    await expect(off.execute({ tool: "list_responsibilities", callId: randomUUID(), arguments: {} }))
+      .rejects.toThrow("Areas and responsibilities are turned off");
+
+    const on = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, responsibilitiesEnabled: true });
+    expect(on.definitions()).toHaveLength(off.definitions().length + tools.length);
+    expect(on.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining(tools));
+  });
+
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
@@ -197,10 +211,10 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(54);
+    expect(authority.definitions()).toHaveLength(57);
     expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
-      "search_skills", "load_skill",
+      "search_skills", "load_skill", "list_routines", "update_routine", "update_skill_details",
     ]));
     // The read-only response export is its own tool, so call_api offers no save flag on writes.
     const save = authority.definitions().find(tool => tool.name === "save_api_response")!;
