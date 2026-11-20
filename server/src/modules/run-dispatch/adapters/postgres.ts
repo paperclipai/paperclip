@@ -1323,6 +1323,7 @@ export function createPostgresRunDispatchAdapter(
     const recovery = await getExecutionBlocker(tx, run.companyId, issueId, {
       conversationResetCommentId: deriveCommentId(contextSnapshot),
       resumingNativeRunId: run.runtimeMode === "native" ? run.id : null,
+      dispatchRunId: run.id,
     });
     if (recovery) return { issueId, facts: null, executionBlocker: recovery, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
@@ -1421,14 +1422,21 @@ export function createPostgresRunDispatchAdapter(
   }
 
   async function carryIsolatedContinuationInTx(tx: Db, run: HeartbeatRun, issueId: string) {
-    if (typeof parseObject(run.contextSnapshot).freshContinuationIsolation === "string") return;
-    const isolated = await isolatedContinuationForDispatch(tx, run.companyId, issueId);
+    const isolated = await isolatedContinuationForDispatch(tx, { companyId: run.companyId, issueId, runId: run.id });
     if (!isolated) return;
-    await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({
-      freshContinuationIsolation: isolated.recoveryActionId, forceFreshSession: true })}::jsonb` })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")));
-    if (isolated.pending) await deliverContinuationAsRun(tx, { companyId: run.companyId, issueId, runId: run.id,
-      continuation: { recoveryActionId: isolated.recoveryActionId, sourceRunId: isolated.sourceRunId, isolation: "fresh_isolated_workspace" } });
+    if (parseObject(run.contextSnapshot).freshContinuationIsolation !== isolated.recoveryActionId) {
+      await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({
+        freshContinuationIsolation: isolated.recoveryActionId, forceFreshSession: true })}::jsonb` })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")));
+    }
+    const continuation = { recoveryActionId: isolated.recoveryActionId, sourceRunId: isolated.sourceRunId, isolation: "fresh_isolated_workspace" };
+    if (isolated.action === "deliver") await deliverContinuationAsRun(tx, { companyId: run.companyId, issueId, runId: run.id, continuation });
+    if (isolated.action === "redeliver") {
+      await tx.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+        continuationRunId: run.id, continuationRedeliveredFromUnstartedRun: true })}::jsonb` })
+        .where(and(eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.id, isolated.recoveryActionId),
+          sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'delivered'`));
+    }
   }
 
   async function cancelStaleQueuedRun(
