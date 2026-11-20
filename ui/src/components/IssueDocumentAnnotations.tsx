@@ -4,7 +4,11 @@ import type { Agent, DocumentAnnotationThreadWithComments, IssueDocument } from 
 import { MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { accessApi } from "@/api/access";
+import { agentsApi } from "@/api/agents";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
+import { useOptionalCompany } from "@/context/CompanyContext";
+import { useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import {
@@ -15,7 +19,7 @@ import {
 import { DocumentAnnotationLayer, type AnnotationAnchorRect, type PendingAnchor } from "./DocumentAnnotationLayer";
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
 import { DocumentAnnotationPopover } from "./DocumentAnnotationPopover";
-import type { CompanyUserProfile } from "@/lib/company-members";
+import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/company-members";
 
 // Width of the right-hand comment gutter on desktop (lg+). The gutter is an
 // in-flow flex column beside the document, so it scrolls with the doc instead
@@ -45,6 +49,10 @@ export interface IssueDocumentAnnotationsProps {
   onPanelOpenChange: (open: boolean) => void;
   /** Keep the panel in document flow for narrow hosts such as the task properties pane. */
   panelPlacement?: "floating" | "inline" | "popover";
+  /**
+   * Optional overrides. When omitted, comment authors are named from the
+   * company's agents list and user directory, read through the shared queries.
+   */
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /** Seed which thread is focused on mount. Used by Storybook/screenshot harness. */
@@ -70,8 +78,8 @@ export function IssueDocumentAnnotations({
   panelOpen,
   onPanelOpenChange,
   panelPlacement = "floating",
-  agentMap,
-  userProfileMap,
+  agentMap: agentMapProp,
+  userProfileMap: userProfileMapProp,
   defaultFocusedThreadId,
   initialComposerAnchor,
   onInitialComposerAnchorConsumed,
@@ -114,6 +122,11 @@ export function IssueDocumentAnnotations({
     staleTime: 30_000,
   });
   const allThreads = annotationsQuery.data ?? [];
+  const { agentMap, userProfileMap, retryAuthorNames } = useAnnotationAuthorMaps({
+    companyId: allThreads[0]?.companyId ?? null,
+    agentMap: agentMapProp,
+    userProfileMap: userProfileMapProp,
+  });
 
   // Resolve deep link `#document-<key>&thread=...&comment=...` once per change.
   useEffect(() => {
@@ -272,6 +285,7 @@ export function IssueDocumentAnnotations({
       desktopWidth={showDesktopGutter ? DESKTOP_ANNOTATION_PANEL_WIDTH : undefined}
       agentMap={agentMap}
       userProfileMap={userProfileMap}
+      onRetryAuthorNames={retryAuthorNames}
     />
   ) : null;
 
@@ -341,6 +355,7 @@ export function IssueDocumentAnnotations({
             newCommentDisabled={newCommentDisabled}
             agentMap={agentMap}
             userProfileMap={userProfileMap}
+            onRetryAuthorNames={retryAuthorNames}
           />
         ) : null}
       </section>
@@ -375,6 +390,63 @@ export function IssueDocumentAnnotations({
 
 function isSameAnchorRect(a: AnnotationAnchorRect | null, b: AnnotationAnchorRect | null): boolean {
   return a === b || Boolean(a && b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height);
+}
+
+type AnnotationAgentMap = NonNullable<IssueDocumentAnnotationsProps["agentMap"]>;
+
+/**
+ * Resolve comment author names inside the annotation surface so every host
+ * (side panel, Plan and Artifacts tabs, routines) names people and agents
+ * without having to pass maps. Uses the same query keys as the pages, so the
+ * data usually comes from cache.
+ */
+function useAnnotationAuthorMaps({
+  companyId: threadCompanyId,
+  agentMap,
+  userProfileMap,
+}: {
+  companyId: string | null;
+  agentMap?: AnnotationAgentMap;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+}) {
+  const selectedCompanyId = useOptionalCompany()?.selectedCompanyId ?? null;
+  const companyId = threadCompanyId ?? selectedCompanyId;
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(companyId ?? ""),
+    queryFn: () => agentsApi.list(companyId!),
+    enabled: !agentMap && !!companyId,
+  });
+  const directoryQuery = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(companyId ?? ""),
+    queryFn: () => accessApi.listUserDirectory(companyId!),
+    enabled: !userProfileMap && !!companyId,
+  });
+  const agents = agentsQuery.data;
+  const directoryUsers = directoryQuery.data?.users;
+  const loadedAgentMap = useMemo<AnnotationAgentMap>(
+    () => new Map((agents ?? []).map((agent) => [agent.id, agent])),
+    [agents],
+  );
+  const loadedUserProfileMap = useMemo(
+    () => buildCompanyUserProfileMap(directoryUsers),
+    [directoryUsers],
+  );
+  // A view of kind "error" failed with no cached data, so names are missing.
+  const agentsView = useQueryView(agentsQuery);
+  const directoryView = useQueryView(directoryQuery);
+  const agentsFailed = !agentMap && agentsView.kind === "error";
+  const directoryFailed = !userProfileMap && directoryView.kind === "error";
+  const { retry: retryAgents } = agentsView;
+  const { retry: retryDirectory } = directoryView;
+  const retryAuthorNames = useCallback(() => {
+    if (agentsFailed) retryAgents();
+    if (directoryFailed) retryDirectory();
+  }, [agentsFailed, directoryFailed, retryAgents, retryDirectory]);
+  return {
+    agentMap: agentMap ?? loadedAgentMap,
+    userProfileMap: userProfileMap ?? loadedUserProfileMap,
+    retryAuthorNames: agentsFailed || directoryFailed ? retryAuthorNames : undefined,
+  };
 }
 
 export interface DocumentAnnotationsCountChipProps {

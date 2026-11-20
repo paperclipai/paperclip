@@ -6,7 +6,7 @@ import type { DocumentAnnotationTarget } from "@/api/document-annotations";
 import type { CompanyUserProfile } from "@/lib/company-members";
 import { useDocumentAnnotationMutations } from "@/hooks/useDocumentAnnotationMutations";
 import type { AnnotationAnchorRect, PendingAnchor } from "./DocumentAnnotationLayer";
-import { useCopyAnnotationLink, ThreadCard, truncate } from "./DocumentAnnotationPanel";
+import { AuthorNamesErrorNotice, useCopyAnnotationLink, ThreadCard, truncate } from "./DocumentAnnotationPanel";
 
 export interface DocumentAnnotationPopoverProps {
   anchorRect: AnnotationAnchorRect;
@@ -24,6 +24,8 @@ export interface DocumentAnnotationPopoverProps {
   newCommentDisabled?: boolean;
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+  /** Set when author names failed to load; shows a notice with a retry action. */
+  onRetryAuthorNames?: () => void;
 }
 
 export function DocumentAnnotationPopover(props: DocumentAnnotationPopoverProps) {
@@ -84,6 +86,7 @@ export function DocumentAnnotationPopover(props: DocumentAnnotationPopoverProps)
       className="absolute z-(--z-20) w-80 max-w-full rounded-lg border border-border bg-popover text-popover-foreground shadow-xl"
       style={{ top, left }}
     >
+      {props.onRetryAuthorNames ? <AuthorNamesErrorNotice onRetry={props.onRetryAuthorNames} /> : null}
       {mutationError ? <p className="border-b border-border bg-destructive/10 px-3 py-2 text-xs text-destructive">{mutationError}</p> : null}
       {props.pendingAnchor ? (
         <div className="p-3">
