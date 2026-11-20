@@ -235,6 +235,8 @@ and read markers do not establish participation in automatic work. Direct board 
 human API comments, human assignment, and deliberate user mutations do establish
 participation. Open requests addressed to the person also admit the task until
 resolution. Ordinary human-created tasks keep their creator's participation.
+Responsibility-repair audit entries do not establish personal participation,
+even when the repair is attributed to a human operator.
 These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
 Approvals retain their existing recipient and permission rules.
 
