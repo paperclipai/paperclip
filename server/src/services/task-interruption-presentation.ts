@@ -458,7 +458,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     then ${requestedIssueId}::uuid else null end`;
   const legacyIssue = sql<string>`${heartbeatRuns.contextSnapshot}->>'issueId'`;
   const candidate = (condition: SQL | undefined, executionOwner = false) => db.select({ id: heartbeatRuns.id,
-    createdAt: heartbeatRuns.createdAt, executionOwner: sql<number>`${sql.raw(executionOwner ? "1" : "0")}`.as("execution_owner") })
+    createdAt: heartbeatRuns.createdAt, executionOwner: sql<number>`${executionOwner ? 1 : 0}::int`.as("execution_owner") })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), condition, taskAttemptCondition()))
     .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   const nativeRun = eq(heartbeatRuns.nativeIssueId, requestedUuid);
