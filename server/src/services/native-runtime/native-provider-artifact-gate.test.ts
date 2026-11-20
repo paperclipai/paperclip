@@ -182,6 +182,37 @@ describe("shared provider artifact capture", () => {
     await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(3), { interval: 1 });
   });
 
+  it("keeps the two-capture cap for runs that cannot reuse the saved copy", async () => {
+    const key = `company:${Math.random()}`;
+    const releases: Array<() => void> = [];
+    let active = 0, peak = 0;
+    const reuse = vi.fn(async () => null);
+    const capture = vi.fn((_signal: AbortSignal, hold: (work: Promise<unknown>) => void) => {
+      const transfer = deferred<void>();
+      active += 1;
+      peak = Math.max(peak, active);
+      hold(transfer.promise.finally(() => { active -= 1; }));
+      releases.push(() => transfer.resolve());
+      return capture.mock.calls.length === 2 ? Promise.resolve("captured") : new Promise<string>(() => undefined);
+    });
+    void shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 });
+    await expect(shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 }))
+      .resolves.toBe("captured");
+    const misses = [0, 1].map(() => shareNativeProviderArtifactCapture({
+      key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 }));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(peak).toBe(2);
+    releases[1]!();
+    await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(3), { interval: 1 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(capture).toHaveBeenCalledTimes(3);
+    expect(peak).toBe(2);
+    expect(reuse.mock.calls.length).toBeLessThan(12);
+    releases.forEach(release => release());
+    void misses;
+  });
+
   it("starts one more capture when the shared capture runs past the hedge delay, not one per waiting run", async () => {
     const key = `company:${Math.random()}`;
     const hung = deferred<string>();

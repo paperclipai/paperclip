@@ -43,9 +43,9 @@ class SharedArtifactCapture {
     return this.state.saved;
   }
 
-  tryStart(hedgeAfterMs: number, options: { afterSavedMiss?: boolean } = {}): (() => void) | null {
-    if (!options.afterSavedMiss && (this.state.running >= MAX_CONCURRENT_CAPTURES
-      || this.state.running > 0 && this.state.lastStartedAtMs + hedgeAfterMs > Date.now())) return null;
+  tryStart(hedgeAfterMs: number, options: { afterSavedMiss: boolean }): (() => void) | null {
+    if (this.state.running >= MAX_CONCURRENT_CAPTURES) return null;
+    if (!options.afterSavedMiss && this.state.running > 0 && this.state.lastStartedAtMs + hedgeAfterMs > Date.now()) return null;
     this.state.running += 1;
     this.state.lastStartedAtMs = Date.now();
     let released = false;
@@ -58,13 +58,12 @@ class SharedArtifactCapture {
     };
   }
 
-  async waitForChange(hedgeAfterMs: number, stopped: Promise<never>) {
+  async waitForChange(hedgeAfterMs: number, stopped: Promise<never>, options: { afterSavedMiss: boolean }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const waits: Promise<unknown>[] = [this.changed.promise, stopped];
-    if (this.state.running < MAX_CONCURRENT_CAPTURES) {
-      waits.push(new Promise<void>(resolve => {
-        timer = setTimeout(resolve, Math.max(0, this.state.lastStartedAtMs + hedgeAfterMs - Date.now()));
-      }));
+    const hedgeInMs = this.state.lastStartedAtMs + hedgeAfterMs - Date.now();
+    if (!options.afterSavedMiss && this.state.running < MAX_CONCURRENT_CAPTURES && hedgeInMs > 0) {
+      waits.push(new Promise<void>(resolve => { timer = setTimeout(resolve, hedgeInMs); }));
     }
     try {
       await Promise.race(waits);
@@ -115,20 +114,19 @@ export async function shareNativeProviderArtifactCapture<T>(input: ShareNativePr
   const hedgeAfterMs = input.hedgeAfterMs ?? NATIVE_PROVIDER_ARTIFACT_CAPTURE_HEDGE_MS;
   const stopped = stopWith(input.signal);
   try {
-    let shared = sharedCaptureFor(input.key);
-    let release = shared.tryStart(hedgeAfterMs);
-    while (!release) {
-      if (!shared.saved) await shared.waitForChange(hedgeAfterMs, stopped.promise);
+    let afterSavedMiss = false;
+    for (;;) {
+      const shared = sharedCaptureFor(input.key);
+      const release = shared.tryStart(hedgeAfterMs, { afterSavedMiss });
+      if (release) return await captureOrReuse(input, shared, release, stopped.promise);
+      if (afterSavedMiss || !shared.saved) await shared.waitForChange(hedgeAfterMs, stopped.promise, { afterSavedMiss });
       const reused = await input.reuse();
       if (reused) {
         shared.markSaved();
         return reused;
       }
-      const afterSavedMiss = shared.saved;
-      shared = sharedCaptureFor(input.key);
-      release = shared.tryStart(hedgeAfterMs, { afterSavedMiss });
+      afterSavedMiss ||= shared.saved;
     }
-    return await captureOrReuse(input, shared, release, stopped.promise);
   } finally {
     stopped.dispose();
   }
