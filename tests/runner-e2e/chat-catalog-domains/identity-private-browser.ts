@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Cookie } from "@playwright/test";
+import { readPrivateChildFailure } from "./private-child-failure.js";
+import { IDENTITY_PRIVATE_STEPS } from "./identity-private-browser-steps.js";
 import type { WizardReceipt, WizardHarness } from "./identity-wizard.js";
 import type { NewCompanyNativeReceipt } from "./identity-new-company-native-proof.js";
-export const identityPrivateBrowserSources = ["chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts"];
+export const identityPrivateBrowserSources = ["chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-private-browser-steps.ts", "chat-catalog-domains/private-child-failure.ts"];
 export type PrivateIdentityOperation =
   | { kind: "sign-in"; origin: string; startPath: string; returnPath: string; email: string; password: string; cookies: Cookie[] }
   | { kind: "wizard"; origin: string; startPath: string; cookies: Cookie[]; credential: string; companyName: string; agentName: string; harness: WizardHarness; resume?: boolean; entry?: "empty" | "new-company"; deadlineAt: number }
@@ -27,7 +29,7 @@ export async function privateIdentityBrowser(input: PrivateIdentityOperation, ca
     let output: string;
     try { output = (await promisify(execFile)(process.execPath, ["--import", loader, worker, request], { timeout: (input.kind === "wizard" || input.kind === "new-company-native") ? Math.max(1, Math.min(540_000, input.deadlineAt - Date.now())) : 120_000,
       maxBuffer: 32_768, env: { PATH: process.env.PATH ?? "", NODE_ENV: "test", DO_NOT_TRACK: "1", HOME: directory, TMPDIR: directory } })).stdout; }
-    catch { throw new Error("Private identity browser operation failed; child diagnostics withheld"); }
+    catch { throw new Error(`Private identity browser operation failed${await readPrivateChildFailure(directory, IDENTITY_PRIVATE_STEPS)}; child diagnostics withheld`); }
     let receipt: PrivateIdentityReceipt;
     try { receipt = JSON.parse(output) as PrivateIdentityReceipt; } catch { throw new Error("Invalid closed private identity receipt"); }
     if (receipt.operation !== input.kind || receipt.completed !== true || receipt.processIsolation !== true || receipt.testRunnerAttached !== false || receipt.apiStepRecorder !== false || receipt.tracingEnabled !== false || receipt.videoEnabled !== false

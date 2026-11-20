@@ -13,6 +13,7 @@ import { readIdleMcpEventSchedule, type IdleMcpEventScheduleProof } from "./idle
 import { readIdleMcpTransferSchedule } from "./idle-transfer-schedule.js";
 import { readIdleMcpAuthorizationHandoffs } from "./idle-authorization-handoffs.js";
 import type { IdleDeadlineSnapshot } from "../idle-deadline-types.js";
+import { logger } from "../../middleware/logger.js";
 
 const owners = new WeakMap<object, { config: PublicMcpConfig | null; personal: PublicMcpEvents | null; dot: PublicMcpEvents | null; clientMirrorInstanceId?:string }>();
 export function registerIdleMcpOwners(owner: object, services: { config: PublicMcpConfig | null; personal: PublicMcpEvents | null; dot: PublicMcpEvents | null; clientMirrorInstanceId?:string }) {
@@ -31,19 +32,28 @@ export interface IdleMcpSleepProof {
   schedule: IdleDeadlineSnapshot;
   generation: string;
 }
+let lastReportedFrontDoorHold: string | null = null;
+/** Make a sleep hold from an unpublished Cloud front door visible once per state change, not once per idle check. */
+function reportFrontDoorHold(frontDoor: IdleDeadlineSnapshot) {
+  const state = frontDoor.blocked ? JSON.stringify(Array.isArray(frontDoor.state) ? frontDoor.state[0] : frontDoor.state) : null;
+  if (state === lastReportedFrontDoorHold) return;
+  lastReportedFrontDoorHold = state;
+  if (state !== null) logger.warn({ frontDoorState: JSON.parse(state) }, "Idle sleep is held until the assistant connection front door is published to Paperclip Cloud");
+}
 export async function readIdleMcpSleepProof(tx: Pick<Db, "select">, owner: object, context: {
   stackId: string; ownerId: string; capabilityGeneration: string; challenge: string; now: number; budget: IdleMcpInspectionBudget;
 }) : Promise<IdleMcpSleepProof> {
   const services = owners.get(owner);
   await context.budget.beforeRead();
   const feature = await instanceSettingsService(tx as Db).getExperimentalReadOnly();
-  const frontDoor = await readIdleMcpClientMirror(tx,{budget:context.budget,enabled:feature.enablePublicMcp,origin:services?.config?.origin,instanceId:services?.clientMirrorInstanceId,managedStackId:getCloudRuntimeIdentity()?.stackId,authorizationOrigin:services?.config?.authorizationOrigin,unsupportedProfiles:feature.enableOpenAiDot||feature.enableGrokBot&&feature.enableNativeRunner});
+  const frontDoor = await readIdleMcpClientMirror(tx,{budget:context.budget,enabled:true,origin:services?.config?.origin,instanceId:services?.clientMirrorInstanceId,managedStackId:getCloudRuntimeIdentity()?.stackId,authorizationOrigin:services?.config?.authorizationOrigin,unsupportedProfiles:feature.enableOpenAiDot||feature.enableGrokBot&&feature.enableNativeRunner});
+  reportFrontDoorHold(frontDoor);
   const ingress = await readIdleMcpWakeProof(tx, { ...context,
     clientMirror:frontDoor.receipt,
     personalResource: services?.config?.resource ?? "", dotResource: services?.config ? services.config.origin + "/mcp/runner" : "",
-    discovery: services?.config && feature.enablePublicMcp ? { origin: services.config.origin, authorizationOrigin: services.config.authorizationOrigin ?? services.config.origin,
+    discovery: services?.config ? { origin: services.config.origin, authorizationOrigin: services.config.authorizationOrigin ?? services.config.origin,
       profiles: ["personal-mcp", ...(feature.enableOpenAiDot || feature.enableGrokBot && feature.enableNativeRunner ? ["dot-mcp" as const] : [])] } : undefined,
-    personalEnabled: feature.enablePublicMcp, dotEnabled: feature.enablePublicMcp && feature.enableOpenAiDot });
+    personalEnabled: true, dotEnabled: feature.enableOpenAiDot });
   const absent = { revision: "absent", reconciled: false };
   const personal = services?.personal?.reconciliationSnapshot() ?? absent, dot = services?.dot?.reconciliationSnapshot() ?? absent;
   const personalDestination = services?.personal?.createIdleDestinationInspector();
@@ -51,8 +61,8 @@ export async function readIdleMcpSleepProof(tx: Pick<Db, "select">, owner: objec
   const subscriptions = await readIdleMcpSubscriptionProof(tx, { now: context.now, ingress, personal, dot, budget: context.budget,
     inspectDestination: row => (row.bindingId ? dotDestination : personalDestination)?.(row) ?? Promise.resolve(false) });
   const retries = await readIdleMcpEventSchedule(tx, { now: context.now, coveredGrantIds: ingress.grantIds, personal, dot, budget: context.budget });
-  const deviceStatus=await readIdleMcpDeviceStatus(tx,{enabled:feature.enablePublicMcp,receipt:frontDoor.receipt,budget:context.budget});
-  const legacyDevices=feature.enablePublicMcp?await readIdleMcpDeviceCutover(tx,context):{blocked:false,state:"absent",deadlines:[]};
+  const deviceStatus=await readIdleMcpDeviceStatus(tx,{enabled:true,receipt:frontDoor.receipt,budget:context.budget});
+  const legacyDevices=await readIdleMcpDeviceCutover(tx,context);
   const transfers = await readIdleMcpTransferSchedule(tx, context);
   const handoffs = await readIdleMcpAuthorizationHandoffs(tx, context);
   const schedule = { blocked: frontDoor.blocked || deviceStatus.blocked || legacyDevices.blocked || retries.blocked || transfers.blocked || handoffs.blocked, state: [frontDoor.state,deviceStatus.state,legacyDevices.state,retries.state,transfers.state,handoffs.state], deadlines: [...legacyDevices.deadlines,...retries.deadlines,...transfers.deadlines,...handoffs.deadlines] };

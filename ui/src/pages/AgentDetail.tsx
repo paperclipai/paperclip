@@ -34,6 +34,7 @@ import { issuesApi } from "../api/issues";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -72,6 +73,7 @@ import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
 import { cn } from "../lib/utils";
+import { ProviderLimitMessage } from "../components/ProviderLimitMessage";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
@@ -80,6 +82,7 @@ import { AuditFeed } from "./audit/AuditFeed";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
+  Paperclip,
   CheckCircle2,
   XCircle,
   Clock,
@@ -95,6 +98,7 @@ import {
   ChevronRight,
   ChevronDown,
   ArrowLeft,
+  ArrowUpRight,
   HelpCircle,
   FolderOpen,
   AlertTriangle,
@@ -165,7 +169,6 @@ import {
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
 import {
-  AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
   agentDetailSegment,
   agentDetailViewLabel,
@@ -186,6 +189,7 @@ export {
   heartbeatProgressLogLineKey,
   RunInvocationCard,
 } from "../components/run-log/RunDetails";
+import { ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 const AgentAdvancedTab = lazy(() => import("./AgentAdvancedTab").then(module => ({ default: module.AgentAdvancedTab })));
 
@@ -226,21 +230,6 @@ const sourceLabels: Record<string, string> = {
   on_demand: "On-demand",
   automation: "Automation",
 };
-
-/** @deprecated Use AGENT_DETAIL_NAVIGATION for contextual navigation. */
-export const AGENT_DETAIL_TABS = AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items);
-
-const LEGACY_AGENT_DETAIL_TABS = [
-  { value: "dashboard", label: "Dashboard" },
-  { value: "instructions", label: "Instructions" },
-  { value: "skills", label: "Skills" },
-  { value: "configuration", label: "Configuration" },
-  { value: "secrets", label: "Secrets" },
-  { value: "tools", label: "Tools" },
-  { value: "runs", label: "Runs" },
-  { value: "audit", label: "Audit" },
-  { value: "budget", label: "Budget" },
-] as const;
 
 export const DISCARD_AGENT_CONFIG_CHANGES_MESSAGE = "Discard unsaved agent configuration changes?";
 
@@ -387,22 +376,10 @@ export function AgentDetail() {
   const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
-  const [configJustSaved, setConfigJustSaved] = useState(false);
-  const [identitySaveVersion, setIdentitySaveVersion] = useState(0);
-  const onIdentitySaved = useCallback(() => setIdentitySaveVersion(value => value + 1), []);
+  const [configSaveVersion, setConfigSaveVersion] = useState(0);
+  const onConfigSaved = useCallback(() => setConfigSaveVersion(value => value + 1), []);
   const [pendingLeave, setPendingLeave] = useState<HTMLAnchorElement | null>(null);
   const leaveBypassRef = useRef(false);
-  const configWasSavingRef = useRef(false);
-  useEffect(() => {
-    if (configWasSavingRef.current && !configSaving && !configDirty) setConfigJustSaved(true);
-    configWasSavingRef.current = configSaving;
-  }, [configSaving, configDirty]);
-  useEffect(() => {
-    if (configDirty) setConfigJustSaved(false);
-  }, [configDirty]);
-  useEffect(() => {
-    setConfigJustSaved(false);
-  }, [activeView]);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
   const { isMobile } = useSidebar();
@@ -818,7 +795,7 @@ export function AgentDetail() {
   const agentJoinLeavePending = agentMembershipPending && membershipMutation.variables?.starred === undefined;
 
   return (
-    <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${activeView}`)}>
+    <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${activeView}`, showConfigActionBar && "agent-settings-with-save-bar")}>
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
@@ -892,12 +869,11 @@ export function AgentDetail() {
           <div className="flex min-w-0 items-center gap-2">
             <InlineEditor
               as="h1"
-              value={agent.title ?? ""}
+              value={agent.name}
               fitContent
-              nullable
-              placeholder={roleLabels[agent.role] ?? agent.role}
+              placeholder="Agent name"
               className="min-w-0 truncate text-2xl font-semibold leading-8 text-foreground"
-              onSave={(title) => saveHeaderField({ title: title || null })}
+              onSave={(name) => saveHeaderField({ name })}
             />
             <PrimaryAgentCrownButton agent={agent} />
           </div>
@@ -915,10 +891,11 @@ export function AgentDetail() {
             <span aria-hidden="true">•</span>
             <InlineEditor
               fitContent
-              value={agent.name}
-              placeholder="Agent name"
-              className="min-w-0 truncate text-sm leading-5 text-muted-foreground"
-              onSave={(name) => saveHeaderField({ name })}
+              value={agent.title ?? ""}
+              nullable
+              placeholder={roleLabels[agent.role] ?? agent.role}
+              className="agent-header-custom-title min-w-0 truncate text-sm leading-5 text-muted-foreground"
+              onSave={(title) => saveHeaderField({ title: title || null })}
             />
           </div>
           <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
@@ -928,7 +905,7 @@ export function AgentDetail() {
           companyId={resolvedCompanyId}
           assignLabel="New task"
           size="default"
-          showAssignIcon={false}
+          assignIcon={Paperclip}
           showChat
           showStatus={false}
           workActionsInMenu
@@ -1099,7 +1076,7 @@ export function AgentDetail() {
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
           showSaveNotice={false}
-          onSaved={onIdentitySaved}
+          onSaved={onConfigSaved}
           onDirtyChange={setConfigDirty}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
@@ -1118,6 +1095,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaved={onConfigSaved}
             updatePermissions={updatePermissions}
             canConfigureProviderTrace={canUseProviderTrace}
             content="runtime"
@@ -1136,6 +1114,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaved={onConfigSaved}
             updatePermissions={updatePermissions}
             content="secrets"
           />
@@ -1166,6 +1145,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaved={onConfigSaved}
             updatePermissions={updatePermissions}
             content="permissions"
           />
@@ -1208,23 +1188,10 @@ export function AgentDetail() {
         />
       )}
 
-      {showConfigActionBar && activeView === "instructions" && <AgentConfigSaveBar key={agent.id} dirty={configDirty} saving={configSaving} savedVersion={identitySaveVersion}
+      {showConfigActionBar && <AgentConfigSaveBar key={`${agent.id}-${activeView}`} dirty={configDirty} saving={configSaving} savedVersion={configSaveVersion}
         onDiscard={() => cancelConfigActionRef.current?.()}
         onSave={() => { Promise.resolve(saveConfigActionRef.current?.()).catch(() => {}); }} />}
-      {showConfigActionBar && activeView !== "instructions" && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
-        <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
-          {configSaving ? null : configDirty ? (
-            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-unsaved)" />
-          ) : configJustSaved ? (
-            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-saved)" />
-          ) : null}
-          {configSaving ? "Saving changes…" : configDirty ? "Unsaved changes" : configJustSaved ? "Changes saved" : "No unsaved changes"}
-        </p>
-        <div className="flex gap-2">
-          <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>Discard</Button>
-          <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
-        </div>
-      </footer>}
+
 
     </div>
   );
@@ -1440,6 +1407,12 @@ export function AgentOverview({
   agentRouteId: string;
 }) {
   const agentRef = agentRouteRef(agent);
+  const { openNewIssue } = useDialogActions();
+  const taskSuggestions = [
+    "Research a topic and summarize the key findings",
+    "Create a step-by-step plan for a project",
+    "Review a document and suggest improvements",
+  ];
   const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(agent.companyId),
@@ -1511,15 +1484,12 @@ export function AgentOverview({
           className="min-h-(--agent-detail-tile-min-h) sm:col-span-2"
           aria-label="Skills"
         >
-          {skillNames.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset)">
-              {skillNames.map((name) => (
-                <AgentChip key={name}>{name}</AgentChip>
-              ))}
-            </div>
-          ) : (
-            <p className="px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset) text-sm text-muted-foreground">No skills enabled.</p>
-          )}
+          <div className="flex flex-wrap gap-1.5 px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset)">
+            {skillNames.map((name) => <AgentChip key={name} className="h-7 px-2">{name}</AgentChip>)}
+            <Link to={agentDetailHref(agentRef, "skills")} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-dashed border-border px-2 py-1 text-sm text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-foreground">
+              Explore skills <ArrowUpRight className="size-3.5" aria-hidden />
+            </Link>
+          </div>
         </AgentPanel>
       </div>
 
@@ -1533,7 +1503,24 @@ export function AgentOverview({
           }
         />
         {assignedIssues.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No recent tasks.</p>
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-muted-foreground">Start with a suggested task</p>
+            <ul className="overflow-hidden rounded-lg border border-border bg-(--agent-detail-tile) divide-y divide-dashed divide-border" aria-label="Suggested tasks">
+              {taskSuggestions.map((title) => (
+                <li key={title}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-3 px-4 py-4 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    onClick={() => openNewIssue({ title, assigneeAgentId: agent.id })}
+                  >
+                    <Paperclip className="size-4 shrink-0" aria-hidden />
+                    <span className="min-w-0 flex-1">{title}</span>
+                    <ChevronRight className="size-4 shrink-0" aria-hidden />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border bg-(--agent-detail-tile)">
             <TaskSummaryList issues={assignedIssues.slice(0, 5)} />
@@ -1621,6 +1608,7 @@ export function ConfigurationTab({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
+  onSaved,
   updatePermissions,
   hidePromptTemplate,
   hideInstructionsFile,
@@ -1633,6 +1621,7 @@ export function ConfigurationTab({
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
+  onSaved?: () => void;
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
@@ -1678,6 +1667,7 @@ export function ConfigurationTab({
       setAwaitingRefreshAfterSave(true);
     },
     onSuccess: (updated, { target }) => {
+      if (lastAgentRef.current.id === target.id) onSaved?.();
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(target.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(target.companyId) });
@@ -1889,13 +1879,17 @@ export function PromptsTab({
     rootPath: string;
     entryFile: string;
   } | null>(null);
-  const [newFilePath, setNewFilePath] = useState("");
+  const [fileNameDraft, setFileNameDraft] = useState<string | null>(null);
+  const [editingFileName, setEditingFileName] = useState(false);
+  const [fileNameError, setFileNameError] = useState<string | null>(null);
+  const fileNameInputRef = useRef<HTMLInputElement>(null);
+  const [fileSaveInProgress, setFileSaveInProgress] = useState(false);
+  const fileSaveLock = useRef(false);
   const [copyVisible, setCopyVisible] = useState(false);
   const [copyNotice, setCopyNotice] = useState<"copied" | "error" | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(copyTimer.current), []);
   useEffect(() => { clearTimeout(copyTimer.current); setCopyNotice(null); }, [agent.id, selectedFile]);
-  const [showNewFileInput, setShowNewFileInput] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<string[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [filePanelWidth, setFilePanelWidth] = useState(260);
@@ -1931,8 +1925,9 @@ export function PromptsTab({
     setDraft(null);
     setReadOnlyCandidateRunId(null);
     setBundleDraft(null);
-    setNewFilePath("");
-    setShowNewFileInput(false);
+    setFileNameDraft(null);
+    setEditingFileName(false);
+    setFileNameError(null);
     setPendingFiles([]);
     setExpandedDirs(new Set());
     setAwaitingRefresh(false);
@@ -1978,6 +1973,14 @@ export function PromptsTab({
     [visibleFilePaths],
   );
   const selectedOrEntryFile = selectedFile || currentEntryFile;
+  const displayedFilePath = fileNameDraft ?? selectedOrEntryFile;
+  const namingPrefix = displayedFilePath.replace(/\.md$/i, "");
+  const renamedFilePath = fileNameDraft === null ? selectedOrEntryFile : markdownFileName(fileNameDraft.replace(/\.md$/i, ""));
+  const nameConflict = renamedFilePath !== selectedOrEntryFile && visibleFilePaths.some(path => path.toLowerCase() === renamedFilePath?.toLowerCase());
+  const fileNameInvalid = !renamedFilePath || nameConflict;
+  useEffect(() => {
+    if (editingFileName) fileNameInputRef.current?.focus();
+  }, [editingFileName]);
   const selectedFileExists = bundleMatchesDraft && fileOptions.includes(selectedOrEntryFile);
   const selectedFileSummary = bundle?.files.find((file) => file.path === selectedOrEntryFile) ?? null;
 
@@ -2220,9 +2223,9 @@ export function PromptsTab({
         bundleDraft.entryFile !== (bundle?.entryFile ?? "AGENTS.md")
       ),
   );
-  const fileDirty = (draft !== null && draft !== currentContent) || pendingFiles.includes(selectedOrEntryFile);
+  const fileDirty = (fileNameDraft !== null && fileNameDraft !== selectedOrEntryFile) || (draft !== null && draft !== currentContent) || pendingFiles.includes(selectedOrEntryFile);
   const isDirty = bundleDirty || fileDirty || candidateRunId !== null;
-  const isSaving = updateBundle.isPending || saveFile.isPending || resolveCandidate.isPending || loadCandidate.isPending || refreshCandidateBase.isPending || deleteFile.isPending || awaitingRefresh;
+  const isSaving = fileSaveInProgress || updateBundle.isPending || saveFile.isPending || resolveCandidate.isPending || loadCandidate.isPending || refreshCandidateBase.isPending || deleteFile.isPending || awaitingRefresh;
 
   useEffect(() => { onSavingChange(isSaving); }, [onSavingChange, isSaving]);
   useEffect(() => { onDirtyChange(isDirty); }, [onDirtyChange, isDirty]);
@@ -2236,7 +2239,14 @@ export function PromptsTab({
 
   useEffect(() => {
     onSaveActionChange(isDirty ? () => {
+      if (fileSaveLock.current) return;
       const save = async () => {
+        if (fileNameInvalid) {
+          setFileNameError(nameConflict ? "A file with this name already exists." : "Use letters, numbers, hyphens or underscores.");
+          setEditingFileName(true);
+          return;
+        }
+        setFileNameError(null);
         const shouldClearLegacy =
           Boolean(bundle?.legacyPromptTemplateActive) || Boolean(bundle?.legacyBootstrapPromptTemplateActive);
         if (bundleDirty && bundleDraft) {
@@ -2249,6 +2259,30 @@ export function PromptsTab({
         if (candidateRunId) {
           await resolveCandidate.mutateAsync({ runId: candidateRunId, content: displayValue,
             baseRevisionId: draftBaseRevisionRef.current ?? null });
+        } else if (fileDirty && renamedFilePath && renamedFilePath !== selectedOrEntryFile) {
+          fileSaveLock.current = true;
+          setFileSaveInProgress(true);
+          const latest = await agentsApi.instructionsBundle(agent.id, companyId);
+          const sourceHash = draftBaseHashRef.current ?? selectedFileDetail?.contentHash;
+          if (selectedFileExists && !sourceHash) throw new Error("Reload this file before renaming; your draft is retained.");
+          const copied = selectedFileExists || selectedOrEntryFile === currentEntryFile
+            ? await agentsApi.renameInstructionsFile(agent.id, {
+                path: selectedOrEntryFile, renameTo: renamedFilePath, content: displayValue, baseHash: selectedFileExists ? sourceHash! : null,
+              }, companyId)
+            : await agentsApi.saveInstructionsFile(agent.id, { path: renamedFilePath, content: displayValue, baseHash: null }, companyId);
+          queryClient.setQueryData(queryKeys.agents.instructionsFile(agent.id, renamedFilePath), copied);
+          queryClient.setQueryData<AgentInstructionsBundle>(queryKeys.agents.instructionsBundle(agent.id), {
+            ...latest,
+            entryFile: selectedOrEntryFile === currentEntryFile ? renamedFilePath : latest.entryFile,
+            files: [...latest.files.filter(file => file.path !== selectedOrEntryFile), copied],
+          });
+          setBundleDraft(null);
+          setPendingFiles([]);
+          setDraft(null);
+          setFileNameDraft(null);
+          setSelectedFile(renamedFilePath);
+          queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
         } else if (fileDirty) {
           await saveFile.mutateAsync({
             path: selectedOrEntryFile,
@@ -2260,7 +2294,7 @@ export function PromptsTab({
         }
         onSaved?.();
       };
-      void save().catch(() => undefined);
+      void save().catch((error) => setFileNameError(error instanceof Error ? error.message : "Could not save the file. Your unsaved edits are retained.")).finally(() => { fileSaveLock.current = false; setFileSaveInProgress(false); });
     } : null);
   }, [
     bundle,
@@ -2278,6 +2312,15 @@ export function PromptsTab({
     currentMode,
     saveFile,
     selectedOrEntryFile,
+    renamedFilePath,
+    fileNameInvalid,
+    nameConflict,
+    selectedFileExists,
+    currentContent,
+    selectedFileDetail?.contentHash,
+    agent.id,
+    companyId,
+    queryClient,
     updateBundle,
   ]);
 
@@ -2289,6 +2332,9 @@ export function PromptsTab({
       resolveCandidate.reset();
       setDraft(null);
       setPendingFiles([]);
+      setFileNameDraft(null);
+      setEditingFileName(false);
+      setFileNameError(null);
       if (pendingFiles.includes(selectedOrEntryFile)) setSelectedFile(currentEntryFile);
       if (bundle) {
         setBundleDraft({
@@ -2381,13 +2427,29 @@ export function PromptsTab({
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-semibold text-foreground">Files</h4>
             <div className="flex items-center gap-1">
-              {!showNewFileInput && (
+              {(
                 <Button
                   type="button"
                   size="icon-xs"
                   variant="ghost"
                   aria-label="Add agent file"
-                  onClick={() => setShowNewFileInput(true)}
+                  disabled={isSaving}
+                  onClick={() => {
+                    if (isDirty && !window.confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE)) return;
+                    let candidate = "Untitled.md";
+                    let suffix = 2;
+                    while (fileOptions.some(path => path.toLowerCase() === candidate.toLowerCase())) candidate = `Untitled-${suffix++}.md`;
+                    setPendingFiles([candidate]);
+                    setSelectedFile(candidate);
+                    draftBaseRevisionRef.current = null;
+                    draftBaseHashRef.current = null;
+                    setDraft("");
+                    setFileNameDraft(null);
+                    setFileNameError(null);
+                    setEditingFileName(true);
+                    setInstructionMode("edit");
+                    setShowFilePanel(false);
+                  }}
                 >
                   <Plus className="size-4" />
                 </Button>
@@ -2405,66 +2467,10 @@ export function PromptsTab({
               )}
             </div>
           </div>
-          {showNewFileInput && (
-            <div className="space-y-2">
-              <div className="agent-markdown-name-field flex items-center rounded-md border border-input focus-within:ring-2 focus-within:ring-ring">
-              <Input
-                aria-label="New Markdown file name"
-                aria-describedby="markdown-file-name-hint"
-                aria-invalid={Boolean(newFilePath && !markdownFileName(newFilePath))}
-                value={newFilePath}
-                onChange={(event) => setNewFilePath(event.target.value)}
-                placeholder="TOOLS"
-                className="min-w-0 border-0 bg-transparent font-mono text-sm shadow-none focus-visible:ring-0"
-                autoFocus
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    setShowNewFileInput(false);
-                    setNewFilePath("");
-                  }
-                }}
-              />
-              <span className="pr-3 font-mono text-sm text-muted-foreground/50" aria-hidden>.md</span>
-              </div>
-              <p id="markdown-file-name-hint" className="text-xs text-muted-foreground">Use letters, numbers, hyphens or underscores.</p>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  className="flex-1"
-                  disabled={!markdownFileName(newFilePath) || visibleFilePaths.includes(markdownFileName(newFilePath) ?? "")}
-                  onClick={() => {
-                    const candidate = markdownFileName(newFilePath);
-                    if (!candidate || visibleFilePaths.includes(candidate)) return;
-                    if (isDirty && !window.confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE)) return;
-                    setPendingFiles([candidate]);
-                    setSelectedFile(candidate);
-                    setDraft("");
-                    setInstructionMode("edit");
-                    setNewFilePath("");
-                    setShowNewFileInput(false);
-                  }}
-                >
-                  Create
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="flex-1"
-                  onClick={() => {
-                    setShowNewFileInput(false);
-                    setNewFilePath("");
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
           <FileTree
-            nodes={fileTree}
+            nodes={fileTree.map(function labelDraft(node): typeof node {
+              return { ...node, name: node.path === selectedOrEntryFile ? displayedFilePath.split("/").pop()! : node.name, children: node.children.map(labelDraft) };
+            })}
             selectedFile={selectedOrEntryFile}
             expandedDirs={expandedDirs}
             checkedFiles={new Set()}
@@ -2479,6 +2485,9 @@ export function PromptsTab({
               if (isDirty && !window.confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE)) return;
               setDraft(null);
               setPendingFiles([]);
+              setFileNameDraft(null);
+              setEditingFileName(false);
+              setFileNameError(null);
               setSelectedFile(filePath);
               setInstructionMode("raw");
               if (!fileOptions.includes(filePath)) setDraft("");
@@ -2487,7 +2496,7 @@ export function PromptsTab({
             onToggleCheck={() => {}}
             showCheckboxes={false}
             wrapLabels={false}
-            fileRowClassName={() => "agent-instruction-file-row font-mono"}
+            fileRowClassName={(node) => cn("agent-instruction-file-row font-mono", pendingFiles.includes(node.path) && "agent-instruction-file-pending italic text-muted-foreground/60")}
             renderFileExtra={(node) => {
               const file = bundle?.files.find((entry) => entry.path === node.path);
               if (!file) return null;
@@ -2523,7 +2532,7 @@ export function PromptsTab({
         )}
 
         <div data-agent-tile="" className={cn("min-w-0 w-full overflow-hidden rounded-lg bg-(--agent-detail-tile)", isMobile && showFilePanel && "hidden")}>
-          <div className="flex items-center justify-between gap-3 px-(--agent-identity-panel-gap) pt-(--agent-identity-panel-gap) pb-5">
+          <div className="agent-identity-preview-header flex items-center justify-between gap-3 px-(--agent-identity-panel-gap) pt-(--agent-identity-panel-gap) pb-5">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && (
                 <Button
@@ -2537,8 +2546,31 @@ export function PromptsTab({
                 </Button>
               )}
               <div className="flex min-w-0 flex-col gap-1.5">
-                <div className="flex min-w-0 items-center gap-2">
-                  <h4 className="agent-identity-preview-title min-w-0 truncate font-mono text-(length:--agent-identity-preview-title-size) text-foreground">{selectedOrEntryFile}</h4>
+                <div className="agent-identity-file-heading flex min-w-0 items-center gap-2">
+                  {editingFileName ? (
+                    <div className="agent-identity-preview-title flex min-w-0 items-baseline font-mono text-(length:--agent-identity-preview-title-size)">
+                      <input ref={fileNameInputRef} aria-label="Markdown file name" autoFocus
+                        value={fileNameDraft === null && pendingFiles.includes(selectedOrEntryFile) ? "" : namingPrefix}
+                        placeholder={selectedOrEntryFile.replace(/\.md$/i, "")}
+                        aria-invalid={fileNameInvalid || undefined}
+                        disabled={isSaving}
+                        className="agent-identity-file-name-input min-w-0 bg-transparent text-foreground outline-none placeholder:italic placeholder:text-muted-foreground/50"
+                        onChange={(event) => { setFileNameDraft(`${event.target.value}.md`); setFileNameError(null); }}
+                        onBlur={() => { if (!fileNameInvalid) setEditingFileName(false); }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") { event.preventDefault(); if (!fileNameInvalid) setEditingFileName(false); }
+                          if (event.key === "Escape") { setFileNameDraft(null); setEditingFileName(false); setFileNameError(null); }
+                        }}
+                      />
+                      <span className="text-muted-foreground/50">.md</span>
+                    </div>
+                  ) : (
+                    <button type="button" disabled={isSaving || Boolean(candidateRunId) || selectedFileSummary?.deprecated || selectedFileDetail?.binary || !selectedOrEntryFile.endsWith(".md")}
+                      aria-label={`Rename ${displayedFilePath}`} onClick={() => setEditingFileName(true)}
+                      className={cn("agent-identity-preview-title min-w-0 truncate rounded font-mono text-(length:--agent-identity-preview-title-size) text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", pendingFiles.includes(selectedOrEntryFile) ? "italic text-muted-foreground/60" : "text-foreground")}>
+                      {displayedFilePath}
+                    </button>
+                  )}
                   <AgentChip>{currentMode === "external" ? "Managed externally" : "Managed by you"}</AgentChip>
                 </div>
                 <p className="text-xs text-muted-foreground">
@@ -2580,6 +2612,16 @@ export function PromptsTab({
                   }}>
                   <Copy className="size-4" />
                 </Button>
+              )}
+              {selectedOrEntryFile === currentEntryFile && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span tabIndex={0} aria-label="This file is required" className="inline-flex">
+                      <Button type="button" variant="ghost" size="icon-xs" className="size-8" aria-label={`Delete ${selectedOrEntryFile}`} disabled><Trash2 className="size-4" /></Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>This file is required</TooltipContent>
+                </Tooltip>
               )}
               {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
                 <Button
@@ -2636,7 +2678,7 @@ export function PromptsTab({
                         className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
                         <Copy className="h-3.5 w-3.5" />Copy preserved edits
                       </CopyText>
-                      <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-3 font-mono text-sm">{candidate.content}</pre>
+                      <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-3 font-mono text-sm", ANALYTICS_MASK_CLASS)}>{candidate.content}</pre>
                     </div>
                   )}
                 </div>
@@ -2646,12 +2688,13 @@ export function PromptsTab({
           {candidateRunId && <div role="status" className="space-y-3">
             <p className="text-sm text-muted-foreground">Reviewing preserved edits. Save to apply your resolved draft and close this preserved edit.</p>
             <details><summary className="cursor-pointer text-sm text-muted-foreground">Compare current instructions</summary>
-              <pre className="whitespace-pre-wrap break-words rounded-md border border-border p-3 font-mono text-sm">{currentContent}</pre>
+              <pre className={cn("whitespace-pre-wrap break-words rounded-md border border-border p-3 font-mono text-sm", ANALYTICS_MASK_CLASS)}>{currentContent}</pre>
             </details>
             {draftBaseRevisionRef.current !== (selectedFileDetail?.revision?.id ?? null) && <p className="text-sm text-destructive">The current instructions changed after this draft was loaded. Refresh the current revision, compare the instructions, and save your resolved draft again.</p>}
             {(resolveCandidate.error || draftBaseRevisionRef.current !== (selectedFileDetail?.revision?.id ?? null)) && <Button type="button" variant="outline" size="sm" disabled={isSaving} onClick={() => refreshCandidateBase.mutate()}>Refresh current revision</Button>}
           </div>}
           {(candidates.error || loadCandidate.error || resolveCandidate.error || refreshCandidateBase.error) && <p role="alert" className="text-sm text-destructive">{(candidates.error ?? loadCandidate.error ?? resolveCandidate.error ?? refreshCandidateBase.error)?.message} Your preserved edits remain available.</p>}
+          {(fileNameError || (editingFileName && fileNameInvalid)) && <p role="alert" className="text-sm text-destructive">{fileNameError ?? (nameConflict ? "A file with this name already exists." : "Use letters, numbers, hyphens or underscores.")}</p>}
           {(saveFile.error || fileError || updateBundle.error) && <p role="alert" className="text-sm text-destructive">{(saveFile.error ?? fileError ?? updateBundle.error)?.message} Your unsaved edits are retained.</p>}
           {selectedFileDetail?.receipt?.materialization === "pending" && <p role="status" className="text-sm text-muted-foreground">Revision saved. The instruction file still needs to be rebuilt from the saved revision.</p>}
           {selectedFileDetail?.revision && currentMode === "managed" && bundle?.persistence !== "agent_files" && <InstructionHistory
@@ -2678,7 +2721,7 @@ export function PromptsTab({
           ) : instructionMode === "edit" ? (
             <textarea
               aria-label="Instruction file editor"
-              autoFocus
+              autoFocus={!editingFileName}
               value={displayValue}
               spellCheck={false}
               onChange={(event) => {
@@ -2696,7 +2739,7 @@ export function PromptsTab({
               onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setInstructionMode("edit"); } }}>
             {displayValue.trim() ? <pre
               data-testid="instructions-raw-source"
-              className="block min-h-(--sz-420px) w-full overflow-x-auto p-(--agent-identity-panel-gap) font-mono text-xs leading-5 whitespace-pre-wrap break-words text-muted-foreground"
+              className={cn("block min-h-(--sz-420px) w-full overflow-x-auto p-(--agent-identity-panel-gap) font-mono text-xs leading-5 whitespace-pre-wrap break-words text-muted-foreground", ANALYTICS_MASK_CLASS)}
             >
               {displayValue}
             </pre> : <p className="min-h-(--sz-420px) p-(--agent-identity-panel-gap) text-sm text-muted-foreground">This instruction file is empty.</p>}
@@ -3257,7 +3300,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 className="text-xs text-muted-foreground"
               >
                 On behalf of{" "}
-                <span className="text-foreground">
+                <span className={cn("text-foreground", ANALYTICS_MASK_CLASS)}>
                   {responsibleUserName ?? responsibleUserLabel(null)}
                 </span>
               </div>
@@ -3265,7 +3308,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             {Boolean(run.identityHistory?.length) && (
               <details className="text-xs text-muted-foreground" data-testid="run-identity-history">
                 <summary className="cursor-pointer">GitHub identity history</summary>
-                <ol className="mt-2 space-y-2">
+                <ol className={cn("mt-2 space-y-2", ANALYTICS_MASK_CLASS)}>
                   {run.identityHistory!.map((identity) => {
                     const person = userDirectory?.users.find((entry) => entry.principalId === identity.responsibleUserId);
                     return (
@@ -3323,7 +3366,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               <ProviderFailureNotice failure={readProviderFailure(run.resultJson?.providerFailure)!} />
             ) : run.error && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">{run.error}</span>
+                <span className="text-red-600 dark:text-red-400"><ProviderLimitMessage>{run.error}</ProviderLimitMessage></span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}
@@ -3361,12 +3404,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 {claudeLoginResult && (
                   <>
                     {!!claudeLoginResult.stdout && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                      <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>
                         {claudeLoginResult.stdout}
                       </pre>
                     )}
                     {!!claudeLoginResult.stderr && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                      <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>
                         {claudeLoginResult.stderr}
                       </pre>
                     )}
@@ -3477,7 +3520,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {run.stderrExcerpt && (
         <div className="space-y-1">
           <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
+          <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>{run.stderrExcerpt}</pre>
         </div>
       )}
 
@@ -3485,7 +3528,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {run.stdoutExcerpt && !run.logRef && (
         <div className="space-y-1">
           <span className="text-xs font-medium text-muted-foreground">stdout</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+          <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>{run.stdoutExcerpt}</pre>
         </div>
       )}
 
@@ -3570,7 +3613,7 @@ export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: s
             API key created — copy it now, it will not be shown again.
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate">
+            <code className={cn("flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate", ANALYTICS_NO_CAPTURE_CLASS)}>
               {tokenVisible ? newToken : newToken.replace(/./g, "•")}
             </code>
             <Button

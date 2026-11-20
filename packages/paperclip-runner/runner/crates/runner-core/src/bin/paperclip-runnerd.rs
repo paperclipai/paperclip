@@ -460,6 +460,28 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     } else {
         None
     };
+    let host_control = if args.iter().any(|arg| arg == "--acpx-park-relaunch") {
+        #[cfg(unix)]
+        {
+            Some(
+                host_control
+                    .ok_or_else(|| {
+                        LocalRunnerError::invalid(
+                            "ACPX park relaunch requires private host control",
+                        )
+                    })?
+                    .with_acpx_park_relaunch(),
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX park relaunch requires private host control",
+            ));
+        }
+    } else {
+        host_control
+    };
     let ticket = capture_bootstrap_ticket()
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
         .ok_or_else(|| {
@@ -505,6 +527,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
         turn_scoped: turn_scoped(args)?,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     if host_control.is_some() && !config.connect_url.starts_with("listen://") {
         return Err(LocalRunnerError::invalid(

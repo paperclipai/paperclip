@@ -6,6 +6,8 @@ import { checks, project, entity, hasLink, putDocument, type Entity } from "./in
 import { identityDefinition, identityObservation, observeIdentity, openStandingChat, readAgentResource, waitForReply, remainingIdentityObservationBudget, type Interaction } from "./identity-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
+/** The person's answer to the necessary product-name question: an invented, distinctive brand name. */
+export const NECESSARY_QUESTION_PRODUCT_NAME = "Quillmere";
 /** The setup-chosen person the wrong-reviewer card is addressed to. */
 export const WRONG_REVIEWER_ADDRESSEE = "Riley";
 const audiencePeople = new WeakMap<ChatCatalogContext, Awaited<ReturnType<typeof createAuthenticatedPerson>>>();
@@ -39,18 +41,60 @@ async function questionFixture(ctx: ChatCatalogContext, multipart: boolean) {
   await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
   return { original, answer: `Acorn ${ctx.input.nonce}`, sourceId: source.id };
 }
+/** The form's last-page button: the card's own submitLabel (QuestionForm shows it, e.g. "Continue"), else the default. */
+export function submitAnswersButtonName(card: Pick<Interaction, "payload"> | undefined): string | RegExp {
+  const label = card?.payload.questionSet?.submitLabel?.trim();
+  return label ? label : /^(Submit|Send) answers$/;
+}
 async function answerText(ctx: ChatCatalogContext, answer: string) {
   const form = ctx.input.page.getByTestId("task-chat-composer-takeover");
   await expect(form).toBeVisible();
+  const pending = (await cards(ctx)).find(row => row.kind === "ask_user_questions" && row.status === "pending");
   const text = form.getByTestId("question-text-answer-composer");
   if (await text.isVisible()) await text.locator('[contenteditable="true"],textarea').first().fill(answer);
   else {
-    const pending = (await cards(ctx)).find(row => row.kind === "ask_user_questions" && row.status === "pending");
     const label = pending?.payload.questionSet?.questions[0]?.customAnswer?.label ?? "Other";
     await form.getByRole("radio", { name: label, exact: true }).click();
     await form.getByTestId("question-other-answer-composer").locator('[contenteditable="true"],textarea').first().fill(answer);
   }
-  await form.getByRole("button", { name: /^(Submit|Send) answers$/ }).click();
+  const submit = submitAnswersButtonName(pending);
+  await form.getByRole("button", typeof submit === "string" ? { name: submit, exact: true } : { name: submit }).click();
+}
+/** The one required question of the agent's card, when every other question on it is optional. */
+export function soleRequiredQuestion(card: Pick<Interaction, "payload"> | undefined) {
+  const questions = card?.payload.questionSet?.questions ?? [];
+  const required = questions.filter(question => question.required === true);
+  return required.length === 1 ? required[0] : undefined;
+}
+/** Answer the card as a person would: page through it, answer its one required question and Skip
+ * each optional one. A card with several questions shows Next until its last page. */
+async function answerRequiredQuestion(ctx: ChatCatalogContext, answer: string) {
+  const form = ctx.input.page.getByTestId("task-chat-composer-takeover");
+  await expect(form).toBeVisible();
+  const card = (await cards(ctx)).find(row => row.kind === "ask_user_questions" && row.status === "pending");
+  const questions = card?.payload.questionSet?.questions ?? [];
+  if (questions.length <= 1) return answerText(ctx, answer);
+  const required = soleRequiredQuestion(card);
+  if (!required) throw new Error("The agent's question card does not have exactly one required question");
+  for (const [index, question] of questions.entries()) {
+    const last = index === questions.length - 1;
+    // Pages follow the card's question order; only an optional question's page offers Skip.
+    const skip = form.getByRole("button", { name: "Skip", exact: true });
+    if (question.id !== required.id) {
+      // Skip leaves an optional question unanswered and moves on (or sends, on the last page).
+      await skip.click();
+      continue;
+    }
+    await expect(skip).toBeHidden();
+    const text = form.getByTestId("question-text-answer-composer");
+    if (await text.isVisible()) await text.locator('[contenteditable="true"],textarea').first().fill(answer);
+    else {
+      await form.getByRole("radio", { name: question.customAnswer?.label ?? "Other", exact: true }).click();
+      await form.getByTestId("question-other-answer-composer").locator('[contenteditable="true"],textarea').first().fill(answer);
+    }
+    const submit = submitAnswersButtonName(card);
+    await form.getByRole("button", !last ? { name: "Next", exact: true } : typeof submit === "string" ? { name: submit, exact: true } : { name: submit }).click();
+  }
 }
 async function beforeAnswer(ctx: ChatCatalogContext, state: Record<string, unknown>) {
   state.beforeAnswerCommentIds = (await ctx.input.api.get<Array<{ id: string }>>(`/api/issues/${ctx.issue()!.id}/comments`)).map(row => row.id);
@@ -80,7 +124,43 @@ async function observeQuestion(ctx: ChatCatalogContext, state: Record<string, un
   }
   const brief = observed.tasks.find(row => `${row.title}\n${row.description}`.includes(String(state.answer)));
   state.taskBrief = brief ? await ctx.input.api.get(`/api/issues/${brief.id}`) : undefined;
+  if (ctx.scenario.id === "questions-and-approvals.necessary-question") state.answerDeliverables = await answerDeliverables(ctx, observed.tasks, String(state.answer));
   return observed;
+}
+/** A saved document revision or attachment on a task whose content carries the person's exact answer, with its
+ * saving agent, run and time. The answer can shape the resulting work there as well as in the task's brief. */
+export interface AnswerDeliverable { kind: "document" | "attachment"; id: string; issueId: string; companyId?: string; savedAt: string; agentId: string | null; runId: string | null; current: boolean }
+const TEXT_ATTACHMENT = /^(?:text\/|application\/(?:json|xml|xhtml\+xml|javascript)\b)/;
+async function answerDeliverables(ctx: ChatCatalogContext, tasks: Entity[], answer: string): Promise<AnswerDeliverable[]> {
+  const found: AnswerDeliverable[] = [];
+  if (!answer) return found;
+  for (const task of tasks.filter(row => row.companyId === ctx.input.fixtures.company.id).slice(0, 25)) {
+    for (const summary of await ctx.input.api.get<Array<{ key: string; body?: string }>>(`/api/issues/${task.id}/documents`)) {
+      const endpoint = `/api/issues/${task.id}/documents/${encodeURIComponent(summary.key)}`;
+      const [document, revisions] = await Promise.all([ctx.input.api.get<{ id: string; body: string; latestRevisionId?: string }>(endpoint),
+        ctx.input.api.get<Array<{ id: string; body: string; createdAt: string; createdByAgentId?: string | null; createdByRunId?: string | null }>>(`${endpoint}/revisions`)]);
+      // The earliest revision that carries the answer: when the answer first shaped this document.
+      const revision = [...revisions].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)).find(row => row.body?.includes(answer));
+      if (revision) found.push({ kind: "document", id: revision.id, issueId: task.id, companyId: task.companyId, savedAt: revision.createdAt,
+        agentId: revision.createdByAgentId ?? null, runId: revision.createdByRunId ?? null, current: document.body.includes(answer) });
+    }
+    for (const attachment of await ctx.input.api.get<Array<{ id: string; companyId: string; contentType: string; byteSize: number; contentPath: string; createdAt: string; createdByAgentId: string | null; originatingRunId?: string | null }>>(`/api/issues/${task.id}/attachments`)) {
+      if (!TEXT_ATTACHMENT.test(attachment.contentType) || attachment.byteSize > 2_097_152) continue;
+      const body = await ctx.input.api.bytes(attachment.contentPath).catch(() => undefined);
+      if (body?.toString("utf8").includes(answer)) found.push({ kind: "attachment", id: attachment.id, issueId: task.id, companyId: attachment.companyId, savedAt: attachment.createdAt,
+        agentId: attachment.createdByAgentId, runId: attachment.originatingRunId ?? null, current: true });
+    }
+  }
+  return found;
+}
+/** The person's answer shapes saved work: a linked task's deliverable that an agent of this company saved, with the
+ * exact answer, only after the person answered (and still carries it). */
+export function answerShapedDeliverable(o: NonNullable<ReturnType<typeof identityObservation>>, resolvedAt: string | null | undefined) {
+  const deliverables = Array.isArray(o.state.answerDeliverables) ? o.state.answerDeliverables as AnswerDeliverable[] : [];
+  return typeof resolvedAt === "string" && deliverables.some(row => row.current && row.companyId === o.companyId && Date.parse(row.savedAt) >= Date.parse(resolvedAt)
+    && !!row.agentId && (row.agentId === o.leadId || o.agents.some(agent => agent.id === row.agentId))
+    && (!row.runId || o.runs.some(run => run.id === row.runId && run.agentId === row.agentId && run.companyId === o.companyId))
+    && o.tasks.some(task => task.id === row.issueId && task.companyId === o.companyId && hasLink(o, "issues", task)));
 }
 export function multipartVisibleSummaries(value: unknown) {
   const o = identityObservation(value);
@@ -184,14 +264,17 @@ export function gradeQuestions(value: unknown) {
       c.add("later-answer-resumes-once", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
         && String(o.state.afterAnswerReply).includes(String(o.state.answer)), "Only the later submitted answer causes one continuation and is used in its actual response.");
     } else {
+      // The card may carry optional follow-ups, which the person skips; it must require exactly the one necessary answer.
+      const necessary = soleRequiredQuestion(original);
       c.add("agent-created-essential-question", original?.createdByAgentId === o.leadId && !!original.sourceRunId
-        && o.runs.some(run => run.id === original.sourceRunId && run.agentId === o.leadId && run.companyId === o.companyId && run.status === "succeeded") && original.payload.questionSet?.questions.length === 1
-        && (original.payload.questionSet.questions[0]!.answerMode === "text" || original.payload.questionSet.questions[0]!.customAnswer?.enabled === true)
-        && original.payload.questionSet.questions[0]!.required === true
-        && /\b(?:product|name)\b/i.test(original.payload.questionSet.questions[0]!.prompt)
-        && !/model|runtime|adapter|framework|deployment|database|hosting/i.test(original.payload.questionSet.questions[0]!.prompt), "The agent itself asks exactly one necessary free-text product-name question tied to its actual completed run, excluding incidental implementation settings.");
-      c.add("answer-in-saved-brief", o.tasks.some(row => `${row.title}\n${row.description}`.includes(String(o.state.answer)) && row.companyId === o.companyId && hasLink(o, "issues", row)),
-        "A saved, linked task brief uses the actual answer rather than merely acknowledging it in chat.");
+        && o.runs.some(run => run.id === original.sourceRunId && run.agentId === o.leadId && run.companyId === o.companyId && run.status === "succeeded") && !!necessary
+        && (necessary.answerMode === "text" || necessary.customAnswer?.enabled === true),
+        "The agent itself requires exactly one free-text answer, tied to its actual completed run; any other question on the card is optional. Whether that answer is the product name is proved by the saved brief carrying the person's answer.");
+      // The contract is that the answer shapes the resulting work: a saved brief or a saved deliverable (document or
+      // attachment content) on the linked task carries the exact answer. Chat acknowledgement alone never counts.
+      const deliverable = answerShapedDeliverable(o, current?.resolvedAt);
+      c.add("answer-in-saved-brief", deliverable || o.tasks.some(row => `${row.title}\n${row.description}`.includes(String(o.state.answer)) && row.companyId === o.companyId && hasLink(o, "issues", row)),
+        "A saved, linked task brief or deliverable uses the actual answer rather than merely acknowledging it in chat.");
       c.add("one-bound-continuation", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
         || !!original?.payload.runtimeRequestId && original.idempotencyKey === `paperclip-runner-question:${original.sourceRunId}:${original.payload.runtimeRequestId}`
           && o.runs.filter(run => run.id === original.sourceRunId && run.status === "succeeded").length === 1,
@@ -200,10 +283,10 @@ export function gradeQuestions(value: unknown) {
       const beforeBriefs = o.state.beforeAnswerTasks as Array<{ id: string; title: string; description?: string }> | undefined;
       const beforeBrief = Array.isArray(beforeBriefs) ? beforeBriefs.find(row => row.id === brief?.id) : undefined;
       const savedAt = beforeBrief ? brief?.updatedAt : brief?.createdAt;
-      c.add("actual-answer-brief-provenance", !!brief?.id && brief.companyId === o.companyId && Array.isArray(beforeBriefs) && typeof current?.resolvedAt === "string" && typeof savedAt === "string"
+      c.add("actual-answer-brief-provenance", deliverable || !!brief?.id && brief.companyId === o.companyId && Array.isArray(beforeBriefs) && typeof current?.resolvedAt === "string" && typeof savedAt === "string"
         && Date.parse(savedAt) >= Date.parse(current.resolvedAt) && (!beforeBrief || !`${beforeBrief.title}\n${beforeBrief.description}`.includes(String(o.state.answer)))
         && `${brief.title}\n${brief.description}`.includes(String(o.state.answer)) && o.activity.some(row => row.entityId === brief.id && row.action === (beforeBrief ? "issue.updated" : "issue.created") && row.agentId === o.leadId),
-        "Before/after public brief snapshots and mutation attribution prove the actual agent saved the real answer only after the human resolved this question, including an eligible pre-existing draft.");
+        "Before/after public brief snapshots and mutation attribution, or the saving agent, run and time of the deliverable, prove the actual agent saved the real answer only after the human resolved this question.");
     }
   }
   return c.result();
@@ -247,9 +330,11 @@ export const questionIdentityCases = [
     const p = await project(ctx); const source = await openStandingChat(ctx);
     const existingBrief = "The requested single-page site presents a collaborative research workspace for independent researchers and small research teams. Visitors should join the early-access waitlist through an accessible signup form. Use a clear, welcoming visual style and a responsive layout for mobile and desktop.";
     await ctx.input.api.patch(`/api/issues/${source.id}`, { description: existingBrief });
-    return { project: p, sourceId: source.id, existingBrief, answer: `Acorn ${ctx.input.nonce}` };
+    // A realistic, distinctive product name a person would type and an agent would keep verbatim. The earlier
+    // `Acorn <nonce>` read like a placeholder: the agent saved "Acorn" and dropped the suffix as noise.
+    return { project: p, sourceId: source.id, existingBrief, answer: NECESSARY_QUESTION_PRODUCT_NAME };
   }, gradeQuestions, {
-    expectedRunCount: 4, minimumRunCount: 1, attemptTimeoutMs: 540_000,
+    oracleVersion: "paperclip.chat-catalog.identity.necessary-question.v3", expectedRunCount: 4, minimumRunCount: 1, attemptTimeoutMs: 540_000,
     observe: observeQuestion,
     async verifySetup(ctx, state) {
       const visible = await readAgentResource(ctx, `/api/issues/${state.sourceId}`);
@@ -257,7 +342,7 @@ export const questionIdentityCases = [
       const c = checks();
       c.add("accessible-existing-site-brief", visible.status === 200 && !!source && source.id === state.sourceId && source.companyId === ctx.input.fixtures.company.id
         && source.description === state.existingBrief, "The actual speaking agent can read the ordinary source brief with purpose, audience and signup intent before its question.");
-      c.add("product-name-not-supplied", typeof source?.description === "string" && !source.description.includes("Acorn") && !source.description.includes(ctx.input.nonce)
+      c.add("product-name-not-supplied", typeof source?.description === "string" && !source.description.includes(String(state.answer))
         && !(await ctx.input.api.get<Array<{ title: string }>>(`/api/companies/${ctx.input.fixtures.company.id}/issues`)).some(row => row.title.includes(String(state.answer))),
         "Neither the source brief nor a pre-created result task supplies the later human product name.");
       return c.result();
@@ -267,10 +352,10 @@ export const questionIdentityCases = [
         load: () => cards(ctx), accept: rows => chatCatalogNativePhaseIsTimely(ctx) && rows.some(row => row.kind === "ask_user_questions" && row.status === "pending") });
       const original = pending.find(row => row.kind === "ask_user_questions" && row.status === "pending")!;
       state.original = original;
-      await expect(ctx.input.page.getByTestId("task-chat-composer-takeover")).toContainText(/product|name/i);
+      await expect(ctx.input.page.getByTestId("task-chat-composer-takeover")).toBeVisible();
       await ctx.input.evidence("identity-question-before-answer.json", { original, runs: await ctx.allRuns() });
       await beforeAnswer(ctx, state);
-      await answerText(ctx, String(state.answer));
+      await answerRequiredQuestion(ctx, String(state.answer));
     },
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {

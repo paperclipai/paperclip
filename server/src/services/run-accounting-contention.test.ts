@@ -20,7 +20,7 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import {
-  AccountingContentionError, isAccountingContentionError, withOperationAccountingTransaction,
+  ACCOUNTING_TRANSACTION_ATTEMPTS, AccountingContentionError, isAccountingContentionError, withOperationAccountingTransaction,
 } from "./accounting-transaction.js";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { reserveRunBudget } from "./budget-reservations.js";
@@ -290,11 +290,11 @@ describe.skipIf(!support.supported)("run accounting writers under concurrent run
       const error = await withOperationAccountingTransaction(hooked.db, f.companyId, async tx => {
         await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
       }).then(() => null, (failure: unknown) => failure);
-      expect(hooked.interleavings()).toBe(4);
+      expect(hooked.interleavings()).toBe(ACCOUNTING_TRANSACTION_ATTEMPTS);
       expect(error).toBeInstanceOf(AccountingContentionError);
       expect(isAccountingContentionError(error)).toBe(true);
       const contention = error as AccountingContentionError;
-      expect(contention).toMatchObject({ code: "40001", attempts: 4, status: 503 });
+      expect(contention).toMatchObject({ code: "40001", attempts: ACCOUNTING_TRANSACTION_ATTEMPTS, status: 503 });
       expect(contention.message).not.toMatch(/select|heartbeat_runs|Failed query|params/i);
       // The database error stays attached for the server log only.
       expect(String((contention.cause as Error).message)).toMatch(/^Failed query: select/);

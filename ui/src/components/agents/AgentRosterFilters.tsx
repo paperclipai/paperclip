@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Filter } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
@@ -20,29 +20,31 @@ export function useAgentRosterFilters(companyId: string | null, agents: Agent[] 
   const accounts = useQuery({ queryKey: ["ai-connections", companyId], queryFn: () => aiConnectionsApi.list(companyId!), enabled: !!companyId });
   const index = useMemo(() => buildAgentRosterIndex(agents, accounts.data), [agents, accounts.data]);
   const activeCount = agentRosterFilterFields.filter(field => filters[field]).length;
+  const matches = useCallback((agent: Agent) => matchesAgentRosterFilters(index.byAgentId.get(agent.id), filters), [index, filters]);
   return {
     filters, options: index.options, activeCount,
     onChange: (next: FilterState) => setSelection({ companyId, filters: next }),
-    matches: (agent: Agent) => matchesAgentRosterFilters(index.byAgentId.get(agent.id), filters),
+    matches,
     connectionError: accounts.error,
     retryConnections: () => void accounts.refetch(),
   };
 }
 
-export function AgentRosterFilters({ filters, options, onChange, activeCount, count, connectionError, retryConnections }: {
+export function AgentRosterFilters({ filters, options, onChange, activeCount, count, connectionError, retryConnections, compact = false }: {
   filters: FilterState;
   options: Record<AgentRosterFilterField, AgentRosterOption[]>;
   onChange: (filters: FilterState) => void;
   activeCount: number;
   count: number;
+  compact?: boolean;
   connectionError?: unknown;
   retryConnections: () => void;
 }) {
-  return <div data-canonical-toolbar="agent-filters" role="toolbar" aria-label="Agent filters" className="flex flex-wrap items-center justify-between gap-3">
+  return <div data-canonical-toolbar="agent-filters" role="toolbar" aria-label="Agent filters" className={cn("flex flex-wrap items-center gap-3", !compact && "justify-between")}>
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Filter agents" title={activeCount ? `Filters: ${activeCount}` : "Filter agents"}
-          className={cn("relative shrink-0", activeCount > 0 && "text-blue-600 dark:text-blue-400")}>
+        <Button variant={compact ? "outline" : "ghost"} size="icon" aria-label="Filter agents" title={activeCount ? `Filters: ${activeCount}` : "Filter agents"}
+          className={cn("relative shrink-0", compact && "design-toolbar-icon", activeCount > 0 && "text-blue-600 dark:text-blue-400")}>
           <Filter className="size-3.5" aria-hidden />
           {activeCount > 0 && <span aria-hidden className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">{activeCount}</span>}
         </Button>
@@ -63,7 +65,7 @@ export function AgentRosterFilters({ filters, options, onChange, activeCount, co
         </label>)}
       </PopoverContent>
     </Popover>
-    <span className="text-xs text-muted-foreground">{count} {count === 1 ? "agent" : "agents"}</span>
+    {!compact && <span className="text-xs text-muted-foreground">{count} {count === 1 ? "agent" : "agents"}</span>}
     {!!connectionError && <p role="alert" className="basis-full text-xs text-destructive">Connection names couldn’t be loaded. <Button variant="link" size="sm" onClick={retryConnections}>Retry</Button></p>}
   </div>;
 }

@@ -13,7 +13,7 @@ const emptyLocal = async () => "none" as const;
 
 describe("explicit idle resource preparation", () => {
   const database = () => {
-    const transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ execute: async () => [{ blocked: false }] }));
+    const transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }));
     return { db: { transaction } as unknown as Db, transaction };
   };
   const inspect = (prepareLocalWork: NonNullable<Parameters<typeof readIdleSleepSafety>[9]>["prepareLocalWork"],
@@ -102,7 +102,7 @@ describe("explicit idle resource preparation", () => {
       const replaceExpiry = () => { status = { ...status,
         expiresAt: kind.endsWith("unbounded") ? null : new Date(now + 120_000) }; };
       if (kind.startsWith("transaction")) transaction.mockImplementationOnce(async run => {
-        const result = await run({ execute: async () => [{ blocked: false }] });
+        const result = await run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] });
         replaceExpiry();
         return result;
       });

@@ -12,7 +12,10 @@ vi.mock("../services/native-runtime/acpx-qualification.js", () => ({ resolveAnti
 vi.mock("../services/native-runtime/antigravity-runner-credentials.js", () => ({
   prepareAntigravityRunnerCredentials: mocks.credentials, antigravityCredentialTurn: mocks.turn,
 }));
-vi.mock("../services/native-runtime/native-codex-runner.js", () => ({ resolvePaperclipRunnerBinary: () => "/owned/runnerd" }));
+vi.mock("../services/native-runtime/native-codex-runner.js", () => ({
+  resolvePaperclipRunnerBinary: () => "/owned/runnerd",
+  resolvePaperclipRunnerBinaryAsync: async () => "/owned/runnerd",
+}));
 import { antigravityConnectionProbeFailure, testAntigravityConnection } from "../services/antigravity-connection-probe.js";
 import { NativeEnvironmentProbeCleanupError, resolveAcpxRuntimeRoot } from "../vendor/paperclip-runner/index.js";
 
@@ -55,6 +58,15 @@ describe("Google Antigravity setup admission", () => {
     "Antigravity installation check failed before account verification");
     expect(JSON.stringify([result, mocks.warn.mock.calls])).not.toMatch(/fixture-private-token|\/private\/selected-google-home/);
     expect(JSON.stringify(result)).not.toMatch(/reconnect|sign in/i);
+  });
+
+  it("logs the closed instructions admission classification without treating it as an installation failure", () => {
+    const error = new Error("fixture-private-token");
+    Object.defineProperty(error, "runnerCommandResult", { value: { commandType: "session.open", status: "failed",
+      result: { code: "command_execution_failed", message: "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=admission_instructions)" } } });
+    expect(antigravityConnectionProbeFailure("company-1", error).checks[0].code).toBe("antigravity_admission_failed");
+    expect(mocks.warn).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ commandCode: "command_execution_failed",
+      classification: "admission_instructions", retryable: false }), "Antigravity runtime admission check failed");
   });
 
   it("does not parse outer serialized errors or copy unknown codes, classes or native output", () => {

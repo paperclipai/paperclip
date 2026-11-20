@@ -30,6 +30,9 @@ process.stdin.on("data", chunk => {
         process.stdout.write(delta.subarray(cut));
         send({ id: message.id, result: { turn: { id: "turn-" + message.id } } });
         send({ method: "turn/started", params: { threadId: message.params.threadId, turn: { id: "turn-" + message.id } } });
+        for (const tool of ["write_document", "paperclip_finish"]) {
+          send({ method: "item/completed", params: { threadId: message.params.threadId, item: { type: "dynamicToolCall", id: "call-" + tool, tool, status: "completed" } } });
+        }
       }, 20);
     }
     if (message.method === "turn/interrupt") {
@@ -91,6 +94,7 @@ async function turnThroughShim(root: string, prompt: string, waitMs = 600) {
     terminals: lines.filter(line => line.message.method === "turn/completed"),
     starts: lines.filter(line => line.message.id === 1),
     deltas: lines.filter(line => line.message.method === "item/agentMessage/delta").map(line => line.message.params.delta as string),
+    toolCompletions: lines.filter(line => line.message.method === "item/completed").map(line => line.message.params.item.tool as string),
   };
 }
 
@@ -128,6 +132,17 @@ describe("provider message fault shim", () => {
     expect((await turnThroughShim(root, "nonce cccc2222")).terminals).toHaveLength(1);
   });
 
+  it("occurrence 2 passes the task's first interrupted terminal and drops its second (Q4)", async () => {
+    const { seam: installed, root } = await seam();
+    await installed.arm([task("ffff5555", { kind: "PV2", message: "terminal", occurrence: 2 })]);
+    expect((await turnThroughShim(root, "nonce ffff5555")).terminals).toHaveLength(1);
+    expect((await turnThroughShim(root, "nonce ffff5555")).terminals).toHaveLength(0);
+    expect((await turnThroughShim(root, "nonce ffff5555")).terminals).toHaveLength(1);
+    const events = await installed.eventsFor("ffff5555");
+    expect(events.filter(event => event.event === "passed")).toMatchObject([{ kind: "PV2", occurrence: 2, seen: 1 }]);
+    expect(events.filter(event => event.event === "applied")).toMatchObject([{ kind: "PV2", message: "terminal", action: "drop" }]);
+  });
+
   it("targets the interruption acknowledgement", async () => {
     const { seam: installed, root } = await seam();
     await installed.arm([task("dddd3333", { kind: "PV2", message: "interrupt_ack" })]);
@@ -135,6 +150,18 @@ describe("provider message fault shim", () => {
     expect(result.acks).toHaveLength(0);
     expect(result.starts).toHaveLength(1);
     expect(result.terminals).toHaveLength(1);
+  });
+
+  it("tool_completed drops the first Paperclip tool completion, never a finish or block (staging, 2026-11-11)", async () => {
+    const { seam: installed, root } = await seam();
+    await installed.arm([task("eeee4444", { kind: "PV2", message: "tool_completed" })]);
+    const result = await turnThroughShim(root, "nonce eeee4444");
+    expect(result.toolCompletions).toEqual(["paperclip_finish"]);
+    expect(result.terminals).toHaveLength(1);
+    expect((await installed.eventsFor("eeee4444")).filter(event => event.event === "applied"))
+      .toMatchObject([{ kind: "PV2", message: "tool_completed", action: "drop", tool: "write_document" }]);
+    expect((await turnThroughShim(root, "nonce eeee4444")).toolCompletions).toEqual(["write_document", "paperclip_finish"]);
+    expect((await turnThroughShim(root, "nonce ffff5555")).toolCompletions).toEqual(["write_document", "paperclip_finish"]);
   });
 
   it("discards a held message when the provider exits first, as a dead provider would", async () => {
@@ -192,6 +219,13 @@ describe("provider fault planning", () => {
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-delays", "18"])).toThrow(/PV1/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--provider-fault-message", "terminal"])).toThrow(/provider fault/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV1", "--provider-fault-message", "result"])).toThrow(/terminal/);
+    const toolCompleted = parseCommand(["--adapters", "codex", "--workloads", "A1", "--faults", "PV2", "--provider-fault-message", "tool_completed", "--tasks", "1", "--seed", "1"]);
+    if (toolCompleted.mode !== "wave") throw new Error("expected a wave");
+    expect(toolCompleted.options).toMatchObject({ providerFaults: ["PV2"], workloads: ["A1"], providerFaultMessage: "tool_completed" });
+    expect(planWave("w-20261111T000000-s1", toolCompleted.options).tasks[0]!.providerFault).toEqual({ kind: "PV2", message: "tool_completed" });
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-message", "tool_completed"])).toThrow(/save a document/);
+    expect(() => parseCommand(["--adapters", "claude", "--workloads", "A1", "--faults", "PV2", "--provider-fault-message", "tool_completed"])).toThrow(/Codex only/);
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "A1", "--faults", "PV2"])).toThrow(/interrupt a provider turn/);
     expect(() => parseProviderDelays("18,abc")).toThrow(/not a number/);
     expect(() => parseProviderDelays("601")).toThrow(/PV2/);
   });

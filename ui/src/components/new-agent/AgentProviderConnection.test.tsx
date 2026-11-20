@@ -56,6 +56,7 @@ async function mount(
   deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
   localAiLoginSupported = true,
   advancedConnection?: Parameters<typeof AgentProviderConnection>[0]["advancedConnection"],
+  requiresAgent = false,
 ) {
   const key =
     adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
@@ -123,6 +124,7 @@ async function mount(
           adapterType={adapterType}
           environmentId="e1"
           canLogin={canLogin}
+          requiresAgent={requiresAgent}
           localEnvironment={localEnvironment}
           onBack={() => {}}
           testConnection={test}
@@ -150,6 +152,21 @@ function openProvider() {
     (host.querySelector('[role="radio"]') as HTMLElement).click(),
   );
 }
+it("starts managed computer sign-in on demand without asking for an agent", async () => {
+  await mount("codex_local", false, true, false, false, false, {
+    intent: { provider: "openai", method: "subscription", name: "OpenAI", ownership: "personal", agentIds: [], allAgents: false },
+    onComplete: vi.fn(),
+  }, false, "authenticated", true, undefined, true);
+
+  expect(mocks.loginPanel).not.toHaveBeenCalled();
+  expect(host.querySelector('[aria-label="Sign-in computer"]')).toBeNull();
+  click("Sign in to OpenAI");
+  expect(mocks.loginPanel).toHaveBeenCalledWith(expect.objectContaining({
+    agentId: undefined, environmentId: "e1", requiresAgent: true, autoStart: true,
+  }));
+  expect(host.querySelector('[aria-label="Sign-in computer"]')).toBeNull();
+});
+
 describe("AgentProviderConnection reuse", () => {
   it("keeps all three connection tiles visible while switching forms", async () => {
     await mount("codex_local", false, true, true, true, false, undefined, false, "local_trusted", true, {

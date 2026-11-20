@@ -165,7 +165,6 @@ interface IssueWorkspaceCardProps {
     currentExecutionWorkspace?: ExecutionWorkspace | null;
   };
   project: {
-    environmentId?: string | null;
     id: string;
     executionWorkspacePolicy?: {
       enabled?: boolean;
@@ -254,15 +253,11 @@ export function IssueWorkspaceCard({
 
   const [draftSelection, setDraftSelection] = useState(currentSelection);
   const [draftExecutionWorkspaceId, setDraftExecutionWorkspaceId] = useState(issue.executionWorkspaceId ?? "");
-  const projectEnvironmentId = environmentsEnabled
-    ? project?.environmentId ?? null
-    : null;
   const currentReusableEnvironmentId = selectedReusableExecutionWorkspace?.config?.environmentId ?? null;
   const currentEnvironmentId = environmentsEnabled
     ? (
         (currentSelection === "reuse_existing" && currentReusableEnvironmentId)
         ?? workspace?.config?.environmentId
-        ?? projectEnvironmentId
       )
     : null;
   const currentEnvironment =
@@ -411,8 +406,6 @@ export function IssueWorkspaceCard({
               Environment: <span className="text-foreground">{currentEnvironment?.name ?? currentEnvironmentId}</span>
               {currentSelection === "reuse_existing" && currentReusableEnvironmentId === currentEnvironmentId
                 ? " · reused workspace"
-                : !issue.executionWorkspaceSettings?.environmentId && projectEnvironmentId === currentEnvironmentId
-                ? " · project default"
                 : null}
             </div>
           )}

@@ -14,6 +14,7 @@ import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { nativeRunHandedOffTask } from "./native-human-self-handoff.js";
 
 export const READ_CURRENT_WAKE_COMMENTS_TOOL_NAME =
   "read_current_wake_comments";
@@ -759,6 +760,7 @@ export async function assertCurrentWakeCommentsRead(
         resultJson: heartbeatRuns.resultJson,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         issueAssigneeAgentId: issues.assigneeAgentId,
+        issueAssigneeUserId: issues.assigneeUserId,
         issueExecutionRunId: issues.executionRunId,
       })
       .from(heartbeatRuns)
@@ -782,6 +784,10 @@ export async function assertCurrentWakeCommentsRead(
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!locked) throw new Error("native_current_wake_comments_binding_changed");
+    // The run handed its own task to a person: it finishes its turn without
+    // task authority. Its finalizer preserves the person's task.
+    const handedOff = nativeRunHandedOffTask(locked.resultJson, { id: input.issueId,
+      assigneeAgentId: locked.issueAssigneeAgentId, assigneeUserId: locked.issueAssigneeUserId });
     if (readNativeReviewAssignmentContext(locked.contextSnapshot)) {
       // Accepting a review can release the child's execution lock. The exact
       // resolving run may still finish; it does not regain task write access.
@@ -791,10 +797,12 @@ export async function assertCurrentWakeCommentsRead(
       if (!review || (review.interaction.status === "pending" && locked.issueExecutionRunId !== input.runId)) {
         throw new Error("native_current_wake_comments_binding_changed");
       }
-    } else if (locked.issueAssigneeAgentId !== input.agentId || locked.issueExecutionRunId !== input.runId) {
+    } else if (!handedOff && (locked.issueAssigneeAgentId !== input.agentId || locked.issueExecutionRunId !== input.runId)) {
       throw new Error("native_current_wake_comments_binding_changed");
     }
-    const currentBinding = await resolveCurrentWakeCommentsBinding(
+    // After its own hand-off the run no longer resolves a current binding (it
+    // does not own the task). It still must have read the wake it started with.
+    const currentBinding = handedOff ? expectedBinding ?? null : await resolveCurrentWakeCommentsBinding(
       tx as unknown as Db,
       {
         companyId: input.companyId,

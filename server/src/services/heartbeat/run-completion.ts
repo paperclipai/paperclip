@@ -4,6 +4,8 @@ import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js
 import { GENERIC_RUN_FAILURE_CODES, NATIVE_PRE_DISPATCH_FAILURE_CODE, NATIVE_PRE_DISPATCH_FAILURE_KEY, NATIVE_PRE_DISPATCH_FAILURE_RECORD, failureCauseFromAdapterResult, failureCauseFromError,
   isNativePreDispatchTransientFailure } from "./run-failure-cause.js";
 import { INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
+import { PREDECESSOR_RETIREMENT_FALLBACK_KEY, readPredecessorRetirementFallback, type PredecessorRetirementFallback } from "../native-runtime/predecessor-retirement.js";
+import { releaseUnchangedFallbackWorkspace } from "./predecessor-retirement-fallback.js";
 import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import { withoutSqlStatementText } from "@paperclipai/shared";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
@@ -55,7 +57,8 @@ import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitrat
 import { conversationTurnPresentsAnswer } from "../native-runtime/native-governance.js";
 import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
-import { MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
+import { MAX_TURN_CONTINUATION_RETRY_REASON, allowsIssueInteractionWake, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
+import { ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS } from "../issue-tree-control.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -110,6 +113,7 @@ interface RunCompletionOutput {
   handle: RunLogHandle | null;
   outputProgressState: { pending: { bytes: number } | null };
   flushOutputProgress: (options?: { force?: boolean }) => Promise<void>;
+  settleDeferredLogRecovery?: () => Promise<void>;
   // Getters in the executor retain output that arrives while finalization awaits I/O.
   readonly stdoutExcerpt: string;
   readonly stderrExcerpt: string;
@@ -164,6 +168,8 @@ export interface FailHeartbeatRunInput extends RunCompletionInput {
   goalCheckpointSession: { current: { params: Record<string, unknown>; displayId: string } | null };
   previousSessionDisplayId: string | null;
   taskSession: TaskSession;
+  /** Set when the run failed on an unretired predecessor and its next attempt was prepared for a fresh sandbox. */
+  predecessorRetirementFallback?: PredecessorRetirementFallback | null;
 }
 
 export interface FailHeartbeatRunSetupInput {
@@ -442,7 +448,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       failedProcessRunCancellations.get(run.id);
     await processCancellation?.settled;
     let outcome: RunSessionOutcome;
-    const latestRun = await getRun(run.id);
+    const latestRun = await getRun(run.id, { unsafeFullResultJson: true });
     if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
       outcome = latestRun.status;
     } else if (signal.aborted) {
@@ -569,6 +575,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       compressed: boolean;
     } | null = null;
     if (handle) {
+      await output.settleDeferredLogRecovery?.();
       logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
     }
     const finalLogBytes = logSummary?.bytes;
@@ -1189,15 +1196,75 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     });
   }
 
-  async function failRun(input: FailHeartbeatRunInput) {
+  /**
+   * A run that failed only because its predecessor on the reused sandbox could
+   * not be retired did no provider work, and its next attempt starts on a fresh
+   * sandbox. It re-queues itself in the uncharged interrupted-preparation lane,
+   * like a transient pre-dispatch fault, whatever its runtime mode. An answered
+   * interaction keeps its response through its own continuation retry. Its own
+   * coordinator, claimed or not, ends without a result: nothing ran under it.
+   */
+  async function schedulePredecessorRetirementFallbackRetry(run: Run, agent: Agent, fallback: PredecessorRetirementFallback | null | undefined) {
+    if (!fallback || run.status !== "failed") return null;
+    const scheduled = await schedulePredecessorRetirementContinuation(run, agent, fallback);
+    if (scheduled?.outcome !== "scheduled") {
+      await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || '{"continuationScheduling":"refused"}'::jsonb` })
+        .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "failed")))
+        .catch(error => logger.warn({ err: error, runId: run.id }, "could not record that a run's continuation was not scheduled"));
+    }
+    return scheduled;
+  }
+
+  async function schedulePredecessorRetirementContinuation(run: Run, agent: Agent, fallback: PredecessorRetirementFallback) {
+    // Files this run's setup may have written are never dropped: without the
+    // shared unchanged-files proof the workspace stays dirty and preserved.
+    const released = await releaseUnchangedFallbackWorkspace(db, run).catch((error) => {
+      logger.warn({ err: error, runId: run.id }, "could not prove the failed run left its workspace unchanged");
+      return false;
+    });
+    if (!released) return { outcome: "workspace_preservation_required" as const };
+    try {
+      // Recorded only once the workspace is settled: it makes the run eligible for retry.
+      if (!readPredecessorRetirementFallback(run.resultJson)) {
+        const [task] = run.issueId ? await db.select({ status: issues.status }).from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.id, run.issueId))) : [];
+        const record = { [PREDECESSOR_RETIREMENT_FALLBACK_KEY]: { ...fallback, ...(task ? { issueStatusAtFailure: task.status } : {}) },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+        await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(record)}::jsonb` })
+          .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "failed")));
+        run = { ...run, resultJson: { ...parseObject(run.resultJson), ...record } };
+      }
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: NATIVE_PRE_DISPATCH_FAILURE_CODE,
+        leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null, updatedAt: new Date() })
+        .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+          isNull(nativeRunFinalizations.resultId), inArray(nativeRunFinalizations.phase, ["observed", "retryable_failure", "terminal_failure"])));
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "could not close the native coordinator of a run that did no provider work");
+      return null;
+    }
+    // An answered interaction keeps its own wake, so the retry still carries
+    // the answer as a resolved-interaction continuation, in the uncharged lane.
+    const wakeReason = isResolvedInteractionContinuationWakeContext(run.contextSnapshot)
+      || allowsIssueInteractionWake(parseObject(run.contextSnapshot), ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS)
+      ? readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) : null;
+    return scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON,
+      ...(wakeReason ? { wakeReason } : {}) }).catch((retryError) => {
+      logger.warn({ err: retryError, runId: run.id }, "failed to re-queue a run whose predecessor could not be retired");
+      return null;
+    });
+  }
+
+  async function failRun(input: FailHeartbeatRunInput): Promise<{ preserveFailedWorkspace: true } | undefined> {
     const { run, agent, issueId, issueRef, signal, output, session, readFailureReportSecrets, runId, err, identityRedactor, requiredWorkspaceRestoreEvidence,
-      legacyAdapterEntered, nativeDispatchMayHaveStarted, goalCheckpointSession, previousSessionDisplayId, taskSession } = input;
+      legacyAdapterEntered, nativeDispatchMayHaveStarted, goalCheckpointSession, previousSessionDisplayId, taskSession,
+      predecessorRetirementFallback } = input;
     const { runtimeForAdapter, previousSessionParams, taskKey, configuredModel, sessionConfigMetadata } = session;
     const { handle, outputProgressState, flushOutputProgress } = output;
     // A process adapter may throw while its owned Stop is joining the
     // child. Let the cancellation write settle before attempting failure.
     await processRunCancellationSettlements.get(run.id)?.settled;
     const providerFailure = providerFailureFromError(err);
+    let preserveFailedWorkspace = false;
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const redactFailureText = (text: string) =>
       redactCurrentUserText(identityRedactor.redact(text), currentUserRedactionOptions);
@@ -1256,6 +1323,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ? { ...exactResumeCause, originalMessage: redactFailureText(exactResumeCause.originalMessage) }
       : null;
     const storageUnavailable = isStorageUnavailableError(err);
+    const remoteWorkspacePreparationTimeout = !legacyAdapterEntered && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && err instanceof RemoteWorkspacePreparationTimeoutError
+      ? err : null;
     const failureErrorCode =
       workspaceValidationFailure?.code ??
       configurationIncompleteFailure?.code ??
@@ -1263,6 +1333,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       recordedResponsibleUserDenialCode ??
       nativeTerminalFailureCode ??
       (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
+      remoteWorkspacePreparationTimeout?.code ??
       "adapter_failed";
     // Only a `storage_unavailable` run gets a storage wait. Under any other code
     // (for example a native recovery hold that keeps the files without
@@ -1282,6 +1353,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     } | null = null;
     if (handle) {
       try {
+        await output.settleDeferredLogRecovery?.();
         logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
       } catch (finalizeErr) {
         logger.warn(
@@ -1417,9 +1489,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           return null;
         })
         : null;
-      const nativePreDispatchRetry = storageWait === null ? await scheduleNativePreDispatchRetry(livenessRun, agent) : null;
+      const nativePreDispatchRetry = storageWait !== null ? null
+        : !stoppedDuringFailure && predecessorRetirementFallback
+          ? await schedulePredecessorRetirementFallbackRetry(livenessRun, agent, predecessorRetirementFallback)
+          : await scheduleNativePreDispatchRetry(livenessRun, agent);
+      // The workspace may hold this run's setup files: the caller preserves it as today.
+      preserveFailedWorkspace = nativePreDispatchRetry?.outcome === "workspace_preservation_required";
       let fallbackRetry: { outcome: string } | null | undefined = nativePreDispatchRetry;
-      if (storageWait?.outcome !== "scheduled" && storageWait?.outcome !== "retry_exhausted" && nativePreDispatchRetry === null) {
+      // The predecessor fallback already asked the interaction continuation retry once.
+      if (storageWait?.outcome !== "scheduled" && storageWait?.outcome !== "retry_exhausted" && nativePreDispatchRetry === null
+        && !(predecessorRetirementFallback && !stoppedDuringFailure)) {
         fallbackRetry = await scheduleInteractionContinuationInfrastructureRetryIfEligible(
           livenessRun,
           agent,
@@ -1486,6 +1565,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         logger.warn({ err: error, runId: run.id }, "interrupted native turn Retry request failed");
       });
     }
+    return preserveFailedWorkspace ? { preserveFailedWorkspace: true } : undefined;
   }
 
   /**
@@ -1666,6 +1746,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ...(providerFailure ? { providerFailure: { ...providerFailure,
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
+      ...(environmentProviderUnavailable?.environmentId ? { environmentProvider: {
+        environmentId: environmentProviderUnavailable.environmentId,
+        environmentName: environmentProviderUnavailable.environmentName } } : {}),
       ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
       // Names the configured setup command that exited non-zero, for the task page.
       ...setupCommandFailureResultJson(outerErr, readFailureReportSecrets()),

@@ -90,13 +90,29 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
     await f.db.update(nativeRunFinalizations).set({ leaseOwner: "original-owner", leaseExpiresAt: new Date(0) })
       .where(eq(nativeRunFinalizations.runId, f.runId));
     expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
-      .toMatchObject({ published: 0, deferred: { source_not_successful: 1 } });
+      .toMatchObject({ published: 0, deferred: { source_coordinator_unsettled: 1 } });
     await f.db.update(nativeRunFinalizations).set({ leaseOwner: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson, nativeWorkspaceFinalizationOwner: { token: "physical-owner" } } })
       .where(eq(heartbeatRuns.id, f.runId));
     expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
       .toMatchObject({ published: 0, deferred: { source_changed: 1 } });
+    expect(put).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["running", "source_run_active"],
+    ["scheduled_retry", "source_run_active"],
+    ["failed_unfinished", "source_run_unfinished"],
+    ["coordinator_missing", "source_coordinator_missing"],
+    ["session_not_selected", "source_session_not_selected"],
+  ])("names why a %s source stays local", async (kind, outcome) => {
+    const f = await fixture(), put = vi.spyOn(f.storage, "putFile");
+    if (kind === "running" || kind === "scheduled_retry") await f.db.update(heartbeatRuns).set({ status: kind, finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "failed_unfinished") await f.db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (kind === "coordinator_missing") await f.db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (kind === "session_not_selected") await f.db.delete(agentTaskSessions).where(eq(agentTaskSessions.lastRunId, f.runId));
+    expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
+      .toMatchObject({ published: 0, deferred: { [outcome]: 1 } });
     expect(put).not.toHaveBeenCalled();
   });
   it("respects the physical advisory lock while unrelated work stays active", async () => {
@@ -139,7 +155,7 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
   });
   it("binds the archive payload and scope to the checked preservation owner", async () => {
     const f = await fixture(), signal = AbortSignal.timeout(15_000);
-    const owner = await settledNativeHarnessBackupOwner(f.db, { ...f, sessionId: f.normalizedSessionId,
+    const { owner } = await settledNativeHarnessBackupOwner(f.db, { ...f, sessionId: f.normalizedSessionId,
       manifestSha256: f.stamp.manifestSha256, signal });
     expect(owner).not.toBeNull();
     const put = vi.spyOn(f.storage, "putFile");

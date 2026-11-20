@@ -114,18 +114,24 @@ describe.skipIf(!support.supported)("installed project workspace defaults", () =
     expect((await svc.update(f.input.projectId, { executionWorkspacePolicy: null }))!.workspaceProvider).toMatchObject({ source: "project", pluginId: f.pluginId });
     for (const storageProviderPluginId of [null, other.pluginId]) {
       await expect(svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId } }))
-        .rejects.toThrow("stays attached");
+        .rejects.toMatchObject({ status: 409, details: { code: "project_storage_locked" } });
     }
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id)))[0]).toEqual(workspace);
   });
 
-  it("lets a Core project move to a storage plugin, and then keeps it there", async () => {
+  it("keeps a Core project on Core storage", async () => {
     const f = await fixture();
+    const other = await createPluginWorkspaceFixture(db, f.companyId);
     await db.update(projects).set({ executionWorkspacePolicy: null }).where(eq(projects.id, f.input.projectId));
     const svc = projectService(db);
-    expect((await svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId: f.pluginId } }))!.workspaceProvider)
-      .toMatchObject({ source: "project", pluginId: f.pluginId });
-    await expect(svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId: null } })).rejects.toThrow("stays attached");
+    for (const storageProviderPluginId of [f.pluginId, other.pluginId]) {
+      await expect(svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId } }))
+        .rejects.toMatchObject({ status: 409, details: { code: "project_storage_locked" } });
+    }
+    expect((await svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId: null } }))!.workspaceProvider)
+      .toMatchObject({ pluginId: null });
+    expect((await svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" } }))!.workspaceProvider)
+      .toMatchObject({ pluginId: null });
   });
 
   it("preserves explicit alternatives and the explicit Core/local choice", async () => {

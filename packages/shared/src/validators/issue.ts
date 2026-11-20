@@ -2,7 +2,7 @@ import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
 import { maxStringLength } from "./text.js";
-import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_DOCUMENT_BATCH_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
 import { normalizeIssueIdentifier } from "../issue-references.js";
 
 import {
@@ -50,6 +50,7 @@ import { objectWithoutDefaults } from "./partial.js";
 import { questionSetToAskUserQuestionsPayload } from "../question-set.js";
 
 export const issueSummariesQuerySchema = z.object({
+  navigation: z.literal("true").optional(),
   ids: z.string().transform((value) => value.split(",").map((id) => id.trim().toLowerCase()))
     .pipe(z.array(z.string().guid()).min(1).max(ISSUE_SUMMARIES_MAX_IDS))
     .transform((ids) => [...new Set(ids)]),
@@ -646,6 +647,7 @@ export const retryWorkspaceExportSchema = z.object({
 export const taskRetrySchema = z.object({
   idempotencyKey: z.string().guid(),
   observedRunId: z.string().guid().nullable(),
+  retryAction: z.literal("move_forward").optional(),
 }).strict();
 
 export const recoverWorkspaceSchema = z.object({
@@ -1333,6 +1335,15 @@ export const issueDocumentKeySchema = z
     /^[a-z0-9][a-z0-9_-]*$/,
     "Document key must be lowercase letters, numbers, _ or -",
   );
+
+export const issueDocumentBatchQuerySchema = z.object({
+  key: z.string().trim().toLowerCase().pipe(issueDocumentKeySchema),
+  issueIds: z.string().max(ISSUE_DOCUMENT_BATCH_MAX_IDS * 40)
+    .transform(value => value.split(",").map(id => id.trim().toLowerCase()))
+    .pipe(z.array(z.string().guid()).min(1).max(ISSUE_DOCUMENT_BATCH_MAX_IDS))
+    .transform(ids => [...new Set(ids)]),
+  includeBody: z.enum(["true", "false"]).default("true").transform(value => value === "true"),
+}).strict();
 
 export const suggestedTaskDraftSchema = z
   .object({

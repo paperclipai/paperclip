@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, type ProjectRepository } from "@paperclipai/shared";
+import { PROJECT_COLORS, type Project, type ProjectRepository } from "@paperclipai/shared";
 import { X } from "lucide-react";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -23,7 +23,8 @@ export function NewProjectDialog() {
     ? <NewProjectForm key={selectedCompanyId} companyId={selectedCompanyId} onClose={closeNewProject} /> : null;
 }
 
-export function NewProjectForm({ companyId, onClose }: { companyId: string; onClose: () => void }) {
+/** `onCreated` runs with the new project before the form closes (a caller filing it somewhere, say). */
+export function NewProjectForm({ companyId, onClose, onCreated }: { companyId: string; onClose: () => void; onCreated?: (project: Project) => Promise<unknown> | void }) {
   const client = useQueryClient();
   const [name, setName] = useState("");
   const [color] = useState(() => PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)]!);
@@ -34,15 +35,18 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
   const environments = useQuery({ queryKey: queryKeys.projects.environments(companyId), queryFn: () => projectsApi.environmentOptions(companyId), gcTime: 0 });
   const environmentView = useQueryView(environments);
   const options = environmentView.data;
-  const environmentId = selectedEnvironmentId ?? options?.defaultEnvironmentId;
-  const selectedGroup = options?.groups.find(group => group.environments.some(environment => environment.id === environmentId));
+  const groupOf = (id: string | null | undefined) => options?.groups.find(group => group.environments.some(environment => environment.id === id));
+  const onlyGroupRemains = options?.groups.length === 1 && Boolean(selectedEnvironmentId) && !groupOf(selectedEnvironmentId);
+  const environmentId = onlyGroupRemains ? options?.defaultEnvironmentId : selectedEnvironmentId ?? options?.defaultEnvironmentId;
+  const selectedGroup = groupOf(environmentId);
   const environmentReady = Boolean(environmentView.kind !== "error" && options && (!options.error || selectedGroup) && (!options.groups.length || selectedGroup));
 
   const create = useMutation({
     mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id), ...(selectedGroup ? { environmentId, expectedStorageProviderPluginId: selectedGroup.storageProviderPluginId } : {}) }),
-    onSuccess: (project) => {
+    onSuccess: async (project) => {
       trackRecentProject(project.id, companyId);
       void client.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
+      await onCreated?.(project);
       onClose();
     },
   });
@@ -69,7 +73,7 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
           </div>
         </div>
         <div role="region" aria-label="Source repositories" tabIndex={0} className="min-h-0 overflow-y-auto overscroll-contain px-5 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
-          {options && (options.groups.length > 1 || (options.error && options.groups.length > 0)) && <div className="mb-4 space-y-2">
+          {options && options.groups.length > 1 && <div className="mb-4 space-y-2">
             <label htmlFor="project-environment" className="text-sm font-medium">Available in</label>
             <NativeSelect id="project-environment" value={selectedGroup?.environments[0].id ?? ""} disabled={create.isPending}
               onChange={event => setSelectedEnvironmentId(event.target.value)}>

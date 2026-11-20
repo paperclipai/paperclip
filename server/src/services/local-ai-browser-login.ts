@@ -120,7 +120,10 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
           await file.close();
         }
       },
-    }).then((result) => { state.outcome = result.outcome === "success" ? "success" : "failure"; })
+    }).then((result) => {
+      state.outcome = result.outcome === "success" ? "success" : "failure";
+      if (result.failureReason === "oauth_error") state.error = "Claude rejected the authorization code. Start sign-in again and use the code from the new sign-in tab.";
+    })
       .catch(() => { state.outcome = "failure"; });
   } else {
     void runDeviceLogin(driver, {

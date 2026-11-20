@@ -5,6 +5,9 @@
 // independently maintained copy in either file could silently drift out of
 // sync with the other and change only one of the two gates that read it.
 
+import { WAKE_COMMENT_IDS_KEY } from "../../../lib/queued-comment-context.js";
+export { WAKE_COMMENT_IDS_KEY } from "../../../lib/queued-comment-context.js";
+
 function parseObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -21,9 +24,15 @@ export const AI_CONNECTION_POOL_WAIT_RETRY_REASON = "ai_connection_pool_wait";
 export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
 export const RUNNER_REVISION_WAIT_RETRY_REASON = "runner_revision_wait";
 export const STORAGE_UNAVAILABLE_WAIT_RETRY_REASON = "storage_unavailable_wait";
+export const AGENT_DIRECTORY_BUSY_RETRY_REASON = "agent_directory_busy";
+export const PREPARATION_WAIT_RETRY_REASONS: ReadonlySet<string> = new Set([
+  RUNNER_REVISION_WAIT_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
+]);
+export function isPreparationWaitRetryReason(reason: string | null | undefined): boolean {
+  return typeof reason === "string" && PREPARATION_WAIT_RETRY_REASONS.has(reason);
+}
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
-export const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 export const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
   "accepted",
   "answered",
@@ -106,7 +115,8 @@ export function isNonAssigneeWorkspaceBusyRetry(
     (retryReason === WORKSPACE_BUSY_RETRY_REASON &&
       contextSnapshot.workspaceBusyDeferredWhileAssignee === false) ||
     ((retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) &&
-      contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false)
+      contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false) ||
+    (retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON && contextSnapshot.preparationWaitDeferredWhileAssignee === false)
   );
 }
 
@@ -205,8 +215,7 @@ export function isResolvedInteractionContinuationWakeContext(contextSnapshot: un
   const retryReason = readNonEmptyString(context.retryReason);
   return (
     (mutation === "interaction" && wakeReason === "issue_commented") ||
-    (mutation === "interaction" && (retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
-      || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON)) ||
+    (mutation === "interaction" && isPreparationWaitRetryReason(retryReason)) ||
     (mutation === "interaction" && context.dependencyBlockedInteraction === true && retryReason !== null
       && RESOLVED_INTERACTION_RESOURCE_WAIT_REASONS.has(retryReason)) ||
     wakeReason === INTERACTION_CONTINUATION_INFRA_WAKE_REASON ||

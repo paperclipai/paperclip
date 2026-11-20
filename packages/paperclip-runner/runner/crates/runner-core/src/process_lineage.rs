@@ -413,6 +413,146 @@ fn signal_member(entry: &ProcessEntry, signal: rustix::process::Signal) {
     }
 }
 
+/// Keeps lib tests that leave orphans apart from a reap that must verify.
+///
+/// `journal::reap_journals` refuses its proof while any live orphan (parent
+/// PID 1) of this user started after the dead runnerd's last sample, whoever
+/// started it. Lib tests run in parallel in one process, so an orphan that one
+/// test leaves on purpose (a tool job whose wrapper exited, a child that
+/// outlives its killed leader) makes a reap in another test refuse.
+///
+/// A test that can leave such an orphan holds [`may_orphan`] until the orphan
+/// is gone or a zombie. A test whose reap must verify holds
+/// [`no_foreign_orphans`]. Holders of [`may_orphan`] never wait for each
+/// other, so one test can hold several.
+#[cfg(test)]
+pub(crate) mod host_orphans {
+    use std::sync::{Condvar, Mutex, MutexGuard};
+    use std::time::{Duration, Instant};
+
+    struct Holders {
+        producers: usize,
+        exclusive: bool,
+    }
+
+    static HOLDERS: Mutex<Holders> = Mutex::new(Holders {
+        producers: 0,
+        exclusive: false,
+    });
+    static CHANGED: Condvar = Condvar::new();
+
+    fn holders() -> MutexGuard<'static, Holders> {
+        HOLDERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub(crate) struct MayOrphan(());
+
+    /// Waits only while a reap that must verify runs.
+    pub(crate) fn may_orphan() -> MayOrphan {
+        let mut holders = CHANGED
+            .wait_while(holders(), |holders| holders.exclusive)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        holders.producers += 1;
+        MayOrphan(())
+    }
+
+    impl Drop for MayOrphan {
+        fn drop(&mut self) {
+            holders().producers -= 1;
+            CHANGED.notify_all();
+        }
+    }
+
+    pub(crate) struct NoForeignOrphans(());
+
+    /// Waits until no test can have an orphan alive, and keeps new ones out
+    /// until dropped.
+    pub(crate) fn no_foreign_orphans() -> NoForeignOrphans {
+        let mut holders = CHANGED
+            .wait_while(holders(), |holders| {
+                holders.exclusive || holders.producers > 0
+            })
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        holders.exclusive = true;
+        NoForeignOrphans(())
+    }
+
+    impl Drop for NoForeignOrphans {
+        fn drop(&mut self) {
+            holders().exclusive = false;
+            CHANGED.notify_all();
+        }
+    }
+
+    /// Waits until every process in a killed group is gone or a zombie, so a
+    /// guard is not released while one still counts as a live orphan. A
+    /// signal takes effect after `kill` returns, not before.
+    pub(crate) fn wait_until_group_gone(pgid: i32) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while paperclip_process_table::list().is_none_or(|table| {
+            table
+                .entries
+                .iter()
+                .any(|entry| entry.pgid == pgid && !entry.zombie)
+        }) {
+            assert!(
+                Instant::now() < deadline,
+                "process group {pgid} did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_verifying_reap_waits_for_held_orphans_and_holds_new_ones_back() {
+        use std::sync::mpsc;
+        let first = may_orphan();
+        // A test can hold several guards; they never wait for each other.
+        let second = may_orphan();
+
+        let (acquired, reap) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        let reaper = std::thread::spawn(move || {
+            let guard = no_foreign_orphans();
+            acquired.send(()).unwrap();
+            released.recv().unwrap();
+            drop(guard);
+        });
+        let quiet = Duration::from_millis(200);
+        assert!(
+            reap.recv_timeout(quiet).is_err(),
+            "reap ran beside two orphans"
+        );
+        drop(first);
+        assert!(
+            reap.recv_timeout(quiet).is_err(),
+            "reap ran beside an orphan"
+        );
+        drop(second);
+        reap.recv_timeout(Duration::from_secs(30))
+            .expect("reap waited after every orphan guard was released");
+
+        let (orphaned, orphan) = mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let guard = may_orphan();
+            orphaned.send(()).unwrap();
+            drop(guard);
+        });
+        assert!(
+            orphan.recv_timeout(quiet).is_err(),
+            "orphan started during a reap"
+        );
+        release.send(()).unwrap();
+        orphan
+            .recv_timeout(Duration::from_secs(30))
+            .expect("orphan waited after the reap finished");
+        reaper.join().unwrap();
+        producer.join().unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

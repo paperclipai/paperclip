@@ -717,8 +717,13 @@ describe("automatic retained workspace recovery", () => {
         : gate === "output_stream" ? { lastOutputStream: "stdout" }
         : gate === "compressed" ? { logCompressed: true } : {};
       if (Object.keys(patch).length) await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.source.id));
-      const receipt = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
-        .send({ observedRunId: f.failed.id, idempotencyKey: randomUUID() }).expect(202)).body;
+      // Admission refuses this held Retry; the answer names the refusal
+      // instead of "accepted" when admission settles before the answer.
+      const answer = await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.failed.id, idempotencyKey: randomUUID() });
+      expect([200, 202]).toContain(answer.status);
+      if (answer.status === 200) expect(answer.body).toMatchObject({ accepted: false, refused: { reason: expect.any(String) } });
+      const receipt = answer.body;
       await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId);
       expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`))).toHaveLength(0);
@@ -877,9 +882,13 @@ describe("automatic retained workspace recovery", () => {
     try {
       await worker.ready;
       const app = boardRecoveryApp(), intent = { observedRunId: f.runId, idempotencyKey: randomUUID() };
-      const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body;
-      requestId = receipt.requestId;
-      expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body.requestId).toBe(requestId);
+      // Until the stopped sandbox is confirmed, admission refuses this Retry
+      // and the answer names the refusal. The saved request starts later.
+      const answer = await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent);
+      expect([200, 202]).toContain(answer.status);
+      if (answer.status === 200) expect(answer.body).toMatchObject({ accepted: false, refused: { reason: expect.any(String) } });
+      requestId = answer.body.requestId;
+      expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent)).body.requestId).toBe(requestId);
       await expect.poll(() => f.runtime.retryPendingSandboxTeardown.mock.calls.length, { timeout: 20_000 }).toBe(1);
       expect(await successors()).toHaveLength(0);
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);

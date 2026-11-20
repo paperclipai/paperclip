@@ -43,19 +43,32 @@ export async function withOperationAccountingTransaction<T>(db: Db, companyId: s
       return result;
     } catch (error) {
       if (!isAccountingRetryable(error)) throw error;
-      if (attempt >= 3) {
+      if (attempt + 1 >= ACCOUNTING_TRANSACTION_ATTEMPTS) {
         const contention = new AccountingContentionError(error, attempt + 1);
         logger.warn({ companyId, sqlState: contention.code, attempts: contention.attempts, err: error },
           "Accounting transaction exhausted its serialization retries");
         throw contention;
       }
-      await new Promise(resolve => setTimeout(resolve, 10 * (attempt + 1)));
+      await new Promise(resolve => setTimeout(resolve, accountingRetryDelayMs(attempt)));
     }
   }
 }
 
+export const ACCOUNTING_TRANSACTION_ATTEMPTS = 8;
+
+const ACCOUNTING_RETRY_BASE_DELAY_MS = 10;
+const ACCOUNTING_RETRY_MAX_DELAY_MS = 400;
+
+export function accountingRetryDelayMs(attempt: number, random: () => number = Math.random): number {
+  const ceiling = Math.min(ACCOUNTING_RETRY_MAX_DELAY_MS, ACCOUNTING_RETRY_BASE_DELAY_MS * 2 ** (attempt + 1));
+  return Math.round(ceiling / 2 + random() * (ceiling / 2));
+}
+
 export const ACCOUNTING_CONTENTION_MESSAGE = "Paperclip could not save this run's budget or usage records because other "
   + "updates to the same run kept conflicting with them. Retry the run.";
+
+export const ACCOUNTING_WRITE_CONTENTION_MESSAGE = "Paperclip could not save these budget or usage changes because other "
+  + "updates to the same company kept conflicting with them. Try again.";
 
 /** Bounded, SQL-free failure for exhausted serialization retries. `code`
  * keeps the SQLSTATE (40001 or 40P01) for retry classifiers and diagnostics;
@@ -63,7 +76,7 @@ export const ACCOUNTING_CONTENTION_MESSAGE = "Paperclip could not save this run'
 export class AccountingContentionError extends HttpError {
   readonly code: string;
   constructor(cause: unknown, readonly attempts: number) {
-    super(503, ACCOUNTING_CONTENTION_MESSAGE);
+    super(503, ACCOUNTING_WRITE_CONTENTION_MESSAGE);
     this.name = "AccountingContentionError";
     this.code = accountingRetryCode(cause) ?? "40001";
     this.cause = cause;

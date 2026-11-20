@@ -11,6 +11,13 @@ export function assertRootDatabase(db: Db) {
 }
 
 type LifecycleRow = typeof agents.$inferSelect;
+
+const LIFECYCLE_PENDING_BASE_MS = 2_000;
+const LIFECYCLE_PENDING_MAX_MS = 60_000;
+
+export function lifecyclePendingRetryDelayMs(passes: number) {
+  return Math.min(LIFECYCLE_PENDING_MAX_MS, LIFECYCLE_PENDING_BASE_MS * 2 ** Math.max(0, passes - 1));
+}
 type ChangeOptions = { version?: number; owner?: string; reason?: string };
 
 // Prepared drafts wait for the wizard; they have no background verification obligation.
@@ -80,6 +87,24 @@ export async function requestAgentLifecycleRecheckInTransaction(
         : sql`${agents.lifecycleOperation} - 'waitingForSignal' - 'recheckRequested' - 'retryAt'`,
     updatedAt: new Date(),
   }).where(and(eq(agents.id, agent.id), eq(agents.companyId, input.companyId), eq(agents.lifecycleVersion, agent.lifecycleVersion)));
+  return true;
+}
+
+export async function wakeStoppingAgentLifecycleInTransaction(
+  tx: Pick<Db, "select" | "update">,
+  agentId: string,
+  notify: () => Promise<void>,
+): Promise<boolean> {
+  if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Lifecycle wakes require the producer transaction");
+  const [agent] = await tx.select({ lifecycleState: agents.lifecycleState, lifecycleOperation: agents.lifecycleOperation })
+    .from(agents).where(eq(agents.id, agentId)).for("update");
+  const operation = agent?.lifecycleOperation;
+  if (!agent || !operation || !["pausing", "terminating", "cleaning_up"].includes(agent.lifecycleState)
+    || (!operation.retryAt && !operation.leaseOwner)) return false;
+  await notify();
+  await tx.update(agents).set({ lifecycleOperation: sql`(${agents.lifecycleOperation} - 'retryAt')
+    || case when ${agents.lifecycleOperation} ? 'leaseOwner' then '{"recheckRequested":true}'::jsonb else '{}'::jsonb end` })
+    .where(eq(agents.id, agentId));
   return true;
 }
 
@@ -268,9 +293,12 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
           sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
         return rows.length > 0;
       }
+      const previousPasses = (agent.lifecycleOperation as { pendingPasses?: unknown } | null)?.pendingPasses;
+      const pendingPasses = options?.pendingReason ? (typeof previousPasses === "number" ? previousPasses : 0) + 1 : undefined;
       const retry: Partial<AgentLifecycleOperation> = options?.retryRequired && ["verifying", "resuming"].includes(agent.lifecycleState)
         ? { retryRequired: true }
-        : { retryAt: new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString() };
+        : { retryAt: new Date(now.getTime() + (error ? 60_000 : pendingPasses ? lifecyclePendingRetryDelayMs(pendingPasses) : 2_000)).toISOString() };
+      if (options?.pendingReason && pendingPasses) Object.assign(retry, { pendingReason: options.pendingReason, pendingPasses });
       if (options?.verificationFailures !== undefined && agent.lifecycleState === "verifying") {
         retry.verificationFailures = options.verificationFailures;
       }

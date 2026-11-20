@@ -5,6 +5,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
+import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
+import { assignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
@@ -63,6 +65,38 @@ describeDatabase("catalog publication", () => {
     transactionSpy.mockRestore();
     const second = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connectionId)).orderBy(toolCatalogEntries.toolName);
     expect(second.map(row => [row.id, row.firstSeenAt, row.status])).toEqual(first.map(row => [row.id, row.firstSeenAt, row.status]));
+  });
+  it("stores sanitized provider icons outside the version hash and lists them by gateway name", async () => {
+    const tool = (icons: unknown) => ({ name: "DisplayMeetings", description: "Show meetings", inputSchema: { type: "object" }, annotations: { readOnlyHint: true }, ...(icons === undefined ? {} : { icons }) });
+    await serviceWithTools([tool(undefined)]).refreshCatalog(connectionId);
+    const [before] = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connectionId));
+    expect(before.icons).toBeNull();
+    await serviceWithTools([tool([
+      { src: "https://cdn.example.com/meetings.png", mimeType: "image/png", sizes: ["32x32"] },
+      { src: "https://cdn.example.com/meetings.svg" },
+      { src: "javascript:alert(1)" },
+      { src: "data:image/svg+xml;base64,PHN2Zy8+", theme: "dark" },
+    ])]).refreshCatalog(connectionId);
+    const [after] = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connectionId));
+    expect(after.icons).toEqual([
+      { src: "https://cdn.example.com/meetings.png", mimeType: "image/png", sizes: ["32x32"] },
+      { src: "data:image/svg+xml;base64,PHN2Zy8+", theme: "dark" },
+    ]);
+    // Icons are display data: adding them never changes the reviewed version.
+    expect(after.versionHash).toBe(before.versionHash);
+    expect(after.status).toBe(before.status);
+    const listed = await listCompanyProviderToolIcons(db, companyId, [connectionId]);
+    const gatewayToolName = `mcp.fixture-connection-${connectionId.replace(/-/g, "").slice(0, 8)}:displaymeetings`;
+    // Native runners name the same tool `app_<name>_<digest>`; transcripts show that name.
+    expect(listed).toEqual([{ gatewayToolName, nativeToolName: assignedToolName(gatewayToolName), icons: after.icons }]);
+    expect(listed[0]!.nativeToolName).toMatch(/^app_[A-Za-z0-9_]*_[0-9a-f]{12}$/);
+    // Another company sees none of them.
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 6)}` });
+    expect(await listCompanyProviderToolIcons(db, otherCompanyId, [connectionId])).toEqual([]);
+    // Only connections the caller may see are listed.
+    expect(await listCompanyProviderToolIcons(db, companyId, [])).toEqual([]);
+    expect(await listCompanyProviderToolIcons(db, companyId, [randomUUID()])).toEqual([]);
   });
   it("refreshes known tools from overlapping MCP pages using the last descriptor", async () => {
     await db.update(toolConnections).set({ config: { url: "https://mcp.example.test/mcp" } }).where(eq(toolConnections.id, connectionId));

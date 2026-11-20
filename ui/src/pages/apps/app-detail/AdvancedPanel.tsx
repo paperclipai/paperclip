@@ -4,6 +4,7 @@ import { ArrowUpRight, ChevronRight, Loader2, Lock } from "lucide-react";
 import type {
   AppDefinition,
   ConnectionGrant,
+  GoogleWorkspaceServiceSelection,
   ToolConnection,
   ToolConnectionCredentialPolicy,
 } from "@paperclipai/shared";
@@ -25,6 +26,7 @@ import { Link } from "@/lib/router";
 import type { AppDetailSectionProps } from "./types";
 import { RevokeGrantDialog } from "./IdentitiesSection";
 import { describeError } from "@/api/errors";
+import { useGoogleWorkspaceServiceGate } from "@/features/connections/GoogleWorkspaceServices";
 
 export function AdvancedPanel({
   connection,
@@ -161,13 +163,17 @@ export function ReconnectCard({
 }) {
   const { pushToast } = useToast();
   const authorization = useAuthorizationWindow();
+  const workspaceGate = useGoogleWorkspaceServiceGate();
   const reconnectOAuth = useMutation({
     // Reconnect is not a new identity choice. Personal-only connections must
     // put the replacement token back on the signed-in user's existing grant;
     // shared and legacy fallback connections keep using the organization slot.
-    mutationFn: () => connection.credentialPolicy === "per_user"
-      ? toolsApi.startOAuth(connection.id, { asCurrentUser: true })
-      : toolsApi.startOAuth(connection.id),
+    mutationFn: (workspaceServices?: GoogleWorkspaceServiceSelection) => {
+      const services = workspaceServices ? { workspaceServices } : {};
+      return connection.credentialPolicy === "per_user"
+        ? toolsApi.startOAuth(connection.id, { asCurrentUser: true, ...services })
+        : workspaceServices ? toolsApi.startOAuth(connection.id, services) : toolsApi.startOAuth(connection.id);
+    },
     onSuccess: async (start) => {
       try {
         await authorization.open(start);
@@ -211,6 +217,7 @@ export function ReconnectCard({
   return (
     <div className="flex flex-col gap-4 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3">
       {authorization.fallback}
+      {workspaceGate.dialog}
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
           {methodUnavailable ? "Connection no longer supported" : oauth ? "Reconnect required" : "This app needs reconnecting"}
@@ -258,7 +265,7 @@ export function ReconnectCard({
             type="button"
             size="sm"
             disabled={reconnectOAuth.isPending}
-            onClick={() => { authorization.reserve(); reconnectOAuth.mutate(); }}
+            onClick={() => workspaceGate.run(connection, (services) => { authorization.reserve(); reconnectOAuth.mutate(services); })}
           >
             {reconnectOAuth.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             {reconnectOAuth.isPending ? "Opening sign-in…" : "Reconnect"}

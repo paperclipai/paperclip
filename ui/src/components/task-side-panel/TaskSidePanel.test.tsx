@@ -61,6 +61,7 @@ vi.mock("@/hooks/useIssuePlanDocument", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
+  Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
   useLocation: () => routeFixture.location,
   useNavigate: () => routeFixture.navigate,
 }));
@@ -120,7 +121,8 @@ vi.mock("@/components/WorkspaceFileBrowser", async () => {
 
 vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
 
-vi.mock("./TaskDocumentPanel", () => ({
+vi.mock("./TaskDocumentPanel", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./TaskDocumentPanel")>()),
   TaskDocumentPanel: ({ documentKey, issueId, revisionId, documentIssueId, currentIssueId, initialDocument }: { documentKey: string; issueId: string; revisionId?: string; documentIssueId?: string; currentIssueId?: string; initialDocument?: IssueDocument }) => <div data-document-owner={issueId} data-gallery-owner={documentIssueId} data-current-task={currentIssueId} data-revision-id={revisionId} data-initial-document={initialDocument?.id}>{`Document ${documentKey}`}</div>,
 }));
 
@@ -366,7 +368,8 @@ describe("TaskSidePanel", () => {
     fixture.plan = null;
     fixture.documents = [issueDocument("plan", "Origin task document must not leak")];
     routeFixture.location.hash = "#document-plan&revision=b-v1&interaction=review-on-a&documentIssue=task-b";
-    await render(panel({ documentDeepLink: { requestId: 1, documentKey: "plan" } }));
+    await render(panel({ documentDeepLink: { requestId: 1, documentKey: "plan" }, showDocumentSourceTask: true }));
+    expect(container.querySelector('a[href="/issues/task-b"]')?.textContent).toContain("Open source task");
     const document = container.querySelector("[data-document-owner]");
     expect(document?.getAttribute("data-document-owner")).toBe("task-b");
     expect(document?.getAttribute("data-gallery-owner")).toBe("task-b");
@@ -378,6 +381,14 @@ describe("TaskSidePanel", () => {
     routeFixture.location.hash = "#document-local";
     await render(panel());
     expect(container.querySelector("[data-gallery-owner]")?.getAttribute("data-gallery-owner")).toBe("task-b");
+  });
+
+  it("links to the conversation's backing task when the open document belongs to the chat", async () => {
+    fixture.plan = issueDocument("plan", "Conversation plan");
+    fixture.documents = [fixture.plan];
+    routeFixture.location.hash = "#document-plan";
+    await render(panel({ documentDeepLink: { requestId: 1, documentKey: "plan" }, showDocumentSourceTask: true }));
+    expect(container.querySelector('a[href="/issues/task-1"]')?.textContent).toContain("Open source task");
   });
 
   it("preserves explicitly saved Coordinator tabs when a decision link adds its document", async () => {
@@ -706,6 +717,20 @@ describe("TaskSidePanel", () => {
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("AGENTS.md");
   });
 
+  it("reopens a document after the reader returns to the chat URL and clicks the link again", async () => {
+    const documentDeepLink = { requestId: 1, documentKey: "brief" };
+    fixture.documents = [issueDocument("brief", "Implementation brief")];
+    routeFixture.location.hash = "#document-brief";
+    await render(panel({ documentDeepLink }));
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    routeFixture.location.hash = "";
+    await render(panel({ documentDeepLink: null }));
+
+    routeFixture.location.hash = "#document-brief";
+    await render(panel({ documentDeepLink }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Implementation brief");
+  });
+
   it("keeps a document selected when an artifact arrives", async () => {
     fixture.documents = [issueDocument("report", "Report")];
     const documentDeepLink = { documentKey: "report", requestId: 1 };
@@ -897,6 +922,19 @@ describe("TaskSidePanel", () => {
     expect(container.textContent).toContain("Document brief");
     await render(panel({ documentDeepLink: { requestId: 2, documentKey: "brief" } }));
     expect(container.querySelectorAll('[data-side-panel-tab-target="document:brief"]')).toHaveLength(1);
+  });
+
+  it("reports artifact visibility when switching between a document and Properties", async () => {
+    const onArtifactVisibilityChange = vi.fn();
+    fixture.documents = [issueDocument("brief", "Implementation brief")];
+    await render(panel({ onArtifactVisibilityChange }));
+    expect(onArtifactVisibilityChange).not.toHaveBeenCalled();
+
+    await render(panel({ onArtifactVisibilityChange, documentDeepLink: { requestId: 1, documentKey: "brief" } }));
+    expect(onArtifactVisibilityChange).toHaveBeenLastCalledWith(true);
+
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    expect(onArtifactVisibilityChange).toHaveBeenLastCalledWith(false);
   });
 
   it("keeps Files out of the launcher when the experiment is disabled", async () => {

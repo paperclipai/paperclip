@@ -10,6 +10,7 @@ import {
   type ReassignInterruptCopy,
   type TimelineAssigneeLike,
 } from "../../lib/interrupt-handoff";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /**
  * Presentational views for the interrupt-handoff UX clarity surfaces (PAP-10669).
@@ -174,7 +175,7 @@ export function ComposerHandoffPreviewRow({
       role="status"
       aria-live="polite"
     >
-      <span>{preview.text}</span>
+      <span className={ANALYTICS_MASK_CLASS}>{preview.text}</span>
       {preview.chip ? <PreviewChip chip={preview.chip} resolvers={resolvers} /> : null}
       {preview.suffix ? <span>{preview.suffix}</span> : null}
     </div>
@@ -337,7 +338,7 @@ export function PauseAffectsSummaryView({
             >
               <span className="font-medium text-foreground">{bucket.label}:</span>
               <span className="tabular-nums text-foreground">{bucket.count}</span>
-              <span className="text-muted-foreground">— {bucket.detail}</span>
+              <span className={cn("text-muted-foreground", ANALYTICS_MASK_CLASS)}>— {bucket.detail}</span>
             </li>
           ))}
         </ul>

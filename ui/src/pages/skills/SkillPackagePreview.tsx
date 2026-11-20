@@ -10,6 +10,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Button } from '@/components/ui/button';
 import { Link } from '@/lib/router';
 import type { SkillTreeCandidate } from './SkillSourceTree';
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function SkillPackagePreview({ companyId, repository, commitSha, skill, initialFile, repositoryPackage, onClose }: {
   companyId: string; repository: SkillSourceDiscoveryRequest; commitSha: string | null;
@@ -71,7 +73,7 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
             {previewView.kind === 'error' && <div className="space-y-2 text-sm"><QueryErrorState size="inline" error={preview.error} action="load the preview" onRetry={previewView.retry} retrying={previewView.isFetching} /> <Link to="/apps" className="underline">Manage GitHub access</Link></div>}
             {skill.error && <p className="text-sm text-muted-foreground">Preview unavailable for a package that failed validation.</p>}
             {preview.data?.file.encoding === 'base64' && <div className="flex flex-col items-center gap-3 py-8 text-sm text-muted-foreground"><FileImage className="size-6" /><p>Binary asset · included without changes</p><p className="text-xs">Open on GitHub to preview or download this file.</p></div>}
-            {preview.data?.content !== null && preview.data?.content !== undefined && <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{preview.data.content}</pre>}
+            {preview.data?.content !== null && preview.data?.content !== undefined && <pre className={cn("whitespace-pre-wrap break-words font-mono text-xs leading-relaxed", ANALYTICS_MASK_CLASS)}>{preview.data.content}</pre>}
             {preview.data?.truncated && <p className="mt-3 text-xs text-muted-foreground">Showing the first 64 KB. The complete file is imported.</p>}
           </div>
         </div>

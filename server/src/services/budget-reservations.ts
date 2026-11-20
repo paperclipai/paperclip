@@ -99,7 +99,11 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).for("update");
     if (!run) throw notFound("Run not found");
     const stopRecovery = await readClaimedNativeStopRecovery(tx, run, recoveryLeaseOwner);
-    if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery) throw conflict("Run cancellation already requested");
+    if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery) {
+      if (run.runtimeMode !== "native") throw conflict("Run cancellation already requested");
+      const { NativeCancellationPendingRecoveryError } = await import("./native-runtime/native-session-executor.js");
+      throw new NativeCancellationPendingRecoveryError();
+    }
     if (run.costAccountedAt || !["queued", "running"].includes(run.status)) throw conflict("Run can no longer start provider work");
     const [existing] = await tx.select().from(budgetReservations).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.runId, runId)));
     if (existing) {
