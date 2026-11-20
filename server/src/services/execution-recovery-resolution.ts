@@ -37,15 +37,21 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { isReattachPhaseActive } from "./heartbeat/run-admission.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
+import { reserveAutomaticRunCreation } from "./recovery/automatic-run-brake.js";
+import { continuationDeliveryDue, deferForUnwakeableAssignee, recordContinuationDeliveryAttempt } from "./recovery/continuation-delivery-attempt.js";
 import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
+import { continueNativeInterruption, nativeInterruptionHold } from "./native-interruption-continuation.js";
 import { alias } from "drizzle-orm/pg-core";
 import { RECOVERY_BACKLOG_AGE_MS, RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
+import { agentRecoveryQueueIsFull } from "./recovery-queue-admission.js";
 import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 
 import { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_BACKLOG_SHARE_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
   recoveryContinuationHeldSince } from "./recovery-continuation-pacing.js";
+import { emitSystemTaskBlockedAfterCommit } from "./product-telemetry.js";
 
 export { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS,
   RECOVERY_CONTINUATION_MAX_HOLD_MS } from "./recovery-continuation-pacing.js";
@@ -368,6 +374,7 @@ export async function deliverReconciledExecutions(
   db: Db,
   wake: ReturnType<typeof import("./heartbeat.js").heartbeatService>["wakeup"],
 ) {
+  if (isReattachPhaseActive()) return;
   const recoveryReasons = [...RECOVERY_WAKE_REASONS];
   const sourceRun = alias(heartbeatRuns, "continuation_source_run");
   const seenActionIds = new Set<string>();
@@ -392,6 +399,7 @@ export async function deliverReconciledExecutions(
     ] : [
       sql`${pastBound} desc`,
       sql`${overdueTurn} asc nulls last`,
+      sql`${attemptedAt} asc nulls first`,
       sql`${sourceRun.finishedAt} desc nulls last`,
       sql`${issueRecoveryActions.updatedAt} asc`,
     ];
@@ -417,6 +425,7 @@ export async function deliverReconciledExecutions(
         and(
           eq(issueRecoveryActions.status, "resolved"),
           sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+          continuationDeliveryDue(new Date()),
           seenActionIds.size ? not(inArray(issueRecoveryActions.id, [...seenActionIds])) : undefined,
           seenAgents.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgents])}::text[])` : undefined,
           companies.length ? not(inArray(issueRecoveryActions.companyId, companies)) : undefined,
@@ -442,23 +451,19 @@ export async function deliverReconciledExecutions(
       ] : [
         sql`${candidates.pastBound} desc`,
         sql`${candidates.heldAt} asc nulls last`,
+        sql`${candidates.attemptedAt} asc nulls first`,
         sql`${candidates.sourceFinishedAt} desc nulls last`,
         sql`${candidates.actionUpdatedAt} asc`,
       ]))
       .limit(25);
     return rows.map(row => row.action);
   };
-  const deferRefusedContinuation = (action: typeof issueRecoveryActions.$inferSelect) => db.update(issueRecoveryActions)
-    .set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
-      { continuationDeliveryAttemptedAt: new Date().toISOString() })}::jsonb` })
-    .where(and(
-      eq(issueRecoveryActions.companyId, action.companyId),
-      eq(issueRecoveryActions.id, action.id),
-      eq(issueRecoveryActions.status, "resolved"),
-      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
-    ));
+  const deferRefusedContinuation = (action: typeof issueRecoveryActions.$inferSelect) => recordContinuationDeliveryAttempt(db, action);
   const agentHasRoom = async (action: typeof issueRecoveryActions.$inferSelect, agentId: string, kind: ContinuationClass) => {
     if ((admittedByCompany.get(action.companyId) ?? 0) >= companyLimit) return false;
+    // A few at a time per agent, fresh or not: the rest waits here, durably,
+    // until a queued recovery run starts or is dropped.
+    if (await agentRecoveryQueueIsFull(db, action.companyId, agentId)) return false;
     if (kind === "fresh") return true;
     const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, action.companyId), eq(agents.id, agentId)));
     if (!agent) return true;
@@ -543,10 +548,13 @@ export async function deliverReconciledExecutions(
             continue;
           }
         }
+        if (await deferForUnwakeableAssignee(db, action)) { seenAgents.add(action.returnOwnerAgentId); continue; }
         if (!await agentHasRoom(action, action.returnOwnerAgentId, kind)) {
           seenAgents.add(action.returnOwnerAgentId);
           continue;
         }
+        const slot = await reserveAutomaticRunCreation(db, action.companyId, { issueId: task.id, sourceRunId: decision.runId });
+        if (slot.heldUntil) { await deferRefusedContinuation(action); continue; }
         const run = await wake(action.returnOwnerAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -567,9 +575,10 @@ export async function deliverReconciledExecutions(
             ...((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace"
               ? { freshContinuationIsolation: action.id } : {}),
           },
-        });
+        }).catch(async error => { await slot.release(); throw error; });
         seenAgents.add(action.returnOwnerAgentId);
         if (!run) {
+          await slot.release();
           await deferRefusedContinuation(action);
           continue;
         }
@@ -673,7 +682,7 @@ export function unresolvedExecutionDispositions(db: Db, limit: number) {
           sql`${issueRecoveryActions.wakePolicy}->>'runId' = ${heartbeatRuns.id}::text`,
           exists(supersedingNativeWorkspaceHold(db, { companyId: heartbeatRuns.companyId,
             issueId: issueRecoveryActions.sourceIssueId, runId: heartbeatRuns.id })),
-        )),
+        ), nativeInterruptionHold()),
         inArray(heartbeatRuns.status, [
           "failed",
           "timed_out",
@@ -811,15 +820,15 @@ export async function settleUnrecoverableExecutions(
         )
           return;
         if (!EXECUTION_RECONCILIATION_CAUSES.includes(action.cause as (typeof EXECUTION_RECONCILIATION_CAUSES)[number])) {
-          if (run.runtimeMode !== "native" || run.nativePhase !== "terminal_failure"
-            || coordinator?.phase !== "terminal_failure" || coordinator.leaseOwner || coordinator.resultId
-            || coordinator.nextAttemptAt || coordinator.failureDetail?.successorRunId
-            || action.wakePolicy?.kind !== "resume_native_run" || action.wakePolicy.runId !== run.id) return;
-          const [hold] = await supersedingNativeWorkspaceHold(tx as unknown as Db, {
+          const resumeHold = run.runtimeMode === "native" && run.nativePhase === "terminal_failure"
+            && coordinator?.phase === "terminal_failure" && !coordinator.leaseOwner && !coordinator.resultId
+            && !coordinator.nextAttemptAt && !coordinator.failureDetail?.successorRunId
+            && action.wakePolicy?.kind === "resume_native_run" && action.wakePolicy.runId === run.id;
+          const [hold] = resumeHold ? await supersedingNativeWorkspaceHold(tx as unknown as Db, {
             companyId: run.companyId, issueId: task.id, runId: run.id,
-          }).limit(1).for("update");
-          if (!hold) return;
-          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          }).limit(1).for("update") : [];
+          if (!hold) return void await continueNativeInterruption(tx as unknown as Db, { action, run, coordinator, now });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
           const note = "Exact session recovery stopped. The recorded workspace recovery holds this execution without replaying its actions.";
           await tx.update(issueRecoveryActions).set({ status: "cancelled", outcome: "cancelled",
             resolvedAt: now, updatedAt: now, wakePolicy: null, monitorPolicy: null,
@@ -902,6 +911,7 @@ export async function settleUnrecoverableExecutions(
               updatedAt: now,
             })
             .where(eq(issues.id, task.id)).returning();
+          await emitSystemTaskBlockedAfterCommit(tx, projected!, task.status);
           // Only a transition owned by this failure grants a recovery receipt.
           // An already-blocked task may have a separate human/dependency hold.
           if (task.status !== "blocked" && run.runtimeMode === "native") {
@@ -954,7 +964,7 @@ export async function settleUnrecoverableExecutions(
             replay: "not_authorized",
           },
         });
-        await notifyExecutionRunWork(tx, { companyId: run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
         await tx
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })

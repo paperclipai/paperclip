@@ -1,4 +1,3 @@
-import { prepareMcpClientMirrorPolicy } from "./public-mcp/client-mirror-mutations.js";
 import { notifyLiveRunRecovery, notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -59,6 +58,7 @@ import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 import { isCloudStagingExperimentalSetting, isCloudStagingInstance } from "./cloud-instance.js";
 import { forbidden } from "../errors.js";
+import { announceInstanceSettingsChange, readThroughInstanceSettings } from "./instance-settings-cache.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -258,7 +258,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       // continuing to accept the compatibility key in stored settings.
       enableApps: true,
       enableMcpAggregators: true,
-      enablePublicMcp: parsed.data.enablePublicMcp ?? false,
+      // Assistant connections (MCP) graduated from Experimental; ignore historical off values.
+      enablePublicMcp: true,
       enableOpenAiDot: parsed.data.enableOpenAiDot ?? false,
       enableMuse: parsed.data.enableMuse ?? false,
       enableGrokBot: parsed.data.enableGrokBot ?? false,
@@ -267,6 +268,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableMemoryConnectors: parsed.data.enableMemoryConnectors ?? false,
       enablePaperclipNotebook: parsed.data.enablePaperclipNotebook ?? false,
       enableGoogleWorkspaceConnector: parsed.data.enableGoogleWorkspaceConnector ?? false,
+      enableAwsConnector: parsed.data.enableAwsConnector ?? false,
       enableCases: parsed.data.enableCases ?? false,
       enableAgentChat: true,
       enableCombinedInboxTasks: parsed.data.enableCombinedInboxTasks ?? false,
@@ -282,6 +284,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableBetaSkills: parsed.data.enableBetaSkills ?? false,
       enableSummaries: parsed.data.enableSummaries ?? false,
       enableStatusCards: parsed.data.enableStatusCards ?? false,
+      enableResponsibilities: parsed.data.enableResponsibilities ?? false,
       enableDecisions: parsed.data.enableDecisions ?? false,
       enableFastResponses: parsed.data.enableFastResponses ?? false,
       enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
@@ -294,6 +297,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
       enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
+      enableMcpTasks: parsed.data.enableMcpTasks ?? false,
       enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
@@ -317,7 +321,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableStreamlinedUi: true,
     enableApps: true,
     enableMcpAggregators: true,
-    enablePublicMcp: false,
+    enablePublicMcp: true,
     enableOpenAiDot: false,
     enableMuse: false,
     enableGrokBot: false,
@@ -326,6 +330,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableMemoryConnectors: false,
     enablePaperclipNotebook: false,
     enableGoogleWorkspaceConnector: false,
+    enableAwsConnector: false,
     enableCases: false,
     enableAgentChat: true,
     enableCombinedInboxTasks: false,
@@ -341,6 +346,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableBetaSkills: false,
     enableSummaries: false,
     enableStatusCards: false,
+    enableResponsibilities: false,
     enableDecisions: false,
     enableFastResponses: false,
     enableGoalsSidebarLink: false,
@@ -353,6 +359,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
     enableSandboxDuplexBridge: false,
+    enableMcpTasks: false,
     enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
@@ -385,8 +392,9 @@ export function applyManagedExperimentalOverlay(
     [ManagedExperimentalFeatureKey, boolean]
   >) {
     // Existing Cloud stack configs may still carry retired flags. Accept the
-    // document during rollout, but never let retired flags disable Apps, Agent Chat or MCP aggregators.
-    if (key === "enableApps" || key === "enableAgentChat" || key === "enableMcpAggregators") continue;
+    // document during rollout, but never let retired flags disable Apps, Agent Chat, MCP aggregators
+    // or Assistant connections (MCP).
+    if (key === "enableApps" || key === "enableAgentChat" || key === "enableMcpAggregators" || key === "enablePublicMcp") continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }
@@ -550,8 +558,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     throw new Error("Failed to initialize instance settings row");
   }
 
+  function getCachedRow(runner: InstanceSettingsWriteDb = db) {
+    return readThroughInstanceSettings(runner, () => getOrCreateRow(runner));
+  }
+
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getCachedRow()),
 
     update: async (
       patch: PatchInstanceSettings,
@@ -574,13 +586,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
+      await announceInstanceSettingsChange(runner);
       return toInstanceSettings(updated ?? current);
     },
 
     getGeneral: async (
       readOptions?: { db?: InstanceSettingsWriteDb },
     ): Promise<InstanceGeneralSettings> => {
-      const row = await getOrCreateRow(readOptions?.db);
+      const row = await getCachedRow(readOptions?.db);
       return toGeneralView(row.general);
     },
 
@@ -591,7 +604,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
-      const row = await getOrCreateRow();
+      const row = await getCachedRow();
       return toExperimentalView(row.experimental);
     },
 
@@ -615,11 +628,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
+      await announceInstanceSettingsChange(db);
       return toInstanceSettings(updated ?? current);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       for (const [key, enabled] of Object.entries(managedConfig?.features ?? {})) {
+        // Retired always-on keys are ignored on read, so an old client's write must not be rejected.
+        if (key === "enablePublicMcp") continue;
         if (enabled && patch[key as ManagedExperimentalFeatureKey] === false) {
           throw forbidden(`${key} is enabled by Paperclip Cloud and cannot be disabled on this instance`, {
             code: "settings_operator_managed",
@@ -645,13 +661,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           }
         }
       }
-      const chatBecameEnabled = !toExperimentalView(current.experimental).enableAgentChat
-        && toExperimentalView(nextExperimental).enableAgentChat;
       const now = new Date();
       const [updated] = await db.transaction(async tx => {
+        await announceInstanceSettingsChange(tx);
         if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
-        if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
-        if(toExperimentalView(current.experimental).enablePublicMcp!==toExperimentalView(nextExperimental).enablePublicMcp)await prepareMcpClientMirrorPolicy(tx as unknown as Db,toExperimentalView(nextExperimental).enablePublicMcp);
+        if (patch.enableMcpTasks !== undefined) await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpClientMirror);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, "*");
@@ -660,7 +674,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
         if (toExperimentalView(current.experimental).enableMuse !== toExperimentalView(nextExperimental).enableMuse || toExperimentalView(current.experimental).enableNativeRunner !== toExperimentalView(nextExperimental).enableNativeRunner) await notifyMuseContactVerification(tx);
         if (patch.enableExternalObjects !== undefined) await notifyExternalObjectRefresh(tx);
-        if (chatBecameEnabled) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAssignments, "*");
         if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);
         if (patch.enableWorktreeRunExecution !== undefined) {
           await notifyRunDispatch(tx);

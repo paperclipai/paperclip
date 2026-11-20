@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { restoreTrailingMarkdownSpaces } from "./trailing-markdown-spaces";
+import { preserveTrailingMarkdownSpaces, restoreTrailingMarkdownSpaces } from "./trailing-markdown-spaces";
+
+describe("preserveTrailingMarkdownSpaces", () => {
+  it.each([
+    ["[/deploy](skill://deploy) ", "[/deploy](skill://deploy)&#x20;"],
+    ["/goal ", "/goal&#x20;"],
+    ["Send this  ", "Send this&#x20;&#x20;"],
+    ["Use `code` ", "Use `code`&#x20;"],
+  ])("preserves a final prose space through import: %s", (input, expected) => {
+    expect(preserveTrailingMarkdownSpaces(input)).toBe(expected);
+    expect(restoreTrailingMarkdownSpaces(expected)).toBe(input);
+  });
+
+  it.each(["", "No suffix", "Keep  \nthis", "```text\ncode ", "    code ", "<div>\ntext ", String.raw`literal\ `])(
+    "leaves other content unchanged: %s", (input) => {
+      expect(preserveTrailingMarkdownSpaces(input)).toBe(input);
+    },
+  );
+});
 
 describe("restoreTrailingMarkdownSpaces", () => {
   it.each([

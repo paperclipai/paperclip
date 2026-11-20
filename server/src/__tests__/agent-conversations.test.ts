@@ -155,7 +155,7 @@ import {
       ).toBe(false);
       expect(
         (
-          await issueService(db).list(companyId, { q: results[0].identifier! })
+          await issueService(db).list(companyId, { q: results[0].title })
         ).some((issue) => issue.id === results[0].id),
       ).toBe(true);
       expect(
@@ -990,7 +990,8 @@ describe("chat prompt policy", () => {
   it("tells chat to name records the way the person sees them instead of raw IDs, internal codes, tool names or server paths", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("give the specific reason returned by the platform, in plain words");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Write replies for the person, not for the API.");
-    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not write raw IDs (UUIDs or their short forms for runs, revisions, handoffs, interactions, routines, triggers, attachments, workspaces, incidents, users or agents), internal codes (status, error, cause or reason codes such as native_session_retry_exhausted or board_access_required), field or setting keys, tool names, internal process names or server file paths in a reply, even in parentheses or inline code.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not write raw IDs (UUIDs or their short forms for runs, revisions, handoffs, interactions, routines, triggers, attachments, workspaces, incidents, users or agents), internal codes (status, error, cause or reason codes such as native_session_retry_exhausted or board_access_required), field or setting keys, tool names, internal process names, internal terms such as checkout, native run or local-board, or server file paths in a reply, even in parentheses or inline code.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Name an actor by the actorName a record returns.");
     expect(AGENT_CHAT_DIRECTIVE).toContain("The only exceptions are link targets, values inside a command the person must run, and an ID the person explicitly asks for.");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("Write replies for the person, not for the API.");
@@ -1050,6 +1051,13 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("an empty history means no earlier text is retained");
     expect(AGENT_CHAT_DIRECTIVE).toContain("do not reconstruct it from the current file, its wording, or the activity log");
     expect(AGENT_CHAT_DIRECTIVE).toContain("say plainly that no earlier version was saved, and ask the person for the text they want");
+  });
+
+  it("uses the company prefix for links in an unnumbered standing chat", () => {
+    const prompt = buildPaperclipTaskMarkdown({ companyPrefix: "BOB", coordinatorWorkspace: true,
+      issue: { id: "chat", identifier: null, title: "Chat", workMode: "standard", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/BOB/agents/");
+    expect(prompt).not.toContain("/<prefix>/");
   });
 
   it("points chat at the teams catalog for ready-made teams and stops the search there", () => {

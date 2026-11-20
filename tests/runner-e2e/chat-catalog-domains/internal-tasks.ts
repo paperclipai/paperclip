@@ -1,5 +1,6 @@
 import { savedDesignInstruction, withRenderedCommentReference, validRenderedCommentReference } from "./internal-comment-reference.js";
-import { linkedQuestionTakeover, observeLinkedTaskQuestion, questionCardNamesCandidates, type ClarificationObservation } from "../chat-linked-question.js";
+import { chosenTaskOption, linkedQuestionTakeover, observeLinkedTaskQuestion, questionCardNamesCandidates, type ClarificationObservation } from "../chat-linked-question.js";
+import { expect } from "@playwright/test";
 import { withEditOwnership } from "./internal-edit-ownership.js";
 import { verifyDistinctTaskFixtures } from "./internal-distinct-fixtures.js";
 import { delegatedTaskCases } from "./internal-task-creation.js";
@@ -85,6 +86,14 @@ export const tasksCases: readonly ChatCatalogCase[] = [
 
 ];
 
+/** The person's answer through the clarification card's Launch choice, for the flow to verify independently. */
+export function answeredClarification(value: unknown) {
+  const answered = (value as { state?: { answeredQuestion?: Record<string, unknown> } } | undefined)?.state?.answeredQuestion;
+  const text = (key: string) => typeof answered?.[key] === "string" && !!answered[key] ? answered[key] as string : undefined;
+  const interactionId = text("interactionId"), sourceRunId = text("sourceRunId"), userId = text("userId"), questionId = text("questionId"), optionId = text("optionId");
+  if (!interactionId || !sourceRunId || !userId || !questionId || !optionId) return;
+  return { interactionId, sourceRunId, userId, clarificationChoice: { questionId, optionId } };
+}
 function ambiguousTask(): ChatCatalogCase {
   const base = define("tasks.ambiguous-task", async ctx => {
     const p = await project(ctx); const otherProject = await project(ctx, "Experiments");
@@ -94,7 +103,8 @@ function ambiguousTask(): ChatCatalogCase {
     await verifyDistinctTaskFixtures(ctx, [t, otherTask]);
     return { project: p, task: t, otherProject, otherTask };
   });
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v5", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v8", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+    expectedHumanQuestionAnswer: answeredClarification,
     async act(ctx, state) {
       await pollUntil({ label: "Task ambiguity clarification", deadlineAt: Date.now() + 150_000,
         load: () => observeInternal(ctx, state), accept: o => o.runs.length === 1 && o.runs.every(row => row.status === "succeeded")
@@ -116,6 +126,23 @@ function ambiguousTask(): ChatCatalogCase {
           throw new Error("The actual linked clarification question changed before the person's selection");
       }
       const answerRoot = card ? linkedQuestionTakeover(ctx.input.page, card) : ctx.input.page;
+      // A card that offers the Launch task as its own choice is answered by selecting that choice, found by the
+      // saved option structure and the task identifier rather than by the option's wording.
+      const choice = card ? chosenTaskOption((first as ClarificationObservation).questionCards ?? [], card, selected, [selected, other]) : undefined;
+      if (card && choice) {
+        await answerRoot.locator(`[id=${JSON.stringify(choice.domId)}]`).click();
+        await expect(answerRoot.locator(`[id=${JSON.stringify(choice.domId)}]`)).toHaveAttribute("aria-checked", "true");
+        const responded = ctx.input.page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/interactions/${card.interactionId}/respond`)
+          && response.request().method() === "POST");
+        await answerRoot.getByRole("button", { name: choice.submitLabel, exact: true }).click();
+        const response = await responded;
+        if (!response.ok()) throw new Error(`The person's clarification answer returned ${response.status()}`);
+        // A chosen option saves no comment; the flow counts it as the person's second action only after it
+        // independently verifies the answered card, its audit event and the one continuation run.
+        const anchor = (await ctx.input.api.get<Entity[]>(`/api/issues/${card.sourceId}/comments?order=asc`)).find(row => row.id === card.anchorCommentId);
+        state.answeredQuestion = { interactionId: card.interactionId, sourceRunId: card.sourceRunId, userId: anchor?.authorUserId ?? null, questionId: card.questionId, optionId: choice.optionId };
+        return;
+      }
       const textInput = answerRoot.getByTestId("question-text-answer-composer").last();
       if (await textInput.isVisible()) {
         await textInput.locator('[contenteditable="true"],textarea').first().fill(answer);

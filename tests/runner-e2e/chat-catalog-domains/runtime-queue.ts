@@ -17,8 +17,21 @@ import type { IssueWorkProduct } from "../../../packages/shared/src/types/work-p
  * request; its status is returned so the caller can tell an accepted move from a refused one. When a gesture
  * sends nothing, `beforeRetry` (for example a reload that refetches the queue) runs and the gesture is pressed
  * again, up to `attempts` gestures in all; every gesture is reported. */
-export async function keyboardMoveQueuedMessageUp(page: Pick<Page, "waitForResponse">, handle: Pick<Locator, "isEnabled" | "focus" | "press">,
-  timeoutMs = 15_000, intervalMs = 100, options: { attempts?: number; beforeRetry?: () => Promise<void> } = {}): Promise<{ status: number; waitedForEnabledMs: number; gestures: number }> {
+export async function keyboardMoveQueuedMessageUp(page: Pick<Page, "waitForResponse" | "evaluate">, handle: Pick<Locator, "isEnabled" | "focus" | "press" | "getAttribute">,
+  timeoutMs = 15_000, intervalMs = 100, options: { attempts?: number; beforeRetry?: () => Promise<void> } = {}): Promise<{ status: number; waitedForEnabledMs: number; gestures: number; dragStarted: boolean[] }> {
+  const dragStarted: boolean[] = [];
+  // The drag library starts a keyboard drag on Space but listens for the next keys only after a timer, and moves
+  // only once it has measured the rows on a later render. A person's keystrokes are far apart; automated ones are
+  // not, so wait for the handle to report the drag (aria-pressed) and let the page paint between keys.
+  const settle = () => page.evaluate(() => new Promise<void>(resolve => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())), 0)));
+  const waitForDrag = async () => {
+    const started = Date.now();
+    while (await handle.getAttribute("aria-pressed") !== "true") {
+      if (Date.now() - started >= Math.min(timeoutMs, 3_000)) return false;
+      await new Promise(resolve => setTimeout(resolve, Math.min(intervalMs, 50)));
+    }
+    return true;
+  };
   const attempts = Math.max(1, options.attempts ?? 1);
   for (let gesture = 1; ; gesture++) {
     const started = Date.now();
@@ -30,10 +43,12 @@ export async function keyboardMoveQueuedMessageUp(page: Pick<Page, "waitForRespo
     const sent = page.waitForResponse((response: Response) => response.request().method() === "PUT"
       && new URL(response.url()).pathname.endsWith("/queued-comments/order"), { timeout: timeoutMs });
     sent.catch(() => undefined);
-    await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
-    const response = await sent.catch(() => null);
-    if (response) return { status: response.status(), waitedForEnabledMs, gestures: gesture };
-    if (gesture >= attempts) throw new Error(`The keyboard reorder gesture sent no queue order request after ${gesture} gesture(s)`);
+    await handle.focus(); await handle.press("Space");
+    const dragging = await waitForDrag(); dragStarted.push(dragging);
+    if (dragging) { await settle(); await handle.press("ArrowUp"); await settle(); await handle.press("Space"); }
+    const response = dragging ? await sent.catch(() => null) : null;
+    if (response) return { status: response.status(), waitedForEnabledMs, gestures: gesture, dragStarted };
+    if (gesture >= attempts) throw new Error(`The keyboard reorder gesture sent no queue order request after ${gesture} gesture(s) (drag started: ${dragStarted.join(", ")})`);
     await options.beforeRetry?.();
   }
 }

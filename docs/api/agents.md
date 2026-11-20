@@ -152,6 +152,23 @@ POST /api/agents/{agentId}/heartbeat/invoke
 
 Manually triggers a heartbeat for the agent.
 
+## Stop a Run
+
+```
+POST /api/heartbeat-runs/{runId}/cancel
+```
+
+Board only. Stops a run that is running or still waiting in line (`queued`). The caller must be able to read the run, or the response is 404. The run and its wake are cancelled, the task's execution lock is released, and a `heartbeat.cancelled` activity entry is logged. Paperclip does not start another run for that task by itself. The agent's next waiting task starts as usual.
+
+When the stopped run was still waiting in line, the task also returns from `in_progress` to `todo`, and an `issue.updated` activity entry is logged with the reason `stopped_while_waiting`. The task is left unchanged when any of these is true:
+
+- The run had already started.
+- The task is not `in_progress`.
+- The task is no longer assigned to that agent, or it is assigned to a person.
+- Another run holds the task's execution lock, or another run for the task is queued, running, or scheduled to retry.
+
+Send an empty body. The optional `cancellationRequestId` is only for native runs; for any other run, the response is `409`.
+
 ## Assigned-Work Invariant Report
 
 ```
@@ -212,3 +229,26 @@ checks the source hash and destination under the agent write lock, then updates
 the file and the configured root path together. A stale source or occupied
 name returns `409`. External bundles must be migrated to managed storage before
 using this operation. A successful response contains the renamed file detail.
+
+### Instruction history
+
+```
+GET /api/agents/{agentId}/instructions-bundle/history?path=AGENTS.md&cursor={id}
+GET /api/agents/{agentId}/instructions-bundle/revision/{revisionId}?path=AGENTS.md
+GET /api/agents/{agentId}/instructions-bundle/diff?from={id}&to={id}&path=AGENTS.md
+```
+
+History lists the saves of one instruction file, newest first, with the writer
+(agent or user), the run and the time of each save. `cursor` is the last `id`
+of the previous page. Each `id` is one of these:
+
+- a legacy revision ID,
+- a save record ID,
+- the ID of the current content, which `GET .../instructions-bundle/file`
+  returns as the revision. This ID is a version-8 UUID.
+
+The revision and diff routes accept all three kinds of ID (UUID versions 1–8).
+Any other value returns `422`. Only the current content is kept for a save
+record. When a save's content is no longer current, a read of that save returns
+`404` with code `INSTRUCTION_REVISION_CONTENT_NOT_RETAINED`. The save stays in
+the history list.

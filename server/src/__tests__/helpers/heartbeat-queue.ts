@@ -3,10 +3,11 @@ import { heartbeatRuns } from "@paperclipai/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { vi, type Mock, type Mocked } from "vitest";
 import { createRunDispatch } from "../../modules/run-dispatch/index.js";
-import type { createWakeQueue } from "../../modules/wake-queue/index.js";
+import { createWakeQueue } from "../../modules/wake-queue/index.js";
+import { filterZombieCoalesceTarget } from "../../services/heartbeat.js";
 import { createHeartbeatRunState } from "../../services/heartbeat/run-state.js";
-import { createHeartbeatRunPreparation } from "../../services/heartbeat/run-preparation.js";
-import type { HeartbeatQueueDependencies } from "../../services/heartbeat/queue.js";
+import { createHeartbeatRunPreparation, mergeCoalescedContextSnapshot } from "../../services/heartbeat/run-preparation.js";
+import { shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "../../services/heartbeat/queue.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type MockedCallback = "getAgent" | "setRunStatusFromLive" | "setWakeupStatus" | "appendRunEvent" | "finalizeAgentStatus" | "getAgentInvokability" | "getWorktreeExecutionCutoff" | "applyRunDispatchPostCommitEffects" | "getSchedulingSuppression" | "canStartNewExternalBotWork" | "executeRun" | "applyWakeQueuePostCommitEffects" | "releaseIssueExecutionAndPromote" | "publishRunLifecyclePluginEvent" | "cancelRunInternal" | "cancelActiveForAgentInternal" | "resumeExecutionWaitComments" | "resumeQueuedCommentInterrupt" | "resumeSavedLegacyComments" | "sweepPendingCleanupLeases";
@@ -22,15 +23,23 @@ type QueueTestDependencies = HeartbeatQueueDependencies & { [K in MockedCallback
 export function createHeartbeatQueueTestDependencies(db: Db): QueueTestDependencies {
   const state = createHeartbeatRunState(db);
   const preparation = createHeartbeatRunPreparation(db);
+  const admission = createWakeQueue(db, {
+    resolveResponsibleUserId: async () => { throw new Error("Unexpected wake promotion"); },
+    getRoutineEnv: async () => { throw new Error("Unexpected wake promotion"); },
+    resolveSessionBeforeForWakeup: async () => null,
+    wakeAdmissionHelpers: { filterZombieCoalesceTarget, mergeCoalescedContextSnapshot,
+      shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
+    recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+  });
   return {
     ...preparation,
     ...state,
     getAgent: vi.fn<HeartbeatQueueDependencies["getAgent"]>(async () => { throw new Error("Unexpected agent lookup"); }),
     options: {},
     // Same compare-and-set contract as the run lifecycle: write only from one of fromStatuses.
-    setRunStatusFromLive: vi.fn<HeartbeatQueueDependencies["setRunStatusFromLive"]>(async (id, status, fromStatuses, patch) => {
+    setRunStatusFromLive: vi.fn<HeartbeatQueueDependencies["setRunStatusFromLive"]>(async (id, status, fromStatuses, patch, _report, condition) => {
       const [updated] = await db.update(heartbeatRuns).set({ ...patch, status })
-        .where(and(eq(heartbeatRuns.id, id), inArray(heartbeatRuns.status, fromStatuses))).returning();
+        .where(and(eq(heartbeatRuns.id, id), inArray(heartbeatRuns.status, fromStatuses), ...(condition ? [condition] : []))).returning();
       if (updated) return { run: updated, updated: true as const };
       const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id));
       return { run: current ?? null, updated: false as const };
@@ -53,8 +62,8 @@ export function createHeartbeatQueueTestDependencies(db: Db): QueueTestDependenc
     instanceSettings: { getExperimental: vi.fn<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>() },
     runDispatch: createRunDispatch(db),
     wakeQueue: {
-      createAdmissionTransactionScope: vi.fn<ReturnType<typeof createWakeQueue>["createAdmissionTransactionScope"]>(),
-      admitWakeBehindIssueExecution: vi.fn<ReturnType<typeof createWakeQueue>["admitWakeBehindIssueExecution"]>(),
+      preflightIssueWake: vi.fn(admission.preflightIssueWake),
+      admitIssueWake: vi.fn(admission.admitIssueWake),
     },
     activeRunExecutions: new Set<string>(),
     activeRunExecutionPromises: new Set<Promise<void>>(),

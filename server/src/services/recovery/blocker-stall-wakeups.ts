@@ -288,8 +288,10 @@ export async function wakeWaitersOfStalledIssues(db: Db, enqueueWakeup: BlockerS
   } else {
     const cursorKey = opts.companyId ?? "*";
     stalled = await readStalls(db, { companyId: opts.companyId, afterActionId: companyCursors.get(cursorKey) ?? null }, maxStalls);
-    if (stalled.length >= maxStalls) companyCursors.set(cursorKey, stalled.at(-1)!.actionId);
-    else companyCursors.delete(cursorKey);
+    if (stalled.length >= maxStalls) {
+      companyCursors.set(cursorKey, stalled.at(-1)!.actionId);
+      retryAt(Date.now());
+    } else companyCursors.delete(cursorKey);
   }
   const access = authorizationService(db);
   const agentCanRead = async (agentId: string, onBehalfOfUserId: string | null, stall: StallRow) => (await access.decide({

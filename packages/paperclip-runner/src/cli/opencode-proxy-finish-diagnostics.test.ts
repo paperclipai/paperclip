@@ -114,3 +114,40 @@ it("forwards closed tool delivery records after binding and drops any record tha
   expect(frames).toEqual([{ method: "warning", params: { threadId: "actual-session",
     message: JSON.stringify({ ...delivery, socketRequestIndex: 2, socketIdleMs: 5270 }) } }]);
 });
+
+it("forwards delivery records with argument names and drops names that could carry values", () => {
+  const frames: { params: { message: string } }[] = [];
+  const forward = createOpenCodeFinishDiagnosticForwarder(frame => frames.push(frame as never));
+  forward.bind("session");
+  const delivery = { schema: "paperclip.opencode.tool-delivery-diagnostic/v1", callIdSha256: "e".repeat(64),
+    socketRequestIndex: 1, socketIdleMs: null, handlerMs: 4, outcome: "result", written: true,
+    argumentNames: ["operationId", "pathParams", "query", "responseText"], argumentNamesTruncated: false, undeclaredArgumentCount: 0 };
+  for (const bad of [
+    { ...delivery, argumentNames: ["body value"] },
+    { ...delivery, argumentNames: "operationId" },
+    { ...delivery, argumentNames: Array.from({ length: 20 }, (_, n) => `${n}${"a".repeat(60)}`) },
+    { ...delivery, argumentNamesTruncated: "no" },
+    { ...delivery, undeclaredArgumentCount: -1 },
+    { ...delivery, undeclaredArgumentCount: "1" },
+  ]) forward.diagnostic(JSON.stringify(bad));
+  expect(frames).toEqual([]);
+  forward.diagnostic(JSON.stringify(delivery));
+  forward.diagnostic(JSON.stringify({ ...delivery, argumentNames: null }));
+  expect(frames.map(frame => JSON.parse(frame.params.message).argumentNames)).toEqual([delivery.argumentNames, null]);
+});
+
+it("forwards closed input-coercion records and drops any that could carry values", () => {
+  const frames: { params: { message: string } }[] = [];
+  const forward = createOpenCodeFinishDiagnosticForwarder(frame => frames.push(frame as never));
+  forward.bind("session");
+  const record = { schema: "paperclip.runner.tool-input-coerced/v1", tool: "paperclip_finish", callIdSha256: "c".repeat(64), coercion: "json_string_to_object", paths: ["/continuation", "/evidence/0"] };
+  forward.diagnostic(JSON.stringify(record));
+  for (const bad of [
+    { ...record, value: "secret" },
+    { ...record, paths: ["/continuation value"] },
+    { ...record, paths: [] },
+    { ...record, coercion: "other" },
+    { ...record, tool: "x y" },
+  ]) forward.diagnostic(JSON.stringify(bad));
+  expect(frames.map(frame => JSON.parse(frame.params.message))).toEqual([record]);
+});

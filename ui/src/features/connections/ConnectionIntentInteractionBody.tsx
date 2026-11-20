@@ -37,6 +37,8 @@ import {
 
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
 import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "@/components/coordinator/NeedsYouCardKit";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export interface ConnectionIntentInteractionBodyProps {
   footerSlot?: ReactNode;
@@ -364,7 +366,7 @@ export function ConnectionIntentInteractionBody({
     const busy = completeMutation.isPending || declineMutation.isPending;
     const askFirst = accessRequest.tools.filter(tool => tool.permission === "ask_first").length;
     return <div id={focusTargetId} ref={focusTargetRef} tabIndex={-1} data-testid="connection-intent-focus-target">
-      <div data-testid="connection-intent-access-request" className="space-y-4">
+      <div data-testid="connection-intent-access-request" className={cn("space-y-4", ANALYTICS_MASK_CLASS)}>
         <NeedsYouPanel>
           {artifactRow}
           <NeedsYouPanelRow icon={serviceLogo} title={`${interaction.payload.serviceName} · ${accessRequest.connectionName}`}
@@ -399,7 +401,7 @@ export function ConnectionIntentInteractionBody({
         <div className="flex items-center gap-3">
           <AgentAvatar agent={agentQuery.data ?? { id: interaction.payload.requestingAgentId, name: interaction.payload.requestingAgentName }} size={32} label={interaction.payload.requestingAgentName} />
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-foreground">Grant {interaction.payload.requestingAgentName} access to “{accessRequest.connectionName}”?</p>
+            <p className={cn("text-sm font-medium text-foreground", ANALYTICS_MASK_CLASS)}>Grant {interaction.payload.requestingAgentName} access to “{accessRequest.connectionName}”?</p>
           </div>
           <AppLogo name={interaction.payload.serviceName} logoUrl={interaction.payload.serviceLogoUrl} darkLogoUrl={interaction.payload.serviceDarkLogoUrl} size={32} />
         </div>
@@ -460,7 +462,7 @@ export function ConnectionIntentInteractionBody({
         </Button>
       </div>
     : selectedReady ? <div className="space-y-3">
-        <p className="text-sm">{repair.connection.name} is ready.</p>
+        <p className={cn("text-sm", ANALYTICS_MASK_CLASS)}>{repair.connection.name} is ready.</p>
         <Button disabled={completeMutation.isPending} onClick={() => completeMutation.mutate(repair.connection.id)}>
           {completeMutation.isPending ? "Continuing…" : "Continue task"}
         </Button>
@@ -485,7 +487,7 @@ export function ConnectionIntentInteractionBody({
         allAgents={false}
         onComplete={(result) => selectAiAccountMutation.mutate({ ...result, generation })}
         onCancel={() => { closeSetup(); returnFocusToCard(); }}
-      /> : <p role="status" className="text-sm text-muted-foreground">
+      /> : <p role="status" className={cn("text-sm text-muted-foreground", ANALYTICS_MASK_CLASS)}>
         {repair.connection.ownership === "personal" ? `${repair.connection.ownerName ?? "The account owner"} must reconnect ${repair.connection.name}.` : `The account owner must reconnect ${repair.connection.name}.`}
         {" "}You can continue here once it is restored.
       </p>
@@ -604,7 +606,7 @@ export function ConnectionIntentInteractionBody({
                 </Button>
               </DialogTrigger>
               <DialogContent
-                className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl"
+                className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl", ANALYTICS_MASK_CLASS)}
                 showCloseButton={false}
                 onCloseAutoFocus={(event) => {
                   event.preventDefault();

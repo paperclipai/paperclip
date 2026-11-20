@@ -68,6 +68,17 @@ const routes = (
   </>
 );
 
+/**
+ * The page's clock starts at navigation start. A test process can be older
+ * than the 30 s page-load timeout, which would turn the hard load (start 0)
+ * into a timeout, so the clock is restarted for each test.
+ */
+function restartPageClock() {
+  const realNow = performance.now.bind(performance);
+  const origin = realNow();
+  vi.spyOn(performance, "now").mockImplementation(() => realNow() - origin);
+}
+
 describe("PageLoadTracker", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
@@ -81,6 +92,7 @@ describe("PageLoadTracker", () => {
     measurements.ended.length = 0;
     resetPageSessionSampleForTest();
     window.history.replaceState(null, "", "/PAP/issues");
+    restartPageClock();
   });
 
   afterEach(() => {
@@ -88,6 +100,7 @@ describe("PageLoadTracker", () => {
     root = null;
     container.remove();
     vi.clearAllMocks();
+    vi.mocked(performance.now).mockRestore?.();
   });
 
   async function render(initialPath: string) {

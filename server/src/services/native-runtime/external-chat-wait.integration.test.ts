@@ -5178,7 +5178,7 @@ describe("native external-chat response wait", () => {
     const unreviewedHead = resumeMode === "new_head";
     const fixture = await seedWaitTurn("github", [], {
       reportedWorkDisposition: disposition,
-      summary: disposition === "done" ? "Review is 5/5 and required checks passed." : "Review published; waiting for the next PR update.",
+      summary: disposition === "done" ? "Review is complete at 5/5; CI results are unavailable." : "Review published; waiting for the next PR update.",
       ...(disposition === "done" ? { continuation: undefined } : {}),
       ...(continuationKind === "monitor" ? { continuation: { kind: "monitor", summary: "Wait for the saved check.", idempotencyKey: "review-monitor" } } : {}),
     });

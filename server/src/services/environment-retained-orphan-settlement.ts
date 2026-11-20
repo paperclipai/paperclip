@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { nativeWorkspaceExportPendingForLease } from "./native-runtime/native-workspace-finalization-state.js";
@@ -97,7 +97,7 @@ function orphanedRunSandboxCondition() {
  * `heldBy`, so a held orphan is not listed (and not polled) until its last
  * reference clears or its retention window ends. The settle re-checks all of
  * them, plus the pending native export, under the row lock. */
-function softlyHeldSql(now?: Date) {
+export function softlyHeldSql(now?: Date) {
   const at = now ? sql`${now.toISOString()}::timestamptz` : sql`now()`;
   const issue = sql`coalesce(run.native_issue_id, run.issue_id, ${environmentLeases.issueId})`;
   return sql`(${environmentLeases.expiresAt} is null or ${environmentLeases.expiresAt} > ${at}) and (
@@ -116,8 +116,7 @@ function alwaysHeldSql() {
     or ${abandonedWorkspaceFilesHeldOnLeaseRowSql()}
     or coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') = 'true'
     or coalesce(${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,state}' = 'pending', false)
-    or exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
-      and run.status not in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))
+    or coalesce((select run.status not in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
     -- A prepared native workspace bound to this exact sandbox, for a run with
     -- workspace access. This is deliberately no wider than the settle's own
     -- export check: an orphan the settle would release must never be hidden
@@ -125,21 +124,23 @@ function alwaysHeldSql() {
     -- are listed and held by the settle until their export settles.
     -- The descriptor must also be one the settle's reader accepts
     -- (readNativeWorkspaceSyncReference); an invalid one holds nothing.
-    or exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
-      and run.runtime_mode = 'native'
-      and run.runner_profile_json#>>'{nativeWorkspaceSync,schema}' in
-        ('paperclip.native-workspace-sync/v1', 'paperclip.native-workspace-sync/v2', 'paperclip.native-workspace-sync/v3')
-      and run.runner_profile_json#>>'{nativeWorkspaceSync,state}' = 'prepared'
-      and coalesce(run.runner_profile_json#>>'{nativeWorkspaceSync,descriptorSha256}' ~ '^[0-9a-f]{64}$', false)
-      and coalesce(run.runner_profile_json#>>'{nativeWorkspaceSync,baselineSha256}' ~ '^[0-9a-f]{64}$', false)
-      and coalesce(jsonb_typeof(run.runner_profile_json#>'{nativeWorkspaceSync,finalHostSha256}'), 'null') = 'null'
-      and jsonb_typeof(run.runner_profile_json#>'{nativeWorkspaceSync,workspaceId}') = 'string'
-      and jsonb_typeof(run.runner_profile_json#>'{nativeWorkspaceSync,remoteCwd}') = 'string'
-      and coalesce(run.runner_profile_json#>>'{nativeWorkspaceSync,resourceDisposition}', 'destroy')
-        in ('keep_running', 'stop_and_retain', 'destroy')
-      and run.runner_profile_json#>>'{nativeWorkspaceSync,leaseId}' = ${environmentLeases.id}::text
-      and run.runner_profile_json#>>'{nativeWorkspaceSync,providerLeaseId}' = ${environmentLeases.providerLeaseId}
-      and coalesce(run.runner_profile_json#>>'{nativeExecutionInput,workspace,access}', '') <> 'none')
+      or (run.runtime_mode = 'native'
+        and profile.sync->>'schema' in
+          ('paperclip.native-workspace-sync/v1', 'paperclip.native-workspace-sync/v2', 'paperclip.native-workspace-sync/v3')
+        and profile.sync->>'state' = 'prepared'
+        and coalesce(profile.sync->>'descriptorSha256' ~ '^[0-9a-f]{64}$', false)
+        and coalesce(profile.sync->>'baselineSha256' ~ '^[0-9a-f]{64}$', false)
+        and coalesce(jsonb_typeof(profile.sync->'finalHostSha256'), 'null') = 'null'
+        and jsonb_typeof(profile.sync->'workspaceId') = 'string'
+        and jsonb_typeof(profile.sync->'remoteCwd') = 'string'
+        and coalesce(profile.sync->>'resourceDisposition', 'destroy') in ('keep_running', 'stop_and_retain', 'destroy')
+        and profile.sync->>'leaseId' = ${environmentLeases.id}::text
+        and profile.sync->>'providerLeaseId' = ${environmentLeases.providerLeaseId}
+        and coalesce(profile.access, '') <> 'none')
+      from heartbeat_runs run
+      cross join lateral (select run.runner_profile_json->'nativeWorkspaceSync' as sync,
+        run.runner_profile_json#>>'{nativeExecutionInput,workspace,access}' as access offset 0) profile
+      where run.id = ${environmentLeases.heartbeatRunId}), false)
     or exists (select 1 from environment_leases other where other.id <> ${environmentLeases.id}
       and other.provider = ${environmentLeases.provider} and other.provider_lease_id = ${environmentLeases.providerLeaseId}
       and other.status in ('active', 'retained', 'pending_cleanup')))`;
@@ -148,15 +149,31 @@ function alwaysHeldSql() {
 /** Retained orphans that nothing appears to reference now. */
 // The listing is built once, so it reads the database clock.
 export function releasableRetainedOrphanCondition(now?: Date) {
-  return and(retainedOrphanSandboxCondition(), sql`not ${alwaysHeldSql()}`, sql`not (${softlyHeldSql(now)})`);
+  return onlyForRetainedOrphans(sql`not ${alwaysHeldSql()} and not (${softlyHeldSql(now)})`);
+}
+
+function retainedOrphanCandidateCondition() {
+  return and(eq(environmentLeases.cleanupStatus, "success"), sql`${environmentLeases.heartbeatRunId} is not null`,
+    sql`${environmentLeases.provider} is not null`, sql`${environmentLeases.providerLeaseId} is not null`,
+    or(and(eq(environmentLeases.status, "released"), eq(environmentLeases.leasePolicy, "ephemeral"),
+      sql`${environmentLeases.metadata} ? ${ORPHANED_SANDBOX_RECOVERY_KEY}`,
+      sql`${environmentLeases.metadata} ? 'sandboxStopAndRetainReceipt'`),
+    and(eq(environmentLeases.leasePolicy, "reuse_by_environment"), inArray(environmentLeases.status, ["released", "failed"]),
+      sql`coalesce(${environmentLeases.metadata}#>>'{remoteExecutionTermination,state}' = 'stopped', false)`),
+    and(eq(environmentLeases.status, "retained"), eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+      sql`${environmentLeases.executionWorkspaceId} is not null`)));
+}
+
+function onlyForRetainedOrphans(condition: SQL, candidate: SQL | undefined = retainedOrphanSandboxCondition()) {
+  return and(retainedOrphanCandidateCondition(), sql`(case when ${candidate} then ${condition} else false end)`);
 }
 
 /** When the next retained orphan's retention window ends while only soft
  * references hold it; the reconciler wakes then to release it. */
 export async function nextRetainedOrphanDueAt(db: Db, now: Date): Promise<Date | null> {
   const [row] = await db.select({ due: sql<string | null>`min(${environmentLeases.expiresAt})` }).from(environmentLeases)
-    .where(and(retainedOrphanSandboxCondition(), sql`not ${alwaysHeldSql()}`, sql`${softlyHeldSql(now)}`,
-      sql`${environmentLeases.expiresAt} is not null`));
+    .where(onlyForRetainedOrphans(sql`not ${alwaysHeldSql()} and ${softlyHeldSql(now)}`,
+      and(retainedOrphanSandboxCondition(), sql`${environmentLeases.expiresAt} is not null`)));
   return row?.due ? new Date(row.due) : null;
 }
 

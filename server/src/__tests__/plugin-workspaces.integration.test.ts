@@ -17,6 +17,7 @@ import {
   pluginCompanySettings,
 } from "@paperclipai/db";
 import {
+  callWorkspaceProvider,
   preparePluginWorkspace,
   inspectPluginWorkspace,
   finalizePluginWorkspace,
@@ -129,6 +130,60 @@ const support = await getEmbeddedPostgresTestSupport();
         const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
         expect(retained.providerRef).toBe(`checkout:${workspaceId}`);
       });
+
+    it("sends the run's own-driver environment only to a provider that declares it", async () => {
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      const declare = (workspaceEnvironmentVersion?: 1) => db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: { type: "object" }, supportsTasks: true }],
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, workspaceVerificationVersion: 1,
+          ...(workspaceEnvironmentVersion ? { workspaceEnvironmentVersion } : {}) },
+      } }).where(eq(plugins.id, f.pluginId));
+      await declare(1);
+      const [row] = await db.insert(environments).values({ name: `Snapshot tasks ${f.pluginId}`, driver: "plugin", status: "active",
+        config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: { snapshot: "base", cpu: 2 } } }).returning();
+      const environment = { ...row, driver: "plugin" as const };
+      const expected = { id: row.id, driverKey: "tasks", config: { snapshot: "base", cpu: 2 } };
+
+      const prepared = await preparePluginWorkspace(db, f.workers, { ...f.input, environment });
+      expect(f.calls).toHaveLength(1);
+      expect(f.calls[0].environment).toEqual(expected);
+      // Retry verification of the retained checkout carries the same environment.
+      await preparePluginWorkspace(db, f.workers, { ...f.input, environment, existingWorkspaceId: prepared!.id, verifyExisting: true });
+      expect(f.calls[1]).toMatchObject({ environment: expected, operation: { verifyExisting: true } });
+
+      const operation = f.calls[0].operation;
+      const send = async (selected: Parameters<typeof callWorkspaceProvider>[2]["environment"]) => {
+        await callWorkspaceProvider(db, f.workers, { workspace: prepared!, runId: f.runId, agentId: f.input.agentId,
+          environment: selected, operation });
+        return f.calls.at(-1)!;
+      };
+      const withEnvironment = await send(environment);
+      expect(withEnvironment.environment).toEqual(expected);
+      const without = await send(undefined);
+      expect(without).not.toHaveProperty("environment");
+      // The environment is context only; the operation identity does not change.
+      expect(withEnvironment.operationId).toBe(without.operationId);
+      expect(await send({ ...environment, config: { pluginKey: plugin.pluginKey, driverKey: "tasks" } }))
+        .toMatchObject({ environment: { id: row.id, driverKey: "tasks", config: {} } });
+      for (const omitted of [
+        { ...environment, config: { ...environment.config, pluginKey: "other.plugin" } },
+        { ...environment, config: { pluginKey: plugin.pluginKey, driverConfig: { snapshot: "base" } } },
+        { id: row.id, driver: "local" as const, config: {} },
+        { id: row.id, driver: "sandbox" as const, config: { provider: "e2b", pluginKey: plugin.pluginKey, driverKey: "tasks" } },
+        null,
+      ]) {
+        const request = await send(omitted);
+        expect(request).not.toHaveProperty("environment");
+        expect(request.operationId).toBe(without.operationId);
+      }
+
+      await declare();
+      const undeclared = await send(environment);
+      expect(undeclared).not.toHaveProperty("environment");
+      expect(undeclared.operationId).toBe(without.operationId);
+    });
 
     it("polls bounded requests using the provider's advertised preparation deadline", async () => {
       const f = await fixture();

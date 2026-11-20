@@ -727,6 +727,8 @@ export interface PaperclipPluginManifestV1 {
     supportsMergeAncestry?: boolean;
     recoveryPullRequestVersion?: 1;
     freshWorkspaceVersion?: 1;
+    /** Accepts the run's selected environment (one of this plugin's drivers) in workspace params. */
+    workspaceEnvironmentVersion?: 1;
     modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
     strategies: Array<"project_primary" | "git_worktree">;
     defaultForProjects?: {
@@ -753,6 +755,14 @@ export interface PaperclipPluginManifestV1 {
   webhooks?: PluginWebhookDeclaration[];
   /** Agent tools this plugin contributes. Requires `agent.tools.register` capability. */
   tools?: PluginToolDeclaration[];
+  /**
+   * Connector types this plugin adds to the Connectors catalog. Each entry
+   * uses the built-in app-definition schema; the host namespaces its slug by
+   * plugin key. Declaring an app grants no tools: agents get tools only from
+   * a connection installed for them or for the whole company. Requires the
+   * `connectors.provide` capability.
+   */
+  apps?: import("./app-definition.js").AppDefinition[];
   /** Restricted plugin-owned database namespace declaration. */
   database?: PluginDatabaseDeclaration;
   /** Scoped JSON API routes mounted under `/api/plugins/:pluginId/api/*`. */

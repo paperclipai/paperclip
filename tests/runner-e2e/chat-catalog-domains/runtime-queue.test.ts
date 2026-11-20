@@ -63,13 +63,16 @@ it("finds the saved comment when a continuation envelope nests the events JSON a
 function reorderPage(enableAfterMs: number) {
   const enabledAt = Date.now() + enableAfterMs, pressed: Array<{ key: string; enabled: boolean }> = [];
   let resolveResponse!: (value: unknown) => void;
+  let dragging = false;
   const page = { waitForResponse: (match: (response: unknown) => boolean, options: { timeout: number }) => new Promise((resolve, reject) => {
     resolveResponse = value => { if (match(value)) resolve(value); };
     setTimeout(() => reject(new Error("timeout")), options.timeout);
-  }) };
+  }), evaluate: async () => undefined };
   const handle = { isEnabled: async () => Date.now() >= enabledAt, focus: async () => undefined,
+    getAttribute: async (name: string) => name === "aria-pressed" && dragging ? "true" : null,
     press: async (key: string) => {
       const enabled = Date.now() >= enabledAt; pressed.push({ key, enabled });
+      if (enabled && key === "Space") dragging = !dragging;
       if (enabled && key === "Space" && pressed.filter(row => row.key === "Space").length === 2)
         resolveResponse({ request: () => ({ method: () => "PUT" }), url: () => "http://127.0.0.1/api/issues/t/queued-comments/order", status: () => 200 });
     } };
@@ -135,4 +138,38 @@ describe("queued follow-up brief", () => {
     for (const part of ["Acorn Notes", "website.html", "Research notes your whole team can find", "Request early access", "Free for teams", "hello@acornnotes.example"]) expect(brief).toContain(part);
   });
   it("does not pre-complete the queued contact requirement", () => expect(brief).not.toMatch(/contact/i));
+});
+
+// Full cohort 12 (steering.edit-queued-message, as in cohort 9): the edit saved, but Space, ArrowUp, Space pressed
+// back to back sent no PUT /queued-comments/order in 2 gestures. dnd-kit starts a keyboard drag on Space, listens
+// for later keys only after a timer, and moves only after measuring the rows on a later render, so a key pressed
+// before then is dropped and the closing Space drops the item where it started.
+function asyncDragPage() {
+  let resolveResponse!: (value: unknown) => void, dragging = false, activatedAt = 0, moved = false;
+  const page = { waitForResponse: (match: (response: unknown) => boolean, options: { timeout: number }) => new Promise((resolve, reject) => {
+    resolveResponse = value => { if (match(value)) resolve(value); };
+    setTimeout(() => reject(new Error("timeout")), options.timeout);
+  }), evaluate: () => new Promise(resolve => setTimeout(resolve, 20)) };
+  const ready = () => dragging && Date.now() - activatedAt >= 15;
+  const handle = { isEnabled: async () => true, focus: async () => undefined,
+    getAttribute: async (name: string) => name === "aria-pressed" && Date.now() >= activatedAt && dragging ? "true" : null,
+    press: async (key: string) => {
+      if (key === "Space" && !dragging) { dragging = true; activatedAt = Date.now() + 10; moved = false; return; }
+      if (!ready()) return;
+      if (key === "ArrowUp") moved = true;
+      if (key === "Space") {
+        dragging = false;
+        if (moved) resolveResponse({ request: () => ({ method: () => "PUT" }), url: () => "http://127.0.0.1/api/issues/t/queued-comments/order", status: () => 200 });
+      }
+    } };
+  return { page: page as never, handle: handle as never };
+}
+it("waits for the keyboard drag to start and the page to settle between keys", async () => {
+  const fake = asyncDragPage();
+  await expect(keyboardMoveQueuedMessageUp(fake.page, fake.handle, 500, 5)).resolves.toMatchObject({ status: 200, gestures: 1, dragStarted: [true] });
+});
+it("reports a gesture whose drag never starts instead of pressing keys blind", async () => {
+  const fake = asyncDragPage();
+  const handle = { ...(fake.handle as object), getAttribute: async () => null };
+  await expect(keyboardMoveQueuedMessageUp(fake.page, handle as never, 200, 5)).rejects.toThrow(/drag started: false/);
 });

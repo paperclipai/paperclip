@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
-import { createCapabilityRunnerdCodexTransport, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { createCapabilityRunnerdCodexTransport, RUNNER_REPLAY_PROGRESS_MAX_EXTENSION_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
 type Carried = "late-tool-result" | "close-path-suspend" | "suspend-then-tool-result" | "event-backlog";
@@ -220,6 +220,73 @@ it("times out when the runner's queued answer stops advancing", async () => {
     failureCode: () => "provider_transport_failed",
     answeredProgressAt: () => Date.now() - 31_000,
   })).rejects.toThrow("provider_transport_failed: PRP command session.snapshot timed out");
+});
+
+it("keeps waiting past the deadline while the controller is still committing the Runner's replayed events", async () => {
+  let replayedAt = Date.now();
+  const command = pendingCommand();
+  const replaying = setInterval(() => { replayedAt = Date.now(); }, 5);
+  setTimeout(() => { command.status = "completed"; }, 150);
+  try {
+    await expect(waitForRunnerCommand({
+      type: "runner.drain",
+      deadline: Date.now() + 20,
+      abortOnClose: false,
+      isClosed: () => false,
+      throwIfFailed: () => undefined,
+      command: () => command,
+      runnerHasExited: async () => false,
+      failureCode: () => "runner_ingress_unavailable",
+      answeredProgressAt: () => null,
+      replayProgressAt: () => replayedAt,
+    })).resolves.toBeUndefined();
+  } finally {
+    clearInterval(replaying);
+  }
+});
+
+it("times out a Runner that keeps replaying but never answers once the replay extension is spent", async () => {
+  vi.useFakeTimers();
+  try {
+    const deadline = Date.now() + 30_000;
+    const waited = waitForRunnerCommand({
+      type: "session.snapshot",
+      deadline,
+      abortOnClose: false,
+      isClosed: () => false,
+      throwIfFailed: () => undefined,
+      command: () => pendingCommand(),
+      runnerHasExited: async () => false,
+      failureCode: () => "provider_transport_failed",
+      answeredProgressAt: () => null,
+      replayProgressAt: () => Date.now(),
+    });
+    const outcome = waited.then(() => "completed", (error: unknown) => String(error));
+    await vi.advanceTimersByTimeAsync(30_000 + RUNNER_REPLAY_PROGRESS_MAX_EXTENSION_MS - 1_000);
+    let settled = false;
+    void outcome.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(outcome).resolves.toContain("provider_transport_failed: PRP command session.snapshot timed out");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("does not extend a deadline for a Runner whose replay has stopped advancing", async () => {
+  await expect(waitForRunnerCommand({
+    type: "runner.drain",
+    deadline: Date.now() + 20,
+    abortOnClose: false,
+    isClosed: () => false,
+    throwIfFailed: () => undefined,
+    command: () => pendingCommand(),
+    runnerHasExited: async () => false,
+    failureCode: () => "runner_ingress_unavailable",
+    answeredProgressAt: () => null,
+    replayProgressAt: () => Date.now() - 31_000,
+  })).rejects.toThrow("runner_ingress_unavailable: PRP command runner.drain timed out");
 });
 
 it("leaves later barriers that share an admission deadline their time after an answered barrier ran past it", async () => {

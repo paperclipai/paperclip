@@ -361,6 +361,50 @@ describe("failed native run owner release", () => {
     expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
   });
 
+  it.each(["done", "cancelled"] as const)("never surfaces namespace attention for a %s task until it is reopened", async status => {
+    const { runId, issueId } = await nativeRun({ status: "failed", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } });
+    await db.update(issues).set({ status }).where(eq(issues.id, issueId));
+    const before = await coordinator(runId);
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    for (let pass = 0; pass < 3; pass++) {
+      expect(await committedWakes(DELIVERY_QUEUES.strandedAssignments, () => releaseAbandonedNativeOwners(db))).toBe(0);
+    }
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+    expect(await coordinator(runId)).toEqual(before);
+    expect(await executionControlSchedule(db).finalization()).toBeNull();
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).not.toBeNull();
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([
+      expect.objectContaining({ status: "active", evidence: expect.objectContaining({ runId }) })]);
+  });
+
+  it("keeps a settled namespace incident settled and surfaces a renewed authority once", async () => {
+    const { runId, issueId } = await nativeRun({ status: "failed", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(Date.now() - 60_000) } });
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    const [surfaced] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(surfaced).toMatchObject({ status: "active", evidence: { runId } });
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: new Date(),
+      resolutionNote: "source_terminal" }).where(eq(issueRecoveryActions.id, surfaced.id));
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    for (let pass = 0; pass < 3; pass++) {
+      expect(await committedWakes(DELIVERY_QUEUES.strandedAssignments, () => releaseAbandonedNativeOwners(db))).toBe(0);
+    }
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(1);
+    const renewedExpiry = new Date(Date.now() + 60_000);
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: renewedExpiry }).where(eq(nativeRunFinalizations.runId, runId));
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(renewedExpiry.getTime());
+    const afterRenewal = new Date(renewedExpiry.getTime() + 1);
+    expect(await releaseAbandonedNativeOwners(db, afterRenewal)).toBe(0);
+    expect(await releaseAbandonedNativeOwners(db, afterRenewal)).toBe(0);
+    const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.id !== surfaced.id)).toMatchObject({ status: "active", evidence: { runId } });
+    expect(rows.find(row => row.id !== surfaced.id)?.fingerprint).not.toBe(surfaced.fingerprint);
+  });
+
   it("keeps an unexpired owner blocking the stop check and schedules its expiry", async () => {
     const leaseExpiresAt = new Date(Date.now() + 10 * 60_000);
     const { runId } = await nativeRun({ status: "failed", errorCode: "setup_failed", error: LEASE_FAILURE,

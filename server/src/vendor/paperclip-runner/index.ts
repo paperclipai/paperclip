@@ -67,8 +67,10 @@ export type {
   PrpTerminalState,
   PrpVerificationReasonCode,
   PrpWireConnection,
+  ProviderTurnWaitOptions,
   ReplayControlPlaneEventsInput,
   RunnerExecutionDriver,
+  RunnerReleaseResumeOutcome,
   RunnerLaunchPreparer,
   DurableRecoveryIdentity,
   DurablePrpCheckpoint,
@@ -93,10 +95,14 @@ export const CURSOR_CLOUD_DEFAULT_TIMEOUT_MS = runner.CURSOR_CLOUD_DEFAULT_TIMEO
 export const RUNNER_TOOL_SCOPE_TOKEN_HEADER = runner.RUNNER_TOOL_SCOPE_TOKEN_HEADER;
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const providerFailureFromError = runner.providerFailureFromError;
+export const isPrpAutomaticallyContinuedBlocker = runner.isPrpAutomaticallyContinuedBlocker;
 export const safeErrorCauseCode = runner.safeErrorCauseCode;
 export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
 export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
+export const inspectDurablePrpCheckpointRunner = runner.inspectDurablePrpCheckpointRunner;
+export const isSettledReleasedRunnerCut = runner.isSettledReleasedRunnerCut;
+export const revertUnattachedRelaunchRotation = runner.revertUnattachedRelaunchRotation;
 export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
 export const inspectUnauthenticatedBootstrapCheckpoint = runner.inspectUnauthenticatedBootstrapCheckpoint;
 export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapState;
@@ -106,6 +112,8 @@ export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
 export const admitToolInputSchema = runner.admitToolInputSchema;
 export const TOOL_INPUT_SCHEMA_MAX_BYTES = runner.TOOL_INPUT_SCHEMA_MAX_BYTES;
 export const canonicalToolInputSchema = runner.canonicalToolInputSchema;
+export const runnerLaunchPreparationDigest = runner.runnerLaunchPreparationDigest;
+export const runnerLaunchRunDigest = runner.runnerLaunchRunDigest;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
 export const inspectStagedRunAttachment = runner.inspectStagedRunAttachment;
 export const inspectRetainedRunInstructions = runner.inspectRetainedRunInstructions;
@@ -127,6 +135,8 @@ export type SemanticInputAdmission = import("@paperclipai/paperclip-runner").Sem
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
+export const toolInputVariantError = runner.toolInputVariantError;
+export const providerToolSchemaShapeIssues = runner.providerToolSchemaShapeIssues;
 export const CAPABILITY_CANONICAL_OPERATIONS = runner.CAPABILITY_CANONICAL_OPERATIONS;
 export const HarnessRuntimeRequestResolutionError =
   runner.HarnessRuntimeRequestResolutionError;
@@ -190,6 +200,8 @@ export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;
 export const KIMI_DISTRIBUTION_CLOSURE_SHA256 = runner.KIMI_DISTRIBUTION_CLOSURE_SHA256;
+export const SANDBOX_DISK_FULL_FAILURE_CODE = runner.SANDBOX_DISK_FULL_FAILURE_CODE;
+export const isSandboxDiskFullFailure = runner.isSandboxDiskFullFailure;
 export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const resolveCodexCommand = runner.resolveCodexCommand;
 export const resolvePinnedCodexCommand = runner.resolvePinnedCodexCommand;
@@ -208,6 +220,8 @@ export const nativeRestartContinuationInFlight = runner.nativeRestartContinuatio
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+export const completeTerminatedRemoteNativeSessionCleanupForTask = runner.completeTerminatedRemoteNativeSessionCleanupForTask;
+export const nativeSessionCleanupRemoteScopes = runner.nativeSessionCleanupRemoteScopes;
 export const nativeSessionCleanupBlock = runner.nativeSessionCleanupBlock;
 export const onNativeSessionCleanupSettled = runner.onNativeSessionCleanupSettled;
 export const onNativeSessionCleanupQuarantined = runner.onNativeSessionCleanupQuarantined;

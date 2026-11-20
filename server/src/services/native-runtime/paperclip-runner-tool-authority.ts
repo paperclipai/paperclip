@@ -10,7 +10,7 @@ import { createCostEventInTransaction } from "../costs.js";
 import { withOperationAccountingTransaction } from "../accounting-transaction.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
-import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { notifyIssueAttentionRetentionWork } from "../retention-work-notifications.js";
 import { requiredQualityReviewSchema, type RequestCheckboxConfirmationOption } from "@paperclipai/shared";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -48,8 +48,10 @@ import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { normalizeIssueExecutionPolicy, redactIssueMonitorExternalRef } from "../issue-execution-policy.js";
 import { buildLowTrustSourceTrust, isLowTrustQuarantined, LOW_TRUST_QUARANTINED_BODY, resolveActorSourceTrustForIssue, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { handoffPlanContext } from "./handoff-plan-context.js";
-import { callCreateSkillTool, callUpdateSkillTool } from "../skill-tools.js";
+import { callCreateSkillTool, callUpdateSkillDetailsTool, callUpdateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
+import { callResponsibilityTool, isResponsibilityTool, RESPONSIBILITY_TOOL_NAMES, responsibilityToolsDisabledError } from "../responsibility-tools.js";
+import { callRoutineTool, ROUTINE_TOOL_NAMES } from "../routine-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -72,13 +74,16 @@ import { canActorReadAssetContent } from "../asset-content-access.js";
 import { getSecretProvider } from "../../secrets/provider-registry.js";
 import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
-import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
+import { badRequest, forbidden, notFound, HttpError, unprocessable } from "../../errors.js";
 import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
 import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, RUNNER_API_CAPTURE_EVICTION_PASSES, runnerApiCaptureCleanupStalled, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
 import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { AGENT_TOOL_CALL_LOOP, TOOL_CALL_LOOP_HINT, toolCallLoopContinuationKey, type ToolCallLoopError } from "./repeated-tool-failure-guard.js";
+import { nativeRunHasStopRequest } from "./native-tool-receipt-limit.js";
+import { enqueueWake } from "./status-decision-committer.js";
 import type { Db } from "@paperclipai/db";
 import {
   authUsers,
@@ -102,7 +107,7 @@ import {
   projects,
   issueThreadInteractions,
 } from "@paperclipai/db";
-import { CAPABILITY_CANONICAL_OPERATIONS, CAPABILITY_SEMANTIC_TOOL_CATALOG, parseNativeExecutionInput, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
+import { CAPABILITY_CANONICAL_OPERATIONS, CAPABILITY_SEMANTIC_TOOL_CATALOG, parseNativeExecutionInput, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError, toolInputVariantError } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
@@ -142,6 +147,9 @@ import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGui
 import { recordChildTaskRead } from "./native-child-completion-delivery.js";
 import { logger } from "../../middleware/logger.js";
 
+// Artifacts are at most RUNNER_API_MAX_BYTES; a healthy read takes seconds.
+// Stay well inside the provider MCP client's five-minute request cutoff.
+const ARTIFACT_STORAGE_READ_TIMEOUT_MS = 60_000;
 const EXTERNAL_WORKSPACE_OPERATIONS = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "register_deliverable"]);
 const IMPLEMENTED_OPERATIONS = new Set([
   "send_chat_message",
@@ -150,9 +158,10 @@ const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api", "hire_agent",
   "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title", "set_task_monitor",
   "request_human_input", "handoff_case", ...NATIVE_CASE_OPERATIONS,
-  "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "create_skill", "update_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
+  "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "create_skill", "update_skill", "update_skill_details", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_agents", "get_agent", "list_approvals", "get_approval", "get_approval_context",
+  ...RESPONSIBILITY_TOOL_NAMES, ...ROUTINE_TOOL_NAMES,
 ]);
 
 /** Closed first-party native Muse profile. No connector, generic API, credential or workspace grants. */
@@ -224,12 +233,16 @@ type Binding = {
   /** Server-owned API origin and storage; never obtained from tool input. */
   apiUrl?: string;
   storage?: StorageService;
+  /** Deadline for one artifact read from storage; defaults to ARTIFACT_STORAGE_READ_TIMEOUT_MS. */
+  storageReadTimeoutMs?: number;
   /** Server-owned suppression for baseline evals; true never overrides operator opt-in. */
   connectorAssignments?: Pick<ConnectorAssignment, "tools">[];
   assignedMcpTools?: Awaited<ReturnType<typeof createAssignedMcpTools>>;
   apiToolsEnabled?: boolean;
   workMode?: "standard" | "planning" | "ask" | "skill_test";
   casesEnabled?: boolean;
+  /** Instance `enableResponsibilities`, pinned when the turn opens; the routes still enforce it. */
+  responsibilitiesEnabled?: boolean;
   workspaceRoot?: string;
   workspaceBridge?: boolean;
   /** Pinned provider identity; configuration edits cannot remove API file guards. */
@@ -349,7 +362,33 @@ function hireAgentResult(value: unknown, provider: unknown) {
 export class PaperclipRunnerToolAuthority {
   #taskAttachmentCache = new TaskAttachmentReadCache();
   #skillLibraryCache = new SkillLibraryReadCache();
-  close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); }
+  close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); this.binding.assignedMcpTools?.close?.(); }
+
+  async scheduleToolCallLoopContinuation(loop: ToolCallLoopError): Promise<boolean> {
+    const review = this.binding.nativeReview;
+    const loopContext = { sourceRunId: this.binding.runId, continuationCause: AGENT_TOOL_CALL_LOOP,
+      tool: loop.tool, refusals: loop.refusals, runRefusals: loop.runRefusals, argumentNames: loop.argumentNames };
+    return this.db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, this.binding.issueId), eq(issues.companyId, this.binding.companyId))).for("update");
+      const [run] = await tx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("share");
+      if (!run || nativeRunHasStopRequest(run.resultJson)) return false;
+      await enqueueWake({
+      tx: tx as unknown as Db,
+      originRunId: this.binding.runId,
+      companyId: this.binding.companyId,
+      issueId: this.binding.issueId,
+      agentId: this.binding.agentId,
+      reason: review ? "native_completion_review" : "issue_continuation_needed",
+      idempotencyKey: toolCallLoopContinuationKey(this.binding.runId),
+      payload: { ...(review ?? {}), ...loopContext },
+      contextSnapshot: { ...(review ?? {}), forceFreshSession: true, livenessContinuationSourceRunId: this.binding.runId,
+        livenessContinuationReason: AGENT_TOOL_CALL_LOOP, livenessContinuationInstruction: TOOL_CALL_LOOP_HINT },
+      });
+      return true;
+    });
+  }
   constructor(readonly db: Db, readonly binding: Binding) {}
 
   definitions(): Array<Record<string, unknown>> {
@@ -380,6 +419,7 @@ export class PaperclipRunnerToolAuthority {
         (descriptor) =>
           IMPLEMENTED_OPERATIONS.has(descriptor.operationId) &&
           (!(descriptor.operationId === "handoff_case" || NATIVE_CASE_OPERATIONS.has(descriptor.operationId)) || this.binding.casesEnabled === true) &&
+          (!isResponsibilityTool(descriptor.operationId) || this.binding.responsibilitiesEnabled === true) &&
           (!this.binding.firstPartyOnly || !EXTERNAL_WORKSPACE_OPERATIONS.has(descriptor.operationId)) &&
           (runnerApiToolsEnabled(
             this.binding.companyId,
@@ -631,6 +671,12 @@ export class PaperclipRunnerToolAuthority {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
+    // Advertised schemas are plain objects so every model host shows their
+    // arguments; their cross-field variants are checked here with named errors.
+    if (!this.binding.assignedMcpTools?.has(call.tool) && !isConnectorTool(call.tool)) {
+      const variantError = toolInputVariantError(call.tool, call.arguments);
+      if (variantError) throw unprocessable(variantError);
+    }
     if ((call.tool === "handoff_case" || call.tool === "create_case") && !this.binding.nativeReview) {
       if (this.binding.workMode && this.binding.workMode !== "standard") throw forbidden("Case tools require standard work mode");
       const create = call.tool === "create_case" ? createNativeCaseSchema.parse(call.arguments) : null;
@@ -896,6 +942,12 @@ export class PaperclipRunnerToolAuthority {
         if (!apiUrl || !token) throw new Error("Skill tool authentication is unavailable");
         return callUpdateSkillTool({ arguments: input, apiUrl, token, companyId: this.binding.companyId });
       }
+      case "update_skill_details": {
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = this.#apiToken(context);
+        if (!apiUrl || !token) throw new Error("Skill tool authentication is unavailable");
+        return callUpdateSkillDetailsTool({ arguments: input, apiUrl, token, companyId: this.binding.companyId });
+      }
       case "get_workspace":
       case "list_workspaces":
       case "select_workspace":
@@ -916,6 +968,34 @@ export class PaperclipRunnerToolAuthority {
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
           conversation: Boolean(context.issue.conversationAgentId),
           companyPrefix: call.tool === "list_projects" ? await this.#companyPagePrefix() : null });
+      }
+      case "list_responsibilities":
+      case "get_responsibility":
+      case "find_responsibilities_for":
+      case "create_area":
+      case "update_area":
+      case "delete_area":
+      case "create_responsibility":
+      case "update_responsibility":
+      case "delete_responsibility":
+      case "file_under_responsibility":
+      case "remove_from_responsibility": {
+        // Hidden tools stay refused when called by name; the routes also re-check the live setting.
+        if (this.binding.responsibilitiesEnabled !== true) throw responsibilityToolsDisabledError();
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = this.#apiToken(context);
+        if (!apiUrl || !token) throw new Error("Responsibility tool authentication is unavailable");
+        return callResponsibilityTool({ name: call.tool, arguments: input, apiUrl, token,
+          companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
+          companyPrefix: await this.#companyPagePrefix() });
+      }
+      case "list_routines":
+      case "update_routine": {
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = this.#apiToken(context);
+        if (!apiUrl || !token) throw new Error("Routine tool authentication is unavailable");
+        return callRoutineTool({ name: call.tool, arguments: input, apiUrl, token,
+          companyId: this.binding.companyId, companyPrefix: await this.#companyPagePrefix() });
       }
       case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());
       case "hire_agent": {
@@ -1199,11 +1279,11 @@ export class PaperclipRunnerToolAuthority {
     if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
     const token = this.#apiToken(bound);
     if (!token) throw new Error("Paperclip run authentication is unavailable");
-    const execute = async () => {
+    const execute = async (callKey?: string) => {
       const current = await this.#boundContext();
       assertAvailable(current.issue.workMode);
       const result = await executeRunnerApi(input, { ...context, workMode: current.issue.workMode }, {
-        apiUrl, token,
+        apiUrl, token, callKey,
         beforeDispatch: async () => {
           const fresh = await this.#boundContext();
           assertAvailable(fresh.issue.workMode);
@@ -1247,7 +1327,7 @@ export class PaperclipRunnerToolAuthority {
       return null;
     });
     if (prior) return prior.result;
-    const result = await execute();
+    const result = await execute(key);
     const storedResult = provider
       ? { encryptedResult: (await provider.createSecret({ value: JSON.stringify(result) })).material }
       : { result };
@@ -1691,17 +1771,41 @@ export class PaperclipRunnerToolAuthority {
       };
       await assertArtifactAccess();
       if (asset.byteSize > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
-      const object = await (this.binding.storage ?? getStorageService()).getObject(this.binding.companyId, asset.objectKey);
+      // A stalled storage read must fail well before the provider's MCP
+      // client gives up, so the call settles with a retryable error instead
+      // of an anonymous client timeout. Nothing is written before this read.
+      const timeoutMs = this.binding.storageReadTimeoutMs ?? ARTIFACT_STORAGE_READ_TIMEOUT_MS;
+      const signal = AbortSignal.timeout(timeoutMs);
+      let object: Awaited<ReturnType<StorageService["getObject"]>> | undefined;
+      let onAbort = () => {};
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => {
+          object?.stream.destroy();
+          reject(new HttpError(504, `Artifact storage read did not finish within ${Math.ceil(timeoutMs / 1000)} seconds. No file was written; retry the same download.`, { code: "artifact_storage_timeout" }));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
       const chunks: Buffer[] = [];
-      let length = 0;
       try {
-        for await (const chunk of object.stream) {
-          const bytes = Buffer.from(chunk);
-          length += bytes.length;
-          if (length > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
-          chunks.push(bytes);
-        }
-      } finally { object.stream.destroy(); }
+        await Promise.race([aborted, (async () => {
+          const opened = await (this.binding.storage ?? getStorageService()).getObject(this.binding.companyId, asset.objectKey, { signal });
+          // A reply after the deadline can carry a stream opened with the
+          // aborted signal. Its AbortError must never become uncaught.
+          opened.stream.on("error", () => undefined);
+          if (signal.aborted) { opened.stream.destroy(); return; }
+          object = opened;
+          let length = 0;
+          for await (const chunk of opened.stream) {
+            const bytes = Buffer.from(chunk);
+            length += bytes.length;
+            if (length > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
+            chunks.push(bytes);
+          }
+        })()]);
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        object?.stream.destroy();
+      }
       await assertArtifactAccess();
       return { bytes: Buffer.concat(chunks), filename: asset.originalFilename ?? "file", contentType: asset.contentType };
     }
@@ -2510,7 +2614,7 @@ export class PaperclipRunnerToolAuthority {
     let replayed = false;
     let replayStatus: string | null = null;
     let replayMonitor: ReturnType<typeof summarizeIssueMonitor> | null = null;
-    const authorizeTarget = async (tx: Db, context: { run: typeof heartbeatRuns.$inferSelect }) => {
+    const authorizeTarget = async (tx: Db, context: { run: typeof heartbeatRuns.$inferSelect; actor: typeof agents.$inferSelect }) => {
       // A second owned task may itself be writing another task: fail on lock
       // contention instead of taking opposite issue/run locks and deadlocking.
       const [target] = await tx.select().from(issues).where(and(
@@ -2526,7 +2630,17 @@ export class PaperclipRunnerToolAuthority {
         } });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
-      await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true);
+      const project = target.projectId
+        ? (await tx.select().from(projects).where(and(eq(projects.id, target.projectId), eq(projects.companyId, this.binding.companyId))))[0] ?? null
+        : null;
+      const taskSources = { companyId: this.binding.companyId, agent: context.actor, project, issue: target };
+      const taskTrust = resolveCoreTrustPreset(taskSources);
+      const runTrust = resolveCoreTrustPreset({ ...taskSources,
+        run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy } });
+      const wakeKeepsTrust = taskTrust.kind === "low_trust_review" && runTrust.kind === "low_trust_review"
+        && canonicalJson(taskTrust.boundary) === canonicalJson(runTrust.boundary);
+      await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true,
+        wakeKeepsTrust ? { monitor: input.monitor, existing: normalizeIssueExecutionPolicy(target.executionPolicy)?.monitor ?? null } : undefined);
       if (target.assigneeAgentId !== this.binding.agentId || target.assigneeUserId ||
           !["in_progress", "in_review"].includes(target.status)) {
         throw forbidden("Monitors require an in-progress or in-review task assigned to this agent");
@@ -2554,7 +2668,7 @@ export class PaperclipRunnerToolAuthority {
         replayMonitor = summarizeIssueMonitor(target, normalizeIssueExecutionPolicy(target.executionPolicy));
         return { taskId: target.id, status: target.status, monitor: replayMonitor };
       }
-      await notifyAttentionRetentionWork(tx, { companyId: this.binding.companyId });
+      await notifyIssueAttentionRetentionWork(tx, { companyId: this.binding.companyId, issueId: target.id });
       const patch = prepareIssueMonitorUpdate(target, input.monitor, actor);
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       await notifyStatusCardIssueChange(tx, this.binding.companyId);

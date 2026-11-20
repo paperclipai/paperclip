@@ -36,13 +36,13 @@ it("copies installed dependencies as their own layer, before the per-commit app 
 
 it("copies the large provider-pack files as a linked layer with fixed timestamps", () => {
   const pack = stageBody("runner-provider-pack");
-  const archive = pack.indexOf("create-provider-pack-archive.mjs");
+  const copy = pack.indexOf("cp -a /runner-artifacts/provider-pack/. /provider-pack/");
   const split = pack.indexOf("mv \"$1\" \"/provider-pack-large/$1\"");
   const timestamps = pack.indexOf("find /provider-pack-large -exec touch -h -d @0 {} +");
-  // The transport archive reads the whole pack, so the split must follow it.
-  expect(archive).toBeGreaterThanOrEqual(0);
-  expect(split).toBeGreaterThan(archive);
+  expect(copy).toBeGreaterThanOrEqual(0);
+  expect(split).toBeGreaterThan(copy);
   expect(timestamps).toBeGreaterThan(split);
+  expect(pack.match(/^RUN /gm)).toHaveLength(1);
 
   const production = stageBody("production");
   const large = production.search(

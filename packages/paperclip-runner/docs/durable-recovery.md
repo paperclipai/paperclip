@@ -700,6 +700,15 @@ result replay as `semantic_tool_result_duplicate` in a diagnostic event, with
 no task failure. Conflict errors identify the call, operation, and both result
 digests without including the result bodies.
 
+A recorded result that the bridge rejects for a call it still holds settles
+that call with a non-retryable runner error, recorded as
+`semantic_tool_result_undeliverable`; the provider receives that error
+immediately. `run.attach` settles calls left pending by a closed provider turn
+as `semantic_tool_result_expired`, an error result with an unknown outcome: the
+provider stopped waiting when its turn ended, and the next run's authority
+never delivers the previous run's results. Neither settlement executes the
+operation again.
+
 The controller checkpoints a reusable session only after every admitted tool
 has a matching completed result-delivery command and the provider has drained.
 A callback rejected before business dispatch can report

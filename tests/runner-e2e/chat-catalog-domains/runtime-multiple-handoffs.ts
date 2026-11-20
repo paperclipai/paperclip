@@ -57,7 +57,7 @@ export const runtimeMultipleHandoffCases = [runtimeDefinition("agent-chat.multip
   const documents = await ctx.input.api.get<Entity[]>(`/api/issues/${logo.id}/documents`), revisions: Entity[] = [];
   for (const doc of documents) revisions.push(...await ctx.input.api.get<Entity[]>(`/api/issues/${logo.id}/documents/${encodeURIComponent(doc.key!)}/revisions`));
   const busy = await busyRuntimeWorker(ctx); await openStandingChat(ctx);
-  const message = `Keep these two existing work references in this conversation: Website ${busy.task.identifier ?? busy.task.id} is assigned to Morgan, who is working on it now; Logo ${logo.identifier ?? logo.id} was completed by Riley and its actual delivered logo is [logo.html](${new URL(`/api/attachments/${artifact.attachmentId}/content?download=1`, ctx.input.api.baseURL).href}). Acknowledge these separate references, without creating, reassigning, editing or starting any task. Keep the Logo deliverable unchanged.`;
+  const message = `Keep these two existing work references in this conversation: Website ${busy.task.identifier ?? busy.task.id} is assigned to Morgan, who is working on it now; Logo ${logo.identifier ?? logo.id} was completed by Riley and its actual delivered logo is [logo.html](/api/attachments/${artifact.attachmentId}/content?download=1). Acknowledge these separate references, without creating, reassigning, editing or starting any task. Keep the Logo deliverable unchanged.`;
   await sendChatMessage(ctx.input.page, message);
   const saved = await pollUntil({ label: "Real source history retains separate active Website and completed Logo", deadlineAt: Date.now() + 150_000,
     load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },

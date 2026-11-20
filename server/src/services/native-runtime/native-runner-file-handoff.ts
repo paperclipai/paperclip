@@ -1,4 +1,4 @@
-import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
+import { notifyIssueGraphRecovery } from "../issue-recovery-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
@@ -1314,7 +1314,7 @@ export async function prepareNativeRunnerFileHandoff(input: {
       throw new Error("paperclip_runner_file_handoff_origin_not_persisted");
     }
     await input.db.transaction(async tx => {
-      await notifyIssueRecovery(tx, { companyId: input.binding.companyId });
+      await notifyIssueGraphRecovery(tx, { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId });
       await tx
       .update(issueWorkProducts)
       .set({ title: verified.title, updatedAt: new Date() })

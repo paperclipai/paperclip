@@ -47,6 +47,7 @@ import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
 import { McpAppIssueProvider } from "@/components/mcp-app/McpAppIssueContext";
 import { ProviderToolIconsProvider } from "@/components/ProviderToolIcon";
 import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
+import { ToolCallProgressProvider } from "@/components/task-chat/tool-call-progress";
 import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import { partitionRunHealthItems } from "@/components/task-chat/TaskChatRunHealthBanner";
 import {
@@ -132,6 +133,7 @@ import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
@@ -487,6 +489,14 @@ function durableInputLabel(
     return interaction.title ?? "Review items";
   if (interaction.kind === "connection_intent")
     return interaction.title ?? "Connect service";
+  if (interaction.kind === "suggest_routine")
+    return interaction.title ?? "Routine offer";
+  if (interaction.kind === "propose_responsibility_bar")
+    return interaction.title ?? "Proposed bar";
+  if (interaction.kind === "propose_automation")
+    return interaction.title ?? "Proposed automation";
+  if (interaction.kind === "propose_dashboard_changes")
+    return interaction.title ?? "Proposed dashboard changes";
   if (
     interaction.payload.target?.type === "issue_document" &&
     interaction.payload.target.key === "plan"
@@ -1399,8 +1409,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         continue;
       }
       const createdAtMs = toMs(interaction.createdAt);
+      // A routine offer follows the same run's completion message even when
+      // the agent made it before that message was saved.
       const handoffAtMs =
-        interaction.kind === "request_confirmation" && interaction.sourceRunId
+        (interaction.kind === "request_confirmation" || interaction.kind === "suggest_routine"
+          || interaction.kind === "propose_responsibility_bar" || interaction.kind === "propose_automation"
+          || interaction.kind === "propose_dashboard_changes") && interaction.sourceRunId
           ? latestSameRunHandoffTimestamp({
               interactionCreatedAtMs: createdAtMs,
               sourceRunId: interaction.sourceRunId,
@@ -1851,6 +1865,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "Approval required"
             : code === "native_provider_usage_limit" && source.status === "failed"
             ? "Usage limit reached"
+            : code === "sandbox_disk_full" && source.status === "failed"
+            ? "Disk full"
             : source.status === "cancelled"
               ? "Run cancelled"
               : source.status === "interrupted"
@@ -1877,6 +1893,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 : code === "native_provider_usage_limit" &&
                     source.status === "failed"
                   ? "The model provider has reached its current usage limit. Try again after the limit resets."
+                  : code === "sandbox_disk_full" && source.status === "failed"
+                  ? "The agent filled the disk of its computer, so the run stopped. Ask the agent to use less disk space, then retry."
                   : code === "provider_frame_too_large"
                     ? "Provider output exceeded the safe limit."
                     : source.status === "timed_out"
@@ -1888,7 +1906,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           : undefined;
         const finishedAt =
           meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt;
-        if (!historical && (!props.interruption || credentialAccess ||
+        const diskFullBesideInterruption = Boolean(props.interruption) && code === "sandbox_disk_full" && source.status === "failed";
+        if (!historical && (!props.interruption || credentialAccess || diskFullBesideInterruption ||
             (props.interruption.responsibility === "user" &&
               ["native_provider_model_rejected", "native_provider_approval_required"].includes(code)))) entriesWithFailures.push({
           ms: toMs(finishedAt),
@@ -1901,7 +1920,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
-            retryable: code !== "native_session_cleanup_quarantined",
+            retryable: code !== "native_session_cleanup_quarantined" && !diskFullBesideInterruption,
             ...(credentialAccess ? { credentialAccess, retryable: false } : {}),
             collapsible: true,
             runId: source.id,
@@ -2785,6 +2804,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         (interaction) =>
           interaction.status === "pending" &&
           interaction.kind !== "connection_intent" &&
+          interaction.kind !== "suggest_routine" &&
+          // A proposed bar stays in the conversation; the agent does not wait on it.
+          interaction.kind !== "propose_responsibility_bar" &&
+          // Nor does a proposed automation.
+          interaction.kind !== "propose_automation" &&
+          // Nor do proposed dashboard changes.
+          interaction.kind !== "propose_dashboard_changes" &&
           !(coordinatorEnabled && interaction.kind === "suggest_tasks") &&
           !shouldHideInteractionCard(interaction),
       )
@@ -3372,6 +3398,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
     <McpAppIssueProvider issueId={issueId} sendMessage={composerDisabledReason ? null : sendMcpAppMessage}>
     <ProviderToolIconsProvider companyId={companyId}>
+    <ToolCallProgressProvider issueId={issueId}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !scrollTargetPending}>
         <TaskChatPresentationProvider
@@ -3380,6 +3407,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           <div
             className={cn(
               "relative flex min-h-0 flex-1 flex-col",
+              // Customer content: masked in session replay, skipped by autocapture.
+              ANALYTICS_MASK_CLASS,
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
@@ -3550,7 +3579,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                         items={tailItems}
                                         emptyMessage={
                                           tailStatus === "queued"
-                                            ? "Waiting to start..."
+                                            ? undefined
                                             : (liveRun && liveRun.id === tailRunId
                                                 ? liveRun.currentStatusMessage
                                                 : null) ||
@@ -3719,6 +3748,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </TaskChatPresentationProvider>
       </TaskChatScrollReady.Provider>
     </TaskChatExpansionState.Provider>
+    </ToolCallProgressProvider>
     </ProviderToolIconsProvider>
     </McpAppIssueProvider>
     </TaskChatRequestHistoryContext.Provider>

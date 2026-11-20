@@ -192,6 +192,7 @@ function registerRouteMocks() {
   vi.doMock("../services/task-interruption-presentation.js", () => ({
     taskInterruptionPresentation: vi.fn(async () => null),
     taskInterruptionPresentations: vi.fn(async () => new Map()),
+    taskRetryRefusal: vi.fn(async () => null),
   }));
   vi.doMock("../services/native-runtime/native-workspace-owner-recovery.js", () => ({ resumeNativeWorkspaceAfterOwnerStop: mockResumeWorkspaceFinalization }));
   vi.doMock("../services/native-runtime/native-workspace-export-retry.js", () => ({ retryNativeWorkspaceExport: mockRetryWorkspaceExport }));
@@ -943,14 +944,12 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it.each([
-    { owner: "another-user", enabled: true, status: 403 },
-    { owner: "board-user", enabled: false, status: 404 },
-    { owner: "board-user", enabled: true, status: 202 },
-  ])("gates Agent Chat task Retry by owner and feature ($owner, $enabled)", async ({ owner, enabled, status }) => {
+    { owner: "another-user", status: 403 },
+    { owner: "board-user", status: 202 },
+  ])("gates Agent Chat task Retry by owner ($owner)", async ({ owner, status }) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       conversationAgentId: ownerAgentId, conversationUserId: owner,
     }));
-    mockGetExperimental.mockResolvedValue({ enableAgentChat: enabled });
     const response = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send({
       idempotencyKey: recoveryActionId, observedRunId: ownerRunId,
     });

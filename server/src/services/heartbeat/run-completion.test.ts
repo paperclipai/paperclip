@@ -642,6 +642,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
   });
 
+  it.each(["completeRun", "failRun"] as const)("finalizes the run log in %s only after a reattach's deferred log recovery settles", async operation => {
+    const f = await fixture();
+    let finishRecovery!: () => void;
+    const recovery = new Promise<void>(resolve => { finishRecovery = resolve; });
+    let recovered = false;
+    const output = { ...f.input.output, settleDeferredLogRecovery: () => recovery.then(() => { recovered = true; }) };
+    const finalizedAfterRecovery: boolean[] = [];
+    f.deps.runLogStore.finalize.mockImplementation(async () => {
+      finalizedAfterRecovery.push(recovered);
+      return { bytes: 123, sha256: "log-hash", compressed: true };
+    });
+    const completion = operation === "completeRun" ? f.completion.completeRun({ ...f.input, output })
+      : f.completion.failRun({ ...f.failure(new Error("reattach preparation failed")), output });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const finalizedEarly = f.deps.runLogStore.finalize.mock.calls.length;
+    finishRecovery();
+    await completion;
+    expect(finalizedEarly).toBe(0);
+    expect(finalizedAfterRecovery).toEqual([true]);
+  });
+
   it("attributes an adapter stop caused by a lost controller lease", async () => {
     const f = await fixture();
     Object.assign(f.input.adapterResult, { exitCode: null, errorCode: "cancelled", errorMessage: "Grok execution was cancelled" });
@@ -1347,6 +1368,18 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["before_adapter", "adapter_entered", "untrusted", "native"] as const)("names a remote preparation timeout raised %s during execution", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "native" ? "native" : "legacy" });
+    const cause = new RemoteWorkspaceOperationTimeoutError("prepare", 30_000);
+    const message = "Could not exclude agent files from task Git staging (reason=timed_out)";
+    const error = scenario === "untrusted" ? new Error(message) : new RemoteWorkspacePreparationTimeoutError(cause, message);
+    await f.completion.failRun({ ...f.failure(error), requiredWorkspaceRestoreEvidence: {}, legacyAdapterEntered: scenario === "adapter_entered" });
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", error: message,
+      errorCode: scenario === "before_adapter" ? "remote_workspace_prepare_timeout" : expect.not.stringMatching(/^remote_workspace_prepare_timeout$/) });
+    if (scenario === "before_adapter") expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
   });
 
   it.each(["fresh", "started", "untrusted", "retained"] as const)("routes a %s preserved sandbox resume failure through bounded bootstrap recovery", async scenario => {

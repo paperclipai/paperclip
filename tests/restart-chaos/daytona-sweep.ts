@@ -215,7 +215,7 @@ export class DaytonaWaveSweeper {
     }
   }
 
-  async cleanUp(settleMs = 90_000, deleteWindowMs = R6_SETTLE_MS): Promise<WaveCleanup> {
+  async cleanUp(settleMs = 90_000, deleteWindowMs = R6_SETTLE_MS, beforeSandboxDelete?: () => Promise<void>): Promise<WaveCleanup> {
     const errors: string[] = [];
     let environmentDeleted = false;
     let environmentDeleteBlocked: string | null = null;
@@ -229,6 +229,7 @@ export class DaytonaWaveSweeper {
       if (/returned 409\b/.test(message)) environmentDeleteBlocked = message;
       else errors.push(`environment delete: ${message}`);
     }
+    await beforeSandboxDelete?.().catch(error => { errors.push(`before sandbox delete: ${error instanceof Error ? error.message : String(error)}`); });
     let remainingSandboxes: string[] = [];
     let archivedSandboxes: string[] = [];
     // Provider teardown is asynchronous; give it a bounded settle before reporting.

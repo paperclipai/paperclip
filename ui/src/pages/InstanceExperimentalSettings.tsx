@@ -19,7 +19,6 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Link } from "@/lib/router";
 import { ClassicWorkspaceSetting } from "@/components/ClassicWorkspaceSetting";
 import { describeError } from "@/api/errors";
 
@@ -240,6 +239,7 @@ export function InstanceExperimentalSettings() {
   const statusCardsBlockedByManagedSummaries = summariesManaged && !enableSummaries;
   const summariesRequiredByManagedStatusCards = statusCardsManaged && enableStatusCards;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
+  const enableResponsibilities = experimentalQuery.data?.enableResponsibilities === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
@@ -309,15 +309,27 @@ export function InstanceExperimentalSettings() {
         </div>
 
         <ExperimentalToggleCard
-          title="Assistant connections (MCP)"
-          description="Connect Codex, Claude, and other assistants to your Paperclip organization. People sign in, select an organization once, and approve access to review work, delegate tasks, and add feedback."
-          footnote={<>Requires an authenticated instance with a configured public URL. Takes effect immediately. Turning this off blocks assistant calls and event delivery; work already delegated continues.{experimentalQuery.data?.enablePublicMcp && <> <Link className="underline" to="/apps/assistant-connection">Set up an assistant connection</Link></>}</>}
-          checked={experimentalQuery.data?.enablePublicMcp === true}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enablePublicMcp: checked })}
+          title="Areas & Responsibilities dashboard"
+          description="Replace the classic dashboard with one built around the areas you care about and the responsibilities you own in each. An agent can interview you to create it, and you can undo any change."
+          footnote="Turning this off brings back the classic dashboard. Your areas and responsibilities are kept."
+          checked={enableResponsibilities}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableResponsibilities: checked })}
           disabled={toggleMutation.isPending}
-          settingKey="enablePublicMcp"
-          managed={managedKeys.enablePublicMcp}
-          ariaLabel="Toggle assistant connections experimental setting"
+          settingKey="enableResponsibilities"
+          managed={managedKeys.enableResponsibilities}
+          ariaLabel="Toggle Areas & Responsibilities dashboard experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="AWS connector"
+          description="Let agents work in AWS through AWS's hosted MCP server, with short-lived credentials made for each connection."
+          footnote="Off by default. While off, the AWS connector cannot be set up or run."
+          checked={experimentalQuery.data?.enableAwsConnector === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAwsConnector: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAwsConnector"
+          managed={managedKeys.enableAwsConnector}
+          ariaLabel="Toggle AWS connector experimental setting"
         />
 
         <ExperimentalToggleCard
@@ -415,6 +427,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Durable app actions (MCP Tasks)"
+          description="Let connected apps run long actions, such as CI runs or deploys, as tasks Paperclip keeps track of. If an action outlasts a call, a restart, or a deploy, the agent collects the result later and the work is never started twice."
+          footnote="Applies to apps that support MCP Tasks. Turning this off stops new tasks; apps then answer as before."
+          checked={experimentalQuery.data?.enableMcpTasks === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableMcpTasks: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableMcpTasks"
+          managed={managedKeys.enableMcpTasks}
+          ariaLabel="Toggle durable app actions experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Enable Environments"
           description="Show environment management in company settings and allow project and agent environment assignment controls."
           checked={enableEnvironments}
@@ -506,10 +530,11 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle Paperclip Google Workspace connector experimental setting"
         />
 
+
         <ExperimentalToggleCard
           title="Grok Bot"
           description="Connect an existing Grok Bot as an agent. Verify routine delivery and an authenticated reply before assigning work."
-          footnote="Requires Assistant connections (MCP), Paperclip Runner, and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
+          footnote="Requires Paperclip Runner and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
           checked={experimentalQuery.data?.enableGrokBot === true}
           onCheckedChange={checked => toggleMutation.mutate({ enableGrokBot: checked })}
           disabled={toggleMutation.isPending}
@@ -545,7 +570,7 @@ export function InstanceExperimentalSettings() {
         <ExperimentalToggleCard
           title="OpenAI Dot"
           description="Add OpenAI Dot as a standalone agent choice. Pair your Dot and verify event delivery before assigning work."
-          footnote="Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
+          footnote="Requires an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
           checked={experimentalQuery.data?.enableOpenAiDot === true}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableOpenAiDot: checked })}
           disabled={toggleMutation.isPending}

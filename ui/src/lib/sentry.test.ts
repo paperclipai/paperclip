@@ -319,6 +319,36 @@ describe("captureBrowserException", () => {
   });
 });
 
+describe("captureQueryException", () => {
+  it("does not throw when the gate is closed", async () => {
+    const { captureQueryException } = await importFreshSentry();
+
+    expect(() => captureQueryException(new Error("boom"), ["issues"])).not.toThrow();
+  });
+
+  it("groups each failing query's server error by status and query name", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureQueryException } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    const issuesError = Object.assign(new Error("Internal server error"), { status: 500 });
+    const agentsError = Object.assign(new Error("Internal server error"), { status: 500 });
+
+    captureQueryException(issuesError, ["issues", "company-uuid", "detail", "PAP-1"]);
+    captureQueryException(agentsError, ["agents", "company-uuid"]);
+    await initBrowserErrorMonitoring(DSN);
+
+    expect(mocks.captureException).toHaveBeenNthCalledWith(1, issuesError, {
+      tags: { query_kind: "issues", api_status: "500" },
+      fingerprint: ["api-error", "500", "issues"],
+    });
+    expect(mocks.captureException).toHaveBeenNthCalledWith(2, agentsError, {
+      tags: { query_kind: "agents", api_status: "500" },
+      fingerprint: ["api-error", "500", "agents"],
+    });
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toMatch(/company-uuid|PAP-1/);
+  });
+});
+
 describe("browser error diagnostics with the real SDK", () => {
   it("emits bounded component and translation context without page data or scope leakage", async () => {
     const Sentry = await vi.importActual<typeof import("@sentry/browser")>("@sentry/browser");
@@ -529,8 +559,8 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
       ...options,
       transport: () => ({ send: async () => ({}), flush: async () => true }),
       beforeSend: async (event, hint) => {
-        const enriched = await options.beforeSend?.(event, hint) ?? event;
-        onEvent(enriched as unknown as Record<string, unknown>);
+        const enriched = options.beforeSend ? await options.beforeSend(event, hint) : event;
+        if (enriched) onEvent(enriched as unknown as Record<string, unknown>);
         return enriched;
       },
     });
@@ -556,6 +586,26 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
       expect(JSON.stringify(captured)).not.toContain("private-class");
     } finally {
       document.documentElement.classList.remove("translated-ltr", "private-class");
+      await Sentry.close();
+    }
+  });
+
+  it("drops only the rejection carrying the app's own request cancellation", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    const { intentionalAbortReason } = await import("./intentional-abort");
+    try {
+      window.onunhandledrejection?.call(window, { reason: intentionalAbortReason() } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toEqual([]);
+
+      window.onunhandledrejection?.call(window, {
+        reason: new DOMException("signal is aborted without reason", "AbortError"),
+      } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toMatchObject({ exception: { values: [{ type: "AbortError" }] } });
+    } finally {
       await Sentry.close();
     }
   });

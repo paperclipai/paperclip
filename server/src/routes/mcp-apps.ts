@@ -15,6 +15,7 @@ import { assertBoard, getAccessibleResource } from "./authz.js";
 import { connectionRequestUserId } from "./connection-management-authz.js";
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService, toMcpAppViewSummary } from "../services/mcp-app-views.js";
+import { listToolCallProgress } from "../services/tool-call-progress.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
 const uuidSchema = z.string().uuid();
@@ -34,7 +35,7 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
   const router = Router();
   const views = mcpAppViewsService(db);
 
-  router.use("/issues/:issueId/mcp-app-views", async (req, res, next) => {
+  const readableTask = async (req: Request, res: Response, next: () => void) => {
     assertBoard(req);
     if (!uuidSchema.safeParse(req.params.issueId).success) {
       res.status(404).json({ error: "Task not found" });
@@ -57,7 +58,9 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
     res.locals.mcpAppIssue = issue;
     res.setHeader("Cache-Control", "no-store");
     next();
-  });
+  };
+  router.use("/issues/:issueId/mcp-app-views", readableTask);
+  router.use("/issues/:issueId/tool-call-progress", readableTask);
 
   async function viewFor(req: Request, res: Response) {
     const issue = res.locals.mcpAppIssue as { id: string; companyId: string };
@@ -160,6 +163,12 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
       },
     });
     res.status(201).json({ commentId: comment.id });
+  });
+
+  // The latest progress of the task's running app tool calls (and recently finished ones, as done), for a reload mid-call.
+  router.get("/issues/:issueId/tool-call-progress", async (_req, res) => {
+    const issue = res.locals.mcpAppIssue as { id: string; companyId: string };
+    res.json(await listToolCallProgress(db, issue.companyId, issue.id));
   });
 
   router.get("/issues/:issueId/mcp-app-views", async (req, res) => {

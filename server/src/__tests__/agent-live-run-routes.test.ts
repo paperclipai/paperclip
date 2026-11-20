@@ -11,6 +11,7 @@ const mockAgentService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   list: vi.fn(async () => []),
   buildRunOutputSilence: vi.fn(),
+  buildRunOutputSilences: vi.fn(),
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
@@ -344,6 +345,7 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.buildRunOutputSilences.mockImplementation(async (runs: unknown[]) => runs.map(() => null));
     mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
       ...run,
       currentStatusMessage: null,
@@ -838,9 +840,9 @@ describe("agent live run routes", () => {
     expect(res.body).toHaveLength(50);
     expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
     expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
-      50,
-    );
+    expect(mockHeartbeatService.buildRunOutputSilence).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.buildRunOutputSilences).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.buildRunOutputSilences.mock.calls[0]![0]).toHaveLength(50);
   });
 
   it("treats explicit zero or invalid live run limit as the capped default", async () => {

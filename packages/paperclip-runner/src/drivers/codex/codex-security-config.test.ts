@@ -1,3 +1,4 @@
+import { CERTIFICATE_ENVIRONMENT_KEYS } from "../../configured-environment.js";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -33,7 +34,7 @@ describe("Codex security configuration", () => {
     const command = resolvePinnedCodexCommand();
     expect(evalProviderTransportOptions("codex").codexCommand).toBe(command);
     expect(execFileSync(command, ["--version"], { env: { PATH: dirname(process.execPath) },
-      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.160.0");
+      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.170.0");
   });
 
   it("resolves usable installed Codex commands and an absent-package PATH fallback while rejecting malformed or escaped dependencies", () => {
@@ -61,8 +62,8 @@ describe("Codex security configuration", () => {
       const executable = join(codex, "bin/codex.js");
       const platformName = "@openai/codex-" + process.platform + "-" + process.arch;
       const platform = join(root, "node_modules", platformName), vendor = join(platform, "vendor");
-      const metadata = { name: "@openai/codex", version: "0.160.0", bin: { codex: "bin/codex.js" },
-        optionalDependencies: { [platformName]: "npm:@openai/codex@0.160.0-" + process.platform + "-" + process.arch } };
+      const metadata = { name: "@openai/codex", version: "0.170.0", bin: { codex: "bin/codex.js" },
+        optionalDependencies: { [platformName]: "npm:@openai/codex@0.170.0-" + process.platform + "-" + process.arch } };
       try {
         mkdirSync(pathDirectory);
         writeFileSync(pathCommand, "#!" + process.execPath + "\\nif (process.argv.slice(2).join(' ') !== '--version') process.exit(9); console.log('codex-cli 0.141.0');\\n", { mode: 0o755 });
@@ -122,23 +123,23 @@ describe("Codex security configuration", () => {
         writeFileSync(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "1.6.2" }));
         writeFileSync(join(codex, "package.json"), JSON.stringify(metadata));
         mkdirSync(vendor, { recursive: true });
-        const platformMetadata = { name: "@openai/codex", version: "0.160.0-" + process.platform + "-" + process.arch,
+        const platformMetadata = { name: "@openai/codex", version: "0.170.0-" + process.platform + "-" + process.arch,
           os: [process.platform], cpu: [process.arch] };
         writeFileSync(join(platform, "package.json"), JSON.stringify(platformMetadata));
-        writeFileSync(executable, "#!" + process.execPath + "\\nif (process.argv.slice(2).join(' ') !== '--version') process.exit(9); console.log('codex-cli 0.160.0');\\n", { mode: 0o755 });
+        writeFileSync(executable, "#!" + process.execPath + "\\nif (process.argv.slice(2).join(' ') !== '--version') process.exit(9); console.log('codex-cli 0.170.0');\\n", { mode: 0o755 });
         assert.equal(resolveCodexCommand(issuer, commandEnvironment), executable, "The selected installed bridge closure takes precedence over PATH");
         assert.equal(resolvePinnedCodexCommand(issuer, commandEnvironment), executable, "The published compatibility alias keeps ordinary command semantics");
         const roots = codexExecutableReadOnlyRoots({ PATH: "/missing-codex-command" }, executable);
         assert.ok(roots.includes(vendor), "The npm-hoisted native vendor directory remains readable");
         assert.ok(!roots.includes(platform) && !roots.includes(root), "Hoisting must not expose npm ancestry");
         assert.equal(execFileSync(resolveCodexCommand(issuer, commandEnvironment), ["--version"], { env: { PATH: "/missing-codex-command" },
-          encoding: "utf8", timeout: 5_000 }).trim(), "codex-cli 0.160.0");
+          encoding: "utf8", timeout: 5_000 }).trim(), "codex-cli 0.170.0");
 
         for (const bin of ["../../escaped-codex", "/usr/bin/codex", {}, ""]) {
           writeFileSync(join(codex, "package.json"), JSON.stringify({ ...metadata, bin }));
           assert.throws(() => resolveCodexCommand(issuer, commandEnvironment), /contained executable|escapes its package/);
         }
-        for (const version of ["0.159.0", "0.161.0"]) {
+        for (const version of ["0.169.0", "0.171.0"]) {
           writeFileSync(join(codex, "package.json"), JSON.stringify({ ...metadata, version }));
           assert.equal(resolveCodexCommand(issuer, commandEnvironment), executable, "Independently usable older and newer installed wrappers remain selectable");
         }
@@ -202,7 +203,7 @@ describe("Codex security configuration", () => {
         };
         // Resource lookup protects package ownership and paths. Version
         // qualification belongs to ACPX, not ordinary Codex shell access.
-        for (const version of ["0.159.0", "0.161.0"]) {
+        for (const version of ["0.169.0", "0.171.0"]) {
           for (const [path, changed] of [
             [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:@openai/codex@" + version + "-" + process.platform + "-" + process.arch } }],
             [serverManifest, { ...serverMetadata, dependencies: { "@agentclientprotocol/codex-acp": version } }],
@@ -219,9 +220,9 @@ describe("Codex security configuration", () => {
         for (const [path, changed] of [
           [serverManifest, { ...serverMetadata, optionalDependencies: {} }],
           [serverManifest, { ...serverMetadata, name: "unowned-server" }],
-          [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:unowned/codex@0.160.0-" + process.platform + "-" + process.arch } }],
+          [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:unowned/codex@0.170.0-" + process.platform + "-" + process.arch } }],
           [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "file:/unowned/native" } }],
-          [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:@openai/codex@0.160.0-unsupported-os-" + process.arch } }],
+          [serverManifest, { ...serverMetadata, optionalDependencies: { [platformName]: "npm:@openai/codex@0.170.0-unsupported-os-" + process.arch } }],
           [serverManifest, { ...serverMetadata, dependencies: {} }],
           [serverManifest, { ...serverMetadata, dependencies: { "@agentclientprotocol/codex-acp": "" } }],
           [publishedBridgeManifest, { ...publishedBridgeMetadata, name: "unqualified-bridge" }],
@@ -336,7 +337,7 @@ describe("Codex security configuration", () => {
       SSH_AUTH_SOCK: "/agent/socket", PAPERCLIP_GIT_METADATA_ROOTS: '["/repo/.git","/repo/.git"]',
     }).join("\n");
     const allowlist = JSON.parse(args.split("\n").find((arg) => arg.startsWith("shell_environment_policy.include_only="))!.split("=", 2)[1]!);
-    expect(allowlist).toEqual(["GH_CONFIG_DIR", "HOME", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME", "PAPERCLIP_GIT_METADATA_ROOTS", "PATH", "SSH_AUTH_SOCK"]);
+    expect(allowlist).toEqual([...CERTIFICATE_ENVIRONMENT_KEYS, "GH_CONFIG_DIR", "HOME", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME", "PAPERCLIP_GIT_METADATA_ROOTS", "PATH", "SSH_AUTH_SOCK"].sort());
     expect(args).not.toContain("must-not-cross");
     expect(args).not.toContain("OPENAI_API_KEY");
     expect(args).not.toContain("DATABASE_URL");
@@ -439,7 +440,7 @@ describe("Codex security configuration", () => {
     expect(serialized).toContain('":workspace_roots"={"."="write"}');
     expect(serialized).toContain('":workspace_roots"={"."="read"}');
     expect(serialized).toContain("network.enabled=true");
-    expect(serialized).toContain('shell_environment_policy.include_only=["LANG","PAPERCLIP_RUNNER_NETWORK_ACCESS","PATH"]');
+    expect(serialized).toContain(`shell_environment_policy.include_only=${JSON.stringify([...CERTIFICATE_ENVIRONMENT_KEYS, "LANG", "PAPERCLIP_RUNNER_NETWORK_ACCESS", "PATH"].sort())}`);
     expect(serialized).toContain('PATH="/safe/bin"');
     expect(serialized).toContain('LANG="C.UTF-8"');
     expect(serialized).not.toContain("OPENAI_API_KEY");
@@ -521,7 +522,7 @@ describe("Codex security configuration", () => {
     expect(exclude).toEqual([...CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS]);
     expect(serialized).not.toContain("fixture-secret-value");
     expect(createIsolatedCodexAppServerArgs({ PAPERCLIP_CONFIGURED_ENV_KEYS: '["STRIPE_SECRET_KEY"]', STRIPE_SECRET_KEY: "fixture-secret-value" }).join("\n"))
-      .toContain('shell_environment_policy.include_only=["STRIPE_SECRET_KEY"]');
+      .toContain(`shell_environment_policy.include_only=${JSON.stringify([...CERTIFICATE_ENVIRONMENT_KEYS, "STRIPE_SECRET_KEY"].sort())}`);
   });
 
   it("excludes every credential the Runner passes to Codex", () => {
@@ -623,4 +624,13 @@ describe("Codex security configuration", () => {
     expect(planningArgs({ PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" }).network)
       .toBe("permissions.paperclip-runner-workspace-read-only.network.enabled=true");
   });
+});
+
+it("keeps certificate-trust names in the shell allowlist before sandbox injection", () => {
+  const args = createIsolatedCodexAppServerArgs({ PATH: "/safe/bin" });
+  const setting = args.find(value => value.startsWith("shell_environment_policy.include_only="))!;
+  const allowlist = JSON.parse(setting.slice(setting.indexOf("=") + 1)) as string[];
+  expect(allowlist).toEqual(expect.arrayContaining([...CERTIFICATE_ENVIRONMENT_KEYS]));
+  expect(args).toContain('shell_environment_policy.inherit="all"');
+  expect(args).toContain("shell_environment_policy.ignore_default_excludes=true");
 });

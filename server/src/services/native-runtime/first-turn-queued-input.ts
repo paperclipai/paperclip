@@ -86,6 +86,12 @@ export function firstTurnClaimedCommentIds(run: { id: string; status?: string | 
  * chat-conversation wakes keep their own delivery contracts. Only the run's
  * responsible user's own messages qualify, so taking them cannot change the
  * run's execution authority.
+ *
+ * A user's message can join an earlier automatic wake that was already waiting
+ * behind the task, which keeps that wake's system requester. The messages, not
+ * the wake's origin, carry the authority: every caller also requires each one
+ * to be the responsible user's own (`firstTurnEligibleComment`). Another
+ * user's or an agent's wake keeps its own delivery.
  */
 export function deferredWakeJoinsFirstTurn(
   wake: { agentId: string; status: string; requestedByActorType: string | null; requestedByActorId: string | null; reason: string | null; payload: unknown },
@@ -94,15 +100,51 @@ export function deferredWakeJoinsFirstTurn(
   const payload = record(wake.payload);
   const context = record(payload[DEFERRED_WAKE_CONTEXT_KEY]);
   const reason = nonEmptyString(context.wakeReason) ?? nonEmptyString(wake.reason);
+  const requester = wake.requestedByActorType === "user"
+    ? wake.requestedByActorId === run.responsibleUserId
+    : wake.requestedByActorType === "system" || wake.requestedByActorType === null;
   return wake.status === DEFERRED_WAKE_STATUS &&
     wake.agentId === run.agentId &&
-    wake.requestedByActorType === "user" &&
-    Boolean(run.responsibleUserId) && wake.requestedByActorId === run.responsibleUserId &&
+    Boolean(run.responsibleUserId) && requester &&
     reason !== null && COMMENT_WAKE_REASONS.has(reason) &&
     !payload.interactionId && !context.interactionId && !context.interactionStatus &&
     !payload.queuedCommentInterrupt && context.resumeIntent !== true &&
-    !nonEmptyString(context.chatConversationId) && !nonEmptyString(payload.externalChatProvider) &&
+    !deferredWakeIsChatRequest(payload) &&
     queuedCommentIdsFromWakePayload(payload).length > 0;
+}
+
+/**
+ * Whether a deferred wake carries a chat request. A chat wake keeps its own
+ * delivery: the run it starts binds that request's source, so its tools act on
+ * what the request asked for. `deferredWakeChatRequestSql` is the same test in SQL.
+ */
+export function deferredWakeIsChatRequest(payloadValue: unknown): boolean {
+  const payload = record(payloadValue);
+  return Boolean(nonEmptyString(record(payload[DEFERRED_WAKE_CONTEXT_KEY]).chatConversationId) ||
+    nonEmptyString(payload.externalChatProvider));
+}
+
+function deferredWakeChatRequestSql(payload: typeof agentWakeupRequests.payload) {
+  return sql`(nullif(btrim(${payload}->${DEFERRED_WAKE_CONTEXT_KEY}->>'chatConversationId'), '') is not null
+    or nullif(btrim(${payload}->>'externalChatProvider'), '') is not null)`;
+}
+
+/**
+ * Whether a chat request waits as a deferred wake behind the agent's current
+ * run on this task. Work that would continue the current run in a fresh session
+ * yields to it, because that continuation would keep the older request's source.
+ */
+export async function hasQueuedChatRequest(
+  db: Pick<Db, "select">,
+  input: { companyId: string; issueId: string; agentId: string },
+): Promise<boolean> {
+  const [wake] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+    eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS), isNull(agentWakeupRequests.runId),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+    deferredWakeChatRequestSql(agentWakeupRequests.payload),
+  )).limit(1);
+  return Boolean(wake);
 }
 
 type QueuedMessage = { id: string; body: string; createdAt: Date };
