@@ -44,7 +44,7 @@ interface NetworkAllowlistRule {
   port: string | null;
 }
 
-interface NetworkAllowlistProxy {
+export interface NetworkAllowlistProxy {
   close: () => Promise<void>;
 }
 
@@ -227,7 +227,9 @@ function connectProxyError(code: string, message: string): string {
   ].join("\r\n");
 }
 
-async function startNetworkAllowlistProxy(
+// Exported so the network-scope tests can drive the real proxy on any
+// platform; buildLocalProcessSandboxSpawnTarget is Linux-only.
+export async function startNetworkAllowlistProxy(
   allowlist: string[],
   trustedUrls: string[],
   socketPath: string,
@@ -267,9 +269,21 @@ async function startNetworkAllowlistProxy(
       upstreamResponse.pipe(response);
     });
     upstream.on("error", (error) => response.destroy(error));
+    // A client that aborts mid-body leaves the upstream request waiting for
+    // the rest of Content-Length forever; release it (but keep it running for
+    // completed requests whose response may still be streaming).
+    request.on("close", () => {
+      if (!request.complete) upstream.destroy();
+    });
     request.pipe(upstream);
   });
   server.on("connect", (request, clientSocket, head) => {
+    // Swallow client-side resets before anything else: both the tunnel data
+    // path and the denial write below run against sockets an agent may have
+    // already destroyed, and an unhandled 'error' event would exit the whole
+    // server process. Destroying the client fires the 'close' listener, which
+    // tears down the upstream.
+    clientSocket.on("error", () => clientSocket.destroy());
     const separator = request.url?.lastIndexOf(":") ?? -1;
     const hostname = separator > 0 ? request.url!.slice(0, separator).replace(/^\[|\]$/g, "") : "";
     const port = separator > 0 ? request.url!.slice(separator + 1) : "443";
