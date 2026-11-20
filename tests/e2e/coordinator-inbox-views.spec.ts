@@ -93,7 +93,7 @@ for (const mobile of [false, true]) test(`Mine retains Inbox behavior inside Tas
       await page.getByRole("link", { name: "Inbox", exact: true }).click();
       const inbox = page.getByRole("region", { name: "Needs You", exact: true });
       await expect(inbox.getByRole("toolbar", { name: "Decisions controls" })).toBeVisible();
-      await expect(inbox.getByLabel("Filter decisions by assignee")).toHaveValue("me");
+      await expect(inbox.getByLabel("Filter decisions by assignee")).toHaveValue("all");
     }
   } finally {
     await request.put(preferencePath, { data: { coordinatorWorkspaceEnabled: preferences.coordinatorWorkspaceEnabled } });
