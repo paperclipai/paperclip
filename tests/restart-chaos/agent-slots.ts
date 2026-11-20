@@ -23,8 +23,8 @@ export function queueWaitFairnessFrom(slots: AgentSlots | null): QueueWaitFairne
     const cap = agentId ? caps.get(agentId) : undefined;
     if (!slots || !agentId || typeof cap !== "number" || cap < 1) return { verdict: "unproven", reason: `no agent slot evidence for ${runId}` };
     const others = slots.runs.filter(run => run.agentId === agentId && run.runId !== runId);
-    const startedAhead = others.filter(run => run.startedAt !== null && run.startedAt >= createdAt && run.startedAt < startedAt);
-    const newer = startedAhead.filter(run => typeof run.createdAt === "number" && run.createdAt > createdAt);
+    const startedAhead = others.filter(run => Number.isFinite(run.startedAt) && run.startedAt! >= createdAt && run.startedAt! < startedAt);
+    const newer = startedAhead.filter(run => Number.isFinite(run.createdAt) && run.createdAt! > createdAt);
     const overtaker = newer.find(run => run.invocationSource === "assignment" && !run.retryOfRunId);
     if (overtaker) {
       return { verdict: "unfair", reason: `assignment run ${overtaker.runId} created ${iso(overtaker.createdAt!)} started ${iso(overtaker.startedAt!)} ahead of ${runId}` };
@@ -46,9 +46,9 @@ export function queueWaitFairnessFrom(slots: AgentSlots | null): QueueWaitFairne
     if (idleGaps.length) {
       return { verdict: "unproven", reason: `idle slot from ${iso(idleGaps[0]![0])} to ${iso(idleGaps[0]![1])} overlapped a server outage while ${runId} was queued` };
     }
-    const unknown = startedAhead.filter(run => typeof run.createdAt !== "number");
+    const unknown = startedAhead.filter(run => !Number.isFinite(run.createdAt));
     if (unknown.length) return { verdict: "unproven", reason: `no createdAt for ${unknown.map(run => run.runId).join(",")}, which started while ${runId} was queued` };
-    const unclassified = newer.filter(run => run.invocationSource === undefined);
+    const unclassified = newer.filter(run => run.invocationSource == null);
     if (unclassified.length) return { verdict: "unproven", reason: `no invocation source for newer run ${unclassified.map(run => run.runId).join(",")}, which started while ${runId} was queued` };
     return { verdict: "fair" };
   };

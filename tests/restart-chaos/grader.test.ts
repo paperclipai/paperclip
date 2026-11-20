@@ -245,9 +245,14 @@ describe("R1 fair queue wait credit", () => {
     expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(followUp))).verdict).toBe("pass");
     const retry = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: T0 + 300_000, retryOfRunId: "o2" } : entry);
     expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(retry))).verdict).toBe("pass");
-    const unclassified = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: T0 + 300_000, invocationSource: undefined } : entry);
-    expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(unclassified))).detail)
-      .toBe("done_too_late 2287s > 2200s (queue wait not credited: no invocation source for newer run o6, which started while r1 was queued)");
+    for (const invocationSource of [undefined, null]) {
+      const unclassified = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: T0 + 300_000, invocationSource } : entry);
+      expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(unclassified))).detail)
+        .toBe("done_too_late 2287s > 2200s (queue wait not credited: no invocation source for newer run o6, which started while r1 was queued)");
+    }
+    const malformed = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: Number.NaN } : entry);
+    expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(malformed))).detail)
+      .toBe("done_too_late 2287s > 2200s (queue wait not credited: no createdAt for o6, which started while r1 was queued)");
   });
 
   it("does not call an idle slot during a server outage unfair", () => {
