@@ -63,12 +63,22 @@ export function expectedFinalStatus(record: TaskRecord): string {
   return record.plan.workload === "G1" && g1Decision(record.plan.nonce) === "reject" ? "cancelled" : "done";
 }
 
-export function firstRunQueueWait(record: TaskRecord): { runId: string; createdAt: number; startedAt: number } | null {
+export function firstRun(record: TaskRecord): NonNullable<TaskSample["runs"]>[number] | null {
   const latest = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
   for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
   const first = [...latest.values()].filter(run => Number.isFinite(ms(run.createdAt)))
     .sort((a, b) => ms(a.createdAt) - ms(b.createdAt))[0];
-  if (!first || first.retryOfRunId || !Number.isFinite(ms(first.startedAt))) return null;
+  return first && !first.retryOfRunId ? first : null;
+}
+
+export function firstRunQueuedMs(record: TaskRecord, now: number): number {
+  const first = firstRun(record);
+  return first && first.status === "queued" && !first.startedAt ? Math.max(0, now - ms(first.createdAt)) : 0;
+}
+
+export function firstRunQueueWait(record: TaskRecord): { runId: string; createdAt: number; startedAt: number } | null {
+  const first = firstRun(record);
+  if (!first || !Number.isFinite(ms(first.startedAt))) return null;
   const createdAt = ms(first.createdAt);
   const startedAt = ms(first.startedAt);
   return startedAt > createdAt ? { runId: first.id, createdAt, startedAt } : null;

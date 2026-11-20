@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApiError, type ChaosApi } from "./api.js";
-import { ACTIVE_RUN_STATUSES, firstRunQueueWait, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
+import { ACTIVE_RUN_STATUSES, firstRunQueuedMs, firstRunQueueWait, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
 import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
@@ -552,7 +552,8 @@ export class TaskObserver {
         if (this.done) return;
       }
     }
-    if (this.record.deadlineAt !== null && now > this.record.deadlineAt && !this.supervisor.faultInProgress) {
+    const queuedMs = this.queueWaitExtended ? 0 : Math.min(firstRunQueuedMs(this.record, now), this.definition.budgetMs);
+    if (this.record.deadlineAt !== null && now > this.record.deadlineAt + queuedMs && !this.supervisor.faultInProgress) {
       if (this.restCandidateSince !== null && this.restCandidateSince <= this.record.deadlineAt
         && now - this.restCandidateSince < REST_CONFIRM_MS) return;
       this.record.timedOut = true;
