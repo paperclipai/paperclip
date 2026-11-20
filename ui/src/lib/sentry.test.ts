@@ -610,6 +610,40 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
     }
   });
 
+  it("tags a stackless network rejection with who started the request, and no URL", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    const diagnostics = await import("./fetch-rejection-origin");
+    const previousFetch = window.fetch;
+    const failure = new TypeError("Failed to fetch");
+    failure.stack = "TypeError: Failed to fetch";
+    window.fetch = Function.prototype.call.bind(() => Promise.reject(failure), null) as unknown as typeof fetch;
+    try {
+      diagnostics.startFetchRejectionDiagnostics(window);
+      await expect(window.fetch("/api/companies/private-company-id/issues")).rejects.toBe(failure);
+
+      window.onunhandledrejection?.call(window, { reason: failure } as PromiseRejectionEvent);
+      // A different value, so the SDK's Dedupe integration keeps both events.
+      window.onunhandledrejection?.call(window, { reason: new TypeError("Load failed") } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toHaveLength(2);
+      expect(captured[0]).toMatchObject({
+        tags: {
+          browser_rejection_kind: "object",
+          browser_fetch_initiator: "other",
+          browser_fetch_wrapper: "none",
+        },
+        exception: { values: [{ type: "TypeError", value: "Failed to fetch" }] },
+      });
+      expect(captured[1]).toMatchObject({ tags: { browser_fetch_initiator: "unrecorded" } });
+      expect(JSON.stringify(captured)).not.toContain("private-company-id");
+    } finally {
+      diagnostics.__resetFetchRejectionDiagnostics();
+      window.fetch = previousFetch;
+      await Sentry.close();
+    }
+  });
+
   it.each([
     ["staging", "staging"],
     ["production", "production"],
