@@ -13412,10 +13412,6 @@ async function executePaperclipNativeSessionAttempt(
           ? sourceFailureCode
           : disposition.failureCode;
       const providerFailure = providerFailureFromError(error);
-      // A remote session.open refused at startup did no provider work in any
-      // recovery mode. A run that resumes its predecessor's provider session
-      // (exact checkpoint resume) records the signature too, so the next
-      // attempt can stop a repeat instead of spending its whole retry budget.
       const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry" || remoteStartupRejection
         ? nativeStartupFailureSignature(providerFailure) : null;
       const startupRejectedAction = repeatedRemoteStartupFailure && providerFailure

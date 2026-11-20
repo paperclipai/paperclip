@@ -72,7 +72,6 @@ describe("native session.open the provider rejected before any provider work", (
         contract: buildNativeCompletionContract(issue, { revision: contract.revision }) },
       interactionResponses: [], credentialBindings: [],
     };
-    // A run continuing its predecessor's provider session carries that session's checkpoint.
     const sessionCheckpoint = options.resumesProviderSession
       ? { sessionId: native.normalizedSessionId, providerSessionId: randomUUID(), terminal: null } : undefined;
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution,
@@ -156,9 +155,6 @@ describe("native session.open the provider rejected before any provider work", (
   }, 120_000);
 
   it("stops a repeated remote startup rejection on a run that resumes its predecessor's provider session", async () => {
-    // A Retry continues the predecessor's provider conversation, so each attempt is
-    // an exact checkpoint resume. Without the recorded signature every attempt looked
-    // new and the run spent its whole budget, ending as provider_session_open_rejected.
     const first = await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, resumesProviderSession: true });
     expect(first.coordinator).toMatchObject({ phase: "retryable_failure",
       failureDetail: expect.objectContaining({ recoveryMode: "exact_checkpoint_resume", originalFailureCode: "provider_session_open_rejected" }) });
