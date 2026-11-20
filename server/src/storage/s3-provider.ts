@@ -282,8 +282,6 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         }),
         { abortSignal: input.signal },
       ), input.signal);
-      // The SDK's own attempts come close together; a SlowDown that outlasts
-      // them backs off like a file upload before the request fails.
       const sendBytes = async (body: Buffer) => {
         await sendThroughStorageOutage(() => sendThrottledRequestWithRetry(input.signal, () => send(body)), input.signal);
       };

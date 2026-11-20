@@ -190,8 +190,6 @@ export function sendFileRequestWithRetry<T>(signal: AbortSignal | undefined, sen
   return sendRequestWithRetry(signal, send, true);
 }
 
-/** For a request whose other failures keep their SDK handling: only a
- * request-rate limit, which the store did not apply, is sent again. */
 export function sendThrottledRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
   return sendRequestWithRetry(signal, send, false);
 }
@@ -219,12 +217,6 @@ async function sendRequestWithRetry<T>(signal: AbortSignal | undefined, send: ()
   }
 }
 
-/**
- * A small streamed upload has no file to read again, so the SDK sends it once
- * and a SlowDown loses it. Within the shared buffered-payload budget, its bytes
- * are held so each attempt resends them. Returns false without reading the
- * stream when the budget is full; the caller then streams it once, as before.
- */
 export async function withBufferedUploadBody(source: Readable, length: number, signal: AbortSignal | undefined,
   send: (body: Buffer) => Promise<void>): Promise<boolean> {
   if (bufferedPayloadBytes + length > bufferedPayloadLimit) return false;
