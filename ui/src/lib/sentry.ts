@@ -211,6 +211,7 @@ export function buildBrowserSentryInitOptions(
         : undefined,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    ignoreErrors: ["__firefox__"],
     beforeSend: (event, hint) => {
       const isUnhandledRejection = event.exception?.values?.some((value) =>
         value.mechanism?.type === "onunhandledrejection"
