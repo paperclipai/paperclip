@@ -40,8 +40,6 @@ function createApp(status: number, body: unknown) {
 describe("OAuth dynamic client registration failure reporting", () => {
   beforeEach(() => captureExceptionMock.mockReset());
 
-  // PAPERCLIP-BACKEND-96: a provider whose registration endpoint refused or
-  // failed the request answered the person with a 502 and also paged Sentry.
   it.each([401, 403, 404, 429, 500, 503])(
     "answers a provider-side %i with a 502 and no crash report",
     async (status) => {

@@ -222,10 +222,6 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
           status: response.status,
         },
       );
-      // A registration endpoint that answers 401/403 (closed or token-gated
-      // registration), 404, 429 or 5xx failed on the provider's side; the
-      // person still gets this 502. Other statuses, such as a 400 rejecting
-      // Paperclip's metadata, stay reportable with the bounded status record.
       recordOAuthProviderFailure(error, {
         operation: "dynamic_client_registration",
         httpStatus: response.status,

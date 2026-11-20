@@ -190,8 +190,6 @@ export function captureException(error: unknown, reference?: SentryRunReference)
         fingerprint: ["{{ default }}"],
       });
     } else if (oauthProviderFailure) {
-      // Only the provider's status and allowlisted error label: never its
-      // URL or response body.
       sentryHandle.captureException(error, {
         tags: {
           ...tags,
