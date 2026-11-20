@@ -21,6 +21,7 @@ import { issueService } from "./issues.js";
 import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { proveRunProcessGone } from "./run-process-owner.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { FRESH_CONTINUATION_SCHEMA, ISOLATING_CONTINUATIONS } from "./fresh-continuation-isolation.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -68,7 +69,7 @@ export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPers
  * backs off and is checked again; it never charges the task's failure budget.
  */
 
-export const FRESH_CONTINUATION_SCHEMA = "paperclip.fresh-continuation.v1" as const;
+export { FRESH_CONTINUATION_SCHEMA };
 export const FRESH_CONTINUATION_ACTOR = "fresh-continuation" as const;
 /** Cause of the record written when the run left no hold of its own. Not an execution blocker. */
 export const FRESH_CONTINUATION_CAUSE = "fresh_continuation" as const;
@@ -370,7 +371,7 @@ export async function freshContinuationIsolatesRun(db: Db, input: { companyId: s
     delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'` }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, input.companyId),
     sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${input.runId}`,
-    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' in ('fresh_isolated_workspace', 'remote_epoch')`)).limit(1);
+    inArray(sql<string>`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}'`, [...ISOLATING_CONTINUATIONS]))).limit(1);
   if (!record) return false;
   // Only the recorded continuation carries the isolation marker that prepares
   // the new workspace, so while it is pending it must be the task's next run.
