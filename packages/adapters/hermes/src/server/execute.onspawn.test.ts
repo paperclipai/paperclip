@@ -159,6 +159,57 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(bothArgs[bothArgs.indexOf("--reasoning") + 1]).toBe("high");
   });
 
+  describe("resuming a session with a thinking effort", () => {
+    function withSession(overrides: Record<string, unknown>, sessionParams: Record<string, unknown>) {
+      const { ctx } = makeCtx(overrides);
+      return { ...ctx, runtime: { ...ctx.runtime, sessionId: "s-old", sessionParams } };
+    }
+    function returnSession(id: string) {
+      vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: `ok\n\nsession_id: ${id}\n`,
+        stderr: "",
+      } as any);
+    }
+    const lastArgs = () => vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+
+    it("starts a new session when the saved session was launched without --reasoning", async () => {
+      returnSession("s-new");
+      const result = await execute(withSession({ effort: "high" }, { sessionId: "s-old" }) as any);
+      const args = lastArgs();
+      expect(args).not.toContain("--resume");
+      expect(args[args.indexOf("--reasoning") + 1]).toBe("high");
+      expect(result.sessionParams).toEqual({ sessionId: "s-new", reasoning: "high" });
+    });
+
+    it("starts a new session when the saved launch level differs", async () => {
+      returnSession("s-new");
+      const result = await execute(withSession({ effort: "low" }, { sessionId: "s-old", reasoning: "high" }) as any);
+      expect(lastArgs()).not.toContain("--resume");
+      expect(result.sessionParams).toEqual({ sessionId: "s-new", reasoning: "low" });
+    });
+
+    it("resumes when the saved launch level matches", async () => {
+      returnSession("s-old");
+      const result = await execute(withSession({ effort: "high" }, { sessionId: "s-old", reasoning: "high" }) as any);
+      const args = lastArgs();
+      expect(args[args.indexOf("--resume") + 1]).toBe("s-old");
+      expect(args[args.indexOf("--reasoning") + 1]).toBe("high");
+      expect(result.sessionParams).toEqual({ sessionId: "s-old", reasoning: "high" });
+    });
+
+    it("resumes without --reasoning and keeps the saved level when no effort is set", async () => {
+      returnSession("s-old");
+      const result = await execute(withSession({}, { sessionId: "s-old", reasoning: "high" }) as any);
+      const args = lastArgs();
+      expect(args[args.indexOf("--resume") + 1]).toBe("s-old");
+      expect(args).not.toContain("--reasoning");
+      expect(result.sessionParams).toEqual({ sessionId: "s-old", reasoning: "high" });
+    });
+  });
+
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches
