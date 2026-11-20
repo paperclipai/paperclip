@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issues,
+import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueRelations, issues,
   nativeRunFinalizations, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpStructuredRunResult, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -22,6 +22,7 @@ import { requestTaskRetry } from "../task-retry.js";
 import { heartbeatService } from "../heartbeat.js";
 import { attentionService } from "../attention.js";
 import * as statusCommitter from "./status-decision-committer.js";
+import * as evidenceClassifier from "./evidence-classifier.js";
 
 type Blocker = NonNullable<PrpStructuredRunResult["blocker"]>;
 
@@ -70,7 +71,8 @@ describe("native run that reports a task-wide blocker it owns", () => {
     return issueId;
   }
 
-  async function runTurn(issueId: string, report: { blocker: Blocker } | { done: true }, runId: string = randomUUID(), beforeFinalize?: () => Promise<unknown>) {
+  async function runTurn(issueId: string, report: { blocker: Blocker } | { done: true }, runId: string = randomUUID(),
+    beforeFinalize?: () => Promise<unknown>, expectedPhase: "committed" | "terminal_failure" = "committed") {
     const [existing] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     if (!existing) await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: boardUserId, contextSnapshot: { issueId } });
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -113,7 +115,12 @@ describe("native run that reports a task-wide blocker it owns", () => {
     const unexpected = async () => { throw new Error("Unexpected provider call"); };
     await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: { descriptor: unexpected, openSession: unexpected } });
     await beforeFinalize?.();
-    for (let replay = 0; replay < 2; replay++) await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    for (let replay = 0; replay < (expectedPhase === "committed" ? 2 : 1); replay++) {
+      const finalized = await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+      expect(finalized?.phase).toBe(expectedPhase);
+    }
+    if (expectedPhase === "terminal_failure") await expect(finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" }))
+      .rejects.toThrow("native_finalization_terminal_failure");
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
     const retries = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
     const [settled] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -151,11 +158,70 @@ describe("native run that reports a task-wide blocker it owns", () => {
     expect(await ownerWakes(issueId)).toEqual([]);
   }, 120_000);
 
+  it("rebuilds a board assessment when a human owner is bound before the authoritative issue read", async () => {
+    const issueId = await createTask();
+    const classify = evidenceClassifier.classifyNativeEvidence;
+    let bound = false;
+    const spy = vi.spyOn(evidenceClassifier, "classifyNativeEvidence").mockImplementation(async input => {
+      const assessment = await classify(input);
+      if (!bound && input.issueId === issueId) {
+        bound = true;
+        await db.update(issues).set({ status: "blocked", statusVersion: 1, unblockDescriptor: {
+          owner: { userId: namedUserId }, action: selfBlocker.unblockAction } }).where(eq(issues.id, issueId));
+      }
+      return assessment;
+    });
+    try {
+      const blocked = await runTurn(issueId, { blocker: { ...selfBlocker, owner: { kind: "user", name: "the decision owner" } } });
+      expect(bound).toBe(true);
+      expect(blocked.issue.unblockDescriptor?.owner).toEqual({ userId: namedUserId });
+      expect(await ownerWakes(issueId)).toEqual([]);
+    } finally { spy.mockRestore(); }
+  }, 120_000);
+
+  it("rechecks a board fallback when its human owner changes without changing the status version", async () => {
+    const issueId = await createTask();
+    await db.update(issues).set({ status: "blocked", unblockDescriptor: {
+      owner: "board", action: selfBlocker.unblockAction } }).where(eq(issues.id, issueId));
+    const commit = statusCommitter.commitNativeStatusDecision;
+    let rebound = false;
+    const spy = vi.spyOn(statusCommitter, "commitNativeStatusDecision").mockImplementation(async input => {
+      if (!rebound && input.issueId === issueId && input.decision.unblockDescriptor?.owner === "board") {
+        rebound = true;
+        await db.update(issues).set({ unblockDescriptor: {
+          owner: { userId: namedUserId }, action: selfBlocker.unblockAction } }).where(eq(issues.id, issueId));
+      }
+      return commit(input);
+    });
+    try {
+      const blocked = await runTurn(issueId, { blocker: { ...selfBlocker, owner: { kind: "user", name: "the decision owner" } } });
+      expect(rebound).toBe(true);
+      expect(blocked.issue.unblockDescriptor?.owner).toEqual({ userId: namedUserId });
+      expect(await ownerWakes(issueId)).toEqual([]);
+    } finally { spy.mockRestore(); }
+  }, 120_000);
+
   it("keeps an unknown human blocker with the board instead of assigning the task creator", async () => {
     const blocked = await runTurn(await createTask(), { blocker: { ...selfBlocker,
       owner: { kind: "user", name: "Unknown Reviewer" } } });
     expect(blocked.issue.unblockDescriptor?.owner).toBe("board");
     expect(blocked.retries).toEqual([]);
+  }, 120_000);
+
+  it.each([false, true])("refuses human blocker routing when the agent cannot assign tasks to humans (dependency: %s)", async dependency => {
+    const issueId = await createTask();
+    if (dependency) await db.insert(issueRelations).values({ companyId, issueId: await createTask(), relatedIssueId: issueId, type: "blocks" });
+    await db.update(agents).set({ permissions: { interactions: { canAssignTasksToHumans: false } } }).where(eq(agents.id, agentId));
+    try {
+      const blocked = await runTurn(issueId, { blocker: { ...selfBlocker,
+        owner: { kind: "user", name: "Dependency Reviewer" } } }, undefined, undefined, "terminal_failure");
+      expect(blocked.issue.unblockDescriptor).toBeNull();
+      expect(blocked.decision).toBeUndefined();
+      const [finalized] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, blocked.runId));
+      expect(finalized).toMatchObject({ phase: "terminal_failure", failureCode: "agent_interaction_denied", nextAttemptAt: null });
+      const feed = await attentionService(db).list(companyId, { userId: namedUserId, view: "mine" });
+      expect(feed.items.some(item => item.dedupKey.startsWith("blocked-owner:") && item.subject.id === issueId)).toBe(false);
+    } finally { await db.update(agents).set({ permissions: {} }).where(eq(agents.id, agentId)); }
   }, 120_000);
 
   it.each(["Foreign Reviewer", "Inactive Reviewer", "Shared Reviewer"])("does not route a human blocker through an unsafe name: %s", async name => {

@@ -875,6 +875,7 @@ async function materializeDecisionEffect(input: {
     await assertAgentInteraction(input.tx, { companyId: input.companyId, actorAgentId: input.actorAgentId,
       operation: "assign", issueId: input.issue.id,
       targetAgentId: typeof effect.owner === "object" && "agentId" in effect.owner ? effect.owner.agentId : null,
+      assigneeUserId: typeof effect.owner === "object" && "userId" in effect.owner ? effect.owner.userId : null,
       texts: [effect.action], lock: true });
     const [bound] = await input.tx
       .update(issues)
@@ -1880,7 +1881,14 @@ export async function commitNativeStatusDecision(input: {
       throw new NativeStatusRaceError();
     }
     const unblockOwner = input.decision.unblockDescriptor?.owner;
-    if (unblockOwner && typeof unblockOwner === "object" && "userId" in unblockOwner) {
+    const assessedUserId = unblockOwner && typeof unblockOwner === "object" && "userId" in unblockOwner
+      ? unblockOwner.userId : null;
+    // A board fallback is also an assessed resolution. A late API-bound
+    // human owner must invalidate it before any blocker effects are saved.
+    const boardBlocker = unblockOwner === "board" && [
+      "task_wide_blocker_bound", "current_track_blocker_waiting", "durable_dependency_blocker_bound",
+    ].includes(reasonCode);
+    if (assessedUserId || boardBlocker) {
       try {
         const [saved] = await tx.select({ envelope: nativeRunResults.resultJson }).from(nativeRunResults).where(and(
           eq(nativeRunResults.id, coordinator.resultId!), eq(nativeRunResults.companyId, input.companyId),
@@ -1889,9 +1897,14 @@ export async function commitNativeStatusDecision(input: {
         )).limit(1).for("share", { noWait: true });
         const owner = record(record(record(saved?.envelope).result).blocker).owner;
         if (!saved || await nativeBlockerUserId({ db: tx as unknown as Db, companyId: input.companyId,
-          issueId: input.issueId, owner: record(owner), lockSources: true }) !== unblockOwner.userId) {
+          issueId: input.issueId, owner: record(owner), lockSources: true }) !== assessedUserId) {
           throw new NativeStatusRaceError();
         }
+        // Dependency waits can project an owner without a bind_blocker
+        // effect, so enforce the human-assignment permission here too.
+        if (assessedUserId) await assertAgentInteraction(tx, { companyId: input.companyId,
+          actorAgentId: originRun?.agentId ?? null, operation: "assign", issueId: input.issueId,
+          assigneeUserId: assessedUserId, texts: [input.decision.unblockDescriptor!.action], lock: true });
       } catch (error) {
         if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
         throw error;
