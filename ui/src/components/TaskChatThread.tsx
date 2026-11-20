@@ -154,6 +154,7 @@ import { heartbeatsApi, type RuntimeRequestResolution } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 import { isRunStopConfirmed } from "@/lib/wait-for-stopped-runs";
 
@@ -534,6 +535,7 @@ function durableInputLabel(
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
   const coordinatorEnabled = useCoordinatorPresentation();
+  const getAdapterCapabilities = useAdapterCapabilities();
   const { status: connectionStatus } = useConnectivity();
   const { enabled: streamlinedPreference } = useStreamlinedUiEnabled();
   const streamlinedUiEnabled = coordinatorEnabled || streamlinedPreference;
@@ -645,10 +647,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         (run.status === "failed" || run.status === "timed_out") &&
         run.execution?.phase === "recovery_needed" &&
         run.execution.cause === "legacy_execution_requires_reconciliation" &&
-        [
+        ([
           "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
           "pi_local", "grok_local", "kimi_local", "hermes_local",
-        ].includes(run.adapterType ?? "")
+        ].includes(run.adapterType ?? "") ||
+          getAdapterCapabilities(run.adapterType ?? "").supportsConversationContinuation === true)
       ) return false;
       return [
         "working",
