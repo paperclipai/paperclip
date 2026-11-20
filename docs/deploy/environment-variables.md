@@ -68,6 +68,11 @@ One GitHub repository folder can supply skills to every company library. The ser
 10 minutes, and each company imports the latest snapshot on demand as `shared/<slug>` skills. No company, person or agent
 receives the token. The feature is off unless both the token and the repository are set.
 
+When it is on, a run also switches on the shared skills an agent's tools call for: a skill is added to the run when the
+agent can use every tool the skill requires (the table is `SHARED_SKILL_DEFAULTS` in
+`server/src/services/shared-skill-defaults.ts`). Nothing is saved into the agent's skill preferences, and there is no
+per-agent opt-out. Unsetting the repository turns this off for everyone.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `PAPERCLIP_SHARED_SKILLS_GITHUB_TOKEN` | unset | Read-only GitHub token (fine-grained, Contents: read, limited to that one repository). Keep it in a secret store. |

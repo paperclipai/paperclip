@@ -26,6 +26,7 @@ import { resolveAssignedConnectionInstructionsForRun } from "../native-runtime/a
 import { recordFailedSkillPreparation, type NativeRunHistoricalSpan } from "../native-runtime/native-run-trace.js";
 import { collectRunFailureSecretValues } from "../run-failure-diagnostics.js";
 import { skillVersionSelectionMap } from "../runtime-skill-selections.js";
+import { resolveSharedSkillDefaultKeys } from "../shared-skill-defaults.js";
 import type { selectHeartbeatEnvironment } from "./environment-selection.js";
 import type { createHeartbeatRetries } from "./retries.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
@@ -133,11 +134,17 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       commentIds: extractWakeCommentIds(context),
       actor: skillActor,
     }));
-  const runScopedSkillKeys =
-    acceptedPlanContinuationWake &&
+  // Run-only overlay: shared skills the agent's tools call for. Unlike a mentioned skill, a missing one never fails the run.
+  const sharedSkillDefaultKeys =
+    preconfiguredHome ? [] : await resolveSharedSkillDefaultKeys(db, { companyId: agent.companyId, agentId: agent.id });
+  const runScopedSkillKeys = [
+    ...runScopedMentionedSkillKeys,
+    ...(acceptedPlanContinuationWake &&
     !acceptedPlanWakeRoutingDecision?.suppressAcceptedContinuation
-      ? [...runScopedMentionedSkillKeys, ACCEPTED_PLAN_CONVERSION_SKILL_KEY]
-      : runScopedMentionedSkillKeys;
+      ? [ACCEPTED_PLAN_CONVERSION_SKILL_KEY]
+      : []),
+    ...sharedSkillDefaultKeys,
+  ];
   const githubSelection = await time("configuration_github_identity", () => resolveManagedGitHubIdentitySelection(
     db,
     agent.companyId,

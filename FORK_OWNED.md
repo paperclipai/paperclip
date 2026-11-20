@@ -34,6 +34,12 @@ any new fork patch; remove one when the patch is upstreamed.
 - `ui/src/lib/agent-setup-fields.ts`
 - `ui/src/pages/test-support/hermes-create-preflight.ts`
 
+## Shared skills (TECH-9129)
+
+- `server/src/services/shared-skills-source.ts`
+- `server/src/secrets/shared-skills-token.ts`
+- `server/src/services/shared-skill-defaults.ts`
+
 ## Claude Code memory hooks
 
 - `docker/claude/` managed settings (memory hooks; Claude auto memory off, TECH-8749) and the memory hook baked into the image
