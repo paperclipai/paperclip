@@ -88,6 +88,25 @@ describe("exact chat replay while workspace recovery restarts the failed run's s
     expect(attempt.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it("checks once more when the stop settles between the refusal and the pending-stop read", async () => {
+    const { source, lease, companyId } = await stoppedSource();
+    const pending = await recoveryRestart(lease);
+    const check = authorize(source.id);
+    let first = true;
+    // The refused transaction has released its locks; recovery then commits the stop receipt.
+    const attempt = vi.fn(async () => {
+      if (!first) return check();
+      first = false;
+      await check().catch(async error => { await restop(pending); throw error; });
+      throw new Error("expected the first attempt to be refused");
+    });
+    const onWait = vi.fn();
+    await expect(awaitFailedChatRetrySourceStop(db, { companyId, sourceRunId: source.id,
+      signal: new AbortController().signal, onWait, pollMs: 25 }, attempt)).resolves.toBe(true);
+    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(onWait).not.toHaveBeenCalled();
+  });
+
   it("refuses at the deadline when the sandbox stays held", async () => {
     const { source, lease, companyId } = await stoppedSource();
     await recoveryRestart(lease);
@@ -96,15 +115,18 @@ describe("exact chat replay while workspace recovery restarts the failed run's s
       .rejects.toMatchObject({ details: { code: "chat_failed_run_retry_not_authorized" } });
   });
 
-  it("refuses at once when no stop of the source sandbox is in progress", async () => {
+  it("refuses without waiting when no stop of the source sandbox is in progress", async () => {
     const { source, companyId } = await stoppedSource();
     // An unreleased lease without a stop intent: the old executor may still be running.
     await db.update(environmentLeases).set({ status: "active", cleanupStatus: null, releasedAt: null, metadata: { pluginId: "fake-plugin" } })
       .where(eq(environmentLeases.heartbeatRunId, source.id));
     const attempt = vi.fn(authorize(source.id));
+    const onWait = vi.fn();
     await expect(awaitFailedChatRetrySourceStop(db, { companyId, sourceRunId: source.id,
-      signal: new AbortController().signal, pollMs: 25 }, attempt)).rejects.toMatchObject({ status: 409 });
-    expect(attempt).toHaveBeenCalledTimes(1);
+      signal: new AbortController().signal, onWait, pollMs: 25 }, attempt)).rejects.toMatchObject({ status: 409 });
+    // One final read of the unchanged authority, and no wait.
+    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(onWait).not.toHaveBeenCalled();
   });
 
   it.each([

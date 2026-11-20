@@ -41,7 +41,9 @@ function delay(ms: number, signal: AbortSignal) {
 
 /** Re-run an exact chat replay's authorization while the failed run's sandbox
  * stop settles, instead of failing the replay on a transient missing receipt.
- * The wait is bounded and stops with the run; the last refusal is returned. */
+ * The wait is bounded and stops with the run; the last refusal is returned.
+ * When no stop is pending after a refusal, the stop may have settled after the
+ * refused transaction released its locks, so the authority is read once more. */
 export async function awaitFailedChatRetrySourceStop<T>(db: Db, input: {
   companyId: string;
   sourceRunId: string | null;
@@ -56,8 +58,9 @@ export async function awaitFailedChatRetrySourceStop<T>(db: Db, input: {
     try {
       return await attempt();
     } catch (error) {
-      if (!input.sourceRunId || !isSourceContainmentRefusal(error) || Date.now() >= deadline ||
-          !await failedChatRetrySourceStopPending(db, input.companyId, input.sourceRunId)) throw error;
+      if (!input.sourceRunId || !isSourceContainmentRefusal(error)) throw error;
+      if (!await failedChatRetrySourceStopPending(db, input.companyId, input.sourceRunId)) return await attempt();
+      if (Date.now() >= deadline) throw error;
     }
     if (!announced) {
       announced = true;
