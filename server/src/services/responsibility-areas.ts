@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { responsibilityAreas } from "@paperclipai/db";
+import { responsibilities, responsibilityAreas } from "@paperclipai/db";
 import type {
   CreateResponsibilityArea,
   ResponsibilityArea,
@@ -13,8 +13,9 @@ type DbOrTransaction = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 const TITLE_UNIQUE_INDEX = "responsibility_areas_company_title_uq";
 
+/** `board` with `viaAgentId`: an agent acting for a member of the company, which creates what that person could. */
 export type ResponsibilityAreaCreateActor =
-  | { type: "board" }
+  | { type: "board"; viaAgentId?: string }
   | { type: "agent"; agentId: string };
 
 export function toResponsibilityArea(row: AreaRow): ResponsibilityArea {
@@ -45,8 +46,9 @@ const AREA_ORDER = [
 ] as const;
 
 /**
- * Areas: broad nouns a company cares about. No owner. Board users manage them;
- * agents can only propose one (idempotently, by case-insensitive title).
+ * Areas: broad nouns a company cares about. No owner. Board users, and agents
+ * acting for a member of the company, manage them; other agents can only
+ * propose one (idempotently, by case-insensitive title).
  */
 export function responsibilityAreaService(db: Db) {
   async function findLiveByTitle(companyId: string, title: string, database: DbOrTransaction = db) {
@@ -112,10 +114,11 @@ export function responsibilityAreaService(db: Db) {
         sortOrder: input.sortOrder ?? 0,
         ...(actor.type === "agent"
           ? { status: "proposed", source: "onboarding", proposedByAgentId: actor.agentId }
-          : { status: input.status ?? "active", source: input.source ?? "manual", proposedByAgentId: null }),
+          : { status: input.status ?? "active", source: input.source ?? "manual", proposedByAgentId: actor.viaAgentId ?? null }),
       };
       try {
-        const [row] = await db.insert(responsibilityAreas).values(values).returning();
+        // Its own (sub)transaction: a title clash must not abort a caller's transaction.
+        const [row] = await db.transaction((tx) => tx.insert(responsibilityAreas).values(values).returning());
         return { area: toResponsibilityArea(row!), created: true };
       } catch (error) {
         if (!isTitleConflict(error)) throw error;
@@ -140,9 +143,9 @@ export function responsibilityAreaService(db: Db) {
         }
       }
       try {
-        const [row] = await db.update(responsibilityAreas).set(set)
+        const [row] = await db.transaction((tx) => tx.update(responsibilityAreas).set(set)
           .where(and(eq(responsibilityAreas.id, existing.id), eq(responsibilityAreas.companyId, existing.companyId)))
-          .returning();
+          .returning());
         if (!row) throw notFound("Area not found");
         return toResponsibilityArea(row);
       } catch (error) {
@@ -151,12 +154,41 @@ export function responsibilityAreaService(db: Db) {
       }
     },
 
-    /** Responsibilities under it keep existing with `areaId` null (FK on delete set null). */
-    async remove(existing: AreaRow): Promise<ResponsibilityArea | null> {
-      const [row] = await db.delete(responsibilityAreas)
-        .where(and(eq(responsibilityAreas.id, existing.id), eq(responsibilityAreas.companyId, existing.companyId)))
-        .returning();
-      return row ? toResponsibilityArea(row) : null;
+    /**
+     * Responsibilities under it keep existing: moved to `opts.moveTo` (an
+     * area in the same company that is not archived) in the same transaction,
+     * otherwise left with `areaId` null (FK on delete set null).
+     */
+    async remove(existing: AreaRow, opts: { moveTo?: string | null } = {}): Promise<{ area: ResponsibilityArea; moved: number } | null> {
+      return db.transaction(async (tx) => {
+        let moved = 0;
+        if (opts.moveTo) {
+          if (opts.moveTo === existing.id) throw conflict("Move its responsibilities to a different area");
+          const target = await tx.select().from(responsibilityAreas)
+            .where(and(eq(responsibilityAreas.id, opts.moveTo), eq(responsibilityAreas.companyId, existing.companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (!target) throw notFound("Area to move responsibilities to not found");
+          if (target.status === "archived") throw conflict("That area is archived; restore it or choose another area");
+          const rows = await tx.update(responsibilities).set({ areaId: target.id, updatedAt: new Date() })
+            .where(and(eq(responsibilities.companyId, existing.companyId), eq(responsibilities.areaId, existing.id)))
+            .returning({ id: responsibilities.id });
+          moved = rows.length;
+        }
+        const [row] = await tx.delete(responsibilityAreas)
+          .where(and(eq(responsibilityAreas.id, existing.id), eq(responsibilityAreas.companyId, existing.companyId)))
+          .returning();
+        return row ? { area: toResponsibilityArea(row), moved } : null;
+      });
+    },
+
+    /** The people with an active responsibility in the area, whose Dashboards show it. */
+    async ownersInArea(companyId: string, areaId: string, statuses: readonly string[] = ["active"]): Promise<string[]> {
+      const rows = await db.selectDistinct({ ownerUserId: responsibilities.ownerUserId }).from(responsibilities).where(and(
+        eq(responsibilities.companyId, companyId),
+        eq(responsibilities.areaId, areaId),
+        inArray(responsibilities.status, [...statuses]),
+      ));
+      return rows.map((row) => row.ownerUserId);
     },
 
     /** Inside `tx`: make a proposed area active. Returns the area when it changed. */
