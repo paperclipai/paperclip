@@ -66,6 +66,14 @@ export function sharedSkillsDirectory(): string {
   return path.join(resolvePaperclipInstanceRoot(), "shared-skills");
 }
 
+/** True when `locator` is inside the shared snapshot directory, however it was reached. */
+export function isUnderSharedSkillsDirectory(locator: string | null | undefined): boolean {
+  if (!locator) return false;
+  const root = path.resolve(sharedSkillsDirectory());
+  const target = path.resolve(locator);
+  return target === root || target.startsWith(`${root}${path.sep}`);
+}
+
 /** The directory holding the latest complete snapshot, or null before the first successful download. */
 export async function resolveSharedSkillsRoot(directory = sharedSkillsDirectory()): Promise<string | null> {
   const pointer = (await readFile(path.join(directory, POINTER_FILE), "utf8").catch(() => "")).trim();

@@ -4,6 +4,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { agents, companies, companySkills, createDb, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
@@ -83,6 +84,86 @@ describeEmbeddedPostgres("shared skills in the company library", () => {
       __resetSharedSkillsTokenForTests(env[SHARED_SKILLS_TOKEN_ENV]);
     }
     expect(await sharedKeys(id)).toEqual(["shared/alpha"]);
+  });
+
+  async function digestTree(dir: string): Promise<string> {
+    const hash = createHash("sha256");
+    const walk = async (current: string): Promise<void> => {
+      for (const entry of (await fs.readdir(current, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        const full = path.join(current, entry.name);
+        hash.update(path.relative(dir, full));
+        if (entry.isDirectory()) await walk(full); else hash.update(await fs.readFile(full));
+      }
+    };
+    await walk(dir);
+    return hash.digest("hex");
+  }
+
+  async function sharedSkill(companyId: string, slug = "alpha") {
+    const [row] = await db.select().from(companySkills).where(eq(companySkills.key, `shared/${slug}`)).limit(1);
+    void companyId;
+    return row!;
+  }
+
+  describe("read-only enforcement", () => {
+    async function setup() {
+      await refreshSharedSkills({ env, openSnapshot: async () => snapshot("a".repeat(40), ["alpha"]) });
+      const [one, two] = [await company(), await company()];
+      await sharedKeys(one);
+      await sharedKeys(two);
+      const rows = await db.select().from(companySkills).where(eq(companySkills.key, "shared/alpha"));
+      const rowOne = rows.find((r) => r.companyId === one)!;
+      const rowTwo = rows.find((r) => r.companyId === two)!;
+      const directory = rowOne.sourceLocator!;
+      return { one, two, rowOne, rowTwo, directory, before: await digestTree(directory) };
+    }
+
+    it("refuses to edit, create, delete or rename a shared skill and leaves the shared directory unchanged", async () => {
+      const { one, rowOne, directory, before } = await setup();
+      await expect(svc.updateFile(one, rowOne.id, "SKILL.md", "---\nname: alpha\n---\nINJECTED")).rejects.toMatchObject({ details: { code: "shared_skill_read_only" } });
+      await expect(svc.updateFile(one, rowOne.id, "extra.md", "new file")).rejects.toMatchObject({ details: { code: "shared_skill_read_only" } });
+      await expect(svc.deleteFile(one, rowOne.id, { path: "SKILL.md", target: "file" })).rejects.toMatchObject({ details: { code: "shared_skill_read_only" } });
+      await expect(svc.renameSkill(one, rowOne.id, { name: "Renamed" })).rejects.toThrow();
+      await expect(svc.installUpdate(one, rowOne.id, { force: true })).rejects.toMatchObject({ details: { code: "shared_skill_read_only" } });
+      expect(await digestTree(directory)).toBe(before);
+      expect(await fs.readFile(path.join(directory, "SKILL.md"), "utf8")).not.toContain("INJECTED");
+    });
+
+    it("keeps a shared skill read-only even if its marker is lost, because of where it lives", async () => {
+      const { one, rowOne, directory, before } = await setup();
+      await db.update(companySkills).set({ metadata: { sourceKind: "local_path" } }).where(eq(companySkills.id, rowOne.id));
+      await expect(svc.updateFile(one, rowOne.id, "SKILL.md", "x")).rejects.toMatchObject({ details: { code: "shared_skill_read_only" } });
+      expect(await digestTree(directory)).toBe(before);
+    });
+
+    it("an attempted edit in one company never changes what another company sees", async () => {
+      const { one, two, rowOne, rowTwo, directory } = await setup();
+      await expect(svc.updateFile(one, rowOne.id, "SKILL.md", "tampered")).rejects.toThrow();
+      const seen = await svc.readFile(two, rowTwo.id, "SKILL.md");
+      expect(seen?.content).toContain("Body of alpha");
+      expect(await fs.readFile(path.join(directory, "SKILL.md"), "utf8")).toContain("Body of alpha");
+    });
+
+    it("reports a shared skill as not editable", async () => {
+      const { one, rowOne } = await setup();
+      const file = await svc.readFile(one, rowOne.id, "SKILL.md");
+      expect(file?.editable).toBe(false);
+      const detail = await svc.detail(one, rowOne.id);
+      expect(detail?.editable).toBe(false);
+      expect(detail?.editableReason).toMatch(/Fork this skill/);
+    });
+
+    it("still lets a company fork a shared skill into its own managed copy and edit that", async () => {
+      const { one, rowOne, directory, before } = await setup();
+      const { skill: fork } = await svc.forkSkill(one, rowOne.id, {});
+      const managedRoot = path.join(home, "instances", "default", "skills", one);
+      expect(fork.sourceLocator!.startsWith(managedRoot)).toBe(true);
+      expect(fork.key).toBe(`company/${one}/${fork.slug}`);
+      const edited = await svc.updateFile(one, fork.id, "SKILL.md", "---\nname: alpha\ndescription: mine\n---\nMy own text");
+      expect(edited.content).toContain("My own text");
+      expect(await fs.readFile(path.join(fork.sourceLocator!, "SKILL.md"), "utf8")).toContain("My own text");
+      expect(await digestTree(directory)).toBe(before);
+    });
   });
 
   it("adds nothing before the first download", async () => {

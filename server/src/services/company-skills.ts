@@ -35,7 +35,7 @@ import {
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference, resolvePaperclipDesiredSkillNames,
   resolveLegacyPaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
 import { REPOSITORY_CONTENT_DIR, repositorySkillProjection } from "./skill-repository-package.js";
-import { SHARED_SKILLS_KEY_PREFIX, SHARED_SKILLS_SOURCE_KIND, readSharedSkillsConfig, resolveSharedSkillsRoot } from "./shared-skills-source.js";
+import { SHARED_SKILLS_KEY_PREFIX, SHARED_SKILLS_SOURCE_KIND, isUnderSharedSkillsDirectory, readSharedSkillsConfig, resolveSharedSkillsRoot } from "./shared-skills-source.js";
 import { runVersionSnapshotFlight } from "./skill-version-retention.js";
 import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
@@ -2706,6 +2706,23 @@ function isMarkdownPath(filePath: string) {
   return fileName === "skill.md" || fileName.endsWith(".md");
 }
 
+const SHARED_SKILL_READ_ONLY_REASON = "Shared skills are managed centrally and are read-only. Fork this skill to edit your own copy.";
+
+/**
+ * A skill imported from the instance-wide shared snapshot. Every company's row points at the SAME directory on the
+ * server, so any write through one company would change the skill for all of them. Recognized by the import marker
+ * and, independently, by the source directory itself so a row that lost its marker is still protected.
+ */
+function isSharedSkill(skill: SkillSourceInfoTarget): boolean {
+  if (getSkillMeta(skill).sourceKind === SHARED_SKILLS_SOURCE_KIND) return true;
+  return skill.sourceType === "local_path" && isUnderSharedSkillsDirectory(skill.sourceLocator);
+}
+
+function assertSkillNotShared(skill: CompanySkill): void {
+  if (!isSharedSkill(skill)) return;
+  throw unprocessable(SHARED_SKILL_READ_ONLY_REASON, { code: "shared_skill_read_only", skillId: skill.id });
+}
+
 function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
   editable: boolean;
   editableReason: string | null;
@@ -2715,6 +2732,15 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
 } {
   const metadata = getSkillMeta(skill);
   const localSkillDir = normalizeSkillDirectory(skill);
+  if (isSharedSkill(skill)) {
+    return {
+      editable: false,
+      editableReason: SHARED_SKILL_READ_ONLY_REASON,
+      sourceLabel: "Shared skills",
+      sourceBadge: "paperclip",
+      sourcePath: null,
+    };
+  }
   if (metadata.sourceKind === "paperclip_bundled") {
     return {
       editable: false,
@@ -4756,6 +4782,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       const skill = await getById(companyId, skillId, tx);
       if (!skill) throw notFound("Skill not found");
       if (skill.slug !== initial.slug) throw conflict("Skill was renamed. Retry the operation.");
+      // Every file write, rename and delete goes through here; none may touch the shared directory.
+      assertSkillNotShared(skill);
       return mutate(skill, tx);
     });
   }
@@ -4926,6 +4954,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
+    assertSkillNotShared(skill);
 
     const status = await updateStatus(companyId, skillId);
     if (!status?.supported) {
@@ -5046,6 +5075,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
+    assertSkillNotShared(skill);
     if (skill.sourceType !== "catalog") {
       throw unprocessable("Only catalog-managed company skills support reset.");
     }
