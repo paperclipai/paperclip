@@ -33,10 +33,14 @@ describe("native workspace failure write under a deadlock", () => {
 
     // Hold the agent row. Once the failure write waits on it for its recovery
     // action, wait on the run row that write already updated. The holder
-    // detects deadlocks late, so Postgres aborts the failure write.
+    // detects deadlocks late, so Postgres aborts the failure write. The
+    // failure write starts only after the holder owns the agent row.
+    let agentLocked!: () => void;
+    const agentLock = new Promise<void>(resolve => { agentLocked = resolve; });
     const holder = db.transaction(async tx => {
       await tx.execute(sql`set local deadlock_timeout = '10s'`);
       await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId)).for("update");
+      agentLocked();
       for (let waited = 0; ; waited += 25) {
         const blocked = await db.execute<{ pid: number }>(sql`select pid from pg_stat_activity
           where wait_event_type = 'Lock' and query like 'insert into "issue_recovery_actions"%'`);
@@ -46,6 +50,7 @@ describe("native workspace failure write under a deadlock", () => {
       }
       await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     });
+    await Promise.race([agentLock, holder]);
     const failure = await recordNativeFinalizationFailure({ db, runId, error: new Error("native_workspace_sync_out_failed"),
       failureScope: "workspace", projectRunStatus: true });
     await holder;
