@@ -64,6 +64,8 @@ export type InboundDirectMessage = {
   isOutgoing: boolean;
   attachments: InboundAttachment[];
   forward?: InboundForward | null;
+  /** Set when media was refused before download so the caption can keep the reason. */
+  mediaSkipped?: boolean;
 };
 
 export type LoginQrPayload = {

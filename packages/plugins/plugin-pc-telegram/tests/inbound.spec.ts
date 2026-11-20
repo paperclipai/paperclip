@@ -171,6 +171,26 @@ describe("inbound issue mapping", () => {
     });
     expect(skipped).toBeNull();
     expect(downloadMedia).not.toHaveBeenCalled();
+    const caption = await assembleInboundMessage({
+      isPrivate: true,
+      id: 6,
+      message: "please check this screenshot",
+      sender: { id: 2002, firstName: "Sam" },
+      media: { className: "MessageMediaDocument", size: 4 },
+      downloadMedia,
+    }, {
+      companyId: COMPANY_ID,
+      accountId: "1001",
+      allowMedia: async () => false,
+    });
+    expect(downloadMedia).not.toHaveBeenCalled();
+    expect(caption?.attachments).toEqual([]);
+    expect(caption?.mediaSkipped).toBe(true);
+    const harness = createTestHarness({ manifest });
+    const issue = await ingestInboundMessage(harness.ctx, connection, caption!);
+    expect(issue?.description).toContain("please check this screenshot");
+    expect(issue?.description).toContain("storage quota");
+    expect(issue?.description).not.toContain("base64");
   });
 
   it("reopens a completed dialog before waking the assigned agent", async () => {

@@ -31,6 +31,7 @@ import { TG_CSS } from "./inbox-styles.js";
 import {
   INBOX_ABORT_MS,
   absorbStreamAhead,
+  mergeLoadedChats,
   bubbleNode,
   captureFeedAnchor,
   queueStreamBubble,
@@ -85,7 +86,11 @@ export function TelegramInboxPage({
   }
   const chats = usePluginData<{ chats?: TelegramChatRow[]; nextCursor?: string | null }>(
     "chats",
-    companyId ? { companyId, ...(listCursor ? { cursor: listCursor } : {}) } : undefined,
+    companyId ? { companyId } : undefined,
+  );
+  const olderChats = usePluginData<{ chats?: TelegramChatRow[]; nextCursor?: string | null }>(
+    "chats",
+    companyId && listCursor ? { companyId, cursor: listCursor } : undefined,
   );
   const thread = usePluginData<ChatThreadData>(
     "chat-thread",
@@ -379,6 +384,8 @@ export function TelegramInboxPage({
     setReadyKey(cached ? cacheKey : "");
     setFeedRange(tailFeedRange(cached?.messages.length ?? 0));
     setOlderBefore(null);
+    setOlderFault(null);
+    failedOlder.current = null;
     hiddenIds.current = new Set();
     const previous = previousIssueRef.current;
     if (previous && previous !== issueRef) draftsRef.current[previous] = draftLive.current;
@@ -396,14 +403,16 @@ export function TelegramInboxPage({
   useEffect(() => {
     if (chats.loading || chats.error || !chats.data) return;
     const page = chats.data.chats ?? [];
-    setNextChatCursor(chats.data.nextCursor ?? null);
-    setLoadedChats((current) => {
-      if (!listCursor) return page;
-      const seen = new Set(current.map((chat) => chat.issueId));
-      const extra = page.filter((chat) => !seen.has(chat.issueId));
-      return extra.length === 0 ? current : [...current, ...extra];
-    });
+    setLoadedChats((current) => mergeLoadedChats(current, page, "latest"));
+    if (!listCursor) setNextChatCursor(chats.data.nextCursor ?? null);
   }, [chats.loading, chats.error, chats.data, listCursor]);
+
+  useEffect(() => {
+    if (!listCursor || olderChats.loading || olderChats.error || !olderChats.data) return;
+    const page = olderChats.data.chats ?? [];
+    setLoadedChats((current) => mergeLoadedChats(current, page, "older"));
+    setNextChatCursor(olderChats.data.nextCursor ?? null);
+  }, [listCursor, olderChats.loading, olderChats.error, olderChats.data]);
 
   useEffect(() => {
     if (!cacheKey) return;
@@ -502,6 +511,8 @@ export function TelegramInboxPage({
       return next;
     });
     olderSeen.current = "";
+    failedOlder.current = null;
+    setOlderFault(null);
     setOlderBefore(null);
   }, [older.loading, older.data, older.error, olderBefore, cacheKey]);
 
@@ -824,14 +835,14 @@ export function TelegramInboxPage({
                 );
               })}
               {nextChatCursor ? (
-                <button type="button" onClick={() => setListCursor(nextChatCursor)} disabled={chats.loading}>
+                <button type="button" onClick={() => setListCursor(nextChatCursor)} disabled={chats.loading || olderChats.loading}>
                   {uiText("Load older chats")}
                 </button>
               ) : null}
-              {chats.error && rows.length > 0 ? (
+              {(olderChats.error || chats.error) && rows.length > 0 ? (
                 <div role="alert">
-                  <div>{errorMessage(chats.error)}</div>
-                  <button type="button" onClick={() => chats.refresh()}>{uiText("Retry")}</button>
+                  <div>{errorMessage(olderChats.error ?? chats.error)}</div>
+                  <button type="button" onClick={() => (olderChats.error ? olderChats : chats).refresh()}>{uiText("Retry")}</button>
                 </div>
               ) : null}
             </div>

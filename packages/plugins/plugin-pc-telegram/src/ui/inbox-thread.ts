@@ -17,6 +17,21 @@ export type TelegramChatRow = {
   peerId?: string | null;
 };
 
+/** Latest page stays in front. An older page is appended once. */
+export function mergeLoadedChats(
+  loaded: readonly TelegramChatRow[],
+  page: readonly TelegramChatRow[],
+  mode: "latest" | "older",
+): TelegramChatRow[] {
+  if (mode === "latest") {
+    const ids = new Set(page.map((chat) => chat.issueId));
+    return [...page, ...loaded.filter((chat) => !ids.has(chat.issueId))];
+  }
+  const seen = new Set(loaded.map((chat) => chat.issueId));
+  const extra = page.filter((chat) => !seen.has(chat.issueId));
+  return extra.length === 0 ? [...loaded] : [...loaded, ...extra];
+}
+
 export type ChatBubbleView = {
   id: string;
   direction: "in" | "out";

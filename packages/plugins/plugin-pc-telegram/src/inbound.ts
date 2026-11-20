@@ -306,7 +306,7 @@ async function ingestDialog(
 ): Promise<Issue | null> {
   const reserved = await reserveInboundAttachments(ctx, connection.companyId, message.peerId, message.attachments);
   const storedFiles = await storeInboundFiles(ctx, connection.companyId, reserved.accepted);
-  const notes = reserved.skipped ? [QUOTA_NOTE] : [];
+  const notes = message.mediaSkipped || reserved.skipped ? [QUOTA_NOTE] : [];
   const existing = await ctx.issues.list({
     companyId: connection.companyId,
     originKind: DIALOG_ORIGIN_KIND,

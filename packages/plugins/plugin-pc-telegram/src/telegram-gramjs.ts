@@ -357,6 +357,7 @@ export async function assembleInboundMessage(
   const text = typeof message.message === "string" ? message.message : "";
   const hasMedia = Boolean(message.media) && typeof message.downloadMedia === "function";
   let attachments: InboundAttachment[] = [];
+  let mediaSkipped = false;
   if (hasMedia) {
     const declaredBytes = declaredMediaBytes(message.media);
     let allowed = true;
@@ -372,6 +373,7 @@ export async function assembleInboundMessage(
       }
     }
     if (allowed) attachments = await collectAttachments(message);
+    else mediaSkipped = true;
     if (!allowed && text.trim().length === 0) return null;
   }
   const forward = await readInboundForward(message);
@@ -386,6 +388,7 @@ export async function assembleInboundMessage(
     isGroup: false,
     isOutgoing: false,
     attachments,
+    mediaSkipped,
     forward,
   };
 }
