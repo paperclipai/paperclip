@@ -23,8 +23,8 @@ import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js"
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { restartRecoveryMeasurementFor, speedBudgetAdapter } from "./native-speed-budgets.js";
 import { getStartupRecoveryState } from "../../startup-recovery-state.js";
-import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, nativeHarnessBackupOwner, persistNativeHarnessBackup,
-  restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
+import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS,
+  nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
   retainReadyNativeProviderArtifacts, NativeProviderArtifactTransferTimeoutError, nativeProviderArtifactTransferBounds,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
@@ -18395,7 +18395,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 if (durableStorage && backupOwner) {
                   await persistNativeHarnessBackup({ db: input.db, storage: durableStorage, owner: backupOwner,
                     scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), root: pendingRoot,
-                    signal: AbortSignal.timeout(300_000) });
+                    transferIdleTimeoutMs: NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS });
                 }
                 // Without durable storage the local publication below is the
                 // save; its result is uncertain once it starts, so keep the
