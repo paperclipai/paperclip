@@ -68,7 +68,6 @@ describe("runtime asset retention", () => {
     const results = await Promise.all(Array.from({ length: 8 }, use));
     expect(modes.filter(Boolean)).toHaveLength(1);
     expect(results.filter(Boolean)).toHaveLength(1);
-    // A mutation still takes the lock while the lease is fresh.
     expect(await withRuntimeAssetUse(digest, async locked => locked, true)).toBe(true);
   });
   it("lets waiters take the lock themselves when the shared refresh records no lease", async () => {
@@ -82,7 +81,6 @@ describe("runtime asset retention", () => {
     });
     const [leader, ...waiters] = await Promise.allSettled(Array.from({ length: 4 }, use));
     expect(leader.status).toBe("rejected");
-    // No manifest exists, so no lease is recorded and each waiter rechecks under the lock.
     expect(waiters).toEqual(Array.from({ length: 3 }, () => ({ status: "fulfilled", value: true })));
     expect(modes).toEqual([true, true, true, true]);
   });

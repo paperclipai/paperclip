@@ -27,10 +27,6 @@ export async function withRuntimeAssetUse<T>(digest: string, consume: (locked: b
   const target = paths(digest);
   if (!mutation) {
     if (leaseFresh(target.manifest)) return consume(false);
-    // Concurrent turns on one server (after a restart or an expired lease) would
-    // otherwise each take the exclusive lock in turn and verify the whole bundle
-    // again, so later ones exceed the lock budget. One refresh serves them all;
-    // if it records no lease, each waiter takes the lock as before.
     const inflight = refreshing.get(target.manifest);
     if (inflight) {
       await inflight.catch(() => undefined);
