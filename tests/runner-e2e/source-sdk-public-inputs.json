@@ -418,7 +418,7 @@
     "packages/shared/src/types/email.ts": "556ff6a0dcefa01eb704d6d00d3b191de81ff4dc",
     "packages/shared/src/types/environment.ts": "62e62afcb3d5b7f246db1e8910a34fb0091f54db",
     "packages/shared/src/types/execution-continuation.ts": "5afe62afd227efa03ff847d8f73291c14707ab5b",
-    "packages/shared/src/types/execution-projection.ts": "58b80ab6fc38609fa6254f2805cae16392f291b0",
+    "packages/shared/src/types/execution-projection.ts": "75ae5e1312160fd9cec79e5234004221ef296ee6",
     "packages/shared/src/types/external-object.ts": "7a225e0f5a6777d449019a30530c858b753eb4c1",
     "packages/shared/src/types/feedback.ts": "c5eb31545c7f67c04ad9afd9db45a6b4774bcb35",
     "packages/shared/src/types/finance.ts": "5c2208c7950020f1005aa0dd86a1680c54dd4354",
