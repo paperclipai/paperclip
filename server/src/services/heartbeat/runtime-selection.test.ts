@@ -773,10 +773,6 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect((await read(run.id)).contextSnapshot?.skillVersions).toEqual({ [key]: versionId });
   });
 
-  // A permitted skill whose saved version could not be prepared on this host
-  // (for example a storage or cache failure after a server restart) is not an
-  // access change: report the actual preparation failure instead of asking the
-  // board to restore access, and keep the admitted revision intact.
   it.each(["missing", "available"] as const)("distinguishes an unprepared permitted skill from revoked access on resume (%s)", async sourceStatus => {
     const { input, run } = await fixture();
     const key = "company/test/project-skill", versionId = randomUUID();

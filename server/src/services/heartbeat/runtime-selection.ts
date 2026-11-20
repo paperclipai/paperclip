@@ -613,16 +613,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         const currentEntries = new Map(runtimeSkillEntries.map(entry => [entry.key, entry]));
         const savedSkills = nativeExecution.runtimeContext.skills.filter(skill =>
           Object.prototype.hasOwnProperty.call(savedVersions, skill.key));
-        // Preparation lists only skills this agent may still read, so an
-        // absent saved skill is an access change that needs a person.
         if (savedSkills.some(skill => !currentEntries.has(skill.key))) {
           throw new ConfigurationIncompleteFailure("Project skill access changed while this execution was suspended. Restore access or start a new execution.", {
             configurationIncomplete: { reason: "skill_access_changed", actionUrl: "/skills" },
           });
         }
-        // A permitted skill whose saved version could not be prepared on this
-        // host (cache, storage or materialization failure) is not an access
-        // change. Fail with its actual cause, as a fresh admission does.
         const unprepared = savedSkills.find(skill => currentEntries.get(skill.key)?.sourceStatus === "missing");
         if (unprepared) {
           const detail = currentEntries.get(unprepared.key)?.missingDetail?.trim() || "its saved files are unavailable";
