@@ -294,7 +294,7 @@ const support = externalDatabaseUrl
           resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "authentication", message: "Unauthorized", retryability: "requires_action" } },
           runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: tmpdir() } } },
           contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection,
-            aiConnection: { ...runtime.attribution, identity: runtime.identity } } }).where(eq(heartbeatRuns.id, currentId));
+            aiConnection: { ...runtime.attribution, identity: runtime.identity, sessionIdentity: runtime.sessionIdentity } } }).where(eq(heartbeatRuns.id, currentId));
         await runtime.cleanup();
         if (i === 0) await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_auth_failed" }).where(eq(nativeRunFinalizations.runId, currentId));
         else await db.insert(nativeRunFinalizations).values({ runId: currentId, companyId: source.companyId, issueId: source.issueId,
@@ -304,8 +304,8 @@ const support = externalDatabaseUrl
         const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
         expect(await recordVerifiedRouterQuotaCooldown(db, { runId: currentId, companyId: source.companyId, agentId: source.agentId,
           credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`, retryNotBefore: null, failureKind: "auth" })).toBe(true);
-        expect(await connectionIntentService(db).requestForRunAuthFailure(currentId)).toBeNull();
         expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved[i].grantId)))[0].status).toBe("needs_reauthorization");
+        expect(await connectionIntentService(db).requestForRunAuthFailure(currentId)).toBeNull();
         expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toHaveLength(0);
         if (i === 0) {
           let release!: () => void, ready!: () => void;

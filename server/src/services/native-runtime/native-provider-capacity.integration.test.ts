@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -18,6 +18,7 @@ import {
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
+  toolConnections,
 } from "@paperclipai/db";
 import type {
   ControlPlanePort,
@@ -95,6 +96,7 @@ describe("native provider capacity failure persistence", () => {
     ...[false, true].flatMap(replayed => [false, true].map(structured => ({ replayed, structured, kind: "quota", hold: "" }))),
     { replayed: false, structured: false, kind: "auth", hold: "" },
     { replayed: true, structured: true, kind: "auth", hold: "" },
+    { replayed: false, structured: true, kind: "auth", hold: "", reconnected: true },
     { replayed: false, structured: false, kind: "runner", hold: "" },
     { replayed: false, structured: false, kind: "runner_definitive", hold: "" },
     { replayed: false, structured: true, kind: "runner_definitive", hold: "", poolHarness: true },
@@ -105,12 +107,13 @@ describe("native provider capacity failure persistence", () => {
     { replayed: false, structured: false, kind: "quota", hold: "", poolHarness: true, ordinaryRetry: true },
     ...["quota", "auth", "runner_definitive"].map(kind => ({ replayed: false, structured: true, kind, hold: "", poolHarness: true, recoverAttribution: true })),
   ])(
-    "persists $kind failure and continues receipted work (replayed=$replayed, structured=$structured, hold=$hold, recoverAttribution=$recoverAttribution)",
+    "persists $kind failure and continues receipted work (replayed=$replayed, structured=$structured, hold=$hold, recoverAttribution=$recoverAttribution, reconnected=$reconnected)",
     async scenario => {
       const { replayed, structured, kind: scenarioKind, hold } = scenario;
       const poolHarness = "poolHarness" in scenario && scenario.poolHarness === true;
       const recoveringAttribution = "recoverAttribution" in scenario && scenario.recoverAttribution === true;
       const ordinaryRetry = "ordinaryRetry" in scenario && scenario.ordinaryRetry === true;
+      const reconnected = "reconnected" in scenario && scenario.reconnected === true;
       const immediate = scenarioKind === "runner_definitive";
       const kind = immediate ? "runner" : scenarioKind;
       const code = kind === "auth" ? "native_provider_auth_failed" : kind === "runner" ? "native_provider_runner_failed" : "native_provider_usage_limit";
@@ -230,7 +233,7 @@ describe("native provider capacity failure persistence", () => {
       const accounts = aiConnectionService(db);
       const saved = await Promise.all(["First", "Backup"].map(name => accounts.save(companyId, userId, {
         provider: poolHarness && name === "Backup" ? "anthropic" : "openai", method: "api_key", ownership: "personal", name, apiKey: `fixture-${name}`, agentIds: [], allAgents: true,
-      }, randomUUID())));
+      }, `fixture-${name}`)));
       const members: AiConnectionPoolMember[] = saved.map((account, index) => ({ id: randomUUID(), binding: {
         mode: "delegated" as const, provider: poolHarness && index === 1 ? "anthropic" as const : "openai" as const, method: "api_key" as const, ...account,
       }, profile: poolHarness && index === 1 ? { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } : { provider: "codex", model: "gpt-5" } }));
@@ -240,8 +243,15 @@ describe("native provider capacity failure persistence", () => {
       await db.update(agents).set({ runtimeConfig: poolHarness ? { harnessPool: { poolId: pool.id } } : { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, agentId));
       const selection = await router.resolve({ companyId, poolId: pool.id, agentId, userId, adapterType: "paperclip_runner", taskKey: issueId, ...(poolHarness ? { environmentId: null } : {}) });
       if (selection.binding.mode === "responsible_user") throw new Error("Expected delegated fixture");
-      await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId, responsibleUserId: userId,
-        contextSnapshot: { issueId, aiRouterTaskKey: issueId, aiRouterSelection: selection },
+      const [selectedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, selection.binding.grantId));
+      const selectedRef = selectedGrant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+      const [selectedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, selectedRef.secretId));
+      const accountAttribution = { provider: selection.binding.provider, method: selection.binding.method,
+        connectionId: selection.binding.connectionId, grantId: selectedGrant.id, responsibleUserId: userId,
+        identity: `${selectedGrant.id}:${userId}:${createHash("sha256").update("fixture-First").digest("hex").slice(0, 16)}`,
+        sessionIdentity: `${selectedGrant.id}:${userId}:${selectedSecret.id}:${selectedSecret.aiSessionEpoch}` };
+      await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId, responsibleUserId: userId, startedAt: new Date(),
+        contextSnapshot: { issueId, aiRouterTaskKey: issueId, aiRouterSelection: selection, aiConnection: accountAttribution },
         runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { ...execution, workspace: { ...execution.workspace, cwd: workspaceCwd } },
           sessionCheckpoint: { providerSessionId: "capacity-test-provider-session", providerIdentity: { threadId: "capacity-test-thread" }, ...(immediate ? { terminal: { runTerminalState: "failed" } } : {}) } },
       }).where(eq(heartbeatRuns.id, runId));
@@ -422,8 +432,7 @@ describe("native provider capacity failure persistence", () => {
       }
       if (recoveringAttribution) {
         await db.update(heartbeatRuns).set({ responsibleUserId: userId, contextSnapshot: { ...failedRun.contextSnapshot,
-          aiConnection: { provider: "openai", connectionId: selection.binding.connectionId, grantId: grant.id,
-            sessionIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}` } } }).where(eq(heartbeatRuns.id, runId));
+          aiConnection: accountAttribution } }).where(eq(heartbeatRuns.id, runId));
         expect(await executionControlSchedule(db).replacement()).not.toBeNull();
       }
       const expectedDelay = kind === "runner" ? 5 * 60_000 : 2 * 60 * 60_000;
@@ -449,6 +458,8 @@ describe("native provider capacity failure persistence", () => {
           eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`)))).toHaveLength(0);
         expect(await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId))).toHaveLength(cooldownsBefore.length);
         expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        const [rolledBackGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+        expect(rolledBackGrant.status).toBe("active");
         const originalFinishedAt = new Date(Date.now() - expectedDelay - 5 * 60_000);
         await db.update(heartbeatRuns).set({ finishedAt: originalFinishedAt }).where(eq(heartbeatRuns.id, runId));
         recoveredScheduled = (await reconcileSafeNativeReplacements(db, new Date(), {
@@ -460,11 +471,21 @@ describe("native provider capacity failure persistence", () => {
           eq(heartbeatRunEvents.eventType, `ai_connection.${kind}_attributed`)));
         expect(receipt.payload).toMatchObject({ retryAt: new Date(originalFinishedAt.getTime() + expectedDelay).toISOString() });
       }
+      if (reconnected) await db.update(companySecrets).set({ aiSessionEpoch: secret.aiSessionEpoch + 1 }).where(eq(companySecrets.id, secret.id));
       const attributed = recoveringAttribution || await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
         credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`,
         retryNotBefore: null, failureKind: kind as "quota" | "auth" | "runner",
       });
       expect(attributed).toBe(true);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, selection.binding.connectionId));
+      const [currentGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+      const needsReconnect = kind === "auth" && !reconnected;
+      expect(connection.healthStatus).toBe(needsReconnect ? "error" : "ok");
+      expect(currentGrant.status).toBe(needsReconnect ? "needs_reauthorization" : "active");
+      const listed = await accounts.list(companyId, userId);
+      expect(listed.find(account => account.grantId === grant.id)?.status).toBe(needsReconnect ? "needs_attention" : "connected");
+      expect(listed.find(account => account.grantId === saved[1].grantId)?.status).toBe("connected");
+      if (reconnected) return;
       if (poolHarness && kind === "quota") await db.update(agents).set({ runtimeConfig: { harnessPool: { poolId: pool.id } } }).where(eq(agents.id, agentId));
       const cooldown = await router.accountCooldown(companyId, selection.binding.connectionId, `secret:${secret.id}:${secret.aiSessionEpoch}`, poolHarness ? { config: selection.runtimeConfig, scope: { environmentId: null } } : undefined);
       if (recoveringAttribution) expect(cooldown).toBeNull();

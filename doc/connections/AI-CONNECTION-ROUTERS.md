@@ -50,6 +50,13 @@ workspace and session evidence remain available. Codex panic text without an
 actual host crash signal may enter its existing bounded same-account retry, but
 cannot cool an account or select a backup.
 
+A confirmed authentication failure also marks the selected connection as
+**Needs attention** in Connections, even if a backup is available. Paperclip
+records the status with the failure attribution and checks that the failed run
+used the current credential. Runner startup failures, quota limits, and
+failures from credentials that have since been replaced leave the connection
+status unchanged.
+
 Healthy tasks stay on their selected account, including after a backup takes over.
 When a conversation fails because of quota, authentication, or confirmed runner
 failure, Paperclip can select the next available account after the previous

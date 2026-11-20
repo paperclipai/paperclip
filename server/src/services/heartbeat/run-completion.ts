@@ -51,7 +51,8 @@ import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execut
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, companySecrets, connectionGrants, aiConnectionPools, aiConnectionTaskPins, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
-import { readProviderFailure, type AiConnectionRouterSelection } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, readProviderFailure, type AiConnectionRouterSelection } from "@paperclipai/shared";
+import { aiConnectionService, type AiConnectionAuthenticationFailure } from "../ai-connections.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
 import { aiConnectionRouterService, quotaIdentityFromSessionSnapshot } from "../ai-connection-router.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
@@ -140,7 +141,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
   const deadline = new Date(Number.isFinite(supplied) && supplied > anchor.getTime()
     ? supplied
     : anchor.getTime() + (input.failureKind === "runner" ? 5 * 60_000 : POOL_ACCOUNT_DEFAULT_COOLDOWN_MS));
-  return db.transaction(async tx => {
+  const record = async (tx: Db, markFailed?: (failure: AiConnectionAuthenticationFailure) => Promise<void>) => {
     const [candidate] = await tx.select({ scopeKind: heartbeatRuns.scopeKind, issueId: heartbeatRuns.issueId }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId)));
     if (!candidate) return false;
@@ -192,7 +193,6 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
         sql`${aiConnectionTaskPins.member}->>'id' = ${selection.memberId ?? ""}`,
         sql`${aiConnectionTaskPins.member}->'binding' = ${JSON.stringify(binding)}::jsonb`)).for("update");
     if (!pin) return false;
-    const kind = input.failureKind ?? "quota";
     const runnerScope = parseObject(selection.runnerScope);
     const cooldownIdentity = kind === "runner" && Object.hasOwn(runnerScope, "environmentId")
       ? poolRunnerCooldownIdentity(credentialIdentity, parseObject(selection.runtimeConfig), typeof runnerScope.environmentId === "string" ? runnerScope.environmentId : null, typeof selection.adapterType === "string" ? selection.adapterType : undefined) : credentialIdentity;
@@ -219,9 +219,27 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     }
     if (accountProof?.providerEvidence !== "claude_acp_task_quota_v1")
       await aiConnectionRouterService(tx as unknown as Db).recordQuotaCooldown(run.companyId, connectionId, cooldownIdentity, new Date(receiptDeadline), credentialIdentity);
+    if (markFailed) {
+      const account = parseObject(context.aiConnection);
+      const selectedBinding = aiConnectionBindingSchema.safeParse(binding).data;
+      const identity = readNonEmptyString(account.identity);
+      if (selectedBinding && selectedBinding.mode !== "responsible_user" && identity &&
+          account.sessionIdentity === input.credentialIdentity && account.connectionId === connectionId &&
+          account.grantId === grantId && account.provider === selectedBinding.provider &&
+          account.method === selectedBinding.method &&
+          (run.runtimeMode !== "native" || readProviderFailure(run.resultJson?.providerFailure)?.provider === selectedBinding.provider)) {
+        await markFailed({ runId: run.id, agentId: run.agentId, runStartedAt: run.startedAt ?? run.createdAt,
+          attribution: { connectionId, grantId, provider: selectedBinding.provider, method: selectedBinding.method,
+            mode: selectedBinding.mode, responsibleUserId: run.responsibleUserId, identity,
+            sessionIdentity: input.credentialIdentity } });
+      }
+    }
     await input.beforeCommit?.();
     return true;
-  });
+  };
+  return kind === "auth"
+    ? aiConnectionService(db).withAuthenticationFailureTransaction(input.companyId, record)
+    : db.transaction(tx => record(tx as unknown as Db));
 }
 
 export async function recoverLegacyPoolAttribution(db: Db, run: Run) {

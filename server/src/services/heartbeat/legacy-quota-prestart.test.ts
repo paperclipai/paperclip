@@ -221,7 +221,13 @@ describe("legacy quota prestart retry", () => {
     const f = await fixture(true, false, "openai");
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
-    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "refresh_token_expired", stdoutExcerpt: "refresh token expired; retry after 2099-01-01",
+    const runtime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agent.id, responsibleUserId: f.userId,
+      adapterType: "codex_local", config: f.selected.runtimeConfig, binding: f.selected.binding });
+    if (!runtime) throw new Error("Expected the selected Codex account");
+    const account = { ...runtime.attribution, identity: runtime.identity, sessionIdentity: runtime.sessionIdentity };
+    await runtime.cleanup();
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "refresh_token_expired", startedAt: new Date(),
+      stdoutExcerpt: "refresh token expired; retry after 2099-01-01", contextSnapshot: { ...f.source.contextSnapshot, aiConnection: account },
       resultJson: { ...f.source.resultJson, errorFamily: "refresh_token_expired" } }).where(eq(heartbeatRuns.id, f.source.id)).returning();
     Object.assign(f.source, failed);
     if (mode === "offline") vi.mocked(globalThis.fetch).mockRejectedValue(new Error("offline"));
@@ -237,10 +243,12 @@ describe("legacy quota prestart retry", () => {
     });
     const now = new Date();
     expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id,
-      credentialIdentity: f.credentialIdentity, failureKind: "auth", retryNotBefore: "2099-01-01T00:00:00.000Z", now })).toBe(mode === "confirmed");
+      credentialIdentity: account.sessionIdentity, failureKind: "auth", retryNotBefore: "2099-01-01T00:00:00.000Z", now })).toBe(mode === "confirmed");
     const cooldowns = await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
     expect(cooldowns).toHaveLength(mode === "confirmed" ? 1 : 0);
     if (mode === "confirmed") expect(cooldowns[0].retryAt.getTime()).toBe(now.getTime() + 2 * 60 * 60_000);
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.members[0].binding.grantId));
+    expect(grant.status).toBe(mode === "confirmed" ? "needs_reauthorization" : "active");
     expect((await f.schedule()).outcome).toBe(mode === "confirmed" ? "scheduled" : "not_scheduled");
   }, 30_000);
   it.each(["auth", "quota"] as const)("revalidates %s evidence refreshed before the final credential lock", async kind => {

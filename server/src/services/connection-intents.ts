@@ -1556,7 +1556,7 @@ export function connectionIntentService(db: Db) {
       }
       const attribution = record(run.contextSnapshot?.aiConnection);
       if (attribution && attribution.provider !== binding.provider) return null;
-      if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
+      if (!nativePoolRepair && (saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
         await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
           runStartedAt: run.startedAt ?? run.createdAt,
           attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
