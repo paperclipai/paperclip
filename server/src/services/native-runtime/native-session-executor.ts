@@ -19196,9 +19196,10 @@ async function createRunnerdBackendWithinSessionClaim(
         launchRoot: launch.root, accountUid: launch.accountUid });
       providerArtifacts = await reuse() ?? await shareNativeProviderArtifactCapture({
         key: `${input.execution.binding.companyId}:${manifest.digest}`, signal, reuse,
-        capture: () => captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
-          remoteCwd: remoteTarget.remoteCwd, launch, manifest, signal, context: input.executionContext },
-          source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal })),
+        capture: (captureSignal, hold) => captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
+          remoteCwd: remoteTarget.remoteCwd, launch, manifest, signal: captureSignal, context: input.executionContext, hold },
+          source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source,
+            signal: captureSignal })),
       });
     } : undefined,
     bindDiagnosticSession: session => {
