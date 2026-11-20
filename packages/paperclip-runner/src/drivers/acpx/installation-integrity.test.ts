@@ -41,7 +41,7 @@ import {
   type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
-import { grokRequirements } from "./runtime-sandbox.js";
+import { GROK_REQUIREMENTS_ENV, grokRequirements } from "./runtime-sandbox.js";
 
 async function withLinuxX64TestPlatform<T>(run: () => Promise<T>): Promise<T> {
   const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
@@ -2375,7 +2375,7 @@ describe("Grok launcher subscription refresh", () => {
       process: { env: {
         PAPERCLIP_GROK_VERIFIED_EXECUTABLE: executable, GROK_HOME: input.grokHome ?? "/isolated/grok",
         ...(input.apiKey ? { XAI_API_KEY: input.apiKey } : {}),
-        ...(input.requirements === undefined ? {} : { PAPERCLIP_GROK_REQUIREMENTS: input.requirements }),
+        ...(input.requirements === undefined ? {} : { [GROK_REQUIREMENTS_ENV]: input.requirements }),
       }, pid: 4242, getuid: () => 1000, execve },
       require: (name: string) => name === "node:path" ? { isAbsolute, join } : name === "node:fs" ? fs : name === "node:child_process" ? { spawnSync } : undefined,
     }) };

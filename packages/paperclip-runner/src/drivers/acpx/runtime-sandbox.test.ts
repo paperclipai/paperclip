@@ -24,6 +24,7 @@ import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import { createAcpxRecoveryBinding } from "./recovery-identity.js";
 import {
+  GROK_REQUIREMENTS_ENV,
   prepareAcpxRuntimeSandbox,
   refreshCopilotSystemInstructions,
   readAcpxRecoveryWorkspace,
@@ -146,6 +147,8 @@ describe("ACPX runtime sandbox", () => {
     expect(await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8")).toContain(`disable_web_search = ${disabled}`);
     const requirements = await readFile(join(sandbox.agentHomeDirectory, "requirements.toml"), "utf8");
     expect(requirements.includes("disable_web_search = true")).toBe(disabled);
+    expect(sandbox.launchEnvironment[GROK_REQUIREMENTS_ENV]).toBe(requirements);
+    expect(sandbox.persistedEnvironment).not.toHaveProperty(GROK_REQUIREMENTS_ENV);
   });
 
   it("keeps provider credentials outside identity-enabled Codex shell commands", async () => {
