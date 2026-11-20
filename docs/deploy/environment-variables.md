@@ -18,6 +18,7 @@ live environment.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3100` | Server port |
+| `PAPERCLIP_INVITE_TTL_HOURS` | `72` | Company invite lifetime in integer hours (clamped/validated to 1..720; invalid, non-numeric, or out-of-range values fall back to 72). Applies to newly created invites only; existing invites retain their original expiration. |
 | `PAPERCLIP_BIND` | `loopback` | Reachability preset: `loopback`, `lan`, `tailnet`, or `custom` |
 | `PAPERCLIP_BIND_HOST` | (unset) | Required when `PAPERCLIP_BIND=custom` |
 | `HOST` | `127.0.0.1` | Legacy host override; prefer `PAPERCLIP_BIND` for new setups |

@@ -84,6 +84,7 @@ import {
   createInviteRateLimiter,
   type InviteRateLimiter,
 } from "../services/invite-rate-limit.js";
+import { getCompanyInviteTtlMs } from "../config.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { collectReachableInterfaceHosts } from "../runtime-api.js";
@@ -126,7 +127,6 @@ const INVITE_TOKEN_PREFIX = "pcp_invite_";
 // `invites.tokenHash`; the raw value is only returned once on creation.
 const INVITE_TOKEN_ENTROPY_BYTES = 32;
 const INVITE_TOKEN_MAX_RETRIES = 5;
-const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
 
 export function createInviteToken() {
@@ -139,7 +139,7 @@ function createClaimSecret() {
 }
 
 export function companyInviteExpiresAt(nowMs: number = Date.now()) {
-  return new Date(nowMs + COMPANY_INVITE_TTL_MS);
+  return new Date(nowMs + getCompanyInviteTtlMs());
 }
 
 function tokenHashesMatch(left: string, right: string) {

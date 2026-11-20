@@ -81,6 +81,7 @@ import {
   validateAndResolveFetchUrl,
   type ValidatedFetchTarget,
 } from "./plugin-egress-guard.js";
+import { getCompanyInviteTtlMs } from "../config.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
@@ -1260,7 +1261,6 @@ export function buildHostServices(
   // in routes/access.ts. The token is public, so it must not be brute-forceable.
   const INVITE_TOKEN_ENTROPY_BYTES = 32;
   const INVITE_TOKEN_MAX_RETRIES = 5;
-  const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 
   const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
@@ -3099,7 +3099,7 @@ export function buildHostServices(
           inviteType: "company_join" as const,
           allowedJoinTypes,
           defaultsPayload: mergeInviteDefaults(params.defaultsPayload ?? null, normalizedAgentMessage, humanRole),
-          expiresAt: new Date(Date.now() + COMPANY_INVITE_TTL_MS),
+          expiresAt: new Date(Date.now() + getCompanyInviteTtlMs()),
           invitedByUserId: null,
         };
         let token: string | null = null;

@@ -39,6 +39,7 @@ import {
   resolveDefaultStorageDir,
   resolveHomeAwarePath,
 } from "./home-paths.js";
+import { logger } from "./middleware/logger.js";
 
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
@@ -75,6 +76,62 @@ maybeRepairLegacyWorktreeConfigAndEnvFiles();
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 
 type DatabaseMode = "embedded-postgres" | "postgres";
+
+export const DEFAULT_COMPANY_INVITE_TTL_HOURS = 72;
+export const MIN_COMPANY_INVITE_TTL_HOURS = 1;
+export const MAX_COMPANY_INVITE_TTL_HOURS = 720;
+export const COMPANY_INVITE_TTL_HOURS_ENV_KEY = "PAPERCLIP_INVITE_TTL_HOURS";
+
+let inviteTtlCache: { raw: string | undefined; hours: number } | null = null;
+
+export function resetCompanyInviteTtlCacheForTests(): void {
+  inviteTtlCache = null;
+}
+
+export function parseCompanyInviteTtlHours(raw: string | undefined): {
+  hours: number;
+  invalid: boolean;
+} {
+  if (raw === undefined) {
+    return { hours: DEFAULT_COMPANY_INVITE_TTL_HOURS, invalid: false };
+  }
+  const trimmed = raw.trim();
+  const parsed = Number(trimmed);
+  if (
+    trimmed !== "" &&
+    Number.isInteger(parsed) &&
+    parsed >= MIN_COMPANY_INVITE_TTL_HOURS &&
+    parsed <= MAX_COMPANY_INVITE_TTL_HOURS
+  ) {
+    return { hours: parsed, invalid: false };
+  }
+  return { hours: DEFAULT_COMPANY_INVITE_TTL_HOURS, invalid: true };
+}
+
+export function getCompanyInviteTtlHours(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env[COMPANY_INVITE_TTL_HOURS_ENV_KEY];
+  if (inviteTtlCache && inviteTtlCache.raw === raw) {
+    return inviteTtlCache.hours;
+  }
+
+  const { hours, invalid } = parseCompanyInviteTtlHours(raw);
+  if (invalid) {
+    logger.warn(
+      { value: raw, defaultHours: DEFAULT_COMPANY_INVITE_TTL_HOURS },
+      `Invalid ${COMPANY_INVITE_TTL_HOURS_ENV_KEY}; falling back to ${DEFAULT_COMPANY_INVITE_TTL_HOURS} hours (must be an integer between ${MIN_COMPANY_INVITE_TTL_HOURS} and ${MAX_COMPANY_INVITE_TTL_HOURS})`,
+    );
+  }
+  inviteTtlCache = { raw, hours };
+  return hours;
+}
+
+export function getCompanyInviteTtlMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return getCompanyInviteTtlHours(env) * 60 * 60 * 1000;
+}
 
 export interface Config {
   deploymentMode: DeploymentMode;
@@ -131,6 +188,7 @@ export interface Config {
   telemetryEnabled: boolean;
   announcementsEnabled: boolean;
   announcementsFeedUrl: string;
+  companyInviteTtlHours: number;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -514,6 +572,7 @@ export function loadConfig(): Config {
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
     announcementsEnabled: process.env.PAPERCLIP_ANNOUNCEMENTS_ENABLED !== "false",
     announcementsFeedUrl: process.env.PAPERCLIP_ANNOUNCEMENTS_FEED_URL?.trim() || "https://pages.paperclip.ing/announcements/v1/current.json",
+    companyInviteTtlHours: getCompanyInviteTtlHours(),
   };
 
   // Scrub any late-loaded .env repopulation of the platform default OpenAI and Ramp Router keys.
