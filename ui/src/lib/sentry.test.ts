@@ -14,7 +14,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const DSN = "https://public@o0.ingest.sentry.io/1";
 
+/**
+ * `initBrowserErrorMonitoring` wraps `window.fetch` once per module instance.
+ * Each fresh import is a new instance, so remove the current instance's
+ * wrapper before the module registry resets. Otherwise a later test inherits
+ * stacked wrappers and wrapper tags. A `fetch` stub that a test installed
+ * itself is not a wrapper, so it stays in place.
+ */
+async function resetFetchDiagnostics() {
+  const diagnostics = await import("./fetch-rejection-origin");
+  diagnostics.__resetFetchRejectionDiagnostics();
+}
+
 async function importFreshSentry() {
+  await resetFetchDiagnostics();
   vi.resetModules();
   return await import("./sentry");
 }
@@ -84,9 +97,10 @@ function holdCloseOpen(mocks: ReturnType<typeof mockSentryPackage>): () => void 
   return release;
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   vi.doUnmock("@sentry/browser");
+  await resetFetchDiagnostics();
 });
 
 // A representative default-integration list, shaped like the array
@@ -125,6 +139,26 @@ describe("initBrowserErrorMonitoring", () => {
     await initBrowserErrorMonitoring(DSN);
 
     expect(mocks.init).toHaveBeenCalledTimes(1);
+  });
+
+  it("wraps fetch once, and a fresh test import starts from the page's own fetch", async () => {
+    const pageFetch = window.fetch;
+    mockSentryPackage();
+    const first = await importFreshSentry();
+    await first.initBrowserErrorMonitoring(DSN);
+    await first.initBrowserErrorMonitoring(DSN);
+    const wrapped = window.fetch;
+    expect(wrapped).not.toBe(pageFetch);
+    const { readFetchWrapperState } = await import("./fetch-rejection-origin");
+    expect(readFetchWrapperState()).not.toBe("after");
+
+    mockSentryPackage();
+    const second = await importFreshSentry();
+    expect(window.fetch).toBe(pageFetch);
+    await second.initBrowserErrorMonitoring(DSN);
+    const diagnostics = await import("./fetch-rejection-origin");
+    expect(diagnostics.readFetchWrapperState()).not.toBe("after");
+    expect(diagnostics.readFetchWrapperState()).not.toBe("both");
   });
 });
 
@@ -612,6 +646,40 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
       expect(captured).toHaveLength(1);
       expect(captured[0]).toMatchObject({ exception: { values: [{ type: "AbortError" }] } });
     } finally {
+      await Sentry.close();
+    }
+  });
+
+  it("tags a stackless network rejection with who started the request, and no URL", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    const diagnostics = await import("./fetch-rejection-origin");
+    const previousFetch = window.fetch;
+    const failure = new TypeError("Failed to fetch");
+    failure.stack = "TypeError: Failed to fetch";
+    window.fetch = Function.prototype.call.bind(() => Promise.reject(failure), null) as unknown as typeof fetch;
+    try {
+      diagnostics.startFetchRejectionDiagnostics(window);
+      await expect(window.fetch("/api/companies/private-company-id/issues")).rejects.toBe(failure);
+
+      window.onunhandledrejection?.call(window, { reason: failure } as PromiseRejectionEvent);
+      // A different value, so the SDK's Dedupe integration keeps both events.
+      window.onunhandledrejection?.call(window, { reason: new TypeError("Load failed") } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toHaveLength(2);
+      expect(captured[0]).toMatchObject({
+        tags: {
+          browser_rejection_kind: "object",
+          browser_fetch_initiator: "other",
+          browser_fetch_wrapper: "none",
+        },
+        exception: { values: [{ type: "TypeError", value: "Failed to fetch" }] },
+      });
+      expect(captured[1]).toMatchObject({ tags: { browser_fetch_initiator: "unrecorded" } });
+      expect(JSON.stringify(captured)).not.toContain("private-company-id");
+    } finally {
+      diagnostics.__resetFetchRejectionDiagnostics();
+      window.fetch = previousFetch;
       await Sentry.close();
     }
   });
