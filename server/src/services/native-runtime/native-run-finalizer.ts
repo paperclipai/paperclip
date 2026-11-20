@@ -480,9 +480,6 @@ async function recordRetryableFailure(input: {
         : ("failed" as const);
   let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
   const admitted = input;
-  // The recovery-action insert locks the agent row for its foreign keys after
-  // this write already holds the run and task rows, so it can lose a deadlock.
-  // Postgres rolls the whole write back, and each attempt re-reads its state.
   const outcome = await retryTransientLockContention(() => input.db.transaction(async (tx) => {
     input = admitted;
     terminalRunToEmit = null;

@@ -5,11 +5,6 @@ import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issue
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 
-// Staging: a workspace sync-out failure was recorded in one transaction that
-// updates the run row and then inserts its recovery action. That insert's
-// foreign-key check waited on an agent row another transaction held, which in
-// turn waited on the run row. Postgres aborted the failure write (40P01), the
-// run failed with a database error, and the bounded export retry was lost.
 describe("native workspace failure write under a deadlock", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -31,10 +26,6 @@ describe("native workspace failure write under a deadlock", () => {
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId });
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "result_accepted" });
 
-    // Hold the agent row. Once the failure write waits on it for its recovery
-    // action, wait on the run row that write already updated. The holder
-    // detects deadlocks late, so Postgres aborts the failure write. The
-    // failure write starts only after the holder owns the agent row.
     let agentLocked!: () => void;
     const agentLock = new Promise<void>(resolve => { agentLocked = resolve; });
     const holder = db.transaction(async tx => {
