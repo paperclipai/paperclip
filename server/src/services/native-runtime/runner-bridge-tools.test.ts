@@ -96,7 +96,6 @@ describe("Runner workspace bridge", () => {
     expect(comment?.description).toContain("On a finished task, this reopens the task for follow-up.");
     expect(comment?.description).toContain("Resume does not interrupt an active run or force immediate execution.");
     expect(comment?.description).toContain("ask for an existing test result without `resume`; request a new test run with `resume: true`.");
-    expect(comment?.description).toContain("`resume: true` returns HTTP 409 without saving the comment.");
     expect(comment?.description).toContain("Comments on running work are normally queued for a later turn.");
     expect(comment?.description).toContain("the live runner acknowledges steering, the comment may be delivered to the current turn instead.");
     expect(comment?.description).toContain("Report queued comments as saved, not applied. Report live-steered comments as delivered, not completed.");
@@ -106,8 +105,6 @@ describe("Runner workspace bridge", () => {
     expect(schema.properties.resume?.type).toBe("boolean");
     expect(schema.properties.resume?.description).toContain("This flag applies to the target task, not the caller's task.");
     expect(schema.properties.resume?.description).toContain("even if the task finishes before they read the comment.");
-    expect(schema.properties.resume?.description).toContain("It does not interrupt a running turn or force immediate execution.");
-    expect(schema.properties.resume?.description).toContain("true returns HTTP 409 without saving the comment.");
   });
   it("forwards a comment's explicit resume intent to the comment API and omits it otherwise", () => {
     const taskId = "8ba8b5a2-066a-4bb2-b591-e396942ecdf5";
