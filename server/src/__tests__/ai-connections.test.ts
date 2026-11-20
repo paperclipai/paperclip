@@ -2168,6 +2168,34 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect((await db.select().from(issues).where(eq(issues.id, card!.issueId)))[0]!.status).toBe("done");
     });
 
+    it("keeps another person's shared card and its linked tasks when a second person's run on the owner task needs the same connection", async () => {
+      const f = await latchedFleet("second-recipient", 3);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      const linked = f.tasks.filter(task => task !== owner);
+      const secondUserId = `repair-card-second-${randomUUID()}`;
+      await db.insert(companyMemberships).values({ companyId, principalId: secondUserId, principalType: "user", status: "active", membershipRole: "member" });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const [secondRun] = await db.insert(heartbeatRuns).values({ companyId, agentId: owner.agentId, status: "failed", errorCode: "claude_auth_required",
+        responsibleUserId: secondUserId, startedAt: new Date(), finishedAt: new Date(),
+        contextSnapshot: { issueId: owner.issueId, aiConnection: f.identity } }).returning();
+      const second = await connectionIntentService(db).requestForRunAuthFailure(secondRun!.id);
+      expect(second?.interactionId).toBeTruthy();
+      expect(second?.interactionId).not.toBe(card!.id);
+      const [kept] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, card!.id));
+      expect(kept!.status).toBe("pending");
+      expect(((kept!.payload as { linkedIssues: Array<{ issueId: string }> }).linkedIssues).map(entry => entry.issueId).sort())
+        .toEqual(linked.map(task => task.issueId).sort());
+      await f.reconnect();
+      await sweepAll();
+      const wakeup = await f.deliverAll([card!.id]);
+      for (const task of linked) {
+        expect(wakeup).toHaveBeenCalledWith(task.agentId, expect.objectContaining({
+          payload: expect.objectContaining({ issueId: task.issueId }) }));
+      }
+    });
+
     it("wakes linked tasks from the background sweep while the owner task waits on an unrelated question", async () => {
       const f = await latchedFleet("owner-question", 3);
       for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);

@@ -3345,6 +3345,7 @@ export function issueThreadInteractionService(
               candidatePayload.success &&
               candidatePayload.data.serviceSlug === payload.serviceSlug && candidatePayload.data.purpose === payload.purpose
               && (candidatePayload.data.repairConnectionId ?? null) === (payload.repairConnectionId ?? null)
+              && (!payload.repairConnectionId || candidate.addresseeUserId === input.addresseeUserId)
             );
           })
           .map((candidate) => candidate.id);
