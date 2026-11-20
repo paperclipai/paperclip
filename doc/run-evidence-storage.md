@@ -201,6 +201,14 @@ for one second. Existing references are the durable work inventory. Restarting
 reconstructs unfinished work from those references; already migrated rows are
 excluded. No new payload or job table is added.
 
+The bounded online durable-data preparation pass also drives log and trace
+pages before its final eligibility check. It shares the background worker's page
+owner and settled-native archive rules. A busy owner is deferred rather than
+starting a competing transfer. Page cursors survive a spent preparation budget.
+The pass reports its current migration results, not a previous background sweep.
+Active writers and unproven sources remain blockers. An aborted transfer keeps
+its ownership and tracked work until the transfer actually settles.
+
 Active writers, missing files, corrupt data, and storage failures leave history
 unresolved. Other pages continue. The server logs each blocked resource and a
 pass summary. Unresolved passes retry after five minutes, with backoff up to
@@ -277,7 +285,9 @@ An archive preserves historical evidence; it does not certify a complete native
 transcript. The run's status, canonical events, and original completion metadata
 remain unchanged. Archive readers do not append missing native events, and
 writers cannot reopen or modify the archive. Its source cursor remains zero.
-The normal background importer retains its strict native coverage checks.
+The canonical importer retains its strict native coverage checks. Both the
+background worker and online preparation may delegate a settled native source
+with unproven coverage to the guarded read-only archive path.
 Rollbacks after enrollment require readers that support `s3_archive`.
 
 An interrupted trace import keeps an `s3-import-v1:` reference: reads still use

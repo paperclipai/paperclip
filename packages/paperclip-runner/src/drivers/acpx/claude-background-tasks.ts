@@ -30,12 +30,13 @@ export class ClaudeBackgroundTaskTracker {
   #observedTask = false;
   readonly #tasks = new Map<string, Task>();
   readonly #pending = new Map<RequestId, { method: string; advertised: boolean }>();
+  #acted = false;
 
-  observe(direction: "inbound" | "outbound", message: unknown): void {
+  observe(direction: "inbound" | "outbound", message: unknown, providerTurn = false): void {
     if (this.#unknown) return;
     try {
       if (direction === "outbound") this.#outbound(record(message));
-      else this.#inbound(record(message));
+      else this.#inbound(record(message), providerTurn);
     } catch {
       this.#unknown = true;
     }
@@ -43,14 +44,22 @@ export class ClaudeBackgroundTaskTracker {
 
   state(): ClaudeBackgroundTaskState | null {
     if (this.#unknown || !this.#negotiated) return null;
-    if (!this.#observedTask) return { live: 0 };
     let live = 0;
     for (const task of this.#tasks.values()) {
       if (!task.live) continue;
       if (!task.shell) return null;
       live += 1;
     }
-    return live > 0 ? { live } : null;
+    if (live > 0) return { live };
+    return this.#observedTask || this.#acted ? null : { live: 0 };
+  }
+
+  providerTurnStarted(): void {
+    this.#acted = true;
+  }
+
+  providerTurnEnded(completed: boolean): void {
+    if (!completed) this.#unknown = true;
   }
 
   #outbound(message: Record<string, unknown>): void {
@@ -65,7 +74,7 @@ export class ClaudeBackgroundTaskTracker {
     this.#pending.set(id, { method: message.method, advertised });
   }
 
-  #inbound(message: Record<string, unknown>): void {
+  #inbound(message: Record<string, unknown>, providerTurn: boolean): void {
     const id = message.id;
     const hasId = typeof id === "string" || typeof id === "number";
     if (hasId && message.method === undefined) {
@@ -81,7 +90,7 @@ export class ClaudeBackgroundTaskTracker {
       return;
     }
     if (hasId) {
-      if (this.#pending.size === 0) this.#unknown = true;
+      if (this.#pending.size === 0 && !providerTurn) this.#unknown = true;
       return;
     }
     if (message.method !== "session/update") return;
@@ -104,7 +113,7 @@ export class ClaudeBackgroundTaskTracker {
       this.#unknown = true;
     }
     const origin = record(update._meta)["_claude/origin"];
-    if (this.#pending.size === 0 && (IDLE_ACTIVITY.has(kind) || (kind === "usage_update" && origin !== undefined))) {
+    if (this.#pending.size === 0 && !providerTurn && (IDLE_ACTIVITY.has(kind) || (kind === "usage_update" && origin !== undefined))) {
       this.#unknown = true;
     }
   }

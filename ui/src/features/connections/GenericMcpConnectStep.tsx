@@ -1,13 +1,16 @@
 import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { Loader2, Plus, X } from "lucide-react";
-import type { AppDefinition } from "@paperclipai/shared";
+import type { AppDefinition, ConnectToolAppResult } from "@paperclipai/shared";
 import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { RadioCard } from "@/components/ui/radio-card";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
+import { cn } from "@/lib/utils";
 import { AppLogo } from "@/pages/apps/AppLogo";
+import { MachineSignInSetup } from "./MachineSignInSetup";
 import {
   canSubmitGenericConnect,
   customHeaderError,
@@ -112,6 +115,7 @@ export function GenericMcpConnectStep({
   defaults,
   onBack,
   onConnect,
+  machineSignIn,
 }: {
   link: string;
   name: string;
@@ -138,8 +142,13 @@ export function GenericMcpConnectStep({
   defaults?: ReactNode;
   onBack: () => void;
   onConnect: () => void;
+  /** Offered only for organization connections: personal connections sign in as the person. */
+  machineSignIn?: { companyId: string; applicationId?: string | null; onConnected: (result: ConnectToolAppResult) => void } | null;
 }) {
   const [clientFieldsOpen, setClientFieldsOpen] = useState(false);
+  // Machine sign-in runs its own setup and test, so it is a choice beside the modes, not one of them.
+  const [machineSelected, setMachineSelected] = useState(false);
+  const machine = Boolean(machineSelected && machineSignIn);
   const headerError = authMode === "custom_headers" ? customHeaderError(headers) : null;
   const canSubmit = canSubmitGenericConnect({
     link,
@@ -156,7 +165,7 @@ export function GenericMcpConnectStep({
   // Stay open while the chosen option still needs something typed into it, so
   // a disabled primary action always has its reason on screen.
   const choiceNeedsInput = (authMode === "bearer" || authMode === "custom_headers") && !canSubmit;
-  const expanded = advancedOpen || choiceNeedsInput;
+  const expanded = advancedOpen || choiceNeedsInput || machine;
   const showClientFields = clientFieldsOpen
     || oauthClientId.trim().length > 0
     || oauthClientSecret.trim().length > 0
@@ -169,6 +178,8 @@ export function GenericMcpConnectStep({
   const moveSelection = (event: KeyboardEvent<HTMLDivElement>) => {
     // Arrow keys inside an option's own fields belong to that field.
     if ((event.target as HTMLElement).getAttribute("role") !== "radio") return;
+    // Only this group's own options: a nested choice (machine sign-in's) handles its own keys.
+    if ((event.target as HTMLElement).closest('[role="radiogroup"]') !== event.currentTarget) return;
     const step = event.key === "ArrowDown" || event.key === "ArrowRight"
       ? 1
       : event.key === "ArrowUp" || event.key === "ArrowLeft"
@@ -176,9 +187,14 @@ export function GenericMcpConnectStep({
         : 0;
     if (step === 0) return;
     event.preventDefault();
-    const index = AUTH_OPTIONS.findIndex((option) => option.mode === authMode);
-    const next = (index + step + AUTH_OPTIONS.length) % AUTH_OPTIONS.length;
-    onAuthModeChange(AUTH_OPTIONS[next]!.mode);
+    const count = AUTH_OPTIONS.length + (machineSignIn ? 1 : 0);
+    const index = machine ? AUTH_OPTIONS.length : AUTH_OPTIONS.findIndex((option) => option.mode === authMode);
+    const next = (index + step + count) % count;
+    if (next === AUTH_OPTIONS.length) setMachineSelected(true);
+    else {
+      setMachineSelected(false);
+      onAuthModeChange(AUTH_OPTIONS[next]!.mode);
+    }
     event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
   };
 
@@ -316,7 +332,7 @@ export function GenericMcpConnectStep({
   return (
     <div className="mx-auto max-w-xl">
       <div className="flex flex-col gap-6">
-        <p className="min-w-0 truncate font-mono text-sm text-muted-foreground" title={displayedLink}>{displayedLink}</p>
+        <p className={cn("min-w-0 truncate font-mono text-sm text-muted-foreground", ANALYTICS_NO_CAPTURE_CLASS)} title={displayedLink}>{displayedLink}</p>
 
         {matchedEntry && onUseMatchedEntry ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
@@ -353,7 +369,7 @@ export function GenericMcpConnectStep({
               type="button"
               variant="link"
               className="h-auto p-0 text-xs font-semibold underline underline-offset-2"
-              disabled={submitting || choiceNeedsInput}
+              disabled={submitting || choiceNeedsInput || machine}
               data-testid="generic-mcp-sign-in-toggle"
             >
               {expanded ? "Done" : "Change"}
@@ -368,7 +384,7 @@ export function GenericMcpConnectStep({
             onKeyDown={moveSelection}
           >
             {AUTH_OPTIONS.map((option) => {
-              const selected = option.mode === authMode;
+              const selected = !machine && option.mode === authMode;
               const fields = selected ? optionFields(option.mode) : null;
               return (
                 <div key={option.mode}>
@@ -379,27 +395,61 @@ export function GenericMcpConnectStep({
                     tabIndex={selected ? 0 : -1}
                     disabled={submitting}
                     className="bg-background"
-                    onClick={() => onAuthModeChange(option.mode)}
+                    onClick={() => {
+                      setMachineSelected(false);
+                      onAuthModeChange(option.mode);
+                    }}
                   />
                   {fields ? <div className="px-4 pb-2 pt-3">{fields}</div> : null}
                 </div>
               );
             })}
+            {machineSignIn ? (
+              <div>
+                <RadioCard
+                  selected={machine}
+                  title="Machine sign-in"
+                  description="Your organization’s automation signs in as its own registered client. No person signs in."
+                  tabIndex={machine ? 0 : -1}
+                  disabled={submitting}
+                  className="bg-background"
+                  onClick={() => setMachineSelected(true)}
+                />
+                {machine ? (
+                  <div className="px-4 pb-2 pt-3">
+                    <MachineSignInSetup
+                      companyId={machineSignIn.companyId}
+                      applicationId={machineSignIn.applicationId}
+                      link={link}
+                      name={name}
+                      onBack={onBack}
+                      onConnected={machineSignIn.onConnected}
+                      beforeFooter={defaults}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </CollapsibleContent>
       </Collapsible>
 
-      {defaults}
+      {/* Machine sign-in owns its footer (Test connection, not Check link) and shows the access line above it. */}
+      {machine ? null : (
+        <>
+          {defaults}
 
-      <div className="mt-8 flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack} disabled={submitting}>
-          Back
-        </Button>
-        <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
-          {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {submitting ? "Checking…" : "Check link"}
-        </Button>
-      </div>
+          <div className="mt-8 flex items-center justify-between">
+            <Button variant="ghost" onClick={onBack} disabled={submitting}>
+              Back
+            </Button>
+            <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
+              {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {submitting ? "Checking…" : "Check link"}
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

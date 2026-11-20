@@ -1,7 +1,7 @@
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createFinanceEventInTransaction } from "./finance.js";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { fastResponseRequests, decisionInvocations, promptInjectionInvocations, budgetReservations, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { fastResponseRequests, decisionInvocations, promptInjectionInvocations, responsibilitySummaryInvocations, budgetReservations, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { adjustCostSchema, importBillingInvoiceSchema, normalizeCents, subtractCents, type AdjustCost, type ImportBillingInvoice } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { withAccountingReadSnapshot, withAccountingTransaction, withOperationAccountingTransaction } from "./accounting-transaction.js";
@@ -158,6 +158,14 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           ));
           if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(
             eq(budgetReservations.companyId, companyId), eq(budgetReservations.promptInjectionInvocationId, invocation.id), eq(budgetReservations.state, "held"),
+          ));
+        }
+        if (updated.usageKind === "responsibility_summary") {
+          const [invocation] = await tx.select({ id: responsibilitySummaryInvocations.id }).from(responsibilitySummaryInvocations).where(and(
+            eq(responsibilitySummaryInvocations.companyId, companyId), eq(responsibilitySummaryInvocations.costEventId, eventId),
+          ));
+          if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(
+            eq(budgetReservations.companyId, companyId), eq(budgetReservations.responsibilitySummaryInvocationId, invocation.id), eq(budgetReservations.state, "held"),
           ));
         }
         if (updated.usageKind === "fast_response") {

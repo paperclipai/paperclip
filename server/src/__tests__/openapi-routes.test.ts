@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
+import { LINK_PREVIEW_BATCH_LIMIT, MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes, applyPluginSettingsVisibility, buildOpenApiDocument } from "../routes/openapi.js";
@@ -76,13 +76,16 @@ const apiPrefixes: Record<string, string> = {
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
+  "instance-server-metrics.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",
+  "issue-document-batch.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
   "link-previews.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
+  "onboarding-chat.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -93,17 +96,29 @@ const apiPrefixes: Record<string, string> = {
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
+  "routine-suggestions.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
+  "tailscale-connections.ts": "/api",
+  "responsibilities.ts": "/api",
+  "responsibility-areas.ts": "/api",
+  "responsibility-bars.ts": "/api",
+  "responsibility-dashboard.ts": "/api",
+  "responsibility-summaries.ts": "/api",
+  "responsibility-automation.ts": "/api",
+  "responsibility-status-reports.ts": "/api",
+  "responsibility-metrics.ts": "/api",
+  "responsibility-runs.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "voice-sessions.ts": "/api",
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
+  "workload-identity.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -126,6 +141,8 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
   "POST /api/instance/connector-events/wake",
   "POST /api/instance/ephemeral-enrollment/prepare",
+  "GET /api/instance/ephemeral-enrollment/eligibility",
+  "POST /api/instance/ephemeral-enrollment/migrate",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -135,6 +152,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Ordinary board sessions and agent API keys cannot invoke these endpoints.
   "GET /api/customer-success/v1/run-authority",
   "POST /api/customer-success/v1/read",
+  "POST /api/customer-success/v1/run-liveness",
   // OAuth discovery and protocol endpoints have their own metadata contract;
   // browser connection-management operations remain documented in the board API.
   // Markdown rendering of the separately documented assistant setup page.
@@ -197,6 +215,7 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "connection-event-wake.ts") return routePath;
+  if (file === "workload-identity.ts" && routePath.startsWith("/oidc/")) return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
@@ -336,6 +355,15 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("describes cached link results with the lookup shape and shared batch bound", () => {
+    const paths = buildOpenApiSpec().paths;
+    const batch = paths["/api/companies/{companyId}/link-previews/cached"].get;
+    expect(batch.description).toContain(`at most ${LINK_PREVIEW_BATCH_LIMIT} URLs`);
+    const lookupResult = paths["/api/companies/{companyId}/link-preview"].get.responses[200].content["application/json"].schema;
+    expect(batch.responses[200].content["application/json"].schema.properties.results.additionalProperties).toEqual(lookupResult);
+    expect(lookupResult.properties).toHaveProperty("preview");
+    expect(lookupResult.properties).toHaveProperty("maxAgeMs");
+  });
   it("tells agents that unpriced usage in cost reports is unknown cost, not zero", () => {
     const paths = buildOpenApiSpec().paths;
     for (const segment of ["summary", "by-agent", "by-agent-model", "by-project"]) {
@@ -1248,6 +1276,79 @@ describe("openapi routes", () => {
     expect(spec.paths[base + "/test"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object", additionalProperties: false, properties: {},
     });
+  });
+
+  it("documents Tailscale management as instance-admin operations without credential responses", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/tailscale-connections";
+    for (const [path, method] of [[base, "get"], [base, "post"], [base + "/{connectionId}", "delete"],
+      [base + "/{connectionId}/device-login", "post"],
+      [base + "/{connectionId}/devices", "get"], [base + "/{connectionId}/pairing", "post"], ["/api/tools/oauth/tailscale/callback", "get"]]) {
+      const operation = spec.paths[path]?.[method];
+      expect(operation).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board", instanceAdmin: true });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["403"]).toBeDefined();
+    }
+    const connection = spec.paths[base].get.responses["200"].content["application/json"].schema.items;
+    expect(Object.keys(connection.properties).sort()).toEqual(["companyId", "id", "name", "status"]);
+    expect(connection.additionalProperties).toBe(false);
+    expect(connection.properties.status.enum).toEqual(["pending", "authorizing", "connecting", "connected", "disconnected", "expired", "error"]);
+    const start = spec.paths[base].post;
+    expect(start.requestBody.content["application/json"].schema).toMatchObject({ additionalProperties: false,
+      properties: { name: { minLength: 1, maxLength: 100 }, connectionId: { format: "uuid" } } });
+    expect(start.requestBody.content["application/json"].schema.required ?? []).toEqual([]);
+    const session = start.responses["201"].content["application/json"].schema;
+    expect(session.required).toEqual(["connection", "expiresAt"]);
+    expect(Object.keys(session.properties).sort()).toEqual(["authorizationUrl", "connection", "expiresAt", "needsApproval"]);
+    expect(session.properties.expiresAt).toMatchObject({ type: "string", format: "date-time", nullable: true });
+    expect(session.properties.authorizationUrl).toMatchObject({ type: "string", format: "uri" });
+    expect(session.properties.needsApproval).toEqual({ type: "boolean" });
+    expect(session.additionalProperties).toBe(false);
+    const progress = spec.paths[base + "/{connectionId}/device-login"].post;
+    expect(progress.responses["200"].content["application/json"].schema).toEqual(session);
+    expect(progress.requestBody).toBeUndefined();
+    for (const response of [start.responses["201"], progress.responses["200"]]) {
+      expect(response.headers).toMatchObject({
+        "Cache-Control": { schema: { enum: ["no-store"] } },
+        "Referrer-Policy": { schema: { enum: ["no-referrer"] } },
+      });
+    }
+    const pairing = spec.paths[base + "/{connectionId}/pairing"].post;
+    expect(pairing.requestBody.content["application/json"].schema).toMatchObject({ additionalProperties: false, required: ["deviceId"],
+      properties: { deviceId: { minLength: 1, maxLength: 256 }, port: { minimum: 1, maximum: 65535 } } });
+    expect(Object.keys(pairing.responses["200"].content["application/json"].schema.properties).sort()).toEqual(["command", "privateKeySecretId", "publicKey"]);
+    const callback = spec.paths["/api/tools/oauth/tailscale/callback"].get;
+    expect(callback.responses["303"].headers).toMatchObject({ Location: { schema: { type: "string" } }, "Cache-Control": { schema: { enum: ["no-store"] } } });
+    expect(callback.parameters).toContainEqual(expect.objectContaining({ in: "query", name: "state", required: true, schema: expect.objectContaining({ maxLength: 128 }) }));
+  });
+
+  it("documents board-owned onboarding chat and visible welcome operations", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/chats/{agentRef}/onboarding";
+    for (const path of [base, `${base}/greeting`]) {
+      const operation = spec.paths[path]?.post;
+      expect(operation).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["200"]).toBeDefined();
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation.responses["404"]).toBeDefined();
+    }
+    expect(spec.paths[`${base}/greeting`].post.responses["200"].content["application/json"].schema)
+      .toMatchObject({ type: "object", required: ["started"], properties: { started: { type: "boolean" } } });
+  });
+
+  it("documents bounded bulk keyed document reads for native discovery", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/issue-documents"].get;
+    expect(operation.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: "query", name: "key", required: true }),
+      expect.objectContaining({ in: "query", name: "issueIds", required: true, schema: expect.objectContaining({ type: "string", maxLength: 8000 }) }),
+      expect.objectContaining({ in: "query", name: "includeBody", required: false, schema: expect.objectContaining({ enum: ["true", "false"] }) }),
+    ]));
+    expect(operation.responses["413"]).toBeDefined();
+    expect(operation.description).toContain("save_api_response");
   });
 
   it("covers the mounted server routes exactly", () => {

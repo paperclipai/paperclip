@@ -379,6 +379,13 @@ function readRunIssueId(context: Record<string, unknown> | null) {
   return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
 }
 
+// Instruction history IDs are revision or save-record UUIDs, or the current
+// content token, which is a version-8 UUID that `isUuidLike` rejects.
+const INSTRUCTION_REVISION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isInstructionRevisionId(value: string) {
+  return INSTRUCTION_REVISION_ID_RE.test(value);
+}
+
 // Confirms a pre-existing `CODEX_HOME_<handle>` secret still names this
 // account's own home before a device login treats the secret's presence as a
 // successful, idempotent login. The secret name alone is not proof of a
@@ -1911,8 +1918,8 @@ export function agentRoutes(
         );
       } else if (asRecord(config)?.provider === "muse") {
         if (experimental.enableMuse !== true || experimental.enableNativeRunner !== true) throw unprocessable("Muse is experimental and disabled on this instance.", { code: "paperclip_runner_muse_disabled" });
-      } else if (asRecord(config)?.provider === "grok_bot" && (experimental.enableGrokBot !== true || experimental.enablePublicMcp !== true || experimental.enableNativeRunner !== true)) {
-        throw unprocessable("Enable Grok Bot, Assistant connections (MCP), and Paperclip Runner before connecting this agent.", { code: "paperclip_runner_grok_disabled" });
+      } else if (asRecord(config)?.provider === "grok_bot" && (experimental.enableGrokBot !== true || experimental.enableNativeRunner !== true)) {
+        throw unprocessable("Enable Grok Bot and Paperclip Runner before connecting this agent.", { code: "paperclip_runner_grok_disabled" });
       } else if (!([undefined, "codex", "opencode"].includes(asRecord(config)?.provider as string | undefined)) &&
         !(asRecord(config)?.provider === "acpx" && asRecord(config)?.acpxAgent === "copilot") &&
         !["claude_local", "pi_local", "grok_local"].includes(agentHarnessType("paperclip_runner", asRecord(config) ?? {})) &&
@@ -3265,6 +3272,7 @@ export function agentRoutes(
         return { connectionId: selection.connection.id };
       }
       const testEnvironment = testEnvironmentId ? await environmentsSvc.getById(testEnvironmentId) : null;
+      if (testEnvironment?.driver === "ssh" && testEnvironment.config.useHostAuth !== false) return { connectionId: selection.connection.id };
       if (adapterType === "paperclip_runner" && config.homeMode === "preconfigured" && testEnvironment
         && await pluginEnvironmentRunnerTaskDriver(db, testEnvironment)) {
         throw unprocessable(pluginRunnerAiConnectionRequiredMessage(true), { code: PLUGIN_RUNNER_AI_CONNECTION_REQUIRED });
@@ -3302,7 +3310,7 @@ export function agentRoutes(
       await assertCanCreateAgentsForCompany(req, companyId);
 
       const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
-      const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
+      let aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
       const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
@@ -3315,7 +3323,7 @@ export function agentRoutes(
         await assertCanConfigureAgentSetup(req, savedAgent);
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
-      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      let poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
       const prospectiveCursorDefault = type === "cursor_cloud" && !savedAgent
         && (req.body.runner === undefined || req.body.runner === "auto")
         && managedCursorApiDefaultEnabled((await instanceSettings.get()).experimental);
@@ -3350,6 +3358,14 @@ export function agentRoutes(
       const requestedEnvironment = requestedEnvironmentId
         ? await assertAdapterTestEnvironmentBinding(companyId, requestedEnvironmentId)
         : null;
+      if (requestedEnvironment?.driver === "ssh" && requestedEnvironment.config.useHostAuth !== false) {
+        aiBinding = undefined;
+        poolBinding = undefined;
+      }
+      if (requestedEnvironment?.driver === "ssh" && requestedEnvironment.config.useHostAuth === false) {
+        if (!aiBinding && poolBinding?.mode !== "router") aiBinding = poolBinding;
+        if (!aiBinding && !poolBinding) throw unprocessable("Select an AI account for this agent or enable authentication configured on the remote machine in the SSH environment's advanced settings.", { code: "ssh_ai_connection_required" });
+      }
       // Agent reads redact every plain environment value. When this is a saved
       // agent test, restore those display-only placeholders from the
       // server-side config before validating or resolving secrets; otherwise
@@ -3384,7 +3400,8 @@ export function agentRoutes(
           defaultEnvironmentId: requestedEnvironmentId,
         });
       type = selection.adapterType;
-      adapterConfigForTest = selection.adapterConfig;
+      adapterConfigForTest = { ...selection.adapterConfig,
+        ...(type === "paperclip_runner" && requestedEnvironment?.driver === "ssh" ? { homeMode: requestedEnvironment.config.useHostAuth === false ? "isolated" : "preconfigured" } : {}) };
       if (requestedEnvironment) await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironment.id, type);
       const adapter = requireServerAdapter(type);
       if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest, companyId);
@@ -3405,7 +3422,7 @@ export function agentRoutes(
         }
         const controllerAvailable = !managedOnly || environment?.driver === "sandbox";
         const checks: AdapterEnvironmentCheck[] = [
-          { code: "dot_enabled", level: dotEnabled ? "info" : "error", message: dotEnabled ? "Dot is enabled." : "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings." },
+          { code: "dot_enabled", level: dotEnabled ? "info" : "error", message: dotEnabled ? "Dot is enabled." : "Enable OpenAI Dot in experimental settings." },
           { code: "dot_public_endpoint", level: resource?.origin.startsWith("https://") ? "info" : "error", message: resource?.origin.startsWith("https://") ? "Public HTTPS MCP origin is configured." : "Configure a stable public HTTPS PAPERCLIP_PUBLIC_URL." },
           { code: "dot_unmetered", level: inputAdapterConfig.allowUnmeteredProvider === true ? "info" : "error", message: "Dot usage and provider cost are unavailable. Explicit externally billed provider acknowledgement is required." },
           { code: "dot_binding", level: binding?.status === "ready" && binding.subscriptionVerified && binding.id === inputAdapterConfig.dotBindingId ? "info" : "warn", message: binding?.status === "ready" && binding.subscriptionVerified ? "Binding has a verified event subscription and completed readiness challenge." : "Save this agent, pair it, subscribe to mailbox events and complete the event test." },
@@ -5455,7 +5472,7 @@ export function agentRoutes(
     if (!existing) return;
     assertExternalInstructionsAdmin(req, existing);
     const revisionId = req.params.revisionId as string;
-    if (!isUuidLike(revisionId)) throw unprocessable("Invalid instruction revision id");
+    if (!isInstructionRevisionId(revisionId)) throw unprocessable("Invalid instruction revision id");
     const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
     res.json(await instructionRevisions.readRevision({ companyId: existing.companyId, agentId: existing.id, entryFile, revisionId }, req.actor));
   });
@@ -5465,7 +5482,7 @@ export function agentRoutes(
     assertExternalInstructionsAdmin(req, existing);
     const fromRevisionId = typeof req.query.from === "string" ? req.query.from : "";
     const toRevisionId = typeof req.query.to === "string" ? req.query.to : "";
-    if (!isUuidLike(fromRevisionId) || !isUuidLike(toRevisionId)) throw unprocessable("Provide valid from and to revision ids");
+    if (!isInstructionRevisionId(fromRevisionId) || !isInstructionRevisionId(toRevisionId)) throw unprocessable("Provide valid from and to revision ids");
     const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
     res.json(await instructionRevisions.diff({ companyId: existing.companyId, agentId: existing.id, entryFile, fromRevisionId, toRevisionId }, req.actor));
   });

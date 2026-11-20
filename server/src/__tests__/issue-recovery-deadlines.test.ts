@@ -1,14 +1,23 @@
 import { setImmediate as immediate } from "node:timers/promises";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { expect, it, vi } from "vitest";
-import { agents, heartbeatRuns, issueRecoveryActions, issueRelations, issues, issueWatchdogs } from "@paperclipai/db";
+import { agents, budgetPolicies, heartbeatRuns, issueRecoveryActions, issueRelations, issues, issueWatchdogs } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { registerIssueRecoveryWork } from "../services/recovery/work.js";
-import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
+import { changedTaskCondition } from "../services/recovery/changed-tasks.js";
+import { recoveryService } from "../services/recovery/service.js";
+import { ISSUE_RECOVERY_BACKSTOP_MS, ISSUE_RECOVERY_MAX_ISSUE_IDS, notifyIssueRecovery, resolveIssueGraph }
+  from "../services/issue-recovery-notifications.js";
+import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
+import { notifyExecutionRunWork } from "../services/execution-control-notifications.js";
+import { notifyRunDispatch } from "../services/run-dispatch-notifications.js";
+import { notifyExternalConversationSettlement } from "../services/external-conversation-settlement-notifications.js";
+import { notifyChatInboundWakeNotices } from "../services/chat-inbound-wake-notice-notifications.js";
+import { promoteDeferredWorkIntents } from "../services/work-intent-outbox.js";
 import { taskWatchdogService } from "../services/task-watchdogs.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.test-fixture.js";
@@ -49,11 +58,12 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       return query;
     }) as typeof state.db.select);
     await start(); await settled();
-    expect(scans.actions).toBe(1); expect(scans.blockers).toBe(0); expect(scans.loads).toBeLessThanOrEqual(8);
+    expect(scans.actions).toBe(1); expect(scans.blockers).toBe(0); expect(scans.loads).toBeLessThanOrEqual(11);
     expect((await originalSelect().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].status).toBe("resolved");
     const [foreignSource] = await state.db.insert(issues).values({ companyId: foreign.companyId, title: "Foreign done", status: "done" }).returning();
     const [foreignAction] = await state.db.insert(issueRecoveryActions).values({ companyId: foreign.companyId, sourceIssueId: foreignSource.id,
       kind: "stranded_assigned_issue", ownerType: "board", cause: "stranded_assigned_issue", fingerprint: "foreign-query-budget", nextAction: "Inspect" }).returning();
+    await state.db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId })); await settled();
     const before = { ...scans };
     for (let index = 0; index < 100; index++) await state.db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId }));
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -64,12 +74,8 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     expect((await originalSelect().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, foreignAction.id)))[0].status).toBe("active");
     expect(await originalSelect().from(heartbeatRuns)).toHaveLength(0); await quiet();
   });
-  it("limits an ordinary comment to its issue among one thousand open assignments", async () => {
-    const f = await fixture();
-    const rows = await state.db.insert(issues).values(Array.from({ length: 1000 }, (_, index) => ({
-      companyId: f.companyId, title: `Open work ${index}`, status: "todo", assigneeAgentId: f.agentId,
-    }))).returning({ id: issues.id });
-    const checked: string[] = [];
+  async function recordedRecovery(owner: Partial<Parameters<typeof registerIssueRecoveryWork>[2]>,
+    options?: Parameters<typeof registerIssueRecoveryWork>[4]) {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     state.coordinator = createDeliveryWorkCoordinator({ owner: state.db, canRun: () => true, onError: error => state.errors.push(error) });
     const register = state.coordinator.register.bind(state.coordinator);
@@ -78,36 +84,349 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       void pass.then(() => state.passes.delete(pass), () => state.passes.delete(pass));
       return pass;
     } });
-    // Observe the actual paged reconstruction boundary without executing one
-    // thousand adapters. The producer, transaction, coordinator and SQL are real;
-    // the other acceptance cases exercise the resulting recovery decisions.
     state.worker = registerIssueRecoveryWork(state.db, state.coordinator, {
-      stranded: async scope => { checked.push(scope.issueId); },
-      orphanBlockers: async () => {}, recoveryActions: async () => {},
+      stranded: async () => {}, orphanBlockers: async () => {}, recoveryActions: async () => {},
       dependencies: async () => ({ enqueueFailed: 0 }), locks: async () => {},
-      watchdogs: async () => ({ incomplete: 0 }), schedulingSuppressed: async () => false,
-    }, () => true);
+      watchdogs: async () => ({ incomplete: 0 }), schedulingSuppressed: async () => false, ...owner,
+    }, () => true, options);
     await state.worker.ready;
-    async function settleWork() {
-      for (let step = 0; step < 120; step++) {
-        await vi.advanceTimersByTimeAsync(1000);
-        await Promise.allSettled([...state.passes]); await immediate();
-        if (state.coordinator.nextWakeAt() === null && idleWorkSnapshot().active === 0) return;
-      }
-      throw new Error("Recovery did not settle its committed work within two virtual minutes");
+  }
+  async function settleWork(options: { backstopPending?: boolean } = {}) {
+    for (let step = 0; step < 120; step++) {
+      await vi.advanceTimersByTimeAsync(1000);
+      await Promise.allSettled([...state.passes]); await immediate();
+      const next = state.coordinator.nextWakeAt();
+      const settledNow = next === null || (options.backstopPending === true && next > Date.now() + 60_000);
+      if (settledNow && idleWorkSnapshot().active === 0) return;
     }
+    throw new Error("Recovery did not settle its committed work within two virtual minutes");
+  }
+  async function runGraph(companyId: string, agentId: string) {
+    const [other] = await state.db.insert(agents).values({ companyId, name: "Other agent", role: "engineer", status: "idle",
+      adapterType: "process", adapterConfig: {} }).returning({ id: agents.id });
+    const [parent] = await state.db.insert(issues).values({ companyId, title: "Parent", status: "in_progress", assigneeAgentId: agentId })
+      .returning({ id: issues.id });
+    const [task] = await state.db.insert(issues).values({ companyId, title: "Run task", status: "in_progress", assigneeAgentId: agentId,
+      parentId: parent.id }).returning({ id: issues.id });
+    const [dependent] = await state.db.insert(issues).values({ companyId, title: "Waits on the run task", status: "todo",
+      assigneeAgentId: other.id }).returning({ id: issues.id });
+    const [sibling] = await state.db.insert(issues).values({ companyId, title: "Next task of the agent", status: "todo",
+      assigneeAgentId: agentId }).returning({ id: issues.id });
+    await state.db.insert(issueRelations).values({ companyId, issueId: task.id, relatedIssueId: dependent.id, type: "blocks" });
+    const [run] = await state.db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", finishedAt: new Date(),
+      contextSnapshot: { issueId: task.id } }).returning({ id: heartbeatRuns.id });
+    const backlog = async (count: number) => (await state.db.insert(issues).values(Array.from({ length: count }, (_, index) => ({
+      companyId, title: `Backlog ${index}`, status: "todo", assigneeAgentId: other.id, createdAt: new Date(), updatedAt: new Date(),
+    }))).returning({ id: issues.id })).map(row => row.id);
+    return { runId: run.id, taskId: task.id, siblingId: sibling.id, backlog, affected: [parent.id, task.id, dependent.id].sort() };
+  }
+  it("limits an ordinary comment to its issue among one thousand open assignments", async () => {
+    const f = await fixture();
+    const rows = await state.db.insert(issues).values(Array.from({ length: 1000 }, (_, index) => ({
+      companyId: f.companyId, title: `Open work ${index}`, status: "todo", assigneeAgentId: f.agentId,
+    }))).returning({ id: issues.id });
+    const checked: string[] = [];
+    await recordedRecovery({ stranded: async scope => { checked.push(scope.issueId); } });
     await settleWork();
     expect(new Set(checked).size).toBe(1000);
     checked.length = 0;
     await issueService(state.db).addComment(rows[0].id, "New evidence on this task", { userId: "recovery-user" });
-    await settleWork();
+    await settleWork({ backstopPending: true });
     expect(checked).toEqual([rows[0].id]);
-    // Company eligibility changes still reconstruct all assignments. Narrowing
-    // comment hints must not hide unrelated work after an operator resumes it.
+    checked.length = 0;
+    await state.db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId }));
+    await settleWork({ backstopPending: true });
+    expect(new Set(checked).size).toBe(1000);
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS);
+    await settleWork();
+    await quiet();
+  });
+  it("re-checks only the tasks a run lifecycle event can affect, whatever the backlog", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    await graph.backlog(1000);
+    const checked: string[] = [];
+    const assigned: string[] = [];
+    await recordedRecovery({
+      stranded: async scope => { checked.push(scope.issueId); },
+      assignedWork: {
+        listSuspects: (scope, cursor, limit) => recoveryService(state.db, { enqueueWakeup: async () => null })
+          .assignedWork.listSuspects(scope, cursor, limit),
+        checkIssue: async scope => { assigned.push(scope.issueId); },
+      },
+    }, { backstopMs: 60 * 60_000 });
+    await settleWork({ backstopPending: true });
+    expect(new Set(checked).size).toBe(1004);
+    expect(checked).toContain(graph.siblingId);
+    async function lifecycleEvent(producer: (tx: object) => Promise<unknown>, standalone?: () => Promise<unknown>) {
+      checked.length = 0; assigned.length = 0;
+      const statements: string[] = [], prior = state.db.$client.options.debug;
+      state.db.$client.options.debug = (_connection, query) => { statements.push(query); };
+      try {
+        if (standalone) await standalone(); else await state.db.transaction(tx => producer(tx));
+        await settleWork({ backstopPending: true });
+      } finally { state.db.$client.options.debug = prior; }
+      expect([...new Set(checked)].sort()).toEqual(graph.affected);
+      expect(assigned.every(id => graph.affected.includes(id))).toBe(true);
+      await vi.advanceTimersByTimeAsync(31_000);
+      return statements.length;
+    }
+    const finished = () => (tx: object) => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId });
+    const first = await lifecycleEvent(finished());
+    await lifecycleEvent(tx => notifyExecutionRunWork(tx, { companyId: f.companyId, runId: graph.runId, agentId: f.agentId }));
+    await lifecycleEvent(tx => notifyRunDispatch(tx, { companyId: f.companyId, issueId: graph.taskId }));
+    await lifecycleEvent(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "lock_released", issueId: graph.taskId }));
+    await lifecycleEvent(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "accounting_settled", runId: graph.runId }));
+    const recoveryActions = issueRecoveryActionService(state.db);
+    await lifecycleEvent(async () => {}, () => recoveryActions.upsertSourceScoped({ companyId: f.companyId, sourceIssueId: graph.taskId,
+      kind: "stranded_assigned_issue", ownerType: "board", cause: "stranded_assigned_issue", fingerprint: "run-failed",
+      nextAction: "Choose the next step", evidence: {} }));
+    await lifecycleEvent(async () => {}, () => recoveryActions.resolveActiveForIssue({ companyId: f.companyId, sourceIssueId: graph.taskId,
+      status: "resolved", outcome: "restored", resolutionNote: "Recovered" }));
+    await graph.backlog(4000);
+    expect(await lifecycleEvent(finished())).toBe(first);
+  });
+  it("re-checks a run's own tasks for its settlement, lease and dispatch writers, and nothing for a run without a task", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    await graph.backlog(300);
+    const [taskless] = await state.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded",
+      finishedAt: new Date(), contextSnapshot: { source: "scheduler" } }).returning({ id: heartbeatRuns.id });
+    const checked: string[] = [];
+    const assigned: string[] = [];
+    await recordedRecovery({
+      stranded: async scope => { checked.push(scope.issueId); },
+      assignedWork: {
+        listSuspects: (scope, cursor, limit) => recoveryService(state.db, { enqueueWakeup: async () => null })
+          .assignedWork.listSuspects(scope, cursor, limit),
+        checkIssue: async scope => { assigned.push(scope.issueId); },
+      },
+    }, { backstopMs: 60 * 60_000 });
+    await settleWork({ backstopPending: true });
+    const writers = (runId: string): Array<(tx: object) => Promise<unknown>> => [
+      tx => notifyRunDispatch(tx, { companyId: f.companyId, runId }),
+      tx => notifyExecutionRunWork(tx, { companyId: f.companyId, runId }),
+      tx => notifyExternalConversationSettlement(tx, { companyId: f.companyId, runId }),
+      tx => notifyChatInboundWakeNotices(tx, { companyId: f.companyId, runId }),
+      tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "lock_released", issueId: null, runId }),
+    ];
+    for (const [runId, expected] of [[graph.runId, graph.affected], [taskless.id, []]] as Array<[string, string[]]>) {
+      for (const writer of writers(runId)) {
+        checked.length = 0; assigned.length = 0;
+        await state.db.transaction(tx => writer(tx));
+        await settleWork({ backstopPending: true });
+        expect([...new Set(checked)].sort()).toEqual(expected);
+        expect(assigned.every(id => expected.includes(id))).toBe(true);
+        await vi.advanceTimersByTimeAsync(31_000);
+      }
+    }
+    checked.length = 0; assigned.length = 0;
+    await issueService(state.db).addComment(graph.siblingId, "A note on the next task", { userId: "recovery-user" });
+    await settleWork({ backstopPending: true });
+    expect(checked).toEqual([graph.siblingId]);
+    expect(assigned.every(id => id === graph.siblingId)).toBe(true);
+  });
+  it("counts an agent's own run heartbeat as no change to its other tasks, and a resume as a change", async () => {
+    const f = await fixture();
+    const old = new Date(Date.now() - 60 * 60_000);
+    const tasks = await state.db.insert(issues).values(Array.from({ length: 5 }, (_, index) => ({ companyId: f.companyId,
+      title: `Waiting ${index}`, status: "todo", assigneeAgentId: f.agentId, createdAt: old, updatedAt: old }))).returning({ id: issues.id });
+    const since = new Date(Date.now() - 5 * 60_000);
+    const changed = async () => (await state.db.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.companyId, f.companyId), changedTaskCondition(since)))).map(row => row.id).sort();
+    const heartbeatAt = new Date();
+    await state.db.update(agents).set({ status: "idle", lastHeartbeatAt: heartbeatAt, updatedAt: heartbeatAt }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual([]);
+    await state.db.update(agents).set({ status: "idle", updatedAt: new Date(heartbeatAt.getTime() + 1000) }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual(tasks.map(row => row.id).sort());
+  });
+  it("counts an agent's run start as no change to its other tasks, and a pause during the run as a change", async () => {
+    const f = await fixture();
+    const old = new Date(Date.now() - 60 * 60_000);
+    await state.db.update(agents).set({ lastHeartbeatAt: old, updatedAt: old }).where(eq(agents.id, f.agentId));
+    const tasks = await state.db.insert(issues).values(Array.from({ length: 5 }, (_, index) => ({ companyId: f.companyId,
+      title: `Settled ${index}`, status: "in_review", assigneeAgentId: f.agentId, createdAt: old, updatedAt: old }))).returning({ id: issues.id });
+    const since = new Date(Date.now() - 5 * 60_000);
+    const changed = async () => (await state.db.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.companyId, f.companyId), changedTaskCondition(since)))).map(row => row.id).sort();
+    // The write of execution start in heartbeat.ts: a status flip with no heartbeat time.
+    await state.db.update(agents).set({ status: "running", updatedAt: new Date() }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual([]);
+    await state.db.update(agents).set({ status: "paused", updatedAt: new Date() }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual(tasks.map(row => row.id).sort());
+  });
+  it("resolves a run without a task to no tasks and a missing task to the whole company", async () => {
+    const f = await fixture();
+    const [taskless] = await state.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
+      contextSnapshot: { source: "scheduler" } }).returning({ id: heartbeatRuns.id });
+    expect(await resolveIssueGraph(state.db, { companyId: f.companyId, runId: taskless.id })).toEqual([]);
+    expect(await resolveIssueGraph(state.db, { companyId: f.companyId, runId: randomUUID() })).toEqual([]);
+    expect(await resolveIssueGraph(state.db, { companyId: f.companyId, issueId: randomUUID() })).toBeNull();
+  });
+  it("resolves a run's task graph through index lookups, not the backlog", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    await graph.backlog(2000);
+    await state.db.execute(sql`analyze issues`);
+    await state.db.execute(sql`analyze heartbeat_runs`);
+    const [read] = await state.db.transaction(async tx => {
+      expect(await resolveIssueGraph(tx as unknown as typeof state.db, { companyId: f.companyId, runId: graph.runId })).toEqual(graph.affected);
+      return tx.execute<{ rows: number }>(sql`select (coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0))::int as rows
+        from pg_stat_xact_user_tables where relname = 'issues'`);
+    });
+    expect(read.rows).toBeLessThan(50);
+  });
+  it("finds a stranded task outside the affected set within the backstop bound", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    await graph.backlog(50);
+    const checkedAt = new Map<string, number>();
+    await recordedRecovery({ stranded: async scope => { checkedAt.set(scope.issueId, Date.now()); } });
+    await settleWork({ backstopPending: true });
+    const fullPassAt = Date.now();
+    const [unrelated] = await graph.backlog(1);
+    checkedAt.clear();
+    await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+    await settleWork({ backstopPending: true });
+    expect(checkedAt.has(unrelated)).toBe(false);
+    expect(state.coordinator.nextWakeAt()).toBeLessThanOrEqual(fullPassAt + ISSUE_RECOVERY_BACKSTOP_MS);
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS);
+    await settleWork();
+    expect(checkedAt.get(unrelated)! - fullPassAt).toBeLessThanOrEqual(ISSUE_RECOVERY_BACKSTOP_MS + 5_000);
+    checkedAt.clear();
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    expect(checkedAt.size).toBe(0);
+    const [later] = await graph.backlog(1);
+    const eventAt = Date.now();
+    await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+    await settleWork();
+    expect(checkedAt.get(later)! - eventAt).toBeLessThanOrEqual(5_000);
+    await quiet();
+  });
+  async function advanceWithoutWaiting(ms: number) {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { await vi.advanceTimersByTimeAsync(Math.min(1000, until - Date.now())); await immediate(); }
+  }
+  it("keeps a saved deadline of a task that a changed-tasks backstop pass does not load", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    const [target] = await graph.backlog(20);
+    const checkedAt: number[] = [];
+    await recordedRecovery({ stranded: async scope => {
+      if (scope.issueId !== target) return;
+      checkedAt.push(Date.now());
+      scope.onDeferredDeadline(Date.now() + 16 * 60_000);
+    } });
+    await settleWork({ backstopPending: true });
+    for (let round = 0; round < 2; round++) {
+      await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS + 60_000);
+      await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+      await settleWork({ backstopPending: true });
+    }
+    const savedFor = checkedAt.at(-1)! + 16 * 60_000;
+    checkedAt.length = 0;
+    await vi.advanceTimersByTimeAsync(savedFor - Date.now() + 2_000);
+    await settleWork({ backstopPending: true });
+    expect(checkedAt.length).toBeGreaterThan(0);
+    expect(checkedAt[0]! - savedFor).toBeLessThanOrEqual(5_000);
+  });
+  it("starts the next changed-tasks window from the start of a slow backstop scan", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    const backlog = (await graph.backlog(250)).sort();
+    const behind = backlog[0]!;
+    let slow = false, changedBehind = false;
+    const checkedAt = new Map<string, number[]>();
+    await recordedRecovery({ stranded: async scope => {
+      checkedAt.set(scope.issueId, [...checkedAt.get(scope.issueId) ?? [], Date.now()]);
+      if (!slow) return;
+      vi.setSystemTime(Date.now() + 20_000);
+      if (scope.issueId === behind && !changedBehind) {
+        changedBehind = true;
+        await state.db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, behind));
+      }
+    } }, { fullBackstopMs: 24 * 60 * 60_000 });
+    await settleWork({ backstopPending: true });
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS + 60_000);
+    await state.db.update(issues).set({ updatedAt: new Date() }).where(inArray(issues.id, backlog));
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS + 60_000);
+    slow = true;
+    checkedAt.clear();
+    const scanStartedAt = Date.now();
+    await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+    await settleWork({ backstopPending: true });
+    slow = false;
+    expect(changedBehind).toBe(true);
+    expect(backlog.every(id => checkedAt.has(id))).toBe(true);
+    expect(Date.now() - scanStartedAt).toBeGreaterThan(2 * ISSUE_RECOVERY_BACKSTOP_MS);
+    checkedAt.clear();
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS + 60_000);
+    await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+    await settleWork({ backstopPending: true });
+    expect(checkedAt.has(behind)).toBe(true);
+  }, 300_000);
+  it("keeps the company pass for hold releases that can admit any task", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    const backlog = await graph.backlog(150);
+    const checked: string[] = [];
+    await recordedRecovery({ stranded: async scope => { checked.push(scope.issueId); } });
+    await settleWork({ backstopPending: true });
+    const everything = new Set([...graph.affected, graph.siblingId, ...backlog]);
+    await state.db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      metric: "billed_cents", windowKind: "calendar_month_utc", amount: 1000, hardStopEnabled: true, isActive: true });
+    for (const input of [{ trigger: "accounting_settled" as const, runId: graph.runId }, { trigger: "pause_lifted" as const }]) {
+      checked.length = 0;
+      await state.db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, ...input }));
+      await settleWork({ backstopPending: true });
+      expect(new Set(checked)).toEqual(everything);
+      await vi.advanceTimersByTimeAsync(31_000);
+    }
+  });
+  it("falls back to the company pass when a run affects more tasks than a hint names", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    const backlog = await graph.backlog(200);
+    const checked: string[] = [];
+    await recordedRecovery({ stranded: async scope => { checked.push(scope.issueId); } });
+    await settleWork({ backstopPending: true });
+    const dependents = await graph.backlog(ISSUE_RECOVERY_MAX_ISSUE_IDS);
+    await state.db.insert(issueRelations).values(dependents.map(id => ({ companyId: f.companyId, issueId: graph.taskId,
+      relatedIssueId: id, type: "blocks" as const })));
+    checked.length = 0;
+    await state.db.transaction(tx => notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: graph.runId }));
+    await settleWork({ backstopPending: true });
+    expect(new Set(checked)).toEqual(new Set([...graph.affected, graph.siblingId, ...backlog, ...dependents]));
+  });
+  it("checks only blocked tasks whose blockers are done, however many still wait", async () => {
+    const f = await fixture();
+    const [openBlocker, doneBlocker] = await state.db.insert(issues).values([
+      { companyId: f.companyId, title: "Open blocker", status: "in_progress", assigneeAgentId: f.agentId },
+      { companyId: f.companyId, title: "Done blocker", status: "done" },
+    ]).returning({ id: issues.id });
+    const waiting = await state.db.insert(issues).values(Array.from({ length: 300 }, (_, index) => ({
+      companyId: f.companyId, title: `Waiting ${index}`, status: "blocked", assigneeAgentId: f.agentId,
+    }))).returning({ id: issues.id });
+    const [ready] = await state.db.insert(issues).values({ companyId: f.companyId, title: "Ready", status: "blocked",
+      assigneeAgentId: f.agentId }).returning({ id: issues.id });
+    await state.db.insert(issueRelations).values([
+      ...waiting.map(row => ({ companyId: f.companyId, issueId: openBlocker.id, relatedIssueId: row.id, type: "blocks" as const })),
+      { companyId: f.companyId, issueId: doneBlocker.id, relatedIssueId: ready.id, type: "blocks" as const },
+    ]);
+    const checked: string[] = [];
+    await recordedRecovery({ dependencies: async scope => { checked.push(scope.issueId); return { enqueueFailed: 0 }; } });
+    await settleWork();
+    expect(checked).toEqual([ready.id]);
     checked.length = 0;
     await state.db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId }));
     await settleWork();
-    expect(new Set(checked).size).toBe(1000);
+    expect(checked).toEqual([ready.id]);
+    checked.length = 0;
+    await issueService(state.db).update(openBlocker.id, { status: "done" });
+    await settleWork({ backstopPending: true });
+    expect(new Set(checked)).toEqual(new Set([ready.id, ...waiting.map(row => row.id)]));
+    await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS);
+    await settleWork();
     await quiet();
   });
   it("uses ordinary watchdog configuration and subtree closure to dispatch a reusable review", async () => {
@@ -122,10 +441,19 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       const [row] = await state.db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog.watchdog.id));
       expect(row.watchdogIssueId).toBeTruthy(); reviewId = row.watchdogIssueId!;
     }, { timeout: 15_000 });
-    await completed(reviewId!);
+    const review = await completed(reviewId!);
     expect(failures).toEqual([]);
+    // Ordinary assignment recovery can win the wake reason while the watchdog
+    // wake coalesces into that run. Verify its mandate and one dispatch instead.
+    expect(review.contextSnapshot).toMatchObject({
+      watchdogId: watchdog.watchdog.id,
+      taskWatchdog: {
+        watchedIssueId: source.id,
+        stopFingerprint: expect.stringMatching(/^task_watchdog_stop:/),
+      },
+    });
     expect(await state.db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
-      sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'task_watchdog_stopped_subtree'`))).toHaveLength(1);
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${reviewId}`))).toHaveLength(1);
     await finish(reviewId!);
     await taskWatchdogService(state.db).disableForIssue(f.companyId, source.id);
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); await quiet();

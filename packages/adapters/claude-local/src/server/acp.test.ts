@@ -443,7 +443,7 @@ describe("claude_local ACP lane", () => {
     });
   });
 
-  it("reports unavailable ACP for non-sandbox remote auto runs", async () => {
+  it("reports unavailable ACP for SSH host authentication", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -467,7 +467,7 @@ describe("claude_local ACP lane", () => {
     ).resolves.toMatchObject({
       engine: "acp",
       explicit: false,
-      unavailableReason: expect.stringContaining("sandbox remote targets only"),
+      unavailableReason: expect.stringContaining("agent-managed SSH account"),
     });
   });
 

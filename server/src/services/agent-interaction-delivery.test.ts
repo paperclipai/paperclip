@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueThreadInteractions, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueThreadInteractions, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { filterRunMessageInteractionDelivery, hasAutomaticInteractionDeliveryHold, preparedRunInteractionDeliveryDenied, recheckQueuedCommentInteractionDelivery,
   recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "./agent-interaction-delivery.js";
@@ -9,7 +9,7 @@ import { createHeartbeatQueue } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
 import { withPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { recoveryService } from "./recovery/service.js";
-import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("pending agent interaction delivery", () => {
@@ -113,8 +113,7 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
       const context = { issueId: f.issueId, wakeReason: reason, ...(assignmentFirst ? { wakeCommentId: messageId, wakeCommentIds: [messageId] } : {}) };
       const actorType = assignmentFirst ? "user" : "agent", actorId = assignmentFirst ? "human" : f.sender;
       const payload = withInteractionDeliveryOrigin({ issueId: f.issueId, _paperclipWakeContext: context }, actorType, actorId);
-      await db.transaction(tx => createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
-        createAdmissionTransactionScope(f.companyId, tx as unknown as Db), {
+      await db.transaction(tx => createWakeAdmissionWriter(tx, f.companyId).coalesceIntoActiveExecutionRun({
           companyId: f.companyId, agentId: f.recipient, activeExecutionRunId: f.run.id, activeExecutionRunStatus: "queued",
           mergedContextSnapshot: { ...context, wakeCommentId: messageId, wakeCommentIds: [messageId] },
           source: "assignment", triggerDetail: "system", payload, requestedByActorType: actorType,

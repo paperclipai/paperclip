@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { and, eq } from "drizzle-orm";
 import { executionWorkspaces, type Db } from "@paperclipai/db";
-import { readWorkspaceProviderBinding } from "@paperclipai/shared";
+import { readWorkspaceProviderBinding, type Environment } from "@paperclipai/shared";
 import {
   parseWorkspacePrepareResult,
   parseWorkspaceProviderResult,
@@ -17,8 +17,30 @@ import { WorkspaceProviderFailureError, workspaceProviderCallFailure } from "./w
 
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type ProviderRequest = Omit<PluginWorkspaceParams, "deadline">;
+type SelectedEnvironment = Pick<Environment, "id" | "driver" | "config">;
 const legacyWorkspaceOperationMs = 300_000;
 const legacyRpcGraceMs = 10_000;
+
+/**
+ * The run's environment as the provider's own driver sees it, or undefined when
+ * the provider has not opted in or the environment belongs to another driver.
+ */
+function providerRunEnvironment(
+  provider: { pluginKey: string; manifestJson: { workspaceProvider?: { workspaceEnvironmentVersion?: 1 } } },
+  environment: SelectedEnvironment | null | undefined,
+): PluginWorkspaceParams["environment"] {
+  if (provider.manifestJson.workspaceProvider?.workspaceEnvironmentVersion !== 1) return undefined;
+  if (!environment || environment.driver !== "plugin") return undefined;
+  const config = environment.config ?? {};
+  if (config.pluginKey !== provider.pluginKey || typeof config.driverKey !== "string") return undefined;
+  const driverConfig = config.driverConfig;
+  return {
+    id: environment.id,
+    driverKey: config.driverKey,
+    config: driverConfig && typeof driverConfig === "object" && !Array.isArray(driverConfig)
+      ? driverConfig as Record<string, unknown> : {},
+  };
+}
 
 /** No paths or provider credentials are accepted from task callers. */
 export async function callWorkspaceProvider(
@@ -33,6 +55,8 @@ export async function callWorkspaceProvider(
     agentId?: string | null;
     removalOperationId?: string;
     taskLease?: PluginWorkspaceParams["taskLease"];
+    /** The run's selected environment; forwarded only to an opted-in provider that owns its driver. */
+    environment?: SelectedEnvironment | null;
     assertOwned?: () => void;
   },
 ) {
@@ -67,6 +91,7 @@ export async function callWorkspaceProvider(
     operation.fresh = await stageProviderFreshWorkspace({ db, companyId: workspace.companyId,
       issueId: workspace.sourceIssueId, ...operation.fresh, existing: operation.fresh });
   }
+  const environment = providerRunEnvironment(selectedProvider, input.environment);
   const params: ProviderRequest = {
     pluginId,
     companyId: workspace.companyId,
@@ -86,6 +111,8 @@ export async function callWorkspaceProvider(
     runId: input.runId ?? null,
     agentId: input.agentId ?? null,
     ...(input.taskLease ? { taskLease: input.taskLease } : {}),
+    // Context only: the operation ID above stays independent of the environment.
+    ...(environment ? { environment } : {}),
     operation,
   };
   input.assertOwned?.();

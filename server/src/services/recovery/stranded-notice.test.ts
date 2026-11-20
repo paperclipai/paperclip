@@ -395,9 +395,30 @@ it("names the managed AI connection a plugin Runner-task environment requires", 
   expect(notice.body).not.toContain("secret/env");
 });
 
+it("names incompatible project workspace storage instead of a missing secret", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "project_storage_environment_incompatible" });
+  expect(notice.title).toBe("Workspace storage unavailable");
+  expect(notice.body).toContain("workspace storage that the agent's environment cannot use");
+  expect(notice.nextAction).toContain("Assign the task to an agent whose environment can use");
+  expect(notice.body).not.toContain("secret");
+});
+
 it("tells the operator to switch a preconfigured Runner home to an isolated one", () => {
   const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required", homeMode: "preconfigured" });
   expect(notice.title).toBe("Isolated Runner home required");
   expect(notice.nextAction).toContain("isolated Runner home");
   expect(notice.nextAction).not.toContain("Choose an AI connection");
+});
+
+it("never tells a person to press Retry when the task offers no Retry", () => {
+  const sourceRun = { id: "run-1", status: "cancelled", errorCode: "execution_reconciliation_required" };
+  for (const seed of [buildNoRunningExecutionNoticeSeed({ status: "in_progress" }), null]) {
+    const offered = buildStrandedRecoveryEscalationNotice({ seed, recoveryActionId: "action-1", recoveryOwner: null, sourceRun });
+    expect(`${offered.body} ${JSON.stringify(allRows(offered.metadata))}`).toMatch(/Press Retry/);
+    const withheld = buildStrandedRecoveryEscalationNotice({ seed, recoveryActionId: "action-1", recoveryOwner: null, sourceRun,
+      retryOffered: false });
+    expect(withheld.body).not.toMatch(/retry/i);
+    expect(JSON.stringify(allRows(withheld.metadata))).not.toMatch(/retry/i);
+    expect(withheld.body).toContain("Paperclip is holding this task until its saved work is settled.");
+  }
 });

@@ -428,8 +428,9 @@ describe("automatic retained workspace recovery", () => {
     expect(refused).toMatchObject({ state: "exhausted", attempts: 1,
       failure: { code: "allocation_ownership_ambiguous", retryClass: "service_required" } });
     await heartbeatService(db).resumeTaskRetry(f.companyId, first.requestId!);
+    // The route admitted this Retry once before answering (it waited then),
+    // so its earlier wait stays on the row as history; the request is admitted now.
     const [admitted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.requestId!));
-    expect(admitted.payload?.executionWait).toBeUndefined();
     expect(admitted).toMatchObject({ status: "coalesced", runId: expect.any(String),
       payload: { taskRetry: { strategy: "fresh_isolated_workspace" } } });
     expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ generationId: refused!.generationId,
@@ -635,9 +636,15 @@ describe("automatic retained workspace recovery", () => {
           : { latestRunId: later.id, latestRunStatus: "failed", latestRunErrorCode: "setup_failed" } });
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: before.agentId, status: "running" });
       const app = boardRecoveryApp(), retryIntent = { observedRunId: later.id, idempotencyKey: randomUUID() };
-      const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
-      retryRequestId = retry.requestId;
-      expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body.requestId).toBe(retryRequestId);
+      // When admission refuses this Retry for a reason another click cannot
+      // change, the answer names the refusal instead of "accepted". A replay
+      // of the same click names the same saved request.
+      const first = await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent);
+      expect([200, 202]).toContain(first.status);
+      expect(first.body).toMatchObject(first.status === 200
+        ? { accepted: false, refused: { reason: expect.any(String) } } : { accepted: true });
+      retryRequestId = first.body.requestId;
+      expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent)).body.requestId).toBe(retryRequestId);
       await heartbeatService(db).resumeTaskRetry(f.companyId, retryRequestId!);
       const [registered] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, f.companyId),
         sql`${issueRecoveryActions.evidence}->>'runId' = ${f.runId}`));

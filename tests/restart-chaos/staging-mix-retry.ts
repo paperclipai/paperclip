@@ -6,7 +6,7 @@ import {
   bannerShownMs, completedAtAnchor, doneCommentsBeforeCompletion, DUPLICATE_CHECKS, firstDoneCommentAt, noteRetryBanner, type CompletionEvidence,
 } from "./staging-mix.js";
 import type { InterruptionSample, OracleResult, TaskPlan, TaskRecord, TaskSample } from "./types.js";
-import { laterAnswers, laterAnswerWaits, type LaterAnswer } from "./follow-up-delivery.js";
+import { followUpAnsweringRuns, laterAnswers, laterAnswerWaits, rejectedDoneRuns, undeliveredFollowUpRuns, type LaterAnswer } from "./follow-up-delivery.js";
 
 type Json = Record<string, any>;
 
@@ -192,7 +192,8 @@ export interface ExtraTurn {
 export interface WakeEvidenceFile {
   completedAt?: number | null;
   runs?: Array<{ runId: string | null; createdAt: number | null; startedAt?: number | null; invocationSource: string | null; triggerDetail: string | null;
-    wakeupRequestId: string | null; acceptedDisposition?: string | null; acceptedAt?: number | null; finishedAt?: number | null; contextSnapshot?: unknown; status?: string | null }>;
+    wakeupRequestId: string | null; retryOfRunId?: string | null; acceptedDisposition?: string | null; acceptedAt?: number | null; finishedAt?: number | null; contextSnapshot?: unknown; status?: string | null;
+    providerTurnStarted?: boolean | null }>;
   wakes?: Array<{ id: string | null; reason: string | null; source: string | null; triggerDetail: string | null; requestedByActorType: string | null; requestedByActorId: string | null;
     createdAt?: number | null; payload?: unknown }>;
 }
@@ -211,16 +212,18 @@ export function commentEvidence(rows: readonly CommentRow[] | null): Array<{ bod
 export function evidenceCompletion(evidence: WakeEvidenceFile | null, issueCompletedAt?: unknown): CompletionEvidence | null {
   const fromIssue = typeof issueCompletedAt === "string" && Number.isFinite(Date.parse(issueCompletedAt)) ? Date.parse(issueCompletedAt) : null;
   if (!evidence && fromIssue === null) return null;
-  const answers = laterAnswers(evidence);
+  const rejected = rejectedDoneRuns(evidence);
+  const answers = followUpAnsweringRuns(evidence, rejected);
   return { completedAt: evidence?.completedAt ?? fromIssue, runs: (evidence?.runs ?? []).map(run => ({ runId: run.runId, startedAt: run.startedAt ?? null,
-    acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null, answersFollowUp: Boolean(run.runId && answers.has(run.runId)) })) };
+    acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null, answersFollowUp: Boolean(run.runId && answers.has(run.runId)),
+    doneRejected: Boolean(run.runId && rejected.has(run.runId)) })) };
 }
 
 export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null, anchor: { at: number | null; source: string | null }, doneCommentAt: number | null = null):
   { started: ExtraTurn[]; neverStarted: ExtraTurn[]; answeredFollowUp: ExtraTurn[] } {
   const doneAt = anchor.at;
   if (!evidence || doneAt === null) return { started: [], neverStarted: [], answeredFollowUp: [] };
-  const answers = laterAnswers(evidence);
+  const answers = followUpAnsweringRuns(evidence, rejectedDoneRuns(evidence));
   const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
   const turn = (run: NonNullable<WakeEvidenceFile["runs"]>[number]): ExtraTurn => {
     const wake = run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined;
@@ -230,9 +233,10 @@ export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null,
   };
   const runs = evidence.runs ?? [];
   const afterDone = runs.filter(run => run.startedAt != null && run.startedAt > doneAt);
+  const undelivered = undeliveredFollowUpRuns(evidence);
   const answered = (run: (typeof runs)[number]) => Boolean(run.runId && answers.has(run.runId));
   return {
-    started: afterDone.filter(run => !answered(run)).map(turn),
+    started: afterDone.filter(run => !answered(run) && !(run.runId && undelivered.has(run.runId))).map(turn),
     neverStarted: runs.filter(run => run.startedAt == null && run.createdAt !== null && run.createdAt > doneAt).map(turn),
     answeredFollowUp: afterDone.filter(answered).map(turn),
   };

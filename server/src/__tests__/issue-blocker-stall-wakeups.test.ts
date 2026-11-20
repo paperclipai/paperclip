@@ -59,6 +59,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     return { companyId, parentAgent, childAgent, parent, child, action };
   }
 
+  it("continues a company scan past a full page of stalls, also after a restart", async () => {
+    const f = await fixture();
+    const more = await db.insert(issues).values([1, 2].map(index => ({ companyId: f.companyId, title: `Child ${index}`,
+      status: "blocked", parentId: f.parent.id, assigneeAgentId: f.childAgent }))).returning();
+    await db.insert(issueRecoveryActions).values(more.map(child => ({ companyId: f.companyId, sourceIssueId: child.id,
+      kind: "run_recovery", status: "escalated", ownerType: "board", cause: "execution_recovery_budget_exhausted",
+      fingerprint: `fixture-${child.id}`, nextAction: "Retry the run or reassign the task" })));
+    const { calls, enqueueWakeup } = wakeRecorder();
+    const stallWakes = () => new Set(calls.filter(call => call.input.reason === ISSUE_BLOCKER_STALLED_WAKE_REASON)
+      .map(call => call.input.idempotencyKey));
+    const first = await wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, maxStalls: 2 });
+    expect(stallWakes().size).toBe(2);
+    expect(first.retryAt).not.toBeNull();
+    vi.resetModules();
+    const restarted = await import("../services/recovery/blocker-stall-wakeups.js");
+    for (let pass = 0; pass < 5; pass++) {
+      const result = await restarted.wakeWaitersOfStalledIssues(db, enqueueWakeup as never, { companyId: f.companyId, maxStalls: 2 });
+      if (result.retryAt === null) break;
+    }
+    expect(stallWakes().size).toBe(3);
+  });
+
   it("wakes the parent's assignee once per stall, with the stalled child and its recovery action", async () => {
     const f = await fixture();
     const { calls, enqueueWakeup } = wakeRecorder();

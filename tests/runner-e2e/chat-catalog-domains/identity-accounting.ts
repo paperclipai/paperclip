@@ -91,12 +91,24 @@ export function leadApiCalls(events: readonly Record<string, unknown>[]): LeadAp
  * date range (a range could exclude the run), the prerequisite task's cost summary including the task itself,
  * and the original run's record (which carries its saved accounting state and usage cost status). */
 const COMPANY_COST_SEGMENTS = ["summary", "by-agent", "by-agent-model", "by-provider", "by-biller", "by-project", "data-quality"];
+/** The company reports that also count runs with saved usage but no cost event yet (pendingRunCount, unresolved runs).
+ * The ledger groupings (by-agent, by-project, ...) only sum cost events, so they never show such a run. */
+const PENDING_RUN_SEGMENTS = ["summary", "data-quality"];
 export interface SavedAccountingTarget { companyId?: string; task?: Pick<Entity, "id" | "identifier">; originalRunId?: string;
   /** Run-record reads the reading run itself cites in its saved result, as `GET /api/heartbeat-runs/<runId>`. */
   citedRunReads?: readonly string[];
   /** Run records this reading run saved with `saveResponse`, read back from the product's saved asset. */
   savedRunRecords?: readonly SavedRunRecord[];
-  runListPosition?: RunListPosition }
+  runListPosition?: RunListPosition;
+  /** When the original run started and finished. A company cost report whose `from`/`to` range covers it returns
+   * the run's saved accounting, so that ranged read counts as well as an unranged one. */
+  originalRunWindow?: { startedAt: string; finishedAt: string };
+  /** When the original run's unresolved cost events occurred. An empty list means the run is pending with no cost event,
+   * so only reports that include pending runs (summary, data-quality) or the run record can show it. Left out, every
+   * company report counts (the post-retry check, which reads after the person recorded the cost). */
+  costEventTimes?: readonly string[];
+  /** When the reading run started and finished; month-relative reads are compared with it. */
+  readingRunWindow?: { startedAt: string; finishedAt: string } }
 export interface RunListPosition { agentId: string; companyAhead: number; agentAhead: number }
 const RUN_LIST_OPERATION = "GET /api/companies/{companyId}/heartbeat-runs";
 const runListCache = new Map<string, ReadonlySet<string>>();
@@ -125,12 +137,106 @@ export function runListPosition(runs: ReadonlyArray<{ id: string; agentId: strin
 /** A `call_api` read saved with `saveResponse` becomes a company asset that the product logs as
  * `asset.created` by the reading run. Its saved content names the record actually read. */
 export interface SavedRunRecord { runId: string; assetId: string; recordId: string; companyId: string }
+const coveringCache = new Map<string, { digests: Set<string>; pending: Generator<string> }>();
+/** Calendar spans (in days) of the ranges people ask for: a day or a few, a week, two weeks and a month. */
+const RANGE_DAYS = [1, 2, 3, 7, 8, 14, 15, 28, 29, 30, 31, 32];
+/** Local-midnight ranges at an offset: a day, a week, two weeks or a calendar month. */
+const LOCAL_RANGE_DAYS = [1, 7, 14, 28, 29, 30, 31];
+/**
+ * Whether one of the run's company cost-report reads (by input digest) has a `from`/`to` covering the window. Run-log receipts keep only the input
+ * digest, so the grader regenerates the inputs people write and re-parses each bound as the costs route does (both
+ * bounds inclusive, as in resolveCostDateRange). Bounds are UTC day boundaries (with or without milliseconds or seconds,
+ * date-only, end of day) or local midnights at a whole-hour offset (UTC also as +00:00 and -00:00), paired within one
+ * form, open-ended or spanning one of RANGE_DAYS, plus the window's own instants. Every range is also generated with
+ * period=month, since explicit bounds take precedence. A covering range outside these forms is not recognized: a false
+ * negative, never a false pass.
+ */
+export function coveringCostReportRead(companyId: string, window: { startedAt: string; finishedAt: string }, segments: readonly string[],
+  extraInstants: readonly string[], readDigests: ReadonlySet<string>): boolean {
+  if (!readDigests.size) return false;
+  // One lazily filled digest set per company, window and report; hashing stops at the first matching read and resumes
+  // from there for the next check, so each covering input is hashed at most once.
+  return segments.some(segment => {
+    const key = JSON.stringify([companyId, window, segment, extraInstants]);
+    let state = coveringCache.get(key);
+    if (!state) coveringCache.set(key, state = { digests: new Set(), pending: coveringDigests(companyId, window, segment, extraInstants) });
+    for (const digest of readDigests) if (state.digests.has(digest)) return true;
+    for (let next = state.pending.next(); !next.done; next = state.pending.next()) { state.digests.add(next.value); if (readDigests.has(next.value)) return true; }
+    return false;
+  });
+}
+function* coveringDigests(companyId: string, window: { startedAt: string; finishedAt: string }, segment: string, extraInstants: readonly string[]): Generator<string> {
+  const started = Date.parse(window.startedAt), finished = Date.parse(window.finishedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) return;
+  const day = 86_400_000, parse = (text: string) => new Date(text).getTime();
+  const iso = (at: number) => new Date(at).toISOString();
+  // Bound forms: each maps a UTC date to the string a person writes for that day's midnight in the form's zone.
+  const ms = (at: number) => iso(at), seconds = (at: number) => iso(at).replace(".000Z", "Z"), minutes = (at: number) => iso(at).replace(":00.000Z", "Z");
+  const date = (at: number) => iso(at).slice(0, 10), endMs = (at: number) => iso(at - 1), endSeconds = (at: number) => iso(at - 1000).replace(".000Z", "Z");
+  const starts = [ms, seconds, minutes, date], ends = [ms, seconds, minutes, date, endMs, endSeconds];
+  // Pairs are written in one style: a precise start with a precise or end-of-day end, a date with a date or end of day.
+  const forms: Array<{ from: Array<(midnight: number) => string>; to: Array<(midnight: number) => string>; month?: boolean; spans?: readonly number[] }> = [
+    { from: [ms, seconds], to: [ms, seconds, endMs, endSeconds], month: true }, { from: [minutes], to: [minutes], month: true }, { from: [date], to: [date, endMs, endSeconds], month: true }];
+  for (const offset of Array.from({ length: 27 }, (_, index) => index - 12)) for (const zone of offset === 0 ? ["+00:00", "-00:00"] : [`${offset < 0 ? "-" : "+"}${String(Math.abs(offset)).padStart(2, "0")}:00`]) {
+    const write = (midnight: number) => `${iso(midnight).slice(0, 10)}T00:00:00${zone}`;
+    forms.push({ from: [write], to: [write], spans: LOCAL_RANGE_DAYS });
+  }
+  // UTC-form ranges are also generated with period=month (explicit bounds take precedence); offset forms are not.
+  const queries: Array<Record<string, string>> = [], monthQueries: Array<Record<string, string>> = [];
+  const firstDay = Math.floor(started / day) * day, lastDay = Math.floor(finished / day) * day;
+  for (const { from, to, month, spans = RANGE_DAYS } of forms) {
+    const before = queries.length;
+    // Start days reach back as far as the longest span (32 days, so a month-start `from` is included for any event).
+    for (let midnight = firstDay - 32 * day; midnight <= firstDay + day; midnight += day) for (const writeFrom of from) {
+      const fromText = writeFrom(midnight); if (parse(fromText) > started) continue;
+      queries.push({ from: fromText });
+      for (const span of spans) for (const writeTo of to) {
+        const toText = writeTo(midnight + span * day); if (parse(toText) >= finished) queries.push({ from: fromText, to: toText });
+      }
+    }
+    for (let midnight = lastDay; midnight <= lastDay + 32 * day; midnight += day) for (const writeTo of to) { const toText = writeTo(midnight); if (parse(toText) >= finished) queries.push({ to: toText }); }
+    if (month) monthQueries.push(...queries.slice(before));
+  }
+  const instantStart = queries.length;
+  const instants = [window.startedAt, window.finishedAt, ...extraInstants].map(parse).filter(Number.isFinite).flatMap(at => [iso(at), iso(at).replace(/\.\d{3}Z$/, "Z")]);
+  for (const fromText of instants) if (parse(fromText) <= started) { queries.push({ from: fromText }); for (const toText of instants) if (parse(toText) >= finished) queries.push({ from: fromText, to: toText }); }
+  for (const toText of instants) if (parse(toText) >= finished) queries.push({ to: toText });
+  // A UTC day-boundary bound paired with one of the window's own instants (e.g. from today's midnight to the event).
+  const dayStarts = Array.from({ length: 33 }, (_, index) => firstDay - (32 - index) * day + day).flatMap(at => starts.map(write => write(at))).filter(text => parse(text) <= started);
+  const dayEnds = Array.from({ length: 33 }, (_, index) => lastDay + index * day).flatMap(at => ends.map(write => write(at))).filter(text => parse(text) >= finished);
+  for (const instant of instants) {
+    if (parse(instant) >= finished) for (const fromText of dayStarts) queries.push({ from: fromText, to: instant });
+    if (parse(instant) <= started) for (const toText of dayEnds) queries.push({ from: instant, to: toText });
+  }
+  for (const query of [...monthQueries, ...queries.slice(instantStart)]) queries.push({ ...query, period: "month" });
+  for (const query of queries) for (const pathParams of [{ companyId }, {}, undefined])
+    yield callApiInputDigest({ operationId: `GET /api/companies/{companyId}/costs/${segment}`, ...(pathParams ? { pathParams } : {}), query });
+}
 export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, target: SavedAccountingTarget) {
   const { companyId, task, originalRunId } = target;
-  const companyDigests = companyId ? apiReadDigests(COMPANY_COST_SEGMENTS.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
-    // runnerApiUrl fills companyId from the run's company when the call omits it, so that form reads the same report.
-    pathParams: [...recordParams("companyId", companyId), undefined], queries: [{ period: "all" }, { period: "month" }] }))) : new Set<string>();
-  const taskDigests = task ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "false" }] }]) : new Set<string>();
+  // A run with cost events shows in every report whose range covers those events; a pending run only in the reports
+  // that count pending runs, over a range covering the run itself.
+  const eventTimes = (target.costEventTimes ?? []).map(Date.parse).filter(Number.isFinite);
+  const pending = !!target.costEventTimes && !eventTimes.length;
+  const segments = pending ? PENDING_RUN_SEGMENTS : COMPANY_COST_SEGMENTS;
+  const window = !target.costEventTimes ? target.originalRunWindow : pending ? target.originalRunWindow
+    : { startedAt: new Date(Math.min(...eventTimes)).toISOString(), finishedAt: new Date(Math.max(...eventTimes)).toISOString() };
+  // runnerApiUrl fills companyId from the run's company when the call omits it, so that form reads the same report.
+  const reportReads = (queries: Array<Record<string, unknown>>) => companyId ? apiReadDigests(segments.map(segment => ({ operationId: `GET /api/companies/{companyId}/costs/${segment}`,
+    pathParams: [...recordParams("companyId", companyId), undefined], queries }))) : new Set<string>();
+  // An unranged read and period=month cover the current UTC month when the read ran. They count only when the target's
+  // cost event (or the pending run) falls in that month for the whole reading run, so a month rollover cannot pass.
+  const monthDigests = reportReads([{ period: "month" }]);
+  const monthCovers = (() => {
+    if (!("readingRunWindow" in target)) return true;
+    if (!target.readingRunWindow || !window) return false;
+    const month = (text: string) => { const at = new Date(text); return Number.isNaN(at.getTime()) ? "" : `${at.getUTCFullYear()}-${at.getUTCMonth()}`; };
+    const months = new Set([window.startedAt, window.finishedAt, target.readingRunWindow.startedAt, target.readingRunWindow.finishedAt].map(month));
+    return months.size === 1 && !months.has("");
+  })();
+  const companyDigests = new Set([...[...reportReads([{ period: "all" }])].filter(digest => !monthDigests.has(digest)), ...(monthCovers ? monthDigests : [])]);
+  // A task's cost summary sums cost events, so it cannot show a pending run either.
+  const taskDigests = task && !pending ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "false" }] }]) : new Set<string>();
   const runDigests = originalRunId ? apiReadDigests([{ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: recordParams("runId", originalRunId) }]) : new Set<string>();
   // A re-read of the run record can carry extra input fields that change its digest. It still counts when the reading
   // run's own saved result names exactly that read of the original run; a read of any other run does not.
@@ -139,11 +245,18 @@ export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string
   // unlisted digest. A response the run saved is bound by its content instead: the saved run record is the original run.
   const originalRunSaved = !!originalRunId && (target.savedRunRecords ?? []).some(saved => saved.runId === runId
     && saved.recordId === originalRunId && (!companyId || saved.companyId === companyId));
+  // A from equal to the run's own startedAt (copied from its record) is a natural covering bound too.
+  // Generated per report actually read by this run, since the covering set is large.
+  const readSegments = segments.filter(segment => calls.some(call => call.runId === runId && call.operationId === `GET /api/companies/{companyId}/costs/${segment}`));
+  const ok = (call: LeadApiCall) => call.runId === runId && call.ok && call.status >= 200 && call.status < 300;
+  const rangedReads = new Set(calls.filter(call => ok(call) && readSegments.some(segment => call.operationId === `GET /api/companies/{companyId}/costs/${segment}`)
+    && !companyDigests.has(call.digest)).map(call => call.digest));
   const listDigests = companyId && target.runListPosition ? runListDigests(companyId, target.runListPosition) : new Set<string>();
   return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
     && (companyDigests.has(call.digest) || taskDigests.has(call.digest)
       || call.operationId === RUN_LIST_OPERATION && listDigests.has(call.digest)
-      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)));
+      || call.operationId === "GET /api/heartbeat-runs/{runId}" && (runDigests.has(call.digest) || originalRunCited || originalRunSaved)))
+    || !!companyId && !!window && coveringCostReportRead(companyId, window, readSegments, target.originalRunWindow ? [target.originalRunWindow.startedAt] : [], rangedReads);
 }
 /** Run records the given run saved through `call_api` `saveResponse`, from the product's own activity and asset. */
 export async function savedRunRecordReads(ctx: ChatCatalogContext, runId: string, agentId: string): Promise<SavedRunRecord[]> {
@@ -219,7 +332,9 @@ export function gradeAccounting(value: unknown) {
     const savedRunRecords = Array.isArray(o.state.savedRunRecords) ? o.state.savedRunRecords as SavedRunRecord[] : [];
     c.add("unresolved-record-read-from-saved-accounting", !!calls && o.runs.some(run => run.agentId === o.leadId && run.status === "succeeded"
       && readSavedAccounting(calls, run.id, { companyId: o.companyId, task: o.state.preflightTask as Entity | undefined, originalRunId: String(o.state.originalRunId ?? ""),
-        citedRunReads: citedRunReads(run), savedRunRecords, runListPosition: runListPosition(o.runs, String(o.state.originalRunId ?? ""), run) })),
+        citedRunReads: citedRunReads(run), savedRunRecords, runListPosition: runListPosition(o.runs, String(o.state.originalRunId ?? ""), run),
+        originalRunWindow: runWindow(o.state.originalRun as HeartbeatRun | undefined), readingRunWindow: runWindow(run as unknown as HeartbeatRun),
+        costEventTimes: (quality?.events ?? []).filter(row => row.runId === o.state.originalRunId).map(row => row.occurredAt) })),
       "A chat run read the unresolved record's saved accounting through a product cost projection instead of inferring or inventing its cost.");
   } else if (o.scenarioId === "budgets-costs.repair-cost-recording") {
     c.add("real-human-saved-cost-retry", quality?.runs.some(row => row.runId === before?.id && row.reason === "retryable") === true && o.state.agentRetryStatus === 403
@@ -322,7 +437,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
     }
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The requested reporting week is ${weekFrom} through ${weekTo} (UTC). Launch's API charges this week are recorded on tasks ${morganReceiptTask.identifier} (Morgan) and ${rileyReceiptTask.identifier} (Riley). Morgan also finished one work session on Launch (run ${state.originalRunId}) whose usage is saved but not yet priced. Leave out charges from other projects and earlier weeks. Plan subscription fees are separate from API charges.` });
     return { ...state, riley, morganReceiptTask, rileyReceiptTask, weekFrom, weekTo, importedReceiptIds: receipts, receiptOrigin: "public-imported-synthetic-fixture" };
-  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v5", sourceFiles: [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts"], expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
+  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v6", sourceFiles: [...sources, "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts"], expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] } }),
   identityDefinition("budgets-costs.repair-cost-recording", async ctx => {
     try {
@@ -376,6 +491,11 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
 /** The reply identifies the record whose usage has no settled cost (its task by link or identifier,
  * or its run id), and no line or sentence that names it states a zero amount for it. */
 /** The reply points at the unresolved record: a rendered link to its task or run, or its identifier or run id written out. */
+/** When a saved run started (or was created) and finished, for binding ranged cost reports to it. */
+export function runWindow(run: Pick<HeartbeatRun, "createdAt" | "startedAt" | "finishedAt"> | undefined) {
+  const startedAt = run?.startedAt ?? run?.createdAt, finishedAt = run?.finishedAt;
+  return startedAt && finishedAt ? { startedAt: new Date(startedAt).toISOString(), finishedAt: new Date(finishedAt).toISOString() } : undefined;
+}
 export function unresolvedRecordIdentified(o: { reply: string; links: string[]; origin: string }, record: Entity | undefined, runId: string): boolean {
   const keys = [record?.identifier, record?.id, runId || undefined, runId ? runId.slice(0, 8) : undefined].filter((key): key is string => typeof key === "string" && key.length > 0);
   if (!keys.length) return false;

@@ -6,8 +6,9 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { assignmentWakePayloadSql, type DeferredExecutionScope, type DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { dependencyResolvedWakePayloadSql } from "../issue-dependency-wakeups.js";
+import { DEFERRED_CHAT_WAKE_RETRY_KEY, deferredChatWakeNextAttemptAt } from "../durable-chat-wakeup.js";
 
-type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean; operatorRetry?: boolean };
+type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean; operatorRetry?: boolean; forced?: boolean };
 type NativeIntentOptions = DeferredExecutionScope & {
   onDeferredDeadline(at: number): void;
   onError(error: unknown): void;
@@ -63,6 +64,7 @@ export function registerDeferredReceiptWork(
           status: agentWakeupRequests.status, updatedAt: agentWakeupRequests.updatedAt,
           claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
           operatorRetry: sql<boolean>`${operatorRetry}`,
+          chatRetryAt: sql<string | null>`${agentWakeupRequests.payload} #>> ${`{${DEFERRED_CHAT_WAKE_RETRY_KEY},nextAttemptAt}`}`,
           delayed: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null
             or ${agentWakeupRequests.payload}->'executionWait' is not null`,
           interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
@@ -104,13 +106,16 @@ export function registerDeferredReceiptWork(
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
         const now = Date.now();
         return { rows: [...prioritized, ...rows].map(row => {
+          const forced = kind === "deferred" && scope?.requestId === row.id;
+          const chatRetryAt = kind === "deferred" && !forced && row.chatRetryAt ? Date.parse(row.chatRetryAt) : NaN;
           const deadline = kind === "native" && row.status === "claimed" && row.claimedAt ? row.claimedAt.getTime() + 60_000
             : kind === "native" && row.error ? row.updatedAt.getTime() + 30_000
-            : kind === "deferred" && row.delayed && !row.interruptedLegacy ? row.updatedAt.getTime() + 30_000
+            : kind === "deferred" && row.delayed && !row.interruptedLegacy ? Math.max(row.updatedAt.getTime() + 30_000, chatRetryAt || 0)
+            : Number.isFinite(chatRetryAt) ? chatRetryAt
             : null;
           const immediate = deadline === null || deadline <= now;
           return { id: row.id, companyId: row.companyId, dueAt: immediate ? now : deadline, immediate,
-            operatorRetry: kind === "deferred" && row.operatorRetry };
+            operatorRetry: kind === "deferred" && row.operatorRetry, forced };
         }), complete };
       },
       check: async entry => {
@@ -125,12 +130,15 @@ export function registerDeferredReceiptWork(
           }).from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, entry.companyId),
             eq(agentWakeupRequests.id, entry.id)));
           if (!current) return null;
-          const due = kind === "native" && current.status === "claimed" && current.claimedAt
+          const chatRetryAt = kind === "deferred" && !entry.forced && current.status === "deferred_issue_execution"
+            ? deferredChatWakeNextAttemptAt(current.payload) : null;
+          const delayedDue = kind === "native" && current.status === "claimed" && current.claimedAt
             ? current.claimedAt.getTime() + 60_000
             : kind === "native" && current.status === "queued" && current.error ? current.updatedAt.getTime() + 30_000
               : kind === "deferred" && current.status === "deferred_issue_execution" && !current.interruptedLegacy
                 && (current.payload?.queuedCommentInterrupt || current.payload?.executionWait)
                 ? current.updatedAt.getTime() + 30_000 : null;
+          const due = chatRetryAt === null ? delayedDue : Math.max(delayedDue ?? 0, chatRetryAt);
           if (due !== null && due > Date.now()) return { ...entry, dueAt: due, immediate: false };
         }
         const errors: unknown[] = [];
@@ -143,11 +151,12 @@ export function registerDeferredReceiptWork(
         else if (kind === "task_chat") await owner.settleTaskChat(scope);
         else {
           const failed = (error: unknown) => { if (!(error instanceof PersistedExecutionWaitRefusal)) errors.push(error); };
-          try { await owner.resume({ ...scope, onError: failed }); }
+          try { await owner.resume({ ...scope, onError: failed,
+            onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } }); }
           catch (error) { failed(error); }
         }
         if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
-        return next === null ? null : { ...entry, dueAt: next, immediate: false };
+        return next === null ? null : { ...entry, dueAt: next, immediate: false, forced: false };
       },
     }, canRun);
   }

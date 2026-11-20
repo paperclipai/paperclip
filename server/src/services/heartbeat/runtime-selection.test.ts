@@ -182,6 +182,43 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(await coordinators(f.run.id)).toHaveLength(1);
   });
 
+  it.each(["isolated", "preconfigured"] as const)("pins the prepared %s home mode into fresh native selection and recovery", async homeMode => {
+    const f = await fixture();
+    f.agent.adapterConfig = { ...f.agent.adapterConfig, homeMode: homeMode === "isolated" ? "preconfigured" : "isolated" };
+    f.input.config.runtimeConfig.homeMode = homeMode;
+    const selected = await selectHeartbeatRuntime(db, f.input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect("homeMode" in selected.nativeExecution ? selected.nativeExecution.homeMode : "isolated").toBe(homeMode);
+    const saved = await read(f.run.id);
+    f.input.run = saved;
+    f.input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+    f.input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    f.input.config.runtimeConfig.homeMode = homeMode === "isolated" ? "preconfigured" : "isolated";
+    expect(await selectHeartbeatRuntime(db, f.input)).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution });
+    expect((await read(f.run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
+  });
+
+  it.each([
+    { provider: "opencode", model: "openai/gpt-5" },
+    { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+    { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", acpxPermissionMode: "approve-reads" },
+  ])("retains supported isolated native selection for SSH host auth: $provider $acpxAgent", async adapterConfig => {
+    const f = await fixture();
+    f.input.agent = { ...f.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, f.agent.id));
+    f.input.workspace.executionTarget = { kind: "remote", transport: "ssh", remoteCwd: "/workspace", spec: {
+      host: "fixture.invalid", port: 22, username: "fixture", remoteWorkspacePath: "/workspace", remoteCwd: "/workspace",
+      useHostAuth: true, privateKey: null, knownHosts: null, strictHostKeyChecking: true,
+    } };
+    f.input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: f.run, enabled: true, runtimeConfig: {},
+      adapterConfig, agent: f.input.agent, issue: f.issue, target: f.input.workspace.executionTarget, workspaceId: null });
+    f.input.config.runtimeConfig.homeMode = "preconfigured";
+    const selected = await selectHeartbeatRuntime(db, f.input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect("homeMode" in selected.nativeExecution ? selected.nativeExecution.homeMode : "isolated").toBe("isolated");
+    expect(selected.nativeExecution.provider.kind).toBe(adapterConfig.provider === "acpx" ? "acpx" : "opencode");
+  });
+
   it("preserves immutable native recovery when current local Runner configuration is invalid", async () => {
     const f = await fixture();
     const selected = await selectHeartbeatRuntime(db, f.input);
@@ -903,6 +940,42 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(await coordinators(run.id)).toHaveLength(0);
     expect(input.onNativeLifecycleSelected).not.toHaveBeenCalled();
     expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+  });
+
+  it.each(["claude_local", "codex_local", "cursor", "gemini_local", "grok_local", "kimi_local", "opencode_local", "pi_local"])("keeps %s SSH runtime and its durable workspace receipt on a volume-free server", async adapterType => {
+    const { input, run, agent, issue } = await fixture(adapterType);
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    const environmentId = randomUUID(), leaseId = randomUUID(), workspaceId = randomUUID();
+    const remoteCwd = "/home/fixture/work/.paperclip-workspaces/task";
+    const reference = { schema: "paperclip.remote-workspace-run.v1", workspaceId, epoch: 1,
+      leaseId, providerLeaseId: "ssh-fixture", remoteCwd, state: "prepared", snapshotId: null };
+    const [workspace] = await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: agent.companyId,
+      name: "SSH task files", mode: "isolated_workspace", strategyType: "project_primary", providerType: "cloud_sandbox", cwd: remoteCwd,
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, source: { kind: "empty" },
+        writerRunId: run.id, dirty: true, snapshotId: null, location: { environmentId, leaseId, providerLeaseId: "ssh-fixture", remoteCwd } } } }).returning();
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: reference } }).where(eq(heartbeatRuns.id, run.id));
+    input.workspace.persistedExecutionWorkspace = workspace;
+    input.workspace.executionTarget = { kind: "remote", transport: "ssh", environmentId, leaseId, remoteCwd,
+      workspaceRealization: { mode: "in_place", authoritativeRoot: remoteCwd, pathAliases: [], outboundRestorePaths: [] },
+      spec: { host: "fixture.invalid", username: "fixture", port: 22, remoteWorkspacePath: "/home/fixture/work", remoteCwd,
+        useHostAuth: false, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true,
+      runtimeConfig: {}, adapterConfig: agent.adapterConfig, agent, issue, target: input.workspace.executionTarget, workspaceId });
+    const selected = await selectHeartbeatRuntime(db, input);
+    expect(selected.selected).toBe(true);
+    if (!selected.selected) throw new Error("Expected legacy SSH runtime selection");
+    expect(selected.nativeExecution).toBeNull();
+    expect((await read(run.id)).runnerProfileJson?.remoteWorkspace).toEqual(reference);
+    expect(await coordinators(run.id)).toHaveLength(0);
+    expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+    input.workspace.executionTarget.spec.remoteCwd = "/other-directory";
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native Paperclip Runner");
+    input.workspace.executionTarget.spec.remoteCwd = remoteCwd;
+    input.workspace.persistedExecutionWorkspace.companyId = randomUUID();
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native Paperclip Runner");
+    input.workspace.persistedExecutionWorkspace.companyId = agent.companyId;
+    input.workspace.executionTarget.leaseId = randomUUID();
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native Paperclip Runner");
   });
 
   it.each(["warm", "per_turn"] as const)("preserves resolved %s policy on an ephemeral server", async mode => {

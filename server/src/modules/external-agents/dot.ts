@@ -95,7 +95,7 @@ function createBroker(db: Db) {
     enabled,
     async createPairing(input: { companyId: string; agentId: string; operatorId: string; provider?: "openai_dot" | "grok_bot"; dotUrl?: string; replaceBindingId?: string }) {
       const provider = input.provider ?? "openai_dot";
-      if (!await enabled(provider)) throw fail("Enable the external provider and Assistant connections (MCP) in experimental settings.");
+      if (!await enabled(provider)) throw fail("Enable the external provider in experimental settings.");
       if (provider === "grok_bot") await authorizeExternalBotOperator(db, input.companyId, input.operatorId);
       if (input.dotUrl && !/^https:\/\/chatgpt\.com\/dots\/[A-Za-z0-9-]+$/.test(input.dotUrl)) throw fail("Use the Dot's ChatGPT URL.");
       const code = randomBytes(24).toString("base64url");

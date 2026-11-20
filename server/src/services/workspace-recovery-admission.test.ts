@@ -1,13 +1,12 @@
-import { createAdmissionTransactionScope, createWakeAdmissionReader, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
-import { createAdmitWakeBehindIssueExecution } from "../modules/wake-queue/application/use-cases.js";
-import { filterZombieCoalesceTarget, heartbeatService } from "./heartbeat.js";
+import { createWakeAdmissionReader, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { heartbeatService } from "./heartbeat.js";
 import { mergeCoalescedContextSnapshot } from "./heartbeat/run-preparation.js";
 import { recoveryService } from "./recovery/index.js";
 import { inspectWorkspaceSource } from "./workspace-source-inspection.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
 import { heartbeatRunEvents, agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations, plugins } from "@paperclipai/db";
-import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "./heartbeat/queue.js";
+import { createHeartbeatQueue } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
 import { recordRequiredWorkspaceRestoreFailure } from "./legacy-execution-recovery.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
@@ -1425,11 +1424,11 @@ describe("automatic retained workspace recovery", () => {
     const incoming = { source: "issue.comment", issueId: f.issueId, wakeReason: "issue_commented",
       wakeCommentId: followup.id, wakeCommentIds: [followup.id] };
     await db.transaction(async tx => {
-      const scope = createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db);
+      const reader = createWakeAdmissionReader(tx, f.companyId);
       const actor = { companyId: f.companyId, wakeupRequestId: wake.id, requestedByActorType: "user", requestedByActorId: "operator" };
-      expect(await createWakeAdmissionReader().matchesActiveWakeActor(scope, actor)).toBe(true);
-      expect(await createWakeAdmissionReader().matchesActiveWakeActor(scope, { ...actor, requestedByActorId: "other-user" })).toBe(false);
-      await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(scope, {
+      expect(await reader.matchesActiveWakeActor(actor)).toBe(true);
+      expect(await reader.matchesActiveWakeActor({ ...actor, requestedByActorId: "other-user" })).toBe(false);
+      await createWakeAdmissionWriter(tx, f.companyId).coalesceIntoActiveExecutionRun({
         companyId: f.companyId, agentId: original.agentId, activeExecutionRunId: queued.id, activeExecutionRunStatus: queued.status,
         mergedContextSnapshot: mergeCoalescedContextSnapshot((await run(queued.id)).contextSnapshot, incoming,
           { preserveExistingInteractionContinuation: true }),
@@ -1454,12 +1453,22 @@ describe("automatic retained workspace recovery", () => {
     await db.update(agentWakeupRequests).set({ runId: null }).where(eq(agentWakeupRequests.id, wake.id));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id));
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
-    const reader = createWakeAdmissionReader(), sameActor = vi.spyOn(reader, "matchesActiveWakeActor");
-    queueDeps.wakeQueue.createAdmissionTransactionScope.mockImplementation(createAdmissionTransactionScope);
-    queueDeps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(createAdmitWakeBehindIssueExecution({
-      reader, writer: createWakeAdmissionWriter(), helpers: { filterZombieCoalesceTarget, mergeCoalescedContextSnapshot,
-        shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
-    }));
+    const admitIssueWake = queueDeps.wakeQueue.admitIssueWake.getMockImplementation()!;
+    queueDeps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) =>
+      admitIssueWake(target, (tx, admission) => evaluate(tx, {
+        ...admission,
+        async prepareRecovery(input) {
+          const recovery = await admission.prepareRecovery(input);
+          return { ...recovery, async checkBusyAdmission() {
+            const busy = await recovery.checkBusyAdmission();
+            if (busy.kind !== "allowed") return busy;
+            return { ...busy, admitBusy(input) {
+              expect(input.durableReceipt).toBeUndefined();
+              return busy.admitBusy(input);
+            } };
+          } };
+        },
+      }), effects));
     queueDeps.liveRunExecutions.has.mockImplementation(id => t.deps.activeRunExecutions.has(id));
     const stopped = await run(f.runId);
     if (kind !== "active") {
@@ -1511,8 +1520,6 @@ describe("automatic retained workspace recovery", () => {
     const current = await run(admitted!.id);
     const [claimedWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, current.wakeupRequestId!));
     expect(current.contextSnapshot?.wakeCommentIds).toEqual(ids);
-    expect(sameActor).not.toHaveBeenCalled();
-    expect(queueDeps.wakeQueue.admitWakeBehindIssueExecution.mock.calls.every(([, input]) => input.durableReceipt === undefined)).toBe(true);
     expect(queueDeps.executeRun).not.toHaveBeenCalled();
     return { ...t, queued: current, wake: claimedWake, followup, expectedIds: ids, latestAuthor: kind === "deferred-different" ? "third-user" : kind === "active" ? "second-user" : "operator" };
   }
@@ -1887,10 +1894,10 @@ describe("automatic retained workspace recovery", () => {
   }, 30_000);
 
   it("preserves ordinary no-issue deferred merge semantics", async () => {
-    const f = await seed(), original = await run(f.runId), writer = createWakeAdmissionWriter();
+    const f = await seed(), original = await run(f.runId);
     const [carrier] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: original.agentId,
       source: "automation", status: "deferred_issue_execution", payload: { text: "original" }, requestedByActorType: "system" }).returning();
-    await db.transaction(tx => writer.mergeIntoExistingDeferredWake(createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
+    await db.transaction(tx => createWakeAdmissionWriter(tx, f.companyId).mergeIntoExistingDeferredWake({
       companyId: f.companyId, existingDeferredWakeId: carrier.id, mergedPayload: { text: "merged" }, nextCoalescedCount: 1,
       coalescedReceipt: { agentId: original.agentId, source: "automation", triggerDetail: null, reason: null, payload: { text: "saved" }, requestedByActorType: "system", requestedByActorId: null, idempotencyKey: null, runId: null },
     }));
@@ -1901,12 +1908,12 @@ describe("automatic retained workspace recovery", () => {
   });
 
   it("rolls back saved primary and carrier overwrite if incoming mixed-author receipt persistence fails", async () => {
-    const f = await seed(), original = await run(f.runId), writer = createWakeAdmissionWriter();
+    const f = await seed(), original = await run(f.runId);
     const [first] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: "operator", body: "First saved input" }).returning();
     const [second] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: "second-user", body: "Second saved input" }).returning();
     const [carrier] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: original.agentId,
       source: "automation", status: "deferred_issue_execution", payload: { issueId: f.issueId, commentId: first.id }, requestedByActorType: "user", requestedByActorId: "operator" }).returning();
-    const merge = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], id?: string) => writer.mergeIntoExistingDeferredWake(createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
+    const merge = (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], id?: string) => createWakeAdmissionWriter(tx, f.companyId).mergeIntoExistingDeferredWake({
       companyId: f.companyId, existingDeferredWakeId: carrier.id, mergedPayload: { issueId: f.issueId, commentId: second.id }, nextCoalescedCount: 1,
       coalescedReceipt: { ...(id ? { id } : {}), agentId: original.agentId, source: "automation", triggerDetail: null, reason: "issue_commented", payload: { issueId: f.issueId, commentId: second.id, coalescedIntoWakeupRequestId: "untrusted" }, requestedByActorType: "user", requestedByActorId: "second-user", idempotencyKey: null, runId: null },
     });

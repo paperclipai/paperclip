@@ -32,10 +32,15 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
+import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
+import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
+import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE } from "./native-agent-blocker.js";
 import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
@@ -76,6 +81,7 @@ import {
   type NativeStatusCommitFailpoint,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { preservedResultHasStop, readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { issueService } from "../issues.js";
 import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
@@ -404,7 +410,7 @@ export async function endSupersededNativeFinalizationRuns(db: Db, runIds?: reado
         : accepted === "succeeded" ? "succeeded" as const : accepted === "cancelled" ? "cancelled" as const : "failed" as const;
       await notifyNativeFinalizationWork(tx, { companyId: run.companyId, runId: run.id });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
-      await notifyExecutionRunWork(tx, { companyId: run.companyId });
+      await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
       await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
       await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
       await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
@@ -478,7 +484,10 @@ async function recordRetryableFailure(input: {
         ? ("cancelled" as const)
         : ("failed" as const);
   let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
-  const outcome = await input.db.transaction(async (tx) => {
+  const admitted = input;
+  const outcome = await retryTransientLockContention(() => input.db.transaction(async (tx) => {
+    input = admitted;
+    terminalRunToEmit = null;
     // Admission snapshots cannot authorize a failure write after a different
     // owner committed success. Match status-committer lock ordering.
     const current = await tx.select().from(nativeRunFinalizations).where(and(
@@ -625,7 +634,7 @@ async function recordRetryableFailure(input: {
     if (phase === "terminal_failure" && failureCode === "native_workspace_sync_out_unsafe_archive") {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     }
-    await notifyExecutionRunWork(tx, { companyId: input.run.companyId });
+    await notifyExecutionRunWork(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
       .update(nativeRunFinalizations)
@@ -790,7 +799,7 @@ async function recordRetryableFailure(input: {
       failureCode,
       nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
     };
-  });
+  }));
   if (terminalRunToEmit) {
     await emitAgentTaskRun(input.db, terminalRunToEmit);
     void reportRunFailure(input.db, terminalRunToEmit);
@@ -1606,6 +1615,10 @@ export async function finalizeNativeRun(input: {
   const allowIncompleteContinuation = record(sourceWake?.payload).continuationIdempotencyKey !== "native-completion-incomplete";
   let supersedesAssessmentId: string | null = coordinator.assessmentId;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    const savedStop = attempt === 0 ? run.resultJson : await input.db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
+      .then(rows => rows[0]?.resultJson ?? run.resultJson);
+    const stopRequested = nativeRunHasStopRequest(savedStop);
     const authoritativeIssue = await input.db
       .select()
       .from(issues)
@@ -1694,7 +1707,8 @@ export async function finalizeNativeRun(input: {
         issueId: authoritativeIssue.id,
         runId: run.id,
       }),
-      (terminalState === "failed" || (assessment.reportedDisposition === "yielded" &&
+      (terminalState === "failed" || (terminalState === "succeeded" && result.reportedWorkDisposition === "blocked") ||
+      (assessment.reportedDisposition === "yielded" &&
       assessment.continuation?.kind === "response_wake" &&
       assessment.hasBlockingRemainingWork))
         ? issueTreeControlService(input.db).getActivePauseHoldGate(
@@ -1746,6 +1760,7 @@ export async function finalizeNativeRun(input: {
     // issue route decides `status: "done"`. Review runs keep their own path.
     const reviewStage = isConversation(authoritativeIssue) || reviewContext
       ? { kind: "none" as const } : completionReviewStageEntry(authoritativeIssue, run.agentId);
+    await cancelStoppedRunContinuation(input.db, { companyId: run.companyId, resultJson: savedStop }, toolCallLoopContinuationKey(run.id));
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
@@ -1760,11 +1775,22 @@ export async function finalizeNativeRun(input: {
       providerModelRejected: providerFailure?.errorCode === "native_provider_model_rejected" && ownsProviderFailureDecision,
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,
       providerFailureSuperseded: providerFailure?.errorCode === "native_provider_overloaded" && !ownsProviderFailureDecision,
+      toolReceiptLimitStopped: terminalState !== "succeeded" && ownsProviderFailureDecision && !reviewContext
+        && !stopRequested && await readPersistedNativeToolReceiptLimitStop(input.db, run, resultRow.turnId),
+      environmentBlocker: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
+        && isNativeEnvironmentBlocker(result),
+      agentBlockerRecoverable: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
+        && result.reportedWorkDisposition === "blocked",
+      hasQueuedChatRequest: terminalState === "succeeded" && result.reportedWorkDisposition === "blocked"
+        && await hasQueuedChatRequest(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId }),
       failureRetryCount: executionFailureRetryCount(run),
       // Only the task's current owner may turn its own failed continuation
       // into a blocker; the committer rechecks that under the issue lock.
       failedTurnContinuationUsed: terminalState === "failed" && ownsProviderFailureDecision && !reviewContext
         && await isFailedTurnContinuationRun(input.db, run, authoritativeIssue.id),
+      toolCallLoopContinuation: assessment.reportedDisposition === "yielded"
+        && assessment.continuation?.idempotencyKey === toolCallLoopContinuationKey(run.id)
+        && !stopRequested,
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
@@ -1826,7 +1852,8 @@ export async function finalizeNativeRun(input: {
         : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
       try {
         await validateNativeDeliverableEvidence(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id,
-          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts,
+          enteringConfiguredReview: proposedDecision.reasonCode === COMPLETION_REVIEW_STAGE_REASON }, result);
       } catch (error) {
         if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
         const incomplete = resolveNativeFinalizerStatus({ ...statusInput,
@@ -1919,6 +1946,11 @@ export async function finalizeNativeRun(input: {
           : undefined,
         requireProviderFailureOwner: decision.reasonCode?.startsWith("native_provider_overloaded")
           || decision.reasonCode === "native_run_failed_continuation_exhausted"
+          || decision.reasonCode === NATIVE_TOOL_RECEIPT_LIMIT_CODE
+          || decision.reasonCode === NATIVE_ENVIRONMENT_BLOCKER_CODE
+          || decision.reasonCode === NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE
+          || decision.reasonCode === NATIVE_AGENT_BLOCKER_CONTINUATION_CODE
+          || decision.reasonCode === NATIVE_AGENT_BLOCKER_HANDOFF_CODE
           ? { agentId: run.agentId, reviewContext } : undefined,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting" || repairBoardResponseWait
@@ -2074,7 +2106,7 @@ export async function finalizeNativeRun(input: {
         if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyUnsafeWorkspaceExportRunChange(tx, run);
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
-        await notifyExecutionRunWork(tx, { companyId: run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         const [after] = await projectRun(tx);
         if (after && input.projectRunStatus) await settleNativeTerminalWake(tx, after);

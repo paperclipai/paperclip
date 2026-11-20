@@ -6,6 +6,11 @@ export const SCHEDULER_TRANSIENT_RETRY_REASON = "transient_failure";
 export const AUTOMATIC_RETRY_REASONS = [SCHEDULER_TRANSIENT_RETRY_REASON, "server_restart", "interrupted_preparation"];
 export const SHARED_CONTINUATION_WINDOW_MS = 60 * 60_000;
 
+export function startedOrPendingAutomaticRetry() {
+  return sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null
+    and coalesce(${heartbeatRuns.errorCode}, '') = 'execution_reconciliation_required')`;
+}
+
 export async function freshContinuationTimes(db: Db, companyId: string, issueId: string, since: Date) {
   const rows = await db.select({ recordedAt: sql<string>`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`,
     trigger: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuation,trigger}'` }).from(issueRecoveryActions).where(and(
@@ -25,7 +30,8 @@ export async function sharedContinuationAttempts(db: Db, companyId: string, issu
       sql`coalesce(${activityLog.details}->>'continuedFromSavedWork', '') <> 'true'`)).limit(64),
     db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
-      inArray(heartbeatRuns.scheduledRetryReason, AUTOMATIC_RETRY_REASONS), gte(heartbeatRuns.createdAt, since))).limit(64),
+      inArray(heartbeatRuns.scheduledRetryReason, AUTOMATIC_RETRY_REASONS), gte(heartbeatRuns.createdAt, since),
+      startedOrPendingAutomaticRetry())).limit(64),
     freshContinuationTimes(db, companyId, issueId, since),
   ]);
   return [...plainContinuations.map(row => row.createdAt), ...retries.map(row => row.createdAt), ...fresh.map(record => record.at)]

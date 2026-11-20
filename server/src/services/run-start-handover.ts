@@ -347,6 +347,7 @@ export function createRunStartHandover(input: {
     refresh,
     /** This server holds a hand-over an older server may be reading. */
     isHandingOver: () => handingOver(),
+    isLeavingRunStarts: () => yieldingTo !== null,
     /** A hand-over involves this server (either side). Pure read, no refresh. */
     isActive: () => handingOver() || yieldingTo !== null,
     subscribe(listener: () => void) {
@@ -385,6 +386,10 @@ export function isYieldingRunStarts(): boolean {
 /** Null (nothing to await) unless this server has not read the hand-over recently. */
 export function refreshRunStartYieldIfStale(): Promise<void> | null {
   return current?.refreshIfStale() ?? null;
+}
+
+export function isLeavingRunStartsToReplacement(): boolean {
+  return current?.isLeavingRunStarts() ?? false;
 }
 
 /** Either side of a hand-over is in progress here; a pure read for listeners. */

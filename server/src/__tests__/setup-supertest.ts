@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
+import { beforeEach } from "vitest";
 import { createRequire } from "node:module";
 import type { AddressInfo, Server as NetServer } from "node:net";
 import os from "node:os";
@@ -76,3 +77,8 @@ if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
 
   SupertestTest.prototype.__paperclipLoopbackPatched = true;
 }
+
+beforeEach(async () => {
+  const { invalidateInstanceSettingsCache } = await import("../services/instance-settings-cache.js");
+  invalidateInstanceSettingsCache();
+});

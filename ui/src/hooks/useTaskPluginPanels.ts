@@ -10,6 +10,7 @@ import { QueryNotReadyError } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
 import { useAgentEnvironmentSlots } from "@/plugins/useAgentEnvironmentSlots";
 import { usePluginSlots, type ResolvedPluginSlot } from "@/plugins/slots";
+import { readFromIssueChatBootstrap } from "@/lib/issue-chat-bootstrap";
 
 export interface TaskPluginPanel {
   entityId: string;
@@ -43,7 +44,7 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
   });
   const { data: runs, isError: runsError, isPending: runsPending } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issue?.id ?? "pending"),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(issue!.id),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issue!.id), issue!.id, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issue!.id)),
     enabled: savedTask && declaredPanels.length > 0 && !errorMessage,
     refetchInterval: connected ? false : 3000,
     retry: (failures: number, error: Error) => failures < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),

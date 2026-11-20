@@ -1,4 +1,6 @@
 import { notifyChatConnectionObservation } from "../../chat-channels/configuration-work-notifications.js";
+import { assertPluginConnectionWorker, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "../../plugin-connector-runtime.js";
+import { findPluginWorkerUnavailableError } from "../../plugin-worker-unavailable-error.js";
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
@@ -21,7 +23,7 @@ import type { ConnectionCredentialAccess } from "../credential-access.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import { toConnection } from "../connections/projection.js";
 import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js";
-import { healthFailureHttpStatus, sanitizeHttpFailure, unreachableServerRemediation, unsupportedToolConnectionTransport } from "./failures.js";
+import { healthFailureHttpStatus, isCallerAuthorizationFailure, sanitizeHttpFailure, unreachableServerRemediation, unsupportedToolConnectionTransport } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -35,12 +37,13 @@ type HealthDependencies = {
   discovery: ToolCatalogDiscovery;
   setupPolicy: ConnectionSetupPolicy;
   resolveCredentialHeaders: ConnectionCredentialAccess["resolveCredentialHeaders"];
+  vaultGrantForConnection: ConnectionCredentialAccess["vaultGrantForConnection"];
   refreshManagedGitHubGrantAccess: ReturnType<typeof createGitHubGrantContinuity>["refreshManagedGitHubGrantAccess"];
   ensureRuntimeSlot: ReturnType<typeof createToolRuntimeSlots>["ensureRuntimeSlot"];
   stdioTemplateId(companyId: string, config: Record<string, unknown>): Promise<string>;
 };
 
-export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, discovery, setupPolicy, resolveCredentialHeaders, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId }: HealthDependencies) {
+export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, discovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId }: HealthDependencies) {
   const { discoverTools, remoteTools, validateAgentMailConnection, validateCogneeConnection } = discovery;
   const { assertConnectorConnectionSetupEnabled } = setupPolicy;
   async function updateConnectionHealth(
@@ -94,7 +97,9 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         config.sourceTemplateKey === "github" &&
         oauth.connectorProfile === "github.code"
       ) {
-        const activeGrants = await db
+        const activeGrants = connection.credentialPolicy === "per_agent"
+          ? [await vaultGrantForConnection(connection, actor)].filter(grant => grant !== null)
+          : await db
           .select()
           .from(connectionGrants)
           .where(
@@ -127,8 +132,19 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           });
         for (const grant of grantsToCheck)
           await refreshManagedGitHubGrantAccess(connection, grant, actor);
-      } else if (isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) {
+      } else if (isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)
+        || connection.transport === "plugin") {
+        // A plugin-served connector is healthy when its tools can be listed
+        // and its plugin's worker is running to serve them.
         await discoverTools(connection, undefined, actor);
+        if (connection.transport === "plugin") {
+          try {
+            await assertPluginConnectionWorker(db, connection);
+          } catch (error) {
+            if (!findPluginWorkerUnavailableError(error)) throw error;
+            throw unprocessable(error instanceof Error ? error.message : "This connector's plugin is not running right now.", { code: PLUGIN_CONNECTOR_UNAVAILABLE_CODE, retryable: true });
+          }
+        }
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
       } else if (connection.transport === "mcp_remote") {
@@ -187,6 +203,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
       });
       return { connection: toConnection(updated), runtimeSlot };
     } catch (error) {
+      if (isCallerAuthorizationFailure(error, actor)) throw error;
       if (
         error instanceof HttpError &&
         asRecord(error.details).code === "github_access_changed"

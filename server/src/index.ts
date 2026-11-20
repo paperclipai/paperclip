@@ -1,7 +1,10 @@
+import { tailscaleNetworks } from "./services/connectors/tailscale/network.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { closeProcessRunAdmission, isProcessRunAdmissionClosed } from "./services/heartbeat/run-admission.js";
+import { registerReattachPhaseWork } from "./services/heartbeat/reattach-phase.js";
 import { createRunStartHandover, registerRunStartHandover } from "./services/run-start-handover.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
+import { registerPersonCommentWaitWork } from "./services/native-runtime/native-provider-turn-wait.js";
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
 import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.js";
 import { readIdleQuotaSchedule } from "./services/heartbeat/idle-quota-schedule.js";
@@ -15,6 +18,7 @@ import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation
 import { registerNativeHarnessBackupExpirationWork } from "./services/native-runtime/native-harness-backup-expiration-work.js";
 import { registerGitHubConnectionEventWork, registerGitHubConnectionContinuityWork } from "./services/github-connection-work.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
+import { registerToolConnectionContentDeletionWork } from "./services/tool-connection-content-deletion-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
 import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
@@ -129,9 +133,12 @@ import {
   closeLivenessDb,
   closeCheckpointDb,
   closeFileStorageDb,
+  closeDedicatedDbConnections,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
+import { serverDatabaseClientOptions } from "./services/controller-process-identity.js";
+import { installRunIntakeStallWatch, stopRunIntakeStallWatch } from "./services/run-intake-stall-watch.js";
 import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
@@ -206,7 +213,7 @@ import { abortInFlightMultipartUploads } from "./storage/s3-multipart.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
-import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { initTelemetry, getTelemetryClient, shutdownTelemetry } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
@@ -220,6 +227,10 @@ import {
   loadWithoutCoordinatedShutdownSignalHooks,
   runBoundedShutdownStep,
 } from "./shutdown.js";
+import {
+  releaseOwnedSettledNativeRunProcessesAtShutdown,
+  type ShutdownSettledProcessRelease,
+} from "./services/native-local-process-stop.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { initializeAdapterSettings } from "./services/adapter-settings.js";
 import { migrateCloudConfiguration } from "./services/cloud-configuration-migration.js";
@@ -529,7 +540,7 @@ async function startServerWithDatabaseTeardown(
     const migrationUrl = startupConfig.databaseMigrationUrl ?? startupConfig.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
 
-    db = createDb(startupConfig.databaseUrl);
+    db = createDb(startupConfig.databaseUrl, serverDatabaseClientOptions());
     pluginMigrationDb = startupConfig.databaseMigrationUrl ? createDb(startupConfig.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = startupConfig.databaseUrl;
@@ -736,7 +747,7 @@ async function startServerWithDatabaseTeardown(
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    db = createDb(embeddedConnectionString);
+    db = createDb(embeddedConnectionString, serverDatabaseClientOptions());
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
@@ -749,10 +760,12 @@ async function startServerWithDatabaseTeardown(
   // by the fail-loud startup path, so no exit leaves pooled backends behind.
   const closeDatabaseClients = async () => {
     setSentryRunLinkResolver(null);
+    stopRunIntakeStallWatch();
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
-    await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5), closeFileStorageDb(db, 5)]);
+    await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5), closeCheckpointDb(db, 5), closeFileStorageDb(db, 5), closeDedicatedDbConnections(db, 5)]);
   };
   startupDatabase.close = closeDatabaseClients;
+  installRunIntakeStallWatch(db);
   startupTimeline.mark("database");
   setSentryRunLinkResolver(createSentryRunLinkResolver(db));
   await migrateCloudConfiguration(db as any);
@@ -783,8 +796,9 @@ async function startServerWithDatabaseTeardown(
   // then abandons no work. It used to run minutes later, after startup had
   // already dispatched queued runs. No startup step it skipped could make an
   // ineligible database eligible: the migrations that clear its blockers are
-  // maintenance commands, and the background passes startup starts were never
-  // awaited before it.
+  // maintenance commands (the gate itself copies only retained runtime skill
+  // bundles still on this disk), and the background passes startup starts
+  // were never awaited before it.
   if (deploymentListenUrl !== null) await assertEphemeralServerData(db as any);
   startupTimeline.mark("volume_free_data_gate");
 
@@ -1298,7 +1312,9 @@ async function startServerWithDatabaseTeardown(
     runIds?: readonly string[] | null,
   ) => Promise<unknown>) | null = null;
   let drainHeartbeatExecutionFinalizers: (() => Promise<void>) | null = null;
-  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{
+  let handOffNativeRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<string[]>) | null = null;
+  let releaseSettledNativeProcessesForShutdown: (() => Promise<ShutdownSettledProcessRelease>) | null = null;
+  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM", now?: Date, abort?: AbortSignal) => Promise<{
     skipDrain: boolean;
     drainRunIds?: string[];
   }>) | null = null;
@@ -1342,6 +1358,18 @@ async function startServerWithDatabaseTeardown(
   // instead of behind every unrelated startup recovery pass. Agents with a run
   // left `running`, or a queued retry/continuation, keep waiting for the full
   // queued-run pass registered after native restart recovery below.
+  if (heartbeat && config.heartbeatSchedulerEnabled && !isWarmStandby()) {
+    const reattachHeartbeat = heartbeat;
+    registerReattachPhaseWork(deliveryWork, db as any, {
+      claim: runIds => reattachHeartbeat.recoverNativeRunsAfterRestart(new Date(), runIds),
+      onEnd: summary => {
+        if (!summary.gatedStarts || heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(accountingHeartbeat.resumeQueuedRunsAfterDrain().catch(err => {
+          logger.error({ err }, "failed to start queued runs held during the reattach phase");
+        }));
+      },
+    });
+  }
   if (heartbeat) {
     const startupHeartbeat = heartbeat;
     trackHeartbeatSchedulerWork(timeStartupRecovery("fresh_queued_runs", async () => {
@@ -1420,6 +1448,10 @@ async function startServerWithDatabaseTeardown(
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
   trackHeartbeatSchedulerWork(providerTraceRetentionWork.ready);
   server.on("close", providerTraceRetentionWork.stop);
+  const toolConnectionContentDeletionWork = registerToolConnectionContentDeletionWork(db, deliveryWork,
+    () => !heartbeatSchedulerStopped && !isWarmStandby());
+  trackHeartbeatSchedulerWork(toolConnectionContentDeletionWork.ready);
+  server.on("close", toolConnectionContentDeletionWork.stop);
   const executionSchedule = executionControlSchedule(db);
   const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
   const nativeRunnerEvidenceRetentionWorker = config.nativeHarnessBackupExpirationEnabled
@@ -1484,6 +1516,8 @@ async function startServerWithDatabaseTeardown(
   server.on("close", () => { void budgetEnforcementWorker.stop(); });
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
   server.on("close", accountingWorker.stop);
+  const personCommentWaitWorker = registerPersonCommentWaitWork(db, deliveryWork);
+  server.on("close", personCommentWaitWorker.stop);
   skillSourceSync.start(deliveryWork);
   idleDeadlineOwners.skills = bindIdleDeadlineOwner(skillSourceSync.reconciliationSnapshot, readIdleSkillSourceSchedule,
     () => ({ coverage: { kind: "skill_sources" } }));
@@ -1609,7 +1643,7 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready)
     .catch((err: unknown) => logger.error({ err }, "startup provider task recovery failed"))));
   trackHeartbeatSchedulerWork(startupTimeline.background("delivery_workers", () => timeStartupRecovery("delivery_workers",
-    () => Promise.all([budgetEnforcementWorker, accountingWorker, fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)))));
+    () => Promise.all([budgetEnforcementWorker, accountingWorker, personCommentWaitWorker, fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)))));
   trackHeartbeatSchedulerWork(startupTimeline.background("github_connections",
     () => Promise.all([githubEventWorker.ready, githubContinuityWorker.ready])));
 
@@ -1624,6 +1658,8 @@ async function startServerWithDatabaseTeardown(
     );
     drainHeartbeatExecutionFinalizers = () =>
       heartbeat.drainActiveRunExecutions();
+    handOffNativeRunsForShutdown = signal => heartbeat.handOffNativeRunsForShutdown(signal);
+    releaseSettledNativeProcessesForShutdown = () => releaseOwnedSettledNativeRunProcessesAtShutdown(db as any);
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const routines = routineService(db as any, { pluginWorkerManager });
     const statusCardEvaluation = statusCardEvaluationService(db as any, heartbeat);
@@ -1689,8 +1725,8 @@ async function startServerWithDatabaseTeardown(
     let lastTerminalWorkspaceSkipLogAt = 0;
     const terminalWorkspaceWorker = registerTerminalWorkspaceWork(deliveryWork, {
       ...terminalWorkspaces,
-      terminalWorkspaceWorkSettled: (hints) => {
-        terminalWorkspaces.terminalWorkspaceWorkSettled?.(hints);
+      terminalWorkspaceWorkSettled: (hints, options) => {
+        terminalWorkspaces.terminalWorkspaceWorkSettled?.(hints, options);
         gitRestorePointWorker.issuesChanged();
       },
       sweepTerminalWorkspaces: async (limit, signal, options) => {
@@ -2124,7 +2160,9 @@ async function startServerWithDatabaseTeardown(
   }
 
   if (deploymentListenUrl !== null) {
-    const qualification = await startupTimeline.precondition("cloud_configuration", () => qualifyCloudConfigurationForCurrentImage(db as any));
+    const qualification = await startupTimeline.precondition("cloud_configuration", () => qualifyCloudConfigurationForCurrentImage(db as any, {
+      bundledManifestsReady: app.locals.bundledPluginManifestsReady,
+    }));
     if (qualification && !qualification.configurationPackagesEligible) {
       throw new Error(`Volume-free server packages are not eligible: ${qualification.blockers.map(blocker => blocker.code).join(", ")}`);
     }
@@ -2198,6 +2236,13 @@ async function startServerWithDatabaseTeardown(
     const shutdownStartedAt = Date.now();
     logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
     eventLoopStallMonitor.stop();
+    const nativeHandOffStartedAt = Date.now();
+    const nativeHandOff = runStartHandover && handOffNativeRunsForShutdown
+      ? handOffNativeRunsForShutdown(signal).then(runIds => {
+        logger.info({ signal, runs: runIds.length, durationMs: Date.now() - nativeHandOffStartedAt },
+          "handed live native runs to the next server at shutdown start");
+      }, err => { logger.warn({ err, signal }, "early native run hand-off failed; the graceful drain hands them off"); })
+      : null;
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
@@ -2239,6 +2284,7 @@ async function startServerWithDatabaseTeardown(
       await runEvidenceMigrationWork?.stop();
     });
     await preDrain.run("provider_trace_retention_stop", () => providerTraceRetentionWork.stop());
+    await preDrain.run("tool_connection_content_deletion_stop", () => toolConnectionContentDeletionWork.stop());
     await preDrain.run("skill_version_retention_dispose", async () => {
       await skillVersionRetentionWorker?.dispose();
     });
@@ -2248,13 +2294,14 @@ async function startServerWithDatabaseTeardown(
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
 
+    if (nativeHandOff) await preDrain.run("native_run_hand_off", () => nativeHandOff);
     const prepareHotRestart = prepareHotRestartShutdown;
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
       prepareHotRestartShutdown: prepareHotRestart
         ? async (preparationSignal) => {
-          const preparation = await preDrain.run("hot_restart_prepare", () =>
-            prepareHotRestart(preparationSignal));
+          const preparation = await preDrain.run("hot_restart_prepare", abort =>
+            prepareHotRestart(preparationSignal, undefined, abort));
           if (preparation.outcome === "completed") return preparation.value;
           if (preparation.outcome === "failed") throw preparation.error;
           throw new Error("hot-restart shutdown preparation timed out");
@@ -2308,14 +2355,28 @@ async function startServerWithDatabaseTeardown(
 
     await workspaceRecoveryStop;
 
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      telemetryClient.stop();
+    const releaseSettledNativeProcesses = releaseSettledNativeProcessesForShutdown;
+    if (releaseSettledNativeProcesses) {
+      await runBoundedShutdownStep({
+        step: "settled_native_process_release",
+        signal,
+        timeoutMs: 3_000,
+        run: async () => {
+          const release = await releaseSettledNativeProcesses();
+          logger.info({ signal, ...release }, "released the process identity of settled native runs this server ran");
+          return release;
+        },
+        log: logger,
+      });
+    }
+
+    if (getTelemetryClient()) {
       await runBoundedShutdownStep({
         step: "telemetry_flush",
         signal,
         timeoutMs: 5_000,
-        run: () => telemetryClient.flush(),
+        // Flushes queued events, then closes the Cloud PostHog client if any.
+        run: () => shutdownTelemetry(),
         log: logger,
       });
     }
@@ -2354,7 +2415,7 @@ async function startServerWithDatabaseTeardown(
         try { await appShutdown?.(); } finally {
           await runStartHandover?.stop().catch(() => {});
           registerRunStartHandover(null);
-          await stopControllerInstanceLease();
+          try { await tailscaleNetworks.close(); } finally { await stopControllerInstanceLease(); }
         }
       },
       closeHttpListener: () =>

@@ -47,6 +47,7 @@ import {
   type DurableWarmRunTransition,
 } from "./prp-transport-types.js";
 import { crashPoint } from "../crash-point.js";
+import { runnerVersionCanResume } from "../contracts/runner-version.js";
 
 const protocol = "paperclip.runner";
 export const RUNNER_PRP_PROTOCOL_MIN = 1;
@@ -293,6 +294,12 @@ export class SemanticToolNotDispatchedError extends Error {
   }
 }
 
+export class SemanticToolHandedOffError extends Error {
+  constructor() {
+    super("semantic_tool_handed_off");
+  }
+}
+
 export interface DurablePrpControlPlaneOptions {
   stateDirectory: string;
   identity: DurableRecoveryIdentity;
@@ -520,6 +527,15 @@ export function captureLegacyDurablePrpCheckpoint(contents: string, expected: {
     throw new Error("native_runner_checkpoint_artifact_unproven");
   }
   return decodeDurablePrpCheckpoint(captureCheckpoint(value, artifact.runnerVersion, artifact.runnerDigest).records);
+}
+
+export function inspectDurablePrpCheckpointRunner(contents: string): { version: string; digest: string } | null {
+  try {
+    const header = parseCheckpointHeader(contents);
+    return { version: header.runnerVersion, digest: header.runnerDigest };
+  } catch {
+    return null;
+  }
 }
 
 function parseCheckpointHeader(contents: string): Record<string, unknown> & {
@@ -2845,6 +2861,36 @@ export class DurablePrpControlPlane {
     );
   }
 
+  expectedRunner(): { version: string; digest: string } {
+    return { version: this.#expectedRunnerVersion, digest: this.#expectedRunnerDigest };
+  }
+
+  acceptRelaunchedRunner(
+    bootstrapTicket: string,
+    runner: { version: string; digest: string },
+    parked: { version: string; digest: string } | null = { version: this.#expectedRunnerVersion, digest: this.#expectedRunnerDigest },
+  ): void {
+    this.#store.assertWritable();
+    const expected = runner.version === this.#expectedRunnerVersion && runner.digest === this.#expectedRunnerDigest;
+    if (!stableIdPattern.test(runner.version) || !runnerDigestPattern.test(runner.digest)
+      || (parked === null ? !expected : !runnerVersionCanResume(runner.version, parked.version))) {
+      throw new Error("native_runner_relaunched_build_unaccepted");
+    }
+    if (expected) return;
+    const credentialId = credentialMaterial(bootstrapTicket).credentialId;
+    const ticket = this.#store.state.tickets[credentialId];
+    if (this.activeRunnerConnectionCount() !== 0 || !ticket || ticket.usedAt !== null
+      || canonicalJson(ticket.identity) !== canonicalJson(this.#identity)
+      || ticket.runnerVersion !== this.#expectedRunnerVersion || ticket.runnerDigest !== this.#expectedRunnerDigest) {
+      throw new Error("native_runner_relaunched_build_unaccepted");
+    }
+    const candidate = structuredClone(this.#store.state);
+    candidate.tickets[credentialId] = { ...ticket, runnerVersion: runner.version, runnerDigest: runner.digest };
+    this.#store.commit(candidate);
+    this.#expectedRunnerVersion = runner.version;
+    this.#expectedRunnerDigest = runner.digest;
+  }
+
   issueBootstrapTicket(ttlMs = 5_000): string {
     this.#store.assertWritable();
     if (this.#store.state.warmTransition) {
@@ -4798,6 +4844,7 @@ export class DurablePrpControlPlane {
             queueResult(outcome.result, outcome.isError === true),
           )
           .catch((error: unknown) => {
+            if (error instanceof SemanticToolHandedOffError) return;
             if (error instanceof SemanticToolNotDispatchedError) {
               queueResult({ error: {
                 code: "semantic_tool_not_dispatched",
@@ -4887,9 +4934,6 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_RUNNER_INSTANCE_ID",
   "PAPERCLIP_RUN_ID",
   "PAPERCLIP_NORMALIZED_SESSION_ID",
-  "PAPERCLIP_NATIVE_MCP_NAME",
-  "PAPERCLIP_NATIVE_MCP_URL",
-  "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_MCP_STDIO",
   "PAPERCLIP_NATIVE_MCP_PROXY",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",

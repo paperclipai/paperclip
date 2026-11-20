@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -68,20 +69,100 @@ export function parseSandboxRunnerHolders(stdout: string): SandboxRunnerHolder[]
 
 type HolderProbe = "alive" | "gone" | "unproven";
 
-async function probeHolder(runner: CommandManagedRuntimeRunner, holder: SandboxRunnerHolder,
-  signal?: "TERM" | "KILL"): Promise<HolderProbe> {
+async function checkHolder(runner: CommandManagedRuntimeRunner, holder: SandboxRunnerHolder, label: string,
+  signal?: "TERM" | "KILL"): Promise<number | null> {
   const result = await runner.execute({
     command: "sh",
     args: ["-c", REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT + (signal ? '; kill -"$6" "$pid"' : ""),
-      "paperclip-runner-port-holder-check", holder.identityPath, holder.nonce, holder.runnerInstanceId, String(holder.pid),
+      label, holder.identityPath, holder.nonce, holder.runnerInstanceId, String(holder.pid),
       holder.processStartFingerprint ?? "", ...(signal ? [signal] : [])],
     bypassSession: true,
     timeoutMs: 10_000,
   }).catch(() => null);
-  if (!result || result.timedOut) return "unproven";
-  if (result.exitCode === 0) return "alive";
-  if (result.exitCode === 45 || result.exitCode === 47) return "gone";
+  return !result || result.timedOut ? null : result.exitCode;
+}
+
+async function probeHolder(runner: CommandManagedRuntimeRunner, holder: SandboxRunnerHolder,
+  signal?: "TERM" | "KILL"): Promise<HolderProbe> {
+  const exitCode = await checkHolder(runner, holder, "paperclip-runner-port-holder-check", signal);
+  if (exitCode === 0) return "alive";
+  if (exitCode === 45 || exitCode === 47) return "gone";
   return "unproven";
+}
+
+async function listSandboxRunnerHolders(runner: CommandManagedRuntimeRunner, runtimeRoot: string, ownSessionRoot: string) {
+  const listed = await runner.execute({
+    command: "sh",
+    args: ["-c", SANDBOX_RUNNER_HOLDER_LIST_SCRIPT, "paperclip-runner-port-holders", runtimeRoot, ownSessionRoot],
+    bypassSession: true,
+    timeoutMs: 15_000,
+  }).catch(() => null);
+  return { listed, holders: !listed || listed.exitCode !== 0 || listed.timedOut ? null : parseSandboxRunnerHolders(listed.stdout) };
+}
+
+function holderSessionDirectory(holder: SandboxRunnerHolder): string {
+  return posix.basename(posix.dirname(posix.dirname(holder.identityPath)));
+}
+
+export async function sandboxSessionRunnerExited(input: {
+  runner: CommandManagedRuntimeRunner;
+  runtimeRoot: string;
+  sessionDirectory: string;
+}): Promise<boolean> {
+  const { holders } = await listSandboxRunnerHolders(input.runner, input.runtimeRoot, "");
+  const holder = holders?.find(candidate => holderSessionDirectory(candidate) === input.sessionDirectory);
+  return holder !== undefined && await checkHolder(input.runner, holder, "paperclip-runner-exit-check") === 45;
+}
+
+export const SANDBOX_SESSION_RUNNER_INSPECT_SCRIPT = [
+  "const fs=require('fs'),path=require('path');",
+  "const dir=process.argv[1];",
+  "const readSafe=f=>{try{if(fs.lstatSync(f).isSymbolicLink())return null;return fs.readFileSync(f,'utf8')}catch{return null}};",
+  "let state=null;try{const v=JSON.parse(readSafe(path.join(dir,'runner-state.json')));if(v&&typeof v==='object'&&!Array.isArray(v))state=v}catch{}",
+  "const marker=(readSafe(path.join(dir,'runner-process.identity'))||'').split(String.fromCharCode(10));",
+  "const runnerId=marker[3]||null,markerPid=/^[1-9][0-9]*$/.test(marker[1]||'')?Number(marker[1]):null;",
+  "const str=v=>typeof v==='string'?v:null;",
+  "const out={state:state&&{lifecycle:str(state.lifecycle),runId:str(state.runId),normalizedSessionId:str(state.normalizedSessionId),",
+  "runnerInstanceId:str(state.runnerInstanceId),settled:Array.isArray(state.outbox)&&state.outbox.length===0&&state.pendingTerminalDelivery==null",
+  "&&state.pendingProviderCleanup==null&&state.warmTransition==null},markerPid,",
+  "markerRunnerIdMatchesState:runnerId!==null&&state!==null&&state.runnerInstanceId===runnerId,procfs:false,unreadableProcesses:0,processes:[]};",
+  "let entries=null;try{entries=fs.readdirSync('/proc')}catch{}",
+  "if(entries&&fs.existsSync('/proc/self/cmdline')){out.procfs=true;for(const d of entries){",
+  "if(String(Number(d))!==d||Number(d)===process.pid||Number(d)===process.ppid)continue;",
+  "let a;try{a=fs.readFileSync('/proc/'+d+'/cmdline','utf8').split(String.fromCharCode(0))}catch(e){if(e.code!=='ENOENT'&&e.code!=='ESRCH')out.unreadableProcesses++;continue}",
+  "const carries=runnerId!==null&&a.includes('--runner-id')&&a.includes(runnerId);",
+  "if(!carries&&(a[0]||'').split('/').pop()!=='paperclip-runnerd')continue;",
+  "let st=null;try{const s=fs.readFileSync('/proc/'+d+'/stat','utf8');st=s.slice(s.lastIndexOf(')')+2).split(' ')[0]||null}catch{}",
+  "out.processes.push({pid:Number(d),state:st,carriesRunnerId:carries})}}",
+  "out.processes.sort((x,y)=>x.pid-y.pid);process.stdout.write(JSON.stringify(out));",
+].join("");
+
+export type SandboxSessionRunnerInspection = {
+  state: { lifecycle: string | null; runId: string | null; normalizedSessionId: string | null;
+    runnerInstanceId: string | null; settled: boolean } | null;
+  markerPid: number | null;
+  markerRunnerIdMatchesState: boolean;
+  procfs: boolean;
+  unreadableProcesses: number;
+  processes: Array<{ pid: number; state: string | null; carriesRunnerId: boolean }>;
+};
+
+export async function inspectSandboxSessionRunner(input: {
+  runner: CommandManagedRuntimeRunner;
+  stateDirectory: string;
+}): Promise<SandboxSessionRunnerInspection | null> {
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", 'exec node -e "$1" "$2"', "paperclip-runner-session-inspect", SANDBOX_SESSION_RUNNER_INSPECT_SCRIPT,
+      input.stateDirectory],
+    bypassSession: true,
+    timeoutMs: 5_000,
+  }).catch(() => null);
+  if (!result || result.timedOut || result.exitCode !== 0) return null;
+  try {
+    const parsed = JSON.parse(result.stdout.trim()) as SandboxSessionRunnerInspection;
+    return parsed && typeof parsed === "object" && Array.isArray(parsed.processes) ? parsed : null;
+  } catch { return null; }
 }
 
 async function waitUntilGone(runner: CommandManagedRuntimeRunner, holder: SandboxRunnerHolder, waitMs: number, pollMs: number) {
@@ -104,24 +185,21 @@ export async function retireSandboxRunnerPortHolders(input: {
   ownSessionRoot: string;
   providerLeaseId: string | null;
   adoptedRunId?: string | null;
+  only?: { sessionDirectory: string; runId: string };
   retireInProcess: (holderRunId: string) => Promise<boolean>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   waitMs?: number;
   pollMs?: number;
 }): Promise<string[]> {
-  const listed = await input.runner.execute({
-    command: "sh",
-    args: ["-c", SANDBOX_RUNNER_HOLDER_LIST_SCRIPT, "paperclip-runner-port-holders", input.runtimeRoot, input.ownSessionRoot],
-    bypassSession: true,
-    timeoutMs: 15_000,
-  }).catch(() => null);
-  if (!listed || listed.exitCode !== 0 || listed.timedOut) {
+  const { listed, holders } = await listSandboxRunnerHolders(input.runner, input.runtimeRoot, input.ownSessionRoot);
+  if (!holders) {
     throw new NativePredecessorRetirementUnprovenError(null, input.providerLeaseId,
       new Error(`runner_port_holder_inventory_unavailable: exit=${listed?.exitCode ?? "none"} timedOut=${listed?.timedOut ?? false}`));
   }
   const retired: string[] = [];
-  for (const holder of parseSandboxRunnerHolders(listed.stdout)) {
-    if (holder.runId === input.runId || (holder.runId !== null && holder.runId === input.adoptedRunId)) continue;
+  for (const holder of holders) {
+    if (input.only ? holderSessionDirectory(holder) !== input.only.sessionDirectory || holder.runId !== input.only.runId
+      : holder.runId === input.runId || (holder.runId !== null && holder.runId === input.adoptedRunId)) continue;
     const initial = await probeHolder(input.runner, holder);
     if (initial === "gone") continue;
     const unproven = (reason: string) => new NativePredecessorRetirementUnprovenError(holder.runId, input.providerLeaseId,

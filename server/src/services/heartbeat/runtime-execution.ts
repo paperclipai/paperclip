@@ -36,6 +36,7 @@ import {
 } from "./workspaces.js";
 import { recordLegacyWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
+import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { buildAgentIdentityEnv } from "@paperclipai/adapter-utils/server-utils";
 import { externalObjectService } from "../external-objects.js";
 import { isAgentDirectoryCopy } from "../agent-directory-working-copies.js";
@@ -59,6 +60,7 @@ import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@pap
 import { conflict } from "../../errors.js";
 import { getStartupTraceContext } from "../../instrumentation.js";
 import { logger } from "../../middleware/logger.js";
+import { reserveLiveNativeFinalization } from "../native-runtime/live-native-finalization.js";
 import {
   buildNativeProviderEnvironment,
   executePaperclipNativeSession,
@@ -96,7 +98,8 @@ import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunControl } from "./run-control.js";
 import type { createHeartbeatQueue } from "./queue.js";
-import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { secretOutputForms, type createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { createRunOutputSecretStore } from "../run-secret-redaction.js";
 import type { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import type { executionWorkspaceService } from "../execution-workspaces.js";
 import type { workspaceOperationService } from "../workspace-operations.js";
@@ -545,6 +548,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const runGoalControlRequestId = readNonEmptyString(
     context.goalControlRequestId,
   );
+  // The runner posts its accepted result before it returns. Keep the recovery
+  // workers off this run until this heartbeat has finished it.
+  const releaseLiveNativeFinalization = nativeRuntimeResolution.kind === "native"
+    ? reserveLiveNativeFinalization(db, { companyId: run.companyId, runId: run.id, issueId: issueRef?.id })
+    : undefined;
   try {
     if (nativeRuntimeResolution.kind === "native") {
       if (!nativeExecution || !nativeRunnerInstanceId)
@@ -641,6 +649,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           nativeDispatchAtMs,
         }),
       );
+      const outputSecretStore = createRunOutputSecretStore(db);
+      await outputSecretStore.registerAll(run.companyId, run.id,
+        identityRedactor.secretSources.filter((value) => secretOutputForms([value]).length > 0));
+      identityRedactor.addSecretValues(await outputSecretStore.valuesForRun(run.companyId, run.id));
       const stopCleanup = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
         && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
       const guardedDispatch =
@@ -648,6 +660,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           (markDispatchStarted) => {
             return executePaperclipNativeSession({
               casesEnabled: context.paperclipCasesEnabled === true,
+              responsibilitiesEnabled: context.paperclipResponsibilitiesEnabled === true,
               db,
               execution: nativeExecution,
               observability,
@@ -715,6 +728,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
               managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
+              outputSecrets: [...identityRedactor.secretSources, ...observabilitySecretValues(observability)],
               dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
               runnerEnvironment: {
                 ...configuredEnvironmentProjection(configuredTaskEnvironment, secretKeys ?? []),
@@ -1047,7 +1061,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.status, "running"),
             ),
-          ), { companyId: run.companyId });
+          ), { companyId: run.companyId, runId: run.id });
         const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
         await recordWorkspaceFinalize(workspaceFinalizeStatus);
         if (adapterResult.nativeFinalization) {
@@ -1083,7 +1097,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     };
     if (nativeWorkspaceSync || remoteWorkspaceAuthority) {
       const owned = await measureRunPhase("execution.workspace_ownership", () => withNativeWorkspaceFinalizationOwnership({
-        db, companyId: run.companyId, runId: run.id,
+        db, companyId: run.companyId, runId: run.id, liveHeartbeat: true,
+        ...(remoteWorkspaceAuthority && nativeRuntimeResolution.kind !== "native" && persistedExecutionWorkspace
+          ? { remoteWorkspaceId: persistedExecutionWorkspace.id } : {}),
       }, completeWorkspace));
       if (!owned.acquired) throw new NativeWorkspaceFinalizationBusyError();
     } else {
@@ -1128,7 +1144,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             eq(heartbeatRuns.id, run.id),
             eq(heartbeatRuns.status, "running"),
           ),
-        ), { companyId: run.companyId });
+        ), { companyId: run.companyId, runId: run.id });
     } catch (writeError) {
       if (adapterErr instanceof NativeStartupCleanupPendingError) throw adapterErr;
       throw writeError;
@@ -1161,7 +1177,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         },
         runGoalControlRequestId,
         adapterErr instanceof Error
-          ? adapterErr.message
+          ? identityRedactor.redact(adapterErr.message)
           : "session_goal_control_failed",
       ).catch(() => undefined);
     }
@@ -1222,10 +1238,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       await recordWorkspaceFinalize(settleAcceptedResult ? "succeeded" : "failed", settleAcceptedResult
         ? { runnerSettlementDiagnostic: postResultFailure }
         : {
-            errorMessage:
+            errorMessage: identityRedactor.redact(
               adapterErr instanceof Error
                 ? adapterErr.message
                 : String(adapterErr),
+            ),
             ...(postResultFailure ? { failureDiagnostic: postResultFailure } : {}),
           });
     } catch (recordErr) {
@@ -1298,24 +1315,28 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         }
         return { dispatched: true, adapterResult: acceptedResult };
       }
-      try {
-        await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
-          db,
-          runId: run.id,
-          workspaceFinalizeStatus: "failed",
-        }));
-        await dispatchPendingNativeStatusWakeups({
-          companyId: run.companyId,
-        });
-      } catch (finalizeErr) {
-        logger.warn(
-          { err: finalizeErr, runId: run.id },
-          "native result could not be marked workspace_failed; the reconciliation loop will retry persisted results",
-        );
+      if (proposedResult) {
+        try {
+          await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
+            db,
+            runId: run.id,
+            workspaceFinalizeStatus: "failed",
+          }));
+          await dispatchPendingNativeStatusWakeups({
+            companyId: run.companyId,
+          });
+        } catch (finalizeErr) {
+          logger.warn(
+            { err: finalizeErr, runId: run.id },
+            "native result could not be marked workspace_failed; the reconciliation loop will retry persisted results",
+          );
+        }
       }
     }
     throw adapterErr;
   } finally {
+    // Never throws, so a failed cleanup below cannot keep the workers waiting.
+    await releaseLiveNativeFinalization?.();
     try {
       if (!preserveRunGatewayTokens) await revokeHeartbeatRunGatewayTokens({
         db,

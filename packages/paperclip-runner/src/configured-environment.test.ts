@@ -98,7 +98,7 @@ describe("configured environment authority", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
-  it.each(["not-json", "[1]", '["NODE_OPTIONS"]', '["PAPERCLIP_API_KEY"]', '["PAPERCLIP_RUNNER_BOOTSTRAP_TICKET"]', '["OPENAI_API_KEY"]', '["KIMI_API_KEY"]', '["LD_PRELOAD"]', '["bad=name"]', '["CUSTOM","CUSTOM"]', '["MISSING"]'])
+  it.each(["not-json", "[1]", '["NODE_OPTIONS"]', '["PAPERCLIP_API_KEY"]', '["PAPERCLIP_RUNNER_BOOTSTRAP_TICKET"]', '["OPENAI_API_KEY"]', '["KIMI_API_KEY"]', '["PAPERCLIP_NATIVE_MCP_NAME"]', '["PAPERCLIP_NATIVE_MCP_URL"]', '["PAPERCLIP_NATIVE_MCP_TOKEN"]', '["LD_PRELOAD"]', '["bad=name"]', '["CUSTOM","CUSTOM"]', '["MISSING"]'])
     ("rejects malformed or reserved projection %s", raw => {
       expect(() => configuredEnvironment({ [CONFIGURED_ENVIRONMENT_KEYS]: raw })).toThrow("Invalid configured environment");
     });

@@ -10,7 +10,7 @@ export type FailedBeforeProviderTurnRecord = {
   proof: FailedBeforeProviderTurnProof; technicalCause?: string;
 };
 
-const TRANSFER_TIMEOUT_CODE = "native_provider_artifacts_transfer_timeout";
+const SLOW_SETUP_CODES = new Set(["native_provider_artifacts_transfer_timeout", "native_provider_artifacts_export_timeout"]);
 
 function technicalCauseCode(cause: unknown): string {
   const code = cause && typeof cause === "object" ? (cause as { code?: unknown }).code : undefined;
@@ -35,7 +35,7 @@ export class NativeFailedBeforeProviderTurnError extends Error {
   readonly technicalCause: string;
   constructor(readonly providerLeaseId: string | null, cause: unknown) {
     const technicalCause = technicalCauseCode(cause);
-    super(technicalCause === TRANSFER_TIMEOUT_CODE
+    super(SLOW_SETUP_CODES.has(technicalCause)
       ? "Setting up the computer took too long, so the task is continuing on a fresh one."
       : "The computer could not be set up before the agent started, so the task is continuing on a fresh one.", { cause });
     this.name = "NativeFailedBeforeProviderTurnError";

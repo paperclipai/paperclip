@@ -5,6 +5,7 @@ import { environmentTaskErrorCodeData, environmentTaskOperationSchema, parseEnvi
   readEnvironmentTaskErrorCode, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask, isSettledReadyRunnerState, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
+import { createRunnerProviderLaunch, runnerLaunchPreparationDigest, runnerLaunchRunDigest, runnerProviderLaunchRequirements } from "../vendor/paperclip-runner/index.js";
 
 const state = vi.hoisted(() => ({ plugin: {} as any, release: vi.fn(), identity: vi.fn(), config: vi.fn() }));
 vi.mock("../services/provider-fresh-workspace.js", () => ({
@@ -327,6 +328,26 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database(value).db, worker() as never, { companyId: "company", leaseId,
       operation: { ...operation, credential: { type: "claude-env", environment: { ANTHROPIC_API_KEY: "never-leak" } } } })).rejects.toThrow("validation unavailable");
   });
+  it.each(["grok", "copilot", "opencode"] as const)("dispatches a %s environment credential only for the matching harness", async harness => {
+    const credentials = {
+      grok: { type: "provider-env" as const, provider: "grok" as const, environment: { XAI_API_KEY: "never-leak" } },
+      copilot: { type: "provider-env" as const, provider: "copilot" as const, environment: { COPILOT_GITHUB_TOKEN: "never-leak" } },
+      opencode: { type: "provider-env" as const, provider: "opencode" as const, environment: { OPENROUTER_API_KEY: "never-leak" } },
+    };
+    const operation = { ...submit, runner: { ...submit.runner, harness }, accountIdentity: "account", credential: credentials[harness] };
+    const validated = () => {
+      const value = row();
+      Object.assign(value.lease.metadata, { runnerTaskProjectAuthValidation: { configurationId: "configuration", provider: harness, projectIds: [projectId] } });
+      return value;
+    };
+    const accepted = worker();
+    await expect(executeEnvironmentTask(database(validated()).db, accepted as never, { companyId: "company", leaseId, operation })).resolves.toMatchObject({ kind: "accepted" });
+    expect(accepted.call).toHaveBeenCalledOnce();
+    const denied = worker();
+    await expect(executeEnvironmentTask(database(validated()).db, denied as never, { companyId: "company", leaseId,
+      operation: { ...operation, credential: credentials[harness === "grok" ? "copilot" : "grok"] } })).rejects.toThrow("validation unavailable");
+    expect(denied.call).not.toHaveBeenCalled();
+  });
   it.each(["allowed", "denied", "wrong-configuration", "wrong-provider", "timeout"])("records only a matching successful project validation (%s)", async mode => {
     const operation = { kind: "check_project_auth" as const, configurationId: "configuration", provider: "openai" as const, projectIds: [projectId] };
     const result = { kind: "project_auth", taskId: "attempt-1", configurationId: mode === "wrong-configuration" ? "other" : "configuration",
@@ -344,7 +365,7 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database(row(), []).db, denied as never, { companyId: "company", leaseId, operation })).rejects.toThrow("project unavailable");
     expect(denied.call).not.toHaveBeenCalled();
   });
-  it.each([false, true])("prepares scoped configuration with submit-time auth %s", async atSubmit => {
+  it("accepts prepare launch digests only when they match the requirements", async () => {
     const operation = { kind: "prepare" as const, projectIds: [projectId], requirements: {
       schema: "paperclip.runner.launch-requirements.v1" as const,
       identity: { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run",
@@ -353,7 +374,35 @@ describe("plugin-provided Runner execution", () => {
       settings: {}, approvalPolicy: "on-request" as const, readOnly: false,
       preparedConversation: false, includeCollaborationModeInstructions: true,
     } };
-    const result = { kind: "prepared", taskId: "attempt-1", ...(atSubmit ? {projectAuthCheckAtSubmit: true} : {}), launch: { configurationId: "configuration-1",
+    const preparationDigest = runnerLaunchPreparationDigest(operation.requirements);
+    const runDigest = runnerLaunchRunDigest(preparationDigest, operation.requirements);
+    const result = { kind: "prepared", taskId: "attempt-1", launch: { configurationId: "configuration-1",
+      requirementsDigest: `sha256:${"a".repeat(64)}`, provider: { kind: "codex" } } };
+    const accepted = worker(result);
+    await expect(executeEnvironmentTask(database().db, accepted as never, { companyId: "company", leaseId,
+      operation: { ...operation, preparationDigest, runDigest } })).resolves.toEqual(result);
+    expect(accepted.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({
+      operation: expect.objectContaining({ preparationDigest, runDigest }) }), 15_000);
+    const forged = `sha256:${"b".repeat(64)}`;
+    for (const digests of [{ preparationDigest: forged, runDigest }, { preparationDigest, runDigest: forged },
+      { preparationDigest }, { runDigest }]) {
+      const refused = worker(result);
+      await expect(executeEnvironmentTask(database().db, refused as never, { companyId: "company", leaseId,
+        operation: { ...operation, ...digests } })).rejects.toThrow("launch digest mismatch");
+      expect(refused.call).not.toHaveBeenCalled();
+    }
+  });
+  it.each([[false, false], [true, false], [false, true], [true, true]])("prepares scoped configuration with submit-time auth %s and in-prepare auth %s", async (atSubmit, checked) => {
+    const operation = { kind: "prepare" as const, projectIds: [projectId], requirements: {
+      schema: "paperclip.runner.launch-requirements.v1" as const,
+      identity: { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run",
+        normalizedSessionId: "session", turnId: "turn", itemId: "item" },
+      provider: "codex" as const, model: "selected", instructions: "Core instructions", runtimeContext: null,
+      settings: {}, approvalPolicy: "on-request" as const, readOnly: false,
+      preparedConversation: false, includeCollaborationModeInstructions: true,
+    } };
+    const result = { kind: "prepared", taskId: "attempt-1", ...(atSubmit ? {projectAuthCheckAtSubmit: true} : {}),
+      ...(checked ? {projectAuthChecked: true} : {}), launch: { configurationId: "configuration-1",
       requirementsDigest: `sha256:${"a".repeat(64)}`, provider: { kind: "codex" } } };
     const workers = worker(result), store = database();
     await expect(executeEnvironmentTask(store.db, workers as never, { companyId: "company", leaseId, operation }))
@@ -361,9 +410,10 @@ describe("plugin-provided Runner execution", () => {
     expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({
       companyId: "company", runId: "run", agentId: "agent", projectIds: [projectId], operation,
     }), 15_000);
-    expect(store.sets).toHaveLength(atSubmit ? 2 : 1);
-    if (atSubmit) expect(new PgDialect().sqlToQuery(store.sets[1].metadata as never).params).toContain(JSON.stringify({
-      runnerTaskProjectAuthValidation: { configurationId: "configuration-1", provider: "openai", projectIds: [projectId], atSubmit: true },
+    expect(store.sets).toHaveLength(atSubmit || checked ? 2 : 1);
+    if (atSubmit || checked) expect(new PgDialect().sqlToQuery(store.sets[1].metadata as never).params).toContain(JSON.stringify({
+      runnerTaskProjectAuthValidation: { configurationId: "configuration-1", provider: "openai", projectIds: [projectId],
+        ...(checked ? {} : { atSubmit: true }) },
     }));
     const denied = worker(result);
     const inactive = row(); inactive.lease.status = "released";
@@ -583,23 +633,27 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit })).rejects.toThrow("provider unavailable");
     expect(workers.call).not.toHaveBeenCalled();
   });
-  it("forwards a resume credential without persisting it or exposing it in worker errors", async () => {
+  it("forwards resume launch inputs without persisting them or exposing them in worker errors", async () => {
     const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
     const operation = { kind: "resume" as const, identity, bootstrapTicket: "transient-test-ticket",
-      credential: { type: "claude-env" as const, environment: { CLAUDE_CODE_OAUTH_TOKEN: "never-leak-token" } } };
+      credential: { type: "claude-env" as const, environment: { CLAUDE_CODE_OAUTH_TOKEN: "never-leak-token" } },
+      configuredEnvironment: { STRIPE_SECRET_KEY: "never-leak-variable" } };
     const result = { kind: "resume", taskId: "attempt-1", outcome: "resumed" };
     const retained = () => { const value = row(); value.lease.status = "retained"; value.run!.status = "succeeded"; return value; };
     const store = database(retained());
     const workers = worker(result);
     await expect(executeEnvironmentTask(store.db, workers as never, { companyId: "company", leaseId, operation })).resolves.toEqual(result);
     expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({ operation }), 15_000);
-    expect(JSON.stringify(store.sets.map(set => new PgDialect().sqlToQuery(set.metadata as never).params))).not.toContain("never-leak-token");
+    const persisted = JSON.stringify(store.sets.map(set => new PgDialect().sqlToQuery(set.metadata as never).params));
+    expect(persisted).not.toContain("never-leak-token");
+    expect(persisted).not.toContain("never-leak-variable");
 
     const failing = worker();
-    failing.call.mockRejectedValue(Object.assign(new Error("resume failed for never-leak-token"), { data: operation }));
+    failing.call.mockRejectedValue(Object.assign(new Error("resume failed for never-leak-token and never-leak-variable"), { data: operation }));
     const error = await executeEnvironmentTask(database(retained()).db, failing as never, { companyId: "company", leaseId, operation }).catch(caught => caught);
     expect(error.message).toBe("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
     expect(JSON.stringify({ ...error, message: error.message })).not.toContain("never-leak-token");
+    expect(JSON.stringify({ ...error, message: error.message })).not.toContain("never-leak-variable");
     expect(error.cause).toBeUndefined();
   });
   it("rejects wrong task receipts and sanitizes worker errors", async () => {
@@ -662,4 +716,18 @@ describe("plugin-provided Runner execution", () => {
     expect(() => parseEnvironmentTaskResult(submit, "attempt-1", { ...rejected, reason: "unknown" })).toThrow();
     expect(() => parseEnvironmentTaskResult({ kind: "stop" }, "attempt-1", rejected)).toThrow();
   });
+});
+
+describe("Runner launch requirements for plugin preparation", () => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  it.each([{ grokDisableWebSearch: true }, { grokEffort: "high" as const, grokDisableWebSearch: true }, { grokDisableWebSearch: false }])(
+    "passes the Runner's Grok settings %j through the task contract", settings => {
+      const requirements = runnerProviderLaunchRequirements({ provider: "acpx", acpxAgent: "grok", ...settings }, identity,
+        { model: "grok-build" }, null, "Follow the assigned instructions.");
+      const prepared = environmentTaskOperationSchema.parse({ kind: "prepare", projectIds: [], requirements });
+      expect(prepared).toMatchObject({ requirements: { settings: { acpxAgent: "grok", ...settings } } });
+      expect(createRunnerProviderLaunch(requirements, { options: {}, root: "/runner", cwd: "/workspace", codexHome: "/runner/codex",
+        providerNodeCommand: "node", opencodeProxyPath: "/runner/opencode.cjs", acpxSidecarPath: "/runner/acpx.cjs" }))
+        .toMatchObject({ agent: "grok", grokDisableWebSearch: settings.grokDisableWebSearch });
+    });
 });

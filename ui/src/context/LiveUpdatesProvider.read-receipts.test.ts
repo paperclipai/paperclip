@@ -42,7 +42,8 @@ describe("live read receipts", () => {
     const unread = queryKeys.issues.listUnreadTouchedByMe("company-1");
     const badges = queryKeys.sidebarBadges("company-1");
     const chats = queryKeys.agentChats.list("company-1", "viewer");
-    const ownReads = [mine, touched, unread, badges, chats].map(key => watch(key));
+    const navigation = queryKeys.issues.summaryBatch("company-1", "viewer", ["task-1"]);
+    const ownReads = [mine, touched, unread, badges, chats, navigation].map(key => watch(key));
     const unrelatedReads = [
       queryKeys.issues.list("company-1"),
       [...queryKeys.issues.list("company-1"), "row-context"],

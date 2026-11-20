@@ -2,7 +2,7 @@ import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js"
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { centsToUnits, centsToUsd, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
+import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, responsibilitySummaryInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
@@ -13,6 +13,7 @@ import { settleChargedImageReceiptsInTransaction } from "./native-runtime/genera
 import type { BudgetServiceHooks } from "./budgets.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
+import { OWN_PROCESS_START_EVENT_TYPES } from "./native-process-start-events.js";
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
 import { priceAnthropicReceipt } from "./anthropic-pricing.js";
@@ -141,7 +142,7 @@ const inheritedProcessIdentityOnly = sql`${heartbeatRuns.runnerProfileJson}->>'i
   and not exists (select 1 from ${heartbeatRunEvents} own_process
     where own_process.company_id = ${heartbeatRuns.companyId} and own_process.run_id = ${heartbeatRuns.id}
       and own_process.source_event_id is null
-      and own_process.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))`;
+      and own_process.event_type in (${sql.join(OWN_PROCESS_START_EVENT_TYPES.map(type => sql`${type}`), sql`, `)}))`;
 
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
@@ -166,8 +167,8 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
 /** A run's accounting settled: an admission hold may have cleared. Held work
  * (queued runs, saved messages and Retries, and tasks whose start or
  * continuation was refused) waits passively, so wake its owners. */
-async function notifyAccountingHoldRelease(tx: object, companyId: string) {
-  await promoteDeferredWorkIntents(tx, { companyId, trigger: "accounting_settled" });
+async function notifyAccountingHoldRelease(tx: object, companyId: string, runId: string) {
+  await promoteDeferredWorkIntents(tx, { companyId, trigger: "accounting_settled", runId });
 }
 
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
@@ -289,11 +290,11 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     if (run.costAccountedAt) {
       if (object(run.usageJson).accountingLateReceiptPending === true) {
         // Clearing late debt can release an admission hold too.
-        await notifyAccountingHoldRelease(tx, run.companyId);
+        await notifyAccountingHoldRelease(tx, run.companyId, run.id);
         return reconcileLateRunUsageReceiptInTransaction(tx, run, publications);
       }
       await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
-      await notifyAccountingHoldRelease(tx, run.companyId);
+      await notifyAccountingHoldRelease(tx, run.companyId, run.id);
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
       await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId,
         projectId: text(object(object(run.usageJson).ledgerScope).projectId) });
@@ -333,7 +334,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
     await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
-    await notifyAccountingHoldRelease(tx, run.companyId);
+    await notifyAccountingHoldRelease(tx, run.companyId, run.id);
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     await tx.update(budgetReservations).set({ state: preProviderFailure ? "released" : "settled", settledAt: new Date() })
       .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
@@ -426,7 +427,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: text(scope.projectId) });
     // Late usage reported by a later run can arrive before this charge posts.
     const lateDebt = usage.accountingLateReceiptPending === true;
-    if (!lateDebt) await notifyAccountingHoldRelease(tx, run.companyId);
+    if (!lateDebt) await notifyAccountingHoldRelease(tx, run.companyId, run.id);
     await tx.update(heartbeatRuns).set({ costAccountingPending: lateDebt, costAccountedAt: new Date(), accountingProjectionVersion: "v2",
       accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date(),
       // A complete receipt arriving later may price this charge (see usage-receipts).
@@ -499,6 +500,9 @@ export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDi
       union all
       select ${promptInjectionInvocations.startedAt} from ${promptInjectionInvocations}
         where ${promptInjectionInvocations.status} = 'running'
+      union all
+      select ${responsibilitySummaryInvocations.startedAt} from ${responsibilitySummaryInvocations}
+        where ${responsibilitySummaryInvocations.status} = 'running'
     ) running_service_invocations`);
   // Wake when a run waiting for closure evidence reaches its bound.
   const [closure] = await db.select({ at: sql<Date | string | null>`min(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}))` })

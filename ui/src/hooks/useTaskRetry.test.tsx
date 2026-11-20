@@ -41,6 +41,9 @@ describe("optimistic task Retry", () => {
   });
   it.each([
     ["a replaced attempt", { requestId: null, accepted: false, stale: true }, "already replaced, so Retry did not start new work"],
+    ["a Retry that admission refused", { requestId: "retry", accepted: false, stale: false,
+      refused: { reason: "previous_execution_unverified", message: "Retry can't continue because Paperclip can't confirm that the previous attempt stopped before it started work." } },
+      "can't confirm that the previous attempt stopped"],
     ["a scheduled retry held by a gate", { requestId: "retry", accepted: true, stale: false,
       scheduledRetry: { outcome: "gate_suppressed" as const, message: "The company budget is paused." } }, "The company budget is paused."],
     ["a scheduled retry still waiting", { requestId: "retry", accepted: true, stale: false,

@@ -58,7 +58,7 @@ describe("native SSH deliverable output budget", () => {
   });
 
   it("still delivers every byte when SSH consumes the upload", async () => {
-    await writeFile(join(root, "ssh"), `#!${process.execPath}\nconst hash = require('node:crypto').createHash('sha256');\nprocess.stdin.on('data', chunk => hash.update(chunk));\nprocess.stdin.on('end', () => process.stdout.write(hash.digest('hex')));\n`);
+    await writeFile(join(root, "ssh"), `#!${process.execPath}\nconst chunks = [];\nprocess.stdin.on('data', chunk => chunks.push(chunk));\nprocess.stdin.on('end', () => { const wire = Buffer.concat(chunks); const end = wire.indexOf(10); if (end < 0) process.exit(1); process.stdout.write(require('node:crypto').createHash('sha256').update(wire.subarray(end + 1)).digest('hex')); });\n`);
     const stdin = "synthetic upload bytes\0".repeat(32_768);
     const result = await createRunner().execute({ command: "node", args: ["unused"], stdin, timeoutMs: 5000 });
     expect(result.exitCode).toBe(0);

@@ -126,8 +126,7 @@ company-boundary checks.
 
 ## Child→Parent Reporting Under Containment
 
-The direct-parent report comment (`doc/execution-semantics.md` §6, "Child→Parent
-Reporting") is **off by default** for `low_trust_review`: a contained run reads
+The direct-parent report comment is **off by default** for `low_trust_review`: a contained run reads
 untrusted input, so a free-prose comment into the higher-trust parent thread is
 a prompt-injection promotion path. Contained reviewers report by completing
 their own review issue (`done` — the verdict is the deliverable; the
@@ -148,6 +147,15 @@ runtime boundary:
 - inline sensitive environment values such as API keys and tokens are rejected
 - workspace runtime-service mutations are denied unless the boundary explicitly
   grants the `runtime.manage` tool class
+- company-wide `runtime:manage` stays denied, but the assignee may use
+  `set_task_monitor` to schedule or clear a self-wake on its own in-boundary
+  task; monitors that create recovery tasks or escalate to the board are denied
+- that self-wake is allowed only when the agent, project and task policies
+  alone resolve the same low-trust boundary as the run, so the woken run keeps
+  the same limits; a boundary carried only by the run snapshot is denied
+- the assignee cannot clear or replace a monitor it does not own: a
+  board-scheduled, recovery, escalation or provider-quota monitor still needs
+  `runtime:manage`
 
 When the task's project has no configured workspace and no layer specifies a
 workspace strategy, sandbox execution uses a private directory for that company
