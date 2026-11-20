@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issues,
+  agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -10,6 +10,7 @@ import { getExecutionBlocker } from "../services/execution-blocker.ts";
 import { settleHoldIntoAbandonedEpochContinuation } from "../services/fresh-continuation-fallback.ts";
 import { HUMAN_GATE_EVIDENCE_KEYS, hasHumanGateEvidence } from "../services/recovery/human-gate-evidence.ts";
 import { recoverRetainedWorkspace } from "../services/workspace-recovery.ts";
+import { abandonUnverifiedRemoteWorkspaceEpoch } from "../services/remote-workspace-epoch-abandonment.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../services/system-recovery-state.ts";
@@ -67,10 +68,11 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     unsafeArchive?: boolean;
     delivery?: "pending" | "delivered" | "delegated" | "invalidated" | "not_requested" | "coalesced";
     holdEvidence?: Record<string, unknown>;
+    epoch?: "abandoned" | "still_owned" | "none";
   };
 
   async function killedRunAfterFreshContinuation(shape: Shape = {}) {
-    const { isolation = "remote_epoch", personOwned = false, unsafeArchive = false, delivery = "delivered", holdEvidence = {} } = shape;
+    const { isolation = "remote_epoch", personOwned = false, unsafeArchive = false, delivery = "delivered", holdEvidence = {}, epoch = "abandoned" } = shape;
     const userId = randomUUID(), companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const sourceRunId = randomUUID(), continuationId = randomUUID(), holdId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Board", email: `${userId}@example.test`,
@@ -93,6 +95,21 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
       resultJson: { workspaceRestoreFailure: unsafeArchive ? "restore_unsafe_archive" : "restore_failed",
         workspaceRestoreRecovery: restoreRecovery,
         ...(isolation ? { freshContinuationSupersededAt: recordedAt.toISOString() } : {}) } });
+    if (epoch !== "none") {
+      const workspaceId = randomUUID(), leaseId = randomUUID(), snapshotId = randomUUID();
+      const location = { environmentId: randomUUID(), leaseId, providerLeaseId: `sandbox-${sourceRunId}`,
+        remoteCwd: `/home/daytona/paperclip-workspace/.paperclip-workspaces/${sourceRunId}` };
+      await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, mode: "isolated_workspace",
+        strategyType: "project_primary", name: "Task workspace", status: "active", providerType: "cloud_sandbox",
+        cwd: `/workspaces/${workspaceId}`, sourceIssueId: issueId, metadata: { remoteWorkspace: {
+          schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId, source: { kind: "empty" },
+          writerRunId: sourceRunId, dirty: true, location } } });
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1",
+        workspaceId, leaseId, providerLeaseId: location.providerLeaseId, remoteCwd: location.remoteCwd, epoch: 1,
+        state: "prepared", snapshotId } } }).where(eq(heartbeatRuns.id, sourceRunId));
+      if (epoch === "abandoned") await db.transaction(tx => abandonUnverifiedRemoteWorkspaceEpoch(tx, { companyId, workspaceId,
+        runId: sourceRunId, epoch: 1, snapshotId, location }));
+    }
     await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: sourceRunId, phase: "terminal_failure",
       attempt: 1, failureCode: "native_restart_recovery_blocked",
       failureDetail: isolation ? { replacementDenied: "fresh_continuation" } : {} });
@@ -169,6 +186,8 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
 
   it.each([
     ["no continuation was recorded", { isolation: null }],
+    ["the continuation is remote_epoch but the run still owns its epoch", { epoch: "still_owned" }],
+    ["the continuation is remote_epoch but the run had no remote workspace", { epoch: "none" }],
     ["the continuation is a local fresh_isolated_workspace", { isolation: "fresh_isolated_workspace" }],
     ["the continuation reuses the old workspace", { isolation: "writer_ended" }],
     ["the continuation was invalidated", { delivery: "invalidated" }],

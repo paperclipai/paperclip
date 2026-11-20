@@ -23,6 +23,7 @@ import { proveRunProcessGone } from "./run-process-owner.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { hasHumanGateEvidence } from "./recovery/human-gate-evidence.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
+import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
@@ -724,7 +725,7 @@ export async function settleHoldIntoAbandonedEpochContinuation(db: Db, input: {
       sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' = 'remote_epoch'`,
       inArray(sql<string>`${issueRecoveryActions.evidence}->>'continuationDelivery'`, ["pending", "delivered", "delegated", "not_requested"])))
       .orderBy(desc(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`)).limit(1).for("update");
-    if (!prior) return false;
+    if (!prior || !await isAbandonedPreparedRemoteWorkspace(tx, run)) return false;
     await settleLateHolds(tx, { companyId: input.companyId, issue, run, prior, holds: [hold], now });
     logger.info({ runId: run.id, issueId: issue.id, recoveryActionId: hold.id, continuationId: prior.id },
       "Workspace recovery hold settled into the continuation that already moved the task to a new workspace epoch");
