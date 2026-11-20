@@ -13,6 +13,7 @@ import {
   type QueuedRunDispatchInput,
 } from "./queued-run-dispatch-order.js";
 import { parseHeartbeatPolicy } from "./timer-policy.js";
+import { QUEUED_RUN_ORDER_CONTEXT_KEYS, cleanContinuationSourceRunId, listCleanContinuationSourceRunIds } from "./queued-run-provenance.js";
 import { instanceSettingsService, isTruthyRuntimeEnvValue, resolveWorktreeRunExecutionActivation } from "../instance-settings.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -90,6 +91,28 @@ export async function listPersonOriginSourceRunIds(db: Db, companyId: string, so
   return [...result].map(row => String(row.root_id));
 }
 
+const PERSON_TREE_ANCESTOR_DEPTH = 32;
+
+export async function listPersonTreeIssueIds(db: Db, companyId: string, issueIds: string[]): Promise<Set<string>> {
+  const ids = [...new Set(issueIds.filter(id => RUN_ID_PATTERN.test(id)))];
+  if (!ids.length) return new Set();
+  const result = await db.execute<{ issue_id: string }>(sql`
+    with recursive chain(issue_id, ancestor_id, depth) as (
+      select ${issues.id}, ${issues.id}, 0 from ${issues}
+      where ${issues.companyId} = ${companyId} and ${issues.id} in (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
+      union all
+      select chain.issue_id, ancestor.parent_id, chain.depth + 1
+      from chain
+      join ${issues} ancestor on ancestor.id = chain.ancestor_id
+      where ancestor.company_id = ${companyId} and ancestor.created_by_user_id is null
+        and chain.depth < ${PERSON_TREE_ANCESTOR_DEPTH}
+    )
+    select distinct chain.issue_id from chain
+    join ${issues} ancestor on ancestor.id = chain.ancestor_id
+    where ancestor.company_id = ${companyId} and ancestor.created_by_user_id is not null`);
+  return new Set([...result].map(row => String(row.issue_id)));
+}
+
 /**
  * The facts and share counters the queued-run dispatcher orders an agent's
  * queued runs by. The dispatch path and the "position in line" a waiting task
@@ -106,17 +129,18 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     shareDeferred?: (runId: string) => boolean;
     now: Date;
   },
-): Promise<{ facts: Array<QueuedRunDispatchFacts & { run: R }>; dispatchInput: QueuedRunDispatchInput }> {
+): Promise<{ facts: Array<QueuedRunDispatchFacts & { run: R }>; dispatchInput: QueuedRunDispatchInput; personOriginChecked: boolean }> {
   const { agent, queuedRuns, dependencyReadiness, issueById, now } = input;
   const wakeReasonOf = (run: R) => readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
+  const personOriginChecked = queuedRuns.length > 1;
   const requestIds = [...new Set(queuedRuns.flatMap(run => run.wakeupRequestId ? [run.wakeupRequestId] : []))];
-  const userRequests = queuedRuns.length > 1 && requestIds.length
+  const userRequests = personOriginChecked && requestIds.length
     ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.id, requestIds),
       eq(agentWakeupRequests.requestedByActorType, "user")))
     : [];
   const userRequestIds = new Set(userRequests.map(row => row.id));
-  const joinedUserRequests = queuedRuns.length > 1
+  const joinedUserRequests = personOriginChecked
     ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id)),
       eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
@@ -126,7 +150,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
   const sourceRunIdOf = (run: R) =>
     readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
-  const sourceRunIds = queuedRuns.length > 1
+  const sourceRunIds = personOriginChecked
     ? [...new Set(queuedRuns.flatMap(run => {
       const sourceRunId = joinedByUser(run) ? null : sourceRunIdOf(run);
       return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? [sourceRunId] : [];
@@ -145,8 +169,18 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     const sourceRunId = sourceRunIdOf(run);
     return Boolean(sourceRunId && personSourceRunIds.has(sourceRunId));
   };
+  const issueIdOf = (run: R) => readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+  const personTreeIssueIds = personOriginChecked
+    ? await listPersonTreeIssueIds(db, agent.companyId, queuedRuns.flatMap(run => {
+      const issueId = issueIdOf(run);
+      return issueId && issueById.has(issueId) && !issueById.get(issueId)?.createdByUserId ? [issueId] : [];
+    }))
+    : new Set<string>();
+  const cleanSources = await listCleanContinuationSourceRunIds(db, agent.companyId,
+    [...new Set(queuedRuns.flatMap(run => cleanContinuationSourceRunId(run) ?? []))]);
   const facts = queuedRuns.map(run => {
-    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    const issueId = issueIdOf(run);
+    const cleanSourceRunId = cleanContinuationSourceRunId(run);
     const ready = issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true;
     const issue = issueId ? issueById.get(issueId) : null;
     const sourceRunId = sourceRunIdOf(run);
@@ -160,7 +194,8 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
       priorityRank: issueRunPriorityRank(issue?.priority),
       shareDeferred: input.shareDeferred?.(run.id) ?? false,
-      personTask: Boolean(issue?.createdByUserId),
+      personTask: Boolean(issue?.createdByUserId) || Boolean(issueId && personTreeIssueIds.has(issueId)),
+      cleanContinuation: Boolean(cleanSourceRunId && cleanSources.has(cleanSourceRunId)),
     };
   });
   const since = dispatchHistoryStart(facts, now);
@@ -177,14 +212,11 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
   const personStarts = new Set(startRows.length
     ? await listPersonOriginSourceRunIds(db, agent.companyId, startRows.map(row => row.id)) : []);
   const startedTaskIds = [...new Set(startRows.flatMap(row => row.issueId && RUN_ID_PATTERN.test(row.issueId) ? [row.issueId] : []))];
-  const personTaskIds = new Set(startedTaskIds.length
-    ? (await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, agent.companyId),
-      inArray(issues.id, startedTaskIds), isNotNull(issues.createdByUserId)))).map(row => row.id)
-    : []);
+  const personTaskIds = await listPersonTreeIssueIds(db, agent.companyId, startedTaskIds);
   const recentStarts = startRows.map(row => ({ ...row, personOrigin: personStarts.has(row.id),
     personWaiting: personStarts.has(row.id) || Boolean(row.issueId && personTaskIds.has(row.issueId)) }));
   const { startsSinceRecovery, startsSinceOldest } = dispatchCountersFromStarts(facts, recentStarts, now);
-  return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest } };
+  return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest }, personOriginChecked };
 }
 
 /** At most this many agents' lines are computed for one projection read. */
@@ -255,10 +287,8 @@ export async function agentQueuedRunLine(
     wakeupRequestId: heartbeatRuns.wakeupRequestId,
     retryOfRunId: heartbeatRuns.retryOfRunId,
     // Only the keys ordering reads; full snapshots are large.
-    contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-      'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
-      'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
-      'previousRunId', ${heartbeatRuns.contextSnapshot}->'previousRunId')`,
+    contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(${sql.join(QUEUED_RUN_ORDER_CONTEXT_KEYS.map(key =>
+      sql`${key}::text, ${heartbeatRuns.contextSnapshot}->${key}::text`), sql`, `)})`,
   }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
       eq(heartbeatRuns.status, "queued"), cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined))

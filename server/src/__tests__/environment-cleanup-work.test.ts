@@ -10,7 +10,7 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { companies, createDb, sandboxCreationOperations, environmentLeases, environments, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, companies, createDb, sandboxCreationOperations, environmentLeases, environments, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
@@ -20,6 +20,9 @@ import { environmentService } from "../services/environments.js";
 import { historicalCleanupVerificationService } from "../services/historical-cleanup-verification.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { writeEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { agentExecutionsHaveStopped } from "../services/agent-execution-stop.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
@@ -361,6 +364,52 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     const count = reads.mock.calls.length;
     await settle(240_000); expect(reads).toHaveBeenCalledTimes(count);
     await settle(30_000); expect(releases).toHaveBeenCalledTimes(1);
+    expect((await environmentService(db).getLeaseById(lease.id))?.status).toBe("expired");
+    await quiet();
+  });
+  async function recoveredWorkspaceCleanup() {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Stopped workspace owner" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
+      runtimeMode: "native", invocationSource: "on_demand", startedAt: new Date(Date.now() - 60_000), finishedAt: new Date() }).returning();
+    const lease = { id: randomUUID(), companyId, environmentId, heartbeatRunId: run.id, provider: "fixture",
+      providerLeaseId: randomUUID(), leasePolicy: "ephemeral", status: "pending_cleanup", cleanupStatus: "failed",
+      releasedAt: new Date(), updatedAt: new Date() };
+    const metadata = { driver: "sandbox", workspaceRecoveryCleanup: { runId: run.id, snapshotId: randomUUID(), epoch: 1,
+      stopReceipt: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" }) },
+      pendingCleanupRetryAttempts: 0, pendingCleanupInFlight: false, pendingCleanupRetryAfterMs: 0 };
+    await writeEnvironmentCleanup(db, tx => tx.insert(environmentLeases).values({ ...lease, metadata }), { companyId, runId: run.id });
+    return { agent, run, lease, metadata };
+  }
+  it("destroys a recovered workspace on its first scheduled pass, before agent stop can finish", async () => {
+    const destroy = vi.fn(async ({ lease }: { lease: { providerLeaseId: string } }) =>
+      ({ providerLeaseId: lease.providerLeaseId, state: "destroyed" as const }));
+    const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox", retryPendingSandboxTeardown: destroy } as any] });
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+    await start(false, backoffMs => heartbeat.sweepPendingCleanupLeases({ backoffMs })); await quiet();
+    draining = true;
+    const { agent, lease } = await recoveredWorkspaceCleanup();
+    expect(await nextEnvironmentCleanupAt(db)).toBeLessThanOrEqual(Date.now());
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    draining = false;
+    await settle();
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect((await environmentService(db).getLeaseById(lease.id))?.status).toBe("expired");
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    await quiet();
+  });
+  it("keeps normal retry backoff after a recovered workspace's first teardown fails", async () => {
+    await start(); await quiet();
+    failing = true;
+    const { lease } = await recoveredWorkspaceCleanup();
+    await settle();
+    expect(releases).toHaveBeenCalledTimes(1);
+    expect((await environmentService(db).getLeaseById(lease.id))?.status).toBe("pending_cleanup");
+    expect(await nextEnvironmentCleanupAt(db)).toBeGreaterThan(Date.now() + 240_000);
+    await settle(60_000);
+    expect(releases).toHaveBeenCalledTimes(1);
+    failing = false;
+    await settle(240_000);
+    expect(releases).toHaveBeenCalledTimes(2);
     expect((await environmentService(db).getLeaseById(lease.id))?.status).toBe("expired");
     await quiet();
   });

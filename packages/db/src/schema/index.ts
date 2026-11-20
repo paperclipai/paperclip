@@ -52,12 +52,19 @@ export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
+export { responsibilities, responsibilityAreas, responsibilityLinks } from "./responsibilities.js";
+export {
+  responsibilityStatusReports,
+  responsibilityMetrics,
+  responsibilityMetricReadings,
+} from "./responsibility_reporting.js";
 export { folders } from "./folders.js";
 export { issues } from "./issues.js";
 export { issueAccessGrants } from "./issue_access_grants.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
+export { issueRecoveryDeferrals, issueRecoveryFullPasses } from "./issue_recovery_full_passes.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
@@ -261,6 +268,7 @@ export { agentCommentary } from "./agent_commentary.js";
 
 
 export { agentIdentityKeys } from "./agent_identity_keys.js";
+export { companyWorkloadIdentityKeys, type CompanyWorkloadIdentityKeyStatus } from "./company_workload_identity_keys.js";
 
 export { chatVoiceReports } from "./chat_voice_reports.js";
 
@@ -279,6 +287,8 @@ export * from "./fast_responses.js";
 export { companyObservability } from "./company_observability.js";
 
 export * from "./prompt_injection_prevention.js";
+export * from "./responsibility_summary_invocations.js";
+export { responsibilityDashboardVersions } from "./responsibility_dashboard_versions.js";
 export { workflows } from "./workflows.js";
 
 export { userWorkspacePreferences } from "./user_workspace_preferences.js";
@@ -289,3 +299,6 @@ export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionPr
 export { budgetEvaluationWork } from "./budget_evaluation_work.js";
 export { tailscaleConnections } from "./tailscale_connections.js";
 export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";
+export { linkPreviews } from "./link_previews.js";
+export { toolConnectionContentDeletions } from "./tool_connection_content_deletions.js";
+export * from "./plugin_connector_legacy_access.js";

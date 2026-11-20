@@ -6,10 +6,11 @@ import { Check, Copy, MessageCircle, WrapText } from "lucide-react";
 import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { useCoordinatorChatReference } from "./coordinator/CoordinatorChatReferences";
 import { SidebarDocumentLink } from "./SidebarDocumentLink";
-import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
+import { buildDocumentAnnotationHash, parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { MarkdownUrlLink } from "./MarkdownUrlLink";
 import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
@@ -129,6 +130,7 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
   /** Resolve file links to app routes; null leaves the label without a link. */
   resolveLinkHref?: (href: string) => string | null;
+  documentIssueId?: string;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string, image: HTMLImageElement) => void;
   /** Keep media inert as references, or omit images in compact text previews. */
@@ -774,6 +776,7 @@ function MarkdownBodyImpl({
   externalReferences,
   resolveImageSrc,
   resolveLinkHref,
+  documentIssueId,
   onImageClick,
   mediaMode = "render",
   resolveWorkspaceFileRef,
@@ -781,6 +784,11 @@ function MarkdownBodyImpl({
   const { theme } = useTheme();
   const coordinator = useCoordinatorPresentation();
   const streamWords = useContext(MarkdownWordStreaming);
+  const scopedUrlTransform = useCallback((url: string, key: string) => {
+    const safeUrl = safeMarkdownUrlTransform(url);
+    const target = key === "href" && documentIssueId ? parseDocumentAnnotationHash(safeUrl) : null;
+    return target && !target.documentIssueId ? buildDocumentAnnotationHash({ ...target, documentIssueId }) : safeUrl;
+  }, [documentIssueId]);
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
   // knownPrefixes undefined, which keeps issue auto-linking permissive.
@@ -1028,6 +1036,8 @@ function MarkdownBodyImpl({
       className={cn(
         "paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
         theme === "dark" && "prose-invert",
+        // Customer content: masked in session replay, skipped by autocapture.
+        ANALYTICS_MASK_CLASS,
         className,
       )}
       style={mergeWrapStyle(style)}
@@ -1036,7 +1046,7 @@ function MarkdownBodyImpl({
         remarkPlugins={remarkPlugins}
         rehypePlugins={streamWords ? [rehypeStreamingWords] : undefined}
         components={components}
-        urlTransform={safeMarkdownUrlTransform}
+        urlTransform={documentIssueId ? scopedUrlTransform : safeMarkdownUrlTransform}
       >
         {children}
       </Markdown>

@@ -59,6 +59,7 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
       if (key.includes("data-property-row")) return panelOpen && !options.missingProperty;
       if (key === "Toggle side panel") return !panelOpen && options.closedPanel === "toggle";
       if (key.includes("Show properties")) return !panelOpen && options.closedPanel === "properties";
+      if (key === "Open a new tab" || key === "/^Properties/") return false;
       return true;
     },
     async scrollIntoViewIfNeeded() { actions.push(`scroll:${key}`); },

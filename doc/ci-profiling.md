@@ -79,7 +79,7 @@ places the metadata gate on the reserved `paperclip-ci-routing-x64` AWS fleet.
 The gate checks current CI CODEOWNERS before authorizing any PR code on AWS;
 PR edits cannot grant access. A stale roster can allocate only the bounded
 metadata gate. Normal base-branch advancement does not change an authorized
-run's placement. See [Trusted PR Workflow](DEVELOPING.md#trusted-pr-workflow)
+run's placement. See [Trusted PR Workflow](ci-workflows.md#trusted-pr-workflow)
 for the admission settings and immutable merge validation.
 The existing fail-closed GitHub-hosted fallback still applies if AWS routing
 cannot be authorized. The separate post-run Honeycomb exporter also uses

@@ -872,7 +872,7 @@ describe("issue thread interaction routes", () => {
       .get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
       .expect(200, []);
 
-    expect(mockInteractionService.listForIssue).toHaveBeenCalledExactlyOnceWith(ISSUE_ID);
+    expect(mockInteractionService.listForIssue).toHaveBeenCalledExactlyOnceWith(ISSUE_ID, expect.objectContaining({ id: ISSUE_ID, status }));
     expect(mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments).not.toHaveBeenCalled();
     expect(mockInteractionService.expirePendingInteractionsForTerminalIssue).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();

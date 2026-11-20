@@ -69,6 +69,7 @@ it("keeps historical/source packs without an archive on the existing path", asyn
 it.each(["v1", "v2"])("cancels a real %s archive hash after its first read chunk", async version => {
   const { pack } = version === "v2" ? await layeredFixture() : await fixture();
   const archivePath = version === "v2" ? `${pack}.archives/overlay.tar.zst` : `${pack}.tar.zst`;
+  await fs.utimes(archivePath, new Date(), new Date(Date.now() + 60_000));
   const controller = new AbortController();
   const handle = await fs.open(archivePath, "r");
   const prototype = Object.getPrototypeOf(handle) as typeof handle;
@@ -82,6 +83,25 @@ it.each(["v1", "v2"])("cancels a real %s archive hash after its first read chunk
   try {
     await expect(readProviderPackArchive(pack, digest, controller.signal)).rejects.toThrow(/abort|owned archive read stopped/i);
     expect(controller.signal.aborted).toBe(true);
+  } finally { streaming.mockRestore(); }
+});
+
+it("hashes an unchanged verified archive once per server process and again after it changes", async () => {
+  const { pack } = await fixture();
+  const archivePath = `${pack}.tar.zst`;
+  const handle = await fs.open(archivePath, "r");
+  const prototype = Object.getPrototypeOf(handle) as typeof handle;
+  await handle.close();
+  const streaming = vi.spyOn(prototype, "createReadStream");
+  try {
+    await expect(readProviderPackArchive(pack, digest)).resolves.toMatchObject({ sourcePath: archivePath });
+    expect(streaming).not.toHaveBeenCalled();
+    const original = await fs.readFile(archivePath);
+    const corrupted = Buffer.from(original);
+    corrupted[corrupted.length - 1] ^= 0xff;
+    await fs.writeFile(archivePath, corrupted);
+    await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("sha256_mismatch");
+    expect(streaming).toHaveBeenCalledOnce();
   } finally { streaming.mockRestore(); }
 });
 

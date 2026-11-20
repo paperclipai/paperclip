@@ -2,6 +2,7 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sanitizeAssetNamespace } from "@paperclipai/shared";
@@ -92,6 +93,19 @@ describe("ProfileSettings", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("shows the saved display name in the first frame when the session is already cached", () => {
+    // A reload restores the session from the saved read cache before any response. The first
+    // committed frame must show the saved name, not an empty field that an effect fills later.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(queryKeys.auth.session, {
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Alex Chen", email: "alex@example.com", image: null },
+    });
+    const html = renderToStaticMarkup(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    const field = new DOMParser().parseFromString(html, "text/html").getElementById("profile-name") as HTMLInputElement | null;
+    expect(field?.getAttribute("value")).toBe("Alex Chen");
   });
 
   it("does not render a keyboard shortcuts toggle because shortcuts are always enabled", async () => {

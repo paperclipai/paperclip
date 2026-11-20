@@ -7,6 +7,7 @@ export type DeferredReceiptRecoveryOptions = {
   companyId?: string;
   requestId?: string;
   onError?: (error: unknown) => void;
+  onDeferredDeadline?: (at: number) => void;
 };
 
 const ASSIGNMENT_WAKE_REASON = "issue_assigned";

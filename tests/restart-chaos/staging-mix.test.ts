@@ -4,7 +4,7 @@ import { parseCommand } from "./config.js";
 import {
   agentRunCaps, assignAdapters, childLine, childNonce, doneMarker, expectedRoundHash, followUpMarker, gradeStagingMix, holdsRetry, planArrivals,
   arrivalEndMs, followUpRequestId, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
-  slotTimesMs, stagingMixBudgetMs, stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
+  bannerShownMs, noteRetryBanner, slotTimesMs, stagingMixBudgetMs, stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
 } from "./staging-mix.js";
 import { descendantsOf, parseMemInfo, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, type ResourceSample } from "./staging-mix-run.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
@@ -296,6 +296,46 @@ describe("staging-mix board step", () => {
     expect(late.stagingMix!.followUp!.inOverlap).toBe(false);
   });
 
+  it("posts a follow-up the run finished before as an after-end follow-up the product must answer (w-20261114T231451-s7110 t009)", async () => {
+    const createdAt = 1_794_698_190_262, finishedAt = 1_794_698_875_995, latestAt = createdAt + Math.round(10 * ROUND_SECONDS * 1_000 * 0.85);
+    const plan = task({ turnMinutes: 15, rounds: 10, followUpAfterMs: 529_234, arriveAtMs: 40_000, holdMs: 600_000 });
+    const live: TaskSample = { ...running, runs: [{ ...running.runs![0]!, id: "6dfb753b", createdAt: new Date(createdAt + 26).toISOString() }] };
+    const ended: TaskSample = { ...live, issueStatus: "done", runs: [{ ...live.runs![0]!, status: "succeeded", finishedAt: new Date(finishedAt).toISOString() }] };
+    const rec = record({ createdAt });
+    expect((await stepIn(rec, live, createdAt + 529_234 + 10_000, false, plan)).posted).toEqual([]);
+    expect((await stepIn(rec, live, finishedAt - 1_000, false, plan)).posted).toEqual([]);
+    expect((await stepIn(rec, ended, 1_794_698_882_700, true, plan)).posted).toEqual([]);
+    const after = await stepIn(rec, ended, latestAt + 1_000, false, plan);
+    expect(after.posted.length).toBe(1);
+    expect(after.posted[0]).toContain(followUpMarker("n1"));
+    expect(rec.stagingMix!.followUp).toMatchObject({ commentId: "c1", duringRun: false, at: latestAt + 1_000 });
+    expect(rec.stagingMix!.afterEndFollowUps).toEqual([{ afterRunEndAt: finishedAt, at: latestAt + 1_000, delayMs: latestAt + 1_000 - finishedAt, commentId: "c1" }]);
+    expect((await stepIn(rec, ended, latestAt + 5_000, false, plan)).posted).toEqual([]);
+
+    const nonce = "15b397b0";
+    const grade = (comments: Array<{ body: string; runId: string | null; createdAt: number }>, extra: string[]) => gradeStagingMix(nonce, plan, artifacts({
+      documents: { ledger: ledgerFor(nonce, 10, extra) }, agentComments: comments.map(comment => comment.body),
+      stagingMix: { followUp: rec.stagingMix!.followUp!, followUpErrors: [], retries: [], comments, afterEndFollowUps: rec.stagingMix!.afterEndFollowUps } })).checks;
+    const done = { body: doneMarker(nonce), runId: "6dfb753b", createdAt: finishedAt - 1_000 };
+    const unanswered = grade([done], []);
+    expect(unanswered.find(check => check.name === "follow_up_posted")).toMatchObject({ ok: true, detail: "comment c1 after the run ended" });
+    expect(unanswered.find(check => check.name === "after_end_follow_ups_served")!.ok).toBe(false);
+    expect(unanswered.some(check => check.name === "follow_up_served")).toBe(false);
+    const answered = grade([done, { body: "Added the FOLLOWUP line.", runId: "r2", createdAt: latestAt + 60_000 }], [followUpMarker(nonce)]);
+    expect(answered.filter(check => !check.ok)).toEqual([]);
+  });
+
+  it("does not post an after-end follow-up between runs before the during-run window closes, or while a run is queued", async () => {
+    const plan = task({ followUpAfterMs: 60_000 });
+    const gap: TaskSample = { ...running, issueStatus: "in_progress", runs: [{ ...running.runs![0]!, status: "failed", finishedAt: new Date(50_000).toISOString() }] };
+    const queued: TaskSample = { ...gap, runs: [...gap.runs!, { ...running.runs![0]!, id: "r2", status: "queued" }] };
+    const rec = record();
+    expect((await stepIn(rec, gap, 61_000, true, plan)).posted).toEqual([]);
+    expect((await stepIn(rec, queued, 60_000 + 600_000, false, plan)).posted).toEqual([]);
+    expect((await stepIn(rec, gap, 60_000 + 600_000, false, plan)).posted.length).toBe(1);
+    expect(rec.stagingMix!.followUp).toMatchObject({ duringRun: false });
+  });
+
   it("tries a failed follow-up again on the next poll and keeps every error for the grade", async () => {
     const rec = record();
     const failing = await step(rec, running, 80_000, true, undefined, () => { throw new Error("HTTP 502"); });
@@ -362,6 +402,22 @@ describe("staging-mix board step", () => {
     expect(rec.stagingMix!.retryBanner).toMatchObject({ firstShownAt: 1_000, lastShownAt: 9_000, visibleSince: 1_000 });
     await step(rec, running, 20_000, false);
     expect(rec.stagingMix!.retryBanner).toMatchObject({ shownMs: 19_000, visibleSince: null });
+  });
+
+  it("counts a banner at most two minutes past its last sample when it was seen hidden late", () => {
+    const state: Parameters<typeof noteRetryBanner>[0] = {};
+    noteRetryBanner(state, true, 1_000, "setup_failed");
+    noteRetryBanner(state, true, 273_000, "setup_failed");
+    noteRetryBanner(state, false, 10_483_000, null);
+    expect(state.retryBanner).toMatchObject({ firstShownAt: 1_000, lastShownAt: 273_000, shownMs: 392_000, visibleSince: null });
+  });
+
+  it("bounds a banner that is still open when sampling stopped", () => {
+    const state: Parameters<typeof noteRetryBanner>[0] = {};
+    noteRetryBanner(state, true, 1_000, "setup_failed");
+    noteRetryBanner(state, true, 273_000, "setup_failed");
+    expect(bannerShownMs(state.retryBanner!, 10_483_000)).toBe(392_000);
+    expect(bannerShownMs(state.retryBanner!, 300_000)).toBe(299_000);
   });
 
   it("with --mix-retry-during-wave, waits for an overlap to click a Retry, and holds the observer's own click until the hold runs out", async () => {

@@ -89,13 +89,16 @@ function fakeProvider() {
     metadataOnlyAtHint: false,
     /** Runs once when the server first receives a signed-in request (to stage races). */
     onAuthorizedMcpRequest: null as null | (() => Promise<void>),
+    signingAlgorithms: ["RS256", "ES256"],
+    /** Runs once at the start of the next token request (to stage a paused refresh). */
+    onTokenRequest: null as null | (() => Promise<void>),
   };
   const metadata = (issuer: string) => ({
     issuer,
     token_endpoint: `${issuer}/oauth/token`,
     grant_types_supported: ["client_credentials"],
     token_endpoint_auth_methods_supported: ["private_key_jwt", "client_secret_basic", "client_secret_post"],
-    token_endpoint_auth_signing_alg_values_supported: ["RS256", "ES256"],
+    token_endpoint_auth_signing_alg_values_supported: state.signingAlgorithms,
   });
   const handle = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = String(input instanceof Request ? input.url : input);
@@ -118,6 +121,11 @@ function fakeProvider() {
     if (url === TOKEN_URL) {
       const body = new URLSearchParams(String(init?.body));
       state.tokenRequests.push({ url, body, authorization: headers.get("authorization") });
+      if (state.onTokenRequest) {
+        const hook = state.onTokenRequest;
+        state.onTokenRequest = null;
+        await hook();
+      }
       if (state.tokenDelayMs) await new Promise((resolve) => setTimeout(resolve, state.tokenDelayMs));
       if (body.get("grant_type") !== "client_credentials") return json({ error: "unsupported_grant_type" }, 400);
       const assertion = body.get("client_assertion");
@@ -600,6 +608,152 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     const grant = await organizationGrant(created.connectionId);
     await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
     expect(provider.state.tokenRequests.at(-1)!.authorization).toBe(`Basic ${Buffer.from(`${CLIENT_ID}:switched-secret`).toString("base64")}`);
+  });
+
+  it("never leaves a refused test's secret behind with another client ID", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    provider.state.extraClients.set("other-client", "other-secret");
+    // While one admin tests another client, a second admin starts a key rotation.
+    provider.state.onAuthorizedMcpRequest = async () => {
+      await svc.rotateMachineSignIn(company.id, created.connectionId, { method: "paperclip_key" }, actor);
+    };
+    await expect(svc.testMachineSignIn(company.id, created.connectionId, { clientId: "other-client", clientSecret: "other-secret" }, actor))
+      .rejects.toMatchObject({ status: 409, details: expect.objectContaining({ code: "client_credentials_changed" }) });
+    expect((await svc.getMachineSignIn(company.id, created.connectionId)).clientId).toBe(CLIENT_ID);
+    // A normal call (no forced refresh) still runs as the original client: the
+    // refused test did not swap in its own token.
+    await svc.checkHealth(created.connectionId, actor);
+    const used = provider.state.mcpRequests.at(-1)!.authorization!.replace("Bearer ", "");
+    expect(provider.state.tokenClients.get(used)).toBe(CLIENT_ID);
+    // The refused test wrote nothing: the saved ID and secret still belong together.
+    const grant = await organizationGrant(created.connectionId);
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    expect(provider.state.tokenRequests.at(-1)!.authorization).toBe(`Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64")}`);
+  });
+
+  it("refuses an older retest after another retest replaced both the client ID and secret", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    provider.state.extraClients.set("other-client", "other-secret");
+    // While one admin re-tests the original client, another replaces both the ID and secret.
+    provider.state.onAuthorizedMcpRequest = async () => {
+      await svc.testMachineSignIn(company.id, created.connectionId, { clientId: "other-client", clientSecret: "other-secret" }, actor);
+    };
+    await expect(svc.testMachineSignIn(company.id, created.connectionId, { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }, actor))
+      .rejects.toMatchObject({ status: 409, details: expect.objectContaining({ code: "client_credentials_changed" }) });
+    expect((await svc.getMachineSignIn(company.id, created.connectionId)).clientId).toBe("other-client");
+    const grant = await organizationGrant(created.connectionId);
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    expect(provider.state.tokenRequests.at(-1)!.authorization).toBe(`Basic ${Buffer.from("other-client:other-secret").toString("base64")}`);
+  });
+
+  it("reloads accepted key types for a connection saved before they were recorded", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    provider.state.signingAlgorithms = ["ES256"];
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
+    const { tokenEndpointAuthSigningAlgValuesSupported: _dropped, ...olderOauth } = row!.config.oauth as Record<string, unknown>;
+    const olderConfig = { ...row!.config, oauth: olderOauth };
+    await db.update(toolConnections).set({ config: olderConfig, transportConfig: olderConfig }).where(eq(toolConnections.id, row!.id));
+    const started = await svc.rotateMachineSignIn(company.id, created.connectionId, { method: "paperclip_key" }, actor);
+    expect(started.machineSignIn.pendingPublicKey?.algorithm).toBe("ES256");
+  });
+
+  it("lets a retest that replaces the secret and normal token refreshes finish together", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    const grant = await organizationGrant(created.connectionId);
+    const refresh = () => service().refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    const started = Date.now();
+    await Promise.all([
+      svc.testMachineSignIn(company.id, created.connectionId, { clientSecret: CLIENT_SECRET }, actor),
+      refresh(), refresh(), refresh(),
+    ]);
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 60_000);
+
+  it("recovers from a refresh abandoned by a stopped server", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const { svc, created } = await setupKeyConnection(company.id, provider);
+    const grant = await organizationGrant(created.connectionId);
+    const abandoned = async () => {
+      const current = await organizationGrant(created.connectionId);
+      await db.update(connectionGrants).set({
+        providerTenant: { ...(current.providerTenant ?? {}), oauth: {
+          ...((current.providerTenant ?? {}).oauth as object ?? {}),
+          accessTokenExpiresAt: "2000-01-01T00:00:00.000Z",
+          refreshLease: { id: "stopped-server", expiresAt: "2000-01-01T00:00:00.000Z" },
+        } },
+      }).where(eq(connectionGrants.id, grant.id));
+    };
+    // The next request takes over the abandoned lease and gets a new token.
+    await abandoned();
+    const before = provider.state.issued;
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, actor });
+    expect(provider.state.issued).toBe(before + 1);
+    // A successful retest also clears an abandoned lease.
+    await abandoned();
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    expect(((await organizationGrant(created.connectionId)).providerTenant?.oauth as Record<string, unknown>).refreshLease).toBeUndefined();
+  });
+
+  it("never saves the token of a refresh whose lease was taken over", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const { created } = await setupKeyConnection(company.id, provider);
+    const grant = await organizationGrant(created.connectionId);
+    const input = { companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor };
+    // Refresh A pauses past its lease; refresh B on another server takes over and finishes.
+    provider.state.onTokenRequest = async () => {
+      const current = await organizationGrant(created.connectionId);
+      const oauth = (current.providerTenant ?? {}).oauth as Record<string, unknown>;
+      await db.update(connectionGrants).set({
+        providerTenant: { ...(current.providerTenant ?? {}), oauth: { ...oauth, refreshLease: { ...(oauth.refreshLease as object), expiresAt: "2000-01-01T00:00:00.000Z" } } },
+      }).where(eq(connectionGrants.id, grant.id));
+      await service().refreshOAuthGrantCredentials(input);
+    };
+    const issuedBefore = provider.state.issued;
+    await expect(service().refreshOAuthGrantCredentials(input))
+      .rejects.toMatchObject({ details: expect.objectContaining({ code: "oauth_refresh_superseded" }) });
+    const takeoverToken = `machine-token-${issuedBefore + 1}`;
+    // Normal calls use the takeover's token, not the one the paused refresh received later.
+    await service().checkHealth(created.connectionId, actor);
+    expect(provider.state.mcpRequests.at(-1)!.authorization).toBe(`Bearer ${takeoverToken}`);
+  });
+
+  it("creates the kind of key the sign-in service accepts when switching from a secret", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    provider.state.signingAlgorithms = ["ES256"];
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    const started = await svc.rotateMachineSignIn(company.id, created.connectionId, { method: "paperclip_key" }, actor);
+    expect(started.machineSignIn.pendingPublicKey?.algorithm).toBe("ES256");
   });
 
   it("tries a new client secret before replacing the old one", async () => {

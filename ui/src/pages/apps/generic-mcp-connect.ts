@@ -1,4 +1,4 @@
-import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, mcpRemoteHeaderRejectionMessage } from "@paperclipai/shared";
+import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, mcpRemoteHeaderRejectionMessage, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 import type { GenericMcpAuthMode } from "@paperclipai/shared";
 
 /**
@@ -67,6 +67,8 @@ export function oauthCallbackUrlForBrowser(
  * excluded because remote MCP URLs can carry credentials there.
  */
 export function defaultGenericMcpName(url: string): string | null {
+  const peer = paperclipPeerFromMcpUrl(url);
+  if (peer) return peer.name;
   try {
     const parsed = new URL(url);
     const host = parsed.host.replace(/^www\./, "");

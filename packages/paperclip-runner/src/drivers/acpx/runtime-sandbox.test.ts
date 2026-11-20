@@ -20,6 +20,7 @@ import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import { createAcpxRecoveryBinding } from "./recovery-identity.js";
 import {
@@ -368,6 +369,27 @@ describe("ACPX runtime sandbox", () => {
       await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, readRoots } })).rejects.toThrow();
     }
     await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, systemInstructions: "x".repeat(32 * 1024 + 1) } })).rejects.toThrow("bounded size");
+  });
+
+  it.each(["claude", "codex", "grok", "antigravity"] as const)("admits %s instructions that the sandbox does not deliver, whatever their size", async (agent) => {
+    const fixture = await sandboxFixture(agent);
+    const systemInstructions = "x".repeat(54_734);
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent, providerPolicy: { readOnly: false, systemInstructions } });
+    expect(Object.values(sandbox.launchEnvironment).some(value => value?.includes(systemInstructions))).toBe(false);
+  });
+
+  it.each(["pi", "cursor"] as const)("rejects oversized %s instructions with the instructions admission code", async (agent) => {
+    const fixture = await sandboxFixture(agent);
+    const failure = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent, providerPolicy: { readOnly: false, systemInstructions: "x".repeat(32 * 1024 + 1) } }).catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toMatch(/bounded size/);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_INSTRUCTIONS");
+  });
+
+  it("rejects instructions containing NUL with the instructions admission code", async () => {
+    const fixture = await sandboxFixture("claude");
+    const failure = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude", providerPolicy: { readOnly: false, systemInstructions: "a\0b" } }).catch(error => error);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_INSTRUCTIONS");
   });
 
   it("re-prepares and re-synchronizes an existing private sandbox", async () => {

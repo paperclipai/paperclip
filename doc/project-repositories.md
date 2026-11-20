@@ -32,7 +32,7 @@ editable through Configuration and the workspace API. One workspace remains prim
 Tasks materialize the other distinct repositories as editable checkouts inside their
 workspace, including when no local folders are configured. Local execution and sandbox
 staging use the same layout; sandbox restore preserves each repository's Git history.
-See [Project Repository Checkouts](DEVELOPING.md#project-repository-checkouts) for paths,
+See [Project Repository Checkouts](workspace-repositories.md#project-repository-checkouts) for paths,
 ignore rules, and reuse behavior. Responsible-user credential rules still apply.
 A repository selection never delegates credentials.
 

@@ -23,12 +23,37 @@ export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
   return [...new Set([...rendered, ...[...reply.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!)])];
 }
 /**
- * The cancelled request's setup label must be absent from the document's final revision. Whether the label
- * was ever saved is checked separately on the consuming run's revisions; the plan's layout is not graded.
+ * Contact details the later request asks for. Only these setup literals identify the contact section. The
+ * composer turns an email address into a mailto link, so the request names a contact person instead.
  */
-export function documentContactRemoved(rows: ReadonlyArray<{ id: string; body?: string | null }>, latestRevisionId: unknown, label: string) {
-  const final = rows.find(row => row.id === latestRevisionId);
-  return !!final && label.length > 0 && !(final.body ?? "").includes(label);
+export function contactDetails(nonce: string) {
+  return { name: "Harriet Quillfeather", phone: `+1-555-${nonce.replace(/\D/g, "").slice(-4).padStart(4, "0")}` };
+}
+/**
+ * Whole trimmed lines that belong only to the contact section of the revision that saved it: the body of a
+ * Markdown section whose heading carries a setup marker (label, contact name or phone), plus lines that carry a
+ * marker. Lines that also appear elsewhere in that revision, such as `---` or a shared bullet, are excluded.
+ */
+export function contactSectionLines(body: string, markers: readonly string[]): string[] {
+  const lines = body.split("\n").map(row => row.trim()), marked = (line: string) => markers.some(m => m.length > 0 && line.includes(m));
+  const inSection: string[] = []; let level = 0;
+  for (const line of lines) {
+    const heading = /^(#{1,6})\s/.exec(line)?.[1]?.length;
+    if (heading) level = marked(line) ? heading : heading <= level ? 0 : level;
+    if (line && (level > 0 || marked(line))) inSection.push(line);
+  }
+  const count = (rows: string[], line: string) => rows.filter(row => row === line).length;
+  return [...new Set(inSection)].filter(line => count(lines, line) === count(inSection, line));
+}
+/**
+ * None of the contact section's distinctive lines survives as a whole line in the final revision, and the
+ * requested contact name and phone appear nowhere in it, however reformatted. The label alone may still be quoted.
+ */
+export function documentContactRemoved(consumedBody: string, finalBody: string | undefined, label: string, details: readonly string[]) {
+  const section = contactSectionLines(consumedBody, [label, ...details]);
+  const kept = new Set((finalBody ?? "").split("\n").map(row => row.trim()));
+  return finalBody !== undefined && section.length > 0 && !section.some(line => kept.has(line))
+    && !details.some(detail => detail.length > 0 && finalBody.includes(detail));
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -90,7 +115,8 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     await ctx.input.capture("actual-human-contact-discard", "Only the eligible contact request has left the real task queue", "runtime-discard.png");
     // This new, explicit human request is a distinct later instruction. It
     // deliberately reaches delivery before its cancellation.
-    const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}. Keep the accessible-font requirement and finish this task.`;
+    const contact = contactDetails(ctx.input.nonce);
+    const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}, listing the contact person ${contact.name} and the phone ${contact.phone}. Keep the accessible-font requirement and finish this task.`;
     await submitTaskReply(ctx.input.page, secondText);
     const secondQueue = await pollUntil({ label: "Distinct human contact request genuinely queued", deadlineAt: Date.now() + 20_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(queuePath), accept: q => q.entries.length === 2 && q.entries.some(row => row.comment.body === secondText) });
@@ -142,14 +168,17 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state);
     state.initialRevisionRetained = o.revisions.some(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id);
-    // The consumed request asked for a contact section labelled with the attempt nonce. Its
-    // consuming run must have saved that label, and the cancellation run's latest plan must drop it.
-    const label = ctx.input.nonce, worker = (state.worker as Entity).id;
-    state.consumedLabelSaved = o.revisions.some(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(label));
+    // The consumed request asked for a contact section with the setup's contact name and phone. Its consuming run
+    // must have saved the name, and the cancellation run's latest plan must drop that section's distinctive lines.
+    const contact = contactDetails(ctx.input.nonce), worker = (state.worker as Entity).id;
+    const consumed = o.revisions.filter(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(contact.name));
+    state.consumedLabelSaved = consumed.length > 0;
     const latest = o.revisions.filter(row => row.createdByRunId === state.finalWorkerRunId && row.createdByAgentId === worker
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
-    state.finalPlanWithoutContact = latest.length > 0 && o.documents.every(doc => documentContactRemoved(
-      o.revisions.filter(row => row.documentId === doc.id), doc.latestRevisionId, label));
+    state.finalPlanWithoutContact = latest.length > 0 && consumed.every(row => {
+      const doc = o.documents.find(d => d.id === row.documentId);
+      return documentContactRemoved(row.body ?? "", o.revisions.find(r => r.id === doc?.latestRevisionId)?.body ?? undefined, ctx.input.nonce, [contact.name, contact.phone]);
+    });
     return o;
   },
   async cleanup(ctx, state) { try { await cleanupIdentityProbes(ctx); } finally { await releaseRuntimeWorker(state); } },

@@ -152,7 +152,7 @@ export const toolConnections = pgTable(
   },
   (table) => [
     check("tool_connections_ownership_check", sql`${table.ownership} in ('platform_shared', 'platform_provisioned', 'customer', 'dcr')`),
-    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth')`),
+    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth', 'plugin')`),
     check("tool_connections_purpose_check", sql`${table.connectionPurpose} in ('tool', 'channel', 'ai')`),
     check("tool_connections_channel_transport_check", sql`(
       (${table.connectionPurpose} = 'tool' and ${table.transport} not in ('chat_sdk', 'voice', 'runtime_auth'))

@@ -4,6 +4,8 @@ import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
 import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
+import { refreshRecentTaskSummaries } from "../lib/recent-task-summary-refresh";
+import { invalidateInteractionRecordViews } from "../lib/attention-record-views";
 import {
   createContext,
   useCallback,
@@ -1360,6 +1362,7 @@ function buildRunStatusToast(
   // Interrupt is an intentional conversation control. Its caller gives
   // feedback; the terminal event must not announce a cancelled/failed run.
   if (errorCode === "operator_interrupted") return null;
+  if (status === "cancelled" && errorCode === "provider_limit_wait") return null;
   // Workspace contention is ordinary scheduling, not a failed user action.
   if (errorCode === "workspace_busy" || errorCode === "agent_directory_busy") return null;
   const contextSource = readString(payload.contextSource);
@@ -1489,7 +1492,10 @@ function invalidateHeartbeatQueries(
   companyId: string,
   payload: Record<string, unknown>,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(companyId) });
+  const parentIds = Array.isArray(payload.recentSubtaskParentIds)
+    ? payload.recentSubtaskParentIds.filter((id): id is string => typeof id === "string") : undefined;
+  const issueId = readString(payload.issueId);
+  refreshRecentTaskSummaries(queryClient, companyId, issueId, parentIds);
   // Note: liveRuns(companyId) is intentionally NOT invalidated here — it is
   // event-sourced via applyRunLifecycleToCompanyLiveRuns in the caller.
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
@@ -1583,6 +1589,8 @@ function invalidateActivityQueries(
   const actorType = readString(payload.actorType);
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
+  const subtaskParents = Array.isArray(payload.recentSubtaskParentIds)
+    ? payload.recentSubtaskParentIds.filter((id): id is string => typeof id === "string") : undefined;
   queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
   if (entityType === "issue" && (action === "issue.read_marked" || action === "issue.read_unmarked")) {
     // Audit views show read receipts, while unread state belongs to one person.
@@ -1593,6 +1601,7 @@ function invalidateActivityQueries(
     }
     const readerId = readString(details?.userId) ?? (actorType === "user" ? actorId : null);
     if (readerId && readerId === currentActor.userId) {
+      refreshRecentTaskSummaries(queryClient, companyId, entityId, subtaskParents);
       for (const queryKey of [
         queryKeys.issues.listMineByMe(companyId),
         queryKeys.issues.listTouchedByMe(companyId),
@@ -1625,12 +1634,16 @@ function invalidateActivityQueries(
     action?.startsWith("company_membership.") ||
     action?.startsWith("membership.") || action?.includes("privacy");
   if (decisionAudienceChanged) {
+    void queryClient.resetQueries({ queryKey: queryKeys.issues.summaries(companyId) });
     // Drop old permission-filtered payloads immediately while the API resolves
     // the current audience. A failed refetch must not retain a revoked receipt.
     for (const queryKey of [queryKeys.attention(companyId), ["decisions", companyId, "task-record"], ["issues", "decision-receipts"], ["issues", "chat-handoffs"], ["issues", "pending-questions"]]) {
       void queryClient.resetQueries({ queryKey });
     }
   } else if (decisionProjectionChanged) {
+    if (action?.startsWith("issue.thread_interaction_")) {
+      invalidateInteractionRecordViews(queryClient, companyId);
+    }
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     queryClient.invalidateQueries({ queryKey: ["decisions", companyId] });
     queryClient.invalidateQueries({ queryKey: queryKeys.decisionQueues.list(companyId) });
@@ -1664,6 +1677,7 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    refreshRecentTaskSummaries(queryClient, companyId, entityId, subtaskParents);
     // Browser lists stop polling while connected; this activity refreshes them.
     if (entityId && action?.startsWith("browser.")) refreshTaskBrowsers(queryClient, entityId);
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
@@ -1679,7 +1693,8 @@ function invalidateActivityQueries(
     }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
-      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId)),
+      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId),
+        queryKeys.issues.summaries(companyId)),
     });
     refreshTaskIndexForActivity(queryClient, companyId, ownActorActivity);
     refreshMentionPoolForActivity(

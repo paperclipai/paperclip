@@ -33,6 +33,17 @@ function markSeen() {
   try { window.localStorage.setItem(STAR_PROMPT_SEEN_KEY, new Date().toISOString()); } catch { /* shown once per visit instead */ }
 }
 
+function readOrRecordEligibility(companyId: string, completedTasks: number) {
+  try {
+    const key = `paperclip.github-star-prompt.eligibility.${companyId}`;
+    const saved = window.localStorage.getItem(key);
+    if (saved !== null) return saved === "eligible";
+    const eligible = completedTasks < STAR_PROMPT_COMPLETED_TASKS;
+    window.localStorage.setItem(key, eligible ? "eligible" : "ineligible");
+    return eligible;
+  } catch { return false; }
+}
+
 /**
  * Asks self-hosted users to star the repository once they have finished
  * enough tasks to know whether Paperclip helps them. It shows at most once
@@ -46,6 +57,7 @@ export function GitHubStarPrompt() {
   const { onboardingOpen } = useDialogState();
   const [seen, setSeen] = useState(readSeen);
   const [open, setOpen] = useState(false);
+  const [milestone, setMilestone] = useState<{ companyId: string; eligible: boolean } | null>(null);
   const onboardingInProgress = useOnboardingInProgress(selectedCompanyId);
   const health = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get(), enabled: false });
   const selfHosted = health.isSuccess && !health.data.cloud;
@@ -56,7 +68,14 @@ export function GitHubStarPrompt() {
     enabled: eligible,
     staleTime: 60_000,
   });
-  const reached = eligible && done.isSuccess && done.data.length >= STAR_PROMPT_COMPLETED_TASKS;
+  useEffect(() => {
+    if (!eligible || !selectedCompanyId || !done.isSuccess || done.isFetching
+      || milestone?.companyId === selectedCompanyId) return;
+    setMilestone({ companyId: selectedCompanyId, eligible: readOrRecordEligibility(selectedCompanyId, done.data.length) });
+  }, [eligible, selectedCompanyId, done.isSuccess, done.isFetching, done.data, milestone]);
+
+  const reached = eligible && milestone?.companyId === selectedCompanyId && milestone.eligible
+    && done.isSuccess && done.data.length >= STAR_PROMPT_COMPLETED_TASKS;
   const otherModalOpen = useModalOpen(reached);
   const taskNeedsAttention = useModalOpen(reached || open, TASK_ATTENTION_SELECTOR);
   const midTask = isTaskFocusPath(useLocation().pathname);

@@ -697,3 +697,27 @@ it("drops an entry that vanished from a keyed scope and keeps other companies' s
   expect(coordinator.nextWakeAt()).toBeNull();
   expect(onError).not.toHaveBeenCalled();
 });
+
+it("keeps a backstop hint's deadline without holding the worker busy", async () => {
+  vi.useFakeTimers();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });
+  const backstopAt = Date.now() + 300_000;
+  const load = vi.fn(async (_scope?: string) => []);
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.externalObjectRefresh, minimumPassIntervalMs: 0,
+    decodeScope: hint => hint === "*" ? undefined : hint,
+    backstop: scope => scope === "backstop" ? backstopAt : null,
+    matches: () => true, load, check: async () => null,
+  }, () => true);
+  await worker.ready;
+  load.mockClear();
+  worker.invalidate("backstop");
+  await vi.advanceTimersByTimeAsync(1);
+  expect(load).not.toHaveBeenCalled();
+  expect(coordinator.nextWakeAt()).toBe(backstopAt);
+  expect(worker.reconciliationSnapshot().reconciled).toBe(true);
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(load).toHaveBeenCalledWith("backstop", expect.anything());
+  expect(coordinator.nextWakeAt()).toBeNull();
+});

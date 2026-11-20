@@ -28,6 +28,10 @@ const validArchive = (value: unknown): value is Archive => {
 export const invalidArchive = (reason: string, cause?: unknown) =>
   new Error(`runner_remote_provider_archive_invalid: ${reason}`, cause === undefined ? undefined : { cause });
 
+const verifiedArchives = new Set<string>();
+const archiveIdentity = (path: string, expected: Archive, metadata: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }) =>
+  [path, expected.sha256, metadata.dev, metadata.ino, metadata.size, metadata.mtimeMs, metadata.ctimeMs].join("\0");
+
 export async function verifyArchive(path: string, expected: Archive, signal?: AbortSignal) {
   signal?.throwIfAborted();
   let file;
@@ -37,10 +41,14 @@ export async function verifyArchive(path: string, expected: Archive, signal?: Ab
     const metadata = await file.stat();
     if (!metadata.isFile()) throw invalidArchive("archive_not_file");
     if (metadata.size !== expected.bytes) throw invalidArchive("size_mismatch");
+    const identity = archiveIdentity(path, expected, metadata);
+    if (verifiedArchives.has(identity)) return;
     const hash = createHash("sha256");
     for await (const chunk of file.createReadStream({ autoClose: false, signal })) hash.update(chunk);
     signal?.throwIfAborted();
     if (hash.digest("hex") !== expected.sha256) throw invalidArchive("sha256_mismatch");
+    if (verifiedArchives.size >= 1_024) verifiedArchives.clear();
+    verifiedArchives.add(identity);
   } finally { await file.close(); }
 }
 

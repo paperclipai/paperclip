@@ -1289,7 +1289,7 @@ describe("startServer feedback export wiring", () => {
       return { reconciled: 0, seeded: 0, failed: 0 } as never;
     });
     const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
-      run({ execute: async () => [{ blocked: false }] }) };
+      run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) };
     const hold = { ownerId: "fixture-owner", draining: true, activeRuns: 0, pendingWakes: 0,
       startedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) };
     const report = () => readIdleSleepSafety(emptyDb as never, () => hold, Date.now, hold.ownerId, async () => "none");

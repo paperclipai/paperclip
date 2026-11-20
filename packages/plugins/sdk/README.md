@@ -115,6 +115,47 @@ export default plugin;
 runWorker(plugin, import.meta.url);
 ```
 
+### Connectors
+
+Prefer a connector over top-level `tools` for new plugins. Declare it in the
+manifest `apps` (requires `connectors.provide`) with a method that uses
+`transport: "plugin"`, then serve its tools from the worker:
+
+```ts
+// manifest: apps: [{ slug: "records", ..., methods: [{ key: "default", transport: "plugin",
+//   auth: "none", settingsSchema: {...}, timeoutMs: 30000, tools: { kind: "static", list: [
+//   { name: "lookup_record", risk: "read", parametersSchema: {...} },
+//   { name: "build_report", risk: "read", parametersSchema: {...}, timeoutMs: 60000 }] } }] }]
+ctx.connectors.register("records", "lookup_record", async (params, runCtx) => {
+  // runCtx.connection: { id, appSlug, methodKey, grantId, settings, credential? }
+  return { content: `Record for ${runCtx.connection.settings.region}` };
+});
+// For `tools: { kind: "dynamic" }`, list tools per connection:
+ctx.connectors.listTools("records", async (connection) => [
+  { name: "lookup_record", risk: "read", parametersSchema: { type: "object" } },
+]);
+```
+
+A connector behaves like a built-in one: enabling the plugin only adds it to
+the Connectors catalog, and agents get its tools only from a connection
+installed for them or for the whole company. The host validates settings
+against `settingsSchema`, resolves the connection's credential (`api_key`
+methods) for each call only, and passes the run context from the gateway
+session; tool arguments cannot change it. Every static tool needs a
+registered handler before `setup` returns, or the worker fails to start.
+
+The gateway waits 30 s for a plugin connector tool by default. If your
+backend legitimately takes longer, declare `timeoutMs` (1000–60000 ms) on the
+method, or on a single static tool to override the method's value. Values
+outside that range fail manifest validation; 60 s is the gateway's ceiling.
+A call that a person approved under an "ask first" policy always gets the
+gateway's fixed 60 s approved-execution budget, whatever the tool declares.
+
+Top-level `tools` with `ctx.tools.register` stay supported as legacy. The host
+offers them as one implicit connector named after the plugin: installations
+that existed before connectors keep them for every agent, and new
+installations get them through an install of that connector.
+
 **Note:** `runWorker(plugin, import.meta.url)` must be called so that when the host runs your worker (e.g. `node dist/worker.js`), the RPC host starts and the process stays alive. When the file is imported (e.g. for tests), the main-module check prevents the host from starting.
 
 ### Worker lifecycle and context
@@ -269,9 +310,7 @@ Adds a navigation-style entry to the main company sidebar navigation area, rende
 
 #### `routeSidebar`
 
-A contextual sidebar shown while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation. It does **not** replace the app sidebar: the host collapses the main `<Sidebar/>` to its 64px icon rail (still hover/peek-able) and renders your `routeSidebar` in a secondary pane beside it, producing `[ app rail ][ your sidebar ][ content ]`. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
-
-Do **not** mount `RequestCollapsedSidebar` (or otherwise try to collapse the app sidebar) from a `routeSidebar` plugin — the host drives the collapse automatically while your route is active and restores the user's preference when they navigate away. The collapse is a hard invariant: a secondary sidebar always forces the app rail collapsed (hiding its expand toggle), overriding any user pin, but it never mutates the user's saved expanded/collapsed preference — that is restored as soon as they leave your route.
+A contextual sidebar shown while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation. The host displays it in the sidebar area using the active app layout. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
 
 #### `sidebarPanel`
 
@@ -461,6 +500,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `environment.drivers.register` |
 | | `local.folders` |
 | **Agent** | `agent.tools.register` |
+| **Connectors** | `connectors.provide` |
 | | `agents.invoke` |
 | | `access.members.write` |
 | | `access.invites.write` |

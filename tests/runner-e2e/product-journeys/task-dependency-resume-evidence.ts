@@ -7,6 +7,8 @@ export const TASK_DEPENDENCY_RESUME_CHECKS = [
   "dependency-history-preserved", "configured-model-and-environment",
 ] as const;
 
+const DEPENDENCY_WAKE_SOURCES: ReadonlySet<unknown> = new Set(["issue.blockers_resolved", "issue_graph_liveness.backstop", "workspace.finalize"]);
+
 export interface DependencyScope {
   companyId: string; userId: string; agentId: string; environmentId: string; provider: string; model: string;
   blockerId: string; blockerIdentifier: string; blockerTitle: string; blockerDescription: string;
@@ -101,7 +103,7 @@ export function gradeTaskDependencyResume(value: DependencyEvidence | undefined)
     && nonempty(run?.id) && [reopened.dependentRuns[0], newRuns(finished)[0], newRuns(reopened)[0]].every(row => runFacts(row) === runFacts(run))
     && run.companyId === s.companyId && run.agentId === s.agentId && dependencyRunIssueId(run) === s.dependentId
     && run.status === "succeeded" && run.invocationSource === "automation" && run.triggerDetail === "system"
-    && run.contextSnapshot?.wakeReason === "issue_blockers_resolved" && run.contextSnapshot?.source === "issue.blockers_resolved"
+    && run.contextSnapshot?.wakeReason === "issue_blockers_resolved" && DEPENDENCY_WAKE_SOURCES.has(run.contextSnapshot?.source)
     && run.contextSnapshot?.resolvedBlockerIssueId === s.blockerId && exactId(run.contextSnapshot?.blockerIssueIds, s.blockerId)
     && Number.isFinite(date(run.startedAt)) && date(run.startedAt) >= date(released.blocker.completedAt);
   const boundRun = scoped && [run, reopened.dependentRuns[0], newRuns(finished)[0], newRuns(reopened)[0]].every(row =>

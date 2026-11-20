@@ -3,9 +3,8 @@ import { databaseWorkPending, reconcileDatabaseWork } from "@paperclipai/db/work
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { runChildProcess } from "../adapters/utils.js";
-import { currentControllerProcessStamp, currentProcessStartedAtMs, type ControllerProcess } from "./controller-process-identity.js";
+import { currentControllerProcessStamp, currentProcessSpaceHash, currentProcessStartedAtMs, observedProcessStartedAt, type ControllerProcess } from "./controller-process-identity.js";
 import { currentProcessProbe } from "./owner-proof.js";
 import { proveRunProcessGone } from "./run-process-owner.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -148,28 +147,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
 
   it.skipIf(process.platform === "win32")("normal accounting Retry reconstructs an uncommitted legacy receipt after its real controller and child exited", async () => {
-    const identityModule = new URL('./controller-process-identity.ts', import.meta.url).href;
-    const loader = fileURLToPath(import.meta.resolve('tsx/esm'));
     async function joinedIdentity() {
-      const command = `console.error("accounting-identity:program-entered"); const identity = await import(${JSON.stringify(identityModule)}); console.error("accounting-identity:module-imported"); await identity.currentProcessStartedAtMs(); console.error("accounting-identity:birth-read"); console.log(JSON.stringify(identity.currentControllerProcessStamp()));`;
-      let groupId: number | null = null;
-      let observedStderrChars = 0;
-      const result = await runChildProcess(randomUUID(), process.execPath,
-        ['--import', loader, '--input-type=module', '-e', command], {
-          cwd: process.cwd(), env: { NODE_OPTIONS: process.env.NODE_OPTIONS ?? '', PATH: process.env.PATH ?? '' },
-          timeoutSec: 5, graceSec: 1, onLog: async (stream, chunk) => {
-            if (stream === "stderr" && observedStderrChars < 8192) {
-              const observed = chunk.slice(0, 8192 - observedStderrChars);
-              observedStderrChars += observed.length;
-              process.stderr.write(observed);
-            }
-          },
-          onSpawn: async meta => { groupId = meta.processGroupId ?? null; },
-        });
-      expect(result.exitCode, JSON.stringify({ exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut, pid: result.pid, startedAt: result.startedAt, stdoutTail: result.stdout.slice(-8192), stderrTail: result.stderr.slice(-8192) })).toBe(0);
-      const identity = JSON.parse(result.stdout.trim()) as ControllerProcess;
-      expect(identity.processStartedAt).not.toBeNull();
+      const command = `process.on("SIGUSR2", () => process.exit(0)); setInterval(() => {}, 60_000); process.stdout.write("ready\\n");`;
+      let pid: number | null = null, groupId: number | null = null, startedAt: number | null = null, released = false;
+      const result = await runChildProcess(randomUUID(), process.execPath, ['-e', command], {
+        cwd: process.cwd(), env: { PATH: process.env.PATH ?? '' },
+        timeoutSec: 5, graceSec: 1,
+        onSpawn: async meta => { pid = meta.pid; groupId = meta.processGroupId ?? null; },
+        onLog: async (stream, chunk) => {
+          if (stream !== "stdout" || released || pid === null || !chunk.includes("ready")) return;
+          released = true;
+          startedAt = await observedProcessStartedAt(pid);
+          process.kill(pid, "SIGUSR2");
+        },
+      });
+      expect(result.exitCode, JSON.stringify({ exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut, pid: result.pid, stdoutTail: result.stdout.slice(-8192), stderrTail: result.stderr.slice(-8192) })).toBe(0);
+      expect(startedAt).not.toBeNull();
       expect(Number.isSafeInteger(groupId) && groupId! > 1).toBe(true);
+      const identity: ControllerProcess = { bootId: randomUUID(), pid: pid!, hostHash: currentProcessSpaceHash(),
+        processStartedAt: new Date(startedAt!).toISOString() };
       return { ...identity, groupId };
     }
     const controller = await joinedIdentity(), child = await joinedIdentity();

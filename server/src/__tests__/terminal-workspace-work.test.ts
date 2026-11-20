@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { notifyTerminalWorkspaceWork, registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS, type TerminalWorkspaceTargets } from "../services/terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_BACKSTOP_MS, TERMINAL_WORKSPACE_PLUGIN_HINT, TERMINAL_WORKSPACE_RETRY_MS, type TerminalWorkspaceTargets } from "../services/terminal-workspace-work.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -88,18 +88,21 @@ describe("terminal workspace work", () => {
     } finally { release?.(); }
   });
 
-  it("restores the cooldown deadline, lets commits preempt it, and parks after cleanup", async () => {
+  it("restores the cooldown deadline, leaves unscoped commits to the hourly backstop, and parks after cleanup", async () => {
     const s = setup(), due = Date.now() + 86_400_000;
     s.service.nextTerminalWorkspaceSweepAt.mockResolvedValue(due);
     const worker = s.start();
     await worker.ready;
     expect(worker.hasUnrecoveredWork()).toBe(false);
-    await vi.advanceTimersByTimeAsync(3_600_000);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
     await s.owner.transaction(tx => notifyTerminalWorkspaceWork(tx));
     await s.owner.transaction(tx => notifyTerminalWorkspaceWork(tx));
     await vi.advanceTimersByTimeAsync(1);
+    expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(TERMINAL_WORKSPACE_BACKSTOP_MS);
     expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(2);
+    expect(s.service.sweepTerminalWorkspaces.mock.calls[1]?.[2]?.targets).toBeUndefined();
     expect(s.coordinator.nextWakeAt()).toBe(due);
     s.service.nextTerminalWorkspaceSweepAt.mockResolvedValue(null);
     await vi.advanceTimersByTimeAsync(due - Date.now());
@@ -107,7 +110,7 @@ describe("terminal workspace work", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("inspects only hinted workspaces after a commit, and keeps unscoped commits and deadlines on the full rotation", async () => {
+  it("inspects only hinted workspaces after a commit, and leaves an unscoped commit to the backstop", async () => {
     const s = setup(), due = Date.now() + 60_000;
     s.service.nextTerminalWorkspaceSweepAt.mockResolvedValue(due);
     await s.start().ready;
@@ -121,21 +124,34 @@ describe("terminal workspace work", () => {
     expect(s.service.sweepTerminalWorkspaces.mock.calls[1]?.[2]).toMatchObject({ targets: { workspaceIds: [workspaceId], issueIds: [issueId] } });
     await s.owner.transaction(tx => notifyTerminalWorkspaceWork(tx));
     await vi.advanceTimersByTimeAsync(1);
+    expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(due - Date.now());
     expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(3);
     expect(s.service.sweepTerminalWorkspaces.mock.calls[2]?.[2]?.targets).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(due - Date.now());
-    expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(4);
-    expect(s.service.sweepTerminalWorkspaces.mock.calls[3]?.[2]?.targets).toBeUndefined();
   });
 
-  it("falls back to the full rotation when more workspaces are hinted than one inspection reads", async () => {
+  it("retries the plugin workspace listing after it fails instead of waiting for the backstop", async () => {
+    const s = setup();
+    const pluginWorkspaceId = "6b1f9c2e-8a4d-4f3b-9c1e-2d7a5b8e0f13";
+    const listPluginTerminalWorkspaceIds = vi.fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(new Error("database unavailable")).mockResolvedValue([pluginWorkspaceId]);
+    await registerTerminalWorkspaceWork(s.coordinator, { ...s.service, listPluginTerminalWorkspaceIds }, s.enabled).ready;
+    await s.owner.transaction(tx => notifyTerminalWorkspaceWork(tx, TERMINAL_WORKSPACE_PLUGIN_HINT));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(listPluginTerminalWorkspaceIds).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(TERMINAL_WORKSPACE_RETRY_MS);
+    expect(listPluginTerminalWorkspaceIds).toHaveBeenCalledTimes(2);
+    expect(s.service.sweepTerminalWorkspaces.mock.calls.at(-1)?.[2]?.targets).toEqual({ workspaceIds: [pluginWorkspaceId], issueIds: [] });
+  });
+
+  it("works through more hinted workspaces than one inspection reads in targeted batches", async () => {
     const s = setup();
     await s.start().ready;
     const ids = Array.from({ length: 51 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
     await s.owner.transaction(async tx => { for (const id of ids) await notifyTerminalWorkspaceWork(tx, `workspace:${id}`); });
-    await vi.advanceTimersByTimeAsync(1);
-    expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(2);
-    expect(s.service.sweepTerminalWorkspaces.mock.calls[1]?.[2]?.targets).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(3);
+    expect(s.service.sweepTerminalWorkspaces.mock.calls.slice(1).map(call => call[2]?.targets?.workspaceIds.length)).toEqual([50, 1]);
   });
 
   it("keeps the pause between rotation pages while hinted workspaces wait", async () => {

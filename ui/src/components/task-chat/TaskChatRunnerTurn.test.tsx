@@ -99,6 +99,7 @@ describe("TaskChatRunnerTurn", () => {
     ["agent_setup_failed", "Agent setup needs attention"],
     ["server_restarting", "Waiting for server restart"],
     ["previous_run_settling", "Waiting for previous run to stop"],
+    ["routine_execution_in_progress", "Waiting for PAP-5656 to finish"],
   ])("shows the server's %s wait while admission is held", (cause, label) => {
     render([], "queued", "run-1", undefined, false, false, {
       phase: "queued", label, cause,
@@ -107,7 +108,8 @@ describe("TaskChatRunnerTurn", () => {
       permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: null,
     });
     expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain(label);
-    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe(label);
+    expect(container.textContent?.split(label)).toHaveLength(2);
+    expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
     expect(container.textContent).not.toContain("Thinking");
   });
 
@@ -123,7 +125,8 @@ describe("TaskChatRunnerTurn", () => {
       expect(container.textContent).not.toContain("Waiting to start");
       act(() => { vi.advanceTimersByTime(2_000); });
       expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Waiting to start");
-      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Waiting to start");
+      expect(container.textContent?.split("Waiting to start")).toHaveLength(2);
+      expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
       expect(container.textContent).not.toContain("Working");
     } finally {
       vi.useRealTimers();

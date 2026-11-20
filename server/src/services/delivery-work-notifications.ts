@@ -19,6 +19,7 @@ export const DELIVERY_QUEUES = {
   strandedAgentStatus: "stranded-agent-status",
   activeRunSilence: "active-run-silence",
   deferredExecutionReceipts: "deferred-execution-receipts",
+  nativeProviderTurnWaits: "native-provider-turn-waits",
   taskRetryReceiptSettlement: "task-retry-receipt-settlement",
   nativeStatusWakeIntents: "native-status-wake-intents",
   orphanBlockers: "orphan-blockers",
@@ -78,6 +79,7 @@ export const DELIVERY_QUEUES = {
 
   decisionArchiveDelivery: "decision-archive-delivery",
   toolConnectionHealth: "tool-connection-health",
+  toolConnectionContentDeletion: "tool-connection-content-deletion",
   toolReviewProjection: "tool-review-projection",
   toolReviewInterruption: "tool-review-interruption",
   toolReviewRecovery: "tool-review-recovery",

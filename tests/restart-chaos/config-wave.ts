@@ -1,6 +1,6 @@
 /**
  * Config and aged-state fault waves (CF1–CF3). See config-faults.ts for the
- * oracle and README.md ("Config faults") for usage.
+ * oracle and SCENARIOS.md ("Config faults") for usage.
  *
  *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/config-wave.ts \
  *     --faults CF1,CF3 --adapters codex --tasks 4 --concurrency 1 --restarts K1,K2 --seed 61

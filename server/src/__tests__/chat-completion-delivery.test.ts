@@ -17,6 +17,9 @@ import { chatCompletionAlreadyReported, chatCompletionDeliveryService, isComplet
 import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat.js";
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
+import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
+import { conversationDecisionReceiptsService } from "../services/conversation-decision-receipts.js";
+import { ALREADY_REPORTED_WAKE_REASON, createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 
 (support.supported ? describe : describe.skip)("chat completion delivery", () => {
   let db: ReturnType<typeof createDb>;
@@ -54,6 +57,69 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
     };
     return { companyId, agentId, sourceId, runId, task, create, finish, rows, due, wakeup, service, run };
   }
+  /** The person's own message woke a turn that read the task done and linked it in its reply. */
+  async function reportedByEarlierTurn(f: Awaited<ReturnType<typeof seed>>, read = true) {
+    const identifier = `CHAT-${Math.floor(Math.random() * 1e6)}`;
+    await db.update(issues).set({ identifier }).where(eq(issues.id, f.task.id));
+    const earlierRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: earlierRunId, companyId: f.companyId, agentId: f.agentId, status: "running",
+      contextSnapshot: { issueId: f.sourceId, conversationSessionGeneration: 0 } });
+    await f.finish();
+    const [done] = await db.select().from(issues).where(eq(issues.id, f.task.id));
+    if (read) await recordCompletedHandoffRead(db, { companyId: f.companyId, agentId: f.agentId, runId: earlierRunId, task: done });
+    const [reply] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.sourceId, authorAgentId: f.agentId,
+      createdByRunId: earlierRunId, body: `The draft is finished: [${identifier}](/CHAT/issues/${identifier}).`, createdAt: new Date(Date.now() + 1000) }).returning();
+    return { earlierRunId, reply };
+  }
+  it("starts no completion wake or run when an earlier reply already reported the completion", async () => {
+    const f = await seed();
+    const { reply } = await reportedByEarlierTurn(f);
+    const [delivery] = await f.rows();
+    const reports = async () => (await conversationDecisionReceiptsService(db).listCreatedTasks(f.companyId, f.sourceId, {
+      actor: { type: "board", userId: "operator", source: "session", ignoreInstanceAdmin: true }, userId: "operator",
+    })).items.map(item => ({ issueId: item.issueId, completionReportCommentId: item.completionReportCommentId }));
+    // The handoff listing shows the saved delivery outcome: still owed, then the accepted reply.
+    expect(await reports()).toEqual([{ issueId: f.task.id, completionReportCommentId: null }]);
+    await f.service.deliver(delivery.id);
+    expect(await reports()).toEqual([{ issueId: f.task.id, completionReportCommentId: reply.id }]);
+    expect(f.wakeup).not.toHaveBeenCalled();
+    expect(await f.rows()).toMatchObject([{ status: "delivered", responseCommentId: reply.id, targetRunId: null }]);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+  });
+  it.each([true, false])("settles a deferred completion wake without a run when the earlier turn read it done (%s)", async read => {
+    const f = await seed();
+    const { earlierRunId, reply } = await reportedByEarlierTurn(f, read);
+    const [delivery] = await f.rows();
+    // The completion wake waited behind the earlier turn, which now releases the conversation.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, earlierRunId));
+    await db.update(issues).set({ executionRunId: earlierRunId, executionLockedAt: new Date() }).where(eq(issues.id, f.sourceId));
+    const context = { issueId: f.sourceId, taskId: f.sourceId, wakeReason: "chat_task_completed", chatCompletionDeliveryIds: [delivery.id],
+      conversationSessionGeneration: 0 };
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "chat_task_completed", status: "deferred_issue_execution", requestedByActorType: "system",
+      requestedByActorId: "chat_completion_delivery", idempotencyKey: `chat-completion:${delivery.id}:0`,
+      payload: { issueId: f.sourceId, chatCompletionDeliveryIds: [delivery.id], _paperclipWakeContext: context } }).returning();
+    const promotion = vi.fn((): never => { throw new Error("promotion reached the host"); });
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, { resolveResponsibleUserId: promotion, getRoutineEnv: promotion,
+        resolveSessionBeforeForWakeup: promotion } as never),
+      recovery: { escalateStrandedAssignedIssue: promotion, escalateStrandedRecoveryIssueInPlace: promotion } as never,
+    });
+    const releasing = release({ companyId: f.companyId, runId: earlierRunId, now: new Date() });
+    if (!read) {
+      // A linking reply without a done read never consumes the completion turn.
+      await expect(releasing).rejects.toThrow("promotion reached the host");
+      expect(await f.rows()).toMatchObject([{ status: "pending" }]);
+      return;
+    }
+    expect((await releasing).outcome.kind).not.toBe("promoted");
+    expect(promotion).not.toHaveBeenCalled();
+    const [settled] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    expect(settled).toMatchObject({ status: "skipped", runId: null, error: ALREADY_REPORTED_WAKE_REASON });
+    expect(await f.rows()).toMatchObject([{ status: "delivered", responseCommentId: reply.id }]);
+    // Only the seed run and the earlier turn exist: the suppressed completion is not a run.
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+  });
   it("does not report a completion again when an earlier reply read the done task and linked it", async () => {
     const f = await seed(), identifier = `CHAT-${Math.floor(Math.random() * 1e6)}`;
     await db.update(issues).set({ identifier }).where(eq(issues.id, f.task.id));
@@ -71,7 +137,11 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
       authorAgentId: f.agentId, createdByRunId: f.runId, body: `Other update ${index}`, createdAt: new Date(Date.now() + 500) })));
     const [reply] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.sourceId, authorAgentId: f.agentId,
       createdByRunId: earlierRunId, body: `The draft is finished: [${identifier}](/CHAT/issues/${identifier}).`, createdAt: new Date(Date.now() + 1000) }).returning();
-    const prepared = await f.run();
+    // A completion turn admitted before that reply landed still posts nothing at its start.
+    const [delivery] = await f.rows();
+    const [admitted] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "queued",
+      contextSnapshot: { issueId: f.sourceId, wakeReason: "chat_task_completed", chatCompletionDeliveryIds: [delivery.id], conversationSessionGeneration: 0 } }).returning();
+    const prepared = await prepareChatCompletionTurn(db, admitted);
     expect(chatCompletionAlreadyReported(prepared)).toBe(true);
     expect(await f.rows()).toMatchObject([{ status: "delivered", responseCommentId: reply.id }]);
   });
