@@ -1039,6 +1039,7 @@ export interface Issue {
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
   unreadMessageCount?: number;
+  isArchivedForMe?: boolean;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
   archivedByAgentId?: string | null;
@@ -1046,6 +1047,8 @@ export interface Issue {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type IssueInboxArchiveFilter = "include" | "archived";
 
 export type CompactIssue = Pick<
   Issue,
@@ -1103,6 +1106,7 @@ export type CompactIssue = Pick<
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  isArchivedForMe?: boolean;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
   archivedByAgentId?: string | null;

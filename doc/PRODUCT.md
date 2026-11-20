@@ -548,6 +548,12 @@ over. Unread, Recent, Blocked, and Everything are also task views. Organization
 views retain the task table and board. The table saves column selection and
 order per person and company. Old `/inbox/*` links redirect to their Tasks view.
 
+Archive is personal. Use it from Mine, Unread, or a task-table row to
+remove a task from your Mine and Unread views. All tasks and its status views
+still include archived tasks. Use Undo after archiving, or open **Archived**
+from the Views menu and restore a task. New replies from other people, mentions,
+and other inbox activity such as a new decision request can bring a task back.
+
 ### Combined Inbox + Task List
 
 In the Classic workspace, an opt-in setting (`enableCombinedInboxTasks`, off by default)
