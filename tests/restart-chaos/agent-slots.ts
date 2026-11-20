@@ -23,6 +23,8 @@ export function queueWaitFairnessFrom(slots: AgentSlots | null): QueueWaitFairne
     const cap = agentId ? caps.get(agentId) : undefined;
     if (!slots || !agentId || typeof cap !== "number" || cap < 1) return { verdict: "unproven", reason: `no agent slot evidence for ${runId}` };
     const others = slots.runs.filter(run => run.agentId === agentId && run.runId !== runId);
+    const malformed = others.filter(run => [run.startedAt, run.finishedAt].some(at => at !== null && !Number.isFinite(at)));
+    if (malformed.length) return { verdict: "unproven", reason: `malformed start or finish time for ${malformed.map(run => run.runId).join(",")}` };
     const startedAhead = others.filter(run => Number.isFinite(run.startedAt) && run.startedAt! >= createdAt && run.startedAt! < startedAt);
     const newer = startedAhead.filter(run => Number.isFinite(run.createdAt) && run.createdAt! > createdAt);
     const overtaker = newer.find(run => run.invocationSource === "assignment" && !run.retryOfRunId);

@@ -253,6 +253,11 @@ describe("R1 fair queue wait credit", () => {
     const malformed = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: Number.NaN } : entry);
     expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(malformed))).detail)
       .toBe("done_too_late 2287s > 2200s (queue wait not credited: no createdAt for o6, which started while r1 was queued)");
+    for (const field of ["startedAt", "finishedAt"] as const) {
+      const badTime = fullAgent().map(entry => entry.runId === "o2" ? { ...entry, [field]: Number.NaN } : entry);
+      expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(badTime))).detail)
+        .toBe("done_too_late 2287s > 2200s (queue wait not credited: malformed start or finish time for o2)");
+    }
   });
 
   it("does not call an idle slot during a server outage unfair", () => {
