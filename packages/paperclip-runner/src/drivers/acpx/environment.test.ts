@@ -79,6 +79,10 @@ describe("ACPX launch environment", () => {
     expect(createSanitizedAcpxSpawnInput(undefined, "claude").env).not.toHaveProperty("MCP_TOOL_TIMEOUT");
     expect(createSanitizedAcpxSpawnInput({ MCP_TOOL_TIMEOUT: "120000" }, "claude").env.MCP_TOOL_TIMEOUT).toBe("120000");
     expect(createSanitizedAcpxSpawnInput({ MCP_TOOL_TIMEOUT: "120000" }, "codex").env).not.toHaveProperty("MCP_TOOL_TIMEOUT");
+    vi.stubEnv("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", "999999");
+    expect(createSanitizedAcpxSpawnInput(undefined, "claude").env).not.toHaveProperty("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT");
+    expect(createSanitizedAcpxSpawnInput({ CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: "120000" }, "claude").env.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT).toBe("120000");
+    expect(createSanitizedAcpxSpawnInput({ CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: "120000" }, "codex").env).not.toHaveProperty("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT");
   });
 
   it("excludes general IAM from the Pi sidecar and launch, including selected task values", () => {
