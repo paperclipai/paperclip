@@ -31,7 +31,7 @@ import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
-import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_HELD_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
@@ -1129,6 +1129,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
     expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("names a full sandbox disk that the sandbox provider reported during setup", async () => {
+    const f = await fixture();
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "internal server error: failed to create session config directory: "
+        + "mkdir /home/daytona/.daytona/sessions/paperclip-78f6ce53: no space left on device" });
+    await f.completion.failRunSetup(f.setup(new Error("Could not reconnect to the running agent", { cause: refusal })));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full" });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps a full disk on the Paperclip host out of the sandbox disk code", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" })));
+    expect((await read(f.run.id))?.errorCode).not.toBe("sandbox_disk_full");
   });
 
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {

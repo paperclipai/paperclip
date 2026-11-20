@@ -66,8 +66,45 @@ query, or fragment. Return authentication in the secret headers.
 
 `submit` contains the PRP version range, Runner identity, bootstrap ticket,
 authorized project IDs, and optional launch limits. It can also contain a saved
-task ID for session reuse and a typed Codex or Claude credential. Core does not
-supply an executable command or a guest path.
+task ID for session reuse and a typed credential. Core does not supply an
+executable command or a guest path.
+
+### Typed credentials
+
+The `credential` field has one of these types:
+
+| `type` | Contents | Harness |
+| --- | --- | --- |
+| `codex-auth-json` | `authJson`: the selected Codex `auth.json` | `codex` |
+| `claude-env` | `environment`: exactly one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | `claude` |
+| `provider-env` | `provider` and `environment`: one complete variable set for that provider | `grok`, `copilot` or `opencode` |
+
+A `provider-env` credential contains exactly one of these variable sets and no
+other variable:
+
+| `provider` | Variable sets |
+| --- | --- |
+| `grok` | `XAI_API_KEY` |
+| `copilot` | `COPILOT_GITHUB_TOKEN` |
+| `opencode` | `OPENROUTER_API_KEY`, or `PAPERCLIP_AI_PROVIDER_URL` with `PAPERCLIP_AI_PROVIDER_KEY` |
+
+`ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS` exports this list. A server test
+checks every set against the names that the Runner forwards to each provider. Every value
+is non-empty and contains no NUL byte. The `provider` always matches the
+Runner harness of the task. Set the variables in the environment of the Runner
+process. The Runner gives each variable only to its provider.
+
+For `copilot`, also set `PAPERCLIP_ACPX_CREDENTIAL_BINDING` in the Runner
+environment. Its value is this JSON object, with the normalized session ID of
+the task's PRP identity:
+
+```json
+{"schema":"paperclip.acpx_credential_binding.v1","agent":"copilot","sessionId":"<normalizedSessionId>","names":["COPILOT_GITHUB_TOKEN"]}
+```
+
+The Runner refuses a Copilot token without a matching binding.
+Core does not send a Grok subscription login. A Grok agent must use an xAI API
+key in a plugin environment.
 
 ## Configured environment
 
