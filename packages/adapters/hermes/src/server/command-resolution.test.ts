@@ -4,7 +4,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { expect, test } from "vitest";
 
 import { HERMES_CLI } from "../shared/constants.js";
-import { execute, resolveHermesCommand } from "./execute.js";
+import { execute, resolveHermesCommand, resolveHermesInvocation } from "./execute.js";
 import { testEnvironment } from "./test.js";
 
 test("resolveHermesCommand prefers hermesCommand over command", () => {
@@ -17,14 +17,21 @@ test("resolveHermesCommand falls back to command before default hermes binary", 
   expect(resolveHermesCommand({})).toBe(HERMES_CLI);
 });
 
-test("testEnvironment accepts config.command when hermesCommand is absent", async () => {
+test.runIf(process.platform === "win32")("resolves the Hermes Windows launcher without a shell", async () => {
+  const invocation = await resolveHermesInvocation("hermes", ["--version"]);
+
+  expect(invocation.command.toLowerCase()).toMatch(/python(?:\.exe)?$/);
+  expect(invocation.args).toContain("-I");
+}, 30_000);
+
+test.skipIf(process.platform === "win32")("testEnvironment accepts config.command when hermesCommand is absent", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "hermes-command-resolution-"));
   const cliPath = path.join(tempDir, "fake-hermes");
 
   try {
     await writeFile(
       cliPath,
-      "#!/bin/sh\necho fake-hermes 1.2.3\n",
+      "#!/bin/sh\necho fake-hermes 1.2.3\necho hello\n",
       "utf8",
     );
     await chmod(cliPath, 0o755);
@@ -42,12 +49,13 @@ test("testEnvironment accepts config.command when hermesCommand is absent", asyn
     expect(result.checks.some(
       (check) => check.code === "hermes_version" && check.message.includes("fake-hermes 1.2.3"),
     )).toBe(true);
+    expect(result.checks.some((check) => check.code === "hermes_hello_probe_passed")).toBe(true);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("execute renders prompt API base from adapter env PAPERCLIP_API_URL", async () => {
+test.skipIf(process.platform === "win32")("execute renders prompt API base from adapter env PAPERCLIP_API_URL", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "hermes-prompt-api-url-"));
   const cliPath = path.join(tempDir, "fake-hermes");
   const argvPath = path.join(tempDir, "argv.txt");
@@ -97,7 +105,7 @@ test("execute renders prompt API base from adapter env PAPERCLIP_API_URL", async
   }
 });
 
-test("managed connections probe the selected environment without falling back to host keys", async () => {
+test.skipIf(process.platform === "win32")("managed connections probe the selected environment without falling back to host keys", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "hermes-managed-probe-"));
   const cliPath = path.join(tempDir, "fake-hermes");
   try {

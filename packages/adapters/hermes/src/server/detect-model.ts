@@ -11,7 +11,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { MODEL_PREFIX_PROVIDER_HINTS, VALID_PROVIDERS } from "../shared/constants.js";
+import { HERMES_PROVIDER_ID_REGEX, MODEL_PREFIX_PROVIDER_HINTS, VALID_PROVIDERS } from "../shared/constants.js";
 
 export interface DetectedModel {
   /** Model name from config (e.g. "gpt-5.4", "anthropic/claude-sonnet-4") */
@@ -34,16 +34,34 @@ export interface DetectedModel {
 export async function detectModel(
   configPath?: string,
 ): Promise<DetectedModel | null> {
-  const filePath = configPath ?? join(homedir(), ".hermes", "config.yaml");
-
-  let content: string;
-  try {
-    content = await readFile(filePath, "utf-8");
-  } catch {
-    return null;
+  if (configPath) {
+    try {
+      return parseModelFromConfig(await readFile(configPath, "utf-8"));
+    } catch {
+      return null;
+    }
   }
 
-  return parseModelFromConfig(content);
+  // Hermes for Windows installs its default state beneath LOCALAPPDATA rather
+  // than ~/.hermes. Check the portable location first, then the native Windows
+  // location when the portable config has no model configured.
+  const candidates = [
+    join(homedir(), ".hermes", "config.yaml"),
+    process.env.HERMES_HOME ? join(process.env.HERMES_HOME, "config.yaml") : null,
+    process.platform === "win32" && process.env.LOCALAPPDATA
+      ? join(process.env.LOCALAPPDATA, "hermes", "config.yaml")
+      : null,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const filePath of candidates) {
+    try {
+      const detected = parseModelFromConfig(await readFile(filePath, "utf-8"));
+      if (detected) return detected;
+    } catch {
+      // Try the next supported Hermes home.
+    }
+  }
+  return null;
 }
 
 /**
@@ -160,8 +178,9 @@ export function resolveProvider(options: {
     model,
   } = options;
 
-  // 1. Explicit provider from adapterConfig — user override, always wins
-  if (explicitProvider && (VALID_PROVIDERS as readonly string[]).includes(explicitProvider)) {
+  // 1. Explicit provider from adapterConfig — user override, always wins.
+  // Hermes itself validates named custom providers from config.yaml.
+  if (explicitProvider && HERMES_PROVIDER_ID_REGEX.test(explicitProvider)) {
     return { provider: explicitProvider, resolvedFrom: "adapterConfig" };
   }
 

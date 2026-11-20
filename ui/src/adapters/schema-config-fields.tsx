@@ -148,6 +148,13 @@ function ComboboxField({
             if (!open) setOpen(true);
           }}
           onBlur={() => {
+            // A provider entered by hand must survive moving on to the next
+            // field. This is essential for Hermes named providers, which are
+            // intentionally not constrained to the suggestion list.
+            const typed = filter.trim();
+            if (typed) {
+              onChange(filtered.length === 1 ? filtered[0]!.value : typed);
+            }
             // Delay close to allow click on option to register
             setTimeout(() => setOpen(false), 150);
           }}

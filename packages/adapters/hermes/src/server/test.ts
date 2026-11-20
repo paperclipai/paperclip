@@ -17,7 +17,7 @@ import { promisify } from "node:util";
 
 import { HERMES_CLI, DEFAULT_MODEL, ADAPTER_TYPE, VALID_PROVIDERS } from "../shared/constants.js";
 import { detectModel, resolveProvider, inferProviderFromModel } from "./detect-model.js";
-import { resolveHermesCommand } from "./execute.js";
+import { resolveHermesCommand, resolveHermesInvocation } from "./execute.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,7 +34,8 @@ async function checkCliInstalled(
 ): Promise<AdapterEnvironmentCheck | null> {
   try {
     // Try to run the command to see if it exists
-    await execFileAsync(command, ["--version"], { timeout: 10_000 });
+    const invocation = await resolveHermesInvocation(command, ["--version"]);
+    await execFileAsync(invocation.command, invocation.args, { timeout: 10_000 });
     return null; // OK — it ran successfully
   } catch (err: unknown) {
     const e = err as NodeJS.ErrnoException;
@@ -56,7 +57,8 @@ async function checkCliVersion(
   command: string,
 ): Promise<AdapterEnvironmentCheck | null> {
   try {
-    const { stdout } = await execFileAsync(command, ["--version"], {
+    const invocation = await resolveHermesInvocation(command, ["--version"]);
+    const { stdout } = await execFileAsync(invocation.command, invocation.args, {
       timeout: 10_000,
     });
     const version = stdout.trim();
@@ -130,6 +132,47 @@ function checkModel(
     message: `Model: ${model}`,
     code: "hermes_model_configured",
   };
+}
+
+async function checkHelloProbe(
+  command: string,
+  config: Record<string, unknown>,
+): Promise<AdapterEnvironmentCheck> {
+  const env = { ...process.env };
+  for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  const args = ["chat", "-Q", "-q", "Respond with hello. Do not use tools.", "--max-turns", "1"];
+  const model = asString(config.model);
+  // `auto` is Paperclip's sentinel for Hermes's configured default model.
+  if (model && model !== "auto") args.push("-m", model);
+  const provider = asString(config.provider);
+  if (provider && provider !== "auto") args.push("--provider", provider);
+
+  try {
+    const invocation = await resolveHermesInvocation(command, args, env);
+    const { stdout } = await execFileAsync(invocation.command, invocation.args, {
+      env,
+      cwd: asString(config.cwd),
+      // Hermes can load user-enabled plugins before it makes a model request.
+      // Leave enough room for that startup work plus a real provider response.
+      timeout: 180_000,
+      maxBuffer: 1024 * 1024,
+    });
+    if (!/\bhello\b/i.test(stdout)) throw new Error("No hello response");
+    return {
+      level: "info",
+      code: "hermes_hello_probe_passed",
+      message: "Hermes responded through its configured model connection.",
+    };
+  } catch {
+    return {
+      level: "error",
+      code: "hermes_hello_probe_failed",
+      message: "Hermes could not complete a request through its configured model connection.",
+      hint: "Check the Hermes model, endpoint, and credentials, then test again.",
+    };
+  }
 }
 
 async function checkApiKeys(
@@ -339,23 +382,7 @@ export async function testEnvironment(
     if (remote) {
       checks.push({ level: "error", code: "hermes_remote_probe_unsupported", message: "Hermes connection testing requires a local execution environment." });
     } else {
-      const env = { ...process.env };
-      for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
-        if (typeof value === "string") env[key] = value;
-      }
-      const args = ["chat", "-Q", "-q", "Respond with hello. Do not use tools.", "--max-turns", "1"];
-      if (asString(config.model)) args.push("-m", asString(config.model)!);
-      const provider = asString(config.provider);
-      if (provider && provider !== "auto") args.push("--provider", provider);
-      try {
-        const { stdout } = await execFileAsync(command, args, {
-          env, cwd: asString(config.cwd), timeout: 45_000, maxBuffer: 1024 * 1024,
-        });
-        if (!/\bhello\b/i.test(stdout)) throw new Error("No hello response");
-        checks.push({ level: "info", code: "hermes_hello_probe_passed", message: "Hermes responded through the selected connection." });
-      } catch {
-        checks.push({ level: "error", code: "hermes_hello_probe_failed", message: "Hermes could not complete a request through this connection.", hint: "Check the Hermes installation, endpoint, credential, and model, then test again." });
-      }
+      checks.push(await checkHelloProbe(command, config));
     }
     return { adapterType: ADAPTER_TYPE, status: checks.some(check => check.level === "error") ? "fail" : "pass", checks, testedAt: new Date().toISOString() };
   }
@@ -401,6 +428,11 @@ export async function testEnvironment(
   // 7. Provider/model consistency
   const providerCheck = await checkProviderConsistency(config, detectedConfig);
   if (providerCheck) checks.push(providerCheck);
+
+  // A CEO is activated only after a real model response. Running the same
+  // minimal probe for a locally configured Hermes installation proves that
+  // Hermes can use the credentials and model it owns outside Paperclip.
+  checks.push(await checkHelloProbe(command, config));
 
   // Determine overall status
   const hasErrors = checks.some((c) => c.level === "error");

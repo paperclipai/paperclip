@@ -52,14 +52,21 @@ curl -sS "$PAPERCLIP_API_URL/api/agents/me" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
+Record the caller's `adapterType`. Unless the requester explicitly chooses a
+different adapter, use that same adapter type for the new hire. This preserves
+the company's working local runtime and model-routing setup instead of
+silently selecting a Claude or Codex default. Read the target adapter's schema
+before preparing its configuration, and never copy credentials or Paperclip
+run tokens into the new agent's configuration.
+
 ### 2. Discover adapter configuration for this Paperclip instance
 
 ```sh
 curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration.txt" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 
-# Then the specific adapter you plan to use, e.g. claude_local:
-curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration/claude_local.txt" \
+# Then the caller's adapter, or the adapter explicitly requested by the user:
+curl -sS "$PAPERCLIP_API_URL/llms/agent-configuration/<adapter-type>.txt" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
@@ -132,8 +139,8 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-h
     "reportsTo": "<ceo-agent-id>",
     "capabilities": "Owns technical roadmap, architecture, staffing, execution",
     "desiredSkills": ["vercel-labs/agent-browser/agent-browser"],
-    "adapterType": "codex_local",
-    "adapterConfig": {"cwd": "/abs/path/to/repo", "model": "o4-mini"},
+    "adapterType": "<caller-or-user-selected-adapter-type>",
+    "adapterConfig": {"cwd": "/abs/path/to/repo"},
     "instructionsBundle": {"files": {"AGENTS.md": "You are the CTO..."}},
     "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
     "sourceIssueId": "<issue-id>"

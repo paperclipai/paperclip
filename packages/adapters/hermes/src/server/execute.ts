@@ -18,8 +18,11 @@
  *   --source           session source tag for filtering
  */
 
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import type {
   AdapterExecutionContext,
@@ -45,7 +48,6 @@ import {
   DEFAULT_TIMEOUT_SEC,
   DEFAULT_GRACE_SEC,
   DEFAULT_MODEL,
-  VALID_PROVIDERS,
 } from "../shared/constants.js";
 
 import {
@@ -81,8 +83,72 @@ function cfgEnvString(v: unknown): string | undefined {
   return undefined;
 }
 
+const execFileAsync = promisify(execFile);
+
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
+}
+
+export type HermesInvocation = {
+  command: string;
+  args: string[];
+};
+
+/**
+ * Locate a command's Windows launcher without asking cmd.exe to interpret an
+ * agent prompt. Node does not apply PATHEXT when spawning a bare command, so
+ * `spawn("hermes")` cannot find an installation exposed as `hermes.cmd`.
+ */
+function resolveWindowsLauncher(command: string, env: NodeJS.ProcessEnv): string {
+  if (process.platform !== "win32" || path.extname(command) || /[\\/]/.test(command)) {
+    return command;
+  }
+
+  const pathEntries = (env.Path || env.PATH || "").split(";").filter(Boolean);
+  const extensions = (env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .filter(Boolean);
+  for (const directory of pathEntries) {
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${command}${extension}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return command;
+}
+
+/**
+ * Hermes' Windows installer publishes a .cmd launcher. Batch files cannot be
+ * spawned directly by Node, and using a shell for the real agent invocation
+ * would let cmd.exe parse task text. Hermes exposes a trusted runtime-command
+ * mode, so resolve the launcher once and then execute its Python runtime
+ * directly with the agent arguments.
+ */
+export async function resolveHermesInvocation(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<HermesInvocation> {
+  const launcher = resolveWindowsLauncher(command, env);
+  if (process.platform !== "win32" || !/\.(?:cmd|bat)$/i.test(launcher)) {
+    return { command: launcher, args };
+  }
+
+  const comspec = env.ComSpec || env.COMSPEC || "cmd.exe";
+  const { stdout } = await execFileAsync(
+    comspec,
+    ["/d", "/c", launcher, "--print-runtime-command"],
+    { env, timeout: 15_000, maxBuffer: 1024 * 1024 },
+  );
+  const runtime = JSON.parse(stdout) as unknown;
+  if (
+    !Array.isArray(runtime) ||
+    runtime.length === 0 ||
+    runtime.some((value) => typeof value !== "string")
+  ) {
+    throw new Error("Hermes Windows launcher returned an invalid runtime command");
+  }
+  return { command: runtime[0] as string, args: [...runtime.slice(1) as string[], ...args] };
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +462,13 @@ export async function execute(
 
   if (!explicitProvider) {
     try {
-      detectedConfig = await detectModel();
+      const configuredEnv = config.env as Record<string, unknown> | undefined;
+      const hermesHome = cfgString(configuredEnv?.HERMES_HOME);
+      // The managed runtime uses HERMES_HOME/provider. Inspect the same config
+      // Hermes will read, rather than the Paperclip server account's home.
+      detectedConfig = await detectModel(
+        hermesHome ? path.join(hermesHome, "config.yaml") : undefined,
+      );
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }
@@ -458,7 +530,9 @@ export async function execute(
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
-  if (model) {
+  // "auto" is Paperclip's sentinel for preserving Hermes's configured model.
+  // Do not turn it into an explicit CLI override.
+  if (model && model !== "auto") {
     args.push("-m", model);
   }
 
@@ -582,7 +656,8 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+  const invocation = await resolveHermesInvocation(hermesCmd, args, env);
+  const result = await runChildProcess(ctx.runId, invocation.command, invocation.args, {
     cwd,
     env,
     timeoutSec,
