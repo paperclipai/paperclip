@@ -143,7 +143,6 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
   ])("reports more comments only when one stays hidden ($replies replies after $pinned older)", async ({ replies, pinned, hasMore }) => {
     const bareIssueId = randomUUID();
     await db.insert(issues).values({ id: bareIssueId, companyId, title: "No description" });
-    // The oldest and newest older rows are human, so both are pinned into the window.
     await db.insert(issueComments).values([
       ...Array.from({ length: pinned }, (_, i) => ({
         companyId, issueId: bareIssueId, body: `Older ${i}`, createdAt: new Date(i),
