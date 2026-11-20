@@ -10,14 +10,17 @@ import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
 import { Issues } from "./Issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { ToastProvider, useToastState } from "@/context/ToastContext";
 import { IssueFilterPanel } from "@/components/IssueFilterPanel";
 import type { ComponentProps } from "react";
+import type { Issue } from "@paperclipai/shared";
+import type { IssueRowArchiveAction } from "@/components/IssueRow";
 import type { TaskListSort } from "@/lib/task-list";
 import { taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 
-const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn(), localTrusted: false, realFilters: false, labels: [] as { id: string; name: string; color: string }[], identity: { userId: "person" as string | null, settled: true } }));
+const mocks = vi.hoisted(() => ({ list: vi.fn(), archive: vi.fn(), restore: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn(), localTrusted: false, realFilters: false, labels: [] as { id: string; name: string; color: string }[], identity: { userId: "person" as string | null, settled: true } }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
-vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, listLabels: async () => mocks.labels, update: vi.fn() } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, archiveFromInbox: mocks.archive, unarchiveFromInbox: mocks.restore, listLabels: async () => mocks.labels, update: vi.fn() } }));
 vi.mock("@/api/attention", () => ({ attentionApi: { taskIndex: mocks.attention } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
@@ -45,8 +48,21 @@ vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, vi
 </> }));
 vi.mock("@/components/TaskList", async importOriginal => ({
   ...await importOriginal<typeof import("@/components/TaskList")>(),
-  TaskList: ({ items, emptyState, onSortChange }: { onSortChange?: (sort: TaskListSort) => void; items: { issue: { id: string; title: string }; assignee?: string | null }[]; emptyState: React.ReactNode }) =>
-    <div><button onClick={() => onSortChange?.({ column: "taskId", direction: "descending" })}>Sort by task ID</button><output>{useLocation().search}</output>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id} data-assignee={item.assignee}>{item.issue.title}</p>) : emptyState}</div>,
+  TaskList: ({ items, emptyState, onSortChange, getArchiveAction }: {
+    onSortChange?: (sort: TaskListSort) => void;
+    items: { issue: Issue; assignee?: string | null }[];
+    emptyState: React.ReactNode;
+    getArchiveAction?: (issue: Issue) => IssueRowArchiveAction | undefined;
+  }) => <div>
+    <button onClick={() => onSortChange?.({ column: "taskId", direction: "descending" })}>Sort by task ID</button>
+    <output>{useLocation().search}</output>
+    {items.length ? items.map(item => {
+      const action = getArchiveAction?.(item.issue);
+      return <p key={item.issue.id} data-task-id={item.issue.id} data-assignee={item.assignee}>
+        {item.issue.title}{action ? <button disabled={action.disabled} onClick={action.onClick}>{action.archived ? "Restore" : "Archive"}</button> : null}
+      </p>;
+    }) : emptyState}
+  </div>,
 }));
 
 describe("Coordinator tasks using the proposed table", () => {
@@ -69,6 +85,86 @@ describe("Coordinator tasks using the proposed table", () => {
     flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><CoordinatorTasks /></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
   }
+  it("archives from All tasks, supports Undo, and restores from Archived", async () => {
+    let archived = false;
+    const task = createIssue({ id: "task", companyId: "company", parentId: null, title: "Send report" });
+    mocks.list.mockImplementation(async (_company, filters) => filters.inboxArchive === "archived" && !archived
+      ? []
+      : [{ ...task, isArchivedForMe: archived }]);
+    mocks.archive.mockImplementation(async () => { archived = true; });
+    mocks.restore.mockImplementation(async () => { archived = false; });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "person" } });
+
+    function Controls() {
+      const navigate = useNavigate();
+      const undo = useToastState().find(toast => toast.action?.label === "Undo");
+      return <>
+        <button onClick={() => navigate("/issues?view=archived")}>Open Archived</button>
+        {undo ? <button onClick={undo.action?.onClick}>Undo</button> : null}
+      </>;
+    }
+    flushSync(() => root.render(
+      <QueryClientProvider client={client}><ToastProvider><MemoryRouter initialEntries={["/issues?view=all"]}>
+        <Controls /><CoordinatorTasks />
+      </MemoryRouter></ToastProvider></QueryClientProvider>,
+    ));
+    const button = (label: string) => [...host.querySelectorAll("button")].find(element => element.textContent === label);
+    const click = (label: string) => flushSync(() => button(label)!.click());
+
+    await vi.waitFor(() => expect(button("Archive")).toBeDefined());
+    click("Archive");
+    await vi.waitFor(() => {
+      expect(button("Undo")).toBeDefined();
+      expect(button("Restore")).toBeDefined();
+      expect(host.querySelector('[data-task-id="task"]')).not.toBeNull();
+    });
+    click("Undo");
+    await vi.waitFor(() => expect(button("Archive")).toBeDefined());
+    click("Archive");
+    await vi.waitFor(() => expect(button("Restore")?.disabled).toBe(false));
+    click("Open Archived");
+    await vi.waitFor(() => {
+      expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ inboxArchive: "archived" }), expect.anything());
+      expect(button("Restore")).toBeDefined();
+    });
+    click("Restore");
+    await vi.waitFor(() => expect(host.textContent).toContain("No archived tasks"));
+    expect(mocks.archive).toHaveBeenCalledTimes(2);
+    expect(mocks.restore).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps separate Undo actions for consecutive task archives", async () => {
+    const tasks = [
+      createIssue({ id: "first-archive", identifier: "TASK-1", companyId: "company", parentId: null }),
+      createIssue({ id: "second-archive", identifier: "TASK-2", companyId: "company", parentId: null }),
+    ];
+    const archived = new Set<string>();
+    mocks.list.mockImplementation(async () => tasks.map(task => ({ ...task, isArchivedForMe: archived.has(task.id) })));
+    mocks.archive.mockImplementation(async (id: string) => { archived.add(id); });
+    mocks.restore.mockImplementation(async (id: string) => { archived.delete(id); });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "person" } });
+
+    function UndoActions() {
+      return useToastState().filter(toast => toast.action?.label === "Undo").map(toast =>
+        <button key={toast.id} data-undo-task={toast.body ?? ""} onClick={toast.action?.onClick}>Undo</button>,
+      );
+    }
+    flushSync(() => root.render(
+      <QueryClientProvider client={client}><ToastProvider><MemoryRouter initialEntries={["/issues?view=all"]}>
+        <UndoActions /><CoordinatorTasks />
+      </MemoryRouter></ToastProvider></QueryClientProvider>,
+    ));
+    const archiveButton = (id: string) => host.querySelector<HTMLButtonElement>(`[data-task-id="${id}"] button`);
+    await vi.waitFor(() => expect(archiveButton(tasks[0]!.id)?.textContent).toBe("Archive"));
+    flushSync(() => archiveButton(tasks[0]!.id)!.click());
+    await vi.waitFor(() => expect(host.querySelectorAll("[data-undo-task]")).toHaveLength(1));
+    flushSync(() => archiveButton(tasks[1]!.id)!.click());
+    await vi.waitFor(() => expect(host.querySelectorAll("[data-undo-task]")).toHaveLength(2));
+    flushSync(() => host.querySelector<HTMLButtonElement>('[data-undo-task="TASK-2"]')!.click());
+    await vi.waitFor(() => expect(mocks.restore).toHaveBeenCalledExactlyOnceWith(tasks[1]!.id));
+    expect(archived.has(tasks[0]!.id)).toBe(true);
+  });
+
   it.each([
     { url: "/issues", view: "all", ids: ["parent", "mine", "assigned", "unrelated"] },
     { url: "/issues?view=inbox", view: "inbox", ids: ["parent", "mine", "assigned"] },

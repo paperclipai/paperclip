@@ -27,6 +27,20 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Classify only a committed provider terminal, never model prose or tool output. */
+export function nativeProviderUsageLimitFromEvent(
+  event: Pick<PrpEvent, "sourceKind" | "eventType" | "payload">,
+): boolean {
+  const payload = record(event.payload);
+  if (event.sourceKind !== "runner" || event.eventType !== "turn.failed" || payload.status !== "failed") return false;
+  const error = record(payload.error);
+  if (error.codexErrorInfo === "usageLimitExceeded") return true;
+  // ACP harnesses type the same exhausted allowance as a provider failure.
+  // Context, turn and configured budget limits stay ordinary terminals.
+  const category = readProviderFailure(error.providerFailure)?.category;
+  return category === "quota_exhausted" || category === "rate_limit";
+}
+
 /** An API-key Codex turn whose configured model the Responses API answers with 404. */
 export const NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC = {
   provider: "codex",

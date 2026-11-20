@@ -87,30 +87,51 @@ sequenceDiagram
 
 ## Administrator setup
 
-The role method uses three steps, because the role must trust a connection
-that already exists:
+The role method takes two steps, because the role must trust a connection that
+already exists. The setup screen walks through them:
 
 1. Turn on **AWS connector** in Instance Settings, Experimental.
-2. **Save a draft.** Call `connectGalleryApp` with `saveDraft: true`, the role
-   ARN to be created, the endpoint region and the access level. Paperclip
-   creates the connection without contacting AWS. It also publishes the
-   company's issuer, so AWS can validate it in the next step.
-3. In the AWS account:
-   - Register the issuer `https://<instance>/oidc/companies/<companyId>` as an
-     IAM OIDC identity provider with audience `sts.amazonaws.com`.
-   - Create the role. Its trust policy allows
-     `sts:AssumeRoleWithWebIdentity` only when `<issuer host/path>:sub` equals
-     `connection:<connectionId>` and `:aud` equals `sts.amazonaws.com`.
-   - Attach `AWSMCPSignInOAuthAccessPolicy` and the permissions agents need.
-4. **Resume** with `resumeConnectionId`. Paperclip mints a token, lists the
-   tools, and the connection becomes active.
+2. In Connectors, open AWS. Choose the endpoint region and the access level,
+   then click **Connect**. There is no role ARN to enter yet: the role does not
+   exist until the next step creates it.
+3. Paperclip saves a draft without contacting AWS and publishes the company's
+   issuer. The role is named after the connection (`paperclip-<connection id>`),
+   and CloudFormation fills in the account, so nothing is typed by hand. The
+   screen shows one thing by default:
+   - **Set it up with your agent** copies a prompt for an agent (Claude Code,
+     Codex) on a computer signed in to the AWS account. The agent checks which
+     account the CLI uses, checks for an existing identity provider, deploys
+     the template with `aws cloudformation deploy` and reports the stack's
+     `RoleArn` output. For full access it asks which policy to attach. The
+     prompt holds no secret.
+   - Paste that role ARN into the field below the prompt.
+
+   **Or do it by hand** shows the same setup without an agent:
+   - **With CloudFormation.** Download the template, create a stack from it in
+     the AWS account, set `CreateIdentityProvider` to `false` if the account
+     already has an identity provider for this issuer, choose `AccessPolicyArn`
+     for full access, and acknowledge that the stack creates IAM resources
+     (`CAPABILITY_NAMED_IAM`). Copy `RoleArn` from the stack's outputs.
+   - **In the IAM console or AWS CLI.** Add an OpenID Connect provider with the
+     shown provider URL and audience, then create the role with the shown trust
+     policy (replace `ACCOUNT_ID`), which trusts only `connection:<id>`. Attach
+     `AWSMCPSignInOAuthAccessPolicy` and the agents' permissions. The CLI
+     commands read the account ID themselves and print the role ARN.
+
+   If the instance's address changed after the draft was saved, the screen
+   shows no steps and asks you to go back and click **Connect** again, which
+   saves the draft with the current address.
+4. Click **Test connection**. Paperclip saves the role ARN, mints a token, lists the tools and
+   finishes setup. If AWS refuses, the screen shows why, in place.
+
+The screen reads `GET /api/tool-connections/{connectionId}/aws-setup`, which
+returns the issuer, audience, subject, trust policy and template, and never a
+secret. AWS hosts quick-create links only for templates stored in Amazon S3, so
+Paperclip offers a download instead of a hosted template.
 
 For the access-key method, create a dedicated IAM user with
 `AWSMCPSignInOAuthAccessPolicy`, `sts:GetFederationToken` and the agents'
 permissions. Then connect with the key. Setup lists the tools immediately.
-
-A guided setup screen and a CloudFormation template are planned next. Until
-then, the generic setup form and these steps apply.
 
 **Verify:** the connection lists 8 tools. A test call of `aws___run_script` that
 runs `ListBuckets` succeeds. With read-only access, a `CreateBucket` call is
