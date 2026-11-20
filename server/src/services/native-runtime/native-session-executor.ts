@@ -9182,6 +9182,24 @@ export const NATIVE_PROVIDER_STARTUP_REJECTED = "native_provider_startup_rejecte
 export const NATIVE_PROVIDER_STARTUP_REJECTED_ACTION =
   "The provider refused to start a session, so no provider work began. Read the provider message and fix its cause in the agent's environment or AI connection if needed, then Retry. Retry starts a new run with a fresh provider session.";
 
+const ACPX_CREDENTIAL_ADMISSION_REJECTION =
+  "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=admission_credential)";
+const NATIVE_CREDENTIAL_ADMISSION_ACTION =
+  "The Runner rejected credential setup before opening a provider session. Check the Runner's credential setup and workspace permissions, then Retry. Retry starts a new run with a fresh provider session.";
+
+function runnerSessionOpenFailure(error: unknown, depth = 0): Record<string, unknown> | null {
+  if (!error || typeof error !== "object" || depth > 5) return null;
+  const value = record(error);
+  const command = record(value.runnerCommandResult);
+  const detail = record(command.result);
+  if (command.commandType === "session.open" && command.status === "failed" && detail.code === "command_execution_failed") {
+    return detail;
+  }
+  return runnerSessionOpenFailure(value.cause, depth + 1)
+    ?? (Array.isArray(value.errors) ? value.errors.slice(0, 3)
+      .map(item => runnerSessionOpenFailure(item, depth + 1)).find(detail => detail !== null) ?? null : null);
+}
+
 function deterministicProviderStartupFailure(error: unknown): boolean {
   const failure = providerFailureFromError(error);
   return failure?.phase === "startup" && failure.retryability === "requires_action"
@@ -9450,7 +9468,16 @@ function classifyNativeSessionFailure(
     if (/classification=(?:requested_model_unsupported|grok_model_mismatch)\)/.test(message)) {
       return "native_provider_model_rejected";
     }
-    if (deterministicProviderStartupFailure(error)) return NATIVE_PROVIDER_STARTUP_REJECTED;
+    const detail = runnerSessionOpenFailure(error);
+    const failure = readProviderFailure(detail?.providerFailure);
+    if (failure?.phase === "startup" && failure.category === "authentication" && failure.retryability === "requires_action") {
+      return "native_provider_auth_failed";
+    }
+    // This closed class also covers lifetime lease and environment checks.
+    // The class alone cannot attribute a failure to the selected account.
+    if (detail?.message === ACPX_CREDENTIAL_ADMISSION_REJECTION || deterministicProviderStartupFailure(error)) {
+      return NATIVE_PROVIDER_STARTUP_REJECTED;
+    }
     return "provider_session_open_rejected";
   }
   // The controller stopped waiting for session.open while runner startup was
@@ -13428,11 +13455,16 @@ async function executePaperclipNativeSessionAttempt(
               transientIngressFailure: sourceFailureCode === "runner_ingress_acquisition_failed" && error instanceof NativeRunnerIngressAcquisitionError
                 && (error.failure.httpStatus === 429 || error.failure.httpStatus >= 500),
             } : undefined;
+      const startupAuthenticationFailure = classifiedFailureCode === "native_provider_auth_failed" &&
+        sourceFailureCode === "native_provider_auth_failed";
+      // Use the pre-session recovery evidence for session.open, while keeping
+      // the authentication classification used by the pool attribution path.
+      const recoverySourceFailureCode = startupAuthenticationFailure ? NATIVE_PROVIDER_STARTUP_REJECTED : sourceFailureCode;
       const recoveryEvidence = await nativeProviderRecoveryEvidence({
         db: input.db,
         runId: input.execution.binding.runId,
         executionTargetKind: input.runnerExecutionTarget?.kind ?? "local",
-        sourceFailureCode,
+        sourceFailureCode: recoverySourceFailureCode,
         bootstrap,
       });
       const adoptedRunnerUnanswered = input.runnerExecutionTarget?.kind === "remote"
@@ -13455,11 +13487,17 @@ async function executePaperclipNativeSessionAttempt(
         recoveryEvidence.recoveryMode === "ambiguous_state"
           ? DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES.includes(sourceFailureCode) ? "native_provider_runner_failed" : sourceFailureCode
           : disposition.failureCode;
-      const providerFailure = providerFailureFromError(error) ?? providerQuotaFailureObserved ?? providerAuthenticationFailureObserved;
+      const startupRejection = sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED || startupAuthenticationFailure
+        ? runnerSessionOpenFailure(error) : null;
+      const providerFailure = (startupAuthenticationFailure
+        ? readProviderFailure(startupRejection?.providerFailure) : providerFailureFromError(error))
+        ?? providerQuotaFailureObserved ?? providerAuthenticationFailureObserved;
       const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry"
         ? nativeStartupFailureSignature(providerFailure) : null;
-      const startupRejectedAction = repeatedRemoteStartupFailure && providerFailure
-        ? nativeRepeatedStartupFailureAction(providerFailure.message) : NATIVE_PROVIDER_STARTUP_REJECTED_ACTION;
+      const startupRejectedAction = !startupAuthenticationFailure && startupRejection?.message === ACPX_CREDENTIAL_ADMISSION_REJECTION
+        ? NATIVE_CREDENTIAL_ADMISSION_ACTION
+        : repeatedRemoteStartupFailure && providerFailure
+          ? nativeRepeatedStartupFailureAction(providerFailure.message) : NATIVE_PROVIDER_STARTUP_REJECTED_ACTION;
       // Pre-provider startup retries back off and wait out a known provider
       // limit; their exhaustion explains the startup failure.
       const startupRetryExhausted =
@@ -13598,7 +13636,8 @@ async function executePaperclipNativeSessionAttempt(
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
                   : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
                   ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
-                  : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED
+                  : sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED ||
+                      (startupAuthenticationFailure && recoveryEvidence.recoveryMode === "bootstrap_retry")
                   ? startupRejectedAction
                   : sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER
                   ? NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER_ACTION
@@ -13756,7 +13795,7 @@ async function executePaperclipNativeSessionAttempt(
         if (recoveryEvidence.unclaimedBootstrap && bootstrap) {
           const currentEvidence = await nativeProviderRecoveryEvidence({ db: tx as unknown as Db,
             runId: input.execution.binding.runId, executionTargetKind: input.runnerExecutionTarget?.kind ?? "local",
-            sourceFailureCode, bootstrap });
+            sourceFailureCode: recoverySourceFailureCode, bootstrap });
           if (!runBeforeWrite || ["cancelled", "succeeded"].includes(runBeforeWrite.status)
             || Object.keys(record(runBeforeWrite.resultJson?.nativeCancellation)).length > 0
             || runBeforeWrite.runnerInstanceId !== bootstrap.identity.runnerInstanceId

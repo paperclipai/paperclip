@@ -15,6 +15,7 @@ import { executePaperclipNativeSession, NATIVE_PROVIDER_STARTUP_REJECTED } from 
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { heartbeatService } from "../heartbeat.js";
+import { poolFailureKind } from "../heartbeat/pool-failover.js";
 import { requestTaskRetry } from "../task-retry.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
 
@@ -34,9 +35,9 @@ describe("native session.open the provider rejected before any provider work", (
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
-  const rejection = (providerFailure: Record<string, unknown>) => {
+  const rejection = (providerFailure?: Record<string, unknown>, message = String(providerFailure?.message)) => {
     const commandResult = { commandId: "command_prp_00000002", commandType: "session.open", controllerSeq: 2,
-      result: { code: "command_execution_failed", message: String(providerFailure.message), providerFailure }, status: "failed" };
+      result: { code: "command_execution_failed", message, providerFailure }, status: "failed" };
     const reported = { ...commandResult, result: { code: "command_execution_failed", message: "Provider request failed" } };
     return Object.defineProperty(new Error(`PRP command session.open failed: ${JSON.stringify(reported)}`),
       "runnerCommandResult", { value: commandResult, enumerable: false });
@@ -80,16 +81,18 @@ describe("native session.open the provider rejected before any provider work", (
       openSession: async () => { throw new Error("Unexpected provider call"); },
     } }).catch(() => undefined);
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
-    return { issueId, runId, coordinator };
+    const [failedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    return { issueId, runId, coordinator, failedRun };
   }
 
   it("fails the run on the first deterministic rejection with a plain explanation, and Retry starts a new run", async () => {
-    const { issueId, runId, coordinator } = await rejectSessionOpen(rejection(startupFailure({ category: "authentication",
+    const { issueId, runId, coordinator, failedRun } = await rejectSessionOpen(rejection(startupFailure({ category: "authentication",
       retryability: "requires_action", message: "error creating thread: the AI connection was revoked" })));
-    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null,
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "native_provider_auth_failed", nextAttemptAt: null,
       failureDetail: expect.objectContaining({ recoveryMode: "bootstrap_retry", providerSessionEstablished: false,
         providerFailure: expect.objectContaining({ phase: "startup" }),
         nextAction: expect.stringContaining("Retry starts a new run") }) });
+    expect(poolFailureKind({ ...failedRun, contextSnapshot: { aiRouterSelection: { poolId: randomUUID() } } })).toBe("auth");
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     await expect(taskInterruptionPresentation(db, issue)).resolves.toMatchObject({ state: "failed", canRetry: true,
       providerFailure: expect.objectContaining({ phase: "startup" }) });
@@ -123,6 +126,16 @@ describe("native session.open the provider rejected before any provider work", (
   }, 120_000);
 
   const exitProven = (error: Error) => Object.defineProperty(error, "runnerExitConfirmed", { value: true, enumerable: false });
+
+  it("surfaces closed credential admission as a Runner startup failure without attributing it to the account", async () => {
+    const { coordinator, failedRun } = await rejectSessionOpen(exitProven(rejection(undefined,
+      "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=admission_credential)")),
+    0, { remote: true });
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED,
+      nextAttemptAt: null, failureDetail: expect.objectContaining({ recoveryMode: "bootstrap_retry",
+        nextAction: expect.stringContaining("Runner rejected credential setup") }) });
+    expect(poolFailureKind({ ...failedRun, contextSnapshot: { aiRouterSelection: { poolId: randomUUID() } } })).toBeNull();
+  }, 120_000);
 
   it("ends a remote startup rejection at once when the runner exit is not proven", async () => {
     const { coordinator } = await rejectSessionOpen(rejection(startupFailure()), 0, { remote: true });

@@ -15974,14 +15974,24 @@ describe("native session bounded recovery", () => {
       message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
       ...fields });
 
-    it.each(["authentication", "permission", "invalid_request"])("stops on the first %s rejection and hands the run to the board", (category) => {
+    it.each([
+      ["authentication", "native_provider_auth_failed"],
+      ["permission", NATIVE_PROVIDER_STARTUP_REJECTED],
+      ["invalid_request", NATIVE_PROVIDER_STARTUP_REJECTED],
+    ])("stops on the first %s rejection and hands the run to the board", (category, expectedCode) => {
       const code = nativeSessionFailureSourceCode(sessionOpenFailure(startupFailure({ category, retryability: "requires_action" })));
-      expect(code).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(code).toBe(expectedCode);
       const disposition = nativeSessionFailureDisposition(1, new Date(), code);
-      expect(disposition).toEqual({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null });
+      expect(disposition).toEqual({ phase: "terminal_failure", failureCode: expectedCode, nextAttemptAt: null });
       expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
         issueStatus: "blocked", recoveryOwner: { kind: "board" },
       });
+    });
+
+    it("does not attribute a startup failure to the account without the Runner command result", () => {
+      const providerFailure = startupFailure({ category: "authentication", retryability: "requires_action" });
+      const error = Object.assign(new Error(sessionOpenFailure(providerFailure).message), { providerFailure });
+      expect(nativeSessionFailureSourceCode(error)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
     });
 
     it("keeps bounded same-run retries for a local startup failure without a definite permanent cause", () => {
@@ -16056,7 +16066,7 @@ describe("native session bounded recovery", () => {
         confirmed({ message: "Query closed before response received" }), true, previous)).toBe("provider_session_open_rejected");
       // A deterministic rejection never retries, even with exit proof.
       const deterministic = confirmed({ category: "authentication", retryability: "requires_action" });
-      expect(nativeSessionFailureSourceCode(deterministic)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(nativeSessionFailureSourceCode(deterministic)).toBe("native_provider_auth_failed");
     });
   });
 
