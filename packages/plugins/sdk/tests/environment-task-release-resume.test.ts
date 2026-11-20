@@ -107,7 +107,8 @@ describe("release and resume task contract", () => {
     const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
     const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState };
     expect(parseEnvironmentTaskResult(relaunch, "task", resumed)).toEqual(resumed);
-    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState: undefined })).toThrow();
+    const { archivedState: _archivedState, ...withoutState } = resumed;
+    expect(parseEnvironmentTaskResult(relaunch, "task", withoutState)).toEqual(withoutState);
     expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, runner: undefined })).toThrow();
     expect(() => parseEnvironmentTaskResult(resume, "task", resumed)).toThrow();
     expect(parseEnvironmentTaskResult(relaunch, "task", { kind: "resume", taskId: "task", outcome: "unavailable" }))

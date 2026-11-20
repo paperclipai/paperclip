@@ -19513,12 +19513,12 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it.each((["codex", "claude"] as const).flatMap(provider => [
-    ...[[false, false, false, false], [true, false, false, false], [false, true, false, false], [false, false, true, false], ...(provider === "codex" ? [[false, false, false, true]] : [])]
-      .map(([unknown, shutdown, journalFailure, deadline]) => [provider, unknown, shutdown, journalFailure, deadline, "idle timeout"] as const),
+    ...[[false, false, false], [true, false, false], [false, true, false], ...(provider === "codex" ? [[false, false, true]] : [])]
+      .map(([unknown, shutdown, deadline]) => [provider, unknown, shutdown, deadline, "idle timeout"] as const),
     ...(["controller restart", "detach failure", "environment deletion", "replacement hand-off"] as const)
-      .map(retirement => [provider, false, false, false, false, retirement] as const),
+      .map(retirement => [provider, false, false, false, retirement] as const),
   ]))(
-    "releases settled %s only under its current owner and retires its cache (unknown=%s, shutdown=%s, journalFailure=%s, deadline=%s, retirement=%s)", async (provider, unknown, shutdown, journalFailure, deadline, retirement) => {
+    "releases settled %s only under its current owner and retires its cache (unknown=%s, shutdown=%s, deadline=%s, retirement=%s)", async (provider, unknown, shutdown, deadline, retirement) => {
       await closeIdleWarmNativeSessionsForRestart();
       expect(readNativeSessionIdleWork()).toBe("none");
       const previousHome = process.env.PAPERCLIP_HOME;
@@ -19554,7 +19554,7 @@ describe("runnerd provider runtime wiring", () => {
       });
       let allowPhysicalStop!: () => void;
       const physicalStop = new Promise<void>(resolve => { allowPhysicalStop = resolve; });
-      const close = vi.fn(async () => { if (shutdown || deadline || journalFailure) await physicalStop; }), detachControllerForRestart = vi.fn(async () => {});
+      const close = vi.fn(async () => { if (shutdown || deadline) await physicalStop; }), detachControllerForRestart = vi.fn(async () => {});
       const session = { release, close, detachControllerForRestart };
       const validated = validatePrpStructuredRunResult({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
         summary: "Completed", completionClaim: { contractRevision: current.completionContract.contract.revision,
@@ -19583,7 +19583,7 @@ describe("runnerd provider runtime wiring", () => {
           runnerInstanceId: source.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
           runnerExecutionTarget: { ...target, runnerTask: nextTask } })).rejects.toThrow("native_session_supervisor_busy");
         expect(nextTask).not.toHaveBeenCalled();
-        if (provider === "codex" && !unknown && !shutdown && !journalFailure && !deadline) {
+        if (provider === "codex" && !unknown && !shutdown && !deadline) {
           await expect(executePaperclipNativeSession({ db: leaseDb(next), execution: next,
             runnerInstanceId: source.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
             runnerExecutionTarget: { ...target, environmentId: "competing-environment", runnerTask: nextTask,
@@ -19614,33 +19614,6 @@ describe("runnerd provider runtime wiring", () => {
           expect(JSON.parse(await readFile(join(directory, (await readdir(directory))[0]!), "utf8")).releasedRunner).toBeUndefined();
           return;
         }
-        if (journalFailure) {
-          const directory = join(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/sessions");
-          const path = join(directory, (await readdir(directory))[0]!);
-          await rename(path, `${path}.saved`);
-          await mkdir(path);
-          let finished = false;
-          void execute.finally(() => { finished = true; }).catch(() => undefined);
-          allowRelease();
-          await new Promise(resolve => setImmediate(resolve));
-          expect(finished).toBe(false);
-          await expect(executePaperclipNativeSession({ db: leaseDb(next), execution: next,
-            runnerInstanceId: source.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
-            managedAiCredentialHome: home, managedAiCredentialIdentity: "selected-revision", managedAiAccountIdentity: "selected-account",
-            runnerExecutionTarget: { ...target, remoteCwd: "different-workspace", runnerTask: nextTask } })).rejects.toThrow("native_session_supervisor_busy");
-          expect(nextTask).not.toHaveBeenCalled();
-          await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
-          expect(readNativeSessionIdleWork()).toBe("present");
-          expect(finished).toBe(false);
-          await rm(path, { recursive: true });
-          await rename(`${path}.saved`, path);
-          expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toBeUndefined();
-          allowPhysicalStop();
-          await expect(execute).resolves.toMatchObject({ sessionId: source.normalizedSessionId });
-          expect(readNativeSessionIdleWork()).toBe("none");
-          expect(detachControllerForRestart).not.toHaveBeenCalled();
-          return;
-        }
         allowRelease();
         await expect(execute).resolves.toMatchObject({ sessionId: source.normalizedSessionId });
         expect(readNativeSessionIdleWork()).toBe("none");
@@ -19648,21 +19621,20 @@ describe("runnerd provider runtime wiring", () => {
         const files = await readdir(directory);
         const path = join(directory, files[0]!);
         const envelope = JSON.parse(await readFile(path, "utf8"));
-        expect(envelope.releasedRunner).toMatchObject({ source, taskId: "retained-task", scopeDigest: expect.any(String) });
+        expect(envelope.releasedRunner).toBeUndefined();
         expect(JSON.stringify(envelope)).not.toContain("synthetic-fixture");
         if (!unknown) {
           const calls = owners.mock.calls.length;
-          for (const changed of [{ remoteCwd: "different-workspace" }, { runnerTaskProjectIds: ["different-project"] }]) {
-            await expect(executePaperclipNativeSession({ db: leaseDb(next), execution: next,
-              runnerInstanceId: source.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
-              managedAiCredentialHome: home, managedAiCredentialIdentity: "selected-revision", managedAiAccountIdentity: "selected-account",
-              runnerExecutionTarget: { ...target, ...changed, runnerTask: nextTask },
-              runnerEnvironment: provider === "claude" ? { ANTHROPIC_API_KEY: "synthetic-fixture" } : {} })).rejects.toThrow("released_owner_scope_mismatch");
-          }
+          await expect(executePaperclipNativeSession({ db: leaseDb(next), execution: next,
+            runnerInstanceId: source.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
+            managedAiCredentialHome: home, managedAiCredentialIdentity: "selected-revision", managedAiAccountIdentity: "selected-account",
+            runnerExecutionTarget: { ...target, runnerTask: nextTask,
+              sandboxLeaseAcquisition: { ...target.sandboxLeaseAcquisition, providerLeaseId: "different-task" } },
+            runnerEnvironment: provider === "claude" ? { ANTHROPIC_API_KEY: "synthetic-fixture" } : {} })).rejects.toThrow("released_owner_scope_mismatch");
           expect(owners).toHaveBeenCalledTimes(calls);
           expect(nextTask).not.toHaveBeenCalled();
           expect(state.execute).toHaveBeenCalledTimes(1);
-          expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(envelope.releasedRunner);
+          expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toBeUndefined();
         }
         if (retirement === "environment deletion") {
           expect(await closeWarmNativeSessionsForEnvironment({ environmentId: target.environmentId, reason: "environment deleted" }))
@@ -19677,7 +19649,7 @@ describe("runnerd provider runtime wiring", () => {
             expect(await closeIdleWarmNativeSessionsForRestart()).toMatchObject({ closed: 0, busy: 0, failed: 1 });
             expect(close).not.toHaveBeenCalled();
             expect(readNativeSessionIdleWork()).toBe("present");
-            expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(envelope.releasedRunner);
+            expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toBeUndefined();
           }
           detachControllerForRestart.mockResolvedValue(undefined);
         }
@@ -19688,7 +19660,7 @@ describe("runnerd provider runtime wiring", () => {
         expect(readNativeSessionIdleWork()).toBe("none");
         expect(close).not.toHaveBeenCalled();
         expect(task.mock.calls.map(([operation]) => (operation as { kind: string }).kind)).toEqual(["describe"]);
-        expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(envelope.releasedRunner);
+        expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toBeUndefined();
         if (provider === "codex" && !unknown) {
           const inspected = vi.spyOn(remoteWarmRecoveryRuntime, "inspectRemoteWarmSessionRecovery").mockImplementation(async request => {
             request.loadCheckpoint(current);
@@ -19705,18 +19677,11 @@ describe("runnerd provider runtime wiring", () => {
               { runnerExecutionTarget: { ...target, runnerTaskProjectIds: ["different-project"] } },
               { runnerExecutionTarget: { ...target, remoteCwd: "different-workspace" } },
               { runnerExecutionTarget: { ...target, sandboxLeaseAcquisition: { ...target.sandboxLeaseAcquisition, providerLeaseId: "different-task" } } },
-            ]) await expect(executePaperclipNativeSession({ ...base, ...changed })).rejects.toThrow("released_owner_scope_mismatch");
+            ]) await expect(executePaperclipNativeSession({ ...base, ...changed })).rejects.toThrow("fixture completed-source proof checked");
             expect(owners).toHaveBeenCalledTimes(calls);
             expect(state.execute).toHaveBeenCalledTimes(1);
           } finally { inspected.mockRestore(); }
         }
-        await owners.mock.calls.at(-1)![0].onResumed!(source);
-        expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toBeUndefined();
-        const replacement = { ...envelope, snapshot: { ...envelope.snapshot, identity: { ...envelope.snapshot.identity, runId: "new-owner" } },
-          releasedRunner: { ...envelope.releasedRunner, source: { ...source, runId: "new-owner" } } };
-        await writeFile(path, JSON.stringify(replacement));
-        await expect(owners.mock.calls.at(-1)![0].onResumed!(source)).rejects.toThrow("released_source_mismatch");
-        expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(replacement.releasedRunner);
       } finally {
         detachControllerForRestart.mockResolvedValue(undefined);
         registerRunStartHandover(null);
@@ -19727,7 +19692,7 @@ describe("runnerd provider runtime wiring", () => {
 
   it.each((["codex", "claude"] as const).flatMap(provider => (["current", "stale", ...(provider === "codex" ? ["foreign runner", "foreign lease"] : [])] as const)
     .map(receipt => [provider, receipt] as const)))(
-    "records the confirmed %s source after external checkpoint registration and attachment (receipt=%s)", async (provider, receipt) => {
+    "accepts only the attached %s source's release receipt after external checkpoint registration (receipt=%s)", async (provider, receipt) => {
       const invalidReceipt = receipt !== "current";
       await closeIdleWarmNativeSessionsForRestart();
       const previousHome = process.env.PAPERCLIP_HOME;
@@ -19799,7 +19764,6 @@ describe("runnerd provider runtime wiring", () => {
             .toBe("paperclip.runner.external-control-plane-state.v1");
         } else {
           expect(options.existingSession).toBe(session);
-          await owners.mock.calls[0]![0].onResumed!(source);
           authority.rotateRunIdentity(successor);
           await register!(authority, successor);
           await writeFile(join(root, "runner/runner-state.json"), JSON.stringify(durableRunnerState(successor, "ready")));
@@ -19831,7 +19795,7 @@ describe("runnerd provider runtime wiring", () => {
         expect(release).toHaveBeenCalledOnce();
         const directory = join(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/sessions");
         const path = join(directory, (await readdir(directory))[0]!);
-        expect(JSON.parse(await readFile(path, "utf8")).releasedRunner.source).toEqual(source);
+        expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toBeUndefined();
         following = run(next);
         void following.catch(() => undefined);
         if (invalidReceipt) {
@@ -19844,7 +19808,7 @@ describe("runnerd provider runtime wiring", () => {
         } else {
           await expect(following).resolves.toMatchObject({ sessionId: source.normalizedSessionId });
           expect(release).toHaveBeenCalledTimes(2);
-          expect(JSON.parse(await readFile(path, "utf8")).releasedRunner.source).toEqual(successor);
+          expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toBeUndefined();
           expect(close).not.toHaveBeenCalled();
         }
       } finally {
