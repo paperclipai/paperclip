@@ -29,7 +29,7 @@
     "packages/plugins/sdk/src/ui/index.ts": "f7d1cee64a8f0c924bd10a1bd20745a52fe2060e",
     "packages/plugins/sdk/src/ui/runtime.ts": "998428e9701eba3b762d3417236d32c2d0d5763d",
     "packages/plugins/sdk/src/ui/types.ts": "5a5644acf6554d2e5e1d000bfd03b97d57001eb2",
-    "packages/plugins/sdk/src/worker-rpc-host.ts": "afb577313ed099e20446fae6640e4f921089bafd",
+    "packages/plugins/sdk/src/worker-rpc-host.ts": "820c73c7d4c681296ef8c813a68ab2bd9901d339",
     "packages/plugins/sdk/src/workspace-operation-error.ts": "2cd247d002d83b163239229e631bca4e519e5075",
     "packages/plugins/sdk/src/workspace-provider.ts": "38e945b807f22150710c11b136af0a28aab2cb7c",
     "packages/plugins/sdk/tsconfig.json": "d62ebdff94bc4b75dabf1fcad187e1e7a90fc794",
