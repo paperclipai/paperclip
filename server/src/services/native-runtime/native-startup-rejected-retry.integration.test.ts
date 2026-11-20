@@ -47,9 +47,10 @@ describe("native session.open the provider rejected before any provider work", (
     message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
     ...fields });
 
-  async function rejectSessionOpen(failure: Error, attempt = 0, options: { remote?: boolean; recoveryHistory?: Record<string, unknown>[];
-    /** What an earlier attempt of this same run saved; the retry claim keeps it. */
-    priorResultJson?: Record<string, unknown> } = {}) {
+  async function rejectSessionOpen(failure: Error, attempt = 0,
+    options: { remote?: boolean; recoveryHistory?: Record<string, unknown>[]; resumesProviderSession?: boolean;
+      /** What an earlier attempt of this same run saved; the retry claim keeps it. */
+      priorResultJson?: Record<string, unknown> } = {}) {
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Plan the change", status: "in_progress", workMode: "standard",
       assigneeAgentId: agentId, createdByUserId: "board-user", responsibleUserId: "board-user" });
@@ -74,7 +75,10 @@ describe("native session.open the provider rejected before any provider work", (
         contract: buildNativeCompletionContract(issue, { revision: contract.revision }) },
       interactionResponses: [], credentialBindings: [],
     };
-    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
+    const sessionCheckpoint = options.resumesProviderSession
+      ? { sessionId: native.normalizedSessionId, providerSessionId: randomUUID(), terminal: null } : undefined;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution,
+      ...(sessionCheckpoint ? { sessionCheckpoint } : {}) } }).where(eq(heartbeatRuns.id, runId));
     provider.execute.mockReset().mockRejectedValue(failure);
     await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId,
       ...(options.remote ? { runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "test", remoteCwd: "/workspace",
@@ -176,5 +180,17 @@ describe("native session.open the provider rejected before any provider work", (
       .resolves.toEqual({ requested: false, waitUntil: secondReset });
     await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }, new Date(secondReset.getTime() + 1000)))
       .resolves.toMatchObject({ requested: true });
+  }, 120_000);
+
+  it("stops a repeated remote startup rejection on a run that resumes its predecessor's provider session", async () => {
+    const first = await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, resumesProviderSession: true });
+    expect(first.coordinator).toMatchObject({ phase: "retryable_failure",
+      failureDetail: expect.objectContaining({ recoveryMode: "exact_checkpoint_resume", originalFailureCode: "provider_session_open_rejected" }) });
+    const firstHistory = first.coordinator.recoveryHistory as Record<string, unknown>[];
+    expect(firstHistory.at(-1)).toMatchObject({ disposition: "retryable_failure", startupFailureSignature: expect.any(String) });
+    const { coordinator } = await rejectSessionOpen(exitProven(rejection(startupFailure())), 1, { remote: true,
+      resumesProviderSession: true, recoveryHistory: firstHistory });
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null,
+      failureDetail: expect.objectContaining({ nextAction: expect.stringContaining("bwrap: loopback: Failed RTM_NEWADDR") }) });
   }, 120_000);
 });
