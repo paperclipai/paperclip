@@ -27,7 +27,7 @@ export type ShareNativeProviderArtifactCaptureInput<T> = {
   key: string;
   signal: AbortSignal;
   reuse: () => Promise<T | null>;
-  capture: (signal: AbortSignal) => Promise<T>;
+  capture: (signal: AbortSignal, hold: (work: Promise<unknown>) => void) => Promise<T>;
   hedgeAfterMs?: number;
 };
 
@@ -141,8 +141,9 @@ async function captureOrReuse<T>(
   stopped: Promise<never>,
 ): Promise<T> {
   const superseded = new AbortController();
-  const own = Promise.resolve().then(() => input.capture(AbortSignal.any([input.signal, superseded.signal])));
-  own.then(release, release);
+  const held: Promise<unknown>[] = [];
+  const own = Promise.resolve().then(() => input.capture(AbortSignal.any([input.signal, superseded.signal]), work => held.push(work)));
+  void own.then(() => undefined, () => undefined).then(() => Promise.allSettled(held)).then(release);
   try {
     const first = await Promise.race([own.then(value => ({ value })), shared.savedCopy().then(() => null), stopped]);
     if (first) {
@@ -214,6 +215,7 @@ export async function captureRemoteNativeProviderArtifacts<T>(
     manifest: NativeProviderArtifactSource["manifest"];
     signal: AbortSignal;
     context?: NativeExecutionContext;
+    hold?: (work: Promise<unknown>) => void;
   },
   publish: (source: NativeProviderArtifactSource) => Promise<T>,
 ): Promise<T> {
@@ -301,6 +303,7 @@ export async function captureRemoteNativeProviderArtifacts<T>(
         }
       });
     void operation.catch(() => undefined);
+    input.hold?.(operation);
     let abort!: () => void;
     const stopped = new Promise<never>((_resolve, reject) => {
       abort = () => reject(input.signal.reason);

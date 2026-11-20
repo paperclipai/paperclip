@@ -158,6 +158,30 @@ describe("shared provider artifact capture", () => {
     expect(capture).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a stopped capture's slot until its copy out of the sandbox ends", async () => {
+    const key = `company:${Math.random()}`;
+    const transfer = deferred<void>();
+    const stop = new AbortController();
+    const reuse = vi.fn(async () => null);
+    const pending = () => new Promise<string>(() => undefined);
+    const capture = vi.fn()
+      .mockImplementationOnce((signal: AbortSignal, hold: (work: Promise<unknown>) => void) => {
+        hold(transfer.promise);
+        return new Promise<string>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+      })
+      .mockImplementation(pending);
+    const stopped = shareNativeProviderArtifactCapture({ key, signal: stop.signal, reuse, capture, hedgeAfterMs: 0 });
+    await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(1), { interval: 1 });
+    stop.abort(new Error("controlled Stop"));
+    await expect(stopped).rejects.toThrow("controlled Stop");
+    void shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 0 });
+    void shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 0 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(capture).toHaveBeenCalledTimes(2);
+    transfer.resolve();
+    await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(3), { interval: 1 });
+  });
+
   it("starts one more capture when the shared capture runs past the hedge delay, not one per waiting run", async () => {
     const key = `company:${Math.random()}`;
     const hung = deferred<string>();
@@ -256,6 +280,28 @@ describe("provider artifact transfer step", () => {
       message: "Setting up the computer took too long, so the task is continuing on a fresh one.",
     });
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("reports the copy out of the sandbox as held work that outlives a Stop", async () => {
+    const transfer = deferred<{ operations: [] }>();
+    vi.mocked(runner.syncOut!).mockImplementationOnce(() => transfer.promise);
+    const stop = new AbortController();
+    const held: Promise<unknown>[] = [];
+    const capturing = captureRemoteNativeProviderArtifacts({
+      runner, remoteCwd: "/workspace", manifest, signal: stop.signal, hold: work => held.push(work),
+      launch: { root: "/owned/qualified", accountUid: 1000,
+        paths: { nodeCommand: "/qualified/node", opencodeProxy: "/qualified/proxy", opencodeExecutable: "/qualified/opencode" } },
+    }, vi.fn());
+    await vi.waitFor(() => expect(runner.syncOut).toHaveBeenCalled(), { interval: 1 });
+    stop.abort(new Error("controlled Stop"));
+    await expect(capturing).rejects.toThrow("controlled Stop");
+    expect(held).toHaveLength(1);
+    let settled = false;
+    void held[0]!.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+    transfer.resolve({ operations: [] });
+    await vi.waitFor(() => expect(settled).toBe(true), { interval: 1 });
   });
 
   it("does not retry a failure that is not a transfer timeout", async () => {
