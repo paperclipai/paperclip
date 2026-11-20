@@ -474,3 +474,44 @@ describe("project Git credentials", () => {
     expect(resolveGitCredential).toHaveBeenCalledWith(params, context);
   });
 });
+
+describe("issue attachment create", () => {
+  const params = {
+    issueId: "issue-a",
+    companyId: "company-a",
+    filename: "screenshot.png",
+    contentType: "image/png",
+    contentBase64: "UE5H",
+  };
+  const context = { invocationScope: { companyId: "company-a" } };
+
+  it("rejects issues.createAttachment without issue.attachments.create, even with attachment read", async () => {
+    const createAttachment = vi.fn(async () => ({ id: "attachment-1" }));
+    const services = { issues: { createAttachment } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.attachments.read"],
+      services,
+    });
+
+    await expect(handlers["issues.createAttachment"](params, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(createAttachment).not.toHaveBeenCalled();
+  });
+
+  it("forwards issues.createAttachment once issue.attachments.create is granted", async () => {
+    const createAttachment = vi.fn(async () => ({ id: "attachment-1" }));
+    const services = { issues: { createAttachment } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issue.attachments.create"],
+      services,
+    });
+
+    await expect(
+      handlers["issues.createAttachment"](params, { invocationScope: { companyId: "company-b" } }),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(createAttachment).not.toHaveBeenCalled();
+    await expect(handlers["issues.createAttachment"](params, context)).resolves.toEqual({ id: "attachment-1" });
+    expect(createAttachment).toHaveBeenCalledWith(params);
+  });
+});

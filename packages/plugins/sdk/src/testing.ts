@@ -497,6 +497,27 @@ function isInCompany<T extends { companyId: string | null | undefined }>(
   return Boolean(record && record.companyId === companyId);
 }
 
+const GENERIC_TEST_ATTACHMENT_CONTENT_TYPES = ["application/octet-stream", "binary/octet-stream", "application/x-binary"];
+const OFFICE_TEST_ATTACHMENT_CONTENT_TYPES: Array<[string, string]> = [
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".doc", "application/msword"],
+  [".xls", "application/vnd.ms-excel"],
+  [".ppt", "application/vnd.ms-powerpoint"],
+];
+
+function attachmentBaseName(filename: string | null | undefined): string | null {
+  return String(filename ?? "").replace(/\\/g, "/").trim().split("/").pop() || null;
+}
+
+function testAttachmentContentType(contentType: string | null | undefined, filename: string | null | undefined): string {
+  const normalized = (contentType ?? "").split(";", 1)[0]!.trim().toLowerCase() || "application/octet-stream";
+  if (!GENERIC_TEST_ATTACHMENT_CONTENT_TYPES.includes(normalized)) return normalized;
+  const lower = (attachmentBaseName(filename) ?? "").toLowerCase();
+  return OFFICE_TEST_ATTACHMENT_CONTENT_TYPES.find(([ext]) => lower.endsWith(ext))?.[1] ?? normalized;
+}
+
 /**
  * Create an in-memory host harness for plugin worker tests.
  *
@@ -1939,6 +1960,44 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           originalFilename: attachment.originalFilename ?? null,
           contentBase64,
         };
+      },
+      async createAttachment(issueId, companyId, input) {
+        requireCapability(manifest, capabilitySet, "issue.attachments.create");
+        if (!isInCompany(issues.get(issueId), companyId)) throw new Error(`Issue not found: ${issueId}`);
+        if (typeof input.contentBase64 !== "string") throw new Error("contentBase64 must be a base64 string");
+        const encoded = input.contentBase64.replace(/\s+/g, "");
+        if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+          throw new Error("contentBase64 is not valid base64");
+        }
+        const byteSize = Buffer.from(encoded, "base64").length;
+        if (byteSize <= 0) throw new Error("Attachment is empty");
+        if (byteSize > 10 * 1024 * 1024) throw new Error("Attachment is larger than the 10 MB limit");
+        const id = randomUUID();
+        const now = new Date();
+        const contentPath = `/api/attachments/${id}/content`;
+        const attachment: IssueAttachment = {
+          id,
+          companyId,
+          issueId,
+          issueCommentId: null,
+          assetId: randomUUID(),
+          provider: "test",
+          objectKey: `${companyId}/issues/${issueId}/${id}`,
+          contentType: testAttachmentContentType(input.contentType, input.filename),
+          byteSize,
+          sha256: "",
+          originalFilename: attachmentBaseName(input.filename),
+          createdByAgentId: null,
+          createdByUserId: null,
+          createdAt: now,
+          updatedAt: now,
+          contentPath,
+          openPath: contentPath,
+          downloadPath: `${contentPath}?download=1`,
+        };
+        issueAttachments.set(issueId, [...(issueAttachments.get(issueId) ?? []), attachment]);
+        attachmentContentById.set(id, encoded);
+        return attachment;
       },
       documents: {
         async list(issueId, companyId) {

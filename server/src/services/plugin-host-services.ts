@@ -50,6 +50,8 @@ import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { approvalService } from "./approvals.js";
 import { getStorageService } from "../storage/index.js";
+import { MAX_ATTACHMENT_BYTES, formatAttachmentSize, normalizeUploadAttachmentContentType } from "../attachment-types.js";
+import { HttpError } from "../errors.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -2923,6 +2925,89 @@ export function buildHostServices(
           sha256: attachment.sha256,
           originalFilename: attachment.originalFilename ?? null,
           contentBase64: bytes.toString("base64"),
+        };
+      },
+      async createAttachment(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = await requirePluginReadableIssue(params.issueId, companyId);
+
+        if (typeof params.contentBase64 !== "string") {
+          throw new Error("contentBase64 must be a base64 string");
+        }
+        const tooLargeMessage = `Attachment is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`;
+        const encoded = params.contentBase64.replace(/\s+/g, "");
+        if (encoded.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) throw new Error(tooLargeMessage);
+        if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+          throw new Error("contentBase64 is not valid base64");
+        }
+        const body = Buffer.from(encoded, "base64");
+        if (body.length <= 0) throw new Error("Attachment is empty");
+        if (body.length > MAX_ATTACHMENT_BYTES) throw new Error(tooLargeMessage);
+        const originalFilename = path.basename(String(params.filename ?? "").replace(/\\/g, "/").trim()) || null;
+        const contentType = normalizeUploadAttachmentContentType({
+          contentType: params.contentType,
+          originalFilename,
+        });
+
+        const storage = getStorageService();
+        const stored = await storage.putFile({
+          companyId,
+          namespace: `issues/${issue.id}`,
+          originalFilename,
+          contentType,
+          body,
+        });
+
+        let created: Awaited<ReturnType<typeof issues.createAttachment>>;
+        try {
+          created = await issues.createAttachment({
+            issueId: issue.id,
+            issueCommentId: null,
+            provider: stored.provider,
+            objectKey: stored.objectKey,
+            contentType: stored.contentType,
+            byteSize: stored.byteSize,
+            sha256: stored.sha256,
+            originalFilename: stored.originalFilename,
+            createdByAgentId: null,
+            createdByUserId: null,
+            createdByRunId: null,
+          });
+        } catch (err) {
+          if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
+            try {
+              await storage.deleteObject(companyId, stored.objectKey);
+            } catch (cleanupErr) {
+              logger.warn(
+                { cleanupErr, companyId, issueId: issue.id },
+                "failed to remove stored object after plugin attachment registration was rejected",
+              );
+            }
+          }
+          throw err;
+        }
+
+        await logPluginActivity({
+          companyId,
+          action: "issue.attachment_added",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            attachmentId: created.id,
+            originalFilename: created.originalFilename,
+            contentType: created.contentType,
+            byteSize: created.byteSize,
+          },
+        });
+
+        const { artifactWorkProductId: _artifactWorkProductId, ...attachment } = created;
+        const contentPath = `/api/attachments/${attachment.id}/content`;
+        return {
+          ...attachment,
+          contentPath,
+          openPath: contentPath,
+          downloadPath: `${contentPath}?download=1`,
         };
       },
     },

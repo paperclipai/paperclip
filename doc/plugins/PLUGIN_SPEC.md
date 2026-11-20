@@ -849,6 +849,7 @@ Governance helpers:
 - `ctx.issues.requestWakeup(issueId, companyId, options)` requests assignment wakeups through host heartbeat semantics, including terminal-status, blocker, assignee, and budget hard-stop checks.
 - `ctx.issues.requestWakeups(issueIds, companyId, options)` applies the same host-owned wakeup semantics to a batch and may use an idempotency key prefix for stable coordinator retries.
 - `ctx.issues.createComment(issueId, body, companyId, options)` posts a comment attributed to the plugin's own agent by default (`options.authorAgentId`). Passing `options.actorUserId` instead attributes the comment to that human company member — this requires `issue.comments.create_human_attributed` in addition to `issue.comments.create`, and the host independently verifies `actorUserId` is an active human member of the company before applying it, so a plugin can never forge attribution to an arbitrary or inactive user. A human-attributed comment on a non-terminal-status issue with an assignee also triggers the same assignee wakeup a board user's comment gets.
+- `ctx.issues.createAttachment(issueId, companyId, { filename, contentType, contentBase64 })` adds a file to an issue. It requires `issue.attachments.create`. The host applies the same size limit and content-type handling as a board upload, keeps only the base name of `filename`, and refuses an issue the plugin cannot read.
 
 Plugin-originated issue, relation, document, comment, and wakeup mutations must write activity entries with `actorType: "plugin"` and details fields for `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
 
@@ -954,6 +955,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `issues.update`
 - `issue.comments.create`
 - `issue.comments.create_human_attributed`
+- `issue.attachments.create`
 - `issue.interactions.create`
 - `issue.documents.write`
 - `issue.relations.write`

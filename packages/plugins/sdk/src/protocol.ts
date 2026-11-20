@@ -2176,6 +2176,16 @@ export interface WorkerToHostMethods {
     params: { attachmentId: string; companyId: string; maxBytes?: number | null },
     result: PluginIssueAttachmentContent | null,
   ];
+  "issues.createAttachment": [
+    params: {
+      issueId: string;
+      companyId: string;
+      filename: string;
+      contentType: string;
+      contentBase64: string;
+    },
+    result: IssueAttachment,
+  ];
 
   // Issue Documents
   "issues.documents.list": [
