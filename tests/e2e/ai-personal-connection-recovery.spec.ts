@@ -43,6 +43,20 @@ test("a ready agent with a missing personal key offers Claude setup in chat and 
     expect(failed).toMatchObject({ status: "failed", errorCode: "configuration_incomplete", responsibleUserId: "local-board",
       resultJson: { configurationIncomplete: { reason: "secret_binding_missing", missingBindings: [expect.objectContaining({ errorCode: "user_secret_missing" })] } } });
     const sourceRunId = before[0].id;
+    // The custom ACP fixture may run with a managed connection only in an
+    // explicitly trusted project workspace, just like an operator-owned provider.
+    const project = await json(await request.post(`/api/companies/${company.id}/projects`, {
+      data: { name: "Trusted recovery fixture", workspace: { name: "Fixture", cwd: root } },
+    }));
+    const [workspace] = await json(await request.get(`/api/projects/${project.id}/workspaces`));
+    const { sourceType, cwd, repoUrl, repoRef, defaultRef, remoteProvider, remoteWorkspaceRef } = workspace;
+    await json(await request.put(`/api/projects/${project.id}/workspaces/${workspace.id}/claude-project-trust`, {
+      data: { agentIds: [agent.id], expectedUpdatedAt: workspace.updatedAt,
+        expectedSource: { sourceType, cwd, repoUrl, repoRef, defaultRef, remoteProvider, remoteWorkspaceRef } },
+    }));
+    await json(await request.patch(`/api/issues/${chat.id}`, {
+      data: { projectId: project.id, projectWorkspaceId: workspace.id },
+    }));
     await test.info().attach("missing-personal-ai-card", { body: await page.screenshot(), contentType: "image/png" });
 
     await page.getByRole("button", { name: "Connect Claude", exact: true }).click();
