@@ -22,13 +22,9 @@ describe("agent directory merge-lock wait timeout", () => {
     const { withDirectoryMergeLock, WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } = await import("@paperclipai/adapter-utils/workspace-restore-merge");
     const service = await import("../services/agent-directory-working-copies.js");
     const busy = await import("../services/heartbeat/agent-directory-busy.js");
-    // Importing the service runs worktree-config, which rewrites
-    // process.env.PAPERCLIP_HOME/PAPERCLIP_INSTANCE_ID. Stub the lock-root env
-    // after the import so the holder and the service resolve the same lock.
     vi.stubEnv("PAPERCLIP_HOME", home);
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "agent-directory-lock-test");
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "false");
-    // serial() locks path.resolve(row.localRoot, "../../..") — the target.
     const localRoot = path.join(target, "a", "b", "c");
     await mkdir(localRoot, { recursive: true });
     const row = { companyId: "company-1", runId: "run-1", agentId: "agent-1", location: "local", localRoot, receipt: {} };
@@ -43,11 +39,16 @@ describe("agent directory merge-lock wait timeout", () => {
     const releaseHolder = new Promise<void>(resolve => { release = resolve; });
     const holder = withDirectoryMergeLock(target!, async () => { heldResolve(); await releaseHolder; },
       { PAPERCLIP_HOME: home!, PAPERCLIP_INSTANCE_ID: "agent-directory-lock-test" });
-    await held;
     try {
+      await Promise.race([
+        held,
+        holder.then(
+          () => { throw new Error("merge-lock holder finished before its callback started"); },
+          error => { throw error; },
+        ),
+      ]);
       const copies = service.agentDirectoryWorkingCopyService({} as never, async () => null, async r => r);
       const failure = copies.collectStopped(row as never);
-      // The directory-merge wait is a real 30s budget (LOCK_WAIT_MS), not a test seam.
       await expect(failure).rejects.toBeInstanceOf(service.AgentDirectoryOperationBusyError);
       await expect(busy.prepareWithAgentDirectoryDeferral(() => Promise.reject(new service.AgentDirectoryOperationBusyError())))
         .rejects.toBeInstanceOf(busy.AgentDirectoryPreparationDeferral);

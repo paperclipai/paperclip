@@ -673,10 +673,6 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
           return fn(current);
         }, process.env, operation);
       } catch (error) {
-        // A wait timeout before entering the lock is the same contention the
-        // ephemeral advisory-lock path reports as busy; map it so the heartbeat
-        // deferral applies. A timeout raised by work inside the lock is not
-        // contention on this lock and keeps its own error.
         if (!entered && (error as NodeJS.ErrnoException | null)?.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) throw new AgentDirectoryOperationBusyError();
         throw error;
       }
