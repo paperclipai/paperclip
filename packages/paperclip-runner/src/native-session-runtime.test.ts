@@ -794,11 +794,13 @@ describe("executeNativeSession recovery", () => {
       terminalTurns: [...warm.terminalTurns!,
         { turnId: lostTurnId, fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
     };
-    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({
-      turnId: startTurn.mock.calls.length === 1 ? "turn-own" : "turn-continuation",
-    }));
+    let startedTurns = 0;
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => {
+      startedTurns += 1;
+      return { turnId: startedTurns === 1 ? "turn-own" : "turn-continuation" };
+    });
     // The runner reports the loss only after this execution submitted its turn.
-    const turnSubmitted = vi.waitFor(() => expect(startTurn).toHaveBeenCalled());
+    const turnSubmitted = vi.waitFor(() => { expect(startedTurns).toBeGreaterThan(0); });
     const session: NativeSession = {
       identity: () => identity,
       async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
