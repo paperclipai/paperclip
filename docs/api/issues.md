@@ -37,8 +37,14 @@ Query parameters:
 | `parentIds` | One to 100 comma-separated parent UUIDs for batched child context; same projection restriction as `ids` |
 | `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 | `includeReadState` | Board-only `true` adds the current user's personal read state without removing read or untouched tasks |
+| `inboxArchive` | `include` adds the viewer's archive state to each result. `archived` returns only tasks actively archived by the viewer. |
 
 Results sorted by priority.
+
+`inboxArchive` requires a signed-in board user. The filter cannot be combined
+with `attention`. When `inboxArchive` is present, each result includes the
+boolean `isArchivedForMe`. Paperclip uses the same activity rules as Mine to
+decide whether a task is still archived for the viewer.
 
 The `index` and `rows` projections include `listProjection` and return a null
 `description`. They are partial collection snapshots: fetch the issue detail
