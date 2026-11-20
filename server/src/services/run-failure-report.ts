@@ -18,6 +18,7 @@ import { isOwnedAiConnectionSelectionRejection } from "./ai-connection-configura
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "./project-storage-environment-reason.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { REVIEWED_CHAT_BINDING_NOT_READY } from "./reviewed-chat-binding-diagnostics.js";
@@ -173,6 +174,19 @@ function isPluginRunnerAiConnectionRequiredBlocker(run: HeartbeatRun, options: R
   const configuration = asRecord(run.resultJson?.configurationIncomplete);
   const recovery = asRecord(run.resultJson?.executionRecovery);
   return configuration?.reason === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
+/** The source project's storage cannot serve the agent's environment, refused before dispatch; the task notice names the owner action. */
+function isProjectStorageEnvironmentBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return configuration?.reason === PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
@@ -382,6 +396,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
     isRestrictedWorkspaceSourceBlocker(run, options) ||
     isPluginRunnerAiConnectionRequiredBlocker(run, options) ||
+    isProjectStorageEnvironmentBlocker(run, options) ||
     isProjectAccessDenialBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||

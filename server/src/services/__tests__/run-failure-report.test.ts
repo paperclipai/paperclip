@@ -949,6 +949,34 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
 
+  function projectStorageEnvironmentRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: { reason: "project_storage_environment_incompatible", actionUrl: "/agents/fixture/runtime" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it("keeps a run refused for incompatible project workspace storage actionable on the task", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, projectStorageEnvironmentRun(), { phase: "setup" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { executionStage: "executing" },
+    { errorCode: "setup_failed" },
+    { resultJson: { configurationIncomplete: { reason: "project_storage_environment_incompatible" }, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+  ])("reports project storage markers without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, projectStorageEnvironmentRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   function localPathConfigurationRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       errorCode: "workspace_validation_failed",
