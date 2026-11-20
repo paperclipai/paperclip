@@ -530,6 +530,86 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(3);
   });
 
+  /**
+   * The persisted shape after the runner interrupts a turn at its tool-result
+   * receipt limit and the native finalizer schedules the fresh-session
+   * continuation. The runner's stop has no recorded request, so the run's
+   * cancellation provenance stays `unknown` and unexpected.
+   */
+  async function nativeToolReceiptLimitStop(input: {
+    run?: Partial<typeof heartbeatRuns.$inferSelect>;
+    retry?: Partial<typeof heartbeatRuns.$inferInsert> | null;
+  } = {}) {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    const run = buildRun({
+      status: "cancelled", error: "Native session cancelled", errorCode: "cancelled",
+      runtimeMode: "native", nativePhase: "committed", exitCode: 1, signal: null,
+      startedAt: new Date(0), finishedAt: new Date(1000),
+      resultJson: {
+        stopReason: "cancelled", finalizationPhase: "committed", finalizationReasonCode: "semantic_tool_turn_receipt_limit",
+        cancellation: { source: "unknown", expected: false, initiator: { type: "system" },
+          reason: "Execution stopped without a recorded cancellation request: Native session cancelled",
+          recordedAt: new Date(1000).toISOString() },
+      },
+      ...input.run,
+    });
+    const [stored] = await db.insert(heartbeatRuns).values(run).returning();
+    if (input.retry !== null) {
+      await db.insert(heartbeatRuns).values({
+        companyId, agentId, invocationSource: "automation", triggerDetail: "system", status: "scheduled_retry",
+        retryOfRunId: run.id, scheduledRetryReason: "semantic_tool_turn_receipt_limit", scheduledRetryAttempt: 1,
+        scheduledRetryAt: new Date(Date.now() + 5_000), errorCode: "semantic_tool_turn_receipt_limit",
+        contextSnapshot: { issueId: run.nativeIssueId, retryOfRunId: run.id }, ...input.retry,
+      });
+    }
+    return stored!;
+  }
+
+  it("keeps a native tool-receipt-limit stop local once its fresh-session continuation is scheduled", async () => {
+    const run = await nativeToolReceiptLimitStop();
+    await reportRunFailure(db, run);
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed native run local when the finalizer scheduled its receipt-limit continuation", async () => {
+    const run = await nativeToolReceiptLimitStop({ run: { status: "failed", errorCode: "native_run_failed",
+      error: "The provider turn failed", resultJson: { finalizationPhase: "committed" } } });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the continuations are exhausted", { retry: null }],
+    ["the successor belongs to another retry lane", { retry: { scheduledRetryReason: "native_safe_replacement" } }],
+    ["the successor belongs to another task", { retry: { contextSnapshot: { issueId: randomUUID() } } }],
+    ["the run has no native task", { run: { nativeIssueId: null } }],
+    ["the run is legacy", { run: { runtimeMode: "legacy" } }],
+    ["the run has a signal", { run: { signal: "SIGTERM" } }],
+    ["the run timed out", { run: { status: "timed_out" } }],
+  ] as const)("reports a native tool-receipt-limit stop when %s", async (_label, input) => {
+    const run = await nativeToolReceiptLimitStop(input as Parameters<typeof nativeToolReceiptLimitStop>[0]);
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a native tool-receipt-limit stop during setup, in all mode, or when its continuation cannot be read", async () => {
+    const run = await nativeToolReceiptLimitStop();
+    await reportRunFailure(db, run, { phase: "setup" });
+    const select = db.select.bind(db);
+    // The agent lookup succeeds; the continuation read fails.
+    const spy = vi.spyOn(db, "select").mockImplementationOnce(select as typeof db.select)
+      .mockImplementation(() => { throw new Error("fixture continuation read failed"); });
+    try {
+      await reportRunFailure(db, run);
+    } finally {
+      spy.mockRestore();
+    }
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(3);
+  });
+
   function providerAccessRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       error: "ACP agent reported a terminal access failure.\nInvalid API key · Fix external API key",

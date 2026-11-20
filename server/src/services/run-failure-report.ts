@@ -19,6 +19,7 @@ import { readRunFailureReportingMode, type RunFailureReportingMode } from "../se
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE } from "./native-runtime/native-tool-receipt-limit.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { REVIEWED_CHAT_BINDING_NOT_READY } from "./reviewed-chat-binding-diagnostics.js";
 import { readProviderFailure } from "@paperclipai/shared";
@@ -286,15 +287,27 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
  * capacity failures have no automatic retry and stay reportable. The retry
  * carries the task in its context, so the company/context-issue index bounds
  * the read to that task's runs created since this one.
+ *
+ * The runner also interrupts a turn that holds too many tool results, and the
+ * finalizer continues the task in a fresh session. That runner stop has no
+ * recorded request, so a cancelled run's provenance stays `unknown`. Its
+ * successor is the same proof. Exhausted continuations have no successor and
+ * stay reportable.
  */
-async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
-  if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
-      run.nativeIssueId == null || options.phase === "setup" || run.signal != null) return false;
+function scheduledNativeRetryReason(run: HeartbeatRun, options: RunFailureReportOptions): string | null {
+  if (run.runtimeMode !== "native" || run.nativeIssueId == null || options.phase === "setup" || run.signal != null) return null;
+  if (run.status === "failed" && run.errorCode === NATIVE_PROVIDER_OVERLOADED_CODE) return NATIVE_PROVIDER_OVERLOADED_CODE;
+  return run.status === "failed" || run.status === "cancelled" ? NATIVE_TOOL_RECEIPT_LIMIT_CODE : null;
+}
+
+async function isScheduledNativeRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
+  const reason = scheduledNativeRetryReason(run, options);
+  if (!reason) return false;
   const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, run.companyId),
     sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${run.nativeIssueId}`, gte(heartbeatRuns.createdAt, run.createdAt),
     eq(heartbeatRuns.agentId, run.agentId),
-    eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, NATIVE_PROVIDER_OVERLOADED_CODE),
+    eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, reason),
   )).limit(1);
   return retry !== undefined;
 }
@@ -419,11 +432,11 @@ async function captureTerminalRunFailure(
         return false;
       });
       if (rejectedExternally) return;
-      const capacityRetry = await isScheduledNativeCapacityRetry(db, run, options).catch((err) => {
-        logger.warn({ err, runId: run.id }, "failed to read native capacity retry for run failure report");
+      const scheduledRetry = await isScheduledNativeRetry(db, run, options).catch((err) => {
+        logger.warn({ err, runId: run.id }, "failed to read native scheduled retry for run failure report");
         return false;
       });
-      if (capacityRetry) return;
+      if (scheduledRetry) return;
     }
 
     const taskId = readTaskId(run);
