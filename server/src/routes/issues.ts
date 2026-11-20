@@ -15446,7 +15446,7 @@ export function issueRoutes(
         // outgoing run are rejected (assertHandedOffRunTaskOwnership).
         const isHumanSelfHandoff =
           req.actor.type === "agent" &&
-          req.actor.source === "agent_jwt" &&
+          (req.actor.source === "agent_jwt" || req.actor.source === "agent_key") &&
           nextAssigneeAgentId === null &&
           typeof nextAssigneeUserId === "string" &&
           req.actor.agentId === existing.assigneeAgentId &&
