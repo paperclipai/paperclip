@@ -28,6 +28,10 @@ describe("isKimiProviderQuotaError", () => {
     expect(isKimiProviderQuotaError({ stderr: "Error: 401 Unauthorized — run kimi login" })).toBe(false);
   });
 
+  it("does not treat a context limit as quota", () => {
+    expect(isKimiProviderQuotaError({ stderr: "error: You've reached your context limit" })).toBe(false);
+  });
+
   it("is not tripped by the quota wording alone being an auth requirement", () => {
     expect(detectKimiAuthRequired({ stdout: "", stderr: KIMI_FIVE_HOUR_LIMIT_STDERR }).requiresAuth).toBe(false);
   });
