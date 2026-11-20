@@ -1791,6 +1791,12 @@ describe("LiveUpdatesProvider visible issue toast suppression", () => {
 });
 
 describe("LiveUpdatesProvider run lifecycle toasts", () => {
+  it("does not notify each task held before provider work for the same usage limit", () => {
+    expect(__liveUpdatesTestUtils.buildRunStatusToast({
+      runId: "held-run", agentId: "agent-1", status: "cancelled", errorCode: "provider_limit_wait",
+      error: "Waiting to recheck the provider usage limit",
+    }, () => "Assistant")).toBeNull();
+  });
   it("does not build start or success toasts for agent runs", () => {
     const queryClient = {
       getQueryCache: () => ({ findAll: () => [] }),

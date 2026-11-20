@@ -275,7 +275,7 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(await recovery.assignedWork.report(f.companyId)).toMatchObject({ violationCount: 1, heldByRecoveryOwner: 1 });
   }, 60_000);
 
-  it("Retry-started tasks the scheduler refused to revalidate get one continuation, even with a question asked before the Retry", async () => {
+  it("continues a refused Retry only after its pending question is actually resolved", async () => {
     // Nine staging tasks: a person's Retry, stopped by a deploy during setup,
     // certified as no provider work; the scheduler then refused with
     // continuation_user_authorization_missing on every sweep. One of them
@@ -289,7 +289,7 @@ describePostgres("assigned-work invariant sweep", () => {
         createdAt: new Date(Date.now() - 4 * HOUR) });
     }
     await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: withQuestion, kind: "ask_user_questions",
-      status: "pending", continuationPolicy: "wake_assignee", payload: {}, createdAt: new Date(Date.now() - 12 * HOUR) } as never);
+      status: "pending", continuationPolicy: "wake_assignee", payload: { supersedeOnUserComment: false }, createdAt: new Date(Date.now() - 12 * HOUR) } as never);
     const queue = wakeQueue();
     // On staging the refusal also left the sweep's escalation without effect
     // (its stale-snapshot guard): the tasks stayed in_progress with nothing
@@ -304,11 +304,23 @@ describePostgres("assigned-work invariant sweep", () => {
     await recovery.reconcileStrandedAssignedIssues({ companyId: f.companyId, skipRelatedRecovery: true });
     expect(queue.calls).toHaveLength(0);
 
-    for (const issueId of [plain, withQuestion]) {
-      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_progress");
-      expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
-        .toMatchObject({ outcome: "repaired", verdict: { reason: "retry_offered" } });
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: plain }))
+      .toMatchObject({ outcome: "repaired", verdict: { reason: "retry_offered" } });
+    for (let pass = 0; pass < 3; pass += 1) {
+      expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: withQuestion }))
+        .toMatchObject({ outcome: "ok", verdict: { clause: "waiting", reason: "question" } });
+      expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id))
+        .not.toContain(withQuestion);
     }
+    expect(queue.calls.map(call => call.issueId)).toEqual([plain]);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, withQuestion),
+      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)))).toHaveLength(0);
+
+    await db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.issueId, withQuestion));
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id))
+      .toContain(withQuestion);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: withQuestion }))
+      .toMatchObject({ outcome: "repaired", verdict: { reason: "retry_offered" } });
     expect(queue.calls.map(call => call.issueId).sort()).toEqual([plain, withQuestion].sort());
   }, 60_000);
 
@@ -322,6 +334,26 @@ describePostgres("assigned-work invariant sweep", () => {
       .toMatchObject({ outcome: "repaired", verdict: { reason: "unknown_block" } });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("todo");
     expect(queue.calls).toHaveLength(1);
+  }, 60_000);
+
+  it("continues past a dismissed ordinary question while retaining a governed question's gate", async () => {
+    const f = await seedCompany();
+    const ordinary = await f.issue(), governed = await f.issue();
+    for (const issueId of [ordinary, governed]) {
+      await f.run(issueId);
+      await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId, kind: "ask_user_questions",
+        status: "pending", dismissedAt: new Date(), payload: { version: 1, questions: [],
+          ...(issueId === governed ? { toolAction: {} } : {}) } } as never);
+    }
+    const queue = wakeQueue();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup });
+    const suspects = (await sweep.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id);
+    expect(suspects).toContain(ordinary);
+    expect(suspects).not.toContain(governed);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: ordinary })).toMatchObject({ outcome: "repaired" });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: governed }))
+      .toMatchObject({ outcome: "ok", verdict: { clause: "waiting", reason: "question" } });
+    expect(queue.calls.map(call => call.issueId)).toEqual([ordinary]);
   }, 60_000);
 
   it("two servers sweeping the same violation at once create one wake", async () => {

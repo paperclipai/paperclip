@@ -12,11 +12,19 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { AWS_MCP_READ_ONLY_SESSION_POLICIES, type AwsMcpClients } from "../services/connectors/aws/mcp-credentials.js";
 import { resetWorkloadIdentityKeyCacheForTests, workloadIdentityService } from "../services/workload-identity.js";
 import { forgetMcpHttpSessions } from "../services/mcp-http.js";
+import express from "express";
+import request from "supertest";
+import { toolAccessRoutes } from "../routes/tool-access.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 const actor = { actorType: "user" as const, actorId: "aws-test-user", actorSource: "local_implicit" as const };
 const ACCESS_KEY_ID = "AKIAEXAMPLE1234567";
 const SECRET_ACCESS_KEY = "fixture-secret-access-key";
 const awsTool = (name: string, readOnlyHint: boolean) => ({ name, description: name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint } });
+
+function asConfig(config: unknown): { methodConfig: Record<string, unknown> } {
+  return config as { methodConfig: Record<string, unknown> };
+}
 
 describe("AWS connector with minted credentials", () => {
   let fixture: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -75,6 +83,80 @@ describe("AWS connector with minted credentials", () => {
     const common = { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 as const }], remoteHttpRequest: send, awsMcpClients: aws };
     return { aws, requests, rejected, service: toolAccessService(db, common), gateway: createToolGatewayService(db, { ...common, toolActionSigningSecret: "fixture-signing-key" }) };
   }
+
+  it("saves a role draft through the API and returns what to configure in AWS", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAwsConnector: true });
+    const { org } = await company();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", userId: actor.actorId, source: "local_implicit", isInstanceAdmin: true } as Express.Request["actor"]; next(); });
+    app.use("/api", toolAccessRoutes(db, { paperclipCloudConnector: null }));
+    app.use(errorHandler);
+    // The role does not exist yet, so the draft is saved without a role ARN.
+    const draft = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
+      galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true,
+      configValues: { roleArn: "", endpointRegion: "us-east-1", accessLevel: "read_only" },
+    });
+    expect(draft.status, JSON.stringify(draft.body)).toBeLessThan(300);
+    const connectionId = draft.body.connectionId as string;
+    // The setup screen reopens a resumed draft by these stored keys.
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    expect(stored).toMatchObject({ status: "draft", config: { sourceTemplateKey: "aws", connectionMethodKey: "aws-role" } });
+    const setup = await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200);
+    const issuer = `https://acme.paperclip.app/oidc/companies/${org.id}`;
+    expect(setup.body).toMatchObject({
+      available: true, issuer, audience: "sts.amazonaws.com", subject: `connection:${connectionId}`,
+      roleName: `paperclip-${connectionId}`, savedRoleArn: null, issuerPublished: true,
+    });
+    const host = issuer.replace("https://", "");
+    const template = JSON.parse(setup.body.cloudFormationTemplate);
+    const role = template.Resources.PaperclipRole.Properties;
+    expect(role).toMatchObject({ RoleName: `paperclip-${connectionId}` });
+    expect(role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals).toEqual({
+      [`${host}:aud`]: "sts.amazonaws.com", [`${host}:sub`]: `connection:${connectionId}`,
+    });
+    expect(template.Resources.PaperclipIdentityProvider.Properties.Url).toBe(issuer);
+    expect(setup.body.trustPolicy.Statement[0].Principal.Federated).toBe(`arn:aws:iam::ACCOUNT_ID:oidc-provider/${host}`);
+    expect(JSON.stringify(setup.body)).not.toMatch(/secret|private/i);
+    // A reconnect may change the access level before it is saved; the guide follows the level being set up.
+    const full = await request(app).get(`/api/tool-connections/${connectionId}/aws-setup?accessLevel=full`).expect(200);
+    expect(full.body.accessLevel).toBe("full");
+    expect(JSON.parse(full.body.cloudFormationTemplate).Parameters.AccessPolicyArn.Default).toBeUndefined();
+
+    // After the address changes, setup for the old address could never pass, so it asks for a new save,
+    // and saving the draft again records the current address.
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://renamed.paperclip.app");
+    try {
+      await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200, { available: false, reason: "address_changed" });
+      await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
+        galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true, resumeConnectionId: connectionId,
+        configValues: { endpointRegion: "us-east-1", accessLevel: "read_only" },
+      }).expect((res) => expect(res.status, JSON.stringify(res.body)).toBeLessThan(300));
+      const resaved = await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200);
+      expect(resaved.body).toMatchObject({ available: true, issuer: `https://renamed.paperclip.app/oidc/companies/${org.id}` });
+    } finally {
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://acme.paperclip.app");
+    }
+
+    // A draft never keeps a role ARN AWS has not accepted: the setup steps would tell an AWS
+    // administrator to update that role, so any role named in a draft would be at risk.
+    const unchecked = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
+      galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true,
+      configValues: { roleArn: "arn:aws:iam::123456789012:role/OrganizationAccountAccessRole", endpointRegion: "us-east-1", accessLevel: "read_only" },
+    });
+    expect(unchecked.status, JSON.stringify(unchecked.body)).toBeLessThan(300);
+    const [uncheckedRow] = await db.select().from(toolConnections).where(eq(toolConnections.id, unchecked.body.connectionId));
+    expect(JSON.stringify(uncheckedRow!.config)).not.toContain("OrganizationAccountAccessRole");
+    const uncheckedSetup = await request(app).get(`/api/tool-connections/${unchecked.body.connectionId}/aws-setup`).expect(200);
+    expect(uncheckedSetup.body.savedRoleArn).toBeNull();
+
+    const keyDraft = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
+      galleryKey: "aws", connectionMethodKey: "aws-access-key", saveDraft: true,
+      configValues: { endpointRegion: "us-east-1", accessLevel: "read_only" },
+      credentialValues: { "credentials.accessKeyId": ACCESS_KEY_ID, "credentials.secretAccessKey": SECRET_ACCESS_KEY },
+    });
+    await request(app).get(`/api/tool-connections/${keyDraft.body.connectionId}/aws-setup`).expect(422);
+  });
 
   it("stays unavailable until the experimental setting is on", async () => {
     const { org } = await company();
@@ -206,7 +288,10 @@ describe("AWS connector with minted credentials", () => {
     };
     // The role must trust a connection that already exists, so setup saves a draft first without contacting AWS,
     // and publishes the company's issuer so AWS can validate it when the customer registers it.
-    const draft = await service.connectGalleryApp(org.id, { ...roleInput, saveDraft: true }, actor);
+    // The role is created after the draft (it is named after it), so the draft has no role ARN yet.
+    const draft = await service.connectGalleryApp(org.id, {
+      ...roleInput, configValues: { endpointRegion: "us-east-1", accessLevel: "full" }, saveDraft: true,
+    }, actor);
     expect(draft.catalog).toEqual([]);
     expect(aws.assumeRoleWithWebIdentity).not.toHaveBeenCalled();
     expect(await workloadIdentityService(db).publicKeySet(org.id)).not.toBeNull();
@@ -239,6 +324,20 @@ describe("AWS connector with minted credentials", () => {
       await service.checkHealth(connected.connectionId, actor).catch(() => undefined);
       const [moved] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
       expect(moved!.healthMessage).toContain("address changed");
+      // Reconnect opens the AWS step for a finished connection, set up for the current address.
+      await service.finishGalleryAppConnection(org.id, connected.connectionId, {
+        enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents",
+      }, actor);
+      // Setup steps tell an administrator to update the saved role, so only the role named after this
+      // connection is offered: a role with any other name (in any account) could be an unrelated one.
+      expect(await service.getAwsSetup(org.id, connected.connectionId)).toMatchObject({
+        available: true, issuer: `https://renamed.paperclip.app/oidc/companies/${org.id}`, savedRoleArn: null,
+      });
+      const ownRole = `arn:aws:iam::123456789012:role/paperclip-${connected.connectionId}`;
+      const [current] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      await db.update(toolConnections).set({ config: { ...current!.config, methodConfig: { ...asConfig(current!.config).methodConfig, roleArn: ownRole } } })
+        .where(eq(toolConnections.id, connected.connectionId));
+      expect(await service.getAwsSetup(org.id, connected.connectionId)).toMatchObject({ savedRoleArn: ownRole });
       // After the administrator registers the new address in AWS, reconnecting records it and works again.
       const reconnected = await service.connectGalleryApp(org.id, { ...roleInput, reconnectConnectionId: connected.connectionId }, actor);
       expect(reconnected.catalog).toHaveLength(2);

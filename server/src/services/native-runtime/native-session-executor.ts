@@ -10568,6 +10568,7 @@ export function resolveNativeCancellationStatus(input: {
 
 export async function executePaperclipNativeSession(input: {
   casesEnabled?: boolean;
+  responsibilitiesEnabled?: boolean;
   getFreshSessionHandoff?: () => Promise<string | null>;
   /** Retire a retained transport so recovery can replace provider tool declarations. */
   refreshTools?: boolean;
@@ -12231,7 +12232,7 @@ async function executePaperclipNativeSessionAttempt(
   );
   let existingWarmSession: NativeSession | undefined;
   let reusingReleasedRunner = false;
-  let relaunchReleased: { owner: ReturnType<typeof createPluginRunnerTaskOwner>; source: DurableRecoveryIdentity;
+  let relaunchReleased: { owner?: ReturnType<typeof createPluginRunnerTaskOwner>; source: DurableRecoveryIdentity;
     runner: { version: string; digest: string }; published?: true } | undefined;
   let managedCredentialSession: NativeSession | undefined;
   let githubAccess: NativeGitHubAccess | undefined;
@@ -12559,24 +12560,44 @@ async function executePaperclipNativeSessionAttempt(
       pluginTaskDescription,
       retainedPluginTaskOwner: existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession) : relaunchReleased?.owner,
       relaunchReleased: relaunchReleased ? { source: relaunchReleased.source, runner: relaunchReleased.runner } : undefined,
+      onPluginTaskOwner: owner => { if (relaunchReleased && !relaunchReleased.owner) relaunchReleased.owner = owner; },
       beginRetainedRunAttachment: existingWarmSession && reusingReleasedRunner ? beginRetainedRunAttachment(existingWarmSession) : undefined,
       durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
-      remoteWarmRecovery: remoteWarmRecovery ? {
-        ...remoteWarmRecovery,
+      remoteWarmRecovery: remoteWarmRecovery ? (recovery => ({
+        ...recovery,
         revalidate: async () => {
-          if (remoteWarmRecoveryPending) await remoteWarmRecovery.revalidate(leaseOwner);
+          if (remoteWarmRecoveryPending) await recovery.revalidate(leaseOwner);
         },
-      } : undefined,
+      }))(remoteWarmRecovery) : undefined,
       trace,
       toolTrace,
     });
+    const releasedRecovery = remoteWarmRecovery;
+    if (releasedRecovery?.releasedSource && releasedRecovery.releasedSourceRunner && releasedRecovery.reuseProcess
+        && !releasedRecovery.portableSourceTaskId && pluginTaskDescription?.resumeIdentityVersion === 1 && warmConfigDigest !== null) {
+      const checkpoint = loadWarmNativeCheckpoint(input.execution, warmConfigDigest, "remote");
+      if (checkpoint) {
+        if (executionContext) await executionContext.wait(() => releasedRecovery.revalidate(leaseOwner));
+        else await releasedRecovery.revalidate(leaseOwner);
+        relaunchReleased = { source: releasedRecovery.releasedSource, runner: releasedRecovery.releasedSourceRunner };
+        persistedWarmSession = checkpoint;
+        remoteWarmRecovery = undefined;
+        remoteWarmRecoveryPending = false;
+        await emitStartupReuse(input.onEvent, "runner", { state: "fresh", reason: "replacement" });
+        executionContext?.assertOpen();
+        await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
+        trace.setBudgetStart("warm");
+        if (executionContext) await finishStartupContextForFallback();
+      }
+    }
     let runnerdBackend =
       input.useRunnerd && input.backend === undefined
         ? await timeController("backend_setup", () => executionContext ? executionContext.wait(createExecutionBackend) : createExecutionBackend())
         : null;
     if (remoteWarmRecovery) {
-      if (executionContext) await executionContext.wait(() => remoteWarmRecovery.revalidate(leaseOwner));
-      else await remoteWarmRecovery.revalidate(leaseOwner);
+      const recovery = remoteWarmRecovery;
+      if (executionContext) await executionContext.wait(() => recovery.revalidate(leaseOwner));
+      else await recovery.revalidate(leaseOwner);
       const recovered = await runnerdBackend?.recoverSession?.(remoteWarmRecovery.checkpoint, {
         signal: executionContext?.signal ?? new AbortController().signal,
       });
@@ -13108,7 +13129,7 @@ async function executePaperclipNativeSessionAttempt(
         try {
           result = await trace.run(runnerSessionStartupScope, runExecution);
         } catch (error) {
-          if (relaunchReleased && !relaunchReleased.published && !relaunchReleased.owner.relaunchMayHaveStarted()) {
+          if (relaunchReleased && !relaunchReleased.published && !relaunchReleased.owner?.relaunchMayHaveStarted()) {
             revertUnattachedRelaunchRotation(scopedRunnerdStateRoot(input.execution), relaunchReleased.source);
           }
           if (!await continueAfterUnavailableReuse(error)) throw error;
@@ -16383,6 +16404,7 @@ export function remoteCheckpointIncompleteFailure(
 export async function createRunnerdBackend(input: {
   executionContext?: NativeExecutionContext;
   casesEnabled?: boolean;
+  responsibilitiesEnabled?: boolean;
   toolRefreshOnResume?: boolean;
   db: Db;
   providerPackAdmissionSource?: NativeProviderPackAdmissionSource;
@@ -16398,6 +16420,7 @@ export async function createRunnerdBackend(input: {
   remoteWarmRecovery?: Omit<RemoteWarmSessionRecovery, "revalidate"> & { revalidate: () => Promise<void> };
   retainedPluginTaskOwner?: ReturnType<typeof createPluginRunnerTaskOwner>;
   relaunchReleased?: { source: DurableRecoveryIdentity; runner: { version: string; digest: string } };
+  onPluginTaskOwner?: (owner: ReturnType<typeof createPluginRunnerTaskOwner>) => void;
   beginRetainedRunAttachment?: () => void;
   pluginTaskDescription?: PluginTaskDescription;
   onSpawn?: (meta: {
@@ -16732,6 +16755,7 @@ async function createRunnerdBackendWithinSessionClaim(
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     apiUrl: resolveLocalRuntimeApiUrl(),
     casesEnabled: input.casesEnabled === true,
+    responsibilitiesEnabled: input.responsibilitiesEnabled === true,
     ...(nativeReview ? { nativeReview } : {}),
     connectorAssignments,
     assignedMcpTools,
@@ -16871,7 +16895,8 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     let priorDescription = input.pluginTaskDescription?.taskId === remoteTarget.sandboxLeaseAcquisition?.providerLeaseId
       ? input.pluginTaskDescription : undefined;
-    if (remoteTarget.sandboxLeaseAcquisition?.outcome === "resumed" && !durableBinding && !input.retainedPluginTaskOwner && !input.remoteWarmRecovery) {
+    if (remoteTarget.sandboxLeaseAcquisition?.outcome === "resumed" && !durableBinding && !input.retainedPluginTaskOwner && !input.remoteWarmRecovery
+      && !input.relaunchReleased) {
       // A new logical session (including fresh retries) cannot inherit the old process authority.
       await pluginTask({kind:"stop"});
       const stopped=environmentTaskResultSchema.parse(await pluginTask({kind:"status"}));
@@ -16898,7 +16923,7 @@ async function createRunnerdBackendWithinSessionClaim(
       turnId: input.remoteWarmRecovery.identity.turnId, itemId: input.remoteWarmRecovery.identity.itemId,
     } : undefined;
 
-    const resumeFrom = !retainedOwner && !adopting && prior && prior.environmentLeaseId !== remoteTarget.leaseId
+    const resumeFrom = !retainedOwner && !adopting && !input.relaunchReleased && prior && prior.environmentLeaseId !== remoteTarget.leaseId
       ? await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: remoteTarget.leaseId!, priorIdentity: prior }) : undefined;
     const credentials = await preparePluginRunnerCredentials({
@@ -16983,6 +17008,7 @@ async function createRunnerdBackendWithinSessionClaim(
     if (input.execution.session.lifecyclePolicy.mode === "warm" && (!credentials.accountIdentity || description.warmTaskVersion !== 1)) throw new Error("Plugin warm task capability or account unavailable");
     const owner = retainedOwner ?? createPluginRunnerTaskOwner(ownerInput);
     if (retainedOwner) retainedOwner.rebind(ownerInput);
+    input.onPluginTaskOwner?.(owner);
     return { provider, description, prior, adoptionIdentity, adopting, owner };
   }
   if (pluginTask && remoteTarget?.transport === "sandbox" && input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v8") {
@@ -19170,9 +19196,10 @@ async function createRunnerdBackendWithinSessionClaim(
         launchRoot: launch.root, accountUid: launch.accountUid });
       providerArtifacts = await reuse() ?? await shareNativeProviderArtifactCapture({
         key: `${input.execution.binding.companyId}:${manifest.digest}`, signal, reuse,
-        capture: () => captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
-          remoteCwd: remoteTarget.remoteCwd, launch, manifest, signal, context: input.executionContext },
-          source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal })),
+        capture: (captureSignal, hold) => captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
+          remoteCwd: remoteTarget.remoteCwd, launch, manifest, signal: captureSignal, context: input.executionContext, hold },
+          source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source,
+            signal: captureSignal })),
       });
     } : undefined,
     bindDiagnosticSession: session => {

@@ -1,5 +1,5 @@
 {
-  "id": "e607f447-7d1c-4e18-9674-e90c5bb63017",
+  "id": "a80ac568-accd-4c40-b63a-82b870052e0a",
   "prevId": "00aaeb32-9423-4cdd-ae8d-dc721ac83170",
   "version": "7",
   "dialect": "postgresql",
@@ -53190,6 +53190,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "skill_id": {
+          "name": "skill_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -53280,6 +53286,28 @@
           "method": "btree",
           "with": {}
         },
+        "responsibility_links_responsibility_skill_uq": {
+          "name": "responsibility_links_responsibility_skill_uq",
+          "columns": [
+            {
+              "expression": "responsibility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "skill_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"responsibility_links\".\"skill_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "responsibility_links_project_idx": {
           "name": "responsibility_links_project_idx",
           "columns": [
@@ -53315,6 +53343,21 @@
           "columns": [
             {
               "expression": "routine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "responsibility_links_skill_idx": {
+          "name": "responsibility_links_skill_idx",
+          "columns": [
+            {
+              "expression": "skill_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -53391,6 +53434,19 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "responsibility_links_skill_id_company_skills_id_fk": {
+          "name": "responsibility_links_skill_id_company_skills_id_fk",
+          "tableFrom": "responsibility_links",
+          "tableTo": "company_skills",
+          "columnsFrom": [
+            "skill_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -53399,7 +53455,7 @@
       "checkConstraints": {
         "responsibility_links_single_target_check": {
           "name": "responsibility_links_single_target_check",
-          "value": "(\"responsibility_links\".\"project_id\" is not null)::int + (\"responsibility_links\".\"issue_id\" is not null)::int + (\"responsibility_links\".\"routine_id\" is not null)::int = 1"
+          "value": "(\"responsibility_links\".\"project_id\" is not null)::int + (\"responsibility_links\".\"issue_id\" is not null)::int + (\"responsibility_links\".\"routine_id\" is not null)::int + (\"responsibility_links\".\"skill_id\" is not null)::int = 1"
         }
       },
       "isRLSEnabled": false
@@ -72001,248 +72057,6 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.departments": {
-      "name": "departments",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "departments_company_idx": {
-          "name": "departments_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "departments_company_name_key_uq": {
-          "name": "departments_company_name_key_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "lower(\"name\")",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "departments_company_id_companies_id_fk": {
-          "name": "departments_company_id_companies_id_fk",
-          "tableFrom": "departments",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "departments_company_id_uq": {
-          "name": "departments_company_id_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "company_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.agent_departments": {
-      "name": "agent_departments",
-      "schema": "",
-      "columns": {
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "department_id": {
-          "name": "department_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "agent_departments_company_idx": {
-          "name": "agent_departments_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_departments_agent_idx": {
-          "name": "agent_departments_agent_idx",
-          "columns": [
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_departments_department_idx": {
-          "name": "agent_departments_department_idx",
-          "columns": [
-            {
-              "expression": "department_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "agent_departments_company_id_companies_id_fk": {
-          "name": "agent_departments_company_id_companies_id_fk",
-          "tableFrom": "agent_departments",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "agent_departments_agent_company_fk": {
-          "name": "agent_departments_agent_company_fk",
-          "tableFrom": "agent_departments",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "company_id",
-            "agent_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "agent_departments_department_company_fk": {
-          "name": "agent_departments_department_company_fk",
-          "tableFrom": "agent_departments",
-          "tableTo": "departments",
-          "columnsFrom": [
-            "company_id",
-            "department_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "agent_departments_pk": {
-          "name": "agent_departments_pk",
-          "columns": [
-            "agent_id",
-            "department_id"
-          ]
-        }
-      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
