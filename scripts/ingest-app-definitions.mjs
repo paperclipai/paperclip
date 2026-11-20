@@ -355,8 +355,8 @@ const apps = [
         "oauth",
         {
           serverUrl: "https://mcp.slack.com/mcp",
-          authorizationEndpoint: "https://slack.com/oauth/v2/authorize",
-          tokenEndpoint: "https://slack.com/api/oauth.v2.access",
+          authorizationEndpoint: "https://slack.com/oauth/v2_user/authorize",
+          tokenEndpoint: "https://slack.com/api/oauth.v2.user.access",
           scopesHint: ["channels:read", "chat:write", "search:read"],
         },
         "S3",
