@@ -559,8 +559,8 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
       ...options,
       transport: () => ({ send: async () => ({}), flush: async () => true }),
       beforeSend: async (event, hint) => {
-        const enriched = await options.beforeSend?.(event, hint) ?? event;
-        onEvent(enriched as unknown as Record<string, unknown>);
+        const enriched = options.beforeSend ? await options.beforeSend(event, hint) : event;
+        if (enriched) onEvent(enriched as unknown as Record<string, unknown>);
         return enriched;
       },
     });
@@ -586,6 +586,26 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
       expect(JSON.stringify(captured)).not.toContain("private-class");
     } finally {
       document.documentElement.classList.remove("translated-ltr", "private-class");
+      await Sentry.close();
+    }
+  });
+
+  it("drops only the rejection carrying the app's own request cancellation", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    const { intentionalAbortReason } = await import("./intentional-abort");
+    try {
+      window.onunhandledrejection?.call(window, { reason: intentionalAbortReason() } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toEqual([]);
+
+      window.onunhandledrejection?.call(window, {
+        reason: new DOMException("signal is aborted without reason", "AbortError"),
+      } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toMatchObject({ exception: { values: [{ type: "AbortError" }] } });
+    } finally {
       await Sentry.close();
     }
   });

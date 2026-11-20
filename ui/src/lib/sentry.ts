@@ -48,6 +48,7 @@ import {
   takeRejectionEventSnapshot,
   type BrowserErrorDetails,
 } from "./browser-error-context";
+import { isIntentionalAbortReason } from "./intentional-abort";
 
 let queue: Promise<void> = Promise.resolve();
 
@@ -211,6 +212,14 @@ export function buildBrowserSentryInitOptions(
     tracesSampleRate: 0,
     sendDefaultPii: false,
     beforeSend: (event, hint) => {
+      const isUnhandledRejection = event.exception?.values?.some((value) =>
+        value.mechanism?.type === "onunhandledrejection"
+        || value.mechanism?.type === "auto.browser.global_handlers.onunhandledrejection",
+      ) ?? false;
+      if (isUnhandledRejection && isIntentionalAbortReason(hint.originalException)) {
+        takeRejectionEventSnapshot(classifyRejectionReason(hint.originalException));
+        return null;
+      }
       // Global handlers do not pass through our React boundaries. Give their
       // reports the same bounded document state, without URLs or breadcrumbs.
       // Preserve a boundary's earlier snapshot across the asynchronous queue.
@@ -224,10 +233,7 @@ export function buildBrowserSentryInitOptions(
           ...event.tags,
           browser_build_mode: import.meta.env.DEV ? "development" : "production",
         };
-        if (event.exception?.values?.some((value) =>
-          value.mechanism?.type === "onunhandledrejection"
-          || value.mechanism?.type === "auto.browser.global_handlers.onunhandledrejection",
-        )) {
+        if (isUnhandledRejection) {
           // The SDK supplies the rejected value directly. Classify without
           // reading object properties, coercing strings, or copying its value.
           const kind = classifyRejectionReason(hint.originalException);
