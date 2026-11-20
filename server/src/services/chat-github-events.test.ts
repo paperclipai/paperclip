@@ -89,6 +89,13 @@ describe("explicit GitHub mentions", () => {
     expect(githubBodyMentionsBot("- item\n\n    ```\n    log\n```\n@maya log", "maya[bot]")).toBe(false);
   });
 
+  it("ends the list before a less-indented line, which can be top-level code", () => {
+    expect(githubBodyMentionsBot("100. item\n\n     ~~~\n     log\n\n    @maya", "maya[bot]")).toBe(false);
+    expect(githubBodyMentionsBot("100. item\n\n    @maya", "maya[bot]")).toBe(false);
+    expect(githubBodyMentionsBot("100. item\n\n     @maya", "maya[bot]")).toBe(true);
+    expect(githubBodyMentionsBot("100. item\n\n     ~~~\n     @maya log\n     ~~~\n    @maya", "maya[bot]")).toBe(false);
+  });
+
   it("downgrades a code-only mention trigger before the envelope is addressed", async () => {
     const message = {
       id: "m1", text: "@maya", isMention: true,
