@@ -420,7 +420,6 @@ describe("portable remote workspace archives", () => {
     await fs.writeFile(file, "saved\n");
     const controller = new AbortController(), reason = new Error("capture cancelled");
     let archiveOpened = false;
-    // Single-pass walks do not open sources, so this open is the archive write.
     archiveIo.afterOpen = async target => {
       if (target === archivePath) archiveOpened = true;
       else if (archiveOpened && target === file) controller.abort(reason);

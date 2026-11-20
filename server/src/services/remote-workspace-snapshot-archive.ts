@@ -274,9 +274,6 @@ export async function workspaceArchive(input: {
         const stat = await handle.stat();
         if (!stat.isFile() || await fs.realpath(source) !== source) fail("changed");
         const digest = crypto.createHash("sha256"); let size = 0;
-        // A FileHandle stream with autoClose false and an already-aborted signal
-        // throws to the loop and also emits an uncaught AbortError. Check after
-        // the awaits above so a cancellation never reaches the stream that way.
         check();
         for await (const bytes of handle.createReadStream({ autoClose: false, signal: input.signal, highWaterMark: 1024 * 1024 })) {
           check(); digest.update(bytes); size += bytes.length; await consume?.(bytes);
@@ -290,7 +287,7 @@ export async function workspaceArchive(input: {
       const before = await handle.stat({ bigint: true });
       if (!before.isFile() || original.dev !== before.dev || original.ino !== before.ino || await fs.realpath(source) !== source) fail("changed");
       const digest = crypto.createHash("sha256"); let size = 0;
-      check(); // Keep synchronous with the stream below; see the unverified path.
+      check();
       for await (const bytes of handle.createReadStream({ autoClose: false, signal: input.signal })) {
         check(); digest.update(bytes); size += bytes.length;
         await consume?.(bytes);
