@@ -5,6 +5,7 @@ import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { uploadedDocumentKey } from "@/lib/issue-artifact-upload";
 import type { ArtifactUploadEntry } from "@/components/artifacts/ArtifactUploadControls";
+import { createUuid } from "../lib/uuid";
 
 export function useIssueArtifactUploads(issue: Pick<Issue, "id" | "companyId">) {
   const client = useQueryClient();
@@ -52,7 +53,7 @@ export function useIssueArtifactUploads(issue: Pick<Issue, "id" | "companyId">) 
     });
   }, [client, issue.companyId, issue.id]);
 
-  const upload = useCallback((picked: File[]) => enqueue(picked.map(file => ({ id: crypto.randomUUID(), file }))), [enqueue]);
+  const upload = useCallback((picked: File[]) => enqueue(picked.map(file => ({ id: createUuid(), file }))), [enqueue]);
   const retry = useCallback((id: string) => {
     const file = files.current.get(id);
     if (file) enqueue([{ id, file }]);

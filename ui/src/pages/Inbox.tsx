@@ -281,6 +281,7 @@ function loadInboxCollectionPreferences(companyId: string | null | undefined) {
 
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
 export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
+import { createUuid } from "../lib/uuid";
 type SectionKey =
   | "work_items"
   | "alerts";
@@ -2044,7 +2045,7 @@ function StreamlinedInbox({
       if (issueId) {
         let idempotencyKey = retryRequestKeys.current.get(run.id);
         if (!idempotencyKey) {
-          idempotencyKey = crypto.randomUUID();
+          idempotencyKey = createUuid();
           retryRequestKeys.current.set(run.id, idempotencyKey);
         }
         const result = await issuesApi.retryTask(issueId, { idempotencyKey, observedRunId: run.id }).catch(error => {
