@@ -96,12 +96,11 @@ describe("Runner workspace bridge", () => {
     expect(comment?.description).toContain("On a finished task, this reopens the task for follow-up.");
     expect(comment?.description).toContain("Resume does not interrupt an active run or force immediate execution.");
     expect(comment?.description).toContain("ask for an existing test result without `resume`; request a new test run with `resume: true`.");
-    expect(comment?.description).toContain("Comments on running work are normally queued for a later turn.");
-    expect(comment?.description).toContain("the live runner acknowledges steering, the comment may be delivered to the current turn instead.");
+    expect(comment?.description).toContain("rather than creating a duplicate task or editing that task's workspace files.");
+    expect(comment?.description).toContain("delivers it at the start of the assignee's next turn on that task.");
+    expect(comment?.description).toContain("With resume: true that delivery still happens if the assignee completes the task first; without it, a comment on finished work is only a note.");
     expect(comment?.description).toContain("Report a queued requirement as saved for the next turn, not as already applied.");
-    expect(comment?.description).toContain("Report live-steered comments as delivered, not completed.");
     expect(comment?.description).toContain("Requires an explicit taskId UUID; use report_progress with body and idempotencyKey for the active task.");
-    expect(comment?.description).toContain("rather than creating a duplicate task or editing the assignee's workspace files.");
     const schema = comment?.inputSchema as { required: string[]; properties: Record<string, { type: string; description?: string }> };
     expect(schema.required).not.toContain("resume");
     expect(schema.properties.resume?.type).toBe("boolean");
