@@ -1,3 +1,4 @@
+import { createChatQueryExecutor } from "../chat-query-executor.js";
 import type { ChatRuntime } from "../chat-runtime.js";
 import type { EndpointRow, RuntimeContext, LifecycleRuntimeFence, DbOrTransaction } from "./runtime-types.js";
 
@@ -55,6 +56,7 @@ import { isSlackReceiptReactionAlreadyApplied } from "./slack/messages.js";
 import { beginSlackReceiptTiming } from "./slack/receipt-timing.js";
 
 type ReceiptReactionsOptions = {
+  queryExecutor?: ReturnType<typeof createChatQueryExecutor>;
   endpointRecord: (endpointId: string) => Promise<EndpointRecord | null>;
   runtimeContextForRecord: (record: EndpointRecord) => RuntimeContext;
   withCredentialMutationLease: ReturnType<typeof chatCredentialMutationLease>;
@@ -80,6 +82,7 @@ function deliveryWarningWithoutReceipt(previousDiagnostic: unknown) {
 }
 
 export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions) {
+  const idleQueries = options.queryExecutor ?? createChatQueryExecutor(false);
   const { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, runtimeFor, fetchImpl, runtime, runtimeGeneration, credentialFingerprint, redactError, MAX_ERROR_TEXT } = options;
 
 
@@ -615,13 +618,19 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
     }
   }
 
-  async function processPendingReceiptReactions(
-    limit = 25,
-    onlyActionId?: string,
-  ) {
-    const actions = await db.select({ id: chatActions.id }).from(chatActions)
-      .where(and(dueChatAction("receipt_reaction"), onlyActionId ? eq(chatActions.id, onlyActionId) : undefined))
-      .orderBy(asc(chatActions.createdAt)).limit(limit);
+  const buildReceiptReactionCandidates = (specific: boolean) => db.select({ id: chatActions.id }).from(chatActions)
+    .where(and(dueChatAction("receipt_reaction", sql`${sql.placeholder("now")}`),
+      specific ? eq(chatActions.id, sql.placeholder("actionId")) : undefined))
+    .orderBy(asc(chatActions.createdAt)).limit(sql.placeholder("limit"));
+  const receiptReactionCandidates = {
+    all: idleQueries.query("chat_receipt_reactions_all", () => buildReceiptReactionCandidates(false)),
+    one: idleQueries.query("chat_receipt_reactions_one", () => buildReceiptReactionCandidates(true)),
+  };
+
+  async function processPendingReceiptReactions(limit = 25, onlyActionId?: string) {
+    const actions = await (onlyActionId ? receiptReactionCandidates.one : receiptReactionCandidates.all)({
+      now: Date.now(), actionId: onlyActionId, limit,
+    });
     for (const action of actions) await processReceiptReaction(action.id);
     return actions.length;
   }
