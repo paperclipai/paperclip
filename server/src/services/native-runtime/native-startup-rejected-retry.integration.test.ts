@@ -172,6 +172,9 @@ describe("native session.open the provider rejected before any provider work", (
     expect(run.errorCode).toBe("native_provider_usage_limit");
     // The run row still names the first attempt's reset; the hold names this attempt's.
     expect((run.resultJson as Record<string, Record<string, unknown>>).providerFailure.retryAt).toBe(firstReset.toISOString());
+    // The run row also names the limit that ended it, which keeps the expected wait out of Sentry.
+    expect((run.resultJson as Record<string, unknown>).providerLimitStartup).toMatchObject({
+      failure: expect.objectContaining({ phase: "startup", category: "rate_limit", retryAt: secondReset.toISOString() }) });
     const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
     expect(hold).toMatchObject({ cause: "native_provider_usage_limit",
       evidence: expect.objectContaining({ providerLimitResetAt: secondReset.toISOString() }) });

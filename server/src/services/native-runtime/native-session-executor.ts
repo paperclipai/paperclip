@@ -13746,7 +13746,14 @@ async function executePaperclipNativeSessionAttempt(
             error: message,
             resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'remoteRunnerRecovery')
               || ${JSON.stringify(remoteRunnerRecovery ? { remoteRunnerRecovery } : {})}::jsonb
-              || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}`,
+              || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}
+              || ${startupProviderLimit && phase === "terminal_failure"
+                // providerFailure keeps an earlier attempt's failure; this names the limit that ended the run.
+                ? sql`jsonb_build_object('providerLimitStartup', ${JSON.stringify({
+                  failure: outputRedactor.redact(startupProviderLimit.failure),
+                  observedAt: startupProviderLimit.observedAt.toISOString(),
+                })}::jsonb)`
+                : sql`'{}'::jsonb`}`,
             errorCode: ownershipUnverified
               ? NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE
               : sourceFailureCode,
