@@ -674,7 +674,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           </div>
         </div>
       </div>
-      {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
+      {isMobile && <MobileBottomNav visible={mobileNavVisible} chatListInDrawer={isAgentChatRoute} />}
       <CommandPalette />
       <BoardDialogs />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
