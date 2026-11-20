@@ -52,9 +52,11 @@ Manual: Create or select a company, rename it, and reload. Switch to the second 
 
 ### `package-transfer`
 
-Automated: [portability routes](../../server/src/__tests__/company-portability-routes.test.ts) and [CLI import/export](../../cli/src/__tests__/company-import-export-e2e.test.ts) cover package and command behavior, not every external Git host.
+Automated: [portability routes](../../server/src/__tests__/company-portability-routes.test.ts) and [CLI import/export](../../cli/src/__tests__/company-import-export-e2e.test.ts) cover package and command behavior, not every external Git host. The [export page test](../../ui/src/pages/CompanyExport.test.tsx) covers recovering from a failed first preview by deselecting Skills and exporting the remaining content.
 
 Manual: Export a small company, inspect the package preview, and import into a disposable target. Verify counts, references, conflict choices, and agent configuration. Run one imported task after supplying its required local credentials. Confirm source company data is unchanged.
+
+In a disposable company with a project-restricted Skill, open the export page and verify that the first preview shows the restriction. Deselect **Skills** under **What to include**, then verify that the preview and downloaded package contain the other selected content.
 
 ### `company-ai-services`
 

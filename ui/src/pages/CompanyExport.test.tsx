@@ -277,6 +277,33 @@ describe("CompanyExport", () => {
     expect(container.textContent).toContain("Paperclip export");
   });
 
+  it("exports without Skills after a project-restricted skill blocks the first preview", async () => {
+    const errorMessage = "Project-restricted skills cannot be exported until the package can preserve their project access.";
+    const preview = buildExportPreviewResult();
+    mockCompaniesApi.exportPreview.mockImplementation(async (_companyId, request) => {
+      if (request.include.skills) throw new Error(errorMessage);
+      return preview;
+    });
+    mockCompaniesApi.exportBundle.mockResolvedValue(preview);
+
+    await renderPage();
+
+    expect(container.textContent).toContain("Export preview failed");
+    expect(container.textContent).toContain(errorMessage);
+    expect(categoryInput("skills").checked).toBe(true);
+
+    await clickElement(categoryInput("skills"));
+
+    expect(categoryInput("skills").checked).toBe(false);
+    expect(container.textContent).toContain("Exporting 1 of 1 file");
+    await clickElement(exportButton());
+    expect(mockCompaniesApi.exportBundle).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      include: { company: true, agents: true, projects: true, issues: false, skills: false },
+      selectedFiles: ["README.md"],
+    }));
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
   it("starts the preview without waiting for sidebar-order dependencies", async () => {
     let resolveSession!: (value: { user: { id: string } }) => void;
     let resolveAgents!: (value: never[]) => void;

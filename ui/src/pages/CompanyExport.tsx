@@ -1045,17 +1045,63 @@ export function CompanyExport() {
     );
   }
 
+  const categoryControls = (
+    <div className="border-b border-border px-4 py-3 shrink-0">
+      <h3 className="mb-2 text-xs font-medium text-muted-foreground">What to include</h3>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label="What to include">
+        {EXPORT_CATEGORY_ORDER.map((key) => {
+          const disabled = key === "attachments" && !isAttachmentsCategoryEnabled(categories);
+          const count = categoryCounts?.[key];
+          const needsHistory = key === "tasks" || key === "routines" || key === "attachments";
+          const countLoaded = exportData && (!needsHistory || exportData.manifest.includes.issues);
+          return (
+            <label
+              key={key}
+              className={cn(
+                "flex items-center gap-2 text-sm",
+                disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+              )}
+              title={
+                disabled
+                  ? "Attachments travel with tasks and routines; re-enable one of them to include attachments."
+                  : undefined
+              }
+            >
+              <input
+                type="checkbox"
+                checked={categories[key] && !disabled}
+                disabled={disabled}
+                onChange={() => handleToggleCategory(key)}
+                className="accent-foreground"
+                data-export-category={key}
+              />
+              <span className="min-w-0 truncate">{EXPORT_CATEGORY_LABELS[key]}</span>
+              <span className="text-xs text-muted-foreground">
+                {countLoaded && count !== undefined ? count.toLocaleString() : "—"}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Task and routine history is opt-in because it can be large.
+      </p>
+    </div>
+  );
+
   if (exportPreviewMutation.isError && !exportData) { // query-error-ok: preview is a mutation; a loaded preview stays visible below
     return (
-      <EmptyState
-        icon={Package}
-        title="Export preview failed"
-        message={previewErrorMessage(exportPreviewMutation.error)}
-        description="Retry the preview. You do not need to reload this page."
-        action="Retry preview"
-        onAction={startPreviewRequest}
-        hideActionIcon
-      />
+      <div className="max-w-6xl">
+        {categoryControls}
+        <EmptyState
+          icon={Package}
+          title="Export preview failed"
+          message={previewErrorMessage(exportPreviewMutation.error)}
+          action="Retry preview"
+          onAction={startPreviewRequest}
+          hideActionIcon
+        />
+      </div>
     );
   }
 
@@ -1149,49 +1195,7 @@ export function CompanyExport() {
           <div className="border-b border-border px-4 py-3 shrink-0">
             <h2 className="text-base font-semibold">Package files</h2>
           </div>
-          <div className="border-b border-border px-4 py-3 shrink-0">
-            <h3 className="mb-2 text-xs font-medium text-muted-foreground">What to include</h3>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label="What to include">
-              {EXPORT_CATEGORY_ORDER.map((key) => {
-                const isAttachments = key === "attachments";
-                const disabled = isAttachments && !isAttachmentsCategoryEnabled(categories);
-                const checked = categories[key] && !disabled;
-                const count = categoryCounts?.[key] ?? 0;
-                const countLoaded = exportData.manifest.includes.issues
-                  || (key !== "tasks" && key !== "routines" && key !== "attachments");
-                return (
-                  <label
-                    key={key}
-                    className={cn(
-                      "flex items-center gap-2 text-sm",
-                      disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-                    )}
-                    title={
-                      disabled
-                        ? "Attachments travel with tasks and routines; re-enable one of them to include attachments."
-                        : undefined
-                    }
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={disabled}
-                      onChange={() => handleToggleCategory(key)}
-                      className="accent-foreground"
-                      data-export-category={key}
-                    />
-                    <span className="min-w-0 truncate">{EXPORT_CATEGORY_LABELS[key]}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {countLoaded ? count.toLocaleString() : "—"}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Task and routine history is opt-in because it can be large.
-            </p>
-          </div>
+          {categoryControls}
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
               <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
