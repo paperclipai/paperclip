@@ -42,8 +42,10 @@ function delay(ms: number, signal: AbortSignal) {
 /** Re-run an exact chat replay's authorization while the failed run's sandbox
  * stop settles, instead of failing the replay on a transient missing receipt.
  * The wait is bounded and stops with the run; the last refusal is returned.
- * When no stop is pending after a refusal, the stop may have settled after the
- * refused transaction released its locks, so the authority is read once more. */
+ * The pending stop is read before and after each refused attempt. A stop can
+ * settle after the refused transaction releases its locks, so a stop seen
+ * before the attempt earns one more attempt even when it is gone after. A
+ * refusal with no pending stop on either side is returned at once. */
 export async function awaitFailedChatRetrySourceStop<T>(db: Db, input: {
   companyId: string;
   sourceRunId: string | null;
@@ -52,15 +54,26 @@ export async function awaitFailedChatRetrySourceStop<T>(db: Db, input: {
   timeoutMs?: number;
   pollMs?: number;
 }, attempt: () => Promise<T>): Promise<T> {
+  const sourceRunId = input.sourceRunId;
+  if (!sourceRunId) return attempt();
   const deadline = Date.now() + (input.timeoutMs ?? FAILED_CHAT_RETRY_SOURCE_STOP_WAIT_MS);
   let announced = false;
+  let settledRetry = false;
   for (;;) {
+    const pendingBefore = await failedChatRetrySourceStopPending(db, input.companyId, sourceRunId);
+    let pendingAfter: boolean;
     try {
       return await attempt();
     } catch (error) {
-      if (!input.sourceRunId || !isSourceContainmentRefusal(error)) throw error;
-      if (!await failedChatRetrySourceStopPending(db, input.companyId, input.sourceRunId)) return await attempt();
-      if (Date.now() >= deadline) throw error;
+      if (!isSourceContainmentRefusal(error)) throw error;
+      pendingAfter = await failedChatRetrySourceStopPending(db, input.companyId, sourceRunId);
+      if ((!pendingBefore && !pendingAfter) || Date.now() >= deadline) throw error;
+    }
+    // The stop settled during the refused attempt: read the authority again
+    // now, once. A later flip waits for the normal poll interval.
+    if (!pendingAfter && !settledRetry) {
+      settledRetry = true;
+      continue;
     }
     if (!announced) {
       announced = true;

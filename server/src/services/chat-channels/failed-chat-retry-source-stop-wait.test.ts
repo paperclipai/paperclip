@@ -124,8 +124,7 @@ describe("exact chat replay while workspace recovery restarts the failed run's s
     const onWait = vi.fn();
     await expect(awaitFailedChatRetrySourceStop(db, { companyId, sourceRunId: source.id,
       signal: new AbortController().signal, onWait, pollMs: 25 }, attempt)).rejects.toMatchObject({ status: 409 });
-    // One final read of the unchanged authority, and no wait.
-    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(attempt).toHaveBeenCalledTimes(1);
     expect(onWait).not.toHaveBeenCalled();
   });
 
