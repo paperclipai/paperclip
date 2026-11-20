@@ -1,10 +1,11 @@
 import { eq } from "drizzle-orm";
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { agents, departments, type Db } from "@paperclipai/db";
 import {
   createDepartmentSchema,
   setAgentDepartmentsSchema,
   updateDepartmentSchema,
+  type Department,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -30,7 +31,6 @@ export function departmentRoutes(db: Db) {
 
   async function assertCanEditAgentDepartments(req: Parameters<typeof assertCompanyAccess>[0], companyId: string, agentId: string) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") return;
     const decision = await access.decide({
       actor: req.actor,
       action: "agent_config:update",
@@ -39,20 +39,34 @@ export function departmentRoutes(db: Db) {
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
+  // Department names are a company catalog. Membership ids are not: a caller
+  // only learns agents it can already read.
+  async function presentDepartments(req: Request, companyId: string, rows: Department[]): Promise<Department[]> {
+    const agentIds = [...new Set(rows.flatMap((row) => row.agentIds))];
+    if (agentIds.length === 0) return rows;
+    const decisions = await access.decideMany(agentIds.map((agentId) => ({
+      actor: req.actor,
+      action: "agent:read" as const,
+      resource: { type: "agent" as const, companyId, agentId },
+    })));
+    const allowed = new Set(agentIds.filter((_, index) => decisions[index]?.allowed));
+    return rows.map((row) => ({
+      ...row,
+      agentIds: row.agentIds.filter((agentId) => allowed.has(agentId)),
+    }));
+  }
+
   router.get("/companies/:companyId/departments", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.list(companyId));
+    res.json(await presentDepartments(req, companyId, await svc.list(companyId)));
   });
 
   router.post("/companies/:companyId/departments", validate(createDepartmentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if (req.actor.type !== "board") {
-      const agentId = req.actor.agentId;
-      if (!agentId) throw forbidden("Board or agent access required");
-      await assertCanEditAgentDepartments(req, companyId, agentId);
-    }
+    // Own-agent configuration is not authority to add a company-wide label.
+    assertBoard(req);
     const { department, created } = await svc.create(companyId, req.body.name);
     if (created) {
       const actor = getActorInfo(req);
@@ -69,7 +83,7 @@ export function departmentRoutes(db: Db) {
         details: { name: department.name },
       });
     }
-    res.status(created ? 201 : 200).json(department);
+    res.status(created ? 201 : 200).json((await presentDepartments(req, companyId, [department]))[0]);
   });
 
   router.patch("/departments/:id", validate(updateDepartmentSchema), async (req, res) => {
@@ -96,7 +110,7 @@ export function departmentRoutes(db: Db) {
       entityId: department.id,
       details: { name: department.name },
     });
-    res.json(department);
+    res.json((await presentDepartments(req, companyId, [department]))[0]);
   });
 
   router.delete("/departments/:id", async (req, res) => {
@@ -123,7 +137,7 @@ export function departmentRoutes(db: Db) {
       entityId: removed.id,
       details: { name: removed.name },
     });
-    res.json(removed);
+    res.json((await presentDepartments(req, companyId, [removed]))[0]);
   });
 
   router.put("/agents/:id/departments", validate(setAgentDepartmentsSchema), async (req, res) => {
@@ -137,6 +151,8 @@ export function departmentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    const names = req.body.names ?? [];
+    if (names.length > 0) assertBoard(req);
     await assertCanEditAgentDepartments(req, agent.companyId, agent.id);
     const { memberships, created } = await svc.setForAgent(
       agent.companyId,
@@ -171,7 +187,7 @@ export function departmentRoutes(db: Db) {
       entityId: agent.id,
       details: { departmentIds: memberships.map((row) => row.id) },
     });
-    res.json(memberships);
+    res.json(await presentDepartments(req, agent.companyId, memberships));
   });
 
   return router;

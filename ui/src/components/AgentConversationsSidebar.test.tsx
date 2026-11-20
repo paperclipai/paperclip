@@ -186,6 +186,33 @@ it("groups a large roster from one membership index and keeps the pin off the un
   expect(container.querySelector('a[href="/chats/a0"]')!.className).toContain("pr-12");
 });
 
+it("expands a matching department stack while searching and restores the collapse", async () => {
+  const carol = { ...roster[0], id: "carol", name: "carol", urlKey: "carol" };
+  client.setQueryData(queryKeys.agents.list("company-a"), [...roster, carol]);
+  client.setQueryData(queryKeys.departments.list("company-a"), [
+    { id: "dept-research", companyId: "company-a", name: "Research", agentIds: ["alice", "bob"] },
+    { id: "dept-design", companyId: "company-a", name: "Design", agentIds: ["alice"] },
+  ]);
+  await render();
+  const press = (label: string) => [...container.querySelectorAll("button")].find(button => button.textContent === label)!;
+  const stack = (name: string) => [...container.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")].find(button => button.textContent?.includes(name))!;
+  const setQuery = (value: string) => {
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search chats"]')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  await act(async () => press("By department").click());
+  await act(async () => stack("Design").click());
+  expect(stack("Design").getAttribute("aria-expanded")).toBe("false");
+  expect(contactOrder().filter(href => href === "/chats/alice")).toHaveLength(1);
+  await act(async () => setQuery("alice"));
+  expect(stack("Design").getAttribute("aria-expanded")).toBe("true");
+  expect(contactOrder()).toEqual(["/chats/alice", "/chats/alice"]);
+  await act(async () => setQuery(""));
+  expect(stack("Design").getAttribute("aria-expanded")).toBe("false");
+  expect(contactOrder()).toEqual(["/chats/alice", "/chats/bob", "/chats/carol"]);
+});
+
 it("reorders filtered pins with the keyboard and saves their order without moving hidden pins", async () => {
   const agents = ["alice", "bob", "carol", "dave"].map(id => ({ ...roster[0], id, name: id, urlKey: id, title: id === "alice" || id === "carol" ? "Designer" : "Engineer" }));
   client.setQueryData(queryKeys.agents.list("company-a"), agents);

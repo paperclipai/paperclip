@@ -50,15 +50,22 @@ type ChatDepartment = { id: string; name: string; agentIds: readonly string[] };
 /** Agents keep the incoming order. A person in two departments is in both stacks. */
 function chatDepartmentStacks(agents: readonly Agent[], departments: readonly ChatDepartment[]) {
   const memberships = indexDepartmentMemberships(departments);
+  const buckets = new Map<string, Agent[]>(departments.map((department) => [department.id, []]));
+  const unassigned: Agent[] = [];
+  for (const agent of agents) {
+    const departmentIds = memberships.departmentIdsByAgent.get(agent.id);
+    if (!departmentIds || departmentIds.length === 0) {
+      unassigned.push(agent);
+      continue;
+    }
+    for (const departmentId of departmentIds) buckets.get(departmentId)?.push(agent);
+  }
   const stacks = departments
-    .map((department) => ({
-      id: department.id,
-      name: department.name,
-      agents: agents.filter((agent) => memberships.membersByDepartment.get(department.id)?.has(agent.id) ?? false),
-    }))
-    .filter((stack) => stack.agents.length > 0)
+    .flatMap((department) => {
+      const grouped = buckets.get(department.id) ?? [];
+      return grouped.length > 0 ? [{ id: department.id, name: department.name, agents: grouped }] : [];
+    })
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
-  const unassigned = agents.filter((agent) => !memberships.assigned.has(agent.id));
   if (unassigned.length > 0) stacks.push({ id: UNASSIGNED_DEPARTMENT_STACK, name: "No department", agents: unassigned });
   return stacks;
 }
@@ -91,6 +98,7 @@ export function AgentConversationSidebar({ agents, compact = false, existingChat
   const canGroup = (departments?.length ?? 0) > 0;
   const grouped = canGroup && view === "departments";
   const query = search.trim().toLocaleLowerCase();
+  const searching = query.length > 0;
   const matching = agents.filter(agent => `${agent.name} ${agent.title ?? ""} ${agent.role}`.toLocaleLowerCase().includes(query));
   const byId = new Map(matching.map(agent => [agent.id, agent]));
   const pins = pinnedAgentIds.flatMap(id => {
@@ -162,11 +170,11 @@ export function AgentConversationSidebar({ agents, compact = false, existingChat
         </div>)}
       </div> : visible.length ? <nav aria-label="Agent conversations" className="flex flex-col gap-1">
         {grouped ? stacks.map(stack => {
-          const open = !collapsedStacks.has(stack.id);
+          const open = searching || !collapsedStacks.has(stack.id);
           const unread = stack.agents.reduce((sum, agent) => sum + Math.max(unreadMessageCounts?.get(agent.id) ?? 0, unreadIds.has(agent.id) ? 1 : 0), 0);
           const label = stack.name;
           return <div key={stack.id} className="flex flex-col not-first:mt-1">
-            <button type="button" aria-expanded={open} onClick={() => toggleStack(stack.id)}
+            <button type="button" aria-expanded={open} onClick={() => { if (!searching) toggleStack(stack.id); }}
               className="group/stack flex h-7 min-w-0 items-center gap-1 rounded-md px-1.5 text-left text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-visible:bg-accent/40 focus-visible:text-foreground focus-visible:outline-none">
               <ChevronRight aria-hidden="true" className={cn("size-3 shrink-0 opacity-60 transition-transform duration-150 group-hover/stack:opacity-100", open && "rotate-90")} />
               <span className="min-w-0 truncate text-xs font-medium">{label}</span>

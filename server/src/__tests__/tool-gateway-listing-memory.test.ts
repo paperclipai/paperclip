@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { context, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -24,6 +27,7 @@ import {
   createToolAccessDecisionCache,
   toolAccessPolicyService,
 } from "../services/tool-access-policy.js";
+import { withRunExecutionTiming } from "../services/execution-preparation-timing.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -250,6 +254,61 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     expect(connectionReadParams).toHaveLength(1);
     expect(connectionReadParams[0]).toContain(fixture.connection.id);
     expect(connectionReadParams[0]).not.toContain(emptyConnection.id);
+  });
+
+  it("exports the catalog transaction, query and projection boundaries for a gateway listing", async () => {
+    const fixture = await createListingFixture(db, 20, { connectionCount: 2 });
+    const gateway = createToolGatewayService(db);
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    const manager = new AsyncLocalStorageContextManager().enable();
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    try {
+      expect(context.setGlobalContextManager(manager)).toBe(true);
+      expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+      const tools = await withRunExecutionTiming(fixture.run.id, () => gateway.listToolsForNamedGateway({
+        gatewayId: fixture.namedGateway.id,
+        bearerToken: fixture.token.token,
+      }));
+      expect(tools.filter((tool) => tool.catalogEntryId)).toHaveLength(18);
+
+      const spans = exporter.getFinishedSpans();
+      const prefix = "connectors.discovery.connections";
+      const connectionPhase = spans.find((span) => span.name === prefix)!;
+      const transaction = spans.find((span) => span.name === `${prefix}.transaction`)!;
+      expect(transaction.parentSpanContext?.spanId).toBe(connectionPhase.spanContext().spanId);
+      expect(transaction.attributes).toMatchObject({
+        "paperclip.execution.catalogEntryCount": 20,
+        "paperclip.execution.connectionCount": 2,
+      });
+      for (const name of ["catalog_entries", "matched_connections"]) {
+        const query = spans.find((span) => span.name === `${transaction.name}.${name}`);
+        expect(query?.parentSpanContext?.spanId).toBe(transaction.spanContext().spanId);
+      }
+      for (const name of ["availability", "descriptors"]) {
+        const phase = spans.find((span) => span.name === `${prefix}.${name}`);
+        expect(phase?.parentSpanContext?.spanId).toBe(connectionPhase.spanContext().spanId);
+      }
+
+      exporter.reset();
+      await db.update(toolConnections).set({
+        agentInstructions: { enabled: true, text: "Use this tool for the assigned task." },
+      }).where(eq(toolConnections.id, fixture.connection.id));
+      await withRunExecutionTiming(fixture.run.id, () => gateway.resolveConnectionInstructionsForRun({
+        companyId: fixture.company.id, agentId: fixture.agent.id, runId: fixture.run.id,
+      }));
+      const instructionCatalog = exporter.getFinishedSpans().find((span) => span.name === transaction.name);
+      expect(instructionCatalog?.attributes).toMatchObject({
+        "paperclip.execution.catalogEntryCount": 10,
+        "paperclip.execution.connectionCount": 1,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      trace.disable();
+      context.disable();
+      manager.disable();
+      await provider.shutdown();
+    }
   });
 
   it("never selects the whole run snapshot or result when it decides access", async () => {

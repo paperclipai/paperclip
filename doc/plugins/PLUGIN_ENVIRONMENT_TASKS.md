@@ -174,6 +174,13 @@ event acknowledged and no command in progress. Core then sends one ordinary
 and `runner` must return the original result and must not start a second
 Runner. Without `runner` on `resume`, keep the claimant handover above.
 
+Core prepares the claimant run before this `resume`: its `prepare` has
+`priorIdentity` set to the released source, and the released task is not yet
+claimed. Core also takes this path when it recovers a released task after a
+Core restart, if it recorded the build the task was released on and the
+session's process configuration has not changed. A provider must then accept
+that `prepare` without state it kept in memory before the restart.
+
 While a released task can still be resumed, its `status` must report
 `executionStopped: false`, even when its Runner process is stopped. Core
 replaces a reused task whose `status` reports a stop, and then cannot resume

@@ -17,7 +17,7 @@ import { prestageNativeControllers } from "./native-runtime/native-controller-mi
 import { listLocalWorkspaceCompanies, listLocalWorkspaces } from "./local-workspace-dependencies.js";
 import { reconcileOnlineWorkspaceOperations } from "./offline-workspace-operation-reconciliation.js";
 import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
-import { readRunEvidenceMigrationDeferrals } from "./run-evidence-migration-work.js";
+import { migrateRunEvidencePage } from "./run-evidence-migration-page.js";
 
 export type OnlineDurableDataMigrationResult = {
   state: "completed" | "budget_exhausted" | "unsupported";
@@ -48,7 +48,7 @@ type Owners = {
     signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[] }>;
   nativeHarnessBackups: typeof prestageNativeHarnessBackups;
   nativeControllers: typeof prestageNativeControllers;
-  runEvidenceDeferrals: () => Record<string, number>;
+  runEvidencePage: typeof migrateRunEvidencePage;
   eligibility: (db: Db) => Promise<{ eligible: boolean; blockers: string[] }>;
   record: (db: Db, result: PassRecord) => Promise<void>;
 };
@@ -77,13 +77,13 @@ const defaultOwners: Owners = {
   migrateWorkspace: migrateRemoteWorkspace,
   nativeHarnessBackups: prestageNativeHarnessBackups,
   nativeControllers: prestageNativeControllers,
-  runEvidenceDeferrals: readRunEvidenceMigrationDeferrals,
+  runEvidencePage: migrateRunEvidencePage,
   eligibility: readOnlineEphemeralEnrollmentEligibility,
   record: recordPass,
 };
 
 const PHASES = ["agent_files", "skill_objects", "skill_snapshots", "skill_versions", "skill_installations",
-  "runtime_skill_assets", "workspace_operations", "workspaces", "native_harness_backups", "native_controllers"] as const;
+  "runtime_skill_assets", "run_logs", "provider_traces", "workspace_operations", "workspaces", "native_harness_backups", "native_controllers"] as const;
 type Phase = typeof PHASES[number];
 
 let running: Promise<OnlineDurableDataMigrationResult> | null = null;
@@ -135,7 +135,6 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
   const deferred: Record<string, number> = {};
   const add = (bucket: Record<string, number>, key: string, by = 1) => { if (by) bucket[key] = (bucket[key] ?? 0) + by; };
   const finish = async (state: OnlineDurableDataMigrationResult["state"], reason?: string): Promise<OnlineDurableDataMigrationResult> => {
-    if (state !== "unsupported") for (const [key, count] of Object.entries(owners.runEvidenceDeferrals())) add(deferred, key, count);
     const { eligible, blockers } = await owners.eligibility(db);
     const result: OnlineDurableDataMigrationResult = { state, ...(reason ? { reason } : {}),
       ...(state === "budget_exhausted" ? { resumePhase: PHASES[progress.phase] } : {}), counts, deferred, eligible, blockers };
@@ -187,6 +186,23 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           const result = await owners.runtimeSkillAssets(db, { apply: true, after, limit, signal }, storage);
           add(counts, "runtimeSkillRuns", result.results.filter(row => row.status === "preserved").length);
           return result.inspected < limit || !result.after ? null : result.after;
+        }
+        case "run_logs":
+        case "provider_traces": {
+          const logs = phase === "run_logs";
+          const result = await untilAborted(owners.runEvidencePage(db, {
+            kinds: [logs ? "log" : "trace"], limit, signal,
+            ...(logs ? { afterRunId: after } : { afterTraceId: after }),
+          }), signal);
+          if (result.busy) { add(deferred, `${phase}:owner_busy`); return null; }
+          for (const item of result.items) {
+            if (item.state === "migrated") add(counts, logs ? "runLogs" : "providerTraces");
+            else if (item.state === "blocked") {
+              const reason = item.reason && /^[a-z_]{1,60}$/.test(item.reason) ? item.reason : "migration_failed";
+              add(deferred, `${phase}:${reason}`);
+            }
+          }
+          return (logs ? result.nextRunId : result.nextTraceId) ?? null;
         }
         case "workspace_operations": {
           const companies = await owners.workspaceCompanies(db, { after, limit });

@@ -40,4 +40,17 @@ describe("AgentDepartmentsField", () => {
     expect(departmentInput(loaded)).not.toContain('disabled=""');
     expect(loaded).toContain('aria-label="Remove Research"');
   });
+
+  it("keeps writes off after the department list fails to load", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.getQueryCache().build(client, { queryKey: queryKeys.departments.list("company-1") }).setState({
+      status: "error",
+      error: new Error("Departments couldn’t be loaded."),
+      fetchStatus: "idle",
+    });
+    const failed = markup(client);
+    expect(departmentInput(failed)).toContain('disabled=""');
+    expect(failed).toContain("Departments couldn’t be loaded.");
+    expect(failed).not.toContain('aria-label="Remove ');
+  });
 });

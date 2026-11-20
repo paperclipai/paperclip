@@ -2508,7 +2508,7 @@ function createSandboxEnvironmentDriver(
             `Sandbox provider "${recordedProvider}" needs a plugin worker manager for cleanup, but none is available.`,
           );
         }
-        const pinnedPluginId = exportResume || input.lease.metadata?.creationOperationId ? readString(input.lease.metadata?.pluginId) : null;
+        const pinnedPluginId = exportResume ? readString(input.lease.metadata?.pluginId) : pinnedCreationCleanupPluginId(input.lease);
         if (exportResume && !pinnedPluginId) throw new Error("Workspace export cleanup has no recorded provider plugin.");
         const pluginProvider = await resolveSandboxProviderPlugin({ provider: recordedProvider, ...(pinnedPluginId ? { pluginId: pinnedPluginId } : {}) });
         if (pluginProvider.state !== "running") {
@@ -2626,6 +2626,13 @@ function createSandboxEnvironmentDriver(
         const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: pinnedPluginId, driverKey: recordedProvider });
         return Boolean(pinned?.plugin.status === "ready" && pluginWorkerManager.isRunning(pinned.plugin.id)
           && pluginWorkerVerifiesLifecycleMethod(pinned.plugin.id, "environmentStopLease"));
+      }
+      // A failed creation is torn down by the plugin that created it, so probe
+      // that plugin. A missing or not-ready pinned plugin is a transient window.
+      const pinnedCreationPluginId = pinnedCreationCleanupPluginId(input.lease);
+      if (pinnedCreationPluginId) {
+        const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: pinnedCreationPluginId, driverKey: recordedProvider });
+        return Boolean(pinned?.plugin.status === "ready" && pluginWorkerManager.isRunning(pinned.plugin.id));
       }
       // Resolve the installed plugin without a wait. A plugin reload or a plugin
       // reinstall can remove the plugin row for a short window, so a missing
@@ -3358,6 +3365,16 @@ function pluginDriverProviderKey(config: PluginEnvironmentConfig): string {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * A failed sandbox creation belongs to the plugin that started it. Two plugins
+ * can declare the same provider key, so the cleanup readiness probe and the
+ * teardown both use this pin instead of the first installed plugin with the key.
+ */
+function pinnedCreationCleanupPluginId(lease: { metadata: Record<string, unknown> | null }): string | null {
+  const metadata = lease.metadata ?? {};
+  return metadata.creationOperationId || metadata.failedCreateCleanup ? readString(metadata.pluginId) : null;
 }
 
 // Keys the runtime stores in the lease metadata that are not part of the
