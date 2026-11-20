@@ -1,3 +1,5 @@
+import { compareTelegramMessageOrder } from "../history-slice.js";
+
 export const AVATAR_PAIRS = [
   ["var(--chart-1)", "var(--primary)"],
   ["var(--chart-2)", "var(--chart-1)"],
@@ -215,7 +217,7 @@ export function mergeThreadMessages<T extends { id: string; at: string }>(curren
   const byId = new Map<string, T>();
   for (const message of current) byId.set(message.id, message);
   for (const message of incoming) byId.set(message.id, message);
-  return [...byId.values()].sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
+  return [...byId.values()].sort(compareTelegramMessageOrder);
 }
 
 export function oldestNumericId(messages: Array<{ id: string }>): string | null {

@@ -48,6 +48,24 @@ export function authorizeSendText(
   return { ok: true, accountId, peerId, connection };
 }
 
+export function authorizeAssignedAgent(
+  connections: TelegramConnection[],
+  request: { companyId: string; agentId: string; issueOriginId?: string | null },
+): SendAuthorization {
+  if (!request.agentId) {
+    return { ok: false, error: "This agent cannot send from that Telegram account." };
+  }
+  const fromIssue = parseDialogOriginId(request.issueOriginId);
+  if (!fromIssue) return { ok: false, error: "This issue is not a Telegram dialog." };
+  const connection = connections.find((entry) => (
+    entry.companyId === request.companyId && entry.telegramUserId === fromIssue.accountId
+  ));
+  if (!connection || connection.assignedAgentId !== request.agentId) {
+    return { ok: false, error: "This agent cannot send from that Telegram account." };
+  }
+  return { ok: true, accountId: fromIssue.accountId, peerId: fromIssue.peerId, connection };
+}
+
 export function authorizeOperatorDialog(
   connections: TelegramConnection[],
   request: { companyId: string; issueOriginId?: string | null },

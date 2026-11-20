@@ -1,5 +1,6 @@
 import {
   definePlugin,
+  runOutsidePluginInvocation,
   runWorker,
   type PluginContext,
   type PluginHealthDiagnostics,
@@ -19,7 +20,7 @@ import {
   publicConnection,
   upsertConnection,
 } from "./connections.js";
-import { dialogOriginId, ingestInboundMessage, parseDialogOriginId, reopenDialogForInbound } from "./inbound.js";
+import { dialogOriginId, inboundMediaAllowed, ingestInboundMessage, parseDialogOriginId, reopenDialogForInbound } from "./inbound.js";
 import { createDialogCache, preferCachedPhoto } from "./dialog-cache.js";
 import { boundLatestHistory, historyCacheKey, historyHitIsFresh, patchHistoryMessages, removeHistoryMessages } from "./history-slice.js";
 import { createInboxLive } from "./inbox-live.js";
@@ -327,6 +328,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         emitInbox(update.companyId, {
           companyId: update.companyId,
           kind: "dialog",
+          accountId: update.accountId,
           issueRef,
           peerId: update.peerId,
           photo,
@@ -358,6 +360,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           emitInbox(update.companyId, {
             companyId: update.companyId,
             kind: "delete",
+            accountId: update.accountId,
             issueRef,
             peerId,
             messageIds: update.messageIds,
@@ -372,6 +375,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       emitInbox(update.companyId, {
         companyId: update.companyId,
         kind: "message",
+        accountId: update.accountId,
         issueRef,
         peerId: update.peerId,
         bubble: update.bubble,
@@ -381,6 +385,14 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         activityAt: card?.activityAt || update.bubble.at,
       });
     });
+  }
+
+  async function allowLiveInboundMedia(companyId: string, accountId: string, peerId: string, declaredBytes: number): Promise<boolean> {
+    const ctx = pluginContext;
+    if (!ctx) return false;
+    const connection = await findConnection(ctx, companyId, accountId, liveAccountIds());
+    if (!connection) return false;
+    return inboundMediaAllowed(ctx, connection, peerId, declaredBytes);
   }
 
   async function handleInbound(message: Parameters<typeof ingestInboundMessage>[2]) {
@@ -477,14 +489,16 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       }
       try {
         const credentials = await resolveCredentials(pending.companyId);
-        const live = await createClient.connectFromSession({
+        const deviceModel = await deviceModelForCompany(pending.companyId);
+        const live = await runOutsidePluginInvocation(() => createClient.connectFromSession({
           companyId: pending.companyId,
           credentials,
           session: signedIn.session,
-          deviceModel: await deviceModelForCompany(pending.companyId),
+          deviceModel,
           onInbound: handleInbound,
           onInboxUpdate: (update) => applyInboxUpdate(update),
-        });
+          allowInboundMedia: ({ accountId, peerId, declaredBytes }) => allowLiveInboundMedia(pending.companyId, accountId, peerId, declaredBytes),
+        }));
         if (!loginStillCurrent(pending)) {
           await live.disconnect().catch(() => undefined);
           await deleteAccountSession(ctx, pending.companyId, stored.secretId);
@@ -571,14 +585,16 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       if (!session) continue;
       try {
         const credentials = await resolveCredentials(companyId);
-        const live = await createClient.connectFromSession({
+        const deviceModel = await deviceModelForCompany(companyId);
+        const live = await runOutsidePluginInvocation(() => createClient.connectFromSession({
           companyId,
           credentials,
           session,
-          deviceModel: await deviceModelForCompany(companyId),
+          deviceModel,
           onInbound: handleInbound,
           onInboxUpdate: (update) => applyInboxUpdate(update),
-        });
+          allowInboundMedia: ({ accountId, peerId, declaredBytes }) => allowLiveInboundMedia(companyId, accountId, peerId, declaredBytes),
+        }));
         await attachLiveSession(companyId, live);
         log.info("Reconnected Telegram account from stored session", {
           companyId,

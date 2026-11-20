@@ -13,6 +13,8 @@ export type TelegramChatRow = {
   unread?: number | null;
   photo?: string | null;
   presence?: PresenceView;
+  accountId?: string | null;
+  peerId?: string | null;
 };
 
 export type ChatBubbleView = {
@@ -32,6 +34,7 @@ export type ChatThreadData = {
   issueId?: string;
   identifier?: string | null;
   peerId?: string | null;
+  accountId?: string | null;
   photo?: string | null;
   presence?: PresenceView;
   messages?: ChatBubbleView[];
@@ -90,6 +93,7 @@ export type InboxStreamEvent = {
   companyId?: string;
   kind?: string;
   issueRef?: string;
+  accountId?: string;
   peerId?: string;
   bubble?: ChatBubbleView;
   messageIds?: string[];

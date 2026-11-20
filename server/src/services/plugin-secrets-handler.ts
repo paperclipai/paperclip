@@ -309,7 +309,7 @@ export function createPluginSecretsHandler(
           projectionClass: "unclassified",
         });
       } catch (error) {
-        await secretService(db).update(created.id, { status: "deleted" }).catch(() => undefined);
+        await secretService(db).remove(created.id).catch(() => undefined);
         throw error;
       }
       return { secretId: created.id, configPath };
@@ -338,28 +338,52 @@ export function createPluginSecretsHandler(
       if (owned.length === 0) {
         throw unprocessable("Secret is not a plugin-owned session binding");
       }
-      await db
-        .delete(companySecretBindings)
-        .where(and(
-          eq(companySecretBindings.companyId, companyId),
-          eq(companySecretBindings.targetType, "plugin"),
-          eq(companySecretBindings.targetId, pluginId),
-          eq(companySecretBindings.secretId, secretId),
-          eq(companySecretBindings.configPath, configPath),
-        ));
+      const bindings = await db
+        .select({
+          id: companySecretBindings.id,
+          companyId: companySecretBindings.companyId,
+          targetType: companySecretBindings.targetType,
+          targetId: companySecretBindings.targetId,
+          configPath: companySecretBindings.configPath,
+        })
+        .from(companySecretBindings)
+        .where(eq(companySecretBindings.secretId, secretId));
+      const foreign = bindings.filter((row) => !(
+        row.companyId === companyId
+        && row.targetType === "plugin"
+        && row.targetId === pluginId
+        && row.configPath === configPath
+      ));
+      if (foreign.length > 0) {
+        await db
+          .delete(companySecretBindings)
+          .where(and(
+            eq(companySecretBindings.companyId, companyId),
+            eq(companySecretBindings.targetType, "plugin"),
+            eq(companySecretBindings.targetId, pluginId),
+            eq(companySecretBindings.secretId, secretId),
+            eq(companySecretBindings.configPath, configPath),
+          ));
+        return;
+      }
       const secret = await db
         .select({ id: companySecrets.id, companyId: companySecrets.companyId })
         .from(companySecrets)
         .where(eq(companySecrets.id, secretId))
         .then((rows) => rows[0] ?? null);
-      if (!secret || secret.companyId !== companyId) return;
-      const remaining = await db
-        .select({ id: companySecretBindings.id })
-        .from(companySecretBindings)
-        .where(eq(companySecretBindings.secretId, secretId));
-      if (remaining.length === 0) {
-        await secretService(db).update(secretId, { status: "deleted" });
+      if (!secret || secret.companyId !== companyId) {
+        await db
+          .delete(companySecretBindings)
+          .where(and(
+            eq(companySecretBindings.companyId, companyId),
+            eq(companySecretBindings.targetType, "plugin"),
+            eq(companySecretBindings.targetId, pluginId),
+            eq(companySecretBindings.secretId, secretId),
+            eq(companySecretBindings.configPath, configPath),
+          ));
+        return;
       }
+      await secretService(db).remove(secretId);
     },
   };
 }

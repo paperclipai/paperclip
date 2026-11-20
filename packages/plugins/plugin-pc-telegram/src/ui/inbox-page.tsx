@@ -73,9 +73,19 @@ export function TelegramInboxPage({
   const shellWidth = useObservedWidth(shell);
   const feedWidth = useObservedWidth(feed);
   const narrow = shellIsNarrow(shellWidth);
-  const chats = usePluginData<{ chats?: TelegramChatRow[] }>(
+  const [listCursor, setListCursor] = useState("");
+  const [listCompany, setListCompany] = useState(companyId);
+  const [loadedChats, setLoadedChats] = useState<TelegramChatRow[]>([]);
+  const [nextChatCursor, setNextChatCursor] = useState<string | null>(null);
+  if (listCompany !== companyId) {
+    setListCompany(companyId);
+    setListCursor("");
+    setLoadedChats([]);
+    setNextChatCursor(null);
+  }
+  const chats = usePluginData<{ chats?: TelegramChatRow[]; nextCursor?: string | null }>(
     "chats",
-    companyId ? { companyId } : undefined,
+    companyId ? { companyId, ...(listCursor ? { cursor: listCursor } : {}) } : undefined,
   );
   const thread = usePluginData<ChatThreadData>(
     "chat-thread",
@@ -87,6 +97,8 @@ export function TelegramInboxPage({
   const [transcript, setTranscript] = useState<ThreadView | null>(() => (cacheKey ? threadCache.get(cacheKey) ?? null : null));
   const [readyKey, setReadyKey] = useState("");
   const [olderBefore, setOlderBefore] = useState<string | null>(null);
+  const [olderFault, setOlderFault] = useState<string | null>(null);
+  const failedOlder = useRef<string | null>(null);
   const older = usePluginData<ChatThreadData>(
     "chat-thread",
     companyId && issueRef ? { companyId, issueRef, beforeId: olderBefore ?? "0" } : undefined,
@@ -143,6 +155,7 @@ export function TelegramInboxPage({
   const requestOlderRef = useRef(() => {});
   const hiddenIds = useRef(new Set<string>());
   const openPeer = useRef("");
+  const openAccount = useRef("");
   const belowRef = useRef(0);
   const [below, setBelow] = useState(0);
   belowRef.current = below;
@@ -175,22 +188,36 @@ export function TelegramInboxPage({
   const applyInboxRef = useRef<(event: InboxStreamEvent) => void>(() => {});
   applyInboxRef.current = (event) => {
     if (event.companyId && companyId && event.companyId !== companyId) return;
+    const sameOpenChat = Boolean(
+      event.accountId
+      && openAccount.current
+      && event.accountId === openAccount.current
+      && event.peerId
+      && event.peerId === openPeer.current,
+    );
     if (event.kind === "gap") {
       refreshThread.current();
       refreshChats.current();
       return;
     }
     if (event.kind === "refresh-thread") {
-      if (event.peerId && event.peerId === openPeer.current) refreshThread.current();
+      const refreshRef = event.issueRef ?? "";
+      if (refreshRef) {
+        if (refreshRef === issueRefLive.current) refreshThread.current();
+      } else if (sameOpenChat) {
+        refreshThread.current();
+      }
       return;
     }
     const ref = event.issueRef ?? "";
-    const forOpen = Boolean(event.peerId && event.peerId === openPeer.current);
-    if (ref && !(chats.data?.chats ?? []).some((chat) => (chat.identifier || chat.issueId) === ref)) {
+    const forOpen = !ref && sameOpenChat;
+    const knownChats = loadedChats.length > 0 ? loadedChats : (chats.data?.chats ?? []);
+    if (ref && !knownChats.some((chat) => (chat.identifier || chat.issueId) === ref)) {
       refreshChats.current();
     }
     if (event.peerId && profilePeer.current && event.peerId === profilePeer.current) {
-      refreshProfile.current();
+      const accountOk = !event.accountId || !openAccount.current || event.accountId === openAccount.current || profilePeer.current !== openPeer.current;
+      if (accountOk) refreshProfile.current();
     }
     if (ref && (event.preview != null || event.activityAt || event.photo !== undefined || typeof event.unread === "number")) {
       setRowPatches((current) => ({
@@ -367,8 +394,22 @@ export function TelegramInboxPage({
   }, [cacheKey]);
 
   useEffect(() => {
+    if (chats.loading || chats.error || !chats.data) return;
+    const page = chats.data.chats ?? [];
+    setNextChatCursor(chats.data.nextCursor ?? null);
+    setLoadedChats((current) => {
+      if (!listCursor) return page;
+      const seen = new Set(current.map((chat) => chat.issueId));
+      const extra = page.filter((chat) => !seen.has(chat.issueId));
+      return extra.length === 0 ? current : [...current, ...extra];
+    });
+  }, [chats.loading, chats.error, chats.data, listCursor]);
+
+  useEffect(() => {
     if (!cacheKey) return;
     if (typeof thread.data?.peerId === "string") openPeer.current = thread.data.peerId;
+    if (typeof thread.data?.accountId === "string") openAccount.current = thread.data.accountId;
+    if (thread.error) return;
     if (thread.loading) {
       sawLoading.current = true;
       return;
@@ -425,12 +466,20 @@ export function TelegramInboxPage({
     storeThread(cacheKey, next);
     setTranscript(next);
     setReadyKey(cacheKey);
-  }, [cacheKey, thread.loading, thread.data]);
+  }, [cacheKey, thread.loading, thread.data, thread.error]);
 
   useEffect(() => {
     if (!olderBefore || !cacheKey) return;
     if (older.loading) {
       olderSeen.current = olderBefore;
+      return;
+    }
+    if (older.error) {
+      if (olderSeen.current !== olderBefore) return;
+      failedOlder.current = olderBefore;
+      setOlderFault(errorMessage(older.error));
+      olderSeen.current = "";
+      setOlderBefore(null);
       return;
     }
     if (olderSeen.current !== olderBefore || !older.data) return;
@@ -454,7 +503,7 @@ export function TelegramInboxPage({
     });
     olderSeen.current = "";
     setOlderBefore(null);
-  }, [older.loading, older.data, olderBefore, cacheKey]);
+  }, [older.loading, older.data, older.error, olderBefore, cacheKey]);
 
   useEffect(() => {
     const element = feed;
@@ -653,7 +702,8 @@ export function TelegramInboxPage({
   }
 
   if (!companyId || !prefix) return null;
-  const listed = (chats.data?.chats ?? []).map((chat) => {
+  const chatSource = loadedChats.length > 0 ? loadedChats : (chats.data?.chats ?? []);
+  const listed = chatSource.map((chat) => {
     const ref = chat.identifier || chat.issueId;
     const patch = rowPatches[ref];
     const photo = keepShownPhoto(shownListPhotos.current[ref], patch?.photo ?? chat.photo);
@@ -672,6 +722,8 @@ export function TelegramInboxPage({
   const showList = !narrow || !issueRef;
   const showThread = !narrow || Boolean(issueRef);
   const openChat = listed.find((chat) => (chat.identifier || chat.issueId) === issueRef);
+  if (openChat?.peerId) openPeer.current = openChat.peerId;
+  if (openChat?.accountId) openAccount.current = openChat.accountId;
   const label = openChat?.label || transcript?.label || uiText("Telegram");
   const headerPhoto = safePhoto(transcript?.photo) || safePhoto(openChat?.photo);
   const headerPresence = transcript?.presence || openChat?.presence || null;
@@ -719,7 +771,12 @@ export function TelegramInboxPage({
               />
             </div>
           </div>
-          {rows.length === 0 && !chats.loading ? (
+          {chats.error && rows.length === 0 ? (
+            <div className="tg-list-empty" role="alert">
+              <div>{errorMessage(chats.error)}</div>
+              <button type="button" onClick={() => chats.refresh()}>{uiText("Retry")}</button>
+            </div>
+          ) : rows.length === 0 && !chats.loading && !nextChatCursor ? (
             <div className="tg-list-empty">{uiText("No chats")}</div>
           ) : (
             <div className="tg-rows">
@@ -766,6 +823,17 @@ export function TelegramInboxPage({
                   </div>
                 );
               })}
+              {nextChatCursor ? (
+                <button type="button" onClick={() => setListCursor(nextChatCursor)} disabled={chats.loading}>
+                  {uiText("Load older chats")}
+                </button>
+              ) : null}
+              {chats.error && rows.length > 0 ? (
+                <div role="alert">
+                  <div>{errorMessage(chats.error)}</div>
+                  <button type="button" onClick={() => chats.refresh()}>{uiText("Retry")}</button>
+                </div>
+              ) : null}
             </div>
           )}
         </div>
@@ -806,7 +874,27 @@ export function TelegramInboxPage({
                 </button>
                 <a className="tg-task" {...navigation.linkProps(taskHref)}>{uiText("Task")}</a>
               </header>
-              {readyKey === cacheKey && transcript && transcript.live === false ? (
+              {thread.error && messages.length > 0 ? (
+                <div className="tg-offline" role="alert">
+                  {errorMessage(thread.error)}
+                  <button type="button" onClick={() => thread.refresh()}>{uiText("Retry")}</button>
+                </div>
+              ) : null}
+              {olderFault ? (
+                <div className="tg-offline" role="alert">
+                  {olderFault}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const id = failedOlder.current;
+                      if (!id) return;
+                      setOlderFault(null);
+                      setOlderBefore(id);
+                    }}
+                  >{uiText("Retry")}</button>
+                </div>
+              ) : null}
+              {readyKey === cacheKey && transcript && transcript.live === false && !thread.error ? (
                 <div className="tg-offline">
                   {uiText("The Telegram account is offline. Showing messages already saved on the task.")}
                 </div>
@@ -828,7 +916,12 @@ export function TelegramInboxPage({
               ) : null}
               <div className={feedIsCompact(feedWidth) ? "tg-feed is-compact" : "tg-feed"} ref={setFeed}>
                 {olderBefore ? <div className="tg-history" aria-hidden="true"><i /></div> : null}
-                {messages.length === 0 && readyKey === cacheKey ? (
+                {messages.length === 0 && thread.error ? (
+                  <div className="tg-empty" role="alert">
+                    <div>{errorMessage(thread.error)}</div>
+                    <button type="button" onClick={() => thread.refresh()}>{uiText("Retry")}</button>
+                  </div>
+                ) : messages.length === 0 && readyKey === cacheKey ? (
                   <div className="tg-empty">{uiText("No messages")}</div>
                 ) : days.map((day) => (
                   <div className="tg-day" key={day.key}>

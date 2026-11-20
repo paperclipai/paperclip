@@ -59,6 +59,8 @@ const RU: Record<string, string> = {
   "Pause inbound": "Поставить входящие на паузу",
   "Something went wrong.": "Что-то пошло не так.",
   "No chats": "Нет чатов",
+  "Retry": "Повторить",
+  "Load older chats": "Показать более ранние чаты",
   Telegram: "Telegram",
   "Choose a chat": "Выберите чат",
   "Select a chat": "Выберите чат",

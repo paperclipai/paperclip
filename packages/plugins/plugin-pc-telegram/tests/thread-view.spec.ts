@@ -27,6 +27,21 @@ describe("thread loading", () => {
     expect(merged.map((message) => message.id)).toEqual(["1", "2", "3", "4"]);
   });
 
+  it("orders same-second messages by numeric telegram id", () => {
+    const at = "2020-01-02T00:00:00.000Z";
+    expect(mergeThreadMessages(
+      [{ id: "100", at }],
+      [{ id: "99", at }],
+    ).map((message) => message.id)).toEqual(["99", "100"]);
+    expect(patchHistoryMessages(
+      [],
+      [
+        { id: "100", direction: "in", text: "later", at },
+        { id: "99", direction: "in", text: "earlier", at },
+      ],
+    ).map((message) => message.id)).toEqual(["99", "100"]);
+  });
+
   it("uses the oldest numeric message as the next page cursor", () => {
     expect(oldestNumericId([{ id: "10" }, { id: "2" }, { id: "note" }])).toBe("2");
     expect(oldestNumericId([{ id: "note" }])).toBeNull();

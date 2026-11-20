@@ -257,4 +257,42 @@ describeEmbeddedPostgres("createPluginSecretsHandler shared vault integration", 
       secretRef: { type: "secret_ref", secretId: replacement.id, version: "latest" },
     })).resolves.toBe("new-api-key");
   });
+
+  it("removes a managed plugin session through the secret removal path", async () => {
+    await seedPlugin();
+    const companyId = await seedCompany("Plugin Co");
+    const svc = secretService(db);
+    const handler = createPluginSecretsHandler({ db, pluginId });
+    const session = await handler.store({ companyId, value: "session-to-drop" });
+    await handler.discard({ companyId, secretId: session.secretId });
+    expect(await svc.getById(session.secretId)).toBeNull();
+    await expect(handler.resolve({
+      companyId,
+      configPath: session.configPath,
+      secretRef: { type: "secret_ref", secretId: session.secretId, version: "latest" },
+    })).rejects.toThrow(/not bound/i);
+
+    const shared = await handler.store({ companyId, value: "shared-session" });
+    await svc.createBinding({
+      companyId,
+      secretId: shared.secretId,
+      targetType: "plugin",
+      targetId: pluginId,
+      configPath: "apiKey",
+      versionSelector: "latest",
+      projectionClass: "unclassified",
+    });
+    await handler.discard({ companyId, secretId: shared.secretId });
+    expect(await svc.getById(shared.secretId)).not.toBeNull();
+    await expect(handler.resolve({
+      companyId,
+      configPath: shared.configPath,
+      secretRef: { type: "secret_ref", secretId: shared.secretId, version: "latest" },
+    })).rejects.toThrow(/not bound/i);
+    await expect(handler.resolve({
+      companyId,
+      configPath: "apiKey",
+      secretRef: { type: "secret_ref", secretId: shared.secretId, version: "latest" },
+    })).resolves.toBe("shared-session");
+  });
 });

@@ -385,14 +385,14 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
           </form>
         ) : (
           <div style={row}>
-            <button type="button" style={primaryButton} onClick={() => void onConnect()} disabled={busy || !companyId}>
-              {busy ? uiText("Starting…") : uiText("Connect Telegram")}
-            </button>
             {status.state === "qr_pending" ? (
               <button type="button" style={button} onClick={() => void onCancel()}>
                 {uiText("Cancel")}
               </button>
             ) : null}
+            <button type="button" style={primaryButton} onClick={() => void onConnect()} disabled={busy || !companyId}>
+              {busy ? uiText("Starting…") : uiText("Connect Telegram")}
+            </button>
           </div>
         )}
       </div>

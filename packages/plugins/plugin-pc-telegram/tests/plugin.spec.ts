@@ -58,6 +58,11 @@ describe("pc-telegram plugin", () => {
       apiId: { format: "secret-ref" },
       apiHash: { format: "secret-ref" },
     });
+    expect(parsed.capabilities).toEqual(expect.arrayContaining([
+      "ui.page.register",
+      "ui.sidebar.register",
+      "instance.settings.register",
+    ]));
   });
 
   it("stores a session secret from QR login and reconnects without a new login", async () => {
@@ -177,6 +182,125 @@ describe("pc-telegram plugin", () => {
     expect(telegram.sent).toHaveLength(1);
     secretFree(allowed);
     secretFree(denied);
+  });
+
+  it("rejects agent cache changes and lets a board user save or clear", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const agent = { actor: { type: "agent" as const, agentId: AGENT_ID } };
+    await expect(harness.performAction("cache-save", {
+      companyId: COMPANY_ID,
+      enabled: false,
+    }, agent)).rejects.toThrow(/board user/);
+    const saved = await harness.performAction<{ enabled: boolean }>("cache-save", {
+      companyId: COMPANY_ID,
+      enabled: false,
+    }, boardUser);
+    expect(saved.enabled).toBe(false);
+    await expect(harness.performAction("cache-clear", {
+      companyId: COMPANY_ID,
+      scope: "all",
+    }, agent)).rejects.toThrow(/board user/);
+    const cleared = await harness.performAction<{ enabled: boolean }>("cache-clear", {
+      companyId: COMPANY_ID,
+      scope: "dialogs",
+    }, boardUser);
+    expect(cleared.enabled).toBe(false);
+  });
+
+  it("lets a board user or the assigned agent send, delete, and forward", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin();
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+    await harness.performAction("update-connection", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+      assignedAgentId: AGENT_ID,
+    }, boardUser);
+    await telegram.deliver(inboundMessage());
+    const [dialog] = await harness.ctx.issues.list({ companyId: COMPANY_ID, originKind: DIALOG_ORIGIN_KIND });
+    const target = await harness.ctx.issues.create({
+      companyId: COMPANY_ID,
+      title: "Telegram · Other",
+      description: "other",
+      status: "todo",
+      originKind: DIALOG_ORIGIN_KIND,
+      originId: "1001:3003",
+    });
+    const issueRef = dialog!.identifier || dialog!.id;
+    const targetRef = target.identifier || target.id;
+    const assigned = { actor: { type: "agent" as const, agentId: AGENT_ID } };
+    const stranger = { actor: { type: "agent" as const, agentId: OTHER_AGENT_ID } };
+
+    await harness.performAction("send-chat-reply", {
+      companyId: COMPANY_ID,
+      issueRef,
+      text: "From the board",
+    }, boardUser);
+    await harness.performAction("send-chat-reply", {
+      companyId: COMPANY_ID,
+      issueRef,
+      text: "From the agent",
+    }, assigned);
+    await expect(harness.performAction("send-chat-reply", {
+      companyId: COMPANY_ID,
+      issueRef,
+      text: "From someone else",
+    }, stranger)).rejects.toThrow(/cannot send/);
+    await expect(harness.performAction("chat-message-menu", {
+      companyId: COMPANY_ID,
+      issueRef,
+      op: "delete",
+      messageIds: ["15"],
+    }, stranger)).rejects.toThrow(/cannot send/);
+    await expect(harness.performAction("chat-message-menu", {
+      companyId: COMPANY_ID,
+      issueRef,
+      op: "forward",
+      messageIds: ["16"],
+      targetIssueRef: targetRef,
+    }, stranger)).rejects.toThrow(/cannot send/);
+    await expect(harness.performAction("chat-message-menu", {
+      companyId: COMPANY_ID,
+      issueRef,
+      op: "react",
+      messageIds: ["17"],
+      emoji: "👍",
+    }, assigned)).rejects.toThrow(/board user/);
+
+    await harness.performAction("chat-message-menu", {
+      companyId: COMPANY_ID,
+      issueRef,
+      op: "delete",
+      messageIds: ["15"],
+    }, assigned);
+    await harness.performAction("chat-message-menu", {
+      companyId: COMPANY_ID,
+      issueRef,
+      op: "forward",
+      messageIds: ["16"],
+      targetIssueRef: targetRef,
+    }, assigned);
+    await harness.performAction("chat-message-menu", {
+      companyId: COMPANY_ID,
+      issueRef,
+      op: "delete",
+      messageIds: ["18"],
+    }, boardUser);
+    expect(telegram.sent.map((row) => row.text)).toEqual(["From the board", "From the agent"]);
+    expect(telegram.actions.map((row) => row.op)).toEqual(["delete", "forward", "delete"]);
   });
 
   it("renders Connect Telegram without session material", () => {

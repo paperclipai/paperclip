@@ -18,6 +18,7 @@ import {
   type PeerSummary,
   type ProfilePhotoMemory,
 } from "./peer-card.js";
+import { compareTelegramMessageOrder } from "./history-slice.js";
 import { mapTelegramMessage, type ChatBubble, type TelegramHistoryMessage } from "./thread.js";
 import { createLoginPasswordGate } from "./password-gate.js";
 import { qrImageDataUrl, telegramQrUrl } from "./qr.js";
@@ -340,6 +341,55 @@ function declaredMediaBytes(media: unknown): number {
   return Math.max(asByteCount(record.size), asByteCount(record.document?.size), photo);
 }
 
+export async function assembleInboundMessage(
+  event: unknown,
+  input: {
+    companyId: string;
+    accountId: string;
+    allowMedia?: (request: { accountId: string; peerId: string; declaredBytes: number }) => Promise<boolean> | boolean;
+  },
+): Promise<InboundDirectMessage | null> {
+  const message = readEventMessage(event);
+  if (!message) return null;
+  if (message.out || message.isGroup || message.isChannel || message.isPrivate === false) return null;
+  const sender = message.sender;
+  const peerId = telegramUserId(sender?.id ?? message.peerId);
+  const text = typeof message.message === "string" ? message.message : "";
+  const hasMedia = Boolean(message.media) && typeof message.downloadMedia === "function";
+  let attachments: InboundAttachment[] = [];
+  if (hasMedia) {
+    const declaredBytes = declaredMediaBytes(message.media);
+    let allowed = true;
+    if (input.allowMedia) {
+      try {
+        allowed = Boolean(await input.allowMedia({
+          accountId: input.accountId,
+          peerId,
+          declaredBytes,
+        }));
+      } catch {
+        allowed = false;
+      }
+    }
+    if (allowed) attachments = await collectAttachments(message);
+    if (!allowed && text.trim().length === 0) return null;
+  }
+  const forward = await readInboundForward(message);
+  return {
+    companyId: input.companyId,
+    accountId: input.accountId,
+    peerId,
+    peerName: sender ? displayNameFromUser(sender) : peerId,
+    messageId: String(message.id ?? ""),
+    text,
+    isPrivate: true,
+    isGroup: false,
+    isOutgoing: false,
+    attachments,
+    forward,
+  };
+}
+
 async function collectAttachments(message: NonNullable<ReturnType<typeof readEventMessage>>): Promise<InboundAttachment[]> {
   try {
     if (!message.media || typeof message.downloadMedia !== "function") return [];
@@ -569,26 +619,12 @@ export function createGramJsClientFactory(): TelegramClientFactory {
       };
       client.addEventHandler(async (event) => {
         try {
-          const message = readEventMessage(event);
-          if (!message) return;
-          if (message.out || message.isGroup || message.isChannel || message.isPrivate === false) return;
-          const sender = message.sender;
-          const peerId = telegramUserId(sender?.id ?? message.peerId);
-          const attachments = await collectAttachments(message);
-          const forward = await readInboundForward(message);
-          const inbound: InboundDirectMessage = {
+          const inbound = await assembleInboundMessage(event, {
             companyId: input.companyId,
             accountId: account.telegramUserId,
-            peerId,
-            peerName: sender ? displayNameFromUser(sender) : peerId,
-            messageId: String(message.id ?? ""),
-            text: typeof message.message === "string" ? message.message : "",
-            isPrivate: true,
-            isGroup: false,
-            isOutgoing: false,
-            attachments,
-            forward,
-          };
+            allowMedia: input.allowInboundMedia,
+          });
+          if (!inbound) return;
           await input.onInbound(inbound);
         } catch (error) {
           console.error(error instanceof Error ? error.message : "Telegram inbound failed.");
@@ -737,7 +773,7 @@ export function createGramJsClientFactory(): TelegramClientFactory {
             if (bubbles.length >= bounded || page.length < bounded || oldest === 0 || oldest === cursor) break;
             cursor = oldest;
           }
-          bubbles.sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
+          bubbles.sort(compareTelegramMessageOrder);
           return bubbles.slice(-bounded);
         },
         async peerNames() {

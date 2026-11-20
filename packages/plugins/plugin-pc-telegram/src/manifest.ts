@@ -40,6 +40,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.write",
     "agent.tools.register",
     "instance.settings.register",
+    "ui.sidebar.register",
+    "ui.page.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",

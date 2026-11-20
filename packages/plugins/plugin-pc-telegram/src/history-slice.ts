@@ -1,6 +1,27 @@
 import type { ChatBubble } from "./thread.js";
 
+const NUMERIC_TELEGRAM_ID = /^\d{1,16}$/;
+
 export const BEFORE_PAGE_TTL_MS = 60_000;
+
+/** Same-second Telegram ids are numeric. `"100"` must not sort before `"99"`. */
+export function compareTelegramIds(left: string, right: string): number {
+  if (NUMERIC_TELEGRAM_ID.test(left) && NUMERIC_TELEGRAM_ID.test(right)) {
+    const a = BigInt(left);
+    const b = BigInt(right);
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+  }
+  return left.localeCompare(right);
+}
+
+export function compareTelegramMessageOrder(
+  left: { at: string; id: string },
+  right: { at: string; id: string },
+): number {
+  return left.at.localeCompare(right.at) || compareTelegramIds(left.id, right.id);
+}
 
 export function historyCacheKey(accountId: string, peerId: string, beforeId: string): string {
   return `${accountId}:${peerId}:${beforeId || "latest"}`;
@@ -20,7 +41,7 @@ export function patchHistoryMessages(messages: ChatBubble[], incoming: ChatBubbl
     const previous = byId.get(message.id);
     byId.set(message.id, previous ? { ...previous, ...message, forward: message.forward ?? previous.forward } : message);
   }
-  return [...byId.values()].sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
+  return [...byId.values()].sort(compareTelegramMessageOrder);
 }
 
 export function removeHistoryMessages(messages: ChatBubble[], ids: string[]): ChatBubble[] {

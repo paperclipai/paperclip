@@ -153,6 +153,7 @@ export type TelegramClientFactory = {
     deviceModel: string;
     onInbound: (message: InboundDirectMessage) => Promise<void>;
     onInboxUpdate?: (update: InboxPeerUpdate) => void;
+    allowInboundMedia?: (input: { accountId: string; peerId: string; declaredBytes: number }) => Promise<boolean> | boolean;
   }): Promise<LiveTelegramAccount>;
 };
 

@@ -84,6 +84,7 @@ export function inboundMessage(overrides: Partial<InboundDirectMessage> = {}): I
 export type MockTelegram = {
   factory: TelegramClientFactory;
   sent: Array<{ accountId: string; peerId: string; text: string }>;
+  actions: Array<{ op: string; peerId: string }>;
   connectFromSessionCalls: Array<{ companyId: string; session: string }>;
   startQrLoginCount: number;
   deliver(message: InboundDirectMessage): Promise<void>;
@@ -98,6 +99,7 @@ export function createMockTelegram(account: PublicTelegramAccount = {
   displayName: "Front Desk",
 }): MockTelegram {
   const sent: MockTelegram["sent"] = [];
+  const actions: MockTelegram["actions"] = [];
   const connectFromSessionCalls: MockTelegram["connectFromSessionCalls"] = [];
   let startQrLoginCount = 0;
   let inboundHandler: ((message: InboundDirectMessage) => Promise<void>) | null = null;
@@ -117,7 +119,9 @@ export function createMockTelegram(account: PublicTelegramAccount = {
     async sendText(peerId, text) {
       sent.push({ accountId: account.telegramUserId, peerId, text });
     },
-    async messageAction() {},
+    async messageAction(peerId, action) {
+      actions.push({ op: action.op, peerId });
+    },
     async readHistory() { return []; },
     async peerNames() { return []; },
     async peerName() { return null; },
@@ -173,6 +177,7 @@ export function createMockTelegram(account: PublicTelegramAccount = {
   return {
     factory,
     sent,
+    actions,
     connectFromSessionCalls,
     get startQrLoginCount() {
       return startQrLoginCount;

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { runOutsidePluginInvocation, type PluginContext } from "@paperclipai/plugin-sdk";
 import {
   ACTION_CANCEL_LOGIN,
   ACTION_DISCONNECT,
@@ -24,7 +24,7 @@ import { createInboxLive } from "./inbox-live.js";
 import { bubbleFromStoredBody, type ChatBubble } from "./thread.js";
 import { idleLoginStatus, reduceLogin } from "./login.js";
 import { reactionEmoji, telegramMessageIds } from "./message-menu.js";
-import { authorizeOperatorDialog, authorizeOperatorReply } from "./send.js";
+import { authorizeAssignedAgent, authorizeOperatorDialog, authorizeOperatorReply, authorizeSendText } from "./send.js";
 import { deleteAccountSession } from "./secrets.js";
 import { publicChannelTitle, publicPhoto, publicPresence, publicSharedChats, unreadCount, type PeerSummary } from "./peer-card.js";
 import { refuseOperatorReport } from "./relay.js";
@@ -250,6 +250,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
       emitInbox(companyId, {
         companyId,
         kind: "dialog",
+        accountId,
         issueRef,
         peerId: row.id,
         preview: next.preview,
@@ -339,7 +340,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
         await dialogCache.writeHistory(companyId, accountId, peerId, merged);
         if (historyContentChanged(previous, merged)) {
           const issueRef = await issueRefFor(companyId, accountId, peerId);
-          emitInbox(companyId, { companyId, kind: "refresh-thread", issueRef, peerId });
+          emitInbox(companyId, { companyId, kind: "refresh-thread", accountId, issueRef, peerId });
         }
       } catch {
         log.warn("Telegram history is unavailable");
@@ -453,14 +454,27 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     return found;
   }
 
-  ctx.data.register("chats", async (params) => {
-    const companyId = readString(params.companyId);
-    if (!companyId) return { chats: [] };
-    const issues = await ctx.issues.list({
+  const CHAT_PAGE_SIZE = 30;
+  const DIALOG_LIST_CAP = 500;
+
+  async function listDialogIssues(companyId: string, needed: number) {
+    const cap = Math.min(DIALOG_LIST_CAP, Math.max(1, Math.floor(needed)));
+    // The host applies limit in SQL and again when it windows the page.
+    // Ask for the prefix in one limit and slice here. Do not pass offset.
+    const batch = await ctx.issues.list({
       companyId,
       originKind: DIALOG_ORIGIN_KIND,
-      limit: 50,
+      limit: cap,
     });
+    return batch.slice(0, cap);
+  }
+
+  ctx.data.register("chats", async (params) => {
+    const companyId = readString(params.companyId);
+    if (!companyId) return { chats: [], nextCursor: null };
+    const rawCursor = Number(params.cursor);
+    const cursor = Number.isFinite(rawCursor) && rawCursor > 0 ? Math.floor(rawCursor) : 0;
+    const issues = await listDialogIssues(companyId, cursor + CHAT_PAGE_SIZE + 1);
     const chats = await Promise.all(issues.map(async (issue) => {
       const updatedAt = issue.updatedAt instanceof Date
         ? issue.updatedAt.toISOString()
@@ -484,10 +498,13 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
           ? keepDialogPhoto(companyId, parsed.accountId, parsed.peerId, card?.photo ?? null, false)
           : null,
         presence: card?.presence ?? null,
+        accountId: parsed?.accountId ?? null,
+        peerId: parsed?.peerId ?? null,
       };
     }));
     chats.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-    const page = chats.slice(0, 30);
+    const page = chats.slice(cursor, cursor + CHAT_PAGE_SIZE);
+    const nextCursor = chats.length > cursor + CHAT_PAGE_SIZE ? String(cursor + CHAT_PAGE_SIZE) : null;
     let warming = 0;
     for (const row of page) {
       if (warming >= 3) break;
@@ -500,17 +517,19 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
       warming += 1;
       void loadHistory(companyId, parsed.accountId, parsed.peerId, "").catch(() => undefined);
     }
-    return { chats: page };
+    return { chats: page, nextCursor };
   });
 
   async function findDialogIssue(companyId: string, issueRef: string) {
-    const issues = await ctx.issues.list({
-      companyId,
-      originKind: DIALOG_ORIGIN_KIND,
-      limit: 50,
-    });
-    const match = issues.find((issue) => issue.identifier === issueRef || issue.id === issueRef);
-    if (match) return match;
+    let scanned = 0;
+    while (scanned < DIALOG_LIST_CAP) {
+      const needed = Math.min(DIALOG_LIST_CAP, scanned + 100);
+      const issues = await listDialogIssues(companyId, needed);
+      const match = issues.slice(scanned).find((issue) => issue.identifier === issueRef || issue.id === issueRef);
+      if (match) return match;
+      if (issues.length < needed) break;
+      scanned = issues.length;
+    }
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(issueRef)) return null;
     const issue = await ctx.issues.get(issueRef, companyId);
     if (!issue || issue.originKind !== DIALOG_ORIGIN_KIND) return null;
@@ -564,6 +583,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
       issueId: issue.id,
       identifier: issue.identifier ?? null,
       peerId: parsed?.peerId ?? null,
+      accountId: parsed?.accountId ?? null,
     };
     if (!header.label || header.label === "Telegram") {
       void resolveDialogLabel(companyId, issue).catch(() => undefined);
@@ -672,6 +692,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
   });
 
   ctx.actions.register("cache-save", async (params, actionCtx) => {
+    assertConnectionManager(actionCtx.actor);
     const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
     const patch: { enabled?: boolean; maxBytes?: number } = {};
     if (typeof params.enabled === "boolean") patch.enabled = params.enabled;
@@ -680,6 +701,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
   });
 
   ctx.actions.register("cache-clear", async (params, actionCtx) => {
+    assertConnectionManager(actionCtx.actor);
     const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
     const scope = params.scope === "avatars" || params.scope === "dialogs" || params.scope === "all" ? params.scope : "";
     if (!scope) throw new Error("Unknown cache scope.");
@@ -694,7 +716,9 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
   });
 
   ctx.actions.register("send-chat-reply", async (params, actionCtx) => {
-    assertConnectionManager(actionCtx.actor);
+    const board = actionCtx.actor?.type === "user";
+    const agentId = actionCtx.actor?.type === "agent" ? readString(actionCtx.actor.agentId) : "";
+    if (!board && !agentId) assertConnectionManager(actionCtx.actor);
     const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
     const issueRef = readString(params.issueRef);
     const text = readString(params.text);
@@ -703,11 +727,18 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     const issue = await findDialogIssue(companyId, issueRef);
     if (!issue) throw new Error("This issue is not a Telegram dialog.");
     const connections = await listConnections(ctx, companyId, liveAccountIds());
-    const authorized = authorizeOperatorReply(connections, {
-      companyId,
-      issueOriginId: issue.originId,
-      text,
-    });
+    const authorized = board
+      ? authorizeOperatorReply(connections, {
+        companyId,
+        issueOriginId: issue.originId,
+        text,
+      })
+      : authorizeSendText(connections, {
+        companyId,
+        agentId,
+        issueOriginId: issue.originId,
+        text,
+      });
     if (!authorized.ok) throw new Error(authorized.error);
     const live = liveByAccount.get(authorized.accountId);
     if (!live || live.companyId !== companyId) {
@@ -720,20 +751,30 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
   });
 
   ctx.actions.register("chat-message-menu", async (params, actionCtx) => {
-    assertConnectionManager(actionCtx.actor);
-    const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
-    const issueRef = readString(params.issueRef);
     const op = readString(params.op);
     if (op !== "react" && op !== "pin" && op !== "unpin" && op !== "delete" && op !== "forward") {
       throw new Error("Unknown message action.");
     }
+    const board = actionCtx.actor?.type === "user";
+    const agentId = actionCtx.actor?.type === "agent" ? readString(actionCtx.actor.agentId) : "";
+    if (!board && (op === "react" || op === "pin" || op === "unpin" || !agentId)) {
+      assertConnectionManager(actionCtx.actor);
+    }
+    const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
+    const issueRef = readString(params.issueRef);
     const issue = await findDialogIssue(companyId, issueRef);
     if (!issue) throw new Error("This issue is not a Telegram dialog.");
     const connections = await listConnections(ctx, companyId, liveAccountIds());
-    const authorized = authorizeOperatorDialog(connections, {
-      companyId,
-      issueOriginId: issue.originId,
-    });
+    const authorized = board
+      ? authorizeOperatorDialog(connections, {
+        companyId,
+        issueOriginId: issue.originId,
+      })
+      : authorizeAssignedAgent(connections, {
+        companyId,
+        agentId,
+        issueOriginId: issue.originId,
+      });
     if (!authorized.ok) throw new Error(authorized.error);
     const live = liveByAccount.get(authorized.accountId);
     if (!live || live.companyId !== companyId) {
@@ -831,61 +872,64 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     };
     pendingLogins.set(loginId, pending);
     emitLogin(companyId, pending.status);
-    const handle = await createClient.startQrLogin({
-      credentials,
-      deviceModel: await deviceModelForCompany(companyId),
-      onQr: (qr) => {
-        const current = pendingLogins.get(loginId);
-        if (!current) return;
-        current.status = reduceLogin(current.status, { type: "qr", loginId, qr });
-        emitLogin(companyId, current.status);
-      },
-      onPasswordRequired: (hint, message) => {
-        const current = pendingLogins.get(loginId);
-        if (!current) return;
-        current.status = reduceLogin(current.status, {
-          type: "password_required",
-          loginId,
-          hint,
-          message: message ?? null,
-        });
-        emitLogin(companyId, current.status);
-      },
-    });
-    pending.handle = handle;
-    void handle.waitUntilSignedIn()
-      .then(async (signedIn) => {
-        if (!loginStillCurrent(pending)) return;
-        const current = pending;
-        if (!signedIn.session) throw new Error("Telegram session was empty after login.");
-        current.signedIn = signedIn;
-        try {
-          await persistSignedIn(current);
-        } catch (error) {
-          if (isInvocationScopeError(error)) {
-            log.warn("Telegram sign-in is waiting for a live board request before it can be stored", {
-              companyId,
-            });
-            return;
-          }
-          throw error;
-        }
-      })
-      .catch((error: unknown) => {
-        if (!loginStillCurrent(pending)) return;
-        const current = pending;
-        const message = error instanceof Error ? error.message : "Telegram login failed.";
-        log.error("Telegram login failed", { companyId, message });
-        void current.handle.abort().catch(() => undefined);
-        current.status = reduceLogin(current.status, {
-          type: "error",
-          loginId,
-          message,
-        });
-        loginResults.set(loginId, { companyId, status: current.status });
-        if (pendingLogins.get(loginId) === current) pendingLogins.delete(loginId);
-        emitLogin(companyId, current.status);
+    const deviceModel = await deviceModelForCompany(companyId);
+    await runOutsidePluginInvocation(async () => {
+      const handle = await createClient.startQrLogin({
+        credentials,
+        deviceModel,
+        onQr: (qr) => {
+          const current = pendingLogins.get(loginId);
+          if (!current) return;
+          current.status = reduceLogin(current.status, { type: "qr", loginId, qr });
+          emitLogin(companyId, current.status);
+        },
+        onPasswordRequired: (hint, message) => {
+          const current = pendingLogins.get(loginId);
+          if (!current) return;
+          current.status = reduceLogin(current.status, {
+            type: "password_required",
+            loginId,
+            hint,
+            message: message ?? null,
+          });
+          emitLogin(companyId, current.status);
+        },
       });
+      pending.handle = handle;
+      void handle.waitUntilSignedIn()
+        .then(async (signedIn) => {
+          if (!loginStillCurrent(pending)) return;
+          const current = pending;
+          if (!signedIn.session) throw new Error("Telegram session was empty after login.");
+          current.signedIn = signedIn;
+          try {
+            await persistSignedIn(current);
+          } catch (error) {
+            if (isInvocationScopeError(error)) {
+              log.warn("Telegram sign-in is waiting for a live board request before it can be stored", {
+                companyId,
+              });
+              return;
+            }
+            throw error;
+          }
+        })
+        .catch((error: unknown) => {
+          if (!loginStillCurrent(pending)) return;
+          const current = pending;
+          const message = error instanceof Error ? error.message : "Telegram login failed.";
+          log.error("Telegram login failed", { companyId, message });
+          void current.handle.abort().catch(() => undefined);
+          current.status = reduceLogin(current.status, {
+            type: "error",
+            loginId,
+            message,
+          });
+          loginResults.set(loginId, { companyId, status: current.status });
+          if (pendingLogins.get(loginId) === current) pendingLogins.delete(loginId);
+          emitLogin(companyId, current.status);
+        });
+    });
     return { loginId, status: pending.status };
   });
 

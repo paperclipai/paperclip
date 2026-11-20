@@ -84,6 +84,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { HttpError } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import {
@@ -1837,12 +1838,28 @@ export function buildHostServices(
       async store(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return secretsHandler.store({ ...params, companyId });
+        const stored = await secretsHandler.store({ ...params, companyId });
+        await logPluginActivity({
+          companyId,
+          action: "secret.created",
+          entityType: "secret",
+          entityId: stored.secretId,
+          details: { secretId: stored.secretId },
+        });
+        return stored;
       },
       async discard(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
+        const secretId = typeof params.secretId === "string" ? params.secretId.trim() : "";
         await secretsHandler.discard({ ...params, companyId });
+        await logPluginActivity({
+          companyId,
+          action: "secret.deleted",
+          entityType: "secret",
+          entityId: secretId,
+          details: { secretId },
+        });
       },
     },
 
@@ -2980,17 +2997,32 @@ export function buildHostServices(
           contentType,
           body,
         });
-        const created = await issues.createAttachment({
-          issueId: params.issueId,
-          provider: stored.provider,
-          objectKey: stored.objectKey,
-          contentType: stored.contentType,
-          byteSize: stored.byteSize,
-          sha256: stored.sha256,
-          originalFilename: stored.originalFilename,
-          createdByAgentId: null,
-          createdByUserId: null,
-        });
+        let created: Awaited<ReturnType<typeof issues.createAttachment>>;
+        try {
+          created = await issues.createAttachment({
+            issueId: params.issueId,
+            provider: stored.provider,
+            objectKey: stored.objectKey,
+            contentType: stored.contentType,
+            byteSize: stored.byteSize,
+            sha256: stored.sha256,
+            originalFilename: stored.originalFilename,
+            createdByAgentId: null,
+            createdByUserId: null,
+          });
+        } catch (err) {
+          if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
+            try {
+              await getStorageService().deleteObject(companyId, stored.objectKey);
+            } catch (cleanupErr) {
+              logger.warn(
+                { cleanupErr, companyId, issueId: params.issueId },
+                "failed to remove stored object after attachment registration was rejected",
+              );
+            }
+          }
+          throw err;
+        }
         await logPluginActivity({
           companyId,
           action: "issue.attachment_added",
