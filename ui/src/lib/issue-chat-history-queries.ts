@@ -15,11 +15,7 @@ import { queryKeys } from "@/lib/queryKeys";
 export interface RecentIssueRunWindow {
   runs: RunForIssue[];
   hasEarlierRuns: boolean;
-  /**
-   * The newest omitted run, when known. The chat compares it with the visible
-   * comments: an omitted run whose answer is already shown hides nothing.
-   */
-  earlierRun?: Pick<RunForIssue, "runId" | "status"> | null;
+  earlierRun?: Pick<RunForIssue, "runId" | "status" | "resultJson"> | null;
 }
 
 export function recentIssueActivityQueryKey(issueRef: string) {
@@ -121,7 +117,7 @@ export function buildRecentIssueRunWindow(
     // omitted run, and must retain that evidence as later turns arrive.
     hasEarlierRuns: !!omitted || retained,
   };
-  const earlierRun = omitted ? { runId: omitted.runId, status: omitted.status } : retained ? previousEarlierRun : undefined;
+  const earlierRun = omitted ? { runId: omitted.runId, status: omitted.status, resultJson: omitted.resultJson } : retained ? previousEarlierRun : undefined;
   if (earlierRun) window.earlierRun = earlierRun;
   return window;
 }

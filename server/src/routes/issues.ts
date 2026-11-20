@@ -17356,8 +17356,6 @@ export function issueRoutes(
         hasMore: recent.length > 20,
       });
     }
-    // Up to two older comments (latest human, first instruction) are pinned
-    // into the window, so three older rows prove whether any stays hidden.
     const [recent, human, firstInstruction] = await Promise.all([
       svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 7 }),
       svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 1, humanOnly: true }),

@@ -233,6 +233,7 @@ import {
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
+import { hasVisibleRunAnswer } from "@/lib/run-answer-visibility";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
@@ -1673,12 +1674,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     ...(conversationMode && !historyExpanded ? commentRuns.data ?? [] : []),
   ].map(run => [run.runId, run])).values()], [linkedRunHistory, conversationMode, historyExpanded, commentRuns.data]);
   const earlierRun = Array.isArray(linkedRunHistory) ? undefined : linkedRunHistory?.earlierRun;
-  // Most tasks have several runs, and the compact window shows only the
-  // latest. An omitted run whose answer is already on screen hides nothing.
   const hasEarlierRuns = !Array.isArray(linkedRunHistory) && linkedRunHistory?.hasEarlierRuns === true && !(
-    earlierRun?.status === "succeeded" && comments.some(comment =>
-      comment.authorType === "agent" && !comment.deletedAt && comment.body.trim() &&
-      (comment.createdByRunId ?? comment.derivedCreatedByRunId) === earlierRun.runId)
+    earlierRun?.status === "succeeded" && hasVisibleRunAnswer(comments, earlierRun.runId, earlierRun.resultJson)
   );
   const resolvedActivity = useMemo(
     () => [...new Map([...(activity ?? []), ...(inputFacts.data ?? [])].map((event) => [event.id, event])).values()],
