@@ -13400,7 +13400,7 @@ async function executePaperclipNativeSessionAttempt(
           ? sourceFailureCode
           : disposition.failureCode;
       const providerFailure = providerFailureFromError(error);
-      const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry"
+      const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry" || remoteStartupRejection
         ? nativeStartupFailureSignature(providerFailure) : null;
       const startupRejectedAction = repeatedRemoteStartupFailure && providerFailure
         ? nativeRepeatedStartupFailureAction(providerFailure.message) : NATIVE_PROVIDER_STARTUP_REJECTED_ACTION;
