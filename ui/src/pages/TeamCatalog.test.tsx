@@ -100,6 +100,11 @@ if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
 }
 
 describe("TeamCatalog routes", () => {
+  it("limits Cloud team installation choices to released harnesses", () => {
+    expect(listTeamInstallAdapterTypes(new Set(), true, true).sort()).toEqual([
+      "claude_local", "codex_local", "grok_local", "opencode_local", "paperclip_runner",
+    ]);
+  });
   it("round-trips file paths containing literal tildes", () => {
     const route = teamRoute("paperclipai/bundled/test/team", "agents/a~b/AGENTS.md");
 

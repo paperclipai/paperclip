@@ -14,14 +14,17 @@ import { buildCodexRunnerConfig } from "./config-fields";
 import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
 import { defaultCreateValues } from "@/components/agent-config-defaults";
 import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
+import { queryKeys } from "@/lib/queryKeys";
 
 beforeAll(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); });
 
-async function renderMarkup(node: ReactNode, expand?: string, inspect?: (container: HTMLElement) => void): Promise<string> {
+async function renderMarkup(node: ReactNode, expand?: string, inspect?: (container: HTMLElement) => void, cloud = false): Promise<string> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>{node}</QueryClientProvider>));
+  const client = new QueryClient();
+  if (cloud) client.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+  await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>));
   if (expand) await act(async () => {
     container.querySelector(`[aria-label="${expand}"]`)?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   });
@@ -32,7 +35,7 @@ async function renderMarkup(node: ReactNode, expand?: string, inspect?: (contain
   return html;
 }
 
-async function renderRunner(config: Record<string, unknown>, expand?: string, inspectOrDot?: ((container: HTMLElement) => void) | boolean): Promise<string> {
+async function renderRunner(config: Record<string, unknown>, expand?: string, inspectOrDot?: ((container: HTMLElement) => void) | boolean, cloud = false): Promise<string> {
   const openAiDotEnabled = inspectOrDot === true;
   const inspect = typeof inspectOrDot === "function" ? inspectOrDot : undefined;
   return renderMarkup(
@@ -51,9 +54,24 @@ async function renderRunner(config: Record<string, unknown>, expand?: string, in
         openAiDotEnabled={openAiDotEnabled}
       />
     </TooltipProvider>,
-    expand, inspect,
+    expand, inspect, cloud,
   );
 }
+
+it("withholds unsupported Cloud Runner providers even for an existing native agent", async () => {
+  const html = await renderRunner({ provider: "codex" }, "Harness", undefined, true);
+  expect(html).toContain("Codex");
+  expect(html).toContain("OpenCode");
+  expect(html).toContain("Grok Build");
+  for (const label of ["Claude Managed", "AWS AgentCore", "Cursor Cloud", "Antigravity"]) expect(html).not.toContain(label);
+});
+
+it("offers only released ACP profiles on Cloud", async () => {
+  const html = await renderRunner({ provider: "acpx", acpxAgent: "claude" }, "ACP agent", undefined, true);
+  expect(html).toContain("Claude");
+  expect(html).toContain("Copilot");
+  for (const label of ["Antigravity", "Kimi", "Cursor", "qualification pending"]) expect(html).not.toContain(label);
+});
 
 async function selectField(container: HTMLElement, label: string, value: string) {
   const picker = container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;

@@ -22,6 +22,8 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import { teamCatalogApi } from "../api/teamCatalog";
 import { agentsApi } from "../api/agents";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { isCloudHarnessAllowed } from "@/lib/cloud-harness-policy";
 import {
   useAdapterRegistryLoaded,
   useDisabledAdaptersSync,
@@ -125,9 +127,11 @@ const TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 export function listTeamInstallAdapterTypes(
   disabledTypes: Set<string>,
   adapterRegistryLoaded: boolean,
+  cloud = false,
 ) {
   return AGENT_ADAPTER_TYPES.filter(
     (type) =>
+      (!cloud || isCloudHarnessAllowed(type)) &&
       !TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES.has(type) &&
       !disabledTypes.has(type) &&
       (type !== "paperclip_runner" || adapterRegistryLoaded),
@@ -1089,9 +1093,10 @@ export function TeamInstallerDialog({
   const [phase, setPhase] = useState<ApplyPhase>("form");
   const disabledAdapterTypes = useDisabledAdaptersSync({ enabled: open });
   const adapterRegistryLoaded = useAdapterRegistryLoaded({ enabled: open });
+  const cloud = Boolean(useCloudInstance());
   const selectableAdapterTypes = useMemo(
-    () => listTeamInstallAdapterTypes(disabledAdapterTypes, adapterRegistryLoaded),
-    [adapterRegistryLoaded, disabledAdapterTypes],
+    () => listTeamInstallAdapterTypes(disabledAdapterTypes, adapterRegistryLoaded, cloud),
+    [adapterRegistryLoaded, disabledAdapterTypes, cloud],
   );
 
   // Step 1 — target manager
