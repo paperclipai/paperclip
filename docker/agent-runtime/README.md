@@ -16,12 +16,20 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 
 **OS & Runtime:**
 - Ubuntu 22.04
-- Node.js 24 (via NodeSource APT repo)
+- Node.js 24 (official release tarball, pinned by `NODE_FULL_VERSION` and checked against a pinned SHA-256)
 - git
 - tini (PID-1 init, ensures signal propagation)
 - Non-root user `paperclip` (uid/gid 1000)
 
-The NodeSource install puts `node` on the default `PATH`. The agent shim in this
+`Dockerfile.base` downloads the Node tarball for the target architecture from
+nodejs.org and runs `sha256sum -c` against `NODE_SHA256_X64` or
+`NODE_SHA256_ARM64` before it extracts anything. A mismatch fails the build.
+Node does not update itself: to move to a new release, set `NODE_FULL_VERSION`
+and copy the two `linux-*.tar.gz` digests from that release's
+`SHASUMS256.txt` after you verify its GPG signature. `NODE_FULL_VERSION` must
+stay in the `NODE_VERSION` major, and the build checks this.
+
+The tarball extracts to `/usr/local`, so `node` is on the default `PATH`. The agent shim in this
 image runs the harness directly with that `PATH`. The shim does not source a
 login profile, and the runtime never writes a profile or an rc file. Some
 sandbox providers instead wrap each command in a login shell. That shell sources
