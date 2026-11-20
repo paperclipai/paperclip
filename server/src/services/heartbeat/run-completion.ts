@@ -80,6 +80,7 @@ import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-stat
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import type { Db, agents } from "@paperclipai/db";
 import { setupCommandFailureResultJson } from "../workspace-setup-command-failure.js";
+import { ownRunError } from "../scheduled-retry-error.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -498,9 +499,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       usageBasis: adapterResult.usageBasis ?? null,
     });
     const normalizedUsage = sessionUsageResolution.normalizedUsage;
+    // A scheduled retry's inherited reason describes its predecessor.
+    const latestOwnError = latestRun ? ownRunError(latestRun) : null;
     const runErrorMessage =
       outcome === "cancelled"
-        ? redactCurrentUserText(withoutSqlStatementText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled"), currentUserRedactionOptions)
+        ? redactCurrentUserText(withoutSqlStatementText(latestOwnError?.error ?? adapterResult.errorMessage ?? "Cancelled"), currentUserRedactionOptions)
         : outcome === "succeeded"
           ? null
           : redactCurrentUserText(
@@ -514,7 +517,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       outcome === "timed_out"
         ? "timeout"
         : outcome === "cancelled"
-          ? (latestRun?.errorCode ?? "cancelled")
+          ? (latestOwnError?.errorCode ?? "cancelled")
           : outcome === "failed"
             ? (adapterResult.errorCode ??
               recordedResponsibleUserDenialCode ??

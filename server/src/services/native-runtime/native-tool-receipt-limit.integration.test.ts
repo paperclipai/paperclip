@@ -7,6 +7,15 @@ import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embed
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
 
 const provider = vi.hoisted(() => ({ execute: vi.fn() }));
+const failureReports = vi.hoisted(() => [] as { id: string; status: string; error: string | null; errorCode: string | null }[]);
+vi.mock("../run-failure-report.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../run-failure-report.js")>();
+  return { ...original, reportRunFailure: (...args: Parameters<typeof original.reportRunFailure>) => {
+    const [, run] = args;
+    failureReports.push({ id: run.id, status: run.status, error: run.error, errorCode: run.errorCode });
+    return original.reportRunFailure(...args);
+  } };
+});
 const receiptLimitRead = vi.hoisted(() => ({ after: null as null | (() => Promise<unknown>) }));
 const sentry = vi.hoisted(() => ({ captureRunFailure: vi.fn((_event: { runId: string }) => true) }));
 vi.mock("../../sentry.js", async (importOriginal) => ({
@@ -30,7 +39,8 @@ import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_DELAY_MS, NATIVE_TOOL_RECEIPT_LIMIT_HINT,
-  readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
+  NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE, NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
+import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_MESSAGE } from "./native-environment-blocker.js";
 import { heartbeatService } from "../heartbeat.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
@@ -58,9 +68,9 @@ describe("native turn stopped at its tool receipt limit", () => {
 
   let finalTurnId: string | null = null;
   async function stopAtReceiptLimit(runId: string, issueId: string, diagnosticCode: string, beforeFinalize?: () => Promise<unknown>,
-    diagnosticTurnId?: string) {
+    diagnosticTurnId?: string, runFields: Partial<typeof heartbeatRuns.$inferInsert> = { error: null, errorCode: null }) {
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
-    const [run] = await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date(), runtimeMode: "native", nativeIssueId: issueId, error: null, errorCode: null }).where(eq(heartbeatRuns.id, runId)).returning();
+    const [run] = await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date(), runtimeMode: "native", nativeIssueId: issueId, ...runFields }).where(eq(heartbeatRuns.id, runId)).returning();
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const native = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
@@ -115,7 +125,7 @@ describe("native turn stopped at its tool receipt limit", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Parallel reads task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "receipt-owner" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "receipt-owner", contextSnapshot: { issueId, wakeCommentId: "original-message" } });
     const stopped = await stopAtReceiptLimit(runId, issueId, NATIVE_TOOL_RECEIPT_LIMIT_CODE);
-    expect(stopped.status).toBe("cancelled");
+    expect(stopped).toMatchObject({ status: "cancelled", errorCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE, error: NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE });
     expect(await readPersistedNativeToolReceiptLimitStop(db, stopped, finalTurnId)).toBe(true);
     expect(await readPersistedNativeToolReceiptLimitStop(db, stopped, "another-turn")).toBe(false);
 
@@ -193,6 +203,57 @@ describe("native turn stopped at its tool receipt limit", () => {
       .rejects.toBeInstanceOf(NativeStatusRaceError);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `native-tool-receipt-limit:${companyId}:${runId}`))).toHaveLength(0);
+  });
+
+  // A scheduled-retry row is created with the predecessor's scheduling reason
+  // in error/errorCode. When the retry itself stops, that note is not its cause.
+  async function seedEnvironmentBlockerRetry(title: string) {
+    const issueId = randomUUID(), predecessorId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title, status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "receipt-owner" });
+    await db.insert(heartbeatRuns).values({ id: predecessorId, companyId, agentId, status: "succeeded", runtimeMode: "native", nativeIssueId: issueId,
+      contextSnapshot: { issueId } });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "receipt-owner",
+      contextSnapshot: { issueId, retryOfRunId: predecessorId, retryReason: NATIVE_ENVIRONMENT_BLOCKER_CODE,
+        executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 0 } } });
+    const inherited = { retryOfRunId: predecessorId, scheduledRetryReason: NATIVE_ENVIRONMENT_BLOCKER_CODE, scheduledRetryAttempt: 2,
+      error: NATIVE_ENVIRONMENT_BLOCKER_MESSAGE, errorCode: NATIVE_ENVIRONMENT_BLOCKER_CODE };
+    return { issueId, runId, inherited };
+  }
+
+  it("names the receipt-limit stop, not the predecessor's retry reason, when the shared continuation budget is spent", async () => {
+    const { issueId, runId, inherited } = await seedEnvironmentBlockerRetry("Spent budget task");
+    failureReports.length = 0;
+    const stopped = await stopAtReceiptLimit(runId, issueId, NATIVE_TOOL_RECEIPT_LIMIT_CODE, undefined, undefined, inherited);
+    expect(stopped.status).toBe("cancelled");
+    // The shared failure-retry budget is spent, so no continuation runs and the
+    // existing hand-off applies.
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
+    expect(decision).toMatchObject({ reasonCode: "cancellation_run_only" });
+    const own = { errorCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE, error: NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE };
+    expect(stopped).toMatchObject(own);
+    // The run-failure report reads the row the terminal projection wrote.
+    const reported = failureReports.filter(report => report.id === runId && report.status === "cancelled");
+    expect(reported.length).toBeGreaterThan(0);
+    for (const report of reported) expect(report).toMatchObject(own);
+  });
+
+  it("drops the predecessor's retry reason from a retry that stopped for another reason", async () => {
+    const { issueId, runId, inherited } = await seedEnvironmentBlockerRetry("Other stop task");
+    failureReports.length = 0;
+    const stopped = await stopAtReceiptLimit(runId, issueId, "semantic_tool_denied", undefined, undefined, inherited);
+    expect(stopped.status).toBe("cancelled");
+    expect(stopped).toMatchObject({ errorCode: null, error: null });
+    const reported = failureReports.filter(report => report.id === runId && report.status === "cancelled");
+    expect(reported.length).toBeGreaterThan(0);
+    for (const report of reported) expect(report).toMatchObject({ errorCode: null, error: null });
+  });
+
+  it("keeps a retry's own recorded cause", async () => {
+    const { issueId, runId, inherited } = await seedEnvironmentBlockerRetry("Own cause task");
+    const stopped = await stopAtReceiptLimit(runId, issueId, NATIVE_TOOL_RECEIPT_LIMIT_CODE, undefined, undefined,
+      { ...inherited, error: "Stopped by the operator", errorCode: "operator_stopped" });
+    expect(stopped).toMatchObject({ status: "cancelled", errorCode: "operator_stopped", error: "Stopped by the operator" });
   });
 
   it("leaves another cancelled turn to its existing recovery", async () => {

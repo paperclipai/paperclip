@@ -32,7 +32,9 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
-import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE, NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE, cancelStoppedRunContinuation,
+  nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
+import { ownRunErrorSql } from "../scheduled-retry-error.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
 import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE } from "./native-agent-blocker.js";
@@ -2042,21 +2044,37 @@ export async function finalizeNativeRun(input: {
         || ${JSON.stringify(finalizationMetadata)}::jsonb
         || ${clearExecutionFailure ? sql`case when ${heartbeatRuns.status} = 'cancelled' then '{}'::jsonb
           else ${recoveredExecutionFailureMetadata()} end` : sql`'{}'::jsonb`}`;
-      const nextError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
-        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.error}`;
-      const nextErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
-        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.errorCode}`;
+      // A scheduled retry still carries the reason it was scheduled. That
+      // describes its predecessor, so it never stands for this run's outcome.
+      const ownError = ownRunErrorSql();
+      // A proven runner stop at the receipt limit is this run's cause when no
+      // writer recorded another one.
+      const receiptLimitCause = input.projectRunStatus && projectedStatus !== "succeeded" && statusInput.toolReceiptLimitStopped
+        ? { errorCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE, error: decision.reasonCode === NATIVE_TOOL_RECEIPT_LIMIT_CODE
+          ? NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE : NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE }
+        : null;
+      const hasOwnError = sql`(${ownError.error} is not null or ${ownError.errorCode} is not null)`;
+      const recordedError = receiptLimitCause
+        ? sql`case when ${hasOwnError} then ${ownError.error} else ${receiptLimitCause.error} end` : ownError.error;
+      const recordedErrorCode = receiptLimitCause
+        ? sql`case when ${hasOwnError} then ${ownError.errorCode} else ${receiptLimitCause.errorCode} end` : ownError.errorCode;
+      const nextError = providerFailure ? sql`coalesce(${recordedError}, ${providerFailure.errorMessage})`
+        : clearExecutionFailure ? sql`null` : recordedError;
+      const nextErrorCode = providerFailure ? sql`coalesce(${recordedErrorCode}, ${providerFailure.errorCode})`
+        : clearExecutionFailure ? sql`null` : recordedErrorCode;
       // A run projected to failed always records why, even when the provider
       // reported a failed terminal without a classified failure. A recorded
       // runner turn failure names that cause.
       const projectsFailedStatus = input.projectRunStatus && projectedStatus === "failed";
       const explained = projectsFailedStatus
-        ? explainFailedRun(explainNativeTurnFailure(turnFailure) ?? NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
+        ? explainFailedRun(explainNativeTurnFailure(turnFailure) ?? NATIVE_RUN_FAILED_UNEXPLAINED,
+          { error: nextError, errorCode: nextErrorCode, preserveCancelled: false })
         : null;
-      const projectedError = explained?.error ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
-        else ${nextError} end`;
-      const projectedErrorCode = explained?.errorCode ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
-        else ${nextErrorCode} end`;
+      // A cancellation that won concurrently keeps its own fields.
+      const projectedError = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${ownError.error}
+        else ${explained?.error ?? nextError} end`;
+      const projectedErrorCode = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${ownError.errorCode}
+        else ${explained?.errorCode ?? nextErrorCode} end`;
       const projectionChanged = or(
         sql`${heartbeatRuns.nativePhase} is distinct from ${finalizationPhase}`,
         sql`${heartbeatRuns.resultJson} is distinct from ${projectedResult}`,
@@ -2081,7 +2099,7 @@ export async function finalizeNativeRun(input: {
             : {}),
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
-          ...(clearExecutionFailure || providerFailure || projectsFailedStatus ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+          ...(input.projectRunStatus || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
           resultJson: projectedResult,
           updatedAt: now,
         })
