@@ -240,6 +240,10 @@ export async function remoteWorkspaceReplacementEvidence(
 export function nativeReplacementPending() {
   return and(
     eq(heartbeatRuns.status, "failed"),
+    // An exact chat Retry is authorized only through its own chat action and
+    // the user's Retry intent. A system successor cannot hold that authority,
+    // so admission would always refuse it. Keep the task's hold for the user.
+    sql`not (coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) ? 'chatFailedRunRetry')`,
     eq(nativeRunFinalizations.phase, "terminal_failure"),
     or(inArray(
       nativeRunFinalizations.failureCode,
