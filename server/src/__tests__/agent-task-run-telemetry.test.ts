@@ -8,6 +8,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../telemetry-company-scope.js";
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
+import { PAPERCLIP_ENUM_DESCRIPTIONS } from "@paperclipai/shared/telemetry";
+import { PAPERCLIP_RUNNER_ACPX_PROFILES, PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES } from "@paperclipai/adapter-utils";
 import { PERMANENT_FAILURE_CODES, PERSON_OWNED_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "../services/continuation-cause.ts";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
@@ -27,7 +29,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-import { agentRunFailureCause, emitAgentTaskRun, emitAgentTaskRunById } from "../services/agent-task-run-telemetry.ts";
+import { agentRunFailureCause, emitAgentTaskRun, emitAgentTaskRunById, telemetryAdapterType } from "../services/agent-task-run-telemetry.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -376,6 +378,19 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     await expect(emitAgentTaskRun(db, run)).resolves.toBeUndefined();
   });
 
+  it.each([
+    { adapterConfig: {}, adapterType: "codex_local" },
+    { adapterConfig: { provider: "acpx", acpxAgent: "claude" }, adapterType: "claude_local" },
+    { adapterConfig: { provider: "opencode" }, adapterType: "opencode_local" },
+  ])("reports a Paperclip runner agent's underlying harness $adapterType as adapterType", async ({ adapterConfig, adapterType }) => {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner", adapterConfig });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded" }).returning();
+
+    await emitAgentTaskRun(db, run);
+
+    expect(mockTrackAgentTaskRun.mock.calls[0][1].adapterType).toBe(adapterType);
+  });
+
   it("omits adapterType and agentRole when the agent row is absent", async () => {
     await seedCompanyAndAgent();
     const run = {
@@ -452,5 +467,27 @@ describe("agentRunFailureCause", () => {
     const unclassified = canonical.filter((errorCode) =>
       agentRunFailureCause({ errorCode, providerFailureCategory: null }) === "unknown");
     expect(unclassified).toEqual([]);
+  });
+});
+
+describe("Paperclip runner adapter_type coverage", () => {
+  it.each(["agent.task_run", "agent.task_completed"] as const)("lists every runner harness in the %s adapter_type contract except the known gaps", (event) => {
+    const contract = Object.keys(PAPERCLIP_ENUM_DESCRIPTIONS[event].adapter_type);
+    const harnesses = [
+      ...Object.keys(PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES)
+        .filter((provider) => provider !== "acpx")
+        .map((provider) => telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } })),
+      ...PAPERCLIP_RUNNER_ACPX_PROFILES.map(({ value }) => telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: value } })),
+    ];
+
+    expect(harnesses.filter((harness) => !contract.includes(harness)).sort()).toEqual([
+      "acpx:copilot",
+      "antigravity_runtime",
+      "aws_agentcore",
+      "claude_managed",
+      "grok_bot",
+      "muse",
+      "openai_dot",
+    ]);
   });
 });

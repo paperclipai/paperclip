@@ -24,10 +24,12 @@ export const RESPONSIBILITY_DASHBOARD_SENTENCE_MAX = 200;
 export const RESPONSIBILITY_DASHBOARD_UNDO_HOURS = 24;
 
 /**
- * Who caused a version. `change_set`: an agent's proposal a person applied.
- * `person`: changes made by hand since the last version (picked up before the
- * next agent change and whenever the version list is opened). `restore`: a
- * person went back to an earlier version.
+ * Who caused a version. `change_set`: an agent's change, either a proposal a
+ * person applied (`interactionId` set) or a change an agent made for the
+ * person with its responsibility tools (no `interactionId`). `person`: changes
+ * made by hand since the last version (picked up before the next agent change
+ * and whenever the version list is opened). `restore`: a person went back to
+ * an earlier version.
  */
 export const RESPONSIBILITY_DASHBOARD_VERSION_CAUSES = ["change_set", "person", "restore"] as const;
 export type ResponsibilityDashboardVersionCause = (typeof RESPONSIBILITY_DASHBOARD_VERSION_CAUSES)[number];
@@ -393,15 +395,30 @@ export function dashboardChangesMissingDependencies(
 // Versions
 // ---------------------------------------------------------------------------
 
-/** One area as a version holds it. */
+/** One area as a version holds it. Versions saved since agents could change areas also hold its description. */
 export interface ResponsibilityDashboardSnapshotArea {
   id: string;
   title: string;
   status: string;
   sortOrder: number;
+  description?: string | null;
 }
 
-/** One responsibility as a version holds it: its sentence fields, area, status and order. */
+/** The projects, tasks, routines and skills filed directly under a responsibility, each sorted. */
+export interface ResponsibilityDashboardSnapshotLinks {
+  projectIds: string[];
+  issueIds: string[];
+  routineIds: string[];
+  /** Absent in versions saved before skills could be filed; restoring one leaves filed skills as they are. */
+  skillIds?: string[];
+}
+
+/**
+ * One responsibility as a version holds it: its sentence fields, area, status
+ * and order. Versions saved since agents could change responsibilities for a
+ * person also hold what is filed under it, its description and the agent that
+ * runs it; restoring an older version leaves those as they are.
+ */
 export interface ResponsibilityDashboardSnapshotResponsibility {
   id: string;
   title: string;
@@ -409,6 +426,12 @@ export interface ResponsibilityDashboardSnapshotResponsibility {
   areaId: string | null;
   status: string;
   sortOrder: number;
+  links?: ResponsibilityDashboardSnapshotLinks;
+  description?: string | null;
+  runByAgentId?: string | null;
+  evidence?: string | null;
+  healthOverride?: string | null;
+  healthNote?: string | null;
 }
 
 /**
@@ -421,13 +444,19 @@ export interface ResponsibilityDashboardSnapshot {
   version: 1;
   areas: ResponsibilityDashboardSnapshotArea[];
   responsibilities: ResponsibilityDashboardSnapshotResponsibility[];
-  /** Areas the change that produced this version created; empty ones stay on the dashboard until undone. */
+  /**
+   * Areas the change that produced this version created or changed; while
+   * they are not archived they stay on the dashboard (an empty one too), so
+   * the change can be undone.
+   */
   createdAreaIds: string[];
 }
 
 export const responsibilityDashboardSnapshotSchema = z.object({
   version: z.literal(1),
-  areas: z.array(z.object({ id: z.string(), title: z.string(), status: z.string(), sortOrder: z.number() })),
+  areas: z.array(z.object({
+    id: z.string(), title: z.string(), status: z.string(), sortOrder: z.number(), description: z.string().nullable().optional(),
+  })),
   responsibilities: z.array(z.object({
     id: z.string(),
     title: z.string(),
@@ -435,6 +464,17 @@ export const responsibilityDashboardSnapshotSchema = z.object({
     areaId: z.string().nullable(),
     status: z.string(),
     sortOrder: z.number(),
+    links: z.object({
+      projectIds: z.array(z.string()),
+      issueIds: z.array(z.string()),
+      routineIds: z.array(z.string()),
+      skillIds: z.array(z.string()).optional(),
+    }).optional(),
+    description: z.string().nullable().optional(),
+    runByAgentId: z.string().nullable().optional(),
+    evidence: z.string().nullable().optional(),
+    healthOverride: z.string().nullable().optional(),
+    healthNote: z.string().nullable().optional(),
   })),
   createdAreaIds: z.array(z.string()).default([]),
 });
@@ -446,8 +486,10 @@ export interface ResponsibilityDashboardVersionSummary {
   /** One plain line of what changed since the version before it. */
   summary: string;
   actorUserId: string | null;
-  /** For `change_set`: the agent that proposed it. */
+  /** For `change_set`: the agent that proposed it, or that made it for the person. */
   actorAgentId: string | null;
+  /** For `change_set`: the proposal a person applied; null when the agent made the change for them. */
+  interactionId: string | null;
   /** The version this one followed: Undo restores it. */
   previousVersionId: string | null;
   /** For `restore`: the version that was restored. */
@@ -519,6 +561,16 @@ export function responsibilityDashboardSentence(row: { standard: string | null; 
   return row.standard?.trim() || row.title;
 }
 
+/** One key per filed item, such as `routine:<id>`, for comparing two versions. */
+export function snapshotLinkKeys(links: ResponsibilityDashboardSnapshotLinks): string[] {
+  return [
+    ...links.projectIds.map((id) => `project:${id}`),
+    ...links.issueIds.map((id) => `issue:${id}`),
+    ...links.routineIds.map((id) => `routine:${id}`),
+    ...(links.skillIds ?? []).map((id) => `skill:${id}`),
+  ];
+}
+
 function count(n: number, one: string, many: string) {
   return `${n} ${n === 1 ? one : many}`;
 }
@@ -550,16 +602,21 @@ export function responsibilityDashboardChangeSummary(
   let addedAreas = 0;
   let renamedAreas = 0;
   let removedAreas = 0;
+  let describedAreas = 0;
   for (const [areaId, area] of afterAreas) {
     const was = beforeAreas.get(areaId);
     if (!was) addedAreas += 1;
     else if (was.title !== area.title) renamedAreas += 1;
+    if (was && was.description !== undefined && area.description !== undefined && was.description !== area.description) describedAreas += 1;
   }
   for (const areaId of beforeAreas.keys()) if (!afterAreas.has(areaId)) removedAreas += 1;
   let added = 0;
   let reworded = 0;
   let moved = 0;
   let letGo = 0;
+  let filed = 0;
+  let unfiled = 0;
+  let detailed = 0;
   for (const [itemId, item] of afterItems) {
     const was = beforeItems.get(itemId);
     if (!was) {
@@ -568,6 +625,19 @@ export function responsibilityDashboardChangeSummary(
     }
     if (responsibilityDashboardSentence(was) !== responsibilityDashboardSentence(item)) reworded += 1;
     if (was.areaId !== item.areaId) moved += 1;
+    // Only versions that both hold these can be compared; an older version holds none.
+    if (was.links && item.links) {
+      // Skills compare only when both versions hold them.
+      const skills = was.links.skillIds !== undefined && item.links.skillIds !== undefined;
+      const before = new Set(snapshotLinkKeys(skills ? was.links : { ...was.links, skillIds: undefined }));
+      const after = new Set(snapshotLinkKeys(skills ? item.links : { ...item.links, skillIds: undefined }));
+      for (const key of after) if (!before.has(key)) filed += 1;
+      for (const key of before) if (!after.has(key)) unfiled += 1;
+    }
+    // Details compare only when both versions hold them.
+    const detailChanged = (["description", "runByAgentId", "evidence", "healthOverride", "healthNote"] as const)
+      .some((key) => was[key] !== undefined && item[key] !== undefined && was[key] !== item[key]);
+    if (detailChanged) detailed += 1;
   }
   for (const itemId of beforeItems.keys()) if (!afterItems.has(itemId)) letGo += 1;
   const verbs: string[] = [];
@@ -577,10 +647,14 @@ export function responsibilityDashboardChangeSummary(
   ].filter((part): part is string => part !== null);
   if (addedParts.length > 0) verbs.push(`added ${joinWords(addedParts)}`);
   if (renamedAreas > 0) verbs.push(`renamed ${count(renamedAreas, "area", "areas")}`);
+  if (describedAreas > 0) verbs.push(`changed the description of ${count(describedAreas, "area", "areas")}`);
   if (reworded > 0) verbs.push(`reworded ${count(reworded, "responsibility", "responsibilities")}`);
   if (moved > 0) verbs.push(`moved ${count(moved, "responsibility", "responsibilities")}`);
   if (removedAreas > 0) verbs.push(`removed ${count(removedAreas, "area", "areas")}`);
   if (letGo > 0) verbs.push(`let go of ${count(letGo, "responsibility", "responsibilities")}`);
+  if (filed > 0) verbs.push(`filed ${count(filed, "item", "items")}`);
+  if (unfiled > 0) verbs.push(`unfiled ${count(unfiled, "item", "items")}`);
+  if (detailed > 0) verbs.push(`changed the details of ${count(detailed, "responsibility", "responsibilities")}`);
   if (verbs.length === 0) return "No changes";
   const line = joinWords(verbs);
   return line.charAt(0).toUpperCase() + line.slice(1);

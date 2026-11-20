@@ -1,8 +1,9 @@
 import { setImmediate as immediate } from "node:timers/promises";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { expect, it, vi } from "vitest";
-import { activityLog, agents, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, agents, heartbeatRuns, issues, issueThreadInteractions } from "@paperclipai/db";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
+import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION } from "../services/recovery/assigned-work-sweep.js";
 import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.test-fixture.js";
 
@@ -53,6 +54,30 @@ describeIssueRecovery("assigned-work re-checks of tasks whose continuation is re
     const report = await state.heartbeat.reportAssignedWorkInvariant(f.companyId);
     expect(report.violations).toEqual({ retry_offered: TASKS });
   }
+
+  it("stays quiet behind unanswered questions and wakes on their resolution event", async () => {
+    const f = await seed();
+    await state.db.update(heartbeatRuns).set({ contextSnapshot:
+      sql`${heartbeatRuns.contextSnapshot} || '{"explicitUserContinuation":{"previousRunId":"11111111-1111-4111-8111-111111111111"}}'::jsonb` })
+      .where(eq(heartbeatRuns.companyId, f.companyId));
+    for (const task of f.tasks) await state.db.insert(issueThreadInteractions).values({ companyId: f.companyId,
+      issueId: task.id, kind: "ask_user_questions", status: "pending", continuationPolicy: "wake_assignee",
+      payload: { version: 1, supersedeOnUserComment: false, questions: [{ id: "scope", prompt: "Choose the scope",
+        selectionMode: "single", required: true, options: [{ id: "small", label: "Small" }, { id: "full", label: "Full" }] }] },
+      createdAt: new Date(Date.now() - HOUR) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    await state.start({});
+    await advance(20 * MINUTE);
+    expect(await attempts(f.companyId)).toBe(0);
+    await state.db.transaction(async tx => {
+      await tx.update(issueThreadInteractions).set({ status: "answered", updatedAt: new Date() })
+        .where(eq(issueThreadInteractions.issueId, f.tasks[0]!.id));
+      await notifyChatRunMilestones(tx, { companyId: f.companyId, issueId: f.tasks[0]!.id });
+    });
+    await advance(2 * MINUTE);
+    expect(await attempts(f.companyId, f.tasks[0]!.id)).toBeGreaterThan(0);
+    expect(await attempts(f.companyId)).toBe(await attempts(f.companyId, f.tasks[0]!.id));
+  }, 600_000);
 
   it("backs off while every check finds the same refused state", async () => {
     const f = await seed();

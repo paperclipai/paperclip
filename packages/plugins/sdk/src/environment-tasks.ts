@@ -56,10 +56,29 @@ export const environmentTaskConfiguredEnvironmentSchema = z.record(
 });
 export type PluginEnvironmentTaskConfiguredEnvironment = z.infer<typeof environmentTaskConfiguredEnvironmentSchema>;
 
+export const ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS = {
+  grok: [["XAI_API_KEY"]],
+  copilot: [["COPILOT_GITHUB_TOKEN"]],
+  opencode: [["OPENROUTER_API_KEY"], ["PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_AI_PROVIDER_KEY"]],
+} as const satisfies Record<string, readonly (readonly string[])[]>;
+export type PluginEnvironmentTaskCredentialProvider = keyof typeof ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS;
+const providerCredential = z.object({
+  type: z.literal("provider-env"),
+  provider: z.enum(["grok", "copilot", "opencode"]),
+  environment: z.record(z.string(), credentialValue),
+}).strict().superRefine((credential, ctx) => {
+  const names = Object.keys(credential.environment).sort();
+  const sets: readonly (readonly string[])[] = ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS[credential.provider];
+  if (!sets.some(set => set.length === names.length && [...set].sort().every((name, index) => name === names[index]))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one complete credential for the provider", path: ["environment"] });
+  }
+});
+
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("codex-auth-json"), authJson: credentialValue }).strict(),
   z.object({ type: z.literal("claude-env"), environment: claudeCredentialEnvironment }).strict(),
+  providerCredential,
 ]);
 export type PluginEnvironmentTaskCredential = z.infer<typeof environmentTaskCredentialSchema>;
 
@@ -74,6 +93,8 @@ export const environmentRunnerLaunchRequirementsSchema = z.object({
     acpxPermissionMode: z.enum(["approve-all", "approve-paperclip", "approve-reads", "deny-all"]).optional(),
     acpxPermissionModePinned: z.boolean().optional(), piThinkingLevel: z.enum(["off", "low", "high", "max"]).optional(),
     claudeEffort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    grokEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+    grokDisableWebSearch: z.boolean().optional(),
     opencodePermissionMode: z.enum(["allow", "ask", "deny"]).optional(),
     disableCodexWebSearch: z.literal(true).optional(),
     disableCodexProjectInstructions: z.literal(true).optional(),
