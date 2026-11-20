@@ -11,7 +11,6 @@
 export const RUN_FAILURE_CAUSE_MAX_LENGTH = 80;
 export const RUN_FAILURE_CAUSE_PATTERN = /^[A-Za-z0-9_.:-]{1,80}$/;
 
-/** Prefer a confirmed infrastructure cause over a later process-recovery symptom. */
 export function runFailureMessage(run: { errorCode?: string | null; error?: string | null }): string | null {
   if (run.errorCode === "sandbox_disk_full") {
     return "The agent's computer ran out of disk space, so its runner stopped. "
