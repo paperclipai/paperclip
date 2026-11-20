@@ -184,6 +184,29 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       expect(result.sessionParams).toEqual({ sessionId: "s-new", reasoning: "high" });
     });
 
+    it("loads the fresh-session handoff only when it starts a new session", async () => {
+      const handoff = vi.fn(async () => "EARLIER TASK HISTORY");
+      returnSession("s-new");
+      const taskContext = { issueId: "issue-1", wakeReason: "manual", paperclipWake: null, paperclipTaskMarkdown: "Task brief" };
+      await execute({
+        ...withSession({ effort: "high" }, { sessionId: "s-old" }),
+        context: { ...taskContext },
+        getFreshSessionHandoff: handoff,
+      } as any);
+      expect(handoff).toHaveBeenCalledTimes(1);
+      expect(lastArgs()[lastArgs().indexOf("-q") + 1]).toContain("EARLIER TASK HISTORY");
+
+      handoff.mockClear();
+      returnSession("s-old");
+      await execute({
+        ...withSession({ effort: "high" }, { sessionId: "s-old", reasoning: "high" }),
+        context: { ...taskContext },
+        getFreshSessionHandoff: handoff,
+      } as any);
+      expect(handoff).not.toHaveBeenCalled();
+      expect(lastArgs()[lastArgs().indexOf("-q") + 1]).not.toContain("EARLIER TASK HISTORY");
+    });
+
     it("starts a new session when the saved launch level differs", async () => {
       returnSession("s-new");
       const result = await execute(withSession({ effort: "low" }, { sessionId: "s-old", reasoning: "high" }) as any);

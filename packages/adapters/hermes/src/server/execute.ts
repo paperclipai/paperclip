@@ -38,6 +38,7 @@ import {
   selectPaperclipPromptSections,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
+  hydrateFreshSessionHandoff,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -491,6 +492,9 @@ export async function execute(
     );
     sessionId = undefined;
   }
+  // The server loads the fresh-session handoff only when it has no saved
+  // session. Load it here when this run starts a new Hermes session anyway.
+  await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(sessionId) });
   const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
