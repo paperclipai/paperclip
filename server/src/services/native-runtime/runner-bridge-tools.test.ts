@@ -87,24 +87,23 @@ describe("Runner workspace bridge", () => {
     expect(await readFile(join(directory, "result.txt"), "utf8")).toBe("hello");
   });
 
-  it("tells agents that a comment on a running task waits for the assignee's next turn", () => {
-    // A chat lead routing a requirement change to busy work otherwise reads "without interrupting"
-    // as "never delivered" and reaches for the assignee's workspace or a duplicate task instead.
+  it("distinguishes asking for help from requesting execution on the target task", () => {
     const comment = runnerBridgeDefinitions({ workspace: false, skills: false, api: true, mode: "standard" }).find(tool => tool.name === "comment_on_task");
-    expect(comment?.description).toContain("existing task's assignee a new or changed requirement");
-    expect(comment?.description).toContain("rather than creating a duplicate task or editing that task's workspace files");
-    expect(comment?.description).toContain("delivers it at the start of the assignee's next turn on that task");
-    expect(comment?.description).toContain("For routine coordination, progress updates, questions, or help requests, omit resume");
-    expect(comment?.description).toContain("Set resume: true only when requesting follow-up execution");
+    expect(comment?.description).toContain("Omit resume when asking for help with your own task, even if the target task is blocked on yours");
+    expect(comment?.description).toContain("do more work on the target task even if it finishes before they read the comment");
+    expect(comment?.description).toContain("ask for an existing test result without resume; request a new test run with resume: true");
     expect(comment?.description).toContain("HTTP 409 without saving the comment");
-    expect(comment?.description).toContain("delivery still happens if the assignee completes the task first");
+    expect(comment?.description).toContain("Resume is not an interrupt");
+    expect(comment?.description).toContain("normally queued for the next turn");
+    expect(comment?.description).toContain("an active session goal can receive them in the current turn");
+    expect(comment?.description).toContain("rather than creating a duplicate task or editing the assignee's workspace files");
     expect(comment?.description).toContain("not as already applied");
-    const schema = comment?.inputSchema as { required: string[]; properties: Record<string, unknown> };
+    const schema = comment?.inputSchema as { required: string[]; properties: Record<string, { type: string; description?: string }> };
     expect(schema.required).not.toContain("resume");
-    expect(schema.properties.resume).toEqual({
-      type: "boolean",
-      description: expect.stringContaining("Omit for routine coordination, progress updates, questions, or help requests"),
-    });
+    expect(schema.properties.resume?.type).toBe("boolean");
+    expect(schema.properties.resume?.description).toContain("requests for help with your own task");
+    expect(schema.properties.resume?.description).toContain("even if it finishes before they read the comment");
+    expect(schema.properties.resume?.description).toContain("HTTP 409 without saving the comment");
   });
   it("forwards a comment's explicit resume intent to the comment API and omits it otherwise", () => {
     const taskId = "8ba8b5a2-066a-4bb2-b591-e396942ecdf5";
