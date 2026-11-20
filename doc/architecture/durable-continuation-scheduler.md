@@ -100,13 +100,14 @@ another turn. Its invariant is: an assigned open issue should have either a
 live execution path, a durable reason to wait, or a visible terminal/blocking
 disposition.
 
-Pending interactions remain a reason to wait until the interaction service
-persists an answer, cancellation, or permitted supersession. A newer Retry or
-message does not implicitly resolve an unanswered question. Assigned-work
-reconciliation leaves these tasks quiet; the existing interaction-resolution
-notification makes them eligible for another check. The task and inbox show
-the question as the current blocker, while older provider failures remain in
-run history.
+Active pending interactions remain a reason to wait under the shared
+interaction eligibility rules. A newer Retry alone does not answer a question.
+Dismissed or historical ordinary questions remain answerable conversation
+data, without blocking current work; governed requests retain their gates.
+Assigned-work reconciliation leaves active question waits quiet, and the
+existing interaction-resolution notification makes them eligible for another
+check. The task and inbox show an active question as the current blocker,
+while older provider failures remain in run history.
 
 A provider-limit hold before provider work is scheduling, so it does not send
 a cancellation toast for every held task. Its durable retry rechecks provider

@@ -336,6 +336,26 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(queue.calls).toHaveLength(1);
   }, 60_000);
 
+  it("continues past a dismissed ordinary question while retaining a governed question's gate", async () => {
+    const f = await seedCompany();
+    const ordinary = await f.issue(), governed = await f.issue();
+    for (const issueId of [ordinary, governed]) {
+      await f.run(issueId);
+      await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId, kind: "ask_user_questions",
+        status: "pending", dismissedAt: new Date(), payload: { version: 1, questions: [],
+          ...(issueId === governed ? { toolAction: {} } : {}) } } as never);
+    }
+    const queue = wakeQueue();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup });
+    const suspects = (await sweep.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id);
+    expect(suspects).toContain(ordinary);
+    expect(suspects).not.toContain(governed);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: ordinary })).toMatchObject({ outcome: "repaired" });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: governed }))
+      .toMatchObject({ outcome: "ok", verdict: { clause: "waiting", reason: "question" } });
+    expect(queue.calls.map(call => call.issueId)).toEqual([ordinary]);
+  }, 60_000);
+
   it("two servers sweeping the same violation at once create one wake", async () => {
     const f = await seedCompany();
     const issueId = await f.issue();

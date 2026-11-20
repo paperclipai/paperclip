@@ -15,6 +15,7 @@ import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { authorizationService } from "./authorization.js";
+import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { taskWorkspaceProjectRequirements } from "./task-workspace-access.js";
 import { isAcknowledgedNativeStop } from "./acknowledged-native-stop.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
@@ -598,7 +599,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)) : [],
     db.selectDistinct({ issueId: issueThreadInteractions.issueId }).from(issueThreadInteractions)
       .where(and(eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, ids),
-        eq(issueThreadInteractions.kind, "ask_user_questions"), eq(issueThreadInteractions.status, "pending"))),
+        eq(issueThreadInteractions.kind, "ask_user_questions"), eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition())),
   ]);
   // Advertise a pending resume only when the scheduler would admit it, using
   // its own check, so the task never hides Retry behind a deferred candidate

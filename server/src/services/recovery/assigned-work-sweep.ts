@@ -28,6 +28,7 @@ import { legacyControllerOwnerStamp } from "../legacy-controller-lease.js";
 import { currentProcessProbe, proveOwnerGone, type OwnerProof, type LocalOwnerStamp } from "../owner-proof.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { taskInterruptionPresentations } from "../task-interruption-presentation.js";
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { workspaceRecoverySourceEligible } from "../workspace-recovery-source.js";
@@ -261,7 +262,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)),
       database.select({ issueId: issueThreadInteractions.issueId, count: sql<number>`count(*)::int` }).from(issueThreadInteractions)
         .where(and(eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, ids),
-          eq(issueThreadInteractions.status, "pending")))
+          eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition()))
         .groupBy(issueThreadInteractions.issueId),
       database.select({ issueId: issueApprovals.issueId, count: sql<number>`count(*)::int` }).from(issueApprovals)
         .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
@@ -546,8 +547,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
             or coalesce(w.claimed_at, w.created_at) > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)))
         and not exists (select 1 from heartbeat_runs wake_run where wake_run.id = w.run_id
           and ${queuedRunStalledSql(aliasedRun("wake_run"), at)})))`,
-      sql`not exists (select 1 from issue_thread_interactions t where t.company_id = ${issues.companyId}
-        and t.issue_id = ${issues.id} and t.status = 'pending')`,
+      sql`not exists (select 1 from ${issueThreadInteractions} where ${issueThreadInteractions.companyId} = ${issues.companyId}
+        and ${issueThreadInteractions.issueId} = ${issues.id} and ${issueThreadInteractions.status} = 'pending'
+        and ${activeIssueInteractionCondition()})`,
       // Plain waits on someone else, decided without the full read. The
       // predicate re-checks every task this lets through.
       sql`not exists (select 1 from issue_relations rel inner join issues blocker

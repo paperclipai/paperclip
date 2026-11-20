@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, environmentLeases, heartbeatRuns, issueRecoveryActions,
-  issueRelations, issues, issueThreadInteractions,
+  issueComments, issueRelations, issues, issueThreadInteractions,
   toolApplications, toolConnections,
   nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -52,6 +52,15 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect(presentations.get(tasks[0].id)).toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
     expect(presentations.get(tasks[0].id)?.providerFailure).toBeUndefined();
     expect(presentations.get(tasks[1].id)).toMatchObject({ state: "failed", providerFailure: { httpStatus: 429 } });
+    await db.update(issueThreadInteractions).set({ dismissedAt: new Date() }).where(eq(issueThreadInteractions.id, question.id));
+    expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "failed", canRetry: true });
+    await db.update(issueThreadInteractions).set({ dismissedAt: null }).where(eq(issueThreadInteractions.id, question.id));
+    await db.insert(issueComments).values({ companyId, issueId: tasks[0].id, authorUserId: "board-user", authorType: "user",
+      body: "Continue with the current scope", createdAt: new Date(question.createdAt.getTime() + 1) });
+    expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "failed", canRetry: true });
+    await db.update(issueThreadInteractions).set({ dismissedAt: new Date(), payload: sql`${issueThreadInteractions.payload} || '{"toolAction":{}}'::jsonb` })
+      .where(eq(issueThreadInteractions.id, question.id));
+    expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
     await db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.id, question.id));
     expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "failed", providerFailure: { httpStatus: 429 } });
     const [historical] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, tasks[0].id));
