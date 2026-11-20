@@ -44,6 +44,9 @@ import {
 import { useTaskArchiveAction } from "../hooks/useTaskArchiveAction";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 import { usePageContentReady } from "../hooks/usePageContentReady";
+import { useTaskListSidePanel } from "../hooks/useTaskListSidePanel";
+import { TaskListSplit } from "../components/TaskListSidePanel";
+import { findIssueByRef } from "../lib/task-list-side-panel";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -227,6 +230,11 @@ function OrganizationIssues({
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
+  const keepSyncedSearch = useCallback((next: URLSearchParams) => {
+    if (syncedSearch) next.set("q", syncedSearch);
+    else next.delete("q");
+  }, [syncedSearch]);
+  const sidePanel = useTaskListSidePanel(keepSyncedSearch);
   const handleSearchChange = useCallback((search: string) => {
     const nextUrl = buildIssuesSearchUrl(window.location.href, search);
     if (!nextUrl) {
@@ -329,6 +337,7 @@ function OrganizationIssues({
   usePageContentReady(!selectedCompanyId || (issuesView.kind !== "loading" && issuesView.kind !== "reconnecting"));
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const openIssueId = useMemo(() => findIssueByRef(issues, sidePanel.taskRef)?.id ?? null, [issues, sidePanel.taskRef]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
     && hasNextPage === true;
   const loadMoreServerIssues = useCallback(() => {
@@ -359,7 +368,7 @@ function OrganizationIssues({
 
   if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action="load tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
-  return (
+  const issuesList = (
     <IssuesList
       key={archiveView === "archived" ? "archived" : undefined}
       issues={issues ?? []}
@@ -392,6 +401,10 @@ function OrganizationIssues({
         participantAgentId, workspaceId: workspaceIdFilter, originKind, inboxArchive,
         ...(includeBlockedBy ? { includeBlockedBy: true } : {}),
       } : undefined}
+      onOpenIssue={sidePanel.enabled ? sidePanel.openIssue : undefined}
+      openIssueId={openIssueId}
     />
   );
+  if (!sidePanel.enabled) return issuesList;
+  return <TaskListSplit taskRef={sidePanel.taskRef} onClose={sidePanel.close} presentation={sidePanel.presentation}>{issuesList}</TaskListSplit>;
 }

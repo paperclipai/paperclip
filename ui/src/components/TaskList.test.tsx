@@ -7,8 +7,8 @@ import { TaskList, type TaskListItem } from "./TaskList";
 import { TooltipProvider } from "./ui/tooltip";
 import { readTaskListSortParams } from "../lib/task-list";
 
-vi.mock("./IssueRow", () => ({ IssueRow: ({ issue, leadingControl }: { issue: { id: string; title: string }; leadingControl?: ReactNode }) =>
-  <div data-issue-row-details={issue.id}>{leadingControl}<button>{issue.title}</button></div> }));
+vi.mock("./IssueRow", () => ({ IssueRow: ({ issue, leadingControl, selected, onOpenIssue }: { issue: { id: string; title: string }; leadingControl?: ReactNode; selected?: boolean; onOpenIssue?: () => void }) =>
+  <div data-issue-row-details={issue.id} data-selected={selected ? "true" : undefined}>{leadingControl}<button onClick={onOpenIssue}>{issue.title}</button></div> }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const tasks = (count: number, parentId: string | null = null): TaskListItem[] => Array.from({ length: count }, (_, i) => ({
@@ -143,5 +143,20 @@ describe("TaskList progressive rendering", () => {
     expect(rows()).toHaveLength(250);
     await render(tasks(300).map(item => ({ issue: { ...item.issue, id: `other-${item.issue.id}` } })), "different-filter");
     expect(rows()).toHaveLength(100);
+  });
+  it("opens a row in the side panel and keeps the open task's row selected", async () => {
+    const items = tasks(2);
+    const onOpenIssue = vi.fn();
+    await act(async () => root.render(<TooltipProvider><TaskList items={items} onOpenIssue={onOpenIssue} openIssueId="task-1" /></TooltipProvider>));
+    expect([...rows()].map(row => row.getAttribute("data-selected"))).toEqual([null, "true"]);
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-issue-row-details="task-0"] button')!.click());
+    expect(onOpenIssue).toHaveBeenCalledWith(items[0].issue);
+  });
+  it("keeps the first-paint budget with the side panel open on a large list", async () => {
+    const items = tasks(300);
+    await act(async () => root.render(<TooltipProvider><TaskList items={items} onOpenIssue={vi.fn()} openIssueId="task-42" /></TooltipProvider>));
+    expect(rows()).toHaveLength(100);
+    expect(host.querySelectorAll('[data-selected="true"]')).toHaveLength(1);
+    expect(host.querySelector('[data-issue-row-details="task-42"]')?.getAttribute("data-selected")).toBe("true");
   });
 });

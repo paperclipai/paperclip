@@ -654,6 +654,18 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle summaries experimental setting"
         />
 
+        <ExperimentalToggleCard
+          title="Task List Side Panel"
+          description="Open a task from the Tasks list in a side panel beside the list. The list keeps its scroll position and filters. Cmd/Ctrl-click still opens the full task page."
+          footnote="Desktop only. Mobile keeps the full task page."
+          checked={experimentalQuery.data?.enableTaskListSidePanel ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableTaskListSidePanel: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableTaskListSidePanel"
+          managed={managedKeys.enableTaskListSidePanel}
+          ariaLabel="Toggle task list side panel experimental setting"
+        />
+
         {enableIsolatedWorkspaces && (
           <ExperimentalToggleCard
             title="Use Isolated Workspaces By Default"

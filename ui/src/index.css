@@ -501,6 +501,8 @@
   --side-panel-tab-radius: var(--radius-xl);
   --side-panel-control-radius: var(--radius-xl);
   --side-panel-launcher-width: var(--sz-320px);
+  /* Task opened beside the Tasks list: wide enough for the thread, the list keeps the rest. */
+  --task-list-side-panel-width: clamp(var(--sz-320px), 45%, 48rem);
   --side-panel-bg: var(--background);
   --side-panel-fg: var(--foreground);
   --streamlined-task-detail-bg: var(--background);

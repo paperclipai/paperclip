@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, ReactNode, Ref } from "react";
 import { Maximize2, Minimize2, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -21,6 +21,9 @@ export interface SidePanelFrameProps {
   className?: string;
   bodyClassName?: string;
   style?: CSSProperties;
+  /** Lets a sheet act as a focus target, so an overlay can take focus like a modal surface. */
+  ref?: Ref<HTMLElement>;
+  tabIndex?: number;
 }
 
 export function SidePanelFrame({
@@ -38,10 +41,14 @@ export function SidePanelFrame({
   className,
   bodyClassName,
   style,
+  ref,
+  tabIndex,
 }: SidePanelFrameProps) {
   const handleScroll = useScrollbarWhileScrolling();
   return (
     <section
+      ref={ref}
+      tabIndex={tabIndex}
       aria-label={label}
       aria-hidden={!open}
       data-presentation={presentation}

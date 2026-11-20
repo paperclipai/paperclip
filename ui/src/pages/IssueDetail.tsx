@@ -425,6 +425,7 @@ import {
 import { AgentQueueWaitChip } from "@/components/AgentQueueWait";
 import { agentQueueWaitOf, isWaitingToStart } from "@/lib/agent-queue-wait";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { taskChatShellLayoutClass } from "@/lib/task-list-side-panel";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
@@ -3256,12 +3257,16 @@ function IssueDetailActivityTab({
 export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasksTab"] }) { return <TaskDetailSurface tasksTab={tasksTab} />; }
 
 /** One controller and surface for both task URLs and agent conversations. */
-export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskSidePanelProps["tasksTab"]; conversation?: {
+export function TaskDetailSurface({ conversation, tasksTab, embeddedIssueRef }: { tasksTab?: TaskSidePanelProps["tasksTab"]; conversation?: {
   agent: Agent; issue: Issue | null; ensureIssue: () => Promise<Issue>;
   onReady?: () => void;
-} }) {
+};
+  /** Renders a task beside another page (the Tasks list side panel) instead of from the task route. */
+  embeddedIssueRef?: string;
+}) {
   const { issueId: routeIssueId, companyPrefix } = useParams<{ issueId: string; companyPrefix: string }>();
-  const issueId = conversation ? conversation.issue?.id : routeIssueId;
+  const embedded = embeddedIssueRef !== undefined;
+  const issueId = conversation ? conversation.issue?.id : embeddedIssueRef ?? routeIssueId;
   const isAgentChatRoute = Boolean(conversation);
   const persistedAgentChat = Boolean(conversation?.issue);
   const [loadingTitleIssueId, setLoadingTitleIssueId] = useState<string | null>(null);
@@ -3489,12 +3494,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const loadedIssueCompany = loadedIssue
     ? companies.find((company) => company.id === loadedIssue.companyId)
     : undefined;
-  const taskRouteReady = Boolean(conversation || (
+  const taskRouteReady = Boolean(conversation || (embedded ? loadedIssue : (
     loadedIssue &&
     issueId === (loadedIssue.identifier ?? loadedIssue.id) &&
     (!loadedIssueCompany || companyPrefix === loadedIssueCompany.issuePrefix) &&
     !hasLegacyIssueDetailQuery(location.search)
-  ));
+  )));
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const hasLiveConnection = useTaskRunLiveUpdates({ companyId: resolvedCompanyId, issueId: issue?.id ?? issueId, issueQueryRef: issueId ?? "pending", assigneeAgentId: issue?.assigneeAgentId });
   const externalObjectsState = useIssueExternalObjects(conversation && !conversation.issue ? null : issue?.id ?? null);
@@ -6223,7 +6228,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // Resolve external UUID links and wrong-prefix task links from the loaded
   // task's company, not the organization that happened to be selected first.
   useEffect(() => {
-    if (conversation || !loadedIssue) return;
+    if (conversation || embedded || !loadedIssue) return;
     const nextState = resolvedIssueDetailState ?? location.state;
     const taskCompany = loadedIssueCompany;
     const canonicalRef = loadedIssue.identifier ?? loadedIssue.id;
@@ -6256,6 +6261,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     loadedIssue,
     loadedIssueCompany,
     companyPrefix,
+    embedded,
     issueId,
     navigate,
     location.state,
@@ -6507,7 +6513,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const canQuickArchiveFromInbox = !issue?.hiddenAt;
 
   useEffect(() => {
-    if (!issue?.id || !canQuickArchiveFromInbox) return;
+    if (embedded || !issue?.id || !canQuickArchiveFromInbox) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       const action = resolveInboxQuickArchiveKeyAction({
         armed: canQuickArchiveFromInbox,
@@ -6532,9 +6538,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     return () => {
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [archiveFromInbox, canQuickArchiveFromInbox, issue?.id]);
+  }, [archiveFromInbox, canQuickArchiveFromInbox, embedded, issue?.id]);
 
   useEffect(() => {
+    if (embedded) return;
     const clearArmTimeout = () => {
       if (goToInboxShortcutTimeoutRef.current !== null) {
         window.clearTimeout(goToInboxShortcutTimeoutRef.current);
@@ -6622,6 +6629,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [
+    embedded,
     fileViewerEnabled,
     navigate,
     sourceBreadcrumb.href,
@@ -8621,13 +8629,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               value="chat"
               className={
                 taskChatShellEnabled
-                  ? isMobile
-                    ? streamlinedTaskDetailEnabled
-                      ? "flex min-h-0 flex-1 flex-col"
-                      : "-mx-4 flex min-h-0 flex-1 flex-col"
-                    : streamlinedTaskDetailEnabled
-                      ? "flex min-h-0 flex-col"
-                      : "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col"
+                  ? taskChatShellLayoutClass({ isMobile, streamlined: streamlinedTaskDetailEnabled, embedded })
                   : undefined
               }
             >

@@ -69,7 +69,7 @@ function TaskChatPreload({ companyId, refs }: { companyId: string; refs: readonl
 }
 
 /** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
-export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId, getArchiveAction }: {
+export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId, getArchiveAction, onOpenIssue, openIssueId = null }: {
   items: readonly TaskListItem[];
   allItems?: readonly TaskListItem[];
   initialColumns?: readonly TaskListColumnId[];
@@ -87,6 +87,10 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   /** Preload the chat of the top rows for this company. Only a page's main task list sets this. */
   preloadCompanyId?: string | null;
   getArchiveAction?: (issue: Issue) => IssueRowArchiveAction | undefined;
+  /** Rows open the task here on a plain click instead of navigating to the task page. */
+  onOpenIssue?: (issue: Issue) => void;
+  /** The task shown beside the list; its row stays highlighted. */
+  openIssueId?: string | null;
 }) {
   const localKey = useId();
   const { columns, order: columnOrder, setColumns, setOrder: setColumnOrder } = useTaskListColumnPreferences(preferenceLocation, initialColumns);
@@ -134,6 +138,8 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
           issue={issue} presentation="task" appearance="refreshed" density={density} issueLinkState={issueLinkState}
           archiveAction={getArchiveAction?.(issue)}
           unreadState={item.unread ? "visible" : "hidden"}
+          selected={openIssueId === issue.id}
+          onOpenIssue={onOpenIssue ? () => onOpenIssue(issue) : undefined}
           treeGuides={depth} chevronInGuide={depth > 0 && children.length > 0}
           leadingControl={children.length ? (
             <Button variant="ghost" size="icon-xs" className="task-row-disclosure" aria-label={`${expanded ? "Collapse" : "Expand"} ${issue.title}`} aria-expanded={expanded} onClick={() => {

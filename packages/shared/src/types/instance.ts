@@ -115,6 +115,8 @@ export interface InstanceExperimentalSettings {
   /** Show company connection settings and allow contextual fast-response acknowledgements. */
   enableFastResponses: boolean;
   enableGoalsSidebarLink: boolean;
+  /** Open a task from the Tasks list in a side panel beside the list (desktop only). */
+  enableTaskListSidePanel: boolean;
   enableServerInfoDebugView: boolean;
   /** Shows internal Paperclip maintainer tools and observability links. */
   enablePaperclipDeveloperMode: boolean;

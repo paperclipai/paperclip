@@ -5,6 +5,7 @@ import {
   findPageSearchShortcutTarget,
   focusPageSearchShortcutTarget,
   hasBlockingShortcutDialog,
+  isInertShortcutScope,
   isKeyboardShortcutTextInputTarget,
   resolveAttentionQueueKeyAction,
   resolveIssueDetailGoKeyAction,
@@ -76,6 +77,17 @@ describe("keyboardShortcuts helpers", () => {
     root.innerHTML = `<section aria-modal="true"></section>`;
 
     expect(hasBlockingShortcutDialog(root)).toBe(false);
+  });
+
+  it("reports a shortcut scope under an inert region, such as a list under an overlay panel", () => {
+    const covered = document.createElement("div");
+    covered.setAttribute("inert", "");
+    covered.innerHTML = `<div data-list></div>`;
+    const live = document.createElement("div");
+
+    expect(isInertShortcutScope(covered.querySelector("[data-list]"))).toBe(true);
+    expect(isInertShortcutScope(live)).toBe(false);
+    expect(isInertShortcutScope(null)).toBe(false);
   });
 
   it("finds the visible page search shortcut target", () => {

@@ -345,6 +345,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableTaskListSidePanel: {
+    title: "Task List Side Panel",
+    description: "Open a task from the Tasks list in a side panel beside the list. Cmd/Ctrl-click still opens the full page.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSimplifiedEnglishInteractions: {
     title: "Simplified English Interactions",
     description:

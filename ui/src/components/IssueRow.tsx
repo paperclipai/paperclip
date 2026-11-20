@@ -1,5 +1,5 @@
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Archive, ArchiveRestore, Flag, CircleAlert } from "lucide-react";
@@ -27,6 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { TaskRowColumnCells, useTaskListColumns, type TaskRowColumnValues } from "./TaskListColumns";
 import { CellMarquee, HoveredCellContext, useCellMarqueeHover } from "./CellMarquee";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { shouldOpenTaskInSidePanel } from "@/lib/task-list-side-panel";
 
 export type IssueRowUnreadState = "hidden" | "visible" | "fading";
 export type IssueRowPresentation = "legacy" | "task";
@@ -94,6 +95,8 @@ export interface IssueRowProps {
   chevronInGuide?: boolean;
   /** Legacy-only opt in to a bottom divider; canonical task rows stay divider-free. */
   showDivider?: boolean;
+  /** Plain clicks call this instead of navigating; modified and middle clicks still follow the link. */
+  onOpenIssue?: () => void;
 }
 
 export type IssueRowArchiveAction = {
@@ -186,6 +189,7 @@ export function IssueRow({
   treeGuides = 0,
   chevronInGuide = false,
   showDivider = false,
+  onOpenIssue,
 }: IssueRowProps) {
   const visibleColumns = useTaskListColumns();
   const { hoveredCell, onMouseMove: handleCellHover, clearHoveredCell } = useCellMarqueeHover();
@@ -229,6 +233,13 @@ export function IssueRow({
   );
   const selectedStatusClass = selected ? "!text-muted-foreground !border-muted-foreground" : undefined;
   const detailState = withIssueDetailHeaderSeed(issueLinkState, issue);
+  const handleLinkClick = onOpenIssue
+    ? (event: MouseEvent<HTMLAnchorElement>) => {
+      if (!shouldOpenTaskInSidePanel(event)) return;
+      event.preventDefault();
+      onOpenIssue();
+    }
+    : undefined;
   const hasChecklistStep = checklistStepNumber !== null;
   const checklistStep = hasChecklistStep ? (
     <span className="shrink-0 font-mono text-xs text-muted-foreground" aria-hidden="true">
@@ -276,6 +287,7 @@ export function IssueRow({
             disableIssueQuicklook
             issuePrefetch={issue}
             onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+            onClick={handleLinkClick}
             aria-label={`Open task ${identifier} (${statusLabel})`}
             className="task-row-status-link"
             data-slot="task-row-status"
@@ -296,6 +308,7 @@ export function IssueRow({
         id={checklistRowId}
         aria-current={checklistCurrentStep ? "step" : undefined}
         onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+        onClick={handleLinkClick}
         onFocus={appearance === "refreshed" ? () => setTitleFocused(true) : undefined}
         onBlur={appearance === "refreshed" ? () => setTitleFocused(false) : undefined}
         onKeyDown={appearance === "refreshed" ? (event) => {
@@ -512,6 +525,7 @@ export function IssueRow({
         id={checklistRowId}
         aria-current={checklistCurrentStep ? "step" : undefined}
         onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+        onClick={handleLinkClick}
         className={cn(
           // Overlay Link keeps ONLY positioning + focus ring so header controls
           // stay clickable above it; visual washes belong on the root above.

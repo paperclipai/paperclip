@@ -152,6 +152,7 @@ describe("instance settings service", () => {
       enableBuiltInAgents: true,
       enableBetaSkills: false,
       enableSummaries: false,
+      enableTaskListSidePanel: false,
       enableStatusCards: false,
       enableResponsibilities: false,
       enableDecisions: false,
@@ -264,6 +265,12 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableGoalsSidebarLink,
     ).toBe(false);
+  });
+
+  it("defaults enableTaskListSidePanel to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableTaskListSidePanel).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableTaskListSidePanel).toBe(false);
+    expect(normalizeExperimentalSettings({ enableTaskListSidePanel: true }).enableTaskListSidePanel).toBe(true);
   });
 
   it("defaults enableDecisions to false for empty and legacy stored settings", () => {
