@@ -1310,6 +1310,67 @@ describeEmbeddedPostgres("tool access policy service", () => {
     })).toMatchObject({ allowed: true, decision: "allow" });
   });
 
+  it("does not deny listings on an argument-filtered trust rule that a later allow can reach", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const profile = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `profile-${randomUUID()}`,
+      name: "Write tools",
+      defaultAction: "deny",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "send_email",
+    });
+    const [trustRule] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Filtered trust",
+      policyType: "trust_rule",
+      enabled: true,
+      priority: 10,
+      selectors: { toolName: "send_email" },
+      config: { trustRule: { hitCount: 0, argumentFilters: { fieldEquals: { to: "ops@example.com" } } } },
+    }).returning();
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow sends",
+      policyType: "allow",
+      enabled: true,
+      priority: 20,
+      selectors: { toolName: "send_email" },
+    });
+    const [block] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Block sends",
+      policyType: "block",
+      enabled: true,
+      priority: 30,
+      selectors: { toolName: "send_email" },
+    }).returning();
+    const svc = toolAccessPolicyService(db);
+    const input = sendEmailDecisionInput(company, agent, connection, catalogEntry);
+
+    expect(await svc.decide({
+      ...input,
+      request: { ...input.request, arguments: {}, argumentsUnknown: true },
+    })).toMatchObject({ allowed: true, decision: "allow" });
+
+    expect(await svc.decide({
+      ...input,
+      request: { ...input.request, arguments: { to: "other@example.com" } },
+    })).toMatchObject({ decision: "allow", reasonCode: "allow_policy" });
+    expect(await svc.decide({
+      ...input,
+      request: { ...input.request, arguments: { to: "ops@example.com" } },
+    })).toMatchObject({ decision: "deny", reasonCode: "deny_policy_block", matchedPolicyIds: [block.id] });
+  });
+
   it("does not retain rate admission for a mismatched or no-longer-authorized invocation", async () => {
     const { input, invocation, svc } = await admittedRateLimitedInvocation();
     const options = { admittedInvocationId: invocation.id };

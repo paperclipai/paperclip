@@ -1723,7 +1723,9 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         if (!ctx.argumentsUnknown && !argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
         // Remembered permissions cannot override an explicit block. Preserve
         // priority semantics for ordinary allow/require-approval policies.
-        if (explicitBlock) return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
+        const argumentMatchUnknown = ctx.argumentsUnknown === true
+          && !!rule.argumentFilters && rule.argumentFilters.allowAny !== true;
+        if (explicitBlock && !argumentMatchUnknown) return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
 
         if (trustRuleNeedsReview(policy, ctx)) {
           return decision(
