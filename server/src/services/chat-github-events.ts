@@ -105,9 +105,11 @@ function stripGitHubCommentCodeSpans(body: string): string {
       blankContext = true;
       continue;
     }
-    // A non-empty line less indented than the list's content column leaves the
-    // list; re-evaluate it at top level, where it may be indented code.
-    if (listIndent !== null && indent < listIndent) listIndent = null;
+    // A non-empty line after a break that is less indented than the list's
+    // content column leaves the list; re-evaluate it at top level, where it
+    // may be indented code. A paragraph continuation line can be lazily
+    // indented and keeps the list open.
+    if (blankContext && listIndent !== null && indent < listIndent) listIndent = null;
     const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
     if (indented && blankContext && indent >= (listIndent ?? 0) + 4) {
       indentedCode = true;
@@ -117,6 +119,7 @@ function stripGitHubCommentCodeSpans(body: string): string {
       fenceChar = run[1][0];
       fenceLen = run[1].length;
       fenceListIndent = listIndent !== null && indent >= listIndent ? listIndent : null;
+      if (listIndent !== null && indent < listIndent) listIndent = null;
       continue;
     }
     kept.push(line);
