@@ -6,6 +6,7 @@ import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
 import { TaskChatTaskCreatedCard } from "./TaskChatTaskCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
+import type { IssueChatThreadOrder } from "@/lib/issue-chat-messages";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import type {
@@ -77,6 +78,19 @@ interface TaskChatThreadViewProps {
   retryFailedRunId?: string | null;
   /** Content appended inside the transcript scroller after the settled thread. */
   tail?: ReactNode;
+  /**
+   * Display order for the thread. `newest_first` renders the settled items
+   * in reverse (each turn's internal order stays chronological) and moves
+   * the live `tail` above them so the newest activity sits at the top.
+   */
+  threadOrder?: IssueChatThreadOrder;
+  /**
+   * Content rendered inside the transcript scroller after the settled
+   * thread's chronological end: the load-earlier control's slot when the
+   * thread is newest-first. With `newest_first`, `tail` moves above the
+   * items and `footer` stays at the bottom of the list.
+   */
+  footer?: ReactNode;
   /** Optional streaming-aware key when `tail` changes without changing `items`. */
   contentKey?: unknown;
   className?: string;
@@ -330,6 +344,8 @@ export function TaskChatThreadView({
   onRetryFailedRun,
   retryFailedRunId = null,
   tail,
+  threadOrder = "oldest_first",
+  footer,
   contentKey,
   className,
   scroll = true,
@@ -351,6 +367,13 @@ export function TaskChatThreadView({
             },
           )?.id
       : undefined;
+  const newestFirst = threadOrder === "newest_first";
+  // Adjacent-error compaction and image grouping run on the chronological
+  // list; only the finished rows are reversed for display.
+  const displayItems = useMemo(
+    () => (newestFirst ? [...visibleItems].reverse() : visibleItems),
+    [visibleItems, newestFirst],
+  );
   // Streaming tail and header updates must not rebuild settled markdown/tool trees.
   const history = useMemo(() => {
     const renderVisibleItem = (item: TaskChatItem) => {
@@ -368,7 +391,7 @@ export function TaskChatThreadView({
       );
     };
     const renderedItems = streamlined
-      ? visibleItems.map((item) => ({ item, content: renderVisibleItem(item) }))
+      ? displayItems.map((item) => ({ item, content: renderVisibleItem(item) }))
           .filter((entry) => entry.content !== null)
       : [];
     return (
@@ -395,7 +418,7 @@ export function TaskChatThreadView({
                 {content}
               </div>
             ))
-          : visibleItems.map((item, index) => (
+          : displayItems.map((item, index) => (
               <div
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
@@ -418,7 +441,7 @@ export function TaskChatThreadView({
       </>
     );
   }, [
-    visibleItems, retryMarkers, streamlined, onApprovalDecision, onRuntimeRequestDecision,
+    displayItems, retryMarkers, streamlined, onApprovalDecision, onRuntimeRequestDecision,
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
     retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
@@ -439,15 +462,17 @@ export function TaskChatThreadView({
           {header}
         </div>
       ) : null}
+      {newestFirst && tail ? <div data-conversation-typography="" className={streamlined ? "mb-4" : undefined}>{tail}</div> : null}
       {history}
-      {tail ? <div data-conversation-typography="" className={streamlined ? "mt-4" : undefined}>{tail}</div> : null}
+      {!newestFirst && tail ? <div data-conversation-typography="" className={streamlined ? "mt-4" : undefined}>{tail}</div> : null}
+      {footer}
     </div>
   );
 
   if (!scroll) return body;
 
   return (
-    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)} scrollingHistory={scrollingHistory}>
+    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)} scrollingHistory={scrollingHistory} threadOrder={threadOrder}>
       {body}
     </TaskMessageScroller>
   );

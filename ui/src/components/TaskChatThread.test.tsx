@@ -431,6 +431,34 @@ it.each([true, false])("coordinates compact cards before first reveal and retain
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
 });
 
+it.each(["oldest_first", "newest_first"] as const)("keeps earlier-history controls at the chronological edge (%s)", async (threadOrder) => {
+  render(<TaskChatThread
+    issueId="ordered-thread"
+    comments={createLongThreadComments()}
+    historyControl={<button type="button">More messages</button>}
+    threadFooter={<button type="button">Load earlier comments</button>}
+    threadOrder={threadOrder}
+    onAdd={async () => {}}
+  />);
+  await settleThreadLayout();
+  const messages = [...container.querySelectorAll<HTMLElement>("[data-thread-anchor]")]
+    .filter((row) => row.textContent?.includes("Thread message"));
+  expect(messages.map((row) => row.textContent?.match(/Thread message \d/)?.[0])).toEqual(
+    threadOrder === "newest_first"
+      ? ["Thread message 4", "Thread message 3", "Thread message 2", "Thread message 1"]
+      : ["Thread message 1", "Thread message 2", "Thread message 3", "Thread message 4"],
+  );
+  const button = (label: string) => [...container.querySelectorAll("button")].find((node) => node.textContent === label)!;
+  const oldest = messages.find((row) => row.textContent?.includes("Thread message 1"))!;
+  const following = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  if (threadOrder === "newest_first") {
+    expect(following(oldest, button("More messages"))).toBe(true);
+    expect(following(oldest, button("Load earlier comments"))).toBe(true);
+  } else {
+    expect(following(button("More messages"), oldest)).toBe(true);
+  }
+});
+
 it.each([false, true])("waits for fonts but bounds a stalled request (stalled=%s)", async (stalled) => {
   const original = Object.getOwnPropertyDescriptor(document, "fonts");
   const fonts = { status: "loading" };

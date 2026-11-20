@@ -40,13 +40,15 @@ export function useTaskChatScrollNavigation() {
     key: navigation?.key,
     hash: navigation?.hash,
     ready,
-    initialPosition(root: Element, viewportTop: number, scrollTop: number, options?: { restore?: boolean }): number | null {
+    initialPosition(root: Element, viewportTop: number, scrollTop: number, options?: { restore?: boolean; newestFirst?: boolean }): number | null {
       if (!navigation) return null;
       if (options?.restore !== false && navigation.restore && positionKey && positions.has(positionKey)) {
         const saved = positions.get(positionKey)!;
         // A saved pixel offset goes stale when rotation changes text wrapping.
-        // Bottom-follow needs no row measurements, even across navigation.
-        if (saved.followBottom) return Math.max(0, root.scrollHeight - root.clientHeight);
+        // Live-edge follow needs no row measurements, even across navigation.
+        // `followBottom` records that follow intent; newest-first threads keep
+        // their live edge at the top.
+        if (saved.followBottom) return options?.newestFirst ? 0 : Math.max(0, root.scrollHeight - root.clientHeight);
         if (saved.anchor && [...root.querySelectorAll<HTMLElement>("[data-thread-anchor]")].some((row) => row.dataset.threadAnchor === saved.anchor?.id)) {
           return scrollTop + threadScrollAnchorDelta(root, saved.anchor, viewportTop);
         }

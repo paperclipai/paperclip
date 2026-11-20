@@ -684,3 +684,142 @@ describe("TaskMessageScroller", () => {
     await waitForPill(false); // no animationend needed
   });
 });
+
+describe("TaskMessageScroller thread order", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  const scroller = () => container.querySelector<HTMLDivElement>('[data-testid="task-chat-scroller"]')!;
+  const pill = () => container.querySelector<HTMLButtonElement>(PILL_SELECTOR);
+
+  async function scrollTo(el: HTMLElement, top: number) {
+    el.scrollTop = top;
+    el.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await flushEvents();
+  }
+
+  /** ResizeObserver stub that only notifies observers that are still connected. */
+  function stubResizeObservers() {
+    const observers: { notify: () => void; connected: boolean }[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      private entry: { notify: () => void; connected: boolean };
+      constructor(callback: ResizeObserverCallback) {
+        this.entry = { notify: () => callback([], this as unknown as ResizeObserver), connected: true };
+        observers.push(this.entry);
+      }
+      observe() {}
+      disconnect() { this.entry.connected = false; }
+    });
+    return () => {
+      for (const observer of observers.filter((entry) => entry.connected)) observer.notify();
+    };
+  }
+
+  function growContent(scrollHeight: number) {
+    Object.defineProperty(scroller(), "scrollHeight", { value: scrollHeight, configurable: true });
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    flushSync(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it("follows content growth toward the live edge of the current order after a mounted toggle", () => {
+    const resize = stubResizeObservers();
+    const renderOrder = (threadOrder: "oldest_first" | "newest_first") => flushSync(() => root.render(
+      <TaskMessageScroller contentKey="unchanged" threadOrder={threadOrder}><div>messages</div></TaskMessageScroller>,
+    ));
+    renderOrder("oldest_first");
+    fakeGeometry(scroller(), { clamp: true });
+    resize();
+    expect(scroller().scrollTop).toBe(600); // pinned to the bottom live edge
+
+    renderOrder("newest_first");
+    expect(scroller().scrollTop).toBe(0);
+    growContent(1400); // streamed text or a late image grows the thread
+    resize();
+    expect(scroller().scrollTop).toBe(0);
+    expect(pill()).toBeNull();
+
+    renderOrder("oldest_first");
+    expect(scroller().scrollTop).toBe(1000);
+    growContent(1700);
+    resize();
+    expect(scroller().scrollTop).toBe(1300);
+  });
+
+  it("holds a newest-first reader below the top and jumps back up to the latest", async () => {
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} threadOrder="newest_first"><div>messages</div></TaskMessageScroller>,
+    ));
+    update(0);
+    fakeGeometry(scroller(), { clamp: true });
+    update(1);
+    expect(scroller().scrollTop).toBe(0);
+    await scrollTo(scroller(), 30); // within the pin threshold of the top
+    expect(pill()).toBeNull();
+    await scrollTo(scroller(), 300);
+    await vi.waitFor(() => expect(pill()).not.toBeNull());
+    expect(pill()!.querySelector("svg")?.getAttribute("class")).toContain("lucide-arrow-up");
+    growContent(1300);
+    update(2);
+    expect(scroller().scrollTop).toBe(300);
+    pill()!.click();
+    expect(scroller().scrollTop).toBe(0);
+    await vi.waitFor(() => expect(pill()).toBeNull());
+    growContent(1600);
+    update(3);
+    expect(scroller().scrollTop).toBe(0);
+  });
+
+  it("does not page history from the top of a newest-first thread", async () => {
+    const load = vi.fn();
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick} threadOrder="newest_first" scrollingHistory={{ hasMore: true, loading: false, load }}>
+        <div>messages</div>
+      </TaskMessageScroller>,
+    ));
+    update(0);
+    fakeGeometry(scroller(), { clamp: true });
+    update(1);
+    await scrollTo(scroller(), 400);
+    await scrollTo(scroller(), 100);
+    scroller().dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+    scroller().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Home" }));
+    await flushEvents();
+    expect(load).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="chat-history-status"]')).toBeNull();
+  });
+
+  it("restores live-edge follow at the top on Back for a newest-first thread", () => {
+    const configured = new WeakSet<HTMLElement>();
+    function mount(restore: boolean, scrollHeight: number) {
+      flushSync(() => root.render(
+        <TaskChatScrollNavigation.Provider value={{ key: "newest-first-entry", hash: "", restore }}>
+          <TaskMessageScroller contentKey={scrollHeight} threadOrder="newest_first">
+            <div ref={(node) => {
+              const viewport = node?.parentElement;
+              if (viewport && !configured.has(viewport)) {
+                fakeGeometry(viewport, { scrollHeight, clamp: true });
+                configured.add(viewport);
+              }
+            }}>Latest response</div>
+          </TaskMessageScroller>
+        </TaskChatScrollNavigation.Provider>,
+      ));
+    }
+    mount(false, 1000);
+    expect(scroller().scrollTop).toBe(0);
+    flushSync(() => root.render(null));
+    mount(true, 2000);
+    expect(scroller().scrollTop).toBe(0);
+    expect(pill()).toBeNull();
+  });
+});
