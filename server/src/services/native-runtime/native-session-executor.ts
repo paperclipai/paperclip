@@ -119,7 +119,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { redactNativeFailureError } from "./native-failure-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
-import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
+import { createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent } from "./native-provider-failure.js";
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
@@ -9024,19 +9024,7 @@ function armWarmNativeSessionIdleTimer(
   entry.idleTimer.unref();
 }
 
-/** Classify only a committed provider terminal, never model prose or tool output. */
-export function nativeProviderUsageLimitFromEvent(
-  event: Pick<PrpEvent, "sourceKind" | "eventType" | "payload">,
-): boolean {
-  const payload = record(event.payload);
-  if (event.sourceKind !== "runner" || event.eventType !== "turn.failed" || payload.status !== "failed") return false;
-  const error = record(payload.error);
-  if (error.codexErrorInfo === "usageLimitExceeded") return true;
-  // ACP harnesses type the same exhausted allowance as a provider failure.
-  // Context, turn and configured budget limits stay ordinary terminals.
-  const category = readProviderFailure(error.providerFailure)?.category;
-  return category === "quota_exhausted" || category === "rate_limit";
-}
+export { nativeProviderUsageLimitFromEvent };
 
 export function nativeSessionFailureDisposition(
   attempt: number,
