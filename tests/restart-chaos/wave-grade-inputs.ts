@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { AGENT_SLOTS_FILE, slotFreeFrom, type AgentSlots } from "./agent-slots.js";
+import { AGENT_SLOTS_FILE, queueWaitFairnessFrom, slotFreeFrom, type AgentSlots, type QueueWaitFairness } from "./agent-slots.js";
 import { withChildWaits } from "./child-wait.js";
 import type { WakeEvidenceFile } from "./staging-mix-retry.js";
 import type { StagingMixOptions } from "./staging-mix.js";
@@ -8,7 +8,7 @@ import type { TaskRecord } from "./types.js";
 import { declaredQueueBoundMs, universalBounds, type SlotFree, type UniversalBounds } from "./universal.js";
 
 export interface WaveGradeInputs {
-  queue: { bounds: UniversalBounds; slotFree: SlotFree };
+  queue: { bounds: UniversalBounds; slotFree: SlotFree; queueWait: QueueWaitFairness };
   slotEvidence: boolean;
   prepare(taskId: string, record: TaskRecord): Promise<TaskRecord>;
 }
@@ -21,7 +21,7 @@ export async function loadWaveGradeInputs(waveDir: string, mix: Pick<StagingMixO
   const declaredQueuedMs = declaredQueueBoundMs(mix);
   const bounds = { ...universalBounds(env), ...(declaredQueuedMs === undefined ? {} : { declaredQueuedMs }) };
   return {
-    queue: { bounds, slotFree: slotFreeFrom(slots) },
+    queue: { bounds, slotFree: slotFreeFrom(slots), queueWait: queueWaitFairnessFrom(slots) },
     slotEvidence: slots !== null,
     prepare: async (taskId, record) => withChildWaits(record, await readJson<WakeEvidenceFile>(path.join(waveDir, "wake-evidence", `${taskId}.json`))),
   };
