@@ -9,9 +9,10 @@ function valid() {
   return { scenarioId: "cases.create-case", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { project: { id: "project" }, task: { id: "source-brief" }, worker: { id: "morgan" } },
     tasks: [{ id: "source-brief", title: "Customer bug brief" }, { id: "primary", companyId: "company", title: "Customer checkout bug", assigneeAgentId: "morgan" }], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], activity: [], reply: "Created the case and started Morgan's investigation on its primary task.", links: ["/ACORN/cases/case", "/ACORN/issues/primary"],
     cases: [{ id: "case", companyId: "company", projectId: "project", workIssueId: "primary", fields: structuredClone(customerBugFacts) }],
-    handoffs: { case: [{ id: "kickoff", caseId: "case", version: 1, issueId: "primary", toAgentId: "morgan", actorId: "ceo", sourceRunId: "source-run", state: "delivered" }] }, taskDocuments: { primary: [workflow, brief] },
+    handoffs: { case: [{ id: "kickoff", caseId: "case", version: 1, issueId: "primary", toAgentId: "morgan", actorId: "ceo", sourceRunId: null as string | null, state: "delivered", createdAt: "2026-10-26T12:00:30Z" }] as Array<Record<string, unknown>> }, taskDocuments: { primary: [workflow, brief] },
     documentVersions: { "primary:workflow": [revision(workflow)], "primary:brief": [revision(brief)] },
-    runs: [{ id: "source-run", agentId: "ceo", status: "succeeded" }, { id: "investigation", agentId: "morgan", status: "running", contextSnapshot: { issueId: "primary" }, startedAt: "2026-10-26T12:01:00Z" }] };
+    runs: [{ id: "source-run", agentId: "ceo", status: "succeeded", contextSnapshot: { issueId: "source-brief" } as Record<string, unknown>, startedAt: "2026-10-26T11:59:00Z", finishedAt: "2026-10-26T12:00:40Z" },
+      { id: "investigation", agentId: "morgan", status: "running", contextSnapshot: { issueId: "primary" } as Record<string, unknown>, startedAt: "2026-10-26T12:01:00Z" } as Record<string, unknown>] };
 }
 describe("real case kickoff independent controls", () => {
   it("requires the real primary task, first Morgan dispatch and original saved documents", () => {
@@ -28,6 +29,33 @@ describe("real case kickoff independent controls", () => {
     const repaired = valid(); repaired.documentVersions["primary:brief"][0]!.body = "Investigate a bug.";
     expect(gradeIntegratorCaseCreation(repaired).passed).toBe(false);
     expect(gradeIntegratorCaseCreation({ ...valid(), links: ["/ACORN/cases/case"] }).passed).toBe(false);
+  });
+  // gha-43101125481: a kickoff that creates its primary task has no sourceRunId (that field names the run holding the
+  // task being handed off). The kickoff and its documents are bound to the CEO chat run active when it was saved.
+  it("binds the kickoff and its documents to the CEO chat run that saved them, not to sourceRunId", () => {
+    const failed = (value: unknown) => gradeIntegratorCaseCreation(value).checks.filter(check => !check.passed).map(check => check.id);
+    expect(failed(valid())).toEqual([]);
+    const otherRun = valid(); for (const key of Object.keys(otherRun.documentVersions)) otherRun.documentVersions[key as keyof typeof otherRun.documentVersions][0]!.createdByRunId = "elsewhere";
+    expect(failed(otherRun)).toContain("required-documents-persist-before-investigation");
+    const outside = valid(); outside.handoffs.case[0]!.createdAt = "2026-10-26T12:05:00Z";
+    expect(failed(outside)).toEqual(expect.arrayContaining(["real-first-morgan-kickoff", "required-documents-persist-before-investigation"]));
+    const byWorker = valid(); byWorker.handoffs.case[0]!.actorId = "morgan";
+    expect(failed(byWorker)).toContain("real-first-morgan-kickoff");
+    const otherChat = valid(); otherChat.runs[0]!.contextSnapshot = { issueId: "primary" };
+    expect(failed(otherChat)).toContain("real-first-morgan-kickoff");
+  });
+  it("accepts one CEO run woken by Morgan's own case handoff back, and nothing else", () => {
+    const failed = (value: unknown) => gradeIntegratorCaseCreation(value).checks.filter(check => !check.passed).map(check => check.id);
+    const handback = (o: ReturnType<typeof valid>, wakeReason = "case_handoff", issueId = "primary") => {
+      o.runs.push({ id: "handback", agentId: "ceo", status: "running", contextSnapshot: { issueId, wakeReason }, startedAt: "2026-10-26T12:03:00Z" });
+      return o;
+    };
+    const returned = (o: ReturnType<typeof valid>) => { o.handoffs.case.push({ id: "back", caseId: "case", version: 2, issueId: "primary", toAgentId: "ceo", actorId: "morgan", state: "delivered" }); return o; };
+    expect(failed(returned(handback(valid())))).toEqual([]);
+    expect(failed(handback(valid()))).toContain("only-declared-case-handback-to-ceo");
+    expect(failed(returned(handback(valid(), "issue_commented")))).toContain("only-declared-case-handback-to-ceo");
+    expect(failed(returned(handback(valid(), "case_handoff", "elsewhere")))).toContain("only-declared-case-handback-to-ceo");
+    expect(failed(returned(handback(handback(valid()))))).toContain("only-declared-case-handback-to-ceo");
   });
   it("accepts changed wording of factual fields but rejects swapped expected/observed behavior", () => {
     const paraphrase = { customer: "Acorn Test Shop", issue: "Checkout stops responding", browser: "Safari 18 on iPhone 15", steps: ["Add the trial item", "Fill the test address", "Press Pay"], expectedBehavior: "An order confirmation should be shown", observedBehavior: "Without confirmation; customer is not charged" };

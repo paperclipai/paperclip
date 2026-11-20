@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogState } from "@/context/DialogContext";
+import { useLocation } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { MODAL_SELECTOR, useModalOpen, useOnboardingInProgress } from "./AnnouncementWell";
 import { PaperclipMark } from "./PaperclipLockup";
@@ -14,6 +15,15 @@ import { PaperclipMark } from "./PaperclipLockup";
 export const STAR_PROMPT_COMPLETED_TASKS = 5;
 export const STAR_PROMPT_SEEN_KEY = "paperclip.github-star-prompt.seen";
 export const PAPERCLIP_GITHUB_URL = "https://github.com/paperclipai/paperclip";
+export const TASK_ATTENTION_SELECTOR = '[data-testid="task-execution-retry"], [role="status"][aria-label="Task status"]';
+const TASK_LIST_VIEWS = new Set(["all", "active", "backlog", "done", "recent"]);
+
+export function isTaskFocusPath(pathname: string) {
+  const segments = pathname.split("/").filter(Boolean);
+  const [section, ref] = segments.slice(-2);
+  return (segments.length === 2 || segments.length === 3) && Boolean(ref)
+    && (section === "chats" || (section === "issues" && !TASK_LIST_VIEWS.has(ref!)));
+}
 
 function readSeen() {
   try { return window.localStorage.getItem(STAR_PROMPT_SEEN_KEY) !== null; } catch { return true; }
@@ -21,6 +31,17 @@ function readSeen() {
 
 function markSeen() {
   try { window.localStorage.setItem(STAR_PROMPT_SEEN_KEY, new Date().toISOString()); } catch { /* shown once per visit instead */ }
+}
+
+function readOrRecordEligibility(companyId: string, completedTasks: number) {
+  try {
+    const key = `paperclip.github-star-prompt.eligibility.${companyId}`;
+    const saved = window.localStorage.getItem(key);
+    if (saved !== null) return saved === "eligible";
+    const eligible = completedTasks < STAR_PROMPT_COMPLETED_TASKS;
+    window.localStorage.setItem(key, eligible ? "eligible" : "ineligible");
+    return eligible;
+  } catch { return false; }
 }
 
 /**
@@ -36,6 +57,7 @@ export function GitHubStarPrompt() {
   const { onboardingOpen } = useDialogState();
   const [seen, setSeen] = useState(readSeen);
   const [open, setOpen] = useState(false);
+  const [milestone, setMilestone] = useState<{ companyId: string; eligible: boolean } | null>(null);
   const onboardingInProgress = useOnboardingInProgress(selectedCompanyId);
   const health = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get(), enabled: false });
   const selfHosted = health.isSuccess && !health.data.cloud;
@@ -46,8 +68,17 @@ export function GitHubStarPrompt() {
     enabled: eligible,
     staleTime: 60_000,
   });
-  const reached = eligible && done.isSuccess && done.data.length >= STAR_PROMPT_COMPLETED_TASKS;
+  useEffect(() => {
+    if (!eligible || !selectedCompanyId || !done.isSuccess || done.isFetching
+      || milestone?.companyId === selectedCompanyId) return;
+    setMilestone({ companyId: selectedCompanyId, eligible: readOrRecordEligibility(selectedCompanyId, done.data.length) });
+  }, [eligible, selectedCompanyId, done.isSuccess, done.isFetching, done.data, milestone]);
+
+  const reached = eligible && milestone?.companyId === selectedCompanyId && milestone.eligible
+    && done.isSuccess && done.data.length >= STAR_PROMPT_COMPLETED_TASKS;
   const otherModalOpen = useModalOpen(reached);
+  const taskNeedsAttention = useModalOpen(reached || open, TASK_ATTENTION_SELECTOR);
+  const midTask = isTaskFocusPath(useLocation().pathname);
 
   useEffect(() => {
     if (seen) return;
@@ -59,13 +90,18 @@ export function GitHubStarPrompt() {
   }, [seen]);
 
   useEffect(() => {
-    if (!reached || otherModalOpen || document.querySelector(MODAL_SELECTOR)) return;
+    if (!reached || otherModalOpen || taskNeedsAttention || midTask
+      || document.querySelector(`${MODAL_SELECTOR}, ${TASK_ATTENTION_SELECTOR}`)) return;
     // Another tab may have shown it after this one mounted.
     if (readSeen()) { setSeen(true); return; }
     markSeen();
     setSeen(true);
     setOpen(true);
-  }, [reached, otherModalOpen]);
+  }, [reached, otherModalOpen, taskNeedsAttention, midTask]);
+
+  useEffect(() => {
+    if (open && (midTask || taskNeedsAttention)) setOpen(false);
+  }, [open, midTask, taskNeedsAttention]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

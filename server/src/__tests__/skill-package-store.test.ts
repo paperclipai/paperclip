@@ -17,7 +17,7 @@ import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { companySkillService } from "../services/company-skills.js";
-import { skillPackageStore, skillPackagePaths, withSkillPackageReadScope } from "../services/skill-package-store.js";
+import { skillPackageStore, skillPackagePaths, skillPackageStorageIoDepth, withSkillPackageReadScope } from "../services/skill-package-store.js";
 import { skillPackageMaintenance } from "../services/skill-package-maintenance.js";
 import { skillPackageManifest, validateSkillPackageManifest, writeSkillPackageArchive, extractSkillPackageArchive,
   verifySkillPackageDirectory } from "../services/skill-package-files.js";
@@ -755,7 +755,6 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     let ready = 0;
     vi.spyOn(dbModule, "withDedicatedDbConnection").mockImplementation((owner, action) => dedicated(owner, connection => {
       connection.$client.options.debug = observe;
-      if (kind === "files") ready++;
       return action(connection);
     }));
     if (kind === "manifest") {
@@ -770,7 +769,8 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const read = (id: string) => kind === "files" ? store.files(companyId, id, true) : store.manifest(companyId, id);
     const queued = rows.slice(0, 32).map(row => read(row.id));
     try {
-      await vi.waitFor(() => expect(ready).toBe(32));
+      await vi.waitFor(() => expect(kind === "files" ? skillPackageStorageIoDepth().waiting : ready).toBe(32));
+      if (kind === "files") expect(dbModule.dedicatedDbConnectionStats(db)?.inUse).toBe(2);
       // The final reader observes the full queue only after all earlier readers
       // have reached admission. None may preload repository bodies while waiting.
       await expect(read(rows[32]!.id)).rejects.toThrow("busy");

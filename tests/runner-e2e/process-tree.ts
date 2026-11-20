@@ -10,13 +10,6 @@ export interface ProcessObservation {
   state?: string;
 }
 
-export interface ProcessTableInspectionFailure {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  errno: number | null;
-  outputBytes: number;
-}
-
 export interface ObservedProcessGroup {
   processGroupId: number;
   depth: number;
@@ -176,23 +169,18 @@ export function diagnosticProcessKind(command: string, platform: NodeJS.Platform
 
 export async function readProcessTable(
   startInspector?: () => ChildProcess,
-  onFailure?: (failure: ProcessTableInspectionFailure) => void,
+  onFailure?: (reason: string) => void,
 ): Promise<ProcessObservation[] | null> {
   if (process.platform === "win32") {
     return null;
   }
-  let outputBytes = 0;
-  const reportFailure = (code: number | null, signal: NodeJS.Signals | null, error?: unknown) => {
-    const errno = (error as NodeJS.ErrnoException | undefined)?.errno;
-    onFailure?.({ code, signal, errno: typeof errno === "number" && Number.isSafeInteger(errno) ? errno : null, outputBytes });
-  };
   return await new Promise<ProcessObservation[] | null>((resolve) => {
     const inspector = startInspector ? startInspector() : spawn(
       "ps",
       ["-e", "-o", "pid=,ppid=,pgid=,lstart=,stat=,comm="],
       {
         env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-        stdio: ["ignore", "pipe", "ignore"],
+        stdio: ["ignore", "pipe", "pipe"],
         // A wrapper-group shutdown must not interrupt its own bounded audit.
         detached: true,
       },
@@ -200,31 +188,37 @@ export async function readProcessTable(
     let output = "";
     let settled = false;
     let truncated = false;
-    const finish = (value: ProcessObservation[] | null, error?: unknown) => {
+    let errorOutput = "";
+    const finish = (value: ProcessObservation[] | null, reason?: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(inspectionTimeout);
-      if (value === null) reportFailure(inspector.exitCode, inspector.signalCode, error);
+      if (value === null && reason) onFailure?.(reason);
       resolve(value);
     };
     const inspectionTimeout = setTimeout(() => {
       inspector.kill("SIGKILL");
-      finish(null);
+      finish(null, "ps did not finish within 5000ms");
     }, 5_000);
     inspectionTimeout.unref();
     inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
-      outputBytes += Buffer.byteLength(chunk);
       if (output.length + chunk.length > 1024 * 1024) {
         truncated = true;
         inspector.kill("SIGKILL");
-        finish(null);
+        finish(null, "ps output exceeded 1 MiB");
         return;
       }
       output += chunk;
     });
-    inspector.once("error", error => finish(null, error));
-    inspector.once("close", (code) => {
-      if (code !== 0 || truncated) { finish(null); return; }
+    inspector.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+      errorOutput = (errorOutput + chunk).slice(-512);
+    });
+    inspector.once("error", (error) => finish(null, `ps could not start: ${error.message}`));
+    inspector.once("close", (code, signal) => {
+      if (code !== 0 || truncated) {
+        finish(null, `ps exited code=${code} signal=${signal}${errorOutput.trim() ? `: ${errorOutput.trim()}` : ""}`);
+        return;
+      }
       const observations = output
         .split(/\r?\n/)
         .map((line) =>
@@ -249,5 +243,5 @@ export async function readProcessTable(
         });
       finish(observations);
     });
-  }).catch(error => { reportFailure(null, null, error); return null; });
+  }).catch(() => null);
 }

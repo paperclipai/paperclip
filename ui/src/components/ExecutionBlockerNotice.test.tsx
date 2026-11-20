@@ -38,6 +38,30 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector("a, details, input, textarea")).toBeNull();
     expect(container.textContent).not.toMatch(/service attention|process|receipt|workspace/i);
   });
+  it("asks the person to help a blocked agent and offers Retry", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "unblock" });
+    expect(container.textContent).toContain("needs your help to continue");
+    expect(container.textContent).not.toMatch(/blocker_|native|owner kind/i);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-execution-retry"]')!.click());
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])("names the question without repeating a historical failure (manual Retry=%s)", async canRetry => {
+    const presentation = { ...failed, responsibility: "user" as const, state: "waiting_for_user" as const, userAction: "question" as const, canRetry,
+      providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+        category: "rate_limit", httpStatus: 429, retryability: "unknown", message: "API error: 429" } } satisfies TaskInterruptionPresentation;
+    await render(presentation);
+    expect(container.textContent).toContain("Respond to the pending question to continue.");
+    expect(container.textContent).not.toMatch(/429|rate limit|failed/i);
+    expect(Boolean(container.querySelector("button"))).toBe(canRetry);
+    if (canRetry) {
+      await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+      expect(retry).toHaveBeenCalledOnce();
+    }
+    await render(presentation, { canRetry: false });
+    expect(container.querySelector("button")).toBeNull();
+  });
+
   it("keeps the failure visible and names the gate while a saved Retry waits on the budget", async () => {
     await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false });
     const notice = container.querySelector('[data-testid="task-execution-waiting"]');
@@ -66,6 +90,26 @@ describe("ordinary task interruption", () => {
   it.each(["working", "resolved"] as const)("does not duplicate the thread indicator for %s", async state => {
     await render({ ...failed, state }); expect(container.textContent).toBe("");
   });
+  it("offers to move a waiting continuation forward in plain words, without reporting a failure", async () => {
+    await render({ ...failed, state: "working", retryAction: "move_forward" });
+    expect(container.textContent).toContain("Paperclip continues this task by itself.");
+    expect(container.textContent).not.toMatch(/Couldn’t finish|failed|continuation|queue|run\b/i);
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-execution-move-forward"]');
+    expect(button?.textContent).toBe("Move it forward now");
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+    await act(async () => button!.click());
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it("shows a waiting continuation without the button to a read-only user, or once the move was requested", async () => {
+    await act(async () => root.render(<ExecutionBlockerNotice presentation={{ ...failed, state: "working", retryAction: "move_forward" }}
+      canRetry={false} onRetry={retry} />));
+    expect(container.textContent).toContain("Paperclip continues this task by itself.");
+    expect(container.querySelector("button")).toBeNull();
+    await render({ ...failed, state: "working", canRetry: false });
+    expect(container.textContent).toBe("");
+  });
+
   it("names the admission hold a task that has not started waits for", async () => {
     await render({ ...failed, state: "working", canRetry: false, sourceRunIds: [], observedRunId: null,
       retryWait: { reason: "budget.blocked", message: "Waiting for the budget to allow new work. The task starts automatically when it does." } });

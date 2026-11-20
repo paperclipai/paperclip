@@ -243,9 +243,13 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     assertCompanyAccess(req, companyId);
     const status = typeof req.query.status === "string" ? req.query.status : null;
     const page = proposalListPage(req.query);
+    if (req.query.order !== undefined && req.query.order !== "created" && req.query.order !== "resolved") {
+      throw unprocessable("order must be created or resolved");
+    }
     const rows = await proposals.listForBoard(companyId, status, {
       limit: page.limit + 1,
       offset: page.offset,
+      order: req.query.order === "resolved" ? "resolved" : "created",
     });
     const hasMore = rows.length > page.limit;
     setProposalPaginationHeaders(res, page, hasMore);

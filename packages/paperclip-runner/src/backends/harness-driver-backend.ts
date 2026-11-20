@@ -10,6 +10,7 @@ import type {
   NativeSessionBackend,
   NativeSessionBackendDescriptor,
   NativeSessionRecoveryOptions,
+  NativeSessionSnapshotOptions,
   OpenNativeSessionInput,
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
@@ -153,6 +154,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
       goal: snapshot.goal ?? null,
       lineage: snapshot.lineage ?? [],
+      ...(snapshot.awaitingProviderTurn === true ? { awaitingProviderTurn: true } : {}),
     };
     const recoveryOptions: HarnessSessionRecoveryOptions = {
       signal: options.signal,
@@ -167,6 +169,8 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         recovered: false,
         reason: recovered.reason,
         ...(recovered.failureClass ? { failureClass: recovered.failureClass } : {}),
+        ...(recovered.resumeStateUnavailable ? { resumeStateUnavailable: true as const } : {}),
+        ...(recovered.runnerExitConfirmed ? { runnerExitConfirmed: true as const } : {}),
       };
     }
     try {
@@ -402,6 +406,7 @@ class HarnessNativeSession implements NativeSession {
   readonly #session: HarnessSession;
   #terminal: PrpTerminalState | null = null;
   #explicitlyCancelled = false;
+  #stopRequested = false;
   #protocolIntegrityFailure: NativeSessionProtocolIntegrityError | null = null;
 
   #assertProtocolIntegrity(): void {
@@ -416,10 +421,11 @@ class HarnessNativeSession implements NativeSession {
     throw this.#protocolIntegrityFailure;
   }
 
-  async #harnessSnapshot(): Promise<PersistedHarnessSession> {
+  async #harnessSnapshot(sourceSeq?: number): Promise<PersistedHarnessSession> {
     this.#assertProtocolIntegrity();
     try {
-      const snapshot = await this.#session.snapshot();
+      const boundary = sourceSeq === undefined ? null : this.#session.boundarySnapshot?.(sourceSeq) ?? null;
+      const snapshot = boundary ?? await this.#session.snapshot();
       this.#assertProtocolIntegrity();
       return snapshot;
     } catch (error) {
@@ -457,6 +463,10 @@ class HarnessNativeSession implements NativeSession {
 
   identity() {
     return structuredClone(this.#input.identity);
+  }
+
+  downloadAttachment(grant: Parameters<NonNullable<NativeSession["downloadAttachment"]>>[0]) {
+    return this.#session.downloadAttachment?.(grant) ?? Promise.resolve(null);
   }
 
   async capabilities() {
@@ -519,11 +529,17 @@ class HarnessNativeSession implements NativeSession {
     this.#input = { ...this.#input, identity: structuredClone(input.identity) };
     this.#terminal = null;
     this.#explicitlyCancelled = false;
+    this.#stopRequested = false;
   }
 
   async release(): Promise<DurableRecoveryIdentity | false> {
     this.#assertProtocolIntegrity();
     return this.#session.release?.() ?? false;
+  }
+
+  async retireReleasedController(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null> {
+    this.#assertProtocolIntegrity();
+    return this.#session.retireReleasedController?.() ?? null;
   }
 
   async detachControllerForRestart(): Promise<void> {
@@ -624,7 +640,7 @@ class HarnessNativeSession implements NativeSession {
           const disposition =
             snapshot.semanticResult?.result.reportedWorkDisposition ??
             "yielded";
-          this.#terminal = {
+          if (event.payload.awaitingProviderTurn !== true) this.#terminal = {
             schema: "paperclip.prp.terminal.v1",
             turnTerminalState:
               event.eventType === "turn.completed"
@@ -774,6 +790,7 @@ class HarnessNativeSession implements NativeSession {
 
   revokeTurnPublication() {
     this.#explicitlyCancelled = true;
+    this.#stopRequested = true;
   }
 
   settleCancelledTurn(input: { turnId: string; reason: string }) {
@@ -782,7 +799,7 @@ class HarnessNativeSession implements NativeSession {
     return this.#withProtocolIntegrity(() => this.#session.settleCancelledTurn?.(input) ?? null);
   }
 
-  cancel(input: { reason: string; signal: AbortSignal }) {
+  cancel(input: { reason: string; signal: AbortSignal; failureCleanup?: boolean }) {
     if (input.signal.aborted) {
       throw (
         input.signal.reason ?? new Error("native session cancellation aborted")
@@ -791,7 +808,8 @@ class HarnessNativeSession implements NativeSession {
     // This flag is the adapter's synchronous publication boundary. Provider
     // interruption happens afterward as passive cleanup, so a slow or broken
     // transport cannot synthesize or publish new accepted output for the turn.
-    this.revokeTurnPublication();
+    if (input.failureCleanup === true) this.#explicitlyCancelled = true;
+    else this.revokeTurnPublication();
     const interrupt = this.#session.interrupt;
     return {
       ...(this.terminalDrainTimeoutMs === undefined ? {} : { terminalDrainTimeoutMs: this.terminalDrainTimeoutMs }),
@@ -863,9 +881,9 @@ class HarnessNativeSession implements NativeSession {
     };
   }
 
-  async snapshot(): Promise<PersistedNativeSession> {
+  async snapshot(options?: NativeSessionSnapshotOptions): Promise<PersistedNativeSession> {
     this.#assertProtocolIntegrity();
-    const snapshot = await this.#harnessSnapshot();
+    const snapshot = await this.#harnessSnapshot(options?.sourceSeq);
     return {
       backendKind: "runner",
       driverKind: snapshot.driverKind,
@@ -908,6 +926,7 @@ class HarnessNativeSession implements NativeSession {
       pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
       goal: snapshot.goal ?? null,
       lineage: snapshot.lineage ?? [],
+      ...(snapshot.awaitingProviderTurn === true ? { awaitingProviderTurn: true } : {}),
     };
   }
 
@@ -916,7 +935,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   close(input: { reason: string }) {
-    return this.#session.close(input);
+    return this.#session.close({ ...input, retainUnsettledRemoteRunner: !this.#stopRequested && this.#protocolIntegrityFailure === null });
   }
 }
 

@@ -1,9 +1,9 @@
 import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
-import { heartbeatRuns, issues, projects, type Db, type agents } from "@paperclipai/db";
+import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
-import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
+import type { ExecutionWorkspace, InstanceSettings, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
@@ -39,6 +39,23 @@ import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspa
 
 type Issue = typeof issues.$inferSelect;
 
+export async function resolveSshAuthenticationBeforeRouting(input: {
+  agentDefaultEnvironmentId: string | null;
+  lowTrustIssueEnvironmentId: string | null;
+  environmentsSvc: Pick<ReturnType<typeof environmentService>, "getById">;
+  instanceSettings: { get(): Promise<{
+    defaultEnvironmentId: InstanceSettings["defaultEnvironmentId"];
+    general: Pick<InstanceSettings["general"], "executionMode">;
+  }> };
+}): Promise<"host" | "managed" | null> {
+  const settings = await input.instanceSettings.get();
+  if (isExecutionForcedToKubernetes({ executionMode: settings.general.executionMode })) return null;
+  const id = input.lowTrustIssueEnvironmentId ?? input.agentDefaultEnvironmentId ?? settings.defaultEnvironmentId;
+  if (!id) return null;
+  const environment = await input.environmentsSvc.getById(id);
+  return environment?.driver === "ssh" ? environment.config.useHostAuth === false ? "managed" : "host" : null;
+}
+
 /** Selects policy and reuse inputs; lease acquisition and cleanup belong to the executor. */
 export interface HeartbeatEnvironmentSelectionInput {
   run: Pick<typeof heartbeatRuns.$inferSelect,
@@ -47,7 +64,7 @@ export interface HeartbeatEnvironmentSelectionInput {
     "id" | "companyId" | "adapterType" | "adapterConfig" | "defaultEnvironmentId">;
   task: {
     freshWorkspace?: import("../fresh-workspace-continuation.js").ContinuationReadiness | null;
-    issueRef: Pick<Issue, "id" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> & { projectId?: string | null } | null;
+    issueRef: Pick<Issue, "id" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> | null;
     issueContext: Pick<Issue, "assigneeAgentId" | "executionWorkspaceSettings"> | null;
     issueId: string | null;
     context: Record<string, unknown>;
@@ -203,12 +220,6 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const managedSandboxEnvironment = managedSandboxOnly && !providerApiPlacement
     ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
     : null;
-  const placementProjectId = issueRef ? issueRef.projectId ?? null : executionProjectId;
-  const [projectEnvironment] = placementProjectId && !controllerOnly && !persistedNativeExecutionInput
-    ? await db.select({ environmentId: projects.environmentId }).from(projects)
-      .where(and(eq(projects.id, placementProjectId), eq(projects.companyId, agent.companyId)))
-    : [];
-  // A project edit affects new admissions, never a surviving provider process.
   const savedEnvironment = parseObject(parseObject(run.contextSnapshot).paperclipEnvironment);
   const admittedLeaseId = persistedNativeExecutionInput && !controllerOnly
     ? readNonEmptyString(savedEnvironment.leaseId) ?? readNativeWorkspaceSyncReference(persistedRunnerProfile.nativeWorkspaceSync)?.leaseId
@@ -227,7 +238,6 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     : resolveExecutionWorkspaceEnvironmentId({
     lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
       ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, {includeEnvironmentId: true})?.environmentId : null,
-    projectEnvironmentId: projectEnvironment?.environmentId,
     agentDefaultEnvironmentId: agent.defaultEnvironmentId,
     instanceDefaultEnvironmentId:
       resolvedInstanceSettings.defaultEnvironmentId ?? null,

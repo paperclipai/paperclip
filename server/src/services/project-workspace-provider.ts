@@ -2,6 +2,8 @@ import { and, eq, notInArray } from "drizzle-orm";
 import { pluginCompanySettings, plugins, type Db } from "@paperclipai/db";
 import type { Environment, PaperclipPluginManifestV1, ProjectExecutionWorkspacePolicy, ProjectWorkspaceProviderConfiguration } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { workspaceWorkerRefusal } from "./workspace-provider-failure.js";
 import { conflict } from "../errors.js";
 
 export function isWorkspaceProvider(manifest: PaperclipPluginManifestV1) {
@@ -10,6 +12,45 @@ export function isWorkspaceProvider(manifest: PaperclipPluginManifestV1) {
 }
 
 type ProviderDb = Pick<Db, "select">;
+export type WorkspaceWorkers = Pick<PluginWorkerManager, "call" | "getWorker">;
+
+export async function requireWorkspaceProviderWorker(
+  db: ProviderDb,
+  workers: WorkspaceWorkers | undefined,
+  companyId: string,
+  pluginId: string,
+  /** Before a call, a ready provider whose worker is not running is a retryable refusal: no request is sent. */
+  beforeCall = false,
+) {
+  const [plugin] = await db
+    .select()
+    .from(plugins)
+    .where(eq(plugins.id, pluginId));
+  const [settings] = await db
+    .select()
+    .from(pluginCompanySettings)
+    .where(
+      and(
+        eq(pluginCompanySettings.pluginId, pluginId),
+        eq(pluginCompanySettings.companyId, companyId),
+      ),
+    );
+  const worker = workers?.getWorker(pluginId);
+  const refusal = beforeCall && workers && plugin?.status === "ready" && settings?.enabled !== false &&
+    isWorkspaceProvider(plugin.manifestJson) ? workspaceWorkerRefusal(pluginId, worker) : null;
+  if (refusal) throw refusal;
+  if (
+    !workers ||
+    !plugin ||
+    plugin.status !== "ready" ||
+    settings?.enabled === false ||
+    !isWorkspaceProvider(plugin.manifestJson) ||
+    !worker?.supportedMethods?.includes("workspaceOperation")
+  ) {
+    throw conflict("The workspace storage plugin is unavailable");
+  }
+  return plugin;
+}
 
 export async function listProjectWorkspaceProviders(db: ProviderDb, companyId: string) {
   const rows = await db.select({ plugin: plugins, enabled: pluginCompanySettings.enabled })

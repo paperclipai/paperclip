@@ -56,6 +56,16 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+/**
+ * Error details an HTTP caller may see. `execution` is the call's audit record
+ * (request IDs, timings, the server-side stack of an error); the audit keeps
+ * it, and callers never need it. Agents paste errors into task comments.
+ */
+function callerErrorDetails(details: Record<string, unknown>): Record<string, unknown> {
+  const { execution: _auditOnly, ...rest } = details;
+  return rest;
+}
+
 async function cancellableRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
   const controller = new AbortController();
   const aborted = () => controller.abort();
@@ -87,21 +97,28 @@ async function handleMcpGatewayProtocol(
     const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
     const id = body.id ?? null;
     if (body.method === "initialize") {
-      await toolGateway.initializeNamedGatewayProtocol({
+      const session = await toolGateway.initializeNamedGatewayProtocol({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
       });
+      const allowedActions = session.gatewayTokenAllowedActions;
+      const mayList = (action: "tools/list" | "resources/list" | "prompts/list") =>
+        !allowedActions || allowedActions.includes(action);
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
           protocolVersion: "2025-03-26",
-          capabilities: { tools: {}, resources: {}, prompts: {} },
+          capabilities: {
+            ...(mayList("tools/list") ? { tools: {} } : {}),
+            ...(mayList("resources/list") ? { resources: {} } : {}),
+            ...(mayList("prompts/list") ? { prompts: {} } : {}),
+          },
           serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
           _meta: {
-            "paperclip/mcp-app-ui": "unsupported",
-            "paperclip/mcp-app-ui-detail": "Interactive ui:// iframe hosting is not available in Paperclip Runner.",
+            "paperclip/mcp-app-ui": "host_rendered",
+            "paperclip/mcp-app-ui-detail": "Paperclip renders MCP Apps ui:// views in the task chat. The gateway does not forward them to clients.",
           },
         },
       });
@@ -169,7 +186,7 @@ async function handleMcpGatewayProtocol(
       } as const;
       const contextMethod = contextMethods[name as keyof typeof contextMethods];
       if (contextMethod) {
-        const result = await toolGateway.executeContextForNamedGateway({
+        const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
           ...locator,
           bearerToken: token,
           method: contextMethod,
@@ -177,7 +194,8 @@ async function handleMcpGatewayProtocol(
             ? params.arguments as Record<string, unknown>
             : {},
           callerHeaders: headers,
-        });
+          signal,
+        }));
         res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
         return;
       }
@@ -208,13 +226,14 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (["resources/list", "resources/read", "prompts/list", "prompts/get"].includes(body.method ?? "")) {
-      const result = await toolGateway.executeContextForNamedGateway({
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
         ...locator,
         bearerToken: token,
         method: body.method as "resources/list" | "resources/read" | "prompts/list" | "prompts/get",
         params: body.params ?? {},
         callerHeaders: headers,
-      });
+        signal,
+      }));
       res.json({ jsonrpc: "2.0", id, result });
       return;
     }
@@ -237,7 +256,7 @@ async function handleMcpGatewayProtocol(
       res.status(err.status).json({
         jsonrpc: "2.0",
         id,
-        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
+        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...callerErrorDetails(err.details) } },
       });
       return;
     }
@@ -333,7 +352,7 @@ function sendGatewayError(res: import("express").Response, err: unknown) {
     res.status(err.status).json({
       error: err.message,
       reasonCode: err.reasonCode,
-      ...err.details,
+      ...callerErrorDetails(err.details),
     });
     return;
   }

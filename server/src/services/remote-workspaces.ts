@@ -8,11 +8,13 @@ import { mkdtemp, readFile, rm, statfs } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { crashPoint } from "@paperclipai/shared/crash-points";
+import { sandboxDiskFullFaultTarget } from "./sandbox-disk-full-fault.js";
 import {
   companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
 } from "@paperclipai/db";
 import {
-  readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema,
+  adapterSupportsRemoteManagedEnvironments, readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema,
   type RemoteWorkspaceAuthority, type RemoteWorkspaceRunReference, type RemoteWorkspaceSource,
   type EnvironmentLease,
 } from "@paperclipai/shared";
@@ -31,7 +33,7 @@ import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
   RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause, hasRemoteRecoveryAttachment,
   requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, type RemoteWorkspaceRestoreStep,
-  type RemoteWorkspaceSavePhaseTiming,
+  type RemoteWorkspaceSavePhaseTiming, syncRemoteWorkspaceRecoveryDirectory,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, findUnchangedWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, uploadWorkspaceSnapshot,
@@ -92,25 +94,32 @@ function sameExportLocation(value: unknown, location: NonNullable<RemoteWorkspac
   return (["environmentId", "leaseId", "providerLeaseId", "remoteCwd"] as const).every(key => recorded[key] === location[key]);
 }
 
+export function supportsSshRemoteWorkspace(adapterType: string, environmentDriver: string | null | undefined) {
+  return environmentDriver === "ssh" && adapterSupportsRemoteManagedEnvironments(adapterType);
+}
+
 export function shouldUseRemoteWorkspaces(input: {
   adapterType: string; environmentDriver: string | null; experimentalEnabled: boolean; existingWorkspace?: { metadata?: Record<string, unknown> | null } | null;
 }) {
   const enrolled = readRemoteWorkspaceAuthority(input.existingWorkspace?.metadata) !== null;
-  if (enrolled && (input.adapterType !== "paperclip_runner" || input.environmentDriver !== "sandbox")) {
-    throw conflict("This workspace requires its native sandbox execution environment.", { code: "remote_workspace_execution_required" });
+  const supported = input.adapterType === "paperclip_runner" && input.environmentDriver === "sandbox"
+    || supportsSshRemoteWorkspace(input.adapterType, input.environmentDriver);
+  if (enrolled && !supported) {
+    throw conflict("This workspace requires a supported remote execution environment.", { code: "remote_workspace_execution_required" });
   }
   if (enrolled) return true;
   // Existing host authority changes only through the explicit import workflow.
-  if (input.existingWorkspace || !input.experimentalEnabled || input.adapterType !== "paperclip_runner"
-    || input.environmentDriver !== "sandbox") return false;
+  if (input.existingWorkspace || !input.experimentalEnabled || !supported) return false;
   return configuredRemoteWorkspacePersistence() !== null;
 }
 
 export function assertEphemeralWorkspaceExecution(input: {
   externalConversation: boolean; adapterType: string;
   pluginTaskWorkspace: boolean; remoteAuthority: boolean;
+  environmentDriver?: string | null;
 }) {
   if (process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" || input.externalConversation) return;
+  if (input.remoteAuthority && supportsSshRemoteWorkspace(input.adapterType, input.environmentDriver)) return;
   // Runtime selection has not promoted a fresh run yet. Validate storage here;
   if (input.adapterType !== "paperclip_runner"
     || (!input.pluginTaskWorkspace && !input.remoteAuthority)) {
@@ -119,8 +128,13 @@ export function assertEphemeralWorkspaceExecution(input: {
   }
 }
 
-export function assertEphemeralNativeRuntime(native: boolean) {
-  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && !native) {
+export function assertEphemeralNativeRuntime(native: boolean, ssh?: {
+  adapterType: string; environmentDriver: string | null; remoteAuthority: boolean;
+  remoteCwd: string | null; authorityCwd: string | null;
+}) {
+  const durableSsh = ssh?.remoteAuthority && supportsSshRemoteWorkspace(ssh.adapterType, ssh.environmentDriver)
+    && Boolean(ssh.remoteCwd) && ssh.remoteCwd === ssh.authorityCwd;
+  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && !native && !durableSsh) {
     throw unprocessable("Volume-free servers require native Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
   }
@@ -554,9 +568,8 @@ export async function prepareRemoteWorkspace(input: {
           const provenance = await readFile(path.join(item.path, "provenance.json"), "utf8");
           const exists = await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId,
             provenance });
-          if (!exists) await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
-              kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
-            }] }]);
+          if (!exists) await syncRemoteWorkspaceRecoveryDirectory({ target,
+            sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative) });
           recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative, provenance });
         }
       } finally { await removeTaskDirectoryTree(scratch); }
@@ -618,6 +631,12 @@ export async function prepareRemoteWorkspace(input: {
     return { workspace: savedWorkspace!, lease: savedLease! as EnvironmentLease, remoteRoot, reference: runReference };
   });
   target.remoteCwd = remoteRoot;
+  // Counted only for a preparation that published an unchanged baseline (a
+  // restore of a saved version), so the point exercises the saved-root handoff.
+  const publishedBaseline = readUnchangedBaseline(prepared.workspace.metadata);
+  if (publishedBaseline?.runId === input.runId && publishedBaseline.epoch === prepared.reference.epoch && !publishedBaseline.releasedAt) {
+    crashPoint("remote_workspace.prepare.after_publish_before_provision");
+  }
   if (restoredExport?.cleanupPending) await cleanupSavedExports({ db: input.db, companyId: input.workspace.companyId,
     workspaceId: input.workspace.id, location: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.location!, target,
     assertOwned: input.assertOwned ?? (async () => undefined) });
@@ -905,7 +924,9 @@ export async function saveRemoteWorkspace(input: {
     const existingUpload = snapshot.status === "uploaded" ? await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId,
       workspaceId: input.workspace.id, snapshotId: snapshot.id }) : null;
     if (existingUpload) timing.reusedUpload = true;
-    captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ target, remoteCwd: expected.location.remoteCwd,
+    captured = existingUpload ? null : await captureRemoteWorkspaceArchive({ remoteCwd: expected.location.remoteCwd,
+      // Test-only DF1 hook (sandbox-disk-full-fault.ts): the target itself unless a harness armed this save.
+      target: sandboxDiskFullFaultTarget(target, { boundary, issueId: operation.issueId, runId: input.runId }),
       operationId: operation.id, timing });
     await input.assertOwned();
     const uploadStarted = performance.now();
@@ -916,7 +937,8 @@ export async function saveRemoteWorkspace(input: {
         archiveSha256: captured.sha256, archiveBytes: captured.byteSize, timing: storageTiming }) : null;
     const saved = unchanged ?? await uploadWorkspaceSnapshot({ db: input.db, storage, snapshotId: snapshot.id,
       companyId: input.workspace.companyId, workspaceId: input.workspace.id, archivePath: captured?.archivePath ?? "",
-      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: storageTiming });
+      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: storageTiming,
+      ...(captured ? { expectedArchive: { sha256: captured.sha256, byteSize: captured.byteSize } } : {}) });
     timing.uploadMs = Math.max(0, Math.round(performance.now() - uploadStarted));
     await input.assertOwned();
     const publishStarted = performance.now();

@@ -40,6 +40,13 @@ async function observeCreation(ctx: ChatCatalogContext, state: Record<string, un
   }
   return { ...o, cases, handoffs, taskDocuments, documentVersions };
 }
+/** The CEO's own chat run on the standing conversation that was running when the kickoff handoff was saved. */
+function kickoffSourceRun(o: CaseCreationObservation, kickoff: CaseHandoff | undefined) {
+  const at = Date.parse(String(kickoff?.createdAt)), sourceId = (o.state.task as Entity | undefined)?.id;
+  if (!kickoff || !Number.isFinite(at) || !sourceId) return undefined;
+  return o.runs.find(run => run.agentId === o.leadId && run.contextSnapshot?.issueId === sourceId && Date.parse(String(run.startedAt)) <= at
+    && (!(run as { finishedAt?: string | null }).finishedAt || at <= Date.parse(String((run as { finishedAt?: string | null }).finishedAt))));
+}
 function creationObservation(value: unknown): CaseCreationObservation | undefined {
   const o = value as CaseCreationObservation;
   return observation(value) && Array.isArray(o.cases) && !!o.handoffs && !!o.taskDocuments && !!o.documentVersions ? o : undefined;
@@ -54,8 +61,11 @@ export function gradeIntegratorCaseCreation(value: unknown) {
     && !!primary && o.tasks.filter(task => task.id !== (o.state.task as Entity | undefined)?.id).length === 1, "One actual company case has one primary task; the prerequisite customer brief remains a separate original record.");
   c.add("structured-customer-facts", preservesCustomerBugFacts(row?.fields), "Structured case fields preserve the actual customer, device/browser, reproduction and expected versus observed behavior; prose may be paraphrased.");
   const kickoff = row && o.handoffs[row.id]?.filter(handoff => handoff.version === 1);
+  // A handoff's sourceRunId names the run that held the task being handed off, so a kickoff that creates its
+  // primary task has none (gha-43101125481). Bind the kickoff to the measured CEO chat run active when it was saved.
+  const kickoffRun = kickoffSourceRun(o, kickoff?.[0]);
   c.add("real-first-morgan-kickoff", !!worker && kickoff?.length === 1 && kickoff[0]?.caseId === row?.id && kickoff[0]?.issueId === primary?.id && kickoff[0]?.toAgentId === worker.id
-    && kickoff[0]?.actorId === o.leadId && !!kickoff[0]?.sourceRunId && o.runs.some(run => run.id === kickoff[0]?.sourceRunId && run.agentId === o.leadId)
+    && kickoff[0]?.actorId === o.leadId && !!kickoffRun
     && ["delivered", "completed"].includes(kickoff[0]?.state ?? "")
     && o.runs.some(run => run.agentId === worker.id && run.contextSnapshot?.issueId === primary?.id && ["queued", "running", "succeeded"].includes(run.status)), "The real measured CEO starts the primary task with Morgan as its first actual investigation recipient.");
   const docs = primary ? o.taskDocuments[primary.id] ?? [] : [];
@@ -63,8 +73,14 @@ export function gradeIntegratorCaseCreation(value: unknown) {
   const workerRun = o.runs.find(run => run.agentId === worker?.id && run.contextSnapshot?.issueId === primary?.id);
   const savedBeforeStart = (doc: IssueDocument | undefined, content: (body: string) => boolean) => !!doc && !!primary && doc.issueId === primary.id && doc.companyId === o.companyId
     && !!workerRun && o.documentVersions[`${primary.id}:${doc.key}`]?.some(revision => revision.issueId === primary.id && revision.documentId === doc.id && revision.createdByAgentId === o.leadId
-    && content(revision.body) && revision.createdByRunId === kickoff?.[0]?.sourceRunId && Date.parse(String(revision.createdAt)) <= Date.parse(String(workerRun.startedAt)));
+    && content(revision.body) && !!kickoffRun && revision.createdByRunId === kickoffRun.id && Date.parse(String(revision.createdAt)) <= Date.parse(String(workerRun.startedAt)));
   c.add("required-documents-persist-before-investigation", savedBeforeStart(workflow, body => /Morgan/i.test(body) && /\b(?:review|handoff|hand.off|owner)\b/i.test(body)) && savedBeforeStart(brief, briefHasFacts), "The primary task owns an attributed saved brief and workflow describing Morgan, owners and later handoffs before Morgan's run begins; a later repaired document cannot rescue a missing initial brief.");
+  // Morgan may legitimately hand the case back to the CEO (e.g. blocked without app access); that wakes the CEO on the
+  // primary task once. Any other CEO run outside this conversation is undeclared work.
+  const handbacks = o.runs.filter(run => run.agentId === o.leadId && run.contextSnapshot?.issueId !== (o.state.task as Entity | undefined)?.id);
+  c.add("only-declared-case-handback-to-ceo", handbacks.length <= 1 && handbacks.every(run => run.contextSnapshot?.issueId === primary?.id && run.contextSnapshot?.wakeReason === "case_handoff"
+    && !!row && (o.handoffs[row.id] ?? []).some(handoff => handoff.version > 1 && handoff.issueId === primary?.id && handoff.toAgentId === o.leadId && handoff.actorId === worker?.id)),
+  "Beyond its chat turn, the CEO runs at most once, on the primary task, woken by Morgan's own case handoff back to it.");
   c.add("case-and-primary-task-links", !!row && !!primary && !!(resultHref(o, row.id, "cases") ?? resultHref(o, row.identifier, "cases")) && hasLink(o, "issues", primary), "Chat links the actual case and primary task instead of a passive record with a fictional investigation claim.");
   return c.result();
 }
@@ -93,6 +109,7 @@ export const integratorCaseCreationCases = [integratorDefinition("cases", "cases
   const taskHref = o.links.find(link => hasLink({ ...o, links: [link] }, "issues", primary)); if (!taskHref) throw new Error("Missing primary task link");
   await inspectResult(ctx, new URL(taskHref, o.origin).pathname, primary.title!, taskHref);
 }, { authentication: "human-session", queryAttachments: factualContextQueryAttachment("customer-bug-brief.md"), sourceFiles: ["chat-catalog-domains/integrator-case-create.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"],
-  expectedRunCount: 2, minimumRunCount: 2, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 }, attemptTimeoutMs: 420_000,
+  oracleVersion: "paperclip.chat-catalog.integrator.case-create.v2",
+  expectedRunCount: 3, minimumRunCount: 2, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1, maximumLeadCaseHandbackRuns: 1 }, attemptTimeoutMs: 420_000,
   async cleanup(ctx) { const value = previous.get(ctx); if (value !== undefined) { await ctx.input.api.patch("/api/instance/settings/experimental", { enableCases: value }); previous.delete(ctx); } },
 })];

@@ -190,6 +190,11 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
   and OpenCode) passed 2 of 2 on master. The save-back did not block the task. The harness keeps no
   evidence for passing tasks, so it is not verified that the link existed at save-back time.
 - Proposed (not built): `DF1`, which fills the sandbox disk to ENOSPC before result copy-back.
+- Built (2026-11-11): `DF1` (`--faults DF1`, `--env daytona`). A test-only server hook makes the
+  task's final saves report a full sandbox disk until the harness clears it, instead of filling a
+  real disk. See "Sandbox disk full (DF1)" in `tests/restart-chaos/README.md`. First wave
+  `w-20261111T131941-s9412` (Daytona, R1, Codex): the task rested with `sandbox_disk_full` and the
+  API offered Retry, but the board showed "Recover saved files" and no Retry button.
 
 ### E: Daytona capacity outage (18 runs, mostly self-healing)
 
@@ -274,7 +279,7 @@ working hours is about 40 minutes. Every native run longer than about 40 minutes
 | K15 redeploy into a new process space and deployment identity | R, P, L (and A with `--upgrade-from`) | `--faults K15` | Implemented, unit-tested. Five Daytona waves are recorded below. |
 | EP1 environment-provider 5xx window | E | — | Proposed |
 | F1 absolute symlink kept in the repository workspace | F (unsafe-symlink save-back) | `--workloads F1` | Implemented, unit-tested. Daytona wave: 2 of 2 pass on master. |
-| DF1 sandbox disk full | F (ENOSPC save-back) | — | Proposed |
+| DF1 sandbox disk full | F (ENOSPC save-back) | — | Built (test-only save hook) |
 
 ### Waves on master 8f6ca25976
 
@@ -307,3 +312,41 @@ What this shows:
 - The next scenario to build is **K15 with `--upgrade-from` on Daytona**: start with the older
   checkout and its image, redeploy to the current checkout, and keep the older runner in the
   retained sandboxes. Today the Daytona image check refuses that mixed state on purpose.
+
+### Follow-up: long mid-tool outages and server stalls (PR #20711)
+
+Built after review by the class R and class L fix owners:
+
+- `--k15-hold-seconds` holds a K15 outage, because staging deploys were down 4–7 minutes.
+- The T1 workload keeps a shell tool running across the fault, and `fault_crossed_tool` proves it.
+- Sandbox-side Runner evidence is captured in `results/<wave>/daytona-runner/`.
+- TM1 stalls now run on Daytona, with `--tm1-hold-seconds`.
+
+Class L turned out not to be a deploy. The server process stalled for about 100 s at 08:19Z on Nov 10.
+
+| Wave | Revision | Scenario | Result |
+| --- | --- | --- | --- |
+| `w-20261111T015441-s9310` | 8f6ca25976 | K15 hold 267–408 s, T1, OpenCode | 4 of 4 pass. The Runner was alive through every outage. |
+| `w-20261111T022637-s9311` | 8f6ca25976 | K15 hold 300 s, T1, OpenCode and Claude | 4 of 4 pass. The stop captures show the T1 loop running. |
+| `w-20261111T025307-s9320` | a1ec05a1a4 | K15 hold 460–482 s, past the Runner's 420 s reconnect grace | 4 of 4 pass. The same `runnerd` PID was alive 491–549 s after the stop, every sandbox was `started`, and there was no `transport_reconnect_grace_exceeded`. |
+| `w-20261111T034105-s9330` | a1ec05a1a4 | TM1 70–120 s at `--fault-after-seconds 10`, A1, all three adapters | **RED, 1 of 3 fail.** An OpenCode run was stalled at `native.process_start_requested`. Afterwards it waited forever on `native.recovery.transition` with `reason: controller_still_alive` and `restartKind: hard`. The controller it waited for was its own live, unrestarted process. No Retry was offered. |
+| `w-20261111T040439-s9331` | a1ec05a1a4 | TM1 70–120 s mid-tool, T1, all three adapters | **RED, 3 of 3 fail.** After the stall, `native.session.execute` ended, but the run never got another event: no terminal and no recovery. It stayed `running` for more than 20 minutes with no Retry. Each task crossed three back-to-back stalls. |
+| `w-20261111T043759-s9340` | a1ec05a1a4 | One TM1 stall of 90 s mid-tool, T1, Codex | 1 of 1 pass. `fault_crossed_tool` confirms the stall landed in the loop. The mid-tool wedge needs repeated stalls; one did not cause it. |
+
+Conclusions:
+
+- Class R's Runner loss (`runner_remote_process_identity_unavailable`) does **not** reproduce on current
+  master with the e2e image, even past the reconnect grace.
+- Staging differs from these waves in four ways:
+  - its sandboxes come from the managed fleet snapshot (`fleet-sbx-…`, last updated Nov 5), not the e2e image;
+  - it ran older runner builds;
+  - Railway drains the server before it stops;
+  - the cloud manages the sandbox lifecycle.
+- The next step needs staging-side `runnerd.stderr.log` from a retained sandbox of a failed run.
+- A control-plane stall **without** a restart is a new open product class. A native run whose lease
+  lapses while its own server is frozen is never taken back by that same server:
+  - **stall during preparation:** the run waits forever on `controller_still_alive`;
+  - **stall mid-turn:** the run is orphaned while still `running`. This took three back-to-back stalls of about 90 s; a single 90 s stall recovered.
+- #20694 fixed the legacy `preparing` case only.
+- Code pointer: `server/src/services/native-runtime/native-restart-recovery.ts` (the same-boot owner is not
+  recognized as the server itself).

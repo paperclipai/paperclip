@@ -13,7 +13,7 @@ it("shows the uploaded image in small and animated-character surfaces, then retu
   const container = document.createElement("div");
   const root = createRoot(container);
   try {
-    await act(async () => root.render(<><AgentAvatar appearance={appearance} /><AgentCharacter appearance={appearance} /></>));
+    await act(async () => root.render(<><AgentAvatar appearance={appearance} view="portrait" /><AgentCharacter appearance={appearance} /></>));
     for (const image of container.querySelectorAll("img")) {
       expect(image.getAttribute("src")).toBe("/api/assets/22222222-2222-4222-8222-222222222222/content");
       expect(image.hasAttribute("srcset")).toBe(false);

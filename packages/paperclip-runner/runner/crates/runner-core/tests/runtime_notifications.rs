@@ -57,6 +57,7 @@ fn real_cli_uses_relative_state_from_another_directory_and_never_process_run_ide
         reconnect_grace: None,
         max_runtime: Duration::ZERO,
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let store = DurableStateStore::new(&path).unwrap();
     let (mut state, _) = store.load_or_create(&config).unwrap();

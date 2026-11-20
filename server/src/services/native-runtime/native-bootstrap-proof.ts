@@ -17,6 +17,17 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * Whether this attempt launches its own fresh Runner bootstrap, so that its
+ * unclaimed controller checkpoint can prove a startup failure retryable. A
+ * `bootstrap_incomplete` restart does: it stops and quarantines the unfinished
+ * bootstrap, then launches a new one on the same run. Other recoveries continue
+ * an existing Runner or provider session.
+ */
+export function attemptLaunchesFreshBootstrap(restartRecovery: { kind: string } | null | undefined): boolean {
+  return !restartRecovery || restartRecovery.kind === "bootstrap_incomplete";
+}
+
 /** The runner never connected, so every bootstrap command is still undelivered. */
 export function runnerdStateIsUnconnectedBootstrap(state: Record<string, unknown>): boolean {
   const commands = Array.isArray(state.commands) ? state.commands.map(record) : [];

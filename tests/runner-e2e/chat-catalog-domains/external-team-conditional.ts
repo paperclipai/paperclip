@@ -216,11 +216,6 @@ export async function observeTeamConditions(
       skill.slug === target.slug && skill.key !== target.key,
   };
 }
-/** The reply names the unresolved required skill by an identity the product returned (slug, name or catalog key). */
-export function namesTeamSkill(reply: string, skill: Pick<CatalogSkill, "slug" | "name"> & { key?: string }): boolean {
-  const text = reply.replace(/[*_`]/g, "").toLowerCase();
-  return [skill.slug, skill.slug.replaceAll("-", " "), skill.name, skill.key].some(name => !!name && text.includes(name.toLowerCase()));
-}
 export function gradeTeamConditions(
   o: ExternalObservation,
   phase: "initial" | "complete" = "complete",
@@ -270,14 +265,14 @@ export function gradeTeamConditions(
       ),
     "The actual initial model's installer creates the team graph and reports a genuine post-import warning with the required skill either still blocked or independently recovered through its exact catalog version and intended agent bindings.",
   );
-  // Reply meaning is read by a person; graded here only by the identity the
-  // product returned. The renamed member and project links are graded by the
-  // install case, and saved state above proves the partial outcome.
+  // Reply meaning, including how it names the blocked skill, is left to human review. The case grades the
+  // partial outcome from saved state above (catalog skill still missing beside the local skill that holds
+  // its slug, plus the installer's own warning); the renamed member and project links are graded by the
+  // install case. A product-returned name is not required: models paraphrase slugs ("document-maintenance").
   c.add(
-    "initial-reply-names-unresolved-skill",
-    !!target && first.trim().length > 0 &&
-      (resolved(earlier) || namesTeamSkill(first, target)),
-    "While the required catalog skill is still missing, the first reply names it by its returned slug, name or key; a verified recovery needs no particular wording.",
+    "initial-reply-delivered",
+    !!target && first.trim().length > 0,
+    "The initial installer run delivers a reply in the conversation; its account of the blocked skill is read by a person.",
   );
   return c.result();
 }

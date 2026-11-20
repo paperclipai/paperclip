@@ -150,6 +150,7 @@ function claimsUnrequestedChange(reply: string): boolean {
 }
 
 import { observeInternal } from "./internal-support.js";
+import { waitForTurnReplyLinks } from "./identity-support.js";
 import { pollUntil } from "../api.js";
 
 function purposeVariants(): ChatCatalogCase {
@@ -171,6 +172,8 @@ function purposeVariants(): ChatCatalogCase {
       foreignRequest: `Why are we doing the website task ${foreignTask.identifier ?? foreignTask.id} in our other company?` };
   });
   return { ...base, coverageGaps: [], expectedRunCount: 3, expectedHumanMessageCount: 3, attemptTimeoutMs: 600_000,
+    // v2: each phase is captured after its saved reply renders, so its rendered links are present.
+    oracleVersion: "paperclip.chat-catalog.internal.goals-purpose.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"],
     async act(ctx, state) {
       const first = await waitForPurposePhase(ctx, state, 1);
       if (!initialPurposeValid(first)) throw new Error("Initial purpose explanation does not match its saved chain and rationale");
@@ -197,9 +200,12 @@ function purposeVariants(): ChatCatalogCase {
   };
 }
 async function waitForPurposePhase(ctx: ChatCatalogContext, state: Record<string, unknown>, count: number) {
-  return pollUntil({ label: `Purpose explanation phase ${count}`, deadlineAt: Date.now() + 150_000,
+  await pollUntil({ label: `Purpose explanation phase ${count}`, deadlineAt: Date.now() + 150_000,
     load: () => observeInternal(ctx, state), accept: o => o.runs.length === count && o.runs.every(row => row.status === "succeeded")
       && ctx.issue()?.conversationState === "waiting" });
+  // Finished runs and a waiting chat precede the saved reply's render; capture the phase only after it renders.
+  await waitForTurnReplyLinks(ctx);
+  return observeInternal(ctx, state);
 }
 async function sourceReplies(ctx: ChatCatalogContext) {
   const source = ctx.issue(); if (!source) throw new Error("Purpose phase lost its source conversation");
