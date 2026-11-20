@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 import { describe, expect, it } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import {
@@ -7,7 +8,7 @@ import {
 
 describe("Cloud agent harness choices", () => {
   it("offers exactly the released harnesses even with experiments and candidate access", async () => {
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableOpenAiDot: true, enableMuse: true });
     state.adapters = state.adapters.map((adapter: any) => adapter.type === "paperclip_runner"
       ? { ...adapter, candidateHarnesses: [{ agent: "antigravity", model: "candidate-model" }] }
@@ -24,7 +25,7 @@ describe("Cloud agent harness choices", () => {
   });
 
   it.each(["antigravity", "kimi", "pi", "cursor_cloud", "claude_managed", "aws_agentcore", "openai_dot", "muse"])("withholds native %s setup and model controls on direct links", async provider => {
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableOpenAiDot: true, enableMuse: true });
     await render("paperclip_runner", provider);
     expect(container.textContent).toContain("This adapter is unavailable");

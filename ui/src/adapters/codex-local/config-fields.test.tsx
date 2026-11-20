@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+import { sampleHarnesses } from "@/test-support/harness-availability";
 import { CodexLocalConfigFields } from "./config-fields";
 import { buildCodexRunnerConfig } from "./config-fields";
 import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
@@ -17,7 +18,7 @@ import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
 
 beforeAll(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); });
 
-async function renderMarkup(node: ReactNode, expand?: string, inspect?: (container: HTMLElement) => void): Promise<string> {
+async function renderMarkup(node: ReactNode, expand?: string, inspect?: (container: HTMLElement) => void | Promise<void>): Promise<string> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -26,7 +27,7 @@ async function renderMarkup(node: ReactNode, expand?: string, inspect?: (contain
   if (expand) await act(async () => {
     container.querySelector(`[aria-label="${expand}"]`)?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   });
-  inspect?.(container);
+  await inspect?.(container);
   const html = container.innerHTML + Array.from(document.body.children).filter(child => child !== container).map(child => child.outerHTML).join("");
   await act(async () => root.unmount());
   container.remove();
@@ -49,7 +50,7 @@ async function renderRunner(config: Record<string, unknown>, expand?: string, in
         mark={() => undefined}
         models={[]}
         hideInstructionsFile
-        cloudHarnessesOnly={cloud}
+        availableHarnesses={cloud ? sampleHarnesses : undefined}
         openAiDotEnabled={openAiDotEnabled}
       />
     </TooltipProvider>,
@@ -70,6 +71,22 @@ it("offers only released ACP profiles on Cloud", async () => {
   expect(html).toContain("Claude");
   expect(html).toContain("Copilot");
   for (const label of ["Antigravity", "Kimi", "Cursor", "qualification pending"]) expect(html).not.toContain(label);
+});
+
+it("selects an allowed ACP default when deployment configuration excludes Claude", async () => {
+  const changes: Record<string, unknown> = {};
+  await renderMarkup(<TooltipProvider><CodexLocalConfigFields mode="edit" isCreate={false}
+    adapterType="paperclip_runner" values={null} set={null} config={{ provider: "codex" }}
+    eff={(_group, _field, original) => original} mark={(_group, field, value) => { changes[field] = value; }}
+    models={[]} hideInstructionsFile availableHarnesses={["copilot_runtime"]} />
+  </TooltipProvider>, "Harness", async () => {
+    const option = [...document.querySelectorAll('[role="option"]')].find(element => element.textContent?.includes("ACP agents"));
+    expect(option).toBeDefined();
+    await act(async () => option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(changes.provider).toBe("acpx");
+    expect(changes.acpxAgent).toBe("copilot");
+    expect(changes.model).toBe("");
+  });
 });
 
 async function selectField(container: HTMLElement, label: string, value: string) {

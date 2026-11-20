@@ -1,22 +1,23 @@
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
-import { isCloudHarnessAllowed, isCloudRunnerProviderAllowed } from "./cloud-harness-policy";
+import { unrestrictedCloudHarnessPolicy, type CloudHarnessPolicy } from "./cloud-harness-policy";
 
 /** Creation policy shared by the picker and direct setup links. */
 export function isNewAgentAdapterAllowed(
   type: string,
   {
     cloud,
+    harnessPolicy = unrestrictedCloudHarnessPolicy,
     nativeRunnerEnabled,
     openAiDotEnabled = false,
     museEnabled = false,
     runnerProvider,
     candidateHarnesses,
-  }: { cloud: boolean; nativeRunnerEnabled: boolean; openAiDotEnabled?: boolean; museEnabled?: boolean; runnerProvider?: string;
+  }: { cloud: boolean; harnessPolicy?: CloudHarnessPolicy; nativeRunnerEnabled: boolean; openAiDotEnabled?: boolean; museEnabled?: boolean; runnerProvider?: string;
     candidateHarnesses?: readonly { agent: "antigravity"; model: string }[] },
 ) {
   if (cloud && !(type === "paperclip_runner"
-    ? isCloudRunnerProviderAllowed(runnerProvider ?? "codex")
-    : isCloudHarnessAllowed(type))) return false;
+    ? harnessPolicy.isCloudRunnerProviderAllowed(runnerProvider ?? "codex")
+    : harnessPolicy.isCloudHarnessAllowed(type))) return false;
   if (type === "openai_dot" || (type === "paperclip_runner" && runnerProvider === "openai_dot")) {
     return openAiDotEnabled;
   }

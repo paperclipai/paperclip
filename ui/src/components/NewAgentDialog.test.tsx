@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -220,7 +221,7 @@ it("offers one Codex harness without a runner/provider tile", async () => {
 });
 it("withholds Cursor Cloud from the hosted picker even when its native backend is available", async () => {
   await act(async () => {
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
     cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters,
       { type: "cursor_cloud", loaded: true, supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
   });
@@ -232,7 +233,7 @@ it("withholds Cursor Cloud from the hosted picker even when its native backend i
 
 it.each([false, true])("withholds unavailable backends and limits Cloud to released harnesses (cloud=%s)", async cloud => {
   await act(async () => {
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: cloud ? { managed: true } : null });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: cloud ? { managed: true, availableHarnesses: sampleHarnesses } : null });
     cache.setQueryData(queryKeys.adapters.availability("company-1", null), [
       { type: "codex_local", loaded: true, supportedRunners: [] },
       { type: "opencode_local", loaded: true, supportedRunners: [] },
@@ -250,7 +251,7 @@ it.each([false, true])("withholds unavailable backends and limits Cloud to relea
 
 it.each(["gate off", "native unavailable"])("keeps hosted Cursor Cloud hidden when %s", async reason => {
   await act(async () => {
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
     if (reason === "gate off") cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: false });
     cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters,
       { type: "cursor_cloud", loaded: true, supportedRunners: reason === "native unavailable" ? ["legacy"] : ["paperclip"], defaultRunner: "legacy" }]);
@@ -424,7 +425,7 @@ it("waits for company approval before issuing a Dot capability", async () => {
 it("allows the scoped Dot invitation on cloud when its prerequisites are enabled", async () => {
   await act(async () => {
     cache.setQueryData(queryKeys.instance.experimentalSettings, { enableOpenAiDot: true, enablePublicMcp: true });
-    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
   });
   await click("Invite an external agent");
   const dot = [...document.querySelectorAll("button")].find(b => b.textContent?.startsWith("Dot"))!;

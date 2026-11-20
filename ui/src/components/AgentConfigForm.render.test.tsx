@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -342,7 +343,7 @@ async function renderForm(
   const root = createRoot(container);
   const onSave = vi.fn();
   const queryClient = createFormQueryClient();
-  if (options.cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+  if (options.cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
 
   await act(async () => {
     renderFormView(root, queryClient,

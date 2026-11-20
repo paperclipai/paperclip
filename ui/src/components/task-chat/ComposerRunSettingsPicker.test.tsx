@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { act, useState, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
@@ -66,7 +67,7 @@ describe("composer assignee picker", () => {
     const selectedAgent = { ...agent, adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent, model: "saved-model" } } as Agent;
     const client = render(vi.fn(), vi.fn(), false, { agents: new Map([[selectedAgent.id, selectedAgent]]) });
     await act(async () => {
-      client.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+      client.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     expect(document.querySelector('[aria-label="Select model and effort"]') !== null).toBe(acpxAgent === "copilot");

@@ -96,7 +96,7 @@ import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
-import { isCloudHarnessAllowed } from "@/lib/cloud-harness-policy";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
@@ -1051,7 +1051,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
   const cloud = Boolean(useCloudInstance());
-  const cloudHarnessAllowed = !cloud || isCloudHarnessAllowed(adapterType, { provider: runnerProvider, acpxAgent: runnerAcpxAgent });
+  const harnessPolicy = useCloudHarnessPolicy();
+  const cloudHarnessAllowed = !cloud || harnessPolicy.isCloudHarnessAllowed(adapterType, { provider: runnerProvider, acpxAgent: runnerAcpxAgent });
   const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
   const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
@@ -1133,7 +1134,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // every adapter without a per-adapter edit.
     hideInstructionsFile: hideInstructionsFile || hideHostPaths || isExternalRunner,
     managedSandboxOnly: hideHostPaths || isExternalRunner,
-    cloudHarnessesOnly: cloud,
+    availableHarnesses: cloud ? harnessPolicy.availableHarnesses : undefined,
     openAiDotEnabled: experimentalSettings?.enableOpenAiDot === true,
     museEnabled: experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true,
   };
@@ -4048,14 +4049,15 @@ export function AdapterTypeDropdown({
   nativeRunnerEnabled?: boolean;
 }) {
   const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(() =>
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
-    ].filter(item => (!cloud || isCloudHarnessAllowed(item.value)) && !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
+    ].filter(item => (!cloud || harnessPolicy.isCloudHarnessAllowed(item.value)) && !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
-    [cloud, disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
+    [cloud, harnessPolicy, disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
     displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
       <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>

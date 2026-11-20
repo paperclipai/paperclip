@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { webcrypto } from "node:crypto";
 import type { ReactNode } from "react";
@@ -338,7 +339,7 @@ describe("CompanyImport", () => {
   async function renderPage(cloud = false) {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    if (cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    if (cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
     const currentRoot = root;
 
     await act(async () => {

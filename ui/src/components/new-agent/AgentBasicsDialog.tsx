@@ -12,6 +12,7 @@ import { ArrowLeft, ArrowRight, Check, ChevronRight } from "lucide-react";
 import { adaptersApi } from "@/api/adapters";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
 import { queryKeys } from "@/lib/queryKeys";
 import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
@@ -71,6 +72,7 @@ export function AgentBasicsDialog({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const experimental = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: instanceSettingsApi.getExperimental,
@@ -88,12 +90,12 @@ export function AgentBasicsDialog({
   const adaptersView = useQueryView(adaptersQuery);
   const adapters = adaptersView.data;
   const nativeRunner = adapters?.find(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled && adapter.supportedRunners?.length !== 0);
-  const copilotAvailable = Boolean(nativeRunner) && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
-  const kimiAvailable = !cloud && Boolean(nativeRunner) && experimental.data?.enableNativeRunner === true
+  const copilotAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("copilot")) && Boolean(nativeRunner) && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
+  const kimiAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("kimi")) && Boolean(nativeRunner) && experimental.data?.enableNativeRunner === true
     && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "kimi" && profile.qualified);
   const antigravityQualified = PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "antigravity" && profile.qualified);
   const antigravityCandidate = nativeRunner?.candidateHarnesses?.some(candidate => candidate.agent === "antigravity");
-  const antigravityAvailable = !cloud && Boolean(nativeRunner);
+  const antigravityAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("antigravity")) && Boolean(nativeRunner);
   const choices = [...(adapters ?? []).filter(
     (adapter) =>
       adapter.loaded &&
@@ -102,6 +104,7 @@ export function AgentBasicsDialog({
       adapter.type !== "paperclip_runner" &&
       isNewAgentAdapterAllowed(adapter.type, {
         cloud,
+        harnessPolicy,
         nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
       }) &&
       (!cloud || adapter.type !== "cursor_cloud" || adapter.supportedRunners?.includes("paperclip")) &&
@@ -114,7 +117,7 @@ export function AgentBasicsDialog({
     && adapters?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled && adapter.supportedRunners?.length !== 0);
   const validAdapter = choices.some((adapter) => adapter.type === adapterType)
     || (experimentalRunnerAvailable && adapterType === "paperclip_runner" && (runnerProvider !== "antigravity" || antigravityQualified)
-      && isNewAgentAdapterAllowed(adapterType, { cloud, nativeRunnerEnabled: true, runnerProvider }));
+      && isNewAgentAdapterAllowed(adapterType, { cloud, harnessPolicy, nativeRunnerEnabled: true, runnerProvider }));
   async function submit() {
     if (busy.current || !name.trim() || (step === "adapter" && !validAdapter)) return;
     busy.current = true;

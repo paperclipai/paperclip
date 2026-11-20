@@ -40,7 +40,7 @@ import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, nativeTaskModelCatalogOpti
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
-import { isCloudHarnessAllowed } from "@/lib/cloud-harness-policy";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { useProjectOrder } from "../../hooks/useProjectOrder";
 import {
   getRecentAssigneeIds,
@@ -760,8 +760,9 @@ export function IssueProperties({
   const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
   const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
   const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const supportsAssigneeOverrides = Boolean(
-    assigneeAdapterType && (!cloud || isCloudHarnessAllowed(assigneeAdapterType, assignee?.adapterConfig))
+    assigneeAdapterType && (!cloud || harnessPolicy.isCloudHarnessAllowed(assigneeAdapterType, assignee?.adapterConfig))
       && (ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType) || nativeCatalog),
   );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);

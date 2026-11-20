@@ -23,7 +23,8 @@ import { teamCatalogApi } from "../api/teamCatalog";
 import { agentsApi } from "../api/agents";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
-import { isCloudHarnessAllowed } from "@/lib/cloud-harness-policy";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
+import { unrestrictedCloudHarnessPolicy, type CloudHarnessPolicy } from "@/lib/cloud-harness-policy";
 import {
   useAdapterRegistryLoaded,
   useDisabledAdaptersSync,
@@ -128,10 +129,11 @@ export function listTeamInstallAdapterTypes(
   disabledTypes: Set<string>,
   adapterRegistryLoaded: boolean,
   cloud = false,
+  harnessPolicy: CloudHarnessPolicy = unrestrictedCloudHarnessPolicy,
 ) {
   return AGENT_ADAPTER_TYPES.filter(
     (type) =>
-      (!cloud || isCloudHarnessAllowed(type)) &&
+      (!cloud || harnessPolicy.isCloudHarnessAllowed(type)) &&
       !TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES.has(type) &&
       !disabledTypes.has(type) &&
       (type !== "paperclip_runner" || adapterRegistryLoaded),
@@ -141,9 +143,9 @@ export function listTeamInstallAdapterTypes(
 export function resolveTeamInstallAdapterType(
   requestedType: string,
   selectableAdapterTypes: readonly string[],
-  { cloud = false, adapterConfig = {} }: { cloud?: boolean; adapterConfig?: Record<string, unknown> } = {},
+  { cloud = false, adapterConfig = {}, harnessPolicy = unrestrictedCloudHarnessPolicy }: { cloud?: boolean; adapterConfig?: Record<string, unknown>; harnessPolicy?: CloudHarnessPolicy } = {},
 ) {
-  if (selectableAdapterTypes.includes(requestedType) && (!cloud || isCloudHarnessAllowed(requestedType, adapterConfig))) return requestedType;
+  if (selectableAdapterTypes.includes(requestedType) && (!cloud || harnessPolicy.isCloudHarnessAllowed(requestedType, adapterConfig))) return requestedType;
   if (selectableAdapterTypes.includes(TEAM_INSTALL_FALLBACK_ADAPTER_TYPE)) {
     return TEAM_INSTALL_FALLBACK_ADAPTER_TYPE;
   }
@@ -1095,9 +1097,10 @@ export function TeamInstallerDialog({
   const disabledAdapterTypes = useDisabledAdaptersSync({ enabled: open });
   const adapterRegistryLoaded = useAdapterRegistryLoaded({ enabled: open });
   const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const selectableAdapterTypes = useMemo(
-    () => listTeamInstallAdapterTypes(disabledAdapterTypes, adapterRegistryLoaded, cloud),
-    [adapterRegistryLoaded, disabledAdapterTypes, cloud],
+    () => listTeamInstallAdapterTypes(disabledAdapterTypes, adapterRegistryLoaded, cloud, harnessPolicy),
+    [adapterRegistryLoaded, disabledAdapterTypes, cloud, harnessPolicy],
   );
 
   // Step 1 — target manager
@@ -1184,12 +1187,12 @@ export function TeamInstallerDialog({
       const adapterType = resolveTeamInstallAdapterType(
         agent.adapterType,
         selectableAdapterTypes,
-        { cloud, adapterConfig: agent.adapterConfig },
+        { cloud, adapterConfig: agent.adapterConfig, harnessPolicy },
       );
       if (!adapterType) {
         throw new Error("Enable a legacy adapter before installing this team.");
       }
-      if (adapterType !== agent.adapterType || (cloud && !isCloudHarnessAllowed(agent.adapterType, agent.adapterConfig))) {
+      if (adapterType !== agent.adapterType || (cloud && !harnessPolicy.isCloudHarnessAllowed(agent.adapterType, agent.adapterConfig))) {
         overrides[agent.slug] = { adapterType,
           ...(cloud ? { adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} } : {}),
         };
@@ -1268,7 +1271,7 @@ export function TeamInstallerDialog({
         !resolveTeamInstallAdapterType(
           adapterOverrides[agent.slug] ?? agent.adapterType,
           selectableAdapterTypes,
-          { cloud, adapterConfig: adapterOverrides[agent.slug] ? {} : agent.adapterConfig },
+          { cloud, adapterConfig: adapterOverrides[agent.slug] ? {} : agent.adapterConfig, harnessPolicy },
         ),
     ),
   );
@@ -1366,6 +1369,7 @@ export function TeamInstallerDialog({
                 adapterOverrides={adapterOverrides}
                 selectableAdapterTypes={selectableAdapterTypes}
                 cloud={cloud}
+                harnessPolicy={harnessPolicy}
                 onAdapterChange={(slug, adapterType) => setAdapterOverrides((cur) => ({ ...cur, [slug]: adapterType }))}
                 secretValues={secretValues}
                 visibleSecretKeys={visibleSecretKeys}
@@ -1791,6 +1795,7 @@ export function StepPreview({
   adapterOverrides,
   selectableAdapterTypes,
   cloud = false,
+  harnessPolicy = unrestrictedCloudHarnessPolicy,
   onAdapterChange,
   secretValues = {},
   visibleSecretKeys = {},
@@ -1809,6 +1814,7 @@ export function StepPreview({
   adapterOverrides: Record<string, string>;
   selectableAdapterTypes: readonly string[];
   cloud?: boolean;
+  harnessPolicy?: CloudHarnessPolicy;
   onAdapterChange: (slug: string, adapterType: string) => void;
   secretValues?: Record<string, string>;
   visibleSecretKeys?: Record<string, boolean>;
@@ -1939,7 +1945,7 @@ export function StepPreview({
             const selected = resolveTeamInstallAdapterType(
               adapterOverrides[agent.slug] ?? agent.adapterType,
               selectableAdapterTypes,
-              { cloud, adapterConfig: adapterOverrides[agent.slug] ? {} : agent.adapterConfig },
+              { cloud, adapterConfig: adapterOverrides[agent.slug] ? {} : agent.adapterConfig, harnessPolicy },
             );
             return (
               <li key={agent.slug} className="flex items-center gap-2 px-3 py-2 text-sm">

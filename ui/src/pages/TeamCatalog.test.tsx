@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { createCloudHarnessPolicy } from "@/lib/cloud-harness-policy";
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -102,7 +104,7 @@ if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
 
 describe("TeamCatalog routes", () => {
   it("limits Cloud team installation choices to released harnesses", () => {
-    expect(listTeamInstallAdapterTypes(new Set(), true, true).sort()).toEqual([
+    expect(listTeamInstallAdapterTypes(new Set(), true, true, createCloudHarnessPolicy(sampleHarnesses)).sort()).toEqual([
       "claude_local", "codex_local", "grok_local", "opencode_local", "paperclip_runner",
     ]);
   });
@@ -277,7 +279,7 @@ describe("TeamCatalog install preview path", () => {
   async function renderPage(cloud = false) {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    if (cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    if (cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>

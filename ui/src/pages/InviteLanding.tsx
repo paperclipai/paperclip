@@ -12,7 +12,7 @@ import { AuthApiError, authApi, authErrorServerMessage } from "../api/auth";
 import { fetchCompanyListForCurrentAccount, useCompanyListQuery } from "../api/companies-query";
 import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
-import { isCloudHarnessAllowed } from "@/lib/cloud-harness-policy";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDate } from "../lib/utils";
@@ -215,6 +215,7 @@ function AwaitingJoinApprovalPanel({
 }
 
 export function InviteLandingPage() {
+  const harnessPolicy = useCloudHarnessPolicy();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { setSelectedCompanyId } = useCompany();
@@ -643,7 +644,7 @@ export function InviteLandingPage() {
                     value={adapterType}
                     onChange={(event) => setAdapterType(event.target.value as AgentAdapterType)}
                   >
-                    {joinAdapterOptions.filter(type => !healthQuery.data?.cloud || isCloudHarnessAllowed(type)).map((type) => (
+                    {joinAdapterOptions.filter(type => !healthQuery.data?.cloud || harnessPolicy.isCloudHarnessAllowed(type)).map((type) => (
                       <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
                         {getAdapterLabel(type)}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
                       </option>
