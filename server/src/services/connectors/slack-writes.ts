@@ -21,6 +21,7 @@ import {
 } from "./slack-authority.js";
 import {
   authorizeSlackWrite,
+  assertPersonalDmToolAllowed,
 } from "./slack-access.js";
 import {
   slackClient,
@@ -90,6 +91,7 @@ export async function executeSlackWrite(
   const api = slackClient(authority.botToken, fetchImpl);
   if (name !== "slack_create_channel" && name !== "slack_open_dm")
     await authorizeSlackWrite(db, authority, api, String(args.channel), SLACK_OTHER_USER_DM_OPTIONS);
+  await assertPersonalDmToolAllowed(db, authority, name, args);
   if (
     name === "slack_invite" &&
     (args.users as string[]).includes(authority.endpoint.botExternalId!)
@@ -174,6 +176,8 @@ export async function executeSlackWrite(
       );
     if (name !== "slack_create_channel" && name !== "slack_open_dm")
       await authorizeSlackWrite(db, authority, api, String(args.channel), SLACK_OTHER_USER_DM_OPTIONS);
+    // After reading personal DMs a task may not open DMs with other people or create channels.
+    await assertPersonalDmToolAllowed(db, authority, name, args);
     if (name === "slack_update_message" || name === "slack_delete_message") {
       const message = await slackMessage(api, args);
       if (!message || message.user !== authority.endpoint.botExternalId)

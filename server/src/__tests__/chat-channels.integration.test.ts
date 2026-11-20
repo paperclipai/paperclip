@@ -11025,6 +11025,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       nextCursor: "older",
       hasMore: true,
     });
+    // A personal DM read is visible across every Slack connection of the company, so a task cannot read
+    // through one connection and post through another.
+    {
+      const { resolveSlackTaskAuthority: resolveAuthority } = await import("../services/connectors/slack-authority.js");
+      const { recordSlackPersonalDmRead, personalDmReaders } = await import("../services/connectors/slack-access.js");
+      const taskAuthority = await resolveAuthority(db, binding);
+      const isolatedIssue = { ...taskAuthority, issueId: randomUUID() };
+      await recordSlackPersonalDmRead(db, isolatedIssue, { id: "DFRIEND" });
+      await expect(personalDmReaders(db, isolatedIssue)).resolves.toEqual([taskAuthority.slackUserId]);
+      const otherConnection = { endpoint: { ...taskAuthority.endpoint, id: randomUUID() }, issueId: isolatedIssue.issueId };
+      await expect(personalDmReaders(db, otherConnection)).resolves.toEqual([taskAuthority.slackUserId]);
+      await expect(personalDmReaders(db, { ...otherConnection, issueId: randomUUID() })).resolves.toEqual([]);
+    }
     vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "slack-tools-integration-signing-secret");
     onTestFinished(() => vi.unstubAllEnvs());
     const originalFetch = globalThis.fetch;
@@ -11235,8 +11248,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     grantedScope = "search:read.public,search:read.private,search:read.files,im:history,im:read,mpim:history,mpim:read";
     await oauth.complete(new URL(dmStart.url).searchParams.get("state")!, "dm-code-2", "owner-user");
     await expect(oauth.status(fixture.companyId, endpoint.id, "owner-user")).resolves.toMatchObject({ connected: true, dmAccess: true });
+    await expect(oauth.dmAccessToken(fixture.companyId, endpoint.id, "owner-user")).resolves.toEqual({ token: "xoxp-search-only-test" });
     await oauth.disconnect(fixture.companyId, endpoint.id, "owner-user");
     await expect(oauth.status(fixture.companyId, endpoint.id, "owner-user")).resolves.toMatchObject({ connected: false, dmAccess: false });
+    await expect(oauth.dmAccessToken(fixture.companyId, endpoint.id, "owner-user")).resolves.toBeNull();
     grantedScope = "search:read.public,search:read.private,search:read.files";
     await expect(oauth.status(randomUUID(), endpoint.id, "owner-user")).rejects.toThrow("not found");
     const { toolProfiles, toolProfileBindings } = await import("@paperclipai/db");

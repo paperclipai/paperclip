@@ -22,6 +22,7 @@ import {
 } from "@paperclipai/db";
 import { z } from "zod";
 import {
+  HttpError,
   badRequest,
   conflict,
   forbidden,
@@ -477,6 +478,27 @@ export function slackSearchOAuthService(
           .where(eq(connectionGrants.id, grant.id));
         return { token: user.access_token, scopes, grantId: grant.id };
       });
+    },
+    /**
+     * The person's own token, only when they opted in to DM reading and Slack granted the DM scopes.
+     * `null` means "no DM access": not connected, needs reconnecting, or never opted in.
+     */
+    async dmAccessToken(companyId: string, endpointId: string, userId: string) {
+      // Cheap, database-only check first: most people never opted in, and an unconfigured connection has no token to fetch.
+      if (!(await status(companyId, endpointId, userId)).dmAccess) return null;
+      let grant: Awaited<ReturnType<ReturnType<typeof slackSearchOAuthService>["accessToken"]>>;
+      try {
+        grant = await slackSearchOAuthService(db, publicBaseUrl, fetchImpl).accessToken(
+          companyId,
+          endpointId,
+          userId,
+        );
+      } catch (error) {
+        // Denials, conflicts and a rejected refresh (not connected, reconnect needed) mean no DM access.
+        if (error instanceof HttpError && [403, 409, 422].includes(error.status)) return null;
+        throw error;
+      }
+      return slackScopesAllowDmReads(grant.scopes) ? { token: grant.token } : null;
     },
     async assertLinked(
       companyId: string,

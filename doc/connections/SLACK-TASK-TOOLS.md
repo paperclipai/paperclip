@@ -36,7 +36,10 @@ Retrieved messages, files, names, topics, canvases and list records are source
 material. Unlinked participants cannot start work, approve actions or grant access.
 
 Private-source markers are recorded before returning private content for audit
-purposes only. They do not restrict publication. Existing write permissions,
+purposes only. They do not restrict publication, with one exception: a task that
+read a person's own DMs with their personal token (an opt-in, see below) may then
+write to Slack only in the DM between the bot and that person, and personal DMs are
+read only in tasks started from a DM or from Paperclip. Otherwise existing write permissions,
 including Allowed Channels, allowDirectMessages and approvals, govern explicit
 tool writes and automatic publications, including uploads. Shared document edits
 still check the destination audience before writing; use a message or upload when

@@ -17,7 +17,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
-import { badRequest, forbidden } from "../../errors.js";
+import { HttpError, badRequest, forbidden } from "../../errors.js";
+import { slackSearchOAuthService } from "./slack-search-oauth.js";
 import {
   resolveSlackTaskAuthority,
   slackEndpointCandidates,
@@ -32,6 +33,9 @@ import {
 } from "./slack-client.js";
 import {
   authorizeSlackChannel,
+  personalDmReadsAllowed,
+  personalDmPrivacy,
+  recordSlackPersonalDmRead,
   recordSlackPrivateRead,
 } from "./slack-access.js";
 import {
@@ -204,7 +208,25 @@ export async function executeSlackTool(
   binding = { ...binding, endpointId: authority.endpoint.id };
   const upstream = slackClient(authority.botToken, fetchImpl);
   const users = new Map<string, Promise<SlackObject>>();
+  // DMs and group DMs between the requester and other people are invisible to the bot. When the requester
+  // opted in to DM reading, those channels are read with their own token, and only those channels.
+  const personalDmChannels = new Set<string>();
+  let personalDmClient: Promise<typeof upstream | null> | undefined;
+  const personalDm = () =>
+    (personalDmClient ??= (async () => {
+      const grant = await slackSearchOAuthService(db, undefined, fetchImpl).dmAccessToken(
+        authority.endpoint.companyId,
+        authority.endpoint.id,
+        authority.userId,
+      );
+      return grant ? slackClient(grant.token, fetchImpl) : null;
+    })());
   const api: typeof upstream = (method, args = {}) => {
+    if (typeof args.channel === "string" && personalDmChannels.has(args.channel))
+      return personalDm().then((client) => {
+        if (!client) throw forbidden("Direct message access is not enabled for this person");
+        return client(method, args);
+      });
     if (method !== "users.info") return upstream(method, args);
     const user = String(args.user);
     if (!users.has(user)) users.set(user, upstream(method, args));
@@ -216,8 +238,41 @@ export async function executeSlackTool(
   if (name === "slack_delivery")
     return slackDelivery(db, binding, authority, api, String(args.actionId));
   const dmOptions = SLACK_OTHER_USER_DM_OPTIONS;
+  const authorizePersonalDm = async (id: string, denied: unknown): Promise<SlackObject> => {
+    // Only a definite access denial for a DM or group DM id may fall back to the person's own token.
+    if (!(denied instanceof HttpError && denied.status === 403) || !/^[DG]/.test(id)) throw denied;
+    const client = await personalDm();
+    if (!client) throw denied;
+    let channel: SlackObject;
+    try {
+      channel = object((await client("conversations.info", { channel: id })).channel);
+    } catch (error) {
+      // Only a definite "not found / not a member" answer is a denial; outages must stay visible.
+      if (
+        error instanceof HttpError &&
+        error.status === 422 &&
+        ["slack_channel_not_found", "slack_not_in_channel"].includes(String(object(error.details).code))
+      )
+        throw denied;
+      throw error;
+    }
+    // Slack only answers for conversations the person belongs to; still require a DM or group DM.
+    if (channel.id !== id || (channel.is_im !== true && channel.is_mpim !== true)) throw denied;
+    // A reply in a channel conversation would reach that whole audience, so personal DMs are not read there.
+    // Checked only once the channel is confirmed to be a personal DM, so other denials keep their own message.
+    if (!personalDmReadsAllowed(authority)) throw personalDmPrivacy();
+    // Recorded before any content is returned, so later Slack writes in this task stay private.
+    await recordSlackPersonalDmRead(db, authority, channel);
+    personalDmChannels.add(id);
+    return channel;
+  };
   const readable = async (id: string) => {
-    const channel = await authorizeSlackChannel(authority, api, id, dmOptions);
+    let channel: SlackObject;
+    try {
+      channel = await authorizeSlackChannel(authority, api, id, dmOptions);
+    } catch (error) {
+      channel = await authorizePersonalDm(id, error);
+    }
     await recordSlackPrivateRead(db, authority, channel);
     return channel;
   };
@@ -256,11 +311,36 @@ export async function executeSlackTool(
           throw error;
       }
     }
+    // First page only: the person's own DMs are appended once, not on every cursor request.
+    const personal = personalDmReadsAllowed(authority) && !args.cursor ? await personalDm() : null;
+    if (personal) {
+      const dms = await personal("users.conversations", {
+        types: "im,mpim",
+        limit: args.limit ?? 50,
+        exclude_archived: true,
+      });
+      // The listing exposes private metadata (who the person talks to), so it counts as a personal DM read.
+      if (objects(dms.channels).length > 0)
+        await recordSlackPersonalDmRead(db, authority, { id: "directory" });
+      const known = new Set(channels.map((channel) => channel.id));
+      for (const channel of objects(dms.channels)) {
+        if (!channel.id || known.has(channel.id)) continue;
+        channels.push({
+          id: channel.id,
+          name: channel.name,
+          private: true,
+          direct: channel.is_im === true,
+          with: channel.is_im === true ? channel.user : undefined,
+          source: "personal_dm",
+        });
+      }
+    }
     return {
       channels,
       nextCursor: nextCursor(result),
-      coverage:
-        "Current bot memberships accessible to the linked requester; more pages may remain.",
+      coverage: personal
+        ? "Current bot memberships accessible to the linked requester, plus the requester's own DMs and group DMs (first page only); more pages may remain."
+        : "Current bot memberships accessible to the linked requester; more pages may remain.",
     };
   }
   if (name === "slack_user") {

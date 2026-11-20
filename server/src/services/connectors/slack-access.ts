@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import { chatActions, chatEndpointResources, type Db } from "@paperclipai/db";
 import { HttpError, forbidden, unprocessable } from "../../errors.js";
 import type { SlackTaskAuthority } from "./slack-authority.js";
@@ -136,6 +136,8 @@ export async function authorizeSlackWrite(
   const channel = await authorizeSlackChannel(authority, api, channelId, options);
   if (channel.is_archived === true)
     throw forbidden("This Slack channel is archived");
+  // A task that read personal DMs may only answer in the DM with the person whose DMs were read.
+  await assertPersonalDmWriteAllowed(db, authority, channel);
   if (channel.is_im === true) {
     if (!authority.endpoint.allowDirectMessages)
       throw forbidden("Direct messages are disabled");
@@ -158,6 +160,115 @@ export async function authorizeSlackWrite(
       );
   }
   return channel;
+}
+
+const PERSONAL_DM_SOURCE_PREFIX = "slack-private-dm:";
+
+export const SLACK_PERSONAL_DM_PRIVACY = "slack_personal_dm_private";
+export const personalDmPrivacy = () =>
+  forbidden(
+    "This task read your direct messages, so Slack output stays in your own DM with the bot.",
+    { code: SLACK_PERSONAL_DM_PRIVACY },
+  );
+
+/**
+ * Whether a task may read the requester's own DMs with their personal token at all. A reply that goes to a
+ * channel conversation would reach that whole audience, so only tasks started from a direct message or from
+ * Paperclip (no Slack conversation) qualify.
+ */
+export const personalDmReadsAllowed = (authority: Pick<SlackTaskAuthority, "conversation">) =>
+  !authority.conversation || authority.conversation.isDirectMessage === true;
+
+/** Records that this task read the requester's own DMs or group DMs with their personal token. */
+export async function recordSlackPersonalDmRead(
+  db: Db,
+  authority: SlackTaskAuthority,
+  channel: SlackObject,
+) {
+  await db
+    .insert(chatActions)
+    .values({
+      companyId: authority.endpoint.companyId,
+      endpointId: authority.endpoint.id,
+      conversationId: authority.conversation?.id ?? null,
+      principalId: authority.principalId,
+      kind: "slack_private_source",
+      status: "processed",
+      providerActionId: `${PERSONAL_DM_SOURCE_PREFIX}${authority.issueId}:${channel.id}:${authority.slackUserId}`,
+      payload: {
+        issueId: authority.issueId,
+        channelId: channel.id,
+        requesterId: authority.slackUserId,
+        source: "personal_dm",
+      },
+    })
+    .onConflictDoNothing();
+}
+
+/**
+ * Slack user ids whose DMs this task has read with their personal token. Looked up across every Slack
+ * connection in the company, not just the current one: a task can use more than one connection, and
+ * reading through one must not open writes through another.
+ */
+export async function personalDmReaders(
+  db: Db,
+  authority: Pick<SlackTaskAuthority, "endpoint" | "issueId">,
+): Promise<string[]> {
+  const prefix = `${PERSONAL_DM_SOURCE_PREFIX}${authority.issueId}:`;
+  const rows = await db
+    .select({ providerActionId: chatActions.providerActionId })
+    .from(chatActions)
+    .where(
+      and(
+        eq(chatActions.companyId, authority.endpoint.companyId),
+        eq(chatActions.kind, "slack_private_source"),
+        like(chatActions.providerActionId, `${prefix}%`),
+      ),
+    );
+  return [
+    ...new Set(
+      rows
+        .map((row) => String(row.providerActionId ?? ""))
+        .filter((id) => id.startsWith(prefix))
+        .map((id) => id.slice(id.lastIndexOf(":") + 1)),
+    ),
+  ];
+}
+
+/** True once this task has read personal DMs. */
+export const taskReadPersonalDms = async (
+  db: Db,
+  authority: Pick<SlackTaskAuthority, "endpoint" | "issueId">,
+) => (await personalDmReaders(db, authority)).length > 0;
+
+/**
+ * After a task read personal DMs, Slack output may only go to the DM between the bot and the person whose
+ * DMs were read. Called for every channel write.
+ */
+export async function assertPersonalDmWriteAllowed(
+  db: Db,
+  authority: Pick<SlackTaskAuthority, "endpoint" | "issueId">,
+  channel: SlackObject,
+) {
+  const readers = await personalDmReaders(db, authority);
+  if (
+    readers.length > 0 &&
+    !(channel.is_im === true && readers.every((reader) => reader === channel.user))
+  )
+    throw personalDmPrivacy();
+}
+
+/** The same rule for writes that name no channel: no DM with anyone else, and no new channels. */
+export async function assertPersonalDmToolAllowed(
+  db: Db,
+  authority: Pick<SlackTaskAuthority, "endpoint" | "issueId" | "slackUserId">,
+  name: string,
+  args: Record<string, unknown>,
+) {
+  const outbound =
+    name === "slack_create_channel" ||
+    (name === "slack_open_dm" && typeof args.user === "string" && args.user !== authority.slackUserId);
+  if (outbound && (await taskReadPersonalDms(db, authority))) throw personalDmPrivacy();
 }
 
 /**
