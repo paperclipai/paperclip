@@ -237,9 +237,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.watchdogIssueId).toBe(watchdogIssues[0]?.id);
     expect(watchdog?.lastObservedFingerprint).toMatch(/^task_watchdog_stop:/);
     expect(watchdog?.lastObservedStopSnapshot).toMatchObject({
-      version: 2,
+      version: 3,
       fingerprint: watchdog?.lastObservedFingerprint,
       materialLeaves: [],
+      materialParents: [],
       waitsByIssueId: {},
     });
     expect(watchdog?.triggerCount).toBe(1);
