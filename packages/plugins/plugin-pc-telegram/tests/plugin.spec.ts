@@ -6,7 +6,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { DIALOG_ORIGIN_KIND, PENDING_LOGIN_TTL_MS, PLUGIN_ID, TOOL_SEND_TEXT } from "../src/constants.js";
+import { CONNECTION_WINDOW_BYTES, DIALOG_ORIGIN_KIND, PENDING_LOGIN_TTL_MS, PLUGIN_ID, TOOL_SEND_TEXT } from "../src/constants.js";
+import { commitInboundUsage } from "../src/inbound.js";
+import type { TelegramConnection } from "../src/types.js";
 import { containsSecretMaterial } from "../src/redaction.js";
 import { TelegramConnectPage } from "../src/ui/index.js";
 import { getAccountSession } from "../src/secrets.js";
@@ -495,9 +497,44 @@ describe("pc-telegram plugin", () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("present");
       clock.mockReturnValue(now + PENDING_LOGIN_TTL_MS + 1);
+      expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("present");
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("none");
     } finally {
       clock.mockRestore();
+      await plugin.definition.onShutdown?.();
+    }
+  });
+
+  it("keeps an expired login tracked until its connection settles", async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const telegram = createMockTelegram();
+    telegram.holdConnect();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    try {
+      await plugin.definition.setup(harness.ctx);
+      await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      telegram.completeLogin();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(telegram.connectStarted).toBe(1);
+      clock.mockReturnValue(now + PENDING_LOGIN_TTL_MS + 1);
+      expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("present");
+      telegram.releaseConnect();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("none");
+      const overview = await harness.getData<{ connections: Array<{ hasSession: boolean; paused: boolean }> }>("overview", { companyId: COMPANY_ID });
+      expect(overview.connections).toEqual([
+        expect.objectContaining({ hasSession: false, paused: true }),
+      ]);
+    } finally {
+      clock.mockRestore();
+      telegram.releaseConnect();
       await plugin.definition.onShutdown?.();
     }
   });
@@ -655,6 +692,61 @@ describe("pc-telegram plugin", () => {
       }));
     }
     expect(downloads).toBe(8);
+  });
+
+  it("keeps a caption when the attachment budget is already full", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin();
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+    await harness.performAction("update-connection", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+      acceptUnlistedSenders: true,
+    }, boardUser);
+    const connection = {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+    } as TelegramConnection;
+    expect(await commitInboundUsage(harness.ctx, connection, {
+      messages: 0,
+      attachments: 0,
+      bytes: CONNECTION_WINDOW_BYTES,
+    })).toBe(true);
+    let downloads = 0;
+    await telegram.deliver(inboundMessage({
+      text: "please check this screenshot",
+      peerId: "3003",
+      attachments: [],
+      loadAttachments: async () => {
+        downloads += 1;
+        const bytes = new Uint8Array([1, 2, 3, 4]);
+        return [{
+          id: "shot",
+          filename: "shot.png",
+          mimeType: "image/png",
+          byteLength: bytes.byteLength,
+          kind: "photo" as const,
+          bytes,
+        }];
+      },
+    }));
+    expect(downloads).toBe(0);
+    const issues = await harness.ctx.issues.list({
+      companyId: COMPANY_ID,
+      originKind: DIALOG_ORIGIN_KIND,
+      originId: "1001:3003",
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.description).toContain("please check this screenshot");
+    expect(issues[0]?.description).toContain("Inbound media was skipped because the storage quota was reached.");
+    expect(issues[0]?.description).not.toContain("shot.png");
   });
 
   it("drops the previous company's login when the settings page changes company", async () => {

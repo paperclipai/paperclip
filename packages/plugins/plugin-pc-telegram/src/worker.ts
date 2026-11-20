@@ -138,6 +138,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const accountGenerations = new Map<string, number>();
   const accountGates = new Map<string, Promise<void>>();
   const reconnectJobs = new Set<Promise<void>>();
+  const loginJobs = new Set<Promise<void>>();
   let pluginContext: PluginContext | null = null;
   let shuttingDown = false;
 
@@ -308,27 +309,22 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     }
     const peerKey = `${message.companyId}:${message.accountId}:${message.peerId}`;
     const shapeAllowed = inboundShapeAllowed(connection, message);
-    const consumesQuota = shapeAllowed && (
-      message.text.trim().length > 0
-      || message.attachments.length > 0
-      || Boolean(message.loadAttachments)
-    );
-    const needsMedia = message.attachments.length > 0 || Boolean(message.loadAttachments);
-    if (consumesQuota) {
-      const room = await hasInboundBudget(ctx, connection, {
-        messages: 1,
-        attachments: needsMedia ? 1 : 0,
-        bytes: needsMedia ? 1 : 0,
-      });
-      if (!room || !takeInboundMessageSlot(peerKey)) {
+    const text = message.text.trim();
+    const wantsMedia = message.attachments.length > 0 || Boolean(message.loadAttachments);
+    let keepingText = false;
+    if (shapeAllowed && text.length > 0) {
+      const textRoom = await hasInboundBudget(ctx, connection, { messages: 1, attachments: 0, bytes: 0 });
+      if (!textRoom || !takeInboundMessageSlot(peerKey)) {
         log.warn("Dropped inbound Telegram message over the peer quota", {
           companyId: message.companyId,
           accountId: message.accountId,
         });
         return;
       }
+      keepingText = true;
     }
     let attachments = message.attachments;
+    let skippedMedia = false;
     if (message.loadAttachments) {
       attachments = [];
       const mediaRoom = shapeAllowed
@@ -343,26 +339,61 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           const downloaded = await message.loadAttachments();
           const kept = [];
           for (const file of downloaded) {
-            if (file.byteLength > MAX_INBOUND_MEDIA_BYTES || file.bytes.byteLength > MAX_INBOUND_MEDIA_BYTES) continue;
+            if (file.byteLength > MAX_INBOUND_MEDIA_BYTES || file.bytes.byteLength > MAX_INBOUND_MEDIA_BYTES) {
+              skippedMedia = true;
+              continue;
+            }
             if (!(await hasInboundBudget(ctx, connection, {
               messages: 0,
               attachments: 1,
               bytes: file.byteLength,
-            }))) continue;
+            }))) {
+              skippedMedia = true;
+              continue;
+            }
             kept.push(file);
           }
           attachments = kept;
+          if (downloaded.length > 0 && kept.length === 0) skippedMedia = true;
         } catch (error) {
+          skippedMedia = true;
           log.warn("Skipped inbound Telegram media", {
             companyId: message.companyId,
             accountId: message.accountId,
             message: error instanceof Error ? error.message : "unknown error",
           });
         }
+      } else if (shapeAllowed && wantsMedia) {
+        skippedMedia = true;
+      }
+    } else if (shapeAllowed && attachments.length > 0) {
+      const bytes = attachments.reduce((sum, file) => sum + file.byteLength, 0);
+      const mediaRoom = await hasInboundBudget(ctx, connection, {
+        messages: 0,
+        attachments: attachments.length,
+        bytes,
+      });
+      if (!mediaRoom) {
+        attachments = [];
+        skippedMedia = true;
       }
     }
+    if (!keepingText && shapeAllowed && attachments.length > 0) {
+      const room = await hasInboundBudget(ctx, connection, { messages: 1, attachments: 0, bytes: 0 });
+      if (!room || !takeInboundMessageSlot(peerKey)) {
+        log.warn("Dropped inbound Telegram message over the peer quota", {
+          companyId: message.companyId,
+          accountId: message.accountId,
+        });
+        return;
+      }
+    }
+    if (shapeAllowed && !keepingText && attachments.length === 0) return;
+    const outboundText = skippedMedia && keepingText
+      ? `${text}\n\nInbound media was skipped because the storage quota was reached.`
+      : message.text;
     try {
-      await ingestInboundMessage(ctx, connection, { ...message, attachments });
+      await ingestInboundMessage(ctx, connection, { ...message, text: outboundText, attachments });
     } catch (error) {
       log.error("Failed to ingest Telegram inbound message", {
         companyId: message.companyId,
@@ -529,7 +560,8 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         if (pending.timer.unref) pending.timer.unref();
         pendingLogins.set(loginId, pending);
         emitLogin(companyId, pending.status);
-        const finished = ctx.runInCompanyBackground(companyId, async () => {
+        let finished: Promise<void> = Promise.resolve();
+        finished = ctx.runInCompanyBackground(companyId, async () => {
           let storedSecretId = "";
           let savedAccount: { telegramUserId: string; username: string | null; displayName: string } | null = null;
           try {
@@ -643,7 +675,11 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
             loginId,
             message: error instanceof Error ? error.message : "Telegram login failed.",
           }));
-        }).finally(resolveFinished);
+        }).finally(() => {
+          loginJobs.delete(finished);
+          resolveFinished();
+        });
+        loginJobs.add(finished);
         pending.finished = finished;
         return { loginId, status: pending.status };
       });
@@ -806,21 +842,19 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       for (const pending of [...pendingLogins.values()]) {
         if (pendingLoginExpired(pending)) expirePendingLogin(pending);
       }
-      if (reconnectJobs.size > 0 || liveByAccount.size > 0 || pendingLogins.size > 0) return "present";
+      if (reconnectJobs.size > 0 || loginJobs.size > 0 || liveByAccount.size > 0 || pendingLogins.size > 0) return "present";
       return "none";
     },
 
     async onShutdown() {
       shuttingDown = true;
       await Promise.all([...reconnectJobs].map((job) => job.catch(() => undefined)));
-      const finishing: Promise<void>[] = [];
       for (const pending of pendingLogins.values()) {
         pending.cancelled = true;
         if (pending.timer) clearTimeout(pending.timer);
         await pending.handle.abort().catch(() => undefined);
-        finishing.push(pending.finished);
       }
-      await Promise.all(finishing.map((job) => job.catch(() => undefined)));
+      await Promise.all([...loginJobs].map((job) => job.catch(() => undefined)));
       pendingLogins.clear();
       for (const live of liveByAccount.values()) {
         await live.disconnect().catch(() => undefined);
