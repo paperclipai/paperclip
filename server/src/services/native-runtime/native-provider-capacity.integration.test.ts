@@ -36,7 +36,13 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
-import { PROVIDER_LIMIT_RESUME_KEY_PREFIX, registerProviderLimitResumeWork, requestProviderLimitResumeRetry } from "./provider-limit-resume.js";
+import {
+  planProviderLimitResume,
+  PROVIDER_LIMIT_RESUME_KEY_PREFIX,
+  readNativeUsageLimitReset,
+  registerProviderLimitResumeWork,
+  requestProviderLimitResumeRetry,
+} from "./provider-limit-resume.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 
@@ -422,6 +428,52 @@ describe("native provider capacity failure persistence", () => {
     const [receipt] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
       eq(agentWakeupRequests.idempotencyKey, `task-retry:${PROVIDER_LIMIT_RESUME_KEY_PREFIX}${runId}`)));
     expect(receipt).toMatchObject({ reason: "task_retry", requestedByActorId: userId });
+  });
+
+  it("retries a task whose session start the provider refused with a rate limit, before any turn", async () => {
+    // Staging PAPERCLIP-BACKEND-8Z: Claude's account 429 refused session.open, so no turn event exists.
+    const startupLimit = { schema: "paperclip.provider-failure.v1" as const, provider: "anthropic", phase: "startup" as const,
+      category: "rate_limit" as const, httpStatus: 429, retryability: "unknown" as const,
+      message: "API error: 429 This request would exceed your account's rate limit. Please try again later · model not changed" };
+    const userId = `user-${randomUUID()}`;
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const finishedAt = new Date();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Startup rate limit", status: "blocked",
+      workMode: "standard", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "failed", runtimeMode: "native",
+      nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId },
+      responsibleUserId: userId, errorCode: "native_provider_usage_limit", finishedAt,
+      resultJson: { providerFailure: startupLimit } });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", ownerType: "board", cause: "native_provider_usage_limit",
+      fingerprint: `startup-limit:${runId}`, evidence: { runId }, nextAction: "Wait for the provider limit." }).returning();
+
+    const resetAt = new Date(finishedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS);
+    // The executor plans from the failure it holds, before the run row records it.
+    await expect(planProviderLimitResume(db, runId, { failure: startupLimit, observedAt: finishedAt }))
+      .resolves.toEqual({ automatic: true, resetAt, actorId: userId, estimated: true });
+    // The hold owner later reads the same reset from the run's saved failure.
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }))
+      .resolves.toEqual({ requested: false, waitUntil: resetAt });
+    const outcome = await requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }, new Date(resetAt.getTime() + 1000));
+    expect(outcome).toMatchObject({ requested: true });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.idempotencyKey, `task-retry:${PROVIDER_LIMIT_RESUME_KEY_PREFIX}${runId}`)));
+    expect(receipt).toMatchObject({ reason: "task_retry", requestedByActorId: userId });
+
+    // Only a refusal at session start counts without a turn: a saved turn-phase failure does not.
+    const turnRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: turnRun, companyId, agentId, status: "failed", runtimeMode: "native",
+      nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId },
+      errorCode: "native_provider_usage_limit", finishedAt, resultJson: { providerFailure: { ...startupLimit, phase: "turn" } } });
+    await expect(readNativeUsageLimitReset(db, { id: turnRun, companyId, resultJson: { providerFailure: { ...startupLimit, phase: "turn" } },
+      finishedAt })).resolves.toBeNull();
+    // A turn that started but never settled is still unknown, whatever the run's saved failure says.
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: turnRun, agentId, seq: 1, eventType: "turn.started",
+      stream: "system", level: "info", message: "turn started" });
+    await expect(readNativeUsageLimitReset(db, { id: turnRun, companyId, resultJson: { providerFailure: startupLimit }, finishedAt },
+      { failure: startupLimit, observedAt: finishedAt })).resolves.toBeNull();
   });
 
   it("starts the Retry from the hold's own deadline after a restart rebuilds it", async () => {

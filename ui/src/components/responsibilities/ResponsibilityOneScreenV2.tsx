@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Agent, CompanyArtifact, ResponsibilityProjectSummary, ResponsibilityRoutineSummary } from "@paperclipai/shared";
+import type { Agent, CompanyArtifact, ResponsibilityProjectSummary, ResponsibilityRoutineSummary, ResponsibilitySkillSummary } from "@paperclipai/shared";
 import { FileText, MoreHorizontal, Plus } from "lucide-react";
 import { describeError } from "@/api/errors";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
@@ -143,6 +143,77 @@ function AddMenu({
   );
 }
 
+/**
+ * The Skills "+": file an existing company skill here, remove one filed here,
+ * or open an agent's skills to give it one. Skills an agent holds come from
+ * that agent, so they are not removed here.
+ */
+function SkillsMenu({
+  onExisting,
+  filed,
+  onRemove,
+  removingLinkId,
+  agents,
+}: {
+  onExisting: () => void;
+  /** Skills filed here by hand. */
+  filed: readonly ResponsibilitySkillSummary[];
+  onRemove: (skill: ResponsibilitySkillSummary) => void;
+  removingLinkId: string | null;
+  /** The agents working on this, whose skills page can give them one. */
+  agents: readonly Agent[];
+}) {
+  // The picker opens once the menu has closed, so the menu's focus return does not dismiss it.
+  const pickExisting = useRef(false);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" size="icon-xs" variant="ghost" className="text-muted-foreground" aria-label="Add or remove a skill" data-section-add="">
+          <Plus aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        onCloseAutoFocus={(event) => {
+          if (!pickExisting.current) return;
+          pickExisting.current = false;
+          event.preventDefault();
+          onExisting();
+        }}
+      >
+        <DropdownMenuItem onSelect={() => { pickExisting.current = true; }}>Add existing skill</DropdownMenuItem>
+        {filed.length > 0 ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Remove from this responsibility</DropdownMenuLabel>
+            {filed.map((skill) => (
+              <DropdownMenuItem
+                key={skill.id}
+                disabled={removingLinkId === skill.linkId}
+                aria-label={`Remove ${skill.name} from this responsibility`}
+                onSelect={() => onRemove(skill)}
+              >
+                {skill.name}
+              </DropdownMenuItem>
+            ))}
+          </>
+        ) : null}
+        {agents.length > 0 ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Give a skill to</DropdownMenuLabel>
+            {agents.map((agent) => (
+              <DropdownMenuItem key={agent.id} asChild>
+                <Link to={agentDetailHref(agentRouteRef(agent), "skills")}>{agent.name}</Link>
+              </DropdownMenuItem>
+            ))}
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /** A "+" that cannot do anything yet, with why, on hover and for screen readers. */
 function DisabledAdd({ label, reason }: { label: string; reason: string }) {
   return (
@@ -236,7 +307,8 @@ export function ResponsibilityOneScreenV2({
     project: new Set(responsibility.projects.map((project) => project.id)),
     task: new Set(responsibility.tasks.filter((task) => task.membership === "direct").map((task) => task.id)),
     routine: new Set(responsibility.routines.filter((routine) => routine.membership === "direct").map((routine) => routine.id)),
-  }), [responsibility.projects, responsibility.tasks, responsibility.routines]);
+    skill: new Set(responsibility.skills.filter((skill) => skill.linkId).map((skill) => skill.id)),
+  }), [responsibility.projects, responsibility.tasks, responsibility.routines, responsibility.skills]);
   const routines = responsibility.routines.filter((routine) => routine.status !== "archived");
   const projects = responsibility.projects.filter((project) => !isFinishedProject(project));
   const { open: openTasks, done: doneTasks } = useMemo(() => splitTasksForTable(responsibility.tasks), [responsibility.tasks]);
@@ -296,25 +368,16 @@ export function ResponsibilityOneScreenV2({
     </DropdownMenu>
   );
 
-  const skillsAdd = !editable ? null : working.length === 0 ? (
-    <DisabledAdd label="Give an agent a skill" reason="Skills come from the agents on this; none yet" />
-  ) : (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button type="button" size="icon-xs" variant="ghost" className="text-muted-foreground" aria-label="Give an agent a skill" data-section-add="">
-          <Plus aria-hidden="true" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Give a skill to</DropdownMenuLabel>
-        {working.map((agent) => (
-          <DropdownMenuItem key={agent.id} asChild>
-            <Link to={agentDetailHref(agentRouteRef(agent), "skills")}>{agent.name}</Link>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
+  const filedSkills = useMemo(() => responsibility.skills.filter((skill) => skill.linkId), [responsibility.skills]);
+  const skillsAdd = !editable ? null : picker("skill", (
+    <SkillsMenu
+      onExisting={() => setPicking("skill")}
+      filed={filedSkills}
+      removingLinkId={actions.unlinkingId}
+      onRemove={(skill) => actions.unlink({ linkId: skill.linkId!, label: skill.name, relink: { skillId: skill.id } })}
+      agents={working}
+    />
+  ));
 
   const fileNewProject = async (project: { id: string }) => {
     setFilingError(null);
@@ -414,6 +477,7 @@ export function ResponsibilityOneScreenV2({
               rowData={{ "data-work-id": skill.id }}
               to={skillRoute(skill)}
               title={skill.name}
+              stat={skill.linkId ? "Filed here" : undefined}
               who={skill.agentIds.length > 0 ? <SkillHolders agentIds={skill.agentIds} agentsById={agentsById} /> : null}
             />
           ))}
