@@ -13,7 +13,7 @@ export function ProfileDetailRoute() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Company", href: "/dashboard", literal: Boolean(selectedCompany?.name) },
       { label: "Apps", href: "/apps" },
       { label: "Access profiles", href: advancedTabHref("profiles") },
       { label: "Profile detail" },

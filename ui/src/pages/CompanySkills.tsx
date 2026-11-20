@@ -588,11 +588,15 @@ export function skillDetailBreadcrumbs(
     : [];
   return [
     { label: "Skills", href: "/skills" },
-    ...trail.map((folder, index) => ({
-      label: index === 0 ? reservedRootLabel(folder) : folder.name,
-      href: `/skills?folder=${encodeURIComponent(folder.id)}`,
-    })),
-    { label: detail.name },
+    ...trail.map((folder, index) => {
+      const reserved = index === 0 && (folder.systemKey === "my" || folder.systemKey === "projects" || folder.systemKey === "bundled");
+      return {
+        label: index === 0 ? reservedRootLabel(folder) : folder.name,
+        href: `/skills?folder=${encodeURIComponent(folder.id)}`,
+        literal: !reserved,
+      };
+    }),
+    { label: detail.name, literal: true },
   ];
 }
 

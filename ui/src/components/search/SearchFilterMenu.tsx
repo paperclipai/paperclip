@@ -5,6 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { translateLabel, useTx, useUiLanguage } from "@/i18n/tx";
 
 export interface FilterMenuOption {
   value: string;
@@ -13,6 +14,7 @@ export interface FilterMenuOption {
   icon?: ReactNode;
   swatch?: string;
   searchText?: string;
+  literal?: boolean;
 }
 
 export interface FilterMenuPreset {
@@ -47,6 +49,18 @@ interface SingleProps extends BaseProps {
 
 export type SearchFilterMenuProps = MultiProps | SingleProps;
 
+export function visibleFilterOptions(
+  options: FilterMenuOption[],
+  normalized: string,
+  language: string | undefined,
+): FilterMenuOption[] {
+  if (!normalized) return options;
+  return options.filter((option) => {
+    const shown = option.literal ? option.label : translateLabel(language, option.label);
+    return `${option.label} ${shown} ${option.searchText ?? ""}`.toLowerCase().includes(normalized);
+  });
+}
+
 function summarizeTrigger(label: string, selected: string[], options: FilterMenuOption[]): string {
   if (selected.length === 0) return label;
   if (selected.length === 1) {
@@ -68,16 +82,16 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
     contentClassName,
     align = "start",
   } = props;
+  const tx = useTx();
+  const language = useUiLanguage();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
   const normalized = query.trim().toLowerCase();
-  const visibleOptions = useMemo(() => {
-    if (!normalized) return options;
-    return options.filter((option) =>
-      `${option.label} ${option.searchText ?? ""}`.toLowerCase().includes(normalized),
-    );
-  }, [normalized, options]);
+  const visibleOptions = useMemo(
+    () => visibleFilterOptions(options, normalized, language),
+    [language, normalized, options],
+  );
 
   const active = selected.length > 0;
 
@@ -116,14 +130,14 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
       </PopoverTrigger>
       <PopoverContent align={align} className={cn("w-64 p-0", contentClassName)}>
         <div className="flex items-center justify-between px-3 py-2">
-          <span className="text-xs font-medium text-muted-foreground">{label}</span>
+          <span className="text-xs font-medium text-muted-foreground">{tx(label)}</span>
           {props.multi && active ? (
             <button
               type="button"
               className="text-xs text-muted-foreground hover:text-foreground"
               onClick={() => props.onClear()}
             >
-              Clear
+              {tx("Clear")}
             </button>
           ) : null}
         </div>
@@ -153,7 +167,7 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
                     }
                   }}
                 >
-                  {preset.label}
+                  {tx(preset.label)}
                 </button>
               );
             })}
@@ -176,7 +190,7 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
 
         <div className="max-h-72 overflow-y-auto overscroll-contain border-t border-border py-1">
           {visibleOptions.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-muted-foreground">{emptyMessage}</div>
+            <div className="px-3 py-2 text-xs text-muted-foreground">{tx(emptyMessage)}</div>
           ) : (
             visibleOptions.map((option) => {
               const isSelected = selected.includes(option.value);
@@ -202,7 +216,7 @@ export function SearchFilterMenu(props: SearchFilterMenuProps) {
                       aria-hidden
                     />
                   ) : null}
-                  <span className="min-w-0 flex-1 truncate text-sm">{option.label}</span>
+                  <span className="min-w-0 flex-1 truncate text-sm">{option.literal ? option.label : tx(option.label)}</span>
                   {typeof option.count === "number" ? (
                     <span className="ml-1 text-xs tabular-nums text-muted-foreground">{option.count}</span>
                   ) : null}

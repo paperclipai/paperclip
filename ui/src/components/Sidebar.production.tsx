@@ -24,6 +24,7 @@ import {
   Compass,
 } from "lucide-react";
 import { useState } from "react";
+import { useTx } from "@/i18n/tx";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem.production";
@@ -44,6 +45,7 @@ import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu.production";
 
 export function Sidebar() {
+  const tx = useTx();
   const { openNewIssue } = useDialogActions();
   // Every labeled section is collapsible (session-scoped, default open) —
   // one policy across static nav groups and the data-driven sections.
@@ -134,7 +136,7 @@ export function Sidebar() {
             className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-foreground/80 hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             <SquarePen className="h-4 w-4 shrink-0" />
-            <span className="truncate">New Task</span>
+            <span className="truncate">{tx("New Task")}</span>
           </button>
           <SidebarNavItem to="/search" label="Search" icon={Search} />
           {responsibilitiesHome ? (

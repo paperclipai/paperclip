@@ -41,6 +41,8 @@ import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { StatusBadge } from "../components/StatusBadge";
+import { useTx } from "@/i18n/tx";
+import { PausedEscalationNotice } from "../components/PausedEscalationNotice";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
@@ -295,6 +297,7 @@ export function AgentDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [actionError, setActionError] = useState<string | null>(null);
+  const tx = useTx();
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
   const { enabled: chatEnabled, githubEnabled, loaded: chatConnectorsLoaded } = useChatConnectorsEnabled();
   const chatConnectorsEnabled = chatEnabled || githubEnabled;
@@ -599,14 +602,15 @@ export function AgentDetail() {
   });
 
   useEffect(() => {
-    const crumbs: { label: string; href?: string }[] = [
+    const crumbs: { label: string; href?: string; literal?: boolean }[] = [
       { label: "Agents", href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
+    const agentNameIsSaved = Boolean(agent?.name || routeAgentRef);
     if (activeView === "dashboard" && !urlRunId) {
-      crumbs.push({ label: agentName });
+      crumbs.push({ label: agentName, literal: agentNameIsSaved });
     } else {
-      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
+      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard`, literal: agentNameIsSaved });
       if (urlRunId) {
         crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
@@ -787,13 +791,11 @@ export function AgentDetail() {
         </div>
       ) : null}
       {pausedEscalationWarning ? (
-        <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="min-w-0 space-y-1">
-            <p className="font-medium">Escalation path is paused</p>
-            <p className="text-amber-900/90 dark:text-amber-100/90">{pausedEscalationWarning}</p>
-          </div>
-        </div>
+        <PausedEscalationNotice
+          agentName={agent.name}
+          pausedAncestorName={agent.orgChainHealth?.pausedAncestors?.[0]?.name}
+          english={pausedEscalationWarning}
+        />
       ) : null}
       {hasInvalidOrgChain ? (
         <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
@@ -948,7 +950,7 @@ export function AgentDetail() {
         </Tabs>
       )}
 
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {actionError && <p className="text-sm text-destructive">{tx(actionError)}</p>}
       {isPendingApproval && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/30 dark:text-amber-200">
           <span>This agent is pending board approval and cannot be invoked yet.</span>
@@ -1165,6 +1167,7 @@ function LatestRunCard({
   agentId: string;
   issuesById: Map<string, LatestRunIssue>;
 }) {
+  const tx = useTx();
   const sorted = useMemo(
     () =>
       [...runs].sort(
@@ -1291,7 +1294,7 @@ function LatestRunCard({
 
         {summary && (
           <div className="overflow-hidden max-h-16">
-            <MarkdownBody className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{summary}</MarkdownBody>
+            <MarkdownBody className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{tx(summary)}</MarkdownBody>
           </div>
         )}
       </Link>
@@ -2635,6 +2638,7 @@ function PromptEditorSkeleton() {
 /* ---- Runs Tab ---- */
 
 function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelected: boolean; agentId: string }) {
+  const tx = useTx();
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
@@ -2672,7 +2676,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
       </div>
       {summary && (
         <span className="text-xs text-muted-foreground truncate pl-5.5">
-          {summary.slice(0, 60)}
+          {tx(summary).slice(0, 60)}
         </span>
       )}
       {(metrics.totalTokens > 0 || metrics.cost > 0) && (
@@ -2775,6 +2779,7 @@ export function RunsTab({
 /* ---- Run Detail (expanded) ---- */
 
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
+  const tx = useTx();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
@@ -3041,7 +3046,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             )}
             {run.error && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400"><ProviderLimitMessage>{run.error}</ProviderLimitMessage></span>
+                <span className="text-red-600 dark:text-red-400"><ProviderLimitMessage>{tx(run.error)}</ProviderLimitMessage></span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}

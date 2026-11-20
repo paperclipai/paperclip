@@ -25,9 +25,11 @@ import { FlyoutContent, FlyoutHeader, FlyoutOptions } from "@/components/ui/flyo
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn } from "../lib/utils";
+import { LanguageSwitcher } from "./LanguageSwitcher";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
 import { TruncatedText } from "./TruncatedText";
+import { useTx } from "@/i18n/tx";
 
 const INVITES_PATH = "/company/settings/members?tab=invites";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -71,6 +73,7 @@ function MenuAction({
   external = false,
   topLevel = false,
 }: MenuActionProps) {
+  const tx = useTx();
   const className =
     "flex h-(--profile-popover-row-height) w-full items-center gap-(--profile-popover-row-gap) rounded-lg px-2.5 text-left text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) text-foreground transition-colors hover:bg-accent";
 
@@ -79,7 +82,7 @@ function MenuAction({
       <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
         <Icon className="size-4" />
       </span>
-      <TruncatedText className="min-w-0 flex-1 truncate">{label}</TruncatedText>
+      <TruncatedText className="min-w-0 flex-1 truncate">{tx(label)}</TruncatedText>
     </>
   );
 
@@ -120,6 +123,7 @@ export function SidebarAccountMenu({
   onOpenChange,
   shadow,
 }: SidebarAccountMenuProps) {
+  const tx = useTx();
   const cloud = useCloudInstance();
   const isCloud = Boolean(cloud);
   // Invites live on the Members page (or in Cloud's People settings). Hide the
@@ -252,6 +256,7 @@ export function SidebarAccountMenu({
                 external
                 onClick={() => setOpen(false)}
               />
+              <LanguageSwitcher variant="compact-menu-action" onAfterChange={() => setOpen(false)} />
               <ThemeToggle variant="compact-menu-action" onAfterToggle={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
@@ -267,7 +272,7 @@ export function SidebarAccountMenu({
                     <LogOut className="size-4" />
                   </span>
                   <TruncatedText className="min-w-0 flex-1 truncate">
-                    {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                    {signOutMutation.isPending ? tx("Signing out...") : tx("Sign out")}
                   </TruncatedText>
                 </button>
               ) : null}

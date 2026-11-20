@@ -397,10 +397,10 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     if (!routineTitle) return;
     setBreadcrumbs(
       view === "routine"
-        ? [{ label: "Routines", href: "/routines" }, { label: routineTitle }]
+        ? [{ label: "Routines", href: "/routines" }, { label: routineTitle, literal: true }]
         : [
             { label: "Routines", href: "/routines" },
-            { label: routineTitle, href: routinePath(routineId) },
+            { label: routineTitle, href: routinePath(routineId), literal: true },
             { label: view === "history" ? "Version history" : "Audit log" },
           ],
     );
@@ -539,7 +539,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
         hasMoreHistory={Boolean(historyQuery.hasNextPage)}
         loadingMoreHistory={historyQuery.isFetchingNextPage}
         onLoadMoreHistory={() => void historyQuery.fetchNextPage()}
-        historyLinkState={createIssueDetailLocationState(routine.title, routinePath(routine.id), "issues")}
+        historyLinkState={createIssueDetailLocationState(routine.title, routinePath(routine.id), "issues", true)}
         skippedRunCount={routine.recentRuns.filter((run) => run.status === "coalesced").length}
         instructionCommentCount={openCommentCount}
         onOpenInstructionComments={() => setCommentsOpen(true)}

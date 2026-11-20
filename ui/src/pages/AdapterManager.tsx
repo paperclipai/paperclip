@@ -269,7 +269,7 @@ export function AdapterManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard", literal: Boolean(selectedCompany?.name) },
       { label: "Settings", href: "/company/settings" },
       { label: "Adapters" },
     ]);

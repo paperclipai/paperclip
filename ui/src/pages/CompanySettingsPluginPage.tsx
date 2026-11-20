@@ -43,7 +43,7 @@ export function CompanySettingsPluginPage() {
     if (!pageSlot) return;
     setBreadcrumbs([
       { label: "Settings", href: "/company/settings" },
-      { label: pageSlot.displayName },
+      { label: pageSlot.displayName, literal: true },
     ]);
   }, [pageSlot, setBreadcrumbs]);
 

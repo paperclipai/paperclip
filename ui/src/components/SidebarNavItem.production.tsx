@@ -5,6 +5,7 @@ import { cn } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { useTx, useUiLanguage } from "@/i18n/tx";
 
 interface SidebarNavItemProps {
   to: string;
@@ -57,6 +58,12 @@ export function SidebarNavItem({
   liveAccessory,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen } = useSidebar();
+  const tx = useTx();
+  const language = useUiLanguage();
+  const shownLabel = tx(label);
+  const shownBadgeLabel = badgeLabel ? tx(badgeLabel) : undefined;
+  const shownTextBadge = textBadge ? tx(textBadge) : undefined;
+  const liveText = language === "ru" ? `${liveCount} сейчас` : `${liveCount} live`;
   const hasBadge = badge != null && badge > 0;
   const hasLive = liveCount != null && liveCount > 0;
 
@@ -86,7 +93,7 @@ export function SidebarNavItem({
           <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500 shadow-(--shadow-extract-12)" aria-hidden="true" />
         )}
       </span>
-      <span className={cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
+      <span className={cn("min-w-0 flex-1 truncate", labelClassName)}>{shownLabel}</span>
       {trailing}
       {textBadge && (
         <Badge variant="ghost"
@@ -97,7 +104,7 @@ export function SidebarNavItem({
               : "bg-muted text-muted-foreground",
           )}
         >
-          {textBadge}
+          {shownTextBadge}
         </Badge>
       )}
       {(hasLive || liveAccessory) && (
@@ -109,13 +116,14 @@ export function SidebarNavItem({
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600 dark:bg-blue-400" />
               </span>
-              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveText}</span>
             </>
           )}
         </span>
       )}
       {hasBadge && (
         <Badge variant="ghost"
+          aria-label={shownBadgeLabel ? `${badge} ${shownBadgeLabel}` : undefined}
           className={cn(
             "ml-auto px-1.5 leading-none",
             badgeTone === "danger"
