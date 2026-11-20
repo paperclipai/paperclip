@@ -3439,6 +3439,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         : null,
     }),
     enabled: !!issueId && (coreIssueQuery.isFetched || !!queryClient.getQueryData(queryKeys.issues.detail(issueId))),
+    refetchInterval: (query) => query.state.data?.interruption?.retryWait?.reason === "runner_acpx_profile_incompatible"
+      ? 5_000 : false,
   });
   const {
     data: queriedIssue,

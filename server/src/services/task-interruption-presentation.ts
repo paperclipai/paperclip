@@ -1,3 +1,5 @@
+import { localAcpxRunnerCompatibility, RUNNER_ACPX_PROFILE_INCOMPATIBLE,
+  savedRunnerCompatibilityAgent } from "./native-runtime/native-runner-profile-compatibility.js";
 import { ENVIRONMENT_PROVIDER_WAIT_KEY, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON, environmentProviderWaitMessage } from "./environment-provider-wait.js";
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { AGENT_DIRECTORY_WAIT_RETRY_REASON, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
@@ -112,8 +114,10 @@ type ProjectionState = {
   cleanupSettling?: boolean;
   /** The fresh-continuation fallback is continuing this run's task (recorded,
    * not yet started) or will check it again at `nextCheckAt`. */
-  freshContinuation?: { state: "continuing"; pendingSince?: number } | { state: "scheduled"; nextCheckAt: number };
+  freshContinuation?: { state: "continuing"; pendingSince?: number }
+    | { state: "scheduled"; nextCheckAt: number; reason?: string | null };
   automaticDispositionAt?: number;
+  compatibleRunnerAvailable?: boolean;
   waitingContinuation?: { queuedAt: number; personRequested: boolean };
   recoveryHandedToPerson?: boolean;
   agentBlockerNeedsPerson?: boolean;
@@ -310,6 +314,13 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
         && now - pendingSince >= WAITING_CONTINUATION_MOVE_FORWARD_MS)
       return { ...base, state: "working", canRetry: true, retryAction: "move_forward" };
     return { ...base, state: "working", canRetry: false };
+  }
+  if (run.errorCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE && run.agentId === issue.assigneeAgentId
+    && input.freshContinuation?.state === "scheduled" && input.freshContinuation.reason === RUNNER_ACPX_PROFILE_INCOMPATIBLE) {
+    return { ...base, state: "retry_scheduled", nextRetryAt: new Date(input.freshContinuation.nextCheckAt).toISOString(),
+      canRetry: input.compatibleRunnerAvailable === true,
+      retryWait: { reason: RUNNER_ACPX_PROFILE_INCOMPATIBLE, message: input.compatibleRunnerAvailable
+        ? "A compatible Runner is available." : "Waiting for a compatible Runner for this provider." } };
   }
   if (input.freshContinuation?.state === "scheduled" && input.freshContinuation.nextCheckAt > now)
     return { ...base, state: "retry_scheduled", nextRetryAt: new Date(input.freshContinuation.nextCheckAt).toISOString(), canRetry: false };
@@ -527,6 +538,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         'timeoutSource', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'timeoutSource'`, 80)},
         'timeoutFired', coalesce(${heartbeatRuns.resultJson}->'timeoutFired' = 'true'::jsonb, false),
         'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied',
+        'runnerCompatibility', jsonb_build_object('acpxAgent',
+          ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'runnerCompatibility'->'acpxAgent'`, 32)}),
         'cancelledByActorType', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByActorType'`, 32)},
         'cancelledByUserId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByUserId'`, 160)},
         'queuedCommentInterruptQueueId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'queuedCommentInterruptQueueId'`, 160)},
@@ -658,6 +671,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     recordedAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`,
     reconciledRunId: sql<string | null>`${issueRecoveryActions.evidence}#>>'{executionReconciliation,runId}'`,
     checkKind: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}'`,
+    checkReason: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,reason}'`,
     nextCheckAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}'` })
     .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
       inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
@@ -670,6 +684,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     ? await (await import("./fresh-continuation-fallback.js")).runsAwaitingSystemContinuation(db, companyId,
       unfinished.map(run => run.issueId), unfinished.map(run => run.id))
     : new Set<string>();
+  const compatibleRunners = new Map(await Promise.all(runs.flatMap(run => {
+    const agent = run.errorCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE ? savedRunnerCompatibilityAgent(run.resultJson) : null;
+    return agent ? [localAcpxRunnerCompatibility(agent).then(status => [run.id, status === "compatible"] as const)] : [];
+  })));
   const freshContinuationFor = (issueId: string, runId: string | undefined): ProjectionState["freshContinuation"] => {
     const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
     // Only the primary record (it carries `freshContinuation`) says whether a
@@ -680,10 +698,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       return Number.isFinite(pendingSince) ? { state: "continuing", pendingSince } : { state: "continuing" };
     }
     const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
-      .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
+      .sort((a, b) => Number(a.nextCheckAt) - Number(b.nextCheckAt))[0];
     if (awaitingSystemContinuation.has(`${issueId}:${runId}`) && retryWaitMap.get(issueId)?.sourceRunId !== runId)
       return { state: "continuing" };
-    return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;
+    return scheduled ? { state: "scheduled", nextCheckAt: Number(scheduled.nextCheckAt), reason: scheduled.checkReason } : undefined;
   };
   const dispositionRows = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
     runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'`, updatedAt: issueRecoveryActions.updatedAt })
@@ -844,6 +862,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       retryWait: retryWaitMap.get(issue.id) };
     const presentation = projectTaskInterruption(issue, { ...facts,
       freshContinuation: freshContinuationFor(issue.id, facts.run?.id),
+      compatibleRunnerAvailable: compatibleRunners.get(facts.run?.id ?? ""),
       automaticDispositionAt: automaticDispositionAt.get(issue.id),
       waitingContinuation: waitingContinuationFor(facts.run),
       recoveryHandedToPerson: handedToPerson.has(issue.id),

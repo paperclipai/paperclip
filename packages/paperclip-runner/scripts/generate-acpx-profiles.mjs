@@ -1,5 +1,6 @@
 import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "../src/drivers/acpx/kimi-closure-pins.ts";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { ACPX_RELEASE_ATTESTATIONS, acpxReleaseAttestation } from "./acpx-release-attestations.mjs";
@@ -63,11 +64,19 @@ const profiles = Object.fromEntries(entries.map(([agent, declaration]) => {
     permissionPolicy: "interactive",
   }];
 }));
+const profileDigests = Object.fromEntries(entries.map(([agent, profile]) => [agent,
+  `sha256:${createHash("sha256").update(JSON.stringify([
+    manifest.driverKind, manifest.protocolVersion, manifest.acpxVersion, agent,
+    Object.entries(profile).sort(([a], [b]) => a.localeCompare(b)),
+  ])).digest("hex")}`,
+]));
 const header = "Generated from acpx-profiles.json and cursor-distributions.json. Do not edit.";
 const typescript = `// ${header}
 export const QUALIFIED_ACPX_VERSION = ${quote(manifest.acpxVersion)} as const;
 export const ACPX_DRIVER_KIND = ${quote(manifest.driverKind)} as const;
 export const ACPX_DRIVER_PROTOCOL_VERSION = ${manifest.protocolVersion} as const;
+
+export const ACPX_RELEASE_PROFILE_DIGESTS = ${JSON.stringify(profileDigests, null, 2)} as const;
 
 export const QUALIFIED_ACPX_PROFILE_DATA = ${JSON.stringify(profiles, null, 2)} as const;
 
@@ -79,6 +88,13 @@ const option = value => value === null ? "None" : `Some(${quote(value)})`;
 const rust = `// ${header}
 pub(crate) const QUALIFIED_ACPX_VERSION: &str = ${quote(manifest.acpxVersion)};
 pub(crate) const ACPX_DRIVER_KIND: &str = ${quote(manifest.driverKind)};
+
+pub const ACPX_RELEASE_PROFILE_DIGESTS: &[(&str, &str)] = &[
+${Object.entries(profileDigests).map(([agent, digest]) => `    (
+        ${quote(agent)},
+        ${quote(digest)},
+    ),`).join("\n")}
+];
 
 #[derive(Debug)]
 pub(crate) struct AcpxReleaseProfile {

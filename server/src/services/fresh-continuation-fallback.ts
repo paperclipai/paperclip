@@ -28,6 +28,8 @@ import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isPersonOwnedFailureCode } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
+import { localAcpxRunnerCompatibility, RUNNER_ACPX_PROFILE_INCOMPATIBLE, RUNNER_COMPATIBILITY_RECHECK_MS,
+  savedRunnerCompatibilityAgent } from "./native-runtime/native-runner-profile-compatibility.js";
 import { BACKLOG_CONTINUATION_MAX_AGE_MS, failureOwnsBlock, heldExecutionWhere, heldRunIdSql, interruptionEligibility,
   liveDispositionHoldSql, recentInterruptionSourceSql, sourceRunKey } from "./fresh-continuation-eligibility.js";
 
@@ -78,6 +80,7 @@ export const FRESH_CONTINUATION_CHECK_KEY = "freshContinuationCheck" as const;
 // import cycle); a test pins them to SERVER_RESTART_RETRY_MAX_ATTEMPTS/_WINDOW_MS.
 export const FRESH_CONTINUATIONS_PER_HOUR = 6;
 export const FRESH_CONTINUATION_WINDOW_MS = 60 * 60_000;
+const RUNNER_COMPATIBILITY_CONTINUATIONS_PER_COMPANY_HOUR = 12;
 const PERSON_RECHECK_MS = 60 * 60_000;
 /** Consecutive pending checks (about 12 minutes) before the fallback stops waiting. */
 /** Worst case from the first pending check to the fresh continuation. */
@@ -114,7 +117,7 @@ export type FreshContinuationResult =
   | { kind: "successor_exists" }
   | { kind: "dependency_wait" }
   | { kind: "person_owned"; reason: string }
-  | { kind: "backoff"; retryAt: Date }
+  | { kind: "backoff"; retryAt: Date; reason?: typeof RUNNER_ACPX_PROFILE_INCOMPATIBLE }
   | { kind: "exact_recovery_pending"; reason: string; retryAt: Date; progressAt?: number; savedWorkSignature?: string }
   | { kind: "not_applicable"; reason: string };
 
@@ -584,6 +587,23 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // (the reaper or a Stop) settles it first, then the fallback continues.
   const aliveWait = writer === "alive" ? pending("previous_process_running", new Date(now.getTime() + step)) : null;
   if (aliveWait) return aliveWait;
+  const runnerCompatibility = run.errorCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE;
+  const compatibilityAgent = runnerCompatibility ? savedRunnerCompatibilityAgent(run.resultJson) : null;
+  if (runnerCompatibility && (!compatibilityAgent || await localAcpxRunnerCompatibility(compatibilityAgent) !== "compatible")) {
+    return { kind: "backoff", reason: RUNNER_ACPX_PROFILE_INCOMPATIBLE,
+      retryAt: new Date(now.getTime() + RUNNER_COMPATIBILITY_RECHECK_MS) };
+  }
+  if (runnerCompatibility) {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`runner-compatibility:${companyId}`}, 0))`);
+    const companyAttempts = await tx.select({ resolvedAt: issueRecoveryActions.resolvedAt }).from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId),
+        sql`${issueRecoveryActions.resolvedAt} > ${new Date(now.getTime() - FRESH_CONTINUATION_WINDOW_MS).toISOString()}::timestamptz`,
+        sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,failureCode}' = ${RUNNER_ACPX_PROFILE_INCOMPATIBLE}`))
+      .orderBy(desc(issueRecoveryActions.resolvedAt)).limit(RUNNER_COMPATIBILITY_CONTINUATIONS_PER_COMPANY_HOUR);
+    if (companyAttempts.length === RUNNER_COMPATIBILITY_CONTINUATIONS_PER_COMPANY_HOUR) {
+      return { kind: "backoff", retryAt: new Date(companyAttempts.at(-1)!.resolvedAt!.getTime() + FRESH_CONTINUATION_WINDOW_MS) };
+    }
+  }
   const fenced = await fenceSourceWorkspace(tx, run);
   // Never claim a stop that was not proven: record what isolates the successor.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"

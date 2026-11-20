@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ACPX_RELEASE_PROFILE_DIGESTS } from "../vendor/paperclip-runner/index.js";
+import { RUNNER_ACPX_PROFILE_INCOMPATIBLE } from "./continuation-cause.js";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -217,6 +222,53 @@ suite("fresh-continuation fallback", () => {
     const next = await expectOneFreshSuccessor(f);
     expect(next.responsibleUserId).toBe(userId);
   }, 60_000);
+
+  it.skipIf(process.platform === "win32").each(["automatic", "manual"] as const)(
+    "waits for the exact local ACPX profile and continues once through %s recovery", async mode => {
+      const code = RUNNER_ACPX_PROFILE_INCOMPATIBLE;
+      const f = await unfinishedRun({ runtime: "native", errorCode: code });
+      await db.update(heartbeatRuns).set({ resultJson: { runnerCompatibility: { acpxAgent: "codex" } } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      await db.update(issueRecoveryActions).set({ cause: code }).where(eq(issueRecoveryActions.id, f.actionId!));
+      const root = await mkdtemp(join(tmpdir(), "paperclip-runner-profile-"));
+      const binary = join(root, "runnerd");
+      const savedBinary = process.env.PAPERCLIP_RUNNER_BINARY;
+      const install = async (digest: string) => {
+        const metadata = JSON.stringify({ schema: "paperclip-runner/runnerd-build-metadata/v1",
+          acpxReleaseProfileDigests: { codex: digest } });
+        const next = join(root, "next");
+        await writeFile(next, `#!/bin/sh\n[ "$1" = --build-metadata ] || exit 17\nprintf '%s\\n' '${metadata}'\n`, { mode: 0o700 });
+        await rename(next, binary);
+      };
+      try {
+        process.env.PAPERCLIP_RUNNER_BINARY = binary;
+        await install(ACPX_RELEASE_PROFILE_DIGESTS.claude);
+        await settleUnrecoverableExecutions(db);
+        expect((await evidenceOf(f.actionId!)).evidence.freshContinuationCheck)
+          .toMatchObject({ kind: "backoff", reason: code, nextCheckAt: expect.any(Number) });
+        expect(await taskInterruptionPresentation(db, await issue(f.issueId))).toMatchObject({
+          state: "retry_scheduled", canRetry: false, retryWait: { reason: code }, nextRetryAt: expect.any(String) });
+        const retry = () => requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId,
+          observedRunId: f.runId, idempotencyKey: randomUUID() });
+        await expect(retry()).rejects.toThrow("Waiting for a compatible Runner");
+        expect(await successors(f.runId)).toHaveLength(0);
+        expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+        await install(ACPX_RELEASE_PROFILE_DIGESTS.codex);
+        expect(await taskInterruptionPresentation(db, await issue(f.issueId))).toMatchObject({ canRetry: true });
+        if (mode === "manual") {
+          const clicks = await Promise.all([retry(), retry()]);
+          expect(clicks.every(click => click.accepted)).toBe(true);
+        } else {
+          await makeDue(f.actionId!);
+          await settleUnrecoverableExecutions(db);
+        }
+        await expectOneFreshSuccessor(f);
+      } finally {
+        if (savedBinary === undefined) delete process.env.PAPERCLIP_RUNNER_BINARY;
+        else process.env.PAPERCLIP_RUNNER_BINARY = savedBinary;
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 60_000);
 
   it("falls back for a failure code nobody has classified yet", async () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "runner_new_failure_added_next_week" });
