@@ -524,10 +524,6 @@ export function accessService(db: Db) {
           })),
         );
       }
-      // The replace above must not strip the permissions the member's
-      // role implies: authorization resolves grant rows, never the role.
-      // Merge the role defaults back in; explicit grants win on a key
-      // collision. Agent principals have no role defaults. See #15842.
       if (member.principalType === "user") {
         await ensureHumanRoleDefaultGrants(tx, {
           companyId,
@@ -643,9 +639,6 @@ export function accessService(db: Db) {
           })),
         );
       }
-      // Same rule as setMemberPermissions: the replacement set is merged
-      // over the (possibly new) role's defaults, never below them. See
-      // #15842.
       if (existing.principalType === "user") {
         await ensureHumanRoleDefaultGrants(tx, {
           companyId,
@@ -1241,10 +1234,6 @@ export function accessService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? existing);
 
-      // A role change must confer the new role's permissions: this writer
-      // previously never touched grant rows, so a promotion left the
-      // member with whatever grants the old role (or an earlier edit)
-      // had left behind. See #15842.
       if (
         existing.principalType === "user" &&
         nextMembershipRole !== existing.membershipRole

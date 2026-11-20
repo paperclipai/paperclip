@@ -1291,7 +1291,9 @@ describeEmbeddedPostgres("access service", () => {
     const { company } = await createCompanyWithOwner(db);
     const member = await createMemberWithRoleDefaults(company.id, "viewer");
     const access = accessService(db);
-    expect(await grantKeysOf(company.id, member.principalId)).toEqual([]);
+    expect(await grantKeysOf(company.id, member.principalId)).toEqual(
+      grantsForHumanRole("viewer").map((grant) => grant.permissionKey).sort(),
+    );
 
     await access.updateMember(company.id, member.id, { membershipRole: "admin" });
 
