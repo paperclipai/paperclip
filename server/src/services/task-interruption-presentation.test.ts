@@ -7,6 +7,39 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+describe("pending question presentation", () => {
+  const failed = { ...run, errorCode: "native_session_interrupted", resultJson: null };
+  const input = { run: failed, agent, paused: false, approval: false, question: true };
+  it("names the unanswered question instead of a historical failure, preserving an available manual Retry", () => {
+    for (const previousRun of [failed, { ...failed, status: "succeeded" }, undefined]) {
+      const presentation = projectTaskInterruption(issue, { ...input, run: previousRun });
+      expect(presentation).toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: "question",
+        canRetry: previousRun?.status === "failed" });
+      expect(presentation?.providerFailure).toBeUndefined();
+    }
+  });
+  it("does not offer another Retry while saved input or a Retry is pending", () => {
+    const wait = { id: "saved-input", requestedAt: new Date(), sourceRunId: failed.id };
+    for (const pending of [{ wait }, { retryWait: wait }])
+      expect(projectTaskInterruption(issue, { ...input, ...pending })).toMatchObject({ canRetry: false });
+  });
+  it("shows the question while automatic continuation waits, without offering to move it forward", () => {
+    for (const pendingSince of [undefined, Date.now() - 16 * 60_000])
+      expect(projectTaskInterruption(issue, { ...input, freshContinuation: { state: "continuing", pendingSince } }))
+        .toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
+  });
+  it("preserves other current user gates", () => {
+    for (const [gate, userAction] of [[{ approval: true }, "approval"], [{ paused: true }, "resume"],
+      [{ ownerStopRequired: true }, "confirm_owner_stop"]] as const)
+      expect(projectTaskInterruption(issue, { ...input, ...gate })).toMatchObject({ state: "waiting_for_user", userAction, canRetry: false });
+  });
+  it("preserves live work and terminal task states", () => {
+    expect(projectTaskInterruption(issue, { ...input, run: { ...run, status: "running", errorCode: null } }))
+      .toMatchObject({ state: "working" });
+    expect(projectTaskInterruption({ ...issue, status: "done" }, input)).toMatchObject({ state: "resolved" });
+  });
+});
+
 describe("saved governed wait shutdown", () => {
   const now = Date.parse("2026-11-09T12:00:00Z");
   const pending = { ...run, runtimeMode: "native", errorCode: "native_governed_wait_settlement_pending", resultJson: null };

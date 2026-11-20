@@ -1152,6 +1152,15 @@ suite("fresh-continuation fallback", () => {
       expect(await successors(f.runId)).toHaveLength(0);
     }, 60_000);
 
+  it.each([false, true])("respects deferred question authority in fresh continuation (governed=%s)", async governed => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation" });
+    await db.insert(issueThreadInteractions).values({ companyId, issueId: f.issueId, kind: "ask_user_questions",
+      status: "pending", dismissedAt: new Date(), payload: { version: 1, questions: [],
+        ...(governed ? { toolAction: {} } : {}) } } as never);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject(governed ? { kind: "person_owned", reason: "question_pending" } : { kind: "continued" });
+  }, 60_000);
+
   // Interruption with an unknown outcome is not a governance gate: the task
   // continues, but as a fresh run, never a replay, and with an audit trail.
   it("continues an interrupted governed action as a fresh run, never a replay, and keeps the audit trail", async () => {
