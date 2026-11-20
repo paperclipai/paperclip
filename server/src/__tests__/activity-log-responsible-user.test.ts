@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
+import type { AddressInfo } from "node:net";
+import express from "express";
+import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
@@ -21,6 +25,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { requestActorContext, withRequestActor } from "../services/request-actor-context.js";
 
 type TableRows = Map<unknown, Array<Record<string, unknown>>>;
 
@@ -170,7 +175,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
+describeEmbeddedPostgres("logActivity attribution stamping", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
@@ -236,11 +241,161 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
     });
 
     const row = await db
-      .select({ responsibleUserId: activityLog.responsibleUserId })
+      .select({ responsibleUserId: activityLog.responsibleUserId, apiKeyId: activityLog.apiKeyId })
       .from(activityLog)
       .where(eq(activityLog.companyId, companyId))
       .then((rows) => rows[0]);
 
     expect(row?.responsibleUserId).toBe("key-user");
+    expect(row?.apiKeyId).toBe(agentApiKeyId);
+  });
+
+  it("does not let a callback created during a keyed request reuse the key after the response", async () => {
+    const companyId = randomUUID();
+    const boardApiKeyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Worker",
+      issuePrefix: `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const record = (actorId: string) => logActivity(db, activityInput({
+      companyId, actorType: "user", actorId, agentId: null, entityType: "company", entityId: companyId,
+    }), []);
+    let releaseWorker!: () => void;
+    let workerActivity!: Promise<unknown>;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = { type: "board", userId: "board-key-user", keyId: boardApiKeyId, source: "board_key" };
+      next();
+    });
+    app.use(requestActorContext);
+    app.post("/configure", async (_req, res) => {
+      workerActivity = new Promise<void>((resolve) => { releaseWorker = resolve; }).then(() => record("after-response"));
+      await record("during-request");
+      res.json({ ok: true });
+    });
+
+    await request(app).post("/configure").expect(200);
+    releaseWorker();
+    await workerActivity;
+
+    const rows = await db
+      .select({ actorId: activityLog.actorId, apiKeyId: activityLog.apiKeyId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { actorId: "during-request", apiKeyId: boardApiKeyId },
+      { actorId: "after-response", apiKeyId: null },
+    ]));
+  });
+
+  it("keeps the request key for handler work that finishes after the client disconnects", async () => {
+    const companyId = randomUUID();
+    const boardApiKeyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Disconnect",
+      issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    let releaseHandler!: () => void;
+    const handlerGate = new Promise<void>((resolve) => { releaseHandler = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let markClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { markClosed = resolve; });
+    let handlerDone!: Promise<void>;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = { type: "board", userId: "board-key-user", keyId: boardApiKeyId, source: "board_key" };
+      next();
+    });
+    app.use(requestActorContext);
+    app.put("/file", (_req, res) => {
+      res.once("close", () => markClosed());
+      handlerDone = (async () => {
+        markStarted();
+        await handlerGate;
+        await logActivity(db, activityInput({
+          companyId, actorType: "user", actorId: "after-disconnect", agentId: null, entityType: "company", entityId: companyId,
+        }), []);
+        res.json({ ok: true });
+      })();
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const client = httpRequest({ host: "127.0.0.1", port, method: "PUT", path: "/file" });
+      client.on("error", () => {});
+      client.end();
+      await started;
+      client.destroy();
+      await closed;
+      releaseHandler();
+      await handlerDone;
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    const rows = await db
+      .select({ actorId: activityLog.actorId, apiKeyId: activityLog.apiKeyId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    expect(rows).toEqual([{ actorId: "after-disconnect", apiKeyId: boardApiKeyId }]);
+  });
+
+  it("stores a Board API key id and leaves session activity unkeyed", async () => {
+    const companyId = randomUUID();
+    const boardApiKeyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Board",
+      issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await withRequestActor({ type: "board", userId: "board-key-user", keyId: boardApiKeyId, source: "board_key" }, () =>
+      logActivity(db, activityInput({
+        companyId,
+        actorType: "user",
+        actorId: "board-key-user",
+        agentId: null,
+        entityType: "company",
+        entityId: companyId,
+      }), []));
+    await withRequestActor({ type: "board", userId: "board-key-user", keyId: boardApiKeyId, source: "board_key" }, () =>
+      logActivity(db, activityInput({
+        companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: null,
+        entityType: "company",
+        entityId: companyId,
+      }), []));
+    await withRequestActor({ type: "board", userId: "session-user", source: "session" }, () =>
+      logActivity(db, activityInput({
+        companyId,
+        actorType: "user",
+        actorId: "session-user",
+        agentId: null,
+        entityType: "company",
+        entityId: companyId,
+      }), []));
+
+    const rows = await db
+      .select({ actorId: activityLog.actorId, apiKeyId: activityLog.apiKeyId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { actorId: "board-key-user", apiKeyId: boardApiKeyId },
+      { actorId: "recovery", apiKeyId: null },
+      { actorId: "session-user", apiKeyId: null },
+    ]));
   });
 });

@@ -1,10 +1,20 @@
 import type { Request } from "express";
 import { describe, expect, it } from "vitest";
-import { buildActorSecretContext } from "../routes/authz.js";
+import { buildActorSecretContext, getActorInfo } from "../routes/authz.js";
 
 function makeReq(actor: Express.Request["actor"]) {
   return { method: "POST", actor } as unknown as Request;
 }
+
+describe("getActorInfo API key attribution", () => {
+  it.each([
+    ["agent API key", { type: "agent", agentId: "agent-1", keyId: "key-1", source: "agent_key" } as const, "key-1"],
+    ["Board API key", { type: "board", userId: "user-1", keyId: "key-2", source: "board_key" } as const, "key-2"],
+    ["session", { type: "board", userId: "user-1", sessionId: "session-1", source: "session" } as const, null],
+  ])("maps %s authentication to the activity actor", (_label, actor, apiKeyId) => {
+    expect(getActorInfo(makeReq(actor)).apiKeyId).toBe(apiKeyId);
+  });
+});
 
 describe("buildActorSecretContext", () => {
   it("responsibleUserId resolves to req.actor.userId for a user actor", () => {

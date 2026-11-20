@@ -1,4 +1,5 @@
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
+import { currentRequestApiKeyId } from "./request-actor-context.js";
 import { extractAgentMentionIds } from "@paperclipai/shared";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
@@ -316,7 +317,7 @@ export function agentInstructionRevisionService(db: Db) {
       const recordSave = (row: Revision, adopted: boolean) => tx.insert(activityLog).values({ companyId: input.companyId,
         actorType: origin ? "agent" : bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
         actorId: origin?.agentId ?? (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
-        agentId: origin?.agentId ?? (bound.type === "agent" ? bound.agentId : null), runId: writer.sourceRunId,
+        agentId: origin?.agentId ?? (bound.type === "agent" ? bound.agentId : null), runId: writer.sourceRunId, apiKeyId: currentRequestApiKeyId(),
         responsibleUserId: writer.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
         details: { path: input.entryFile, contentHash: row.contentHash, byteLength: row.byteLength, created: current === null,
           source: adopted ? "adopted" : restored ? "legacy_restore" : (input as InstructionCommitInput).source } })
