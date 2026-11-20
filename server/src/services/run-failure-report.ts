@@ -277,8 +277,13 @@ function isProviderQuotaFailure(run: HeartbeatRun, options: RunFailureReportOpti
 function isNativeProviderUsageLimitFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   if (run.status !== "failed" || run.runtimeMode !== "native" ||
       run.errorCode !== "native_provider_usage_limit" || options.phase === "setup" || run.signal != null) return false;
-  const category = readProviderFailure(asRecord(run.resultJson)?.providerFailure)?.category;
-  return category === "quota_exhausted" || category === "rate_limit";
+  const result = asRecord(run.resultJson);
+  // A same-run startup retry keeps the first attempt's providerFailure; the
+  // limit that ended the run is saved beside it.
+  return [result?.providerFailure, asRecord(asRecord(result?.providerLimitStartup)?.failure)].some(value => {
+    const category = readProviderFailure(value)?.category;
+    return category === "quota_exhausted" || category === "rate_limit";
+  });
 }
 
 /**

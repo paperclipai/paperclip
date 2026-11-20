@@ -16057,6 +16057,35 @@ describe("native session bounded recovery", () => {
       const deterministic = confirmed({ category: "authentication", retryability: "requires_action" });
       expect(nativeSessionFailureSourceCode(deterministic)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
     });
+
+    it("waits out a remote startup rate limit or quota as a usage-limit hold, not a board Retry", () => {
+      // Staging PAPERCLIP-BACKEND-8Z: an account-wide Claude 429 refused session.open, the same-run
+      // retry met it again after the cooldown, and the repeat ended as a startup rejection.
+      const limit = (fields: Record<string, unknown>) => startupFailure({ provider: "anthropic", httpStatus: 429,
+        message: "API error: 429 This request would exceed your account's rate limit. Please try again later · model not changed",
+        ...fields });
+      const confirmed = (fields: Record<string, unknown>) =>
+        Object.defineProperty(sessionOpenFailure(limit(fields)), "runnerExitConfirmed", { value: true, enumerable: false });
+      for (const fields of [{ category: "rate_limit" }, { category: "quota_exhausted", retryability: "requires_action" }]) {
+        const first = confirmed(fields);
+        expect(nativeSessionFailureSourceCode(first)).toBe("provider_session_open_rejected");
+        // The first refusal still retries the same run after the cooldown.
+        expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected", first, true))
+          .toBe("provider_session_open_rejected");
+        // The repeat, or a refusal whose runner exit is unproven, waits for the reset.
+        const previous = nativeStartupFailureSignature(limit(fields));
+        const repeated = nativeRemoteStartupRejectionCode("provider_session_open_rejected", confirmed(fields), true, previous);
+        const unproven = nativeRemoteStartupRejectionCode("provider_session_open_rejected", sessionOpenFailure(limit(fields)), true);
+        for (const code of [repeated, unproven]) {
+          expect(code).toBe("native_provider_usage_limit");
+          const disposition = nativeSessionFailureDisposition(2, new Date(), code);
+          expect(disposition).toEqual({ phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: null });
+        }
+      }
+      // A local target keeps its bounded same-run retries.
+      expect(nativeRemoteStartupRejectionCode("provider_session_open_rejected",
+        sessionOpenFailure(limit({ category: "rate_limit" })), false)).toBe("provider_session_open_rejected");
+    });
   });
 
   it("stops same-run retries for an operator while a saved side-effecting call has no result", () => {

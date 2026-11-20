@@ -9207,18 +9207,23 @@ export function nativeStartupFailureSignature(failure: unknown): string | null {
  * can own the sandbox) and the previous attempt did not fail with the same
  * startup error. Otherwise it ends at once with Retry. A deterministic
  * rejection never reaches here: it is already NATIVE_PROVIDER_STARTUP_REJECTED.
+ *
+ * An exhausted provider allowance (a rate limit or quota) ends as a usage-limit
+ * hold instead: it passes by itself, so the hold retries the task at the reset
+ * like a limit reported on a turn, rather than waiting for a person's Retry.
  */
 export function nativeRemoteStartupRejectionCode<Code extends string>(
   sourceFailureCode: Code,
   error: unknown,
   remoteTarget: boolean,
   previousStartupSignature?: string | null,
-): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED {
+): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED | "native_provider_usage_limit" {
   if (!remoteTarget || sourceFailureCode !== "provider_session_open_rejected") return sourceFailureCode;
   const failure = providerFailureFromError(error);
   if (failure?.phase !== "startup") return sourceFailureCode;
-  return nativeRunnerExitConfirmed(error) && !nativeRepeatedStartupFailure(error, previousStartupSignature)
-    ? sourceFailureCode : NATIVE_PROVIDER_STARTUP_REJECTED;
+  if (nativeRunnerExitConfirmed(error) && !nativeRepeatedStartupFailure(error, previousStartupSignature)) return sourceFailureCode;
+  return failure.category === "rate_limit" || failure.category === "quota_exhausted"
+    ? "native_provider_usage_limit" : NATIVE_PROVIDER_STARTUP_REJECTED;
 }
 
 export function nativeRepeatedStartupFailure(error: unknown, previousStartupSignature: string | null | undefined): boolean {
@@ -13468,9 +13473,13 @@ async function executePaperclipNativeSessionAttempt(
       // An exhausted provider allowance is not ambiguous session state: the
       // provider ended its turn. Say when it resets and whether Paperclip will
       // retry then. A failed read only loses that detail.
+      // A limit at session start has no turn event; its reset comes from this
+      // failure. The hold keeps it: the run row keeps an earlier attempt's failure.
+      const startupProviderLimit = sourceFailureCode === "native_provider_usage_limit" && providerFailure?.phase === "startup"
+        ? { failure: providerFailure, observedAt: now } : undefined;
       const providerLimit = sourceFailureCode === "native_provider_usage_limit" && phase === "terminal_failure"
         ? await import("./provider-limit-resume.js").then(async ({ planProviderLimitResume, providerLimitNextAction }) => {
-          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId);
+          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId, startupProviderLimit);
           return { plan, nextAction: providerLimitNextAction(plan) };
         }).catch((failure: unknown) => {
           logger.warn({ err: failure, runId: input.execution.binding.runId }, "provider limit reset unavailable");
@@ -13762,7 +13771,14 @@ async function executePaperclipNativeSessionAttempt(
             error: message,
             resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'remoteRunnerRecovery')
               || ${JSON.stringify(remoteRunnerRecovery ? { remoteRunnerRecovery } : {})}::jsonb
-              || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}`,
+              || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}
+              || ${startupProviderLimit && phase === "terminal_failure"
+                // providerFailure keeps an earlier attempt's failure; this names the limit that ended the run.
+                ? sql`jsonb_build_object('providerLimitStartup', ${JSON.stringify({
+                  failure: outputRedactor.redact(startupProviderLimit.failure),
+                  observedAt: startupProviderLimit.observedAt.toISOString(),
+                })}::jsonb)`
+                : sql`'{}'::jsonb`}`,
             errorCode: ownershipUnverified
               ? NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE
               : sourceFailureCode,
@@ -13839,6 +13855,10 @@ async function executePaperclipNativeSessionAttempt(
               recoveryEvidence.providerSessionEstablished,
             ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
             ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
+            ...(providerLimit && startupProviderLimit ? { providerLimitStartup: {
+              failure: outputRedactor.redact(startupProviderLimit.failure),
+              observedAt: startupProviderLimit.observedAt.toISOString(),
+            } } : {}),
           },
           nextAction:
             providerLimit
