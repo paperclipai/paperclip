@@ -164,6 +164,25 @@ Claude-specific note:
 
 - If `ANTHROPIC_API_KEY` is set in adapter env or host environment, Claude uses API-key auth instead of subscription login. Paperclip surfaces this as a warning in environment tests, not a hard error.
 
+## 8.1 Safe Local-Run Preflight (CPU-leaning)
+
+Before starting local adapter runs, run a short preflight in this order:
+
+1. Install and authenticate the adapter CLI the runner will execute:
+   - `claude` for `claude_local`
+   - `codex` for `codex_local`
+   - `opencode` for `opencode_local`
+   - `hermes` for `hermes_local`
+2. `pnpm paperclipai doctor --data-dir <path>` in the target instance.
+3. `pnpm paperclipai run --data-dir <path>` once to ensure the local instance starts with the intended paths.
+4. For repository-bound tasks, run one manual `pnpm paperclipai agent local-cli <agent-ref> --company-id <company-id> --api-base <target-api-url> --data-dir <path>` setup, load its emitted exports in the current shell, and verify `PAPERCLIP_API_URL`, `PAPERCLIP_COMPANY_ID`, and `PAPERCLIP_AGENT_ID` reference the intended target instance. The explicit `--api-base` prevents a stale `PAPERCLIP_API_URL` or context profile from selecting another instance.
+5. Check the target API is reachable, for example `curl "$PAPERCLIP_API_URL/api/health"` after loading those exports.
+6. Confirm the workspace exists and is writable before wakeup:
+   - `PAPERCLIP_IN_WORKTREE` is set automatically in managed worktree environments.
+   - `pnpm paperclipai workspace list --company-id <company-id>` shows the expected project/execution workspace references.
+
+If any step fails, pause the agent and fix the dependency or auth state before resuming recurring heartbeats.
+
 ## 9. Security and risk notes
 
 Local CLI adapters run unsandboxed on the host machine.
