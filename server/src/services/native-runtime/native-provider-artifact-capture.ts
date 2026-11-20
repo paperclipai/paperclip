@@ -81,7 +81,10 @@ export async function shareNativeProviderArtifactCapture<T>(input: {
     while (shared.running > 0 && shared.lastStartedAtMs + hedgeAfterMs > Date.now()) {
       await waitForSharedCapture(shared, hedgeAfterMs, stopped.promise);
       const reused = await input.reuse();
-      if (reused) return reused;
+      if (reused) {
+        shared.saved.resolve();
+        return reused;
+      }
       shared = sharedCaptureFor(input.key);
     }
     return await captureOrReuse(input, shared, stopped.promise);
@@ -113,8 +116,9 @@ async function captureOrReuse<T>(
   } catch (error) {
     if (input.signal.aborted) throw error;
     const reused = await input.reuse().catch(() => null);
-    if (reused) return reused;
-    throw error;
+    if (!reused) throw error;
+    shared.saved.resolve();
+    return reused;
   } finally {
     shared.running -= 1;
     const settled = shared.settled;
