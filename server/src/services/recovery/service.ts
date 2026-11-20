@@ -617,8 +617,6 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "project_access_denied",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
-  // A fresh sandbox has the same disk size, so repeating the work would fill
-  // it again. The board frees space through the agent, then presses Retry.
   NATIVE_SANDBOX_DISK_FULL,
   "adapter_engine_unavailable",
   "agent_not_invokable",

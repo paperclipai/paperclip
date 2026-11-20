@@ -1675,10 +1675,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ? outerErr : null;
     const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
-    // The sandbox disk is full, for example when a reconnect after a server
-    // restart cannot open a process session in it. A fresh sandbox has the
-    // same disk size, so this keeps its own code and the board's action
-    // instead of the generic setup failure.
     const sandboxDiskFull = !storageUnavailable && isSandboxProviderDiskFullError(outerErr);
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
