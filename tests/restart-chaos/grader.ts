@@ -1,7 +1,7 @@
 import { UI_RETRY_BLOCKED_BY_MODAL, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
 import { gradeDiskFullRetry, isDiskFullFault } from "./disk-full-faults.js";
-import type { QueueWaitFairness } from "./agent-slots.js";
+import { queueWaitFairnessFrom, type QueueFairness, type QueueWaitFairness } from "./agent-slots.js";
 import { enforcedUniversalFailures, gradeUniversal, type SlotFree, type UniversalBounds, type UniversalDbEvidence } from "./universal.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
@@ -92,7 +92,8 @@ function faultOverlapMs(faults: readonly FaultReceipt[], from: number, to: numbe
   }, 0);
 }
 
-export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly FaultReceipt[], queueWait?: QueueWaitFairness): RuleResult {
+export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly FaultReceipt[],
+  queueWait: QueueWaitFairness = queueWaitFairnessFrom(null)): RuleResult {
   if (record.launchError) return { verdict: "fail", detail: `launch_failed: ${record.launchError}` };
   if (record.retry) return { verdict: "n/a", detail: "task rested needing Retry; graded under R3" };
   const expected = expectedFinalStatus(record);
@@ -104,8 +105,10 @@ export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly F
   const took = (record.restAt ?? Number.POSITIVE_INFINITY) - record.createdAt!;
   const seconds = (value: number) => Math.round(value / 1000);
   if (took <= base) return { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(base)}s)` };
+  const first = firstRun(record);
   const wait = firstRunQueueWait(record);
-  const fairness = wait && queueWait ? queueWait(wait.runId, wait.createdAt, wait.startedAt) : null;
+  const fairness: QueueFairness | null = wait ? queueWait(wait.runId, wait.createdAt, wait.startedAt, faults.map(faultWindow))
+    : first && !first.startedAt ? { verdict: "unproven", reason: `first run ${first.id} never started` } : null;
   if (fairness?.verdict === "unfair") {
     return { verdict: "fail", detail: `unfair_queue_wait ${fairness.reason}; done ${seconds(took)}s > ${seconds(base)}s without queue credit` };
   }

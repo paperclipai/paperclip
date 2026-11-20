@@ -199,7 +199,8 @@ describe("R1 fair queue wait credit", () => {
   const STARTED = CREATED + WAIT;
   type SlotRun = AgentSlots["runs"][number];
   const slotRun = (runId: string, created: number, started: number, finished: number | null): SlotRun =>
-    ({ runId, agentId: "agent-oc", createdAt: T0 + created, startedAt: T0 + started, finishedAt: finished === null ? null : T0 + finished });
+    ({ runId, agentId: "agent-oc", createdAt: T0 + created, invocationSource: "assignment", retryOfRunId: null, startedAt: T0 + started,
+      finishedAt: finished === null ? null : T0 + finished });
   const own = (started: number = STARTED): SlotRun => ({ runId: "r1", agentId: "agent-oc", createdAt: T0 + CREATED, startedAt: T0 + started, finishedAt: null });
   const fullAgent = (): SlotRun[] => [
     slotRun("o1", -900_000, -800_000, 400_000),
@@ -218,7 +219,7 @@ describe("R1 fair queue wait credit", () => {
   const t031 = () => queued(BUDGET + 87_000);
 
   it("credits a fair 1,509 s FIFO queue wait that left the task 87 s over the old budget", () => {
-    expect(gradeR1(t031(), BUDGET, [])).toEqual({ verdict: "fail", detail: "done_too_late 2287s > 2200s" });
+    expect(gradeR1(t031(), BUDGET, [])).toEqual({ verdict: "fail", detail: "done_too_late 2287s > 2200s (queue wait not credited: no agent slot evidence for r1)" });
     const graded = gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(fullAgent())));
     expect(graded).toEqual({ verdict: "pass", detail: "done after 2287s (allowed 3709s incl. 1509s fair queue wait)" });
   });
@@ -227,7 +228,7 @@ describe("R1 fair queue wait credit", () => {
     const runs = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: T0 + 300_000 } : entry);
     const graded = gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(runs)));
     expect(graded.verdict).toBe("fail");
-    expect(graded.detail).toMatch(/^unfair_queue_wait run o6 created .* ahead of r1/);
+    expect(graded.detail).toMatch(/^unfair_queue_wait assignment run o6 created .* ahead of r1/);
     const task = gradeTask(t031(), [], BUDGET, oracle(), undefined, { queueWait: queueWaitFairnessFrom(slots(runs)) });
     expect(task.signature).toBe("R1:unfair_queue_wait:A1:K1");
   });
@@ -237,6 +238,24 @@ describe("R1 fair queue wait credit", () => {
     const graded = gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(runs)));
     expect(graded.verdict).toBe("fail");
     expect(graded.detail).toContain(`idle slot from ${iso(900_000)} to ${iso(931_000)} while r1 was queued`);
+  });
+
+  it("credits the wait when a newer follow-up or retry that the dispatcher ranks higher started ahead", () => {
+    const followUp = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: T0 + 300_000, invocationSource: "on_demand" } : entry);
+    expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(followUp))).verdict).toBe("pass");
+    const retry = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: T0 + 300_000, retryOfRunId: "o2" } : entry);
+    expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(retry))).verdict).toBe("pass");
+    const unclassified = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: T0 + 300_000, invocationSource: undefined } : entry);
+    expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(unclassified))).detail)
+      .toBe("done_too_late 2287s > 2200s (queue wait not credited: no invocation source for newer run o6, which started while r1 was queued)");
+  });
+
+  it("does not call an idle slot during a server outage unfair", () => {
+    const runs = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, startedAt: T0 + 931_000 } : entry);
+    const outage: FaultReceipt = { ...fault, startedAt: T0 + 890_000, readyAt: T0 + 930_000 };
+    const graded = gradeR1(t031(), BUDGET, [outage], queueWaitFairnessFrom(slots(runs)));
+    expect(graded.verdict).toBe("fail");
+    expect(graded.detail).toMatch(/^done_too_late .*queue wait not credited: idle slot from .* overlapped a server outage while r1 was queued/);
   });
 
   it("allows a same-second slot hand-off within the tolerance", () => {
@@ -250,6 +269,15 @@ describe("R1 fair queue wait credit", () => {
     const runs = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: null } : entry);
     expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(runs))).detail)
       .toBe("done_too_late 2287s > 2200s (queue wait not credited: no createdAt for o6, which started while r1 was queued)");
+  });
+
+  it("says so when the first run never started", () => {
+    const cancelled = record([sample(BUDGET + 87_000, "done", [
+      run("r0", "cancelled", 0, 1_000, { startedAt: null }),
+      run("r1", "succeeded", CREATED, BUDGET, { startedAt: iso(STARTED) }),
+    ])], { restAt: T0 + BUDGET + 87_000, faultIds: [] });
+    expect(gradeR1(cancelled, BUDGET, [], queueWaitFairnessFrom(slots(fullAgent()))).detail)
+      .toBe("done_too_late 2287s > 2200s (queue wait not credited: first run r0 never started)");
   });
 
   it("leaves a short queue wait unchanged", () => {
