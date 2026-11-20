@@ -223,6 +223,7 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { startDefaultMcpSetupSweep } from "./services/default-mcp-setup.js";
 import { startDefaultMcpOAuthSeedSweep } from "./services/default-mcp-oauth-seed.js";
 import { startSharedOrgRhMcpSweep } from "./services/shared-org-rh-mcp.js";
+import { startSharedSkillsSync } from "./services/shared-skills-source.js";
 import { configureDefaultMcpTemplateRuntime } from "./services/default-mcp-template.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
@@ -1436,6 +1437,7 @@ export async function createApp(
   const stopDefaultMcpOAuthSeedSweep = startDefaultMcpOAuthSeedSweep(db);
   // Per-org rh-mcp service token for shared orgs (TECH-8066): flag-gated no-op, same cadence pattern as the seed sweep.
   const stopSharedOrgRhMcpSweep = startSharedOrgRhMcpSweep(db, { toolAccessOptions: defaultMcpToolAccessOptions });
+  const stopSharedSkillsSync = startSharedSkillsSync();
   // Startup only (never on the hourly interval — that would kill live
   // applies): apply jobs are in-memory in this single process, so any run
   // still "applying" now was interrupted by the previous shutdown and would
@@ -1552,6 +1554,7 @@ export async function createApp(
       stopDefaultMcpSetupSweep();
       stopDefaultMcpOAuthSeedSweep();
       stopSharedOrgRhMcpSweep();
+      stopSharedSkillsSync();
       devWatcher?.close();
       viteHtmlRenderer?.dispose();
       void viteDevServer?.close().catch(() => undefined);

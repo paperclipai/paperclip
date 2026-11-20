@@ -35,6 +35,7 @@ import {
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference, resolvePaperclipDesiredSkillNames,
   resolveLegacyPaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
 import { REPOSITORY_CONTENT_DIR, repositorySkillProjection } from "./skill-repository-package.js";
+import { SHARED_SKILLS_KEY_PREFIX, SHARED_SKILLS_SOURCE_KIND, readSharedSkillsConfig, resolveSharedSkillsRoot } from "./shared-skills-source.js";
 import { runVersionSnapshotFlight } from "./skill-version-retention.js";
 import type { PaperclipDesiredSkillEntry, PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
@@ -3056,6 +3057,37 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     return upsertImportedSkills(companyId, [firstTaskSkill]);
   }
 
+  /**
+   * Imports the instance-wide shared skills snapshot (see shared-skills-source.ts) into this company's library. A no-op
+   * until the first snapshot exists. Skills removed from the shared repository are dropped here once no agent uses them.
+   */
+  async function ensureSharedSkills(companyId: string) {
+    if (!readSharedSkillsConfig()) return;
+    const root = await resolveSharedSkillsRoot();
+    if (!root) return;
+    const imported = await readLocalSkillImports(companyId, root).catch(() => [] as ImportedSkill[]);
+    if (imported.length === 0) return;
+    const shared = imported.map((skill) => {
+      const key = `${SHARED_SKILLS_KEY_PREFIX}${skill.slug}`;
+      return { ...skill, key, metadata: { ...(skill.metadata ?? {}), sourceKind: SHARED_SKILLS_SOURCE_KIND, skillKey: key } };
+    });
+    await upsertImportedSkills(companyId, shared);
+    const current = new Set(shared.map((skill) => skill.key));
+    const rows = await db
+      .select({ id: companySkills.id, key: companySkills.key, slug: companySkills.slug, sourceType: companySkills.sourceType, sourceLocator: companySkills.sourceLocator, metadata: companySkills.metadata })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId));
+    for (const row of rows) {
+      if (!row.key.startsWith(SHARED_SKILLS_KEY_PREFIX) || current.has(row.key)) continue;
+      if (asString(isPlainRecord(row.metadata) ? row.metadata.sourceKind : null) !== SHARED_SKILLS_SOURCE_KIND) continue;
+      if ((await usage(companyId, row.key)).length > 0) continue;
+      await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), row.id, async () => {
+        await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, row as Parameters<typeof resolveRuntimeSkillMaterializedPath>[1]), { recursive: true, force: true });
+        await db.delete(companySkills).where(eq(companySkills.id, row.id));
+      });
+    }
+  }
+
   async function readBundledSkillReleaseRegistry() {
     for (const registryRoot of resolveBundledSkillReleasesRoot()) {
       const manifestPath = path.join(registryRoot, "releases.json");
@@ -3197,6 +3229,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     for (const skill of skills) {
       if (skill.sourceType !== "local_path") continue;
       if (isPaperclipBundledSkillKey(skill.key) || asString(skill.metadata?.sourceKind) === "paperclip_bundled") continue;
+      // Shared snapshots are owned by ensureSharedSkills; a missing directory before the first download must not delete them.
+      if (asString(skill.metadata?.sourceKind) === SHARED_SKILLS_SOURCE_KIND) continue;
 
       if (!missingIds.has(skill.id)) {
         const metadata = getMissingSourceMarker(skill.metadata)
@@ -3265,6 +3299,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       }
       const bundledSkills = await ensureBundledSkills(companyId);
       await ensureBundledSkillReleases(companyId, bundledSkills);
+      await ensureSharedSkills(companyId);
       await reconcilePaperclipSkillFolders(companyId);
       await reconcileLocalPathSkillSources(companyId);
     })();

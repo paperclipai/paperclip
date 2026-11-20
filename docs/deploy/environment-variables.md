@@ -62,6 +62,22 @@ live environment.
 | `PAPERCLIP_HIDDEN_SETTINGS` | (unset) | Comma-separated settings surfaces to hide from the UI and floor at the API, for operators hosting Paperclip for others (managed cloud, internal shared server). See [Hiding settings surfaces](#hiding-settings-surfaces). |
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
 
+### Shared skills
+
+One GitHub repository folder can supply skills to every company library. The server downloads it on startup and every
+10 minutes, and each company imports the latest snapshot on demand as `shared/<slug>` skills. No company, person or agent
+receives the token. The feature is off unless both the token and the repository are set.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PAPERCLIP_SHARED_SKILLS_GITHUB_TOKEN` | unset | Read-only GitHub token (fine-grained, Contents: read, limited to that one repository). Keep it in a secret store. |
+| `PAPERCLIP_SHARED_SKILLS_REPOSITORY` | unset | `owner/name` of the repository. |
+| `PAPERCLIP_SHARED_SKILLS_PATH` | `skills` | Folder in the repository whose subfolders (each with a `SKILL.md`) are the skills. |
+| `PAPERCLIP_SHARED_SKILLS_REF` | `main` | Branch or ref to track. |
+
+The token is read once at startup (from the real process environment, not a `.env` file) and removed from the process environment, so agent processes the server starts never inherit it. A token supplied only through a `.env` file is not used and is scrubbed. Rotating or unsetting the token takes effect on the next server restart.
+Unsetting the repository, or restarting without the token, stops further imports; skills already in a library remain until removed.
+
 ### Default MCP OAuth endpoint readiness
 
 The RH endpoint values above are public metadata endpoints, not secrets. Before enabling the

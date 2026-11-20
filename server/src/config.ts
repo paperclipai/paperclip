@@ -2,6 +2,7 @@ import "./bootstrap-platform-default-key.js";
 import { readConfigFile, resolveDeploymentMode } from "./config-file.js";
 import { parseChatWebhookPublicBaseUrl } from "./chat-webhook-public-url.js";
 import { captureAndScrubArcanaProvisionerCredentials } from "./secrets/arcana-provisioner-credentials.js";
+import { captureAndScrubSharedSkillsToken } from "./secrets/shared-skills-token.js";
 import { captureAndScrubCommsBoardProvisionerCredentials } from "./secrets/comms-board-provisioner-credentials.js";
 import { captureAndScrubPlatformDefaultOpenAiKey } from "./secrets/platform-default-openai-key.js";
 import { captureAndScrubPlatformDefaultRouterKey } from "./secrets/platform-default-router-key.js";
@@ -46,6 +47,7 @@ if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
   captureAndScrubPlatformDefaultRouterKey();
   captureAndScrubCommsBoardProvisionerCredentials();
   captureAndScrubArcanaProvisionerCredentials();
+  captureAndScrubSharedSkillsToken();
 }
 
 const CWD_ENV_PATH = resolve(process.cwd(), ".env");
@@ -62,6 +64,7 @@ if (shouldLoadWorkingDirectoryEnv({
   captureAndScrubPlatformDefaultRouterKey();
   captureAndScrubCommsBoardProvisionerCredentials();
   captureAndScrubArcanaProvisionerCredentials();
+  captureAndScrubSharedSkillsToken();
 }
 
 if (basename(dirname(PAPERCLIP_ENV_FILE_PATH)) === ".paperclip") {

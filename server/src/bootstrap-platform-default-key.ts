@@ -3,6 +3,7 @@ import { captureAndScrubArcanaProvisionerCredentials } from "./secrets/arcana-pr
 import { captureDefaultMcpTemplateScope } from "./secrets/default-mcp-template-scope.js";
 import { captureAndScrubPlatformDefaultOpenAiKey } from "./secrets/platform-default-openai-key.js";
 import { captureAndScrubPlatformDefaultRouterKey } from "./secrets/platform-default-router-key.js";
+import { captureAndScrubSharedSkillsToken } from "./secrets/shared-skills-token.js";
 
 // Early bootstrap side-effect: capture and scrub the platform default OpenAI API key
 // from deployment process.env immediately on module evaluation, before any dotenv files,
@@ -17,6 +18,9 @@ captureAndScrubPlatformDefaultRouterKey();
 captureAndScrubCommsBoardProvisionerCredentials();
 // Same for the Arcana provisioner bearer token (TECH-7252).
 captureAndScrubArcanaProvisionerCredentials();
+// Same for the shared skills read token (TECH-9129): the server uses it to download one repository folder, and
+// agent processes it starts must never inherit it.
+captureAndScrubSharedSkillsToken();
 
 // The default-MCP company-template rollout scope (TECH-7271) is an operator control: freeze it from the
 // deployment environment now so a later dotenv load or child environment cannot change it.
