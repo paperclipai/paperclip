@@ -9194,18 +9194,23 @@ export function nativeStartupFailureSignature(failure: unknown): string | null {
  * can own the sandbox) and the previous attempt did not fail with the same
  * startup error. Otherwise it ends at once with Retry. A deterministic
  * rejection never reaches here: it is already NATIVE_PROVIDER_STARTUP_REJECTED.
+ *
+ * An exhausted provider allowance (a rate limit or quota) ends as a usage-limit
+ * hold instead: it passes by itself, so the hold retries the task at the reset
+ * like a limit reported on a turn, rather than waiting for a person's Retry.
  */
 export function nativeRemoteStartupRejectionCode<Code extends string>(
   sourceFailureCode: Code,
   error: unknown,
   remoteTarget: boolean,
   previousStartupSignature?: string | null,
-): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED {
+): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED | "native_provider_usage_limit" {
   if (!remoteTarget || sourceFailureCode !== "provider_session_open_rejected") return sourceFailureCode;
   const failure = providerFailureFromError(error);
   if (failure?.phase !== "startup") return sourceFailureCode;
-  return nativeRunnerExitConfirmed(error) && !nativeRepeatedStartupFailure(error, previousStartupSignature)
-    ? sourceFailureCode : NATIVE_PROVIDER_STARTUP_REJECTED;
+  if (nativeRunnerExitConfirmed(error) && !nativeRepeatedStartupFailure(error, previousStartupSignature)) return sourceFailureCode;
+  return failure.category === "rate_limit" || failure.category === "quota_exhausted"
+    ? "native_provider_usage_limit" : NATIVE_PROVIDER_STARTUP_REJECTED;
 }
 
 export function nativeRepeatedStartupFailure(error: unknown, previousStartupSignature: string | null | undefined): boolean {
@@ -13457,7 +13462,9 @@ async function executePaperclipNativeSessionAttempt(
       // retry then. A failed read only loses that detail.
       const providerLimit = sourceFailureCode === "native_provider_usage_limit" && phase === "terminal_failure"
         ? await import("./provider-limit-resume.js").then(async ({ planProviderLimitResume, providerLimitNextAction }) => {
-          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId);
+          // A limit at session start has no turn event; its reset comes from this failure.
+          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId,
+            providerFailure?.phase === "startup" ? { failure: providerFailure, observedAt: now } : undefined);
           return { plan, nextAction: providerLimitNextAction(plan) };
         }).catch((failure: unknown) => {
           logger.warn({ err: failure, runId: input.execution.binding.runId }, "provider limit reset unavailable");

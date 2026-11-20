@@ -117,6 +117,16 @@ describeEmbeddedPostgres("reportRunFailure native provider usage limits", () => 
     expect(run).toEqual(before);
   });
 
+  it("keeps a native rate limit that refused the session start on the task", async () => {
+    // The persisted shape of staging PAPERCLIP-BACKEND-8Z once it ends as a usage-limit hold.
+    await reportRunFailure(db, nativeUsageLimitRun({
+      error: "PRP command session.open failed: failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=provider_rate_limit)",
+      resultJson: { providerFailure: { ...limitFailure, phase: "startup", category: "rate_limit", retryability: "unknown",
+        httpStatus: 429, message: "API error: 429 This request would exceed your account's rate limit. Please try again later" } },
+    }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
   it.each([
     { status: "timed_out" }, { signal: "SIGTERM" }, { runtimeMode: "legacy" },
     { errorCode: "native_provider_terminal_failed" }, { errorCode: "native_session_retry_exhausted" },
