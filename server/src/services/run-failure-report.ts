@@ -14,7 +14,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
-import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
+import { isOwnedAiConnectionSelectionRejection } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
@@ -88,10 +88,8 @@ function isAiConnectionSelectionBlocker(run: HeartbeatRun, options: RunFailureRe
     run.executionStage !== "preparing" || options.phase !== "setup" ||
     run.exitCode != null || run.signal != null
   ) return false;
-  const configuration = asRecord(run.resultJson?.configurationIncomplete);
   const recovery = asRecord(run.resultJson?.executionRecovery);
-  return configuration?.reason === "ai_connection_unavailable" &&
-    isAiConnectionConfigurationReason(configuration.selectionFailure) &&
+  return isOwnedAiConnectionSelectionRejection(run.resultJson?.configurationIncomplete) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
@@ -268,6 +266,20 @@ function isNativeProviderUsageLimitFailure(run: HeartbeatRun, options: RunFailur
   return category === "quota_exhausted" || category === "rate_limit";
 }
 
+/**
+ * A server restart can interrupt a run whose provider turn already ended on an
+ * exhausted allowance, before its executor saves `native_provider_usage_limit`.
+ * Restart recovery then ends the run as `provider_checkpoint_permanently_failed`.
+ * The task still takes its provider-limit wait, so the same expected failure
+ * stays unreported. The run's persisted runner terminal is the proof.
+ */
+async function isRestartEndedNativeUsageLimit(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
+  if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== "native_restart_recovery_blocked" ||
+      run.error !== "provider_checkpoint_permanently_failed" || options.phase === "setup" || run.signal != null) return false;
+  const { readPersistedNativeTerminalUsageLimit } = await import("./native-runtime/native-provider-failure-evidence.js");
+  return readPersistedNativeTerminalUsageLimit(db, run);
+}
+
 function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const result = asRecord(run.resultJson);
   return run.status === "failed" && run.errorCode === "codex_transient_upstream" &&
@@ -424,6 +436,11 @@ async function captureTerminalRunFailure(
         return false;
       });
       if (capacityRetry) return;
+      const restartEndedUsageLimit = await isRestartEndedNativeUsageLimit(db, run, options).catch((err) => {
+        logger.warn({ err, runId: run.id }, "failed to read native usage-limit terminal for run failure report");
+        return false;
+      });
+      if (restartEndedUsageLimit) return;
     }
 
     const taskId = readTaskId(run);
