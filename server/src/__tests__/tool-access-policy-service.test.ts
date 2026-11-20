@@ -1261,6 +1261,55 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(await svc.decide(input, options)).toMatchObject({ decision: "require_approval" });
   });
 
+  it("does not deny listings behind argument-conditioned blocks", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const profile = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `profile-${randomUUID()}`,
+      name: "Write tools",
+      defaultAction: "deny",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "send_email",
+    });
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Block sends without labels",
+      policyType: "block",
+      enabled: true,
+      priority: 0,
+      selectors: { toolName: "send_email" },
+      conditions: { arguments: { fieldAbsent: ["labels"] } },
+    });
+    const svc = toolAccessPolicyService(db);
+    const input = sendEmailDecisionInput(company, agent, connection, catalogEntry);
+
+    // A listing-style decision has no real call arguments: the argument
+    // condition is unknown, so the block cannot hide the tool and the profile
+    // grant still applies.
+    expect(await svc.decide({
+      ...input,
+      request: { ...input.request, arguments: {}, argumentsUnknown: true },
+    })).toMatchObject({ allowed: true, decision: "allow" });
+
+    // The call path still decides with the actual arguments.
+    expect(await svc.decide({
+      ...input,
+      request: { ...input.request, arguments: {} },
+    })).toMatchObject({ decision: "deny", reasonCode: "deny_policy_block" });
+    expect(await svc.decide({
+      ...input,
+      request: { ...input.request, arguments: { labels: ["ops"] } },
+    })).toMatchObject({ allowed: true, decision: "allow" });
+  });
+
   it("does not retain rate admission for a mismatched or no-longer-authorized invocation", async () => {
     const { input, invocation, svc } = await admittedRateLimitedInvocation();
     const options = { admittedInvocationId: invocation.id };

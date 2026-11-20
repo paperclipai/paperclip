@@ -93,6 +93,7 @@ export type ToolAccessContext = {
   riskLevel: ToolRiskLevel | null;
   argumentsHash: string;
   arguments: unknown;
+  argumentsUnknown?: boolean;
 };
 
 type RedactionResult = {
@@ -105,6 +106,9 @@ type PolicyConditionEvaluation = {
   matchedGroups: string[];
   failedGroup?: string;
   reason?: string;
+  /** True when an argument condition could not be evaluated because the
+   *  decision has no real call arguments (listing mode). */
+  argumentUnknown?: boolean;
 };
 
 type TrustRuleConfig = {
@@ -528,9 +532,16 @@ export function evaluatePolicyConditions(
   if (!conditions || Object.keys(conditions).length === 0) return { matched: true, matchedGroups: [] };
   const matchedGroups: string[] = [];
 
+  let argumentUnknown = false;
   const argumentCondition = conditionRecord(conditions.arguments ?? conditions.args);
   if (argumentCondition) {
-    if (!argumentConditionMatches(argumentCondition, ctx)) {
+    if (ctx.argumentsUnknown) {
+      // A decision without real call arguments (listing, access summary,
+      // grant check) cannot evaluate an argument condition at all. It counts
+      // as unknown, not as "matched against {}". Deny-producing policies must
+      // not fire on it; granting policies treat it as satisfiable.
+      argumentUnknown = true;
+    } else if (!argumentConditionMatches(argumentCondition, ctx)) {
       return conditionGroupFail("arguments", "Tool arguments did not satisfy the policy condition.");
     }
     matchedGroups.push("arguments");
@@ -623,7 +634,7 @@ export function evaluatePolicyConditions(
     matchedGroups.push("timeWindow");
   }
 
-  return { matched: true, matchedGroups };
+  return { matched: true, matchedGroups, argumentUnknown };
 }
 
 type EnabledToolPolicy = {
@@ -681,6 +692,8 @@ export function matchEnabledToolPolicies(
   return { matching };
 }
 
+
+
 function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx: ToolAccessContext): boolean {
   const selected = entry.selectorType === "application" ? entry.applicationId === ctx.applicationId
     : entry.selectorType === "connection" ? entry.connectionId === ctx.connectionId
@@ -689,7 +702,11 @@ function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx:
     : entry.selectorType === "risk_level" ? entry.riskLevel === ctx.riskLevel : false;
   if (!selected) return false;
   const conditions = isRecord(entry.conditions) ? entry.conditions as ToolPolicyConditions : null;
-  return evaluatePolicyConditions(conditions, ctx).matched;
+  const evaluation = evaluatePolicyConditions(conditions, ctx);
+  // An exclude entry cannot exclude on an argument condition that cannot be
+  // evaluated without real call arguments (listing mode).
+  if (evaluation.argumentUnknown && entry.effect === "exclude") return false;
+  return evaluation.matched;
 }
 
 function targetMatches(binding: typeof toolProfileBindings.$inferSelect, ctx: ToolAccessContext): boolean {
@@ -1275,6 +1292,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
           ? toolRequestIdentityHash(input.request.arguments, options.toolActionSigningSecret)
           : redaction.summary.sha256 ?? sha256(input.request.arguments ?? {}),
         arguments: input.request.arguments ?? {},
+        argumentsUnknown: input.request.argumentsUnknown === true,
       },
     };
   }
@@ -1647,7 +1665,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       );
     }
     const matchingPolicies = policyMatch.matching;
-    const explicitBlock = matchingPolicies.find(({ policy }) => policy.policyType === "block");
+    const explicitBlock = matchingPolicies.find(({ policy, conditionEvaluation }) => policy.policyType === "block" && !conditionEvaluation.argumentUnknown);
     for (const { policy, conditionEvaluation } of matchingPolicies) {
       const policyExplanation = {
         policyId: policy.id,
@@ -1666,9 +1684,11 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         );
       }
       if (policy.policyType === "block") {
+        if (conditionEvaluation.argumentUnknown) continue;
         return decision("deny", "deny_policy_block", policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
       if (policy.policyType === "rate_limit") {
+        if (conditionEvaluation.argumentUnknown) continue;
         if (!rateLimitRule(policy)) {
           return decision(
             "deny",
@@ -1700,7 +1720,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       if (policy.policyType === "trust_rule") {
         const rule = trustRuleConfig(policy);
         if (!rule || !trustRuleIsActive(policy)) continue;
-        if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
+        if (!ctx.argumentsUnknown && !argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
         // Remembered permissions cannot override an explicit block. Preserve
         // priority semantics for ordinary allow/require-approval policies.
         if (explicitBlock) return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
@@ -2036,6 +2056,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         riskLevel: invocation.riskLevel,
         argumentsHash: invocation.argumentsHash ?? "",
         arguments: {},
+        argumentsUnknown: false,
       })) return false;
       if (input.filters.allowAny === true) return true;
       return Boolean(invocation.argumentsHash && allowedHashes.has(invocation.argumentsHash));
