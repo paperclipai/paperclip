@@ -25,7 +25,7 @@ import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-co
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
-import { AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService } from "../services/agent-directory-working-copies.js";
+import { AgentDirectoryOperationBusyError, AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService } from "../services/agent-directory-working-copies.js";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -1719,7 +1719,7 @@ describe("persistent agent directories", () => {
       let now = Date.now();
       const clock = vi.spyOn(Date, "now").mockImplementation(() => now += 31_000);
       try {
-        await expect(copies.release(companyId, blocked.runId)).rejects.toMatchObject({ code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT" });
+        await expect(copies.release(companyId, blocked.runId)).rejects.toBeInstanceOf(AgentDirectoryOperationBusyError);
         await copies.recoverCaptured();
       } finally { clock.mockRestore(); }
       expect((await copies.get(companyId, blocked.runId))?.nextAttemptAt).toBeInstanceOf(Date);
