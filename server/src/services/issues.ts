@@ -4262,18 +4262,8 @@ async function readIssueBlockerAttentionBatch(
             inArray(issueThreadInteractions.issueId, chunk),
           ),
         );
-      // A pending interaction only represents a live waiting path if accepting
-      // it could actually reach someone: `queueResolvedInteractionContinuationWakeup`
-      // (server/src/routes/issues.ts) silently no-ops when the host issue has no
-      // assignee agent, is already closed, or the interaction's own
-      // `continuationPolicy` cannot queue a wakeup (`request_confirmation`
-      // defaults to `"none"` — see `createIssueThreadInteractionSchema` — which
-      // never wakes anyone). Counting any of those as `covered` here reports a
-      // card as self-resolving when it is really parked forever (e.g. an
-      // assignee-less anchor issue, or a default-policy confirmation sitting on
-      // an otherwise-live issue).
       for (const row of interactionRows) {
-        const interactionHost = nodesById.get(row.issueId);
+        const interactionHost = evidenceNodes.get(row.issueId);
         const policyCanWake =
           row.continuationPolicy === "wake_assignee" ||
           row.continuationPolicy === "wake_assignee_on_accept";

@@ -384,11 +384,6 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  // A pending interaction only represents a live waiting path if accepting it
-  // could actually reach an agent. `queueResolvedInteractionContinuationWakeup`
-  // (server/src/routes/issues.ts) silently no-ops when the host issue has no
-  // assignee agent, so a blocker in that shape must not be reported as `covered` —
-  // there is nobody the acceptance would wake.
   it("does not treat a pending interaction as a covered path when its host has no assignee", async () => {
     const { companyId } = await createCompany("PBI");
     const parentId = await insertIssue({ companyId, identifier: "PBI-1", title: "Parent", status: "blocked" });
@@ -438,11 +433,6 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  // Greptile finding on PR #13380: `request_confirmation` interactions default
-  // to `continuationPolicy: "none"` (see `createIssueThreadInteractionSchema`),
-  // and `queueResolvedInteractionContinuationWakeup` never queues a wakeup for
-  // that policy. An assigned, open host is not enough — the interaction itself
-  // has to be capable of waking someone.
   it("does not treat a pending interaction as a covered path when its continuation policy cannot wake anyone", async () => {
     const { companyId, agentId } = await createCompany("PBN");
     const parentId = await insertIssue({ companyId, identifier: "PBN-1", title: "Parent", status: "blocked" });
