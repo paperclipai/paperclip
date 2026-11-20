@@ -22,6 +22,9 @@ export type TelegramConnection = {
   assignedAgentId: string | null;
   incomingMode: IncomingMode;
   paused: boolean;
+  /** Board opt-in. Missing or false rejects every sender who is not listed. */
+  acceptUnlistedSenders: boolean;
+  allowedPeerIds: string[];
   sessionSecretId: string;
   sessionConfigPath?: string;
   live: boolean;
@@ -31,6 +34,8 @@ export type TelegramConnectionPatch = {
   assignedAgentId?: string | null;
   incomingMode?: IncomingMode;
   paused?: boolean;
+  acceptUnlistedSenders?: boolean;
+  allowedPeerIds?: string[];
 };
 
 export type InboundAttachment = {

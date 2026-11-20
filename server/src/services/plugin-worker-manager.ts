@@ -1003,6 +1003,12 @@ export function createPluginWorkerHandle(
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
   const retainedBackgroundInvocations = new Set<string>();
+  // A released agent invocation must not come back as company-only scope.
+  // `background.retain` may open a fresh company scope for an unknown id, but
+  // an id that belonged to an agent keeps that restriction until this record expires.
+  const RELEASED_AGENT_INVOCATION_TTL_MS = 6 * 60 * 60 * 1000;
+  const RELEASED_AGENT_INVOCATION_CAP = 4096;
+  const releasedAgentInvocations = new Map<string, number>();
   // Host-owned execute routes, keyed by the host-issued invocation id. Only an
   // `environmentExecute` call with a log sink registers a route here. The
   // `execute.log` router delivers only through this map — never through the
@@ -1335,6 +1341,9 @@ export function createPluginWorkerHandle(
     const entry: ActiveInvocation = { scope, traceparent, providerSpanBudget:{remaining:256} };
     if (ttlMs !== undefined) {
       entry.timer = setTimeout(() => {
+        const current = activeInvocations.get(invocation.id);
+        if (!current) return;
+        rememberReleasedAgentInvocation(invocation.id, current.scope);
         activeInvocations.delete(invocation.id);
       }, ttlMs);
       if (entry.timer.unref) entry.timer.unref();
@@ -1343,10 +1352,36 @@ export function createPluginWorkerHandle(
     return invocation;
   }
 
+  function rememberReleasedAgentInvocation(id: string, scope: PluginInvocationScope): void {
+    if (!scope.agentOrigin) return;
+    const now = Date.now();
+    for (const [key, expiresAt] of releasedAgentInvocations) {
+      if (expiresAt <= now) releasedAgentInvocations.delete(key);
+    }
+    if (releasedAgentInvocations.has(id)) releasedAgentInvocations.delete(id);
+    while (releasedAgentInvocations.size >= RELEASED_AGENT_INVOCATION_CAP) {
+      const oldest = releasedAgentInvocations.keys().next().value;
+      if (oldest === undefined) break;
+      releasedAgentInvocations.delete(oldest);
+    }
+    releasedAgentInvocations.set(id, now + RELEASED_AGENT_INVOCATION_TTL_MS);
+  }
+
+  function releasedAgentInvocation(id: string): boolean {
+    const expiresAt = releasedAgentInvocations.get(id);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= Date.now()) {
+      releasedAgentInvocations.delete(id);
+      return false;
+    }
+    return true;
+  }
+
   function clearInvocation(invocation: PluginInvocationContext | null): void {
     if (!invocation) return;
     const entry = activeInvocations.get(invocation.id);
     if (entry?.timer) clearTimeout(entry.timer);
+    if (entry) rememberReleasedAgentInvocation(invocation.id, entry.scope);
     activeInvocations.delete(invocation.id);
   }
 
@@ -2880,10 +2915,13 @@ export function createPluginWorkerHandle(
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) {
-      // A released invocation id must not authorize ordinary host calls.
-      // Opening a fresh background scope is the exception: the company still
-      // has to be one this worker may act on proactively, and the stale id
-      // itself grants nothing.
+      // A released agent id stays denied, including background.retain.
+      // Opening a fresh company scope is only for an id that was never an
+      // agent invocation. The company still has to be one this worker may
+      // act on proactively, and the stale id itself grants nothing.
+      if (releasedAgentInvocation(invocationId)) {
+        return { invalidInvocationScope: true };
+      }
       if (message.method === "background.retain") {
         const companyId = referencedCompanyId(
           message.method,

@@ -17,6 +17,19 @@ function asIncomingMode(value: unknown): IncomingMode {
   return value === DEFAULT_INCOMING_MODE ? value : DEFAULT_INCOMING_MODE;
 }
 
+function asPeerIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const id = typeof item === "string" ? item.trim() : "";
+    if (!/^[1-9]\d{0,15}$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
 export function connectionFromEntity(entity: PluginEntityRecord, liveAccountIds: ReadonlySet<string>): TelegramConnection {
   const data = entity.data ?? {};
   const companyId = entity.scopeId ?? asString(data.companyId) ?? "";
@@ -29,6 +42,8 @@ export function connectionFromEntity(entity: PluginEntityRecord, liveAccountIds:
     assignedAgentId: asString(data.assignedAgentId),
     incomingMode: asIncomingMode(data.incomingMode),
     paused: asBoolean(data.paused, false),
+    acceptUnlistedSenders: asBoolean(data.acceptUnlistedSenders, false),
+    allowedPeerIds: asPeerIds(data.allowedPeerIds),
     sessionSecretId: asString(data.sessionSecretId) ?? "",
     sessionConfigPath: asString(data.sessionConfigPath) ?? "",
     live: liveAccountIds.has(telegramUserId),
@@ -44,6 +59,8 @@ export function publicConnection(connection: TelegramConnection): Omit<TelegramC
     assignedAgentId: connection.assignedAgentId,
     incomingMode: connection.incomingMode,
     paused: connection.paused,
+    acceptUnlistedSenders: connection.acceptUnlistedSenders,
+    allowedPeerIds: connection.allowedPeerIds,
     live: connection.live,
     hasSession: connection.sessionSecretId.length > 0,
   };
@@ -90,6 +107,8 @@ export async function upsertConnection(
     assignedAgentId?: string | null;
     incomingMode?: IncomingMode;
     paused?: boolean;
+    acceptUnlistedSenders?: boolean;
+    allowedPeerIds?: string[];
   },
 ): Promise<TelegramConnection> {
   const existing = await findConnection(ctx, input.companyId, input.account.telegramUserId, new Set());
@@ -98,6 +117,8 @@ export async function upsertConnection(
     ? existing?.assignedAgentId ?? null
     : input.assignedAgentId;
   const paused = input.paused ?? existing?.paused ?? false;
+  const acceptUnlistedSenders = input.acceptUnlistedSenders ?? existing?.acceptUnlistedSenders ?? false;
+  const allowedPeerIds = input.allowedPeerIds ?? existing?.allowedPeerIds ?? [];
   await ctx.entities.upsert({
     entityType: ACCOUNT_ENTITY_TYPE,
     scopeKind: "company",
@@ -113,6 +134,8 @@ export async function upsertConnection(
       assignedAgentId,
       incomingMode,
       paused,
+      acceptUnlistedSenders,
+      allowedPeerIds,
       sessionSecretId: input.sessionSecretId,
       sessionConfigPath: input.sessionConfigPath ?? existing?.sessionConfigPath ?? "",
     },
@@ -125,6 +148,8 @@ export async function upsertConnection(
     assignedAgentId,
     incomingMode,
     paused,
+    acceptUnlistedSenders,
+    allowedPeerIds,
     sessionSecretId: input.sessionSecretId,
     sessionConfigPath: input.sessionConfigPath ?? existing?.sessionConfigPath ?? "",
     live: false,
@@ -152,6 +177,8 @@ export async function patchConnection(
     assignedAgentId: patch.assignedAgentId === undefined ? existing.assignedAgentId : patch.assignedAgentId,
     incomingMode: patch.incomingMode ?? existing.incomingMode,
     paused: patch.paused ?? existing.paused,
+    acceptUnlistedSenders: patch.acceptUnlistedSenders ?? existing.acceptUnlistedSenders,
+    allowedPeerIds: patch.allowedPeerIds ?? existing.allowedPeerIds,
   }).then((connection) => ({ ...connection, live: liveAccountIds.has(telegramUserId) }));
 }
 

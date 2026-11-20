@@ -17,7 +17,11 @@ import {
   DATA_OVERVIEW,
   DIALOG_ORIGIN_KIND,
   LOGIN_STREAM_CHANNEL,
+  MAX_INBOUND_MEDIA_BYTES,
+  MAX_START_LOGINS_PER_WINDOW,
+  PENDING_LOGIN_TTL_MS,
   PLUGIN_ID,
+  START_LOGIN_WINDOW_MS,
   TOOL_SEND_TEXT,
 } from "./constants.js";
 import {
@@ -28,7 +32,14 @@ import {
   publicConnection,
   upsertConnection,
 } from "./connections.js";
-import { inboundShapeAllowed, ingestInboundMessage, takeInboundMessageSlot, takePeerMediaSlot } from "./inbound.js";
+import {
+  hasInboundBudget,
+  inboundShapeAllowed,
+  ingestInboundMessage,
+  peekPeerMediaSlot,
+  takeInboundMessageSlot,
+  takePeerMediaSlot,
+} from "./inbound.js";
 import { idleLoginStatus, reduceLogin } from "./login.js";
 import { redactValue } from "./redaction.js";
 import { authorizeSendText } from "./send.js";
@@ -45,6 +56,7 @@ import type {
   QrLoginHandle,
   ResolveAppCredentials,
   TelegramClientFactory,
+  TelegramConnectionPatch,
 } from "./types.js";
 
 export type TelegramPluginDeps = {
@@ -58,6 +70,8 @@ type PendingLogin = {
   handle: QrLoginHandle;
   status: LoginStatus;
   cancelled: boolean;
+  startedAt: number;
+  timer?: ReturnType<typeof setTimeout>;
   finished: Promise<void>;
 };
 
@@ -87,6 +101,19 @@ function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeAllowedPeerIds(value: unknown[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const id = readString(item);
+    if (!/^[1-9]\d{0,15}$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= 100) break;
+  }
+  return ids;
+}
+
 function requireCompanyId(value: unknown, fallback?: string | null): string {
   const companyId = readString(value) || readString(fallback);
   if (!companyId) throw new Error("companyId is required.");
@@ -107,6 +134,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const liveByAccount = new Map<string, LiveTelegramAccount>();
   const pendingLogins = new Map<string, PendingLogin>();
   const loginResults = new Map<string, SettledLogin>();
+  const startLoginHits = new Map<string, number[]>();
   const accountGenerations = new Map<string, number>();
   const accountGates = new Map<string, Promise<void>>();
   const reconnectJobs = new Set<Promise<void>>();
@@ -168,8 +196,10 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     secretId: string,
   ): Promise<void> {
     const current = await findConnection(ctx, companyId, account.telegramUserId, liveAccountIds());
-    if (secretId) await deleteAccountSession(ctx, companyId, secretId);
-    if (current?.sessionSecretId !== secretId) return;
+    if (!secretId || current?.sessionSecretId !== secretId) return;
+    await deleteAccountSession(ctx, companyId, secretId);
+    const confirmed = await findConnection(ctx, companyId, account.telegramUserId, liveAccountIds());
+    if (confirmed?.sessionSecretId !== secretId) return;
     await upsertConnection(ctx, {
       companyId,
       account,
@@ -196,15 +226,65 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     ctx.streams.emit(channel, { companyId, status });
   }
 
+  function pendingLoginExpired(pending: PendingLogin, now = Date.now()): boolean {
+    return now - pending.startedAt >= PENDING_LOGIN_TTL_MS;
+  }
+
   function loginStillCurrent(pending: PendingLogin): boolean {
-    return !shuttingDown && !pending.cancelled && pendingLogins.get(pending.loginId) === pending;
+    return !shuttingDown
+      && !pending.cancelled
+      && !pendingLoginExpired(pending)
+      && pendingLogins.get(pending.loginId) === pending;
   }
 
   function settleLogin(pending: PendingLogin, status: LoginStatus) {
+    if (pending.timer) clearTimeout(pending.timer);
     pendingLogins.delete(pending.loginId);
     loginResults.set(pending.loginId, { companyId: pending.companyId, status });
     void pending.handle.abort().catch(() => undefined);
     emitLogin(pending.companyId, status);
+  }
+
+  function expirePendingLogin(pending: PendingLogin) {
+    if (pendingLogins.get(pending.loginId) !== pending) return;
+    pending.cancelled = true;
+    settleLogin(pending, reduceLogin(pending.status, {
+      type: "error",
+      loginId: pending.loginId,
+      message: "Telegram login expired.",
+    }));
+  }
+
+  function allowStartLogin(companyId: string, now = Date.now()): boolean {
+    const recent = (startLoginHits.get(companyId) ?? []).filter((at) => now - at < START_LOGIN_WINDOW_MS);
+    if (recent.length >= MAX_START_LOGINS_PER_WINDOW) {
+      startLoginHits.set(companyId, recent);
+      return false;
+    }
+    recent.push(now);
+    startLoginHits.set(companyId, recent);
+    return true;
+  }
+
+  function replaceCompanyLogin(companyId: string): void {
+    for (const pending of [...pendingLogins.values()]) {
+      if (pending.companyId !== companyId) continue;
+      pending.cancelled = true;
+      settleLogin(pending, reduceLogin(pending.status, { type: "cancel", loginId: pending.loginId }));
+    }
+  }
+
+  async function storedSessionCurrent(
+    ctx: PluginContext,
+    companyId: string,
+    telegramUserId: string,
+    secretId: string,
+    generation: number,
+  ): Promise<boolean> {
+    if (shuttingDown || !secretId || accountGeneration(companyId, telegramUserId) !== generation) return false;
+    const current = await findConnection(ctx, companyId, telegramUserId, liveAccountIds());
+    if (accountGeneration(companyId, telegramUserId) !== generation) return false;
+    return current?.sessionSecretId === secretId;
   }
 
   async function handleInbound(message: Parameters<typeof ingestInboundMessage>[2]) {
@@ -233,27 +313,51 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       || message.attachments.length > 0
       || Boolean(message.loadAttachments)
     );
-    if (consumesQuota && !takeInboundMessageSlot(peerKey)) {
-      log.warn("Dropped inbound Telegram message over the peer quota", {
-        companyId: message.companyId,
-        accountId: message.accountId,
+    const needsMedia = message.attachments.length > 0 || Boolean(message.loadAttachments);
+    if (consumesQuota) {
+      const room = await hasInboundBudget(ctx, connection, {
+        messages: 1,
+        attachments: needsMedia ? 1 : 0,
+        bytes: needsMedia ? 1 : 0,
       });
-      return;
+      if (!room || !takeInboundMessageSlot(peerKey)) {
+        log.warn("Dropped inbound Telegram message over the peer quota", {
+          companyId: message.companyId,
+          accountId: message.accountId,
+        });
+        return;
+      }
     }
     let attachments = message.attachments;
     if (message.loadAttachments) {
       attachments = [];
-      if (shapeAllowed) {
-        if (takePeerMediaSlot(peerKey)) {
-          try {
-            attachments = await message.loadAttachments();
-          } catch (error) {
-            log.warn("Skipped inbound Telegram media", {
-              companyId: message.companyId,
-              accountId: message.accountId,
-              message: error instanceof Error ? error.message : "unknown error",
-            });
+      const mediaRoom = shapeAllowed
+        && peekPeerMediaSlot(peerKey)
+        && await hasInboundBudget(ctx, connection, {
+          messages: 0,
+          attachments: 1,
+          bytes: 1,
+        });
+      if (mediaRoom && takePeerMediaSlot(peerKey)) {
+        try {
+          const downloaded = await message.loadAttachments();
+          const kept = [];
+          for (const file of downloaded) {
+            if (file.byteLength > MAX_INBOUND_MEDIA_BYTES || file.bytes.byteLength > MAX_INBOUND_MEDIA_BYTES) continue;
+            if (!(await hasInboundBudget(ctx, connection, {
+              messages: 0,
+              attachments: 1,
+              bytes: file.byteLength,
+            }))) continue;
+            kept.push(file);
           }
+          attachments = kept;
+        } catch (error) {
+          log.warn("Skipped inbound Telegram media", {
+            companyId: message.companyId,
+            accountId: message.accountId,
+            message: error instanceof Error ? error.message : "unknown error",
+          });
         }
       }
     }
@@ -307,6 +411,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       if (shuttingDown) return;
       if (liveByAccount.has(connection.telegramUserId)) continue;
       if (!connection.sessionSecretId) continue;
+      const secretId = connection.sessionSecretId;
       const generation = accountGeneration(companyId, connection.telegramUserId);
       const session = await getAccountSession(
         ctx,
@@ -327,12 +432,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           session,
           onInbound: handleInbound,
         });
-        if (shuttingDown || accountGeneration(companyId, connection.telegramUserId) !== generation) {
+        if (!(await storedSessionCurrent(ctx, companyId, connection.telegramUserId, secretId, generation))) {
           await live.disconnect().catch(() => undefined);
           continue;
         }
         await attachLiveSession(companyId, live);
-        if (shuttingDown || accountGeneration(companyId, connection.telegramUserId) !== generation) {
+        if (!(await storedSessionCurrent(ctx, companyId, connection.telegramUserId, secretId, generation))) {
           await dropLive(companyId, connection.telegramUserId, live);
           continue;
         }
@@ -394,6 +499,10 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       ctx.actions.register(ACTION_START_LOGIN, async (params, actionCtx) => {
         const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
         assertConnectionManager(actionCtx.actor, companyId);
+        if (!allowStartLogin(companyId)) {
+          throw new Error("Too many Telegram login attempts. Wait a minute and try again.");
+        }
+        replaceCompanyLogin(companyId);
         const credentials = await resolveCredentials(companyId);
         const loginId = randomUUID();
         let resolveFinished: () => void = () => undefined;
@@ -411,10 +520,13 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           },
           status: reduceLogin(idleLoginStatus(), { type: "start", loginId }),
           cancelled: false,
+          startedAt: Date.now(),
           finished: new Promise<void>((resolve) => {
             resolveFinished = resolve;
           }),
         };
+        pending.timer = setTimeout(() => expirePendingLogin(pending), PENDING_LOGIN_TTL_MS);
+        if (pending.timer.unref) pending.timer.unref();
         pendingLogins.set(loginId, pending);
         emitLogin(companyId, pending.status);
         const finished = ctx.runInCompanyBackground(companyId, async () => {
@@ -478,13 +590,19 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
               session: signedIn.session,
               onInbound: handleInbound,
             });
-            if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
+            if (
+              !loginStillCurrent(pending)
+              || !(await storedSessionCurrent(ctx, companyId, signedIn.account.telegramUserId, storedSecretId, generation))
+            ) {
               await live.disconnect().catch(() => undefined);
               await clearStoredSession(ctx, companyId, signedIn.account, storedSecretId);
               return;
             }
             await attachLiveSession(companyId, live);
-            if (!loginStillCurrent(pending) || accountGeneration(companyId, signedIn.account.telegramUserId) !== generation) {
+            if (
+              !loginStillCurrent(pending)
+              || !(await storedSessionCurrent(ctx, companyId, signedIn.account.telegramUserId, storedSecretId, generation))
+            ) {
               await dropLive(companyId, signedIn.account.telegramUserId, live);
               await clearStoredSession(ctx, companyId, signedIn.account, storedSecretId);
               return;
@@ -564,12 +682,16 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
         assertConnectionManager(actionCtx.actor, companyId);
         const telegramUserId = readString(params.telegramUserId);
-        const assignedAgentId = params.assignedAgentId === null
-          ? null
-          : readString(params.assignedAgentId) || undefined;
-        const connection = await patchConnection(ctx, companyId, telegramUserId, {
-          assignedAgentId: assignedAgentId === undefined ? undefined : assignedAgentId,
-        }, liveAccountIds());
+        const patch: TelegramConnectionPatch = {};
+        if (params.assignedAgentId === null) patch.assignedAgentId = null;
+        else if (readString(params.assignedAgentId)) patch.assignedAgentId = readString(params.assignedAgentId);
+        if (typeof params.acceptUnlistedSenders === "boolean") {
+          patch.acceptUnlistedSenders = params.acceptUnlistedSenders;
+        }
+        if (Array.isArray(params.allowedPeerIds)) {
+          patch.allowedPeerIds = normalizeAllowedPeerIds(params.allowedPeerIds);
+        }
+        const connection = await patchConnection(ctx, companyId, telegramUserId, patch, liveAccountIds());
         return publicConnection(connection);
       });
 
@@ -681,6 +803,9 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     },
 
     async onIdleDrain() {
+      for (const pending of [...pendingLogins.values()]) {
+        if (pendingLoginExpired(pending)) expirePendingLogin(pending);
+      }
       if (reconnectJobs.size > 0 || liveByAccount.size > 0 || pendingLogins.size > 0) return "present";
       return "none";
     },
@@ -691,6 +816,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       const finishing: Promise<void>[] = [];
       for (const pending of pendingLogins.values()) {
         pending.cancelled = true;
+        if (pending.timer) clearTimeout(pending.timer);
         await pending.handle.abort().catch(() => undefined);
         finishing.push(pending.finished);
       }

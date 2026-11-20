@@ -309,7 +309,7 @@ export function createPluginSecretsHandler(
           projectionClass: "unclassified",
         });
       } catch (error) {
-        await secretService(db).update(created.id, { status: "deleted" }).catch(() => undefined);
+        await secretService(db).remove(created.id).catch(() => undefined);
         throw error;
       }
       return { secretId: created.id, configPath };
@@ -358,7 +358,7 @@ export function createPluginSecretsHandler(
         .from(companySecretBindings)
         .where(eq(companySecretBindings.secretId, secretId));
       if (remaining.length === 0) {
-        await secretService(db).update(secretId, { status: "deleted" });
+        await secretService(db).remove(secretId);
       }
     },
   };

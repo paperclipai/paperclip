@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { DIALOG_ORIGIN_KIND, MAX_INBOUND_MEDIA_BYTES } from "../src/constants.js";
+import { CONNECTION_WINDOW_BYTES, DIALOG_ORIGIN_KIND, INBOUND_QUOTA_DAY_MS, MAX_INBOUND_MEDIA_BYTES } from "../src/constants.js";
 import {
+  commitInboundUsage,
+  inboundQuotaKeyCount,
   inboundShapeAllowed,
   ingestInboundMessage,
   shouldAcceptInbound,
@@ -28,6 +30,8 @@ const connection: TelegramConnection = {
   assignedAgentId: AGENT_ID,
   incomingMode: "dialog_task",
   paused: false,
+  acceptUnlistedSenders: true,
+  allowedPeerIds: [],
   sessionSecretId: "secret-1",
   live: true,
 };
@@ -286,6 +290,64 @@ describe("inbound issue mapping", () => {
       originId: "1001:2002",
     });
     expect(issues).toHaveLength(1);
+  });
+
+  it("drops an unlisted sender until the board allows that user", async () => {
+    const harness = createTestHarness({ manifest });
+    const closed = { ...connection, acceptUnlistedSenders: false, allowedPeerIds: [] as string[] };
+    expect(await ingestInboundMessage(harness.ctx, closed, inboundMessage())).toBeNull();
+    const listed = { ...closed, allowedPeerIds: ["2002"] };
+    expect((await ingestInboundMessage(harness.ctx, listed, inboundMessage()))?.originId).toBe("1001:2002");
+    expect(await ingestInboundMessage(
+      harness.ctx,
+      listed,
+      inboundMessage({ peerId: "9999", messageId: "9", text: "Other person" }),
+    )).toBeNull();
+  });
+
+  it("stops persisting once the company byte quota is full", async () => {
+    const harness = createTestHarness({ manifest });
+    const second = { ...connection, telegramUserId: "1002" };
+    const third = { ...connection, telegramUserId: "1003" };
+    expect(await commitInboundUsage(harness.ctx, connection, {
+      messages: 0,
+      attachments: 0,
+      bytes: CONNECTION_WINDOW_BYTES,
+    })).toBe(true);
+    expect(await commitInboundUsage(harness.ctx, second, {
+      messages: 0,
+      attachments: 0,
+      bytes: CONNECTION_WINDOW_BYTES,
+    })).toBe(true);
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    expect(await ingestInboundMessage(harness.ctx, third, inboundMessage({
+      accountId: "1003",
+      text: "over the company quota",
+      attachments: [{
+        id: "over",
+        filename: "a.bin",
+        mimeType: "application/octet-stream",
+        byteLength: bytes.byteLength,
+        kind: "file",
+        bytes,
+      }],
+    }))).toBeNull();
+  });
+
+  it("fails closed when the quota ledger cannot be read", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.ctx.state.get = async () => {
+      throw new Error("state down");
+    };
+    expect(await ingestInboundMessage(harness.ctx, connection, inboundMessage())).toBeNull();
+  });
+
+  it("drops expired inbound quota keys", () => {
+    const now = Date.now() + INBOUND_QUOTA_DAY_MS;
+    takePeerMediaSlot("stale-peer-sweep", now - INBOUND_QUOTA_DAY_MS - 1);
+    expect(inboundQuotaKeyCount()).toBeGreaterThan(0);
+    takeInboundMessageSlot("fresh-peer-sweep", now);
+    expect(inboundQuotaKeyCount()).toBe(2);
   });
 
   it("skips paused, group, and outgoing messages", () => {

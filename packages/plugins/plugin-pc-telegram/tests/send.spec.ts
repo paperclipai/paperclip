@@ -11,6 +11,8 @@ const connection: TelegramConnection = {
   assignedAgentId: AGENT_ID,
   incomingMode: "dialog_task",
   paused: false,
+  acceptUnlistedSenders: false,
+  allowedPeerIds: [],
   sessionSecretId: "secret-1",
   live: true,
 };

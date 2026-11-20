@@ -4,6 +4,8 @@ let nextRequestId = 1;
 const pendingNested = new Map();
 let retainedInvocationId = null;
 let releasedInvocationId = null;
+let releasedAgentOutcome = null;
+let releasedAgentWaiter = null;
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -116,6 +118,17 @@ rl.on("line", (line) => {
   if (message.id && pendingNested.has(message.id)) {
     const original = pendingNested.get(message.id);
     pendingNested.delete(message.id);
+    if (original.capture === "released-agent") {
+      releasedAgentOutcome = message.error
+        ? { denied: true, code: message.error.code }
+        : { denied: false, invocationId: message.result && message.result.invocationId };
+      if (releasedAgentWaiter) {
+        const waiter = releasedAgentWaiter;
+        releasedAgentWaiter = null;
+        send({ jsonrpc: "2.0", id: waiter, result: releasedAgentOutcome });
+      }
+      return;
+    }
     if (message.error) {
       send({
         jsonrpc: "2.0",
@@ -156,6 +169,29 @@ rl.on("line", (line) => {
   }
 
   if (["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"].includes(method)) {
+    const params = message.params?.params ?? message.params?.parameters ?? {};
+    if (params.mode === "retain-after-release") {
+      const invocationId = message.paperclipInvocation && message.paperclipInvocation.id;
+      send({ jsonrpc: "2.0", id: message.id, result: { released: true } });
+      const nestedId = `nested-${nextRequestId++}`;
+      pendingNested.set(nestedId, { capture: "released-agent" });
+      send({
+        jsonrpc: "2.0",
+        id: nestedId,
+        method: "background.retain",
+        params: { companyId: params.requestedCompanyId },
+        paperclipInvocationId: invocationId,
+      });
+      return;
+    }
+    if (params.mode === "released-agent-outcome") {
+      if (releasedAgentOutcome) {
+        send({ jsonrpc: "2.0", id: message.id, result: releasedAgentOutcome });
+      } else {
+        releasedAgentWaiter = message.id;
+      }
+      return;
+    }
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }

@@ -15,6 +15,8 @@ type PublicConnection = {
   assignedAgentId: string | null;
   incomingMode: string;
   paused: boolean;
+  acceptUnlistedSenders: boolean;
+  allowedPeerIds: string[];
   live: boolean;
   hasSession: boolean;
 };
@@ -208,7 +210,8 @@ function TelegramCompanyConnect({ context }: PluginCompanySettingsPageProps) {
       <div style={{ display: "grid", gap: "var(--spacing)" }}>
         <h2 style={{ margin: 0, fontSize: "var(--text-xl)", lineHeight: "var(--text-xl--line-height)", fontFamily: "var(--font-sans)" }}>Telegram</h2>
         <p style={muted}>
-          Connect a personal Telegram account with QR login. Incoming direct messages become issues.
+          Connect a personal Telegram account with QR login. A direct message becomes an issue only
+          when the sender is listed, or when a board user allows every private chat.
           Assign the answering agent on the connection; changing it does not require a new login.
         </p>
       </div>
@@ -272,11 +275,17 @@ function TelegramCompanyConnect({ context }: PluginCompanySettingsPageProps) {
             connection={connection}
             onChange={async (patch) => {
               if (!companyId) return;
-              if ("assignedAgentId" in patch) {
+              if (
+                "assignedAgentId" in patch
+                || "acceptUnlistedSenders" in patch
+                || "allowedPeerIds" in patch
+              ) {
                 await updateConnection({
                   companyId,
                   telegramUserId: connection.telegramUserId,
-                  assignedAgentId: patch.assignedAgentId,
+                  ...("assignedAgentId" in patch ? { assignedAgentId: patch.assignedAgentId } : {}),
+                  ...("acceptUnlistedSenders" in patch ? { acceptUnlistedSenders: patch.acceptUnlistedSenders } : {}),
+                  ...("allowedPeerIds" in patch ? { allowedPeerIds: patch.allowedPeerIds } : {}),
                 });
               }
               if ("paused" in patch) {
@@ -302,14 +311,31 @@ function ConnectionCard({
 }: {
   companyId: string | null;
   connection: PublicConnection;
-  onChange: (patch: { assignedAgentId?: string | null; paused?: boolean }) => Promise<void>;
+  onChange: (patch: {
+    assignedAgentId?: string | null;
+    paused?: boolean;
+    acceptUnlistedSenders?: boolean;
+    allowedPeerIds?: string[];
+  }) => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const allowedPeerIds = connection.allowedPeerIds ?? [];
+  const [acceptUnlisted, setAcceptUnlisted] = useState(connection.acceptUnlistedSenders === true);
+  const [peerList, setPeerList] = useState(allowedPeerIds.join(", "));
+  useEffect(() => {
+    setAcceptUnlisted(connection.acceptUnlistedSenders === true);
+    setPeerList((connection.allowedPeerIds ?? []).join(", "));
+  }, [connection.acceptUnlistedSenders, connection.allowedPeerIds]);
   const assigneeValue = useMemo(
     () => (connection.assignedAgentId ? `agent:${connection.assignedAgentId}` : ""),
     [connection.assignedAgentId],
   );
-  async function apply(patch: { assignedAgentId?: string | null; paused?: boolean }) {
+  async function apply(patch: {
+    assignedAgentId?: string | null;
+    paused?: boolean;
+    acceptUnlistedSenders?: boolean;
+    allowedPeerIds?: string[];
+  }) {
     setError(null);
     try {
       await onChange(patch);
@@ -338,6 +364,37 @@ function ConnectionCard({
           }}
         />
       </label>
+      <label style={{ display: "grid", gap: "var(--spacing)" }}>
+        <span>
+          <input
+            type="checkbox"
+            checked={acceptUnlisted}
+            onChange={(event) => setAcceptUnlisted(event.target.checked)}
+          />
+          {" "}
+          Accept direct messages from any Telegram user
+        </span>
+      </label>
+      <label style={{ display: "grid", gap: "var(--spacing)" }}>
+        Allowed Telegram user ids
+        <input
+          style={input}
+          value={peerList}
+          onChange={(event) => setPeerList(event.target.value)}
+        />
+      </label>
+      <div style={row}>
+        <button
+          type="button"
+          style={button}
+          onClick={() => void apply({
+            acceptUnlistedSenders: acceptUnlisted,
+            allowedPeerIds: peerList.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean),
+          })}
+        >
+          Save senders
+        </button>
+      </div>
       {error ? <p role="alert">{error}</p> : null}
       <div style={row}>
         <button

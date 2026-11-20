@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { DIALOG_ORIGIN_KIND, PLUGIN_ID, TOOL_SEND_TEXT } from "../src/constants.js";
+import { DIALOG_ORIGIN_KIND, PENDING_LOGIN_TTL_MS, PLUGIN_ID, TOOL_SEND_TEXT } from "../src/constants.js";
 import { containsSecretMaterial } from "../src/redaction.js";
 import { TelegramConnectPage } from "../src/ui/index.js";
 import { getAccountSession } from "../src/secrets.js";
@@ -234,6 +234,7 @@ describe("pc-telegram plugin", () => {
       companyId: COMPANY_ID,
       telegramUserId: "1001",
       assignedAgentId: AGENT_ID,
+      acceptUnlistedSenders: true,
     }, boardUser);
     expect(telegram.startQrLoginCount).toBe(1);
 
@@ -273,6 +274,7 @@ describe("pc-telegram plugin", () => {
       companyId: COMPANY_ID,
       telegramUserId: "1001",
       assignedAgentId: AGENT_ID,
+      acceptUnlistedSenders: true,
     }, boardUser);
     await telegram.deliver(inboundMessage());
     const [dialog] = await harness.ctx.issues.list({ companyId: COMPANY_ID, originKind: DIALOG_ORIGIN_KIND });
@@ -450,6 +452,56 @@ describe("pc-telegram plugin", () => {
     ]);
   });
 
+  it("replaces the previous pending login and limits how often login can start", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const first = await harness.performAction<{ loginId: string }>("start-login", { companyId: COMPANY_ID }, boardUser);
+    const second = await harness.performAction<{ loginId: string }>("start-login", { companyId: COMPANY_ID }, boardUser);
+    expect(second.loginId).not.toBe(first.loginId);
+    const cancelled = await harness.getData<{ state: string }>("login-status", {
+      companyId: COMPANY_ID,
+      loginId: first.loginId,
+    });
+    const active = await harness.getData<{ state: string }>("login-status", {
+      companyId: COMPANY_ID,
+      loginId: second.loginId,
+    });
+    expect(cancelled.state).toBe("idle");
+    expect(active.state).toBe("qr_pending");
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    }
+    await expect(harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser)).rejects.toThrow(/Too many Telegram login attempts/);
+    expect(telegram.startQrLoginCount).toBeLessThanOrEqual(5);
+  });
+
+  it("drops an expired pending login so the worker can idle", async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    try {
+      await plugin.definition.setup(harness.ctx);
+      await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("present");
+      clock.mockReturnValue(now + PENDING_LOGIN_TTL_MS + 1);
+      expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("none");
+    } finally {
+      clock.mockRestore();
+      await plugin.definition.onShutdown?.();
+    }
+  });
+
   it("does not attach an account that was disconnected while reconnect was in flight", async () => {
     const telegram = createMockTelegram();
     const plugin = createTelegramUserClientPlugin({
@@ -544,10 +596,15 @@ describe("pc-telegram plugin", () => {
     await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
     telegram.completeLogin();
     await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+    await harness.performAction("update-connection", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+      acceptUnlistedSenders: true,
+    }, boardUser);
     let downloads = 0;
     await telegram.deliver(inboundMessage({
       text: "",
-      peerId: "media-peer",
+      peerId: "3003",
       attachments: [],
       loadAttachments: async () => {
         downloads += 1;
@@ -570,7 +627,7 @@ describe("pc-telegram plugin", () => {
     }, boardUser);
     await telegram.deliver(inboundMessage({
       text: "paused",
-      peerId: "media-peer",
+      peerId: "3003",
       messageId: "2",
       attachments: [],
       loadAttachments: async () => {
@@ -589,7 +646,7 @@ describe("pc-telegram plugin", () => {
       await telegram.deliver(inboundMessage({
         messageId: String(index + 10),
         text: "",
-        peerId: "capped-peer",
+        peerId: "4004",
         attachments: [],
         loadAttachments: async () => {
           downloads += 1;
