@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { EntityRow } from "@/components/EntityRow";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { PageSkeleton } from "@/components/PageSkeleton";
+import { QueryErrorState, queryViewKind, useQueryView } from "@/components/QueryView";
 import { CaseDocumentPreview } from "@/components/cases/CaseDocumentPreview";
 import { CaseHandoffHistory } from "@/components/cases/CaseHandoffHistory";
 import { CaseStatus } from "@/components/cases/CaseStatus";
@@ -23,6 +24,8 @@ import { Button } from "@/components/ui/button";
 import { formatDateTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { caseAuditHref } from "./audit/audit-navigation";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 function CaseRelation({ item, search }: { item: Pick<CaseSummary, "id" | "identifier" | "title" | "caseType" | "status">; search: string }) {
   const caseHref = useCaseHref();
@@ -42,6 +45,7 @@ export function CaseDetail() {
     queryFn: () => casesApi.get(caseIdentifier!),
     enabled: !!caseIdentifier,
   });
+  const caseView = useQueryView(caseQuery);
   const caseData = caseQuery.data;
   const listPath = `${caseHref()}${search}`;
   const childrenQuery = useQuery({
@@ -66,14 +70,16 @@ export function CaseDetail() {
   }, [setBreadcrumbs, listPath, caseData?.identifier, caseIdentifier]);
 
   if (!caseIdentifier) return <Navigate to={listPath} replace />;
-  if (caseQuery.isLoading) return <div data-testid="case-pages"><PageSkeleton variant="detail" /></div>;
-  if (caseQuery.isError || !caseData) {
+  if (caseQuery.isLoading || caseView.kind === "reconnecting") return <div data-testid="case-pages"><PageSkeleton variant="detail" /></div>;
+  if (caseView.kind === "error" || !caseData) {
+    // "Not found" only for a real 403/404; an outage never looks like a missing case.
     const unavailable = caseQuery.error instanceof ApiError && [403, 404].includes(caseQuery.error.status);
     return <div data-testid="case-pages" className="space-y-4">
-      <EmptyState icon={FolderOpen} message={unavailable ? "Case not found" : "This case couldn’t be loaded"} />
+      {unavailable
+        ? <EmptyState icon={FolderOpen} message="Case not found" />
+        : <QueryErrorState size="page" error={caseQuery.error} action="load this case" onRetry={caseView.retry} retrying={caseView.isFetching} />}
       <div className="flex justify-center gap-3">
         <Button variant="link" asChild><Link to={listPath}>Back to cases</Link></Button>
-        {!unavailable && <Button variant="outline" size="sm" onClick={() => void caseQuery.refetch()}>Try again</Button>}
       </div>
     </div>;
   }
@@ -96,7 +102,7 @@ export function CaseDetail() {
         <span>{caseData.caseType}</span><CaseStatus status={caseData.status} />
       </div>
       <h1 className="text-2xl font-semibold tracking-tight">{caseData.title}</h1>
-      {caseData.summary && <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{caseData.summary}</p>}
+      {caseData.summary && <p className={cn("max-w-3xl text-sm leading-relaxed text-muted-foreground", ANALYTICS_MASK_CLASS)}>{caseData.summary}</p>}
       {caseData.labels.length > 0 && <div className="flex flex-wrap gap-1.5" aria-label="Case labels">{caseData.labels.map(label => <Badge key={label.id} variant="secondary" className="font-normal">{label.name}</Badge>)}</div>}
     </header>
 
@@ -119,7 +125,7 @@ export function CaseDetail() {
       {caseData.attachments.length > 0 && <section className="space-y-3" aria-label="Case attachments">
         <h2 className="text-sm font-semibold">Attachments</h2>
         {images.length > 0 && <CaseAttachmentsGallery attachments={images} />}
-        {files.length > 0 && <ul className="space-y-2">{files.map(attachment => <li key={attachment.id}><a href={caseAttachmentUrl(attachment)} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 text-sm text-primary hover:underline"><FileText aria-hidden className="size-4 shrink-0" /><span className="truncate">{attachment.asset.originalFilename ?? "Download attachment"}</span></a></li>)}</ul>}
+        {files.length > 0 && <ul className={cn("space-y-2", ANALYTICS_MASK_CLASS)}>{files.map(attachment => <li key={attachment.id}><a href={caseAttachmentUrl(attachment)} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 text-sm text-primary hover:underline"><FileText aria-hidden className="size-4 shrink-0" /><span className="truncate">{attachment.asset.originalFilename ?? "Download attachment"}</span></a></li>)}</ul>}
       </section>}
 
       {caseData.workIssueId && <CaseHandoffHistory caseId={caseData.id} task={caseData.workIssue} agents={agents} />}
@@ -133,7 +139,7 @@ export function CaseDetail() {
         <summary className="w-fit cursor-pointer text-sm font-semibold">Related cases</summary>
         {caseData.parent && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">Parent</h3><CaseRelation item={caseData.parent} search={search} /></div>}
         {children.length > 0 && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">Children {children.length}</h3>{children.map(child => <CaseRelation key={child.id} item={child} search={search} />)}</div>}
-        {childrenQuery.isError && <p role="alert" className="text-sm text-destructive">Child cases couldn’t be loaded.</p>}
+        {queryViewKind(childrenQuery) === "error" && <p role="alert" className="text-sm text-destructive">Child cases couldn’t be loaded.</p>}
       </details>}
 
       {!fields.length && !caseData.documents.length && !taskDocuments.length && !caseData.attachments.length && <p className="text-sm text-muted-foreground">No findings recorded yet.</p>}

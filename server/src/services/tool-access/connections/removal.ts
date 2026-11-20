@@ -1,6 +1,12 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
+import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
+import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
-import { actorBinding } from "../actor.js";
+import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
+import { actorBinding, connectionActorUserId } from "../actor.js";
+import { stageSlackCloudEnrollmentIntent } from "../../chat-channels/slack/cloud-enrollment.js";
 import { vercelConnectResourcesFor } from "../vercel-credentials.js";
 import type { ActorInfo } from "../types.js";
 import { chatCredentialMutationLease } from "../../chat-credential-mutation-lease.js";
@@ -77,10 +83,12 @@ type RemovalDependencies = {
   secrets: ReturnType<typeof secretService>;
   runtimeSupervisor: Pick<ReturnType<typeof createToolRuntimeSupervisor>, "stopSlot">;
   vercelConnect: VercelConnectClient | null;
+  currentCloudConnector: () => PaperclipCloudConnector | null;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
 };
 
-export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow }: RemovalDependencies) {
+export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow }: RemovalDependencies) {
+  const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
   /**
    * Split the secrets a connection points at into the ones it owns outright and
    * the ones another consumer still depends on.
@@ -238,6 +246,8 @@ async function removeConnection(
         await lease.assertOwned(tx);
         await tx.update(chatEndpoints).set({ status: "archived", updatedAt: new Date() }).where(eq(chatEndpoints.id, endpoint.id));
         await tx.update(toolConnections).set({ status: "archived", enabled: false, updatedAt: new Date() }).where(eq(toolConnections.id, connection.id));
+        await stageSlackCloudEnrollmentIntent(tx as unknown as Db, endpoint.id, connectionActorUserId(actor));
+        await lease.assertOwned(tx);
       });
       await removeSlackRegistration(db, endpoint.id, lease);
       return removeConnectionUnlocked(connectionId, companyId, actor);
@@ -256,10 +266,14 @@ async function removeConnection(
     const grantRows = await db
       .select({
         id: connectionGrants.id,
+        companyId: connectionGrants.companyId,
+        connectionId: connectionGrants.connectionId,
         status: connectionGrants.status,
         kind: connectionGrants.kind,
         subjectUserId: connectionGrants.subjectUserId,
+        subjectAgentId: connectionGrants.subjectAgentId,
         credentialSecretRefs: connectionGrants.credentialSecretRefs,
+        providerTenant: connectionGrants.providerTenant,
         externalCredential: connectionGrants.externalCredential,
       })
       .from(connectionGrants)
@@ -270,6 +284,14 @@ async function removeConnection(
         ),
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
+    let secretsRevoked = 0;
+    const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantRows, actor, {
+      removingConnection: true,
+      canRemoveSecret: async (secretId) => (await classifyConnectionSecrets(connection, [secretId])).owned.includes(secretId),
+      removeSecret: async (secretId, expectedVersion) => {
+        if (await secrets.remove(secretId, { expectedVersion })) secretsRevoked += 1;
+      },
+    });
     if (grantsToRevoke.length > 0) {
       await db
         .update(connectionGrants)
@@ -539,6 +561,9 @@ async function removeConnection(
       .returning({ id: connectionTokenIssuances.id });
 
     const archived = await db.transaction(async (tx) => {
+      if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, connection.companyId);
+          if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
+      await notifyGitHubCredentialChange(tx, connection);
       await notifyToolConnectionHealth(tx, connection);
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
@@ -586,6 +611,8 @@ async function removeConnection(
       await browserUseService(db, options.remoteHttpRequest).stopBeforeCredentialRemoval(connection.companyId, connection.id);
     }
 
+    const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
+
     // Only now, with every access path closed, revoke the credentials. Each
     // `secrets.remove` marks the row deleted before it calls the provider, so a
     // provider error leaves an unresolvable secret and a resumable removal
@@ -602,7 +629,6 @@ async function removeConnection(
       connection,
       candidateSecretIds,
     );
-    let secretsRevoked = 0;
     for (const secretId of owned) {
       const removed = await secrets.remove(secretId);
       if (removed) secretsRevoked += 1;
@@ -655,6 +681,7 @@ async function removeConnection(
         gatewaySessionsRevoked,
         applicationArchived: archived.applicationArchived,
         externalCredentialCleanup,
+        ...(providerAccess ? { providerAccess } : {}),
       },
     };
   }

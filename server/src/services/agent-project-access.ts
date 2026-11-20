@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { agents, projects, type Db } from "@paperclipai/db";
 import { trustAuthorizationPolicySchema, type AgentProjectAccess } from "@paperclipai/shared";
@@ -55,6 +56,7 @@ export async function addAgentProjectAccess(db: Db, actor: AuthorizationActor, c
     const added = requested.filter(id => !previous.includes(id));
     const next = [...previous, ...added];
     if (added.length) {
+      await notifyAttentionRetentionWork(tx, { companyId, sourceKind: "agent_error_alert" });
       await tx.update(agents).set({ permissions: { ...agent.permissions, authorizationPolicy: {
         ...policy, trustBoundary: { ...boundary, mode: "low_trust_review", companyId, projectIds: next },
       } }, updatedAt: new Date() }).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));

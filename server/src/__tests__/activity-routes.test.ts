@@ -9,6 +9,7 @@ const mockActivityService = vi.hoisted(() => ({
   runsForIssue: vi.fn(),
   issuesForRun: vi.fn(),
   create: vi.fn(),
+  withActorNames: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -120,6 +121,7 @@ async function requestApp(
 describe("activity routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockActivityService)) mock.mockReset();
+    mockActivityService.withActorNames.mockImplementation(async (rows: unknown[]) => rows);
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
     mockHeartbeatService.getRun.mockImplementation(() => {
       throw new Error("Run issue links must use the narrow authorization read");
@@ -331,6 +333,20 @@ describe("activity routes", () => {
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1");
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
+  });
+
+  it("validates bounded run IDs before using the authorized issue projection", async () => {
+    const runId = "10000000-0000-4000-8000-000000000001";
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-uuid-1", companyId: "company-1" });
+    mockActivityService.runsForIssue.mockResolvedValue([{ runId }]);
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).get(`/api/issues/PAP-1/runs?runIds=${runId}`));
+    expect(response.status).toBe(200);
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1", undefined, [runId]);
+    for (const ids of ["", "not-a-uuid", Array.from({ length: 101 }, () => runId).join(",")]) {
+      const denied = await requestApp(app, base => request(base).get("/api/issues/PAP-1/runs").query({ runIds: ids }));
+      expect(denied.status).toBe(400);
+    }
   });
 
   it("requires company access before creating activity events", async () => {

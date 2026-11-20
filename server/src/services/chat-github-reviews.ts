@@ -1,3 +1,6 @@
+import { notifyGitHubReviewProjection } from "./chat-channels/github/review-projection-work.js";
+import { notifyGitHubReviewChecks } from "./chat-channels/github/review-check-work.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { stageReceiptReactionRemovals } from "./chat-receipt-reactions.js";
 import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
@@ -9,11 +12,11 @@ import {
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
-import { githubReviewHeading } from "./chat-channels/github/review-heading.js";
+import { githubReviewSummary } from "./chat-channels/github/review-heading.js";
 import { githubPublicationRetry, GITHUB_INLINE_RETRY_WINDOW_MS, GITHUB_INLINE_MAX_ATTEMPTS } from "./chat-channels/github/retry.js";
 import { createHash } from "node:crypto";
 import { githubResponseCommentService, writeGitHubResponseComment } from "./chat-github-response-comments.js";
-import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   toolInvocations,
@@ -40,12 +43,13 @@ import {
 } from "@paperclipai/shared";
 import { HttpError, conflict, forbidden, notFound } from "../errors.js";
 import {
-  githubBotRepositoryToken,
+  githubBotRepositoryClient,
   githubBotRequest,
 } from "./chat-github-client.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import {
   effectiveGitHubReviewPolicy,
+  githubCompleteCoverageGap,
   githubReviewConclusion,
   githubReviewPathIsExcluded,
   githubReviewLineIsInPatch,
@@ -313,7 +317,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     source: Awaited<ReturnType<typeof scope>>,
     requestFetch = fetchImpl,
   ) {
-    const token = await githubBotRepositoryToken(
+    const github = await githubBotRepositoryClient(
       db,
       source.endpoint.companyId,
       source.endpoint.id,
@@ -327,8 +331,48 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         path: string,
         options?: Parameters<typeof githubBotRequest>[3],
       ) =>
-        githubBotRequest<T>(requestFetch, token, `${prefix}${path}`, options),
+        github<T>(`${prefix}${path}`, options),
     };
+  }
+  async function supersededAutomaticReview(
+    source: Awaited<ReturnType<typeof scope>>,
+    requestedCommit: string,
+    currentCommit: string,
+  ) {
+    const [newer] = await db
+      .select({ id: chatDeliveries.id })
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.companyId, source.endpoint.companyId),
+          eq(chatDeliveries.endpointId, source.endpoint.id),
+          or(
+            eq(chatDeliveries.conversationId, source.conversation.id),
+            isNull(chatDeliveries.conversationId),
+          ),
+          gt(chatDeliveries.createdAt, source.delivery.createdAt),
+          inArray(chatDeliveries.state, ["received", "processing", "processed", "retry"]),
+          sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'repositoryId' = ${source.repositoryId}`,
+          sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'pullNumber' = ${String(source.number)}`,
+          sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'headSha' = ${currentCommit}`,
+        ),
+      )
+      .limit(1);
+    const next = newer
+      ? "a newer automatic review for that commit is already queued on this task"
+      : "no newer automatic review is queued for it. An authorized person can request a manual review";
+    return conflict(
+      `This automatic review was requested for an older pull request head (${requestedCommit.slice(0, 7)}). ` +
+        `The pull request now points to ${currentCommit.slice(0, 7)}, and ${next}. ` +
+        "Stop this review: do not call review tools again and do not post the review as an ordinary comment.",
+      {
+        reasonCode: "github_review_superseded",
+        retryable: false,
+        requestedCommit,
+        currentCommit,
+        newerReviewQueued: !!newer,
+      },
+    );
   }
   async function reviewForHead(
     source: Awaited<ReturnType<typeof scope>>,
@@ -349,16 +393,21 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       .limit(1);
     if (prior && prior.runId === source.run.id) return prior;
     if (prior && !prior.runId && prior.deliveryId === source.delivery.id) {
-      const [claimed] = await db
-        .update(chatGitHubReviews)
-        .set({ runId: source.run.id, state: "running", updatedAt: new Date() })
-        .where(
-          and(
-            eq(chatGitHubReviews.id, prior.id),
-            isNull(chatGitHubReviews.runId),
-          ),
-        )
-        .returning();
+      const [claimed] = await db.transaction(async tx => {
+        await notifyGitHubReviewProjection(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id });
+        await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+          repositoryId: source.repositoryId, number: source.number });
+        return tx
+          .update(chatGitHubReviews)
+          .set({ runId: source.run.id, state: "running", updatedAt: new Date() })
+          .where(
+            and(
+              eq(chatGitHubReviews.id, prior.id),
+              isNull(chatGitHubReviews.runId),
+            ),
+          )
+          .returning();
+      });
       if (claimed) return claimed;
       return reviewForHead(source, pull);
     }
@@ -406,26 +455,30 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       labels: pull.labels.map((l) => l.name),
       ...(automatic ? automatic.context : {}),
     };
-    const [review] = await db
-      .insert(chatGitHubReviews)
-      .values({
-        companyId: source.endpoint.companyId,
-        endpointId: source.endpoint.id,
-        issueId: source.issue.id,
-        runId: source.run.id,
-        repositoryId: source.repositoryId,
-        repository: source.repository,
-        pullNumber: source.number,
-        headSha: pull.head.sha,
-        deliveryId: `run:${source.run.id}:${pull.head.sha}`,
-        configurationRevision:
-          manual?.revision ?? automatic?.revision ?? source.config.revision,
-        policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
-        event: context,
-        state: "running",
-      })
-      .onConflictDoNothing()
-      .returning();
+    const [review] = await db.transaction(async tx => {
+      await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+        repositoryId: source.repositoryId, number: source.number });
+      return tx
+        .insert(chatGitHubReviews)
+        .values({
+          companyId: source.endpoint.companyId,
+          endpointId: source.endpoint.id,
+          issueId: source.issue.id,
+          runId: source.run.id,
+          repositoryId: source.repositoryId,
+          repository: source.repository,
+          pullNumber: source.number,
+          headSha: pull.head.sha,
+          deliveryId: `run:${source.run.id}:${pull.head.sha}`,
+          configurationRevision:
+            manual?.revision ?? automatic?.revision ?? source.config.revision,
+          policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
+          event: context,
+          state: "running",
+        })
+        .onConflictDoNothing()
+        .returning();
+    });
     if (review) {
       await githubReviewCheckService(db, fetchImpl).enqueue(
         source.endpoint,
@@ -461,6 +514,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   ): Promise<string> {
     if (writer === db) return db.transaction(tx => stage(source, operation, payload, key, invocationId, toolName, parameters, tx));
     const actionKey = `github_publication:${source.issue.id}:${operation}:${hash(key)}`;
+    await notifyChatResponseAvailability(writer, { companyId: source.endpoint.companyId, issueId: source.issue.id });
     await notifyDeliveryWork(writer, DELIVERY_QUEUES.chatGitHubPublications);
     const values = {
       companyId: source.endpoint.companyId,
@@ -619,9 +673,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     const automatic = source.delivery.normalizedEvent.githubAutomatic as
       { context: GitHubReviewEventContext } | undefined;
     if (automatic && automatic.context.headSha !== pull.head.sha)
-      throw conflict(
-        "This automatic review was requested for an older pull request head. Continue with the newest authorized PR event or an authorized manual request.",
-      );
+      throw await supersededAutomaticReview(source, automatic.context.headSha, pull.head.sha);
     if (name === "read_pull_request") {
       const parsed = readSchema.parse(input);
       if (parsed.section === "metadata") {
@@ -763,6 +815,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         reviewId: review.id,
         reviewedCommit: review.headSha,
         state: review.state,
+        findingCategories: review.policySnapshot.findingCategories,
       };
     }
     if (name === "submit_review") {
@@ -818,17 +871,13 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         throw conflict(
           "Assessment coverage and findings must refer to this PR's allowed changed files",
         );
-      if (
-        assessment.complete &&
-        (assessment.coverage.omittedPaths.some((path) => paths.has(path)) ||
-          permittedFiles.some(
-            (file) =>
-              !assessment.coverage.reviewedPaths.includes(file.filename),
-          ))
-      )
-        throw conflict(
-          "A complete assessment must cover every non-excluded changed file",
-        );
+      const coverageGap = assessment.complete
+        ? githubCompleteCoverageGap(
+            permittedFiles.map((file) => file.filename),
+            assessment.coverage,
+          )
+        : null;
+      if (coverageGap) throw conflict(coverageGap);
       // Commit the immutable assessment and its publication together. A restart
       // must never leave a stored result with no durable publication intent.
       const actionId = await db.transaction(async (tx) => {
@@ -1046,6 +1095,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     )?.[1];
     if (!number || !binding?.repository.providerRepositoryId) {
       await db.transaction(async tx => {
+        await notifyChatResponseAvailability(tx, { companyId: action.companyId, conversationId: action.conversationId ?? undefined });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubPublications);
         await tx.update(chatActions).set({ status: "cancelled", result: { code: "publication_binding_unavailable", retryable: false }, updatedAt: new Date() })
           .where(and(eq(chatActions.id, actionId), eq(chatActions.companyId, action.companyId)));
@@ -1230,12 +1280,14 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               ? ` · [Review history](${board}/apps/chat/${source.endpoint.id}/reviews)`
               : "";
             const summary = projectSafeChatPublicationText(
-              `${githubReviewHeading({
+              `${githubReviewSummary({
                 botDisplayName: source.endpoint.botDisplayName,
                 botUsername: source.endpoint.botUsername,
                 agentName: source.agent.name,
                 score: assessment.complete ? assessment.score : null,
-              })}\n\n${assessment.summary}\n\n${assessment.rationale}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
+                summary: assessment.summary,
+                rationale: assessment.rationale,
+              })}\n\nReviewed commit: \`${review.headSha}\`\n\nCoverage: ${assessment.coverage.reviewedPaths.length} files.\n${assessment.coverage.limitations.join("\n")}\n\nTask: ${taskLink} · ${runLink}${historyLink}`,
             );
             const summaryMarker = marker(
               "review",

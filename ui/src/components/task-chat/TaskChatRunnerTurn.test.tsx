@@ -35,14 +35,15 @@ describe("TaskChatRunnerTurn", () => {
   const render = (
     items: TaskChatItem[],
     status = "running",
-    runId = "run-1",
+    runId: string | null = "run-1",
     onRuntimeRequestDecision?: (
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
     ) => void,
-    suppressFinal = false,
+    awaitingContinuation = false,
     continuedAfterSteering = false,
     execution?: ExecutionProjection,
+    preparationLabel?: string,
   ) =>
     act(() =>
       root.render(
@@ -55,8 +56,9 @@ describe("TaskChatRunnerTurn", () => {
               items={items}
               status={status}
               execution={execution}
-              startedAtMs={Date.now() - 2_000}
-              suppressFinal={suppressFinal}
+              preparationLabel={preparationLabel}
+              startedAtMs={runId ? Date.now() - 2_000 : null}
+              awaitingContinuation={awaitingContinuation}
               continuedAfterSteering={continuedAfterSteering}
               onRuntimeRequestDecision={onRuntimeRequestDecision}
             />
@@ -65,6 +67,100 @@ describe("TaskChatRunnerTurn", () => {
         </MemoryRouter>,
       ),
     );
+
+  it.each([null, "run-1"].flatMap(runId => [false, true].map(projected => ({ runId, projected }))))(
+    "shows Working and Thinking during ordinary admission (runId=$runId, projected=$projected)",
+    ({ runId, projected }) => {
+      render([], "queued", runId, undefined, false, false, projected ? {
+        phase: "queued", label: "Queued", cause: null,
+        lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+        recoveryOwner: null, nextAction: null, permittedActions: ["inspect_run"],
+        predecessorRunId: null, successorRunId: null,
+      } : undefined);
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+      if (!runId) {
+        expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toBe("Working");
+      }
+      const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
+      expect(activity?.textContent).toBe("Thinking");
+      expect(activity?.classList.contains("shimmer-text")).toBe(true);
+      expect(container.textContent).not.toContain("Queued");
+    },
+  );
+
+  it("preserves a specific preparation label before a run ID exists", () => {
+    render([], "queued", null, undefined, false, false, undefined, "Preparing workspace");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Preparing workspace");
+  });
+
+  it.each([
+    ["task_drain", "Waiting for maintenance"],
+    ["agent_setup_pending", "Waiting for agent setup"],
+    ["agent_setup_failed", "Agent setup needs attention"],
+    ["server_restarting", "Waiting for server restart"],
+    ["previous_run_settling", "Waiting for previous run to stop"],
+    ["routine_execution_in_progress", "Waiting for PAP-5656 to finish"],
+  ])("shows the server's %s wait while admission is held", (cause, label) => {
+    render([], "queued", "run-1", undefined, false, false, {
+      phase: "queued", label, cause,
+      lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+      recoveryOwner: null, nextAction: "Starts automatically when maintenance finishes.",
+      permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: null,
+    });
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain(label);
+    expect(container.textContent?.split(label)).toHaveLength(2);
+    expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
+    expect(container.textContent).not.toContain("Thinking");
+  });
+
+  it("keeps startup feedback briefly, then says a queued turn with no named hold is waiting to start", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-11-13T17:39:05Z"));
+      render([], "queued");
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Thinking");
+      // The fixture's run was queued 2 s before render: the grace ends at +28 s.
+      act(() => { vi.advanceTimersByTime(27_000); });
+      expect(container.textContent).not.toContain("Waiting to start");
+      act(() => { vi.advanceTimersByTime(2_000); });
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Waiting to start");
+      expect(container.textContent?.split("Waiting to start")).toHaveLength(2);
+      expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
+      expect(container.textContent).not.toContain("Working");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not repeat the agent's waiting line in the turn body", () => {
+    // The shared header (rendered by the thread) shows the waiting line; the body adds no second line.
+    act(() => root.render(
+      <MemoryRouter><ThemeProvider><TaskChatRequestHistoryContext.Provider value="issue-1">
+        <TaskChatRunnerTurn runId="run-1" agentName="Runner" items={[]} status="queued" showHeader={false}
+          startedAtMs={Date.now() - 2_000} execution={{
+            phase: "queued", label: "Waiting for Codie", cause: "agent_at_capacity",
+            lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+            recoveryOwner: null, nextAction: null, permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: null,
+            agentQueue: { agentId: "agent-1", agentName: "Codie", maxConcurrentRuns: 20, runningCount: 20, position: 41, queuedCount: 295 },
+          }} />
+      </TaskChatRequestHistoryContext.Provider></ThemeProvider></MemoryRouter>,
+    ));
+    expect(container.textContent).not.toContain("Waiting for Codie");
+    expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
+  });
+
+  it("does not call a running turn waiting, however long it runs", () => {
+    vi.useFakeTimers();
+    try {
+      render([], "running");
+      act(() => { vi.advanceTimersByTime(10 * 60_000); });
+      expect(container.textContent).not.toContain("Waiting to start");
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   const resolvedQuestion = (
     id: string,
@@ -95,7 +191,7 @@ describe("TaskChatRunnerTurn", () => {
   });
 
   it("shows a stable Working header with Thinking at the turn tail", () => {
-    render([], "queued");
+    render([], "running");
     expect(container.textContent).toContain("Thinking");
     expect(container.textContent).toContain("Runner");
     expect(
@@ -275,7 +371,7 @@ describe("TaskChatRunnerTurn", () => {
     const commentary = container.querySelector('[data-testid="task-chat-phase-interstitial"]');
     const activity = container.querySelector('[data-testid="task-chat-activity-viewport"]');
     expect(commentary?.textContent).toContain("Running the exact command now.");
-    expect(activity?.textContent).toContain("Running a command");
+    expect(activity?.textContent).toContain("Running$ ");
     expect(activity?.textContent).toContain("STREAM-$i");
     expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
     expect(commentary?.compareDocumentPosition(activity!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -762,7 +858,7 @@ describe("TaskChatRunnerTurn", () => {
         family: "safety",
         eventType: "safety.review.started",
         status: "running",
-        expected: "Reviewing safety",
+        expected: "Auto-reviewing",
       },
       {
         family: "terminal",

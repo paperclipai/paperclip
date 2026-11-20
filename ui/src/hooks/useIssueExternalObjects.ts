@@ -1,5 +1,6 @@
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useQueryView } from "../components/QueryView";
 import type {
   ExternalObjectMention,
   ExternalObjectMentionGroup,
@@ -71,11 +72,13 @@ function useExternalObjectsFeature() {
   const query = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
+  const view = useQueryView(query);
   return {
     isEnabled: query.data?.enableExternalObjects === true,
-    isLoaded: query.data !== undefined || query.isError,
+    isLoaded: query.data !== undefined,
+    error: query.error,
+    view,
   };
 }
 
@@ -168,17 +171,18 @@ export function useIssueExternalObjects(issueId: string | null | undefined): Iss
     return result;
   }, [groups]);
 
-  const refetch = useCallback(() => {
-    void query.refetch();
-  }, [query.refetch]);
+  const view = useQueryView(query);
 
+  // Loaded objects stay on screen through an outage; only a real failure is
+  // reported as an error, and an outage before the first load counts as loading.
+  const viewKind = view.kind;
   return {
     isEnabled: externalObjectsFeature.isEnabled,
     groups,
     markdownReferences,
-    isLoading: enabled && query.isLoading,
-    isError: query.isError,
-    refetch,
+    isLoading: enabled && (query.isLoading || viewKind === "reconnecting"),
+    isError: viewKind === "error",
+    refetch: view.retry,
   };
 }
 
@@ -222,16 +226,18 @@ export function useIssueExternalObjectSummaries(
     enabled,
     staleTime: 60_000,
   });
+  const view = useQueryView(query);
   const summaries = useMemo(
     () => new Map(Object.entries(query.data?.summaries ?? {})),
     [query.data?.summaries],
   );
   return {
     summaries,
-    isLoading: enabled && query.isLoading,
-    isReady: externalObjectsFeature.isLoaded && (!enabled || query.isSuccess),
-    error: query.error,
-    refetch: () => { void query.refetch(); },
+    isLoading: (!externalObjectsFeature.isLoaded && externalObjectsFeature.view.kind !== "error")
+      || (enabled && (query.isLoading || view.kind === "reconnecting")),
+    isReady: externalObjectsFeature.isLoaded && (!enabled || query.data !== undefined),
+    error: externalObjectsFeature.view.kind === "error" ? externalObjectsFeature.error : view.kind === "error" ? query.error : null,
+    refetch: externalObjectsFeature.view.kind === "error" ? externalObjectsFeature.view.retry : view.retry,
   };
 }
 

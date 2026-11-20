@@ -9,8 +9,13 @@ async function json(response: APIResponse) {
   return JSON.parse(body);
 }
 
-for (const { unfinishedWrite, stopResponse } of [{ unfinishedWrite: false, stopResponse: false }, { unfinishedWrite: true, stopResponse: false }, { unfinishedWrite: false, stopResponse: true }]) {
-  test(`embedded ACP Stop: ${unfinishedWrite ? "Interrupt continues without replaying the write" : stopResponse ? "composer Stop preserves queued input and accepts a new direction" : "Interrupt delivers queued input in the same session"}`, async ({ page, request }) => {
+for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
+  { unfinishedWrite: false, stopResponse: false },
+  { unfinishedWrite: true, stopResponse: false },
+  { unfinishedWrite: false, stopResponse: true },
+  { unfinishedWrite: false, stopResponse: true, sendSavedQueue: true },
+]) {
+  test(`embedded ACP Stop: ${unfinishedWrite ? "Interrupt continues without replaying the write" : sendSavedQueue ? "Send resumes saved input after Stop" : stopResponse ? "composer Stop preserves queued input and accepts a new direction" : "Interrupt delivers queued input in the same session"}`, async ({ page, request }) => {
     test.setTimeout(120_000);
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-stop-browser-"));
     const company = await json(await request.post("/api/companies", { data: { name: `ACP Stop ${Date.now()}` } }));
@@ -42,7 +47,7 @@ for (const { unfinishedWrite, stopResponse } of [{ unfinishedWrite: false, stopR
         .toContain("List my recent Drive files.");
 
       // Both actions stop the response; composer Stop must not create a task hold.
-      let stopped;
+      let stopped!: { status: string; resultJson?: { executionCancellation?: { state?: string } } | null };
       if (stopResponse) {
         await page.getByRole("button", { name: "Stop", exact: true }).click();
       } else {
@@ -53,7 +58,7 @@ for (const { unfinishedWrite, stopResponse } of [{ unfinishedWrite: false, stopR
         return stopped.resultJson?.executionCancellation?.state;
       }, { timeout: 30_000 }).toBe("acknowledged");
       expect(stopped.status).toBe("cancelled");
-      expect(stopped.resultJson.executionCancellation.state).toBe("acknowledged");
+      expect(stopped.resultJson?.executionCancellation?.state).toBe("acknowledged");
       const writesAtStop = unfinishedWrite ? await readFile(path.join(root, "writes"), "utf8") : null;
       await page.reload();
       if (stopResponse) {
@@ -64,8 +69,12 @@ for (const { unfinishedWrite, stopResponse } of [{ unfinishedWrite: false, stopR
         const saved = await json(await request.get(`/api/issues/${issue.id}/queued-comments`));
         expect(JSON.stringify(saved.entries)).toContain("List my recent Drive files.");
         expect((await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n")).toHaveLength(1);
-        await editor.fill("Please continue with the saved request.");
-        await page.getByRole("button", { name: "Send", exact: true }).click();
+        if (sendSavedQueue) {
+          await page.getByRole("button", { name: "Send queued messages", exact: true }).click();
+        } else {
+          await editor.fill("Please continue with the saved request.");
+          await page.getByRole("button", { name: "Send", exact: true }).click();
+        }
       }
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 30_000 });
       await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}/live-runs`))).length).toBe(0);

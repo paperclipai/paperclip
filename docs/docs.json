@@ -47,6 +47,7 @@
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
+              "guides/board-operator/sentry-run-failure-repairs",
               "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
               "guides/board-operator/execution-workspaces-and-runtime-services",
@@ -56,6 +57,7 @@
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
               "guides/board-operator/activity-log",
+              "guides/board-operator/deleting-connection-data",
               "guides/board-operator/importing-and-exporting"
             ]
           },
@@ -123,9 +125,12 @@
               "api/agents",
               "api/issues",
               "api/approvals",
+              "api/attention",
               "api/goals-and-projects",
               "api/costs",
               "api/secrets",
+              "api/tool-gateway-tokens",
+              "api/tool-connections",
               "api/activity",
               "api/dashboard"
             ]

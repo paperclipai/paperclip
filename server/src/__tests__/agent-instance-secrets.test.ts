@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
-import { agents, companies, companySecrets, companySecretVersions, activityLog, plugins, toolApplications, toolConnections, createDb, type Db } from "@paperclipai/db";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import { agents, companies, companySecrets, companySecretVersions, activityLog, plugins, secretAccessEvents, toolApplications, toolConnections, createDb, type Db } from "@paperclipai/db";
 import type { AgentLifecycleRequest } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { pluginAgentRuntimeIdentity } from "../services/plugin-agent-runtime-state.js";
@@ -116,6 +116,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await secrets.getByKey(companyId, "runtime")).toBeNull();
     await expect(secrets.resolveSecretValue(companyId, stored.id, "latest")).rejects.toThrow("secret declarations");
     await expect(secrets.createBinding({ companyId, secretId: stored.id, targetType: "agent", targetId: f.agent.id, configPath: "env.RUNTIME" })).rejects.toThrow("company-scoped");
+  });
+
+  it("reads each secret with its latest version in one statement, auditing every read and keeping version failures", async () => {
+    const f = await fixture(); onTestFinished(async () => { await db.delete(agents).where(eq(agents.id, f.agent.id)); });
+    await f.service.apply(f.request, pluginId, { runtime, launcher: "launcher value" });
+    await f.service.apply(f.request, pluginId, { launcher: "rotated launcher" });
+    const [stored] = await db.select().from(companySecrets).where(and(eq(companySecrets.ownerAgentId, f.agent.id), eq(companySecrets.name, "launcher")));
+    expect(stored.latestVersion).toBe(2);
+    const audit = () => db.select().from(secretAccessEvents).where(eq(secretAccessEvents.secretId, stored.id)).orderBy(secretAccessEvents.createdAt);
+    const selects = vi.spyOn(db, "select");
+    expect(await f.service.read(f.scope)).toEqual({ runtime, launcher: "rotated launcher" });
+    expect(selects).toHaveBeenCalledTimes(1);
+    selects.mockRestore();
+    expect((await audit()).at(-1)).toMatchObject({ outcome: "success", version: 2, consumerType: "plugin_worker", consumerId: pluginId, pluginId, actorType: "plugin" });
+    const audited = (await audit()).length;
+    expect(await f.service.read(f.scope)).toEqual({ runtime, launcher: "rotated launcher" });
+    expect(await audit()).toHaveLength(audited + 1);
+    await db.update(companySecretVersions).set({ revokedAt: new Date() }).where(and(eq(companySecretVersions.secretId, stored.id), eq(companySecretVersions.version, 2)));
+    await expect(f.service.read(f.scope)).rejects.toThrow("Agent instance secret unavailable");
+    expect((await audit()).at(-1)).toMatchObject({ outcome: "failure", errorCode: "version_inactive", version: 2 });
+    await db.delete(companySecretVersions).where(and(eq(companySecretVersions.secretId, stored.id), eq(companySecretVersions.version, 2)));
+    await expect(f.service.read(f.scope)).rejects.toThrow("Agent instance secret unavailable");
+    expect((await audit()).at(-1)).toMatchObject({ outcome: "failure", errorCode: "version_missing", version: 2 });
   });
 
   it("fences stale writes and removals, and cascades credentials when the owning agent is deleted", async () => {

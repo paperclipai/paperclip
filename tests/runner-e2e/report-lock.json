@@ -1,6 +1,6 @@
 {
-  "inputSha256": "893496dddc21c31bd812ea106ac30d1515dda305eb1dd183007d89cf5b1bab4d",
-  "outputSha256": "c7f23021335b60da0cff1dd4c75cf8b948333ef3165d7d1703eb79a589edb798",
-  "patchSha256": "c7c11e899c12e6a030fe1554a8ceee5f21689a3a4f19956746e852050049cc49",
-  "basis": "Reviewed corrections to existing patch hashes and the already declared yaml workspace dependency. Existing package tarball integrity entries are unchanged. The only added package is yaml@2.9.1 with its exact integrity pinned by this reviewed correction."
+  "inputSha256": "852ae2688ff6a9c10c83d493db7f16152f2e5fc24046255bd0d1afdafba5432b",
+  "outputSha256": "cf3f8b7abee27560bd58adef30d34c52425e4201b714e7f50243404024456644",
+  "patchSha256": "410dc1cf32036957efb0791d3714e9224f7e124b63727888d9467430d050f467",
+  "basis": "Generated with the trusted master lockfile refresh. Review this offline correction and its hashes with the dependency changes."
 }

@@ -1,5 +1,12 @@
 # Connection setup — agent access
 
+Google Antigravity runtime sign-in reuses the existing company/owner-bound local
+AI connection attempts. Agent callers cannot import host credentials, complete
+another user's attempt, or turn a tool OAuth grant into runtime authentication.
+Native Google setup is source-tested for early-token rejection and physical
+retirement before home removal; live Google and database authorization acceptance
+remain separate. See [AI connections](../../doc/connections/AI-CONNECTIONS.md#local-subscription-sign-in).
+
 Product map: [connection-setup](../feature-map/connection-setup.md).
 
 Feature ID: `connection-setup`.

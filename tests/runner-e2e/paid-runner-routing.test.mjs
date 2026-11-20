@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { expect, it } from "vitest";
 
 const workflow = await readFile(new URL("../../.github/workflows/runner-full-stack-e2e.yml", import.meta.url), "utf8");
-const step = workflow.split("      - name: Select paid test runner\n")[1]?.split("\n  target_lock:")[0];
+const step = workflow.split("      - name: Select paid test runner\n")[1]?.split(/\n(?:      - |  [A-Za-z_][A-Za-z0-9_-]*:)/)[0];
 if (!step?.includes("        run: |\n")) throw new Error("Missing actual workflow runner selection");
 const script = step.split("        run: |\n")[1].split("\n").map(line => line.replace(/^          /, "")).join("\n");
 

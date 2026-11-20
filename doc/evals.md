@@ -1,14 +1,109 @@
 # Paperclip evaluation guide
 
+The optional Product regression TestOps lane in `runner-full-stack-e2e.yml`
+maps the standing 20-case plan to existing isolated Product E2E cells: native
+Codex/local, with native OpenCode/local for the task-workspaces case. A manual
+`testops_case` bootstrap accepts `all`, a case name or its TestOps ID. TestOps
+dispatch supplies `ALLURE_JOB_RUN_ID`; its exact case IDs and full names take
+precedence. This lane preserves the existing paid admission, fixture, model,
+timeout, assertion, cleanup and retained-report paths. Reporting credentials
+stay in trusted default-branch jobs. Missing evidence becomes a broken result.
+Subset runs do not qualify the full plan or the historical 355-row snapshot.
+Catalog and projection tests are not live qualification; retain the fresh
+TestOps launch and GitHub run when reporting acceptance.
+
+The sibling **Reliability — staging soak** TestOps plan uses the same lane for
+the seven staging-soak reliability cases. Six run once on native OpenCode with
+DeepSeek 1017 through OpenRouter: on Daytona for `three-turn-revise`,
+`long-silent-command` and `queued-across-restart`, and locally for the others.
+`queue-steer` needs steering, which OpenCode does not support, so it runs on
+native Codex on Daytona.
+A launch selects cases from exactly one plan, so plan 2 keeps its 20-case
+denominator. The plan is launched from TestOps before a release, or bootstrapped
+with `testops_plan=reliability`. It has no schedule and does not run per PR.
+Selection fails closed until TestOps-assigned identities are committed; see the
+[registration steps](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
+The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
+
+The explicit-only [verified API artifact transfer](../tests/runner-e2e/SUITES.md#verified-api-artifact-transfer)
+cell checks a native Codex agent on Daytona installing an authorized saved API
+response and delivering unchanged bytes. The oracle binds the source capture,
+tool completion and independent attachment download, including the complete
+388131-byte synthetic description. Registration and oracle calibration are
+separate from live provider qualification.
+
+The explicit-only [Kimi Code qualification suite](../tests/runner-e2e/SUITES.md#kimi-code-qualification)
+registers twenty candidate cells across local and Daytona. It reuses the
+browser, semantic interaction, file/artifact, Stop and continuation oracles with
+scoped candidate admission and an encrypted Code credential. Registration does
+not establish a live pass, native question/plan support or usable cost accounting.
+
+The public directory calls full-product testing **E2E tests**. Suites describe
+what is tested; deployment targets describe which app instance was tested.
+QA smoke is a named selection of existing journeys against QA, and appears in
+the same campaign history as other E2E runs. Agent execution (local or Daytona),
+provider, model and profile are independent filters. Browser-only journeys need
+no agent or model. Historical records without target metadata remain explicitly
+"Not recorded" rather than being assigned an inferred environment.
+
+The history sidebar includes the current suite catalog and retained historical
+suites. Each suite has its latest matching run and latest full run, with full
+coverage determined from the recorded suite definition, selection and execution
+counts. An unexecuted full selection remains unfinished, and a subset
+can pass without qualifying as a full suite run; failed full selections remain
+visible. Changing a model filter does not redefine the suite's recorded coverage.
+Existing `runner-e2e` URLs, test IDs, commands, and measurement timestamps remain
+stable. **Runner protocol evals** remain a separate category because they test
+the runner/provider against a mock control plane.
+
+Sidebar suite links open that suite's campaign history with other filters cleared.
+The Suite dropdown combines with the current filters instead. Explicit URLs retain
+their selected filters; when a suite is absent from a preset, the empty state
+explains the combination and links to the suite's runs.
+Active filters have blue borders and tinted fields. The filter toolbar counts
+active values, including a count beside More filters for collapsed controls.
+Reset all filters clears every campaign filter and the sidebar suite search.
+
+`node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-browser.browser.mjs`
+exercises the history UI using synthetic metadata and Chromium, with no model calls. It checks suite coverage, correlated
+suite/target/model/execution filters, saved QA selections, URL history and mobile
+navigation. Install the existing Playwright Chromium dependency before running.
+For presentation-only refreshes,
+`node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-refresh.ts --history <history.json> --output <directory>`
+renders an existing history file. Its optional `--public-campaign`, `--public-url` and
+`--preset` arguments import a reviewed public measurement without replacing
+existing campaigns. Private Cloud bundles are rejected. The output contains
+only index HTML and history/pointer JSON; it does not upload evidence or change
+retained campaign bundles.
+
+The explicit-only [Cursor Cloud native cells](../tests/runner-e2e/SUITES.md)
+cover task/artifact delivery, same-agent follow-up, active-run UI Stop and
+semantic Plan revision/approval from a local controller. They require explicit
+model/repository/key and a callback-only
+public HTTPS proxy. Controlled tests and discovery do not qualify hosted work.
+These cells remain private because raw evidence can contain provider session IDs.
+
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
-two natural-language task scenarios into local native Product E2E cells. They
+two natural-language task scenarios into local native Codex subscription and
+OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
-state/provenance checks. The broader YAML catalog remains planning inventory.
+state/provenance checks. A separately selected native OpenCode/DeepSeek1017
+backlog cell supplied historical TestOps integration acceptance with the same
+oracle and original bounds. Its former smoke plan and the three-case completion
+pilot are retired; their cases and measurements remain in history. The
+[full-catalog TestOps lane](../tests/runner-e2e/CHAT-FEATURES.md#full-catalog-in-testops)
+maps all 244 YAML scenarios into a separate candidate-scoped plan. Its app and
+fixtures use a preserved immutable catalog revision; trusted workflow helpers run
+from master. Registration, known gaps and private prerequisites remain distinct
+from measured results. This lane does not qualify the current master app or reset
+earlier campaign accounting.
 
-The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
-extends the existing native restart oracle to a 125-second controller outage,
-using the recorded Claude and Codex models in disposable development fixtures.
+The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/SUITES.md)
+extends the existing native restart oracle to a 300-second controller outage
+and another replacement after completion, using the recorded Claude and Codex
+models in disposable development fixtures.
 It requires same-process adoption, saved files and finalization without replay;
 local regression checks and catalog discovery are separate from live acceptance.
 
@@ -19,19 +114,51 @@ self-hosted/Cloud targets and separately selected local/Daytona agents. Account
 and credential bindings stay in the private eval repo; registration and oracle
 tests do not establish a completed live pass or unattended CI qualification.
 
-The explicit-only [necessary free-text question journey](../tests/runner-e2e/README.md#necessary-free-text-question)
+The deployment-targeted `question-answer-resume` journey reuses the classic
+two-question scenario and native continuation oracle on an attached target.
+It checks the actual board answers, one to three bound work runs, an agent-authored
+task document and browser readback after reload. A typed reference may use a text
+field or the native card's explicit written-answer control; a predefined option
+cannot replace the exact typed answer. It accepts provider questions and
+durable questions proven by an applied semantic receipt or an immutable completed
+native API mutation receipt. It does not qualify named-tool selection. Its provider owns target setup,
+usage and cleanup. Registration and local calibration do not establish a fresh
+Cloud pass or inclusion in a recurring selection.
+
+The explicit-only [necessary free-text question journey](../tests/runner-e2e/SUITES.md#necessary-free-text-question)
 checks one essential input, the rendered prompt and context, the real answer,
 one bound continuation, and an exact saved confirmation. Its four development
 cells use the recorded Codex and Claude models. Registration and calibration do
 not establish Slack, staging authentication, warm lifecycle, or live qualification.
 
+The explicit `followup-while-running` [Product journey](../tests/runner-e2e/PRODUCT-JOURNEYS.md#active-follow-up)
+checks a saved message during independently observed native work, one attributed
+reply with the late requirement, and persistence after reload. Its attached and
+managed targets share the same story and permit one steered run or one normal
+successor. Registration and calibration are separate from a live staging pass.
+
+The explicit [dependency continuation journey](../tests/runner-e2e/product-journeys/task-dependency-resume.md) checks a finite blocked wait and one automatic native continuation after a browser-completed blocker. Local evidence controls are separate from a deployed QA pass.
+
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
-journey uses no model; Cloud onboarding supplies reusable verified state. Cloud
-fleet operations and trusted CI remain private. Local eval gateway qualification
+journey and task-document create/edit/reopen journey use no model; Cloud
+onboarding supplies reusable verified state. The document journey checks exact
+saved content and both revision records through independent API reads. The explicit `chat-continuity` selection verifies browser reload/reopen, prompt-hidden recall,
+ordinary `/new` reset, fresh native context and retained history against an attached target.
+It requires a fresh owned agent with no prior work runs and uses three provider turns plus one synthetic reset row; it does not restart a shared stack.
+Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
 
-The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)
+The explicit [onboarding approval-history journey](../tests/runner-e2e/SUITES.md#first-task-onboarding)
+continues an interview through partial plan acceptance, approved hiring, and a
+separate execution confirmation. It requires the assigned child's real execution,
+saved output, unchanged approved scope, and reload persistence. Deterministic
+PostgreSQL producer/consumer tests run in ordinary CI; native provider cells
+require an explicit paid selection and a recorded live result.
+
+The deployment-targeted [saved skill journey](../tests/runner-e2e/product-journeys/saved-skill-use.md) checks one company skill assigned by key, its exact admitted immutable version, a bound native source read/load, and a run-authored saved result from skill-only inputs. It uses the reusable Product journey target and remains unqualified until a real target run passes.
+
+The explicit-only [case handoff workflow](../tests/runner-e2e/SUITES.md#persistent-case-handoffs-explicit-only)
 contains arithmetic and receipt smoke cells for a same-task round trip among three native agents using real case/task
 APIs, saved documents, handoff receipts, and browser readback. Receipt smoke has
 an explicit terminal handoff to `done` on its fourth run, proving case closure
@@ -63,6 +190,14 @@ or that a real Slack interaction completes.
 The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-CONNECTIONS.md)
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
+
+The explicit-only [Antigravity additional-agent journey](../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+converts the saved-subscription setup and two-turn file walkthrough into one
+local native cell. It measures agent creation through the ordinary UI,
+instruction-dependent downloaded bytes, same native conversation, durable Done
+lineage and owned runtime cleanup. Current support requires an attached
+self-hosted loopback macOS ARM64 candidate; fresh OAuth, Cloud/remote execution
+and global release qualification are separate gates.
 
 The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
 uses ordinary task APIs and retained native receipts to measure unattended
@@ -106,15 +241,15 @@ not an eval category.
 The explicit Product E2E `completion-updates` suite compares onboarding and
 idle, busy, multiple-task, and restart Agent Chat handoffs on native Claude/Codex. It separates mechanical
 completion delivery/result access from semantic review of the retained answer;
-see the [probe contract](../tests/runner-e2e/README.md#completion-update-probes-explicit-only).
+see the [probe contract](../tests/runner-e2e/SUITES.md#completion-update-probes-explicit-only).
 
-The explicit-only [task-titles suite](../tests/runner-e2e/README.md#automatic-task-titles)
+The explicit-only [task-titles suite](../tests/runner-e2e/SUITES.md#automatic-task-titles)
 checks that production guidance causes a real native agent to name prompt-only
 standard/Ask tasks early, while preserving user-supplied titles. Its oracle
 correlates browser creation, native tool receipts, durable titles, audit ownership,
 and the reloaded task UI; fixture prompts contain no naming instructions.
 
-The explicit-only [native connection guidance suite](../tests/runner-e2e/README.md#native-connection-guidance-explicit-only)
+The explicit-only [native connection guidance suite](../tests/runner-e2e/SUITES.md#native-connection-guidance-explicit-only)
 adds neutral decline prompts, same-task run-attributed explanations, and measured
 no-use controls across three native local profiles. Its fifteen configured cells
 are preparation for future matched instruction comparisons, not a live result.
@@ -176,11 +311,11 @@ real APIs, drives Chromium, and invokes the selected local or Daytona runner.
 
 The explicit-only `agent-chat-hardening` Product E2E suite covers native chat
 recovery, hiring, status evidence, and review handoff on local and selected warm
-Daytona paths. Its [fixture contract](../tests/runner-e2e/README.md) distinguishes
+Daytona paths. Its [fixture contract](../tests/runner-e2e/SUITES.md) distinguishes
 startup cancellation from active response cancellation and HTTP send replay
 from ambiguous provider action recovery. Select it explicitly; `--all` excludes it.
 
-The explicit-only [production hiring templates suite](../tests/runner-e2e/README.md#production-hiring-templates)
+The explicit-only [production hiring templates suite](../tests/runner-e2e/SUITES.md#production-hiring-templates)
 adds two local native Codex/Claude cells. It exercises API-created production
 CEO defaults, an explicitly requested hiring skill/reference read, a permanent
 coder hire, independently computed saved JSON fixtures and worker reuse.
@@ -216,9 +351,9 @@ The explicit-only `grok-qualification` and `grok-subscription-qualification`
 Product suites exercise Grok Build with API and company subscription
 authentication respectively. Keep their results separate; the subscription
 fixture seeds an explicitly supplied login and does not qualify interactive
-login. See the [Grok fixture contract](../tests/runner-e2e/README.md#grok-build-qualification).
+login. See the [Grok fixture contract](../tests/runner-e2e/SUITES.md#grok-build-qualification).
 
-The explicit [Direct blocker guidance suite](../tests/runner-e2e/README.md#direct-blocker-guidance)
+The explicit [Direct blocker guidance suite](../tests/runner-e2e/SUITES.md#direct-blocker-guidance)
 checks the legacy coordination skill against human authority, missing hiring
 permission, and requester scope decisions through saved browser interactions.
 
@@ -255,7 +390,10 @@ Use the selectors documented in the [runner E2E README](../tests/runner-e2e/READ
 for a suite, profile, case, group, or environment. Daytona needs the immutable
 image digest and `DAYTONA_API_KEY`; follow the README and fixture security guide.
 `--all` excludes manual suites such as `everyday-workflows`. Select that suite
-explicitly; use a narrow selector while developing a fixture.
+explicitly; use a narrow selector while developing a fixture. Its staging-soak
+reliability cases need `--group reliability` as well; see
+[Everyday workflows](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#staging-soak-reliability-group)
+for the command, the TestOps Reliability plan and the before-release cadence.
 
 For Runner Evals, the narrowest useful local validation is the report program's
 help/validation path and the deterministic Runner checks documented in
@@ -301,7 +439,7 @@ analytical label.
 ## Evidence, provenance, and history
 
 Polling latency is an interval rather than an exact first-detection time. The
-[Product E2E timing contract](../tests/runner-e2e/README.md#latency-observation-bounds)
+[Product E2E timing contract](../tests/runner-e2e/SUITES.md#latency-observation-bounds)
 keeps last-absent/first-present bounds, resolution, strict or inclusive targets,
 and pass/fail/inconclusive timing verdicts alongside the unchanged workflow grade.
 
@@ -330,6 +468,20 @@ coverage and completeness, while trend and latest-green views compare only
 compatible complete campaigns. Refreshing an existing report from retained
 evidence has zero provider calls and is a new presentation of the old
 measurement, not a new model run.
+
+Product E2E test details and screenshot galleries show the recorded application
+URL when it is available. The worker environment, such as Daytona, does not
+imply an application URL. Public projections can retain the reviewed URL in
+`targetUrl`. Test details put recorded checks first and keep raw usage, timing,
+and startup evidence under Diagnostics. Optional `presentation` metadata in a
+retained campaign supplies its title, description, notes, and evidence links
+inside the shared report shell when the dashboard is regenerated.
+
+Standard runner Product E2E attempts also retain a sanitized `taskChat` recording
+for Test details: task briefs, complete saved messages, requests and answers,
+and native agent progress. Related task threads are separate; incomplete capture
+is labeled. This automatic capture runs before teardown on success and failure.
+See the [Product E2E evidence contract](../tests/runner-e2e/README.md#evidence-and-cleanup).
 
 Existing public histories are available at
 [Runner protocol history](https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/index.html)
@@ -368,7 +520,7 @@ is a broken user outcome or invariant, not an individual red cell.
 4. **Design the smallest general correction.** Name the desired user behavior,
    the authoritative state/transaction or provider boundary that owns it, the
    affected callers, and the existing guarantees that must survive. Check it
-   against `PRODUCT.md` and `SPEC-implementation.md`. A change to an intentional
+   against `PRODUCT.md` and the existing code and tests. A change to an intentional
    product rule is a contract change, not an excuse to delete its guard. Avoid
    case-name branches, phrase-specific prompts, unconditional retries, or
    weakening approval, ownership, cancellation, and budget gates to get green.
@@ -475,15 +627,17 @@ a newer rendering of the same campaign.
 Remaining native chat boundaries are in the explicit-only
 `agent-chat-qualification` suite: active task reassignment, user Retry after
 verified worker process loss, and multi-turn answers grounded in actual task
-records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
+records. See the [workflow and qualification limits](../tests/runner-e2e/SUITES.md#remaining-native-agent-chat-qualification).
 The 26 native `first-task` cells inspect the production wizard's saved native
 default on qualified targets, without an API runner switch. The 26 Legacy cells
-select Legacy explicitly in Advanced. Live results and semantic answer reviews must accompany
+use an API-configured inactive setup record and resume it in the wizard, as
+described in the [first-task setup contract](../tests/runner-e2e/SUITES.md#first-task-onboarding).
+Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
 
-The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)
+The explicit-only [native question/resume qualification](../tests/runner-e2e/SUITES.md#task-continuation)
 separates a completed two-answer user journey from semantic-tool documentation
-qualification. It verifies the exact provider-pause or semantic-response-wake
+qualification. It verifies the exact provider-pause or native response-wake
 binding for each answer and preserves prior grades when the definition changes.
 
 ## Lifecycle behavior baseline
@@ -510,11 +664,11 @@ downloaded proof on local native/legacy Codex and native Daytona. See the
 
 The explicit-only Product E2E `api-response-reading` suite verifies retrieval of
 large saved API responses on local and Daytona native Codex runs. See the
-[Runner E2E guide](../tests/runner-e2e/README.md#bounded-api-response-reading).
+[Runner E2E guide](../tests/runner-e2e/SUITES.md#bounded-api-response-reading).
 
 The explicit-only Product E2E `extended-harnesses` suite covers pending Cursor,
 Copilot and Pi ACP profiles on local and Daytona. See the
-[fixture admission, credentials and budget contract](../tests/runner-e2e/README.md#extended-acp-harnesses-explicit-only).
+[fixture admission, credentials and budget contract](../tests/runner-e2e/SUITES.md#extended-acp-harnesses-explicit-only).
 The private Runner Evals campaign of the same name provides complementary
 semantic protocol cases; catalog membership is not live qualification.
 
@@ -525,19 +679,27 @@ source/pack provenance and complete persisted evidence are required.
 The explicit-only Product E2E `confirmation-replies` suite tests conversational
 approval and rejection, persisted message provenance, approval before execution,
 ambiguous proposals, and the existing card-click path with native Claude/Codex.
-See the [suite contract](../tests/runner-e2e/README.md#conversational-confirmation-replies-explicit-only).
+See the [suite contract](../tests/runner-e2e/SUITES.md#conversational-confirmation-replies-explicit-only).
 
 Hiring notification accounting now also requires exact completed action attribution. Missing native/provider ID mapping is uncomparable evidence; it must not be reported as a model task regression or waived through name/order matching. The fixture waits for both known completion callbacks and settled bracketed observations, including the gap before pending outbox work becomes a wake. Strict action replay and original machine verdicts are retained separately.
 
 The explicit-only [planning guidance utility comparison](../tests/runner-e2e/PLAN-TASK-GUIDANCE.md) measures task decomposition and handoffs with current, short, and disabled skills.
 
-The explicit-only [task-workspaces Product E2E suite](../tests/runner-e2e/README.md#projectless-task-workspaces-explicit-only)
+The explicit-only [task-workspaces Product E2E suite](../tests/runner-e2e/SUITES.md#projectless-task-workspaces-explicit-only)
 covers projectless task files, deferred repository acquisition, controller restart
 and nested Git/dirty-file persistence on legacy local, native local and native
 Daytona OpenCode. Its three configured cells use independent filesystem, public
 API and download oracles; no live qualification is implied by fixture registration.
 
-The explicit-only [feedback persistence case](../tests/runner-e2e/README.md#feedback-persistence-explicit-only)
+The explicit-only [feedback persistence case](../tests/runner-e2e/SUITES.md#feedback-persistence-explicit-only)
 checks real native complaint/suggestion submissions and retained bodies with
-run-attributed tool receipts. It is manual, uses the normal Product E2E report,
+run-attributed tool receipts on local and Daytona execution. Its four native
+Claude/Codex cells are explicit-only. Remote registrations remain unqualified
+until retained live attempts prove them. It uses the normal Product E2E report
 and keeps synthetic feedback distinct from actionable product findings.
+# Legacy workspace preservation
+
+The explicit [legacy workspace migration Product E2E suites](../tests/runner-e2e/SUITES.md#legacy-workspace-migration)
+verify a retained session through the production offline migration and an empty
+replacement controller. They complement the rolling deployment suites and do
+not claim uninterrupted service during initial enrollment.

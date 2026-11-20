@@ -1,16 +1,21 @@
+import { EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION, EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../../queued-comment-delivery.js";
+import { notifyChatInboundWakeNotices } from "../../chat-inbound-wake-notice-notifications.js";
 import { DELIVERY_PROCESSING_STALE_MS } from "./delivery-ledger.js";
 import type { EndpointRow, DbOrTransaction } from "../runtime-types.js";
+import { notifyChatRunMilestones } from "../../chat-run-milestone-notifications.js";
 import { notifyChatDeliveryWork } from "../../chat-work-notifications.js";
 import { enqueueFastResponse } from "../../fast-responses.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { retryChatControlAdmission } from "../../chat-control-admission-retry.js";
 import type { Db } from "@paperclipai/db";
-import { createDurableChatWakeupRequest, assertDurableChatWakeupReceipt, registerDeferredChatWakeOwner } from "../../durable-chat-wakeup.js";
-import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints } from "@paperclipai/db";
+import { createDurableChatWakeupRequest, assertDurableChatWakeupReceipt, registerDeferredChatWakeOwner, CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS, type DeferredChatWakeDecline } from "../../durable-chat-wakeup.js";
+import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, heartbeatRuns, issues } from "@paperclipai/db";
+import { issueService } from "../../issues.js";
 import { forbidden } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { queueIssueAssignmentWakeup } from "../../issue-assignment-wakeup.js";
 import { isGitHubAutomaticDelivery, acknowledgeGitHubWakeup } from "../github/wake-authority.js";
+import { githubInboundWakeAdmission, recoverGitHubSteeredWake, steerGitHubInboundWake } from "../github/inbound-steering.js";
 import { inboundWakeScope, type createInboundWakeAuthority } from "./wakeup-authorization.js";
 import type { createInboundAttachments } from "../inbound-attachments.js";
 import type { IssueAssignmentWakeupDeps } from "../../issue-assignment-wakeup.js";
@@ -110,6 +115,11 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
           );
         }
         await notifyChatDeliveryWork(tx);
+        if (action.status === "processed") {
+          await notifyChatRunMilestones(tx, { companyId: action.companyId, issueId: String(action.payload.issueId) });
+        } else if (action.status === "failed") {
+          await notifyChatInboundWakeNotices(tx, { companyId: action.companyId, issueId: String(action.payload.issueId) });
+        }
         const acceptedAt = new Date();
         const accepted = await tx
           .update(chatDeliveries)
@@ -249,6 +259,11 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
     const settle = async (status: string, result: Record<string, unknown>) => {
       const changed = await db.transaction(async (tx) => {
         await notifyChatDeliveryWork(tx);
+        if (status === "processed") {
+          await notifyChatRunMilestones(tx, { companyId: claimed.companyId, issueId: request!.issueId });
+        } else if (status === "failed" && request) {
+          await notifyChatInboundWakeNotices(tx, { companyId: claimed.companyId, issueId: request.issueId });
+        }
         const changed = await tx
           .update(chatActions)
           .set({ status, result, updatedAt: new Date() })
@@ -292,6 +307,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
     };
     let request: ReturnType<typeof createDurableChatWakeupRequest> | null =
       null;
+    let githubAdmission: Awaited<ReturnType<typeof githubInboundWakeAdmission>> | undefined;
     const receipt = async () => {
       const row = await db
         .select()
@@ -330,12 +346,17 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
         requestedAt: claimed.createdAt,
         authorize: async (tx) => {
           const current = await authorizeInboundWorkStart(tx, claimed);
+          await githubAdmission?.authorize(tx, current.issue);
           if (current.delivery.state !== "processed")
             throw new Error("chat_inbound_wakeup_acceptance_not_committed");
         },
       });
-      const priorReceipt = await receipt();
+      let priorReceipt = await receipt();
       if (priorReceipt) {
+        if (priorReceipt.status === "deferred_issue_execution") {
+          await steerGitHubInboundWake(db, claimed, request, authorizeInboundWorkStart);
+          priorReceipt = (await receipt())!;
+        }
         await settle(receiptDeclined(priorReceipt) ? "failed" : "processed", {
           code: receiptDeclined(priorReceipt)
             ? `inbound_wakeup_${priorReceipt.status}`
@@ -352,23 +373,27 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       );
       if (context.delivery.state !== "processed")
         throw new Error("chat_inbound_wakeup_acceptance_not_committed");
+      if (context.endpoint.provider === "github") githubAdmission = await githubInboundWakeAdmission(db, context.issue);
       await queueIssueAssignmentWakeup({
         heartbeat: options.heartbeat,
         issue: context.issue,
-        reason: "External chat message received",
-        mutation: "chat_message_received",
+        reason: EXTERNAL_CHAT_MESSAGE_WAKE_REASON,
+        mutation: EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION,
         contextSource: `chat:${context.endpoint.provider}`,
         requestedByActorType: request.requestedByActorType,
         requestedByActorId: request.requestedByActorId,
         taskKey: context.issue.identifier,
         wakeCommentId: request.commentId,
         chatConversationId: context.conversation.id,
+        ...githubAdmission?.options,
         attachmentOmissionReasons: claimed.payload.attachmentOmissionReasons as
           | Record<string, number>
           | undefined,
         durableChatRequest: request,
         rethrowOnError: true,
       });
+      if (context.endpoint.provider === "github")
+        await steerGitHubInboundWake(db, claimed, request, authorizeInboundWorkStart);
       const durable = await receipt();
       if (!durable) throw new Error("chat_inbound_wakeup_receipt_missing");
       await settle(receiptDeclined(durable) ? "failed" : "processed", {
@@ -425,44 +450,125 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       return denied;
     }
   }
-  const unregisterDeferredWakeOwner = registerDeferredChatWakeOwner(db, async (scope) => {
-    const action = await db.select().from(chatActions).where(and(
+  async function reopenClosedChatTask(tx: Db, action: typeof chatActions.$inferSelect) {
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, action.companyId),
+      eq(issues.id, String(action.payload.issueId)))).for("update");
+    if (!issue || issue.assigneeAgentId !== action.payload.agentId || !["done", "cancelled"].includes(issue.status)) return;
+    const [endpoint] = await tx.select({ sponsorUserId: chatEndpoints.sponsorUserId }).from(chatEndpoints)
+      .where(and(eq(chatEndpoints.companyId, action.companyId), eq(chatEndpoints.id, action.endpointId)));
+    await issueService(tx).update(issue.id, { status: "todo",
+      actorUserId: action.payload.requestedByActorType === "user" ? String(action.payload.requestedByActorId) : endpoint?.sponsorUserId ?? null,
+    }, tx);
+  }
+  async function recentClosedTaskChatWakes(scope: { companyId: string; agentId: string; issueId: string },
+    action: typeof chatActions.$inferSelect) {
+    const rows = await db.select({ receipt: agentWakeupRequests, action: chatActions }).from(agentWakeupRequests)
+      .innerJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId), eq(chatActions.id, agentWakeupRequests.id)))
+      .where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.agentId, scope.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+        sql`${agentWakeupRequests.idempotencyKey} like 'chat-inbound:%'`,
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`,
+        gte(agentWakeupRequests.createdAt, new Date(Date.now() - CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS)),
+        eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+        action.conversationId ? eq(chatActions.conversationId, action.conversationId) : isNull(chatActions.conversationId),
+        sql`${chatActions.payload}->>'issueId' = ${scope.issueId}`, sql`${chatActions.payload}->>'agentId' = ${scope.agentId}`))
+      .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id));
+    return rows;
+  }
+  const unregisterDeferredWakeOwner = registerDeferredChatWakeOwner(db, async (scope): Promise<DeferredChatWakeDecline | void> => {
+    const saved = await db.select().from(chatActions).where(and(
       eq(chatActions.id, scope.requestId), eq(chatActions.companyId, scope.companyId),
-      eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
     )).then(rows => rows[0] ?? null);
-    if (!action || action.payload.agentId !== scope.agentId || action.payload.issueId !== scope.issueId) return;
+    if (!saved || saved.kind !== "inbound_wakeup") return;
+    const source = saved;
     const [receipt] = await db.select().from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.id, action.id), eq(agentWakeupRequests.companyId, scope.companyId),
+      eq(agentWakeupRequests.id, scope.requestId), eq(agentWakeupRequests.companyId, scope.companyId),
       eq(agentWakeupRequests.agentId, scope.agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     ));
     if (!receipt || receipt.runId) return;
-    const authorize = async (tx: Db) => {
-      const [source] = await tx.select().from(chatActions).where(and(
-        eq(chatActions.id, action.id), eq(chatActions.companyId, scope.companyId),
+    const sweep = scope.recoverySweep === true;
+    if (["preparing", "issued", "processing"].includes(source.status)) return sweep ? { retry: "source_pending" } : undefined;
+    if (source.status !== "processed" || source.payload.agentId !== scope.agentId ||
+        source.payload.issueId !== scope.issueId) return sweep ? { settle: "source_missing" } : undefined;
+    if (await recoverGitHubSteeredWake(db, source)) return;
+    let closed = false;
+    if (sweep) {
+      const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
+        .where(and(eq(issues.companyId, scope.companyId), eq(issues.id, scope.issueId)));
+      if (!task) return { settle: "task_missing" };
+      if (task.assigneeAgentId !== scope.agentId) return { settle: "task_reassigned" };
+      if (task.status === "backlog") return { retry: "task_backlog" };
+      closed = task.status === "done" || task.status === "cancelled";
+      if (closed && receipt.createdAt.getTime() < Date.now() - CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS) return { settle: "task_closed" };
+    }
+    const candidates: Awaited<ReturnType<typeof recentClosedTaskChatWakes>> = [];
+    if (closed) {
+      for (const candidate of await recentClosedTaskChatWakes(scope, source)) {
+        if (candidate.receipt.id !== receipt.id && !(await recoverGitHubSteeredWake(db, candidate.action))) candidates.push(candidate);
+      }
+    }
+    const authorizeAction = async (tx: Db, saved: typeof chatActions.$inferSelect) => {
+      const [current] = await tx.select().from(chatActions).where(and(
+        eq(chatActions.id, saved.id), eq(chatActions.companyId, scope.companyId),
         eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
       ));
-      if (!source || inboundWakeScope(source) !== inboundWakeScope(action))
+      if (!current || inboundWakeScope(current) !== inboundWakeScope(saved))
         throw forbidden("The saved chat source changed", { code: "chat_action_authorization_changed" });
-      const current = await authorizeInboundWorkStart(tx, source);
-      if (current.delivery.state !== "processed") throw new Error("chat_inbound_wakeup_acceptance_not_committed");
-      return current;
+      const authorized = await authorizeInboundWorkStart(tx, current);
+      if (authorized.delivery.state !== "processed") throw new Error("chat_inbound_wakeup_acceptance_not_committed");
+      return authorized;
     };
+    const accepted: typeof candidates = [];
     // The same authority used at ingress checks the live endpoint, principal,
     // immutable action source, conversation generation and original comment.
-    const context = await db.transaction(tx => authorize(tx as unknown as Db));
+    const context = await db.transaction(async tx => {
+      if (closed) await reopenClosedChatTask(tx as unknown as Db, source);
+      const authorized = await authorizeAction(tx as unknown as Db, source);
+      for (const candidate of candidates) {
+        if (await tx.transaction(inner => authorizeAction(inner as unknown as Db, candidate.action)).then(() => true, () => false))
+          accepted.push(candidate);
+      }
+      return authorized;
+    });
+    const batch = [{ receipt, action: source }, ...accepted].sort((left, right) =>
+      left.receipt.createdAt.getTime() - right.receipt.createdAt.getTime() || left.receipt.id.localeCompare(right.receipt.id));
+    const { receipt: primaryReceipt, action } = batch.at(-1)!;
+    const riders = batch.slice(0, -1);
+    const githubAdmission = context.endpoint.provider === "github" ? await githubInboundWakeAdmission(db, context.issue) : undefined;
     const request = createDurableChatWakeupRequest({
       id: action.id, companyId: scope.companyId, agentId: scope.agentId, issueId: scope.issueId,
       commentId: String(action.payload.commentId),
       requestedByActorType: action.payload.requestedByActorType as "user" | "system",
       requestedByActorId: String(action.payload.requestedByActorId), requestedAt: action.createdAt,
-      resumeDeferred: true, authorize: async tx => { await authorize(tx); },
+      resumeDeferred: true,
+      authorize: async tx => {
+        const authorized = await authorizeAction(tx, action);
+        await githubAdmission?.authorize(tx, authorized.issue);
+        if (!riders.length) return;
+        const current = await tx.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+          .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, scope.companyId),
+            inArray(agentWakeupRequests.id, riders.map(rider => rider.receipt.id)))).for("update");
+        if (current.length !== riders.length || current.some(row => row.status !== "deferred_issue_execution" || row.runId))
+          throw new Error("chat_inbound_wakeup_batch_changed");
+      },
+      ...(riders.length ? { onAdmitted: async (tx: Db, admitted: { runId: string | null }) => {
+        if (!admitted.runId) return;
+        const now = new Date();
+        await tx.update(agentWakeupRequests).set({ status: "coalesced", runId: admitted.runId, finishedAt: now, updatedAt: now,
+          payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ coalescedIntoWakeupRequestId: action.id })}::jsonb`,
+        }).where(and(eq(agentWakeupRequests.companyId, scope.companyId),
+          inArray(agentWakeupRequests.id, riders.map(rider => rider.receipt.id)),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId)));
+      } } : {}),
     });
-    assertDurableChatWakeupReceipt(request, receipt);
+    assertDurableChatWakeupReceipt(request, primaryReceipt);
     await queueIssueAssignmentWakeup({ heartbeat: options.heartbeat, issue: context.issue,
-      reason: "External chat message received", mutation: "chat_message_received",
+      reason: EXTERNAL_CHAT_MESSAGE_WAKE_REASON, mutation: EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION,
       contextSource: `chat:${context.endpoint.provider}`, taskKey: context.issue.identifier,
       requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
       wakeCommentId: request.commentId, chatConversationId: context.conversation.id,
+      ...githubAdmission?.options,
+      ...(riders.length ? { wakeCommentIds: batch.map(entry => String(entry.action.payload.commentId)) } : {}),
       attachmentOmissionReasons: action.payload.attachmentOmissionReasons as Record<string, number> | undefined,
       durableChatRequest: request, rethrowOnError: true });
   });

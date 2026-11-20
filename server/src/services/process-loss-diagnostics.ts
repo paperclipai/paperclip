@@ -11,6 +11,8 @@ export interface ProcessLossDiagnostic {
   localCheck: typeof LOCAL_CHECKS[number];
   retryEligible: boolean;
   runPredatesObserver?: boolean;
+  /** The run's recorded owner was another server boot: a restart or replacement ended it. */
+  controllerReplaced?: boolean;
   lastOutputAgeMs?: number;
   observerUptimeMs?: number;
 }
@@ -29,6 +31,7 @@ export function buildProcessLossDiagnostic(input: {
   observerStartedAtMs: number;
   checksPersistedChildLiveness: boolean;
   retryEligible: boolean;
+  controllerReplaced?: boolean;
 }): ProcessLossDiagnostic {
   const { run, nowMs, observerStartedAtMs } = input;
   const pidRecorded = !!run.processPid;
@@ -45,6 +48,7 @@ export function buildProcessLossDiagnostic(input: {
     retryEligible: input.retryEligible,
     ...(validObserverStart && startedAt !== undefined && Number.isFinite(startedAt) && startedAt <= nowMs
       ? { runPredatesObserver: startedAt < observerStartedAtMs } : {}),
+    ...(input.controllerReplaced !== undefined ? { controllerReplaced: input.controllerReplaced } : {}),
     ...(lastOutputAgeMs !== undefined ? { lastOutputAgeMs } : {}),
     ...(observerUptimeMs !== undefined ? { observerUptimeMs } : {}),
   };
@@ -57,7 +61,7 @@ export function readProcessLossDiagnostic(value: unknown): Partial<ProcessLossDi
   const read = (key: string): unknown => {
     try { return (value as Record<string, unknown>)[key]; } catch { return undefined; }
   };
-  for (const key of ["pidRecorded", "groupRecorded", "retryEligible", "runPredatesObserver"] as const) {
+  for (const key of ["pidRecorded", "groupRecorded", "retryEligible", "runPredatesObserver", "controllerReplaced"] as const) {
     const entry = read(key);
     if (typeof entry === "boolean") result[key] = entry;
   }

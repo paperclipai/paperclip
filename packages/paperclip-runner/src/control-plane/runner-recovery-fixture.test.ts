@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,13 +24,13 @@ beforeAll(() => {
     "-p", "paperclip-runner-core", "--example", "recovery-fixture"], { timeout: 120_000, stdio: "pipe" });
 }, 120_000);
 
-async function fixture(externalPersistence: boolean, graceMs = 20_000) {
+async function fixture(externalPersistence: boolean, graceMs = 20_000, providerStopMs?: number, reconnectDelayMs?: number) {
   const root = mkdtempSync(resolve(tmpdir(), "runner-in-process-recovery-"));
   const stateDirectory = resolve(root, "control-plane");
   const receiptFile = resolve(root, "work.json");
   const releaseFile = resolve(root, "release");
   const scriptFile = resolve(root, "script.json");
-  writeFileSync(scriptFile, JSON.stringify({ steps: 64, waitAfter: 32, retentionLimit: 8, receiptFile, releaseFile }));
+  writeFileSync(scriptFile, JSON.stringify({ steps: 64, waitAfter: 32, retentionLimit: 8, receiptFile, releaseFile, providerStopMs, reconnectDelayMs }));
   const delivered: Array<{ sourceEventId: string; text: string }> = [];
   let checkpoint: DurablePrpCheckpoint | undefined;
   const create = () => {
@@ -66,7 +67,7 @@ async function fixture(externalPersistence: boolean, graceMs = 20_000) {
     await vi.waitFor(() => expect(core.getCommand(commandId)?.status, `${commandId}: exit=${child?.exitCode}; ${diagnostics}`).toBe("completed"), { timeout: 10_000 });
   }
   return {
-    root, receipt, child, exit, delivered, command,
+    root, port, receipt, child, exit, delivered, command,
     checkpoint: () => checkpoint,
     release: () => writeFileSync(releaseFile, "compute"),
     stopController: async () => {
@@ -98,12 +99,17 @@ it.each([false, true])("preserves useful in-process work through repeated replac
     expect(run.receipt().completedSteps).toBe(0);
     await run.stopController();
     run.release();
-    await vi.waitFor(() => expect(run.receipt()).toMatchObject({ phase: "backpressured", completedSteps: 8, retainedEvents: 8 }), { timeout: 5000 });
+    await vi.waitFor(() => expect(run.receipt()).toMatchObject({ phase: "awaiting_controller", completedSteps: 32, retainedEvents: 0, acknowledgedEvents: 32 }), { timeout: 10_000 });
     expect(run.receipt().pid).toBe(run.child.pid);
     expect(run.child.exitCode).toBeNull();
     expect(run.delivered).toHaveLength(0);
+    const offline = JSON.parse(readFileSync(resolve(run.root, "runner/runner-state.json"), "utf8"));
+    expect(offline.ackedSourceSeq).toBe(0);
+    expect(offline.outbox).toHaveLength(32);
+    expect(offline.peakOutboxBytes).toBeLessThanOrEqual(offline.maxOutboxBytes);
     await run.replaceController();
     await vi.waitFor(() => expect(run.delivered).toHaveLength(32), { timeout: 10_000 });
+    expect(run.delivered.map(event => event.sourceEventId)).toEqual(offline.outbox.map((event: any) => event.envelope.payload.sourceEventId));
     expect(run.receipt()).toMatchObject({ phase: "awaiting_controller", completedSteps: 32 });
     await run.stopController();
     expect(run.receipt().completedSteps).toBe(32);
@@ -124,19 +130,40 @@ it.each([false, true])("preserves useful in-process work through repeated replac
     await run.command("runner.shutdown", "shutdown");
     expect((await run.exit)[0]).toBe(0);
   } finally { await run.cleanup(); }
-}, 35_000);
+}, 60_000);
 
 it("stops after the original reconnect deadline while retaining recovery state", async () => {
-  const run = await fixture(true, 1500);
+  const run = await fixture(true, 1500, undefined, 5000);
   try {
     await run.command("turn.start", "start-once");
+    const disconnectedAt = performance.now();
     await run.stopController();
     run.release();
     await run.exit;
+    expect(performance.now() - disconnectedAt).toBeLessThan(4000);
     const state = JSON.parse(readFileSync(resolve(run.root, "runner/runner-state.json"), "utf8"));
     expect(state.recoverableFailure).toBe("transport_reconnect_grace_exceeded");
     expect(run.receipt()).toMatchObject({ phase: "stopped", pid: run.child.pid });
     expect(run.receipt().completedSteps).toBeGreaterThan(0);
     expect(run.receipt().peakRetainedEvents).toBeLessThanOrEqual(8);
   } finally { await run.cleanup(); }
+}, 15_000);
+
+
+it("enforces local provider cleanup while a replacement controller holds the handshake open", async () => {
+  const run = await fixture(false, 20_000, 1500);
+  const sockets = new Set<Socket>();
+  const silent = createServer(socket => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); });
+  try {
+    await run.command("turn.start", "start-with-deadline");
+    await run.stopController();
+    await new Promise<void>((ready, reject) => { silent.once("error", reject); silent.listen(run.port, "127.0.0.1", ready); });
+    await vi.waitFor(() => expect(sockets.size).toBeGreaterThan(0), { timeout: 4_000 });
+    await vi.waitFor(() => expect(run.receipt().phase).toBe("stopped"), { timeout: 4_000 });
+    expect(run.child.exitCode).toBeNull();
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>(done => silent.close(() => done()));
+    await run.cleanup();
+  }
 }, 15_000);

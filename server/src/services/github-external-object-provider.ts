@@ -13,8 +13,17 @@ import type {
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+type GitHubObjectResolver = Omit<ExternalObjectResolver, "resolve"> & {
+  resolve(input: {
+    companyId: string;
+    object: { externalId: string; sanitizedCanonicalUrl: string | null };
+    signal?: AbortSignal;
+  }): Promise<ExternalObjectResolveResult>;
+};
+
 export interface GitHubExternalObjectProviderOptions {
   fetch?: FetchLike;
+  requestTimeoutMs?: number;
   tokenProvider?: (companyId: string) => Promise<string | null> | string | null;
   /**
    * Resolve the credential and its source. Prefer this over `tokenProvider` when the
@@ -243,12 +252,12 @@ type RepoProbeOutcome = {
 
 async function probeRepoVisibility(
   identity: GitHubObjectIdentity,
-  opts: { fetch: FetchLike; headers?: Record<string, string> | undefined },
+  opts: { fetch: FetchLike; headers?: Record<string, string> | undefined; signal?: AbortSignal },
 ): Promise<RepoProbeOutcome> {
   try {
     const probe = await opts.fetch(
       `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}`,
-      { headers: opts.headers },
+      { headers: opts.headers, signal: opts.signal },
     );
     if (probe.ok) {
       const body = await safeJson(probe);
@@ -336,6 +345,8 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       state,
       merged,
       draft,
+      title,
+      mergeable: asBoolean(body.mergeable),
       ...(authorLogin ? { authorLogin } : {}),
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
@@ -398,7 +409,7 @@ async function safeJson(response: Response) {
 export function createGitHubExternalObjectProvider(
   db: Db,
   opts: GitHubExternalObjectProviderOptions = {},
-): { detector: ExternalObjectDetector; resolvers: ExternalObjectResolver[] } {
+): { detector: ExternalObjectDetector; resolvers: GitHubObjectResolver[] } {
   const fetchImpl = opts.fetch ?? ghFetch;
   const secretNames = opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
   // `credentialProvider` is the preferred seam; `tokenProvider` stays for callers that
@@ -427,12 +438,13 @@ export function createGitHubExternalObjectProvider(
     companyId: string,
     identity: GitHubObjectIdentity,
     headers: Record<string, string>,
+    signal: AbortSignal,
   ): Promise<RepoProbeOutcome> {
     const credentialFingerprint = createHash("sha256").update(headers.authorization ?? "anonymous").digest("hex");
     const key = `${companyId}\u0000${credentialFingerprint}\u0000${identity.owner.toLowerCase()}\u0000${identity.repo.toLowerCase()}`;
     const cached = probeCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.outcome;
-    const outcome = await probeRepoVisibility(identity, { fetch: fetchImpl, headers });
+    const outcome = await probeRepoVisibility(identity, { fetch: fetchImpl, headers, signal });
     if (outcome.visibility === "visible" || outcome.visibility === "hidden") {
       probeCache.set(key, { outcome, expiresAt: Date.now() + GITHUB_OBJECT_TTL_SECONDS * 1000 });
     }
@@ -460,11 +472,13 @@ export function createGitHubExternalObjectProvider(
     },
   };
 
-  function resolver(objectType: GitHubObjectIdentity["objectType"]): ExternalObjectResolver {
+  function resolver(objectType: GitHubObjectIdentity["objectType"]): GitHubObjectResolver {
     return {
       providerKey: "github",
       objectType,
-      async resolve({ companyId, object }) {
+      async resolve({ companyId, object, signal: ownerSignal }) {
+        const deadline = AbortSignal.timeout(opts.requestTimeoutMs ?? 10_000);
+        const signal = ownerSignal ? AbortSignal.any([ownerSignal, deadline]) : deadline;
         const identity = parseGitHubObject(object);
         if (!identity || identity.objectType !== objectType) {
           return {
@@ -509,7 +523,7 @@ export function createGitHubExternalObjectProvider(
           // "public" verdict must not authorize a later read of its private contents.
           // The cache is still used below to classify a 404, where a stale verdict can
           // only make the object look deleted — it can never expose private data.
-          const probe = await probeRepoVisibility(identity, { fetch: fetchImpl, headers });
+          const probe = await probeRepoVisibility(identity, { fetch: fetchImpl, headers, signal });
           if (probe.visibility === "hidden") {
             return {
               ok: false,
@@ -554,7 +568,7 @@ export function createGitHubExternalObjectProvider(
 
         let response: Response;
         try {
-          response = await fetchImpl(url, { headers });
+          response = await fetchImpl(url, { headers, signal });
         } catch {
           return {
             ok: false,
@@ -573,7 +587,7 @@ export function createGitHubExternalObjectProvider(
           // Probe the repository metadata to classify: if the repo itself is visible
           // the object truly is gone; if it is not, surface credentials-needed
           // instead of permanently freezing a reference as "Not found".
-          const probe = await cachedProbeRepoVisibility(companyId, identity, headers);
+          const probe = await cachedProbeRepoVisibility(companyId, identity, headers, signal);
           if (probe.visibility === "visible") {
             return { ok: true, snapshot: notFoundSnapshot(identity, etag) };
           }
