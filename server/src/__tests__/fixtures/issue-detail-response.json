@@ -62,6 +62,8 @@
   "unblockDescriptor": null,
   "blockedTransitionAt": null,
   "blockedOwnerNotifiedAt": null,
+  "completionRequirement": null,
+  "completionRequirementRevision": 0,
   "startedAt": null,
   "completedAt": null,
   "cancelledAt": null,

@@ -1,4 +1,4 @@
-import type { BudgetWindowKind, PauseReason, ProjectStatus } from "../constants.js";
+import type { BudgetWindowKind, IssueCompletionRequirement, PauseReason, ProjectStatus } from "../constants.js";
 import type {
   ProjectExecutionWorkspacePolicy,
   ProjectWorkspaceRuntimeConfig,
@@ -62,6 +62,7 @@ export interface ProjectWorkspace {
   sharedWorkspaceKey: string | null;
   metadata: Record<string, unknown> | null;
   runtimeConfig: ProjectWorkspaceRuntimeConfig | null;
+  defaultCompletionRequirement: IssueCompletionRequirement | null;
   isPrimary: boolean;
   runtimeServices?: WorkspaceRuntimeService[];
   createdAt: Date;

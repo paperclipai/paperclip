@@ -6,6 +6,7 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   create: vi.fn(),
+  decomposeAcceptedPlan: vi.fn(),
   findMentionedAgents: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
@@ -317,5 +318,49 @@ describe("issue workspace command authorization", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers that supply a completion requirement at create", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Self-certified delivery", completionRequirement: "workspace_delivery" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("cannot set the completion requirement");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers that supply a completion requirement on a decomposed child", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/issue-1/accepted-plan-decompositions")
+      .send({
+        acceptedPlanRevisionId: "9f1d6a3c-2b7e-4f5a-8c1d-0e2b3a4c5d6e",
+        children: [
+          {
+            title: "Self-certified child",
+            completionRequirement: "workspace_delivery",
+          },
+        ],
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("cannot set the completion requirement");
+    expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
   });
 });

@@ -386,6 +386,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     sharedWorkspaceKey: null,
     metadata: null,
     runtimeConfig: null,
+    defaultCompletionRequirement: null,
     isPrimary: true,
     runtimeServices: [],
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
