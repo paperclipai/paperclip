@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, environmentLeases, heartbeatRuns, issueRecoveryActions,
-  issueComments, issueRelations, issues, issueThreadInteractions,
+import { agents, agentWakeupRequests, approvals, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, environmentLeases, heartbeatRuns, issueRecoveryActions,
+  issueApprovals, issueComments, issueRelations, issues, issueThreadInteractions,
   toolApplications, toolConnections,
   nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -52,6 +52,11 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect(presentations.get(tasks[0].id)).toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
     expect(presentations.get(tasks[0].id)?.providerFailure).toBeUndefined();
     expect(presentations.get(tasks[1].id)).toMatchObject({ state: "failed", providerFailure: { httpStatus: 429 } });
+    const [approval] = await db.insert(approvals).values({ companyId, type: "approve_ceo_strategy", status: "pending", payload: {} }).returning();
+    await db.insert(issueApprovals).values({ companyId, issueId: tasks[1].id, approvalId: approval.id });
+    const gated = await taskInterruptionPresentations(db, companyId, tasks);
+    expect(gated.get(tasks[0].id)).toMatchObject({ userAction: "question", canRetry: false });
+    expect(gated.get(tasks[1].id)).toMatchObject({ userAction: "approval", canRetry: false });
     await db.update(issueThreadInteractions).set({ dismissedAt: new Date() }).where(eq(issueThreadInteractions.id, question.id));
     expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "failed", canRetry: true });
     await db.update(issueThreadInteractions).set({ dismissedAt: null }).where(eq(issueThreadInteractions.id, question.id));

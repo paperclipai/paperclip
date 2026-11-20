@@ -472,7 +472,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const agentIds = selected.flatMap(issue => issue.assigneeAgentId ? [issue.assigneeAgentId] : []);
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const startingIssueIds = selected.filter(issue => issue.status === "todo" && issue.assigneeAgentId).map(issue => issue.id);
-  const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows, admissionWaits, questionRows] = await Promise.all([
+  const [runs, waits, agentRows, projectRows, pauseRows, gateRows, companyRows, admissionWaits] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
       createdAt: heartbeatRuns.createdAt, finishedAt: heartbeatRuns.finishedAt, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
       nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode, startedAt: heartbeatRuns.startedAt,
@@ -586,10 +586,15 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       eq(issueTreeHolds.companyId, issueTreeHoldMembers.companyId), eq(issueTreeHolds.id, issueTreeHoldMembers.holdId)))
       .where(and(eq(issueTreeHoldMembers.companyId, companyId), inArray(issueTreeHoldMembers.issueId, ids),
         eq(issueTreeHolds.status, "active"), eq(issueTreeHolds.mode, "pause"))),
-    db.select({ issueId: issueApprovals.issueId }).from(issueApprovals).innerJoin(approvals, and(
-      eq(approvals.companyId, issueApprovals.companyId), eq(approvals.id, issueApprovals.approvalId)))
-      .where(and(eq(issueApprovals.companyId, companyId), inArray(issueApprovals.issueId, ids),
-        inArray(approvals.status, ["pending", "revision_requested"]))),
+    unionAll(
+      db.select({ issueId: issueApprovals.issueId, kind: sql<"approval" | "question">`'approval'` }).from(issueApprovals).innerJoin(approvals, and(
+        eq(approvals.companyId, issueApprovals.companyId), eq(approvals.id, issueApprovals.approvalId)))
+        .where(and(eq(issueApprovals.companyId, companyId), inArray(issueApprovals.issueId, ids),
+          inArray(approvals.status, ["pending", "revision_requested"]))),
+      db.selectDistinct({ issueId: issueThreadInteractions.issueId, kind: sql<"approval" | "question">`'question'` }).from(issueThreadInteractions)
+        .where(and(eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, ids),
+          eq(issueThreadInteractions.kind, "ask_user_questions"), eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition())),
+    ),
     db.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
     // Only consulted for tasks without a run: the latest wake says whether admission refused it.
     startingIssueIds.length ? db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id,
@@ -597,9 +602,6 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       agentId: agentWakeupRequests.agentId })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, startingIssueIds)))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)) : [],
-    db.selectDistinct({ issueId: issueThreadInteractions.issueId }).from(issueThreadInteractions)
-      .where(and(eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, ids),
-        eq(issueThreadInteractions.kind, "ask_user_questions"), eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition())),
   ]);
   // Advertise a pending resume only when the scheduler would admit it, using
   // its own check, so the task never hides Retry behind a deferred candidate
@@ -834,9 +836,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   };
   const agentMap = new Map(agentRows.map(agent => [agent.id, agent]));
   const projectMap = new Map(projectRows.map(project => [project.id, project]));
-  const pauses = new Set(pauseRows.map(row => row.issueId)), approvalsSet = new Set(approvalRows.map(row => row.issueId));
+  const pauses = new Set(pauseRows.map(row => row.issueId));
+  const approvalsSet = new Set(gateRows.filter(row => row.kind === "approval").map(row => row.issueId));
   const admissionWaitMap = byIssue(admissionWaits);
-  const questions = new Set(questionRows.map(row => row.issueId));
+  const questions = new Set(gateRows.filter(row => row.kind === "question").map(row => row.issueId));
   const launchWaits = [...retryWaitMap].flatMap(([issueId, wait]) => {
     const run = runMap.get(issueId);
     return run && wait.sourceRunId === run.id && wait.executionWaitReason === "process_identity_missing" ? [{ issueId, run }] : [];
