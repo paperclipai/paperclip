@@ -7,7 +7,17 @@ import type { AccessDraft } from "./types";
  * unrelated save (an action permission, a quarantine review) would then send all_agents and fail. For these
  * connections the draft is therefore always the specific agents that are actually installed.
  */
-export function accessForConnection(draft: AccessDraft, install: InstallState, isPersonalSignIn: boolean): AccessDraft {
+export function accessForConnection(
+  draft: AccessDraft,
+  install: InstallState,
+  isPersonalSignIn: boolean,
+  /**
+   * Per-user connections whose agent picker owns the installs: the installed agents are the only source of truth,
+   * whatever the saved permission bindings say (a connect flow can leave a company-wide binding behind).
+   */
+  installsAreAccess = false,
+): AccessDraft {
+  if (installsAreAccess) return { mode: "specific", agentIds: new Set(install.agentIds) };
   if (!isPersonalSignIn || draft.mode !== "all") return draft;
   return { mode: "specific", agentIds: new Set(install.agentIds) };
 }

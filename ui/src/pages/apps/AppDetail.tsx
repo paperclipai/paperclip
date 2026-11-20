@@ -316,6 +316,21 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     && currentUserId
     && connection.createdByUserId === currentUserId,
   );
+  const managesRemoteMcpAccess = isRemoteMcpConnectorMethod(connection?.config?.sourceTemplateKey, connection?.config?.connectionMethodKey);
+  // On an ordinary tool connection the agent picker IS the install: an agent only gets a connection's tools
+  // with an explicit per-agent install row (a permission binding does not turn a default-MCP agent on), so
+  // choosing an agent installs it and clearing it uninstalls it. The owner of a personal default-MCP instance
+  // also manages installs directly through this picker, while non-owners, AI connections, and remote-MCP
+  // connections manage installs elsewhere.
+  const pickerInstallsAgents =
+    connection?.connectionPurpose !== "ai"
+    && !managesRemoteMcpAccess
+    && (!isPersonal || isPersonalOwner)
+    && managedDefaultMcpKind(connection?.config) === null;
+  // A per-user sign-in connection (GitHub, Slack personal) cannot be shared with every agent, so the explicit
+  // per-agent installs are the whole truth about who has it. A stale company-wide permission binding left by the
+  // connect flow must not make the picker read as "all agents" with nothing selected.
+  const installsAreAccess = pickerInstallsAgents && connection?.credentialPolicy === "per_user";
   const access = useMemo(
     () => {
       // Personal instance owners unconditionally use authoritative install agentIds without falling back
@@ -327,6 +342,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
         accessFrom(connection?.connectionPurpose === "ai" ? undefined : profile, install),
         install,
         isPersonal,
+        installsAreAccess,
       );
     },
     [
@@ -337,18 +353,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       isPersonal,
     ],
   );
-  const managesRemoteMcpAccess = isRemoteMcpConnectorMethod(connection?.config?.sourceTemplateKey, connection?.config?.connectionMethodKey);
   const agents = agentsQuery.data ?? [];
-  // On an ordinary tool connection the agent picker IS the install: an agent only gets a connection's tools
-  // with an explicit per-agent install row (a permission binding does not turn a default-MCP agent on), so
-  // choosing an agent installs it and clearing it uninstalls it. The owner of a personal default-MCP instance
-  // also manages installs directly through this picker, while non-owners, AI connections, and remote-MCP
-  // connections manage installs elsewhere.
-  const pickerInstallsAgents =
-    connection?.connectionPurpose !== "ai"
-    && !managesRemoteMcpAccess
-    && (!isPersonal || isPersonalOwner)
-    && managedDefaultMcpKind(connection?.config) === null;
   const disconnectRemote = useMutation({
     mutationFn: () => toolsApi.archiveConnection(connectionId),
     onSuccess: () => {
