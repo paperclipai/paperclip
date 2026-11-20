@@ -122,6 +122,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       errorCode: "process_lost",
       nativeIssueId: randomUUID(),
       contextSnapshot: null,
+      createdAt: new Date(),
       ...overrides,
     } as unknown as typeof heartbeatRuns.$inferSelect;
   }
@@ -530,12 +531,6 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(3);
   });
 
-  /**
-   * The persisted shape after the runner interrupts a turn at its tool-result
-   * receipt limit and the native finalizer schedules the fresh-session
-   * continuation. The runner's stop has no recorded request, so the run's
-   * cancellation provenance stays `unknown` and unexpected.
-   */
   async function nativeToolReceiptLimitStop(input: {
     run?: Partial<typeof heartbeatRuns.$inferSelect>;
     retry?: Partial<typeof heartbeatRuns.$inferInsert> | null;
@@ -597,7 +592,6 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     const run = await nativeToolReceiptLimitStop();
     await reportRunFailure(db, run, { phase: "setup" });
     const select = db.select.bind(db);
-    // The agent lookup succeeds; the continuation read fails.
     const spy = vi.spyOn(db, "select").mockImplementationOnce(select as typeof db.select)
       .mockImplementation(() => { throw new Error("fixture continuation read failed"); });
     try {

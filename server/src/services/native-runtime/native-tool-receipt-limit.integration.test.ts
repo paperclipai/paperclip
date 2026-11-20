@@ -51,7 +51,6 @@ describe("native turn stopped at its tool receipt limit", () => {
     await db.insert(agents).values({ id: agentId, companyId, name: "Receipt worker", status: "active", adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: "test-model" } });
   });
   afterAll(async () => { vi.unstubAllEnvs(); await temporary?.cleanup(); });
-  /** Sentry run-failure reports the real finalizer sent for one run. */
   async function sentryReports(runId: string) {
     await waitForPendingRunFailureReports();
     return sentry.captureRunFailure.mock.calls.filter(([event]) => event.runId === runId);
@@ -126,7 +125,6 @@ describe("native turn stopped at its tool receipt limit", () => {
       contextSnapshot: { issueId, forceFreshSession: true, livenessContinuationSourceRunId: runId,
         livenessContinuationReason: NATIVE_TOOL_RECEIPT_LIMIT_CODE, livenessContinuationInstruction: NATIVE_TOOL_RECEIPT_LIMIT_HINT } });
     expect(retry!.contextSnapshot).not.toHaveProperty("wakeCommentId");
-    // The continuation owns recovery, so the runner's unrecorded stop is not a Sentry failure.
     expect(await sentryReports(runId)).toHaveLength(0);
     expect(retry!.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_DELAY_MS);
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
@@ -183,7 +181,6 @@ describe("native turn stopped at its tool receipt limit", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
     expect(decision).toMatchObject({ reasonCode: "cancellation_run_only" });
-    // Without a continuation the unexplained stop still reaches Sentry.
     expect(await sentryReports(runId)).toEqual([[expect.objectContaining({ runStatus: "cancelled" })]]);
   });
 

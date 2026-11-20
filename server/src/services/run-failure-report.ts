@@ -287,12 +287,6 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
  * capacity failures have no automatic retry and stay reportable. The retry
  * carries the task in its context, so the company/context-issue index bounds
  * the read to that task's runs created since this one.
- *
- * The runner also interrupts a turn that holds too many tool results, and the
- * finalizer continues the task in a fresh session. That runner stop has no
- * recorded request, so a cancelled run's provenance stays `unknown`. Its
- * successor is the same proof. Exhausted continuations have no successor and
- * stay reportable.
  */
 function scheduledNativeRetryReason(run: HeartbeatRun, options: RunFailureReportOptions): string | null {
   if (run.runtimeMode !== "native" || run.nativeIssueId == null || options.phase === "setup" || run.signal != null) return null;
