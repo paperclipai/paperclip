@@ -63,25 +63,36 @@ export function expectedFinalStatus(record: TaskRecord): string {
   return record.plan.workload === "G1" && g1Decision(record.plan.nonce) === "reject" ? "cancelled" : "done";
 }
 
-export function firstRun(record: TaskRecord): NonNullable<TaskSample["runs"]>[number] | null {
-  const latest = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
+type TaskRun = NonNullable<TaskSample["runs"]>[number];
+export type CreditedRun = { run: TaskRun; kind: "first run" | "follow-up run" };
+
+function boardCommentIds(record: TaskRecord): Set<string> {
+  return new Set([record.followUp?.commentId, record.stagingMix?.followUp?.commentId, ...(record.stagingMix?.afterEndFollowUps ?? []).map(entry => entry.commentId)]
+    .filter((id): id is string => typeof id === "string" && id.length > 0));
+}
+
+export function creditedRuns(record: TaskRecord): CreditedRun[] {
+  const latest = new Map<string, TaskRun>();
   for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
-  const first = [...latest.values()].filter(run => Number.isFinite(ms(run.createdAt)))
-    .sort((a, b) => ms(a.createdAt) - ms(b.createdAt))[0];
-  return first && !first.retryOfRunId ? first : null;
+  const runs = [...latest.values()].filter(run => Number.isFinite(ms(run.createdAt))).sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
+  const credited: CreditedRun[] = runs[0] && !runs[0].retryOfRunId ? [{ run: runs[0], kind: "first run" }] : [];
+  for (const commentId of boardCommentIds(record)) {
+    const index = runs.findIndex(run => (run.wakeCommentIds ?? []).includes(commentId));
+    const run = runs[index];
+    const previous = runs[index - 1];
+    if (!run || !previous || run.retryOfRunId || previous.status !== "succeeded" || !(ms(previous.finishedAt) <= ms(run.createdAt))) continue;
+    if (!credited.some(entry => entry.run.id === run.id)) credited.push({ run, kind: "follow-up run" });
+  }
+  return credited;
 }
 
-export function firstRunQueuedMs(record: TaskRecord, now: number): number {
-  const first = firstRun(record);
-  return first && first.status === "queued" && !first.startedAt ? Math.max(0, now - ms(first.createdAt)) : 0;
+export function creditedRunQueuedMs(record: TaskRecord, now: number): number {
+  return Math.max(0, ...creditedRuns(record).filter(({ run }) => run.status === "queued" && !run.startedAt).map(({ run }) => now - ms(run.createdAt)));
 }
 
-export function firstRunQueueWait(record: TaskRecord): { runId: string; createdAt: number; startedAt: number } | null {
-  const first = firstRun(record);
-  if (!first || !Number.isFinite(ms(first.startedAt))) return null;
-  const createdAt = ms(first.createdAt);
-  const startedAt = ms(first.startedAt);
-  return startedAt > createdAt ? { runId: first.id, createdAt, startedAt } : null;
+export function creditedQueueWaits(record: TaskRecord): Array<{ runId: string; createdAt: number; startedAt: number }> {
+  return creditedRuns(record).map(({ run }) => ({ runId: run.id, createdAt: ms(run.createdAt), startedAt: ms(run.startedAt) }))
+    .filter(wait => Number.isFinite(wait.startedAt) && wait.startedAt > wait.createdAt);
 }
 
 function faultOverlapMs(faults: readonly FaultReceipt[], from: number, to: number): number {
@@ -105,16 +116,23 @@ export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly F
   const took = (record.restAt ?? Number.POSITIVE_INFINITY) - record.createdAt!;
   const seconds = (value: number) => Math.round(value / 1000);
   if (took <= base) return { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(base)}s)` };
-  const first = firstRun(record);
-  const wait = firstRunQueueWait(record);
-  const fairness: QueueFairness | null = wait ? queueWait(wait.runId, wait.createdAt, wait.startedAt, faults.map(faultWindow))
-    : first && !first.startedAt ? { verdict: "unproven", reason: `first run ${first.id} never started` } : null;
-  if (fairness?.verdict === "unfair") {
-    return { verdict: "fail", detail: `unfair_queue_wait ${fairness.reason}; done ${seconds(took)}s > ${seconds(base)}s without queue credit` };
+  const waits = new Map(creditedQueueWaits(record).map(wait => [wait.runId, wait]));
+  const proofs = creditedRuns(record).flatMap(({ run, kind }): Array<{ fairness: QueueFairness; credit: number }> => {
+    const wait = waits.get(run.id);
+    if (wait) {
+      return [{ fairness: queueWait(wait.runId, wait.createdAt, wait.startedAt, faults.map(faultWindow)),
+        credit: Math.max(0, wait.startedAt - wait.createdAt - faultOverlapMs(faults, wait.createdAt, wait.startedAt)) }];
+    }
+    return run.startedAt ? [] : [{ fairness: { verdict: "unproven", reason: `${kind} ${run.id} never started` }, credit: 0 }];
+  });
+  const unfair = proofs.map(proof => proof.fairness).find(fairness => fairness.verdict === "unfair");
+  if (unfair && unfair.verdict === "unfair") {
+    return { verdict: "fail", detail: `unfair_queue_wait ${unfair.reason}; done ${seconds(took)}s > ${seconds(base)}s without queue credit` };
   }
-  const credit = wait && fairness?.verdict === "fair" ? Math.max(0, wait.startedAt - wait.createdAt - faultOverlapMs(faults, wait.createdAt, wait.startedAt)) : 0;
+  const credit = proofs.reduce((total, proof) => total + (proof.fairness.verdict === "fair" ? proof.credit : 0), 0);
+  const unproven = proofs.flatMap(({ fairness }) => fairness.verdict === "unproven" ? [fairness.reason] : []);
   const allowed = base + credit;
-  const note = credit ? ` incl. ${seconds(credit)}s fair queue wait` : fairness?.verdict === "unproven" ? ` (queue wait not credited: ${fairness.reason})` : "";
+  const note = `${credit ? ` incl. ${seconds(credit)}s fair queue wait` : ""}${unproven.length ? ` (queue wait not credited: ${unproven.join("; ")})` : ""}`;
   return took <= allowed
     ? { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(allowed)}s${note})` }
     : { verdict: "fail", detail: `done_too_late ${seconds(took)}s > ${seconds(allowed)}s${note}` };

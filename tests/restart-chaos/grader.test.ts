@@ -315,6 +315,96 @@ describe("R1 fair queue wait credit", () => {
   });
 });
 
+describe("R1 follow-up queue wait credit", () => {
+  const BUDGET = 2_010_000;
+  const WAIT = 1_558_000;
+  type SlotRun = AgentSlots["runs"][number];
+  const slotRun = (runId: string, created: number, started: number, finished: number | null, extra: Partial<SlotRun> = {}): SlotRun =>
+    ({ runId, agentId: "agent-oc", createdAt: T0 + created, invocationSource: "assignment", retryOfRunId: null, startedAt: T0 + started,
+      finishedAt: finished === null ? null : T0 + finished, ...extra });
+  const shape = (firstWait = 0) => {
+    const firstStart = 50 + firstWait;
+    const firstEnd = firstStart + 666_000;
+    const queuedAt = firstEnd + 50;
+    const startedAt = queuedAt + WAIT;
+    return { firstStart, firstEnd, queuedAt, startedAt };
+  };
+  const agent = (firstWait = 0, followUp: Partial<SlotRun> = {}): SlotRun[] => {
+    const { firstStart, firstEnd, queuedAt, startedAt } = shape(firstWait);
+    return [
+      slotRun("r1", 50, firstStart, firstEnd),
+      slotRun("r2", queuedAt, startedAt, null, { invocationSource: "automation", ...followUp }),
+      slotRun("o1", -900_000, -800_000, firstStart),
+      slotRun("o2", -900_000, -700_000, 1_400_000 + firstWait),
+      slotRun("o3", -900_000, -600_000, startedAt),
+      slotRun("o4", -900_000, -500_000, 600_000 + firstWait),
+      slotRun("o5", 10, 600_000 + firstWait, 2_400_000 + firstWait),
+      slotRun("o6", 20, firstEnd, 2_500_000 + firstWait),
+      slotRun("o7", 30, 1_400_000 + firstWait, 2_600_000 + firstWait),
+    ];
+  };
+  const slots = (runs: SlotRun[]): AgentSlots => ({ agents: [{ agentId: "agent-oc", maxConcurrentRuns: 4 }], runs });
+  const followUpTask = (tookMs: number, firstWait = 0, follow: Partial<RunSample> = {}, first: Partial<RunSample> = {}) => {
+    const { firstStart, firstEnd, queuedAt, startedAt } = shape(firstWait);
+    const r1 = run("r1", "succeeded", 50, firstEnd, { startedAt: iso(firstStart), ...first });
+    const r2 = (status: string, started: number | null, finished: number | null) =>
+      run("r2", status, queuedAt, finished, { startedAt: started === null ? null : iso(started), wakeCommentIds: ["c1"], ...follow });
+    return record([
+      sample(queuedAt + 5_000, "in_progress", [r1, r2("queued", null, null)]),
+      sample(startedAt + 5_000, "in_progress", [r1, r2("running", startedAt, null)]),
+      sample(tookMs, "done", [r1, r2("succeeded", startedAt, tookMs - 1_000)]),
+    ], { restAt: T0 + tookMs, faultIds: [], plan: { ...record([]).plan, workload: "SM" },
+      stagingMix: { followUp: { at: T0 + 200_000, commentId: "c1", duringRun: true, inOverlap: false, error: null } } });
+  };
+  const t007 = () => followUpTask(2_310_000);
+
+  it("credits a fair 1,558 s follow-up queue wait behind the agent's older assignments", () => {
+    expect(gradeR1(t007(), BUDGET, [])).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no agent slot evidence for r2)" });
+    expect(gradeR1(t007(), BUDGET, [], queueWaitFairnessFrom(slots(agent()))))
+      .toEqual({ verdict: "pass", detail: "done after 2310s (allowed 3568s incl. 1558s fair queue wait)" });
+  });
+
+  it("fails as unfair when a newer fresh assignment started ahead of the follow-up", () => {
+    const runs = agent().map(entry => entry.runId === "o7" ? { ...entry, createdAt: T0 + 700_000 } : entry);
+    const graded = gradeR1(t007(), BUDGET, [], queueWaitFairnessFrom(slots(runs)));
+    expect(graded.verdict).toBe("fail");
+    expect(graded.detail).toMatch(/^unfair_queue_wait assignment run o7 created .* ahead of r2; done 2310s > 2010s without queue credit$/);
+    const task = gradeTask(t007(), [], BUDGET, oracle(), undefined, { queueWait: queueWaitFairnessFrom(slots(runs)) });
+    expect(task.signature).toMatch(/^R1:unfair_queue_wait/);
+  });
+
+  it("fails as unfair when a slot sat idle while the follow-up was queued", () => {
+    const runs = agent().map(entry => entry.runId === "o7" ? { ...entry, startedAt: T0 + 1_431_000 } : entry);
+    const graded = gradeR1(t007(), BUDGET, [], queueWaitFairnessFrom(slots(runs)));
+    expect(graded.verdict).toBe("fail");
+    expect(graded.detail).toContain(`idle slot from ${iso(1_400_000)} to ${iso(1_431_000)} while r2 was queued`);
+  });
+
+  it("does not credit the wait of a retry or a recovery run", () => {
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    const retry = gradeR1(followUpTask(2_310_000, 0, { retryOfRunId: "r1" }), BUDGET, [], fairness);
+    expect(retry).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+    const afterInterruption = gradeR1(followUpTask(2_310_000, 0, {}, { status: "failed", errorCode: "process_lost" }), BUDGET, [], fairness);
+    expect(afterInterruption).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+    const continuation = gradeR1(followUpTask(2_310_000, 0, { wakeCommentIds: [] }), BUDGET, [], fairness);
+    expect(continuation).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+  });
+
+  it("does not credit outage time inside the follow-up's wait", () => {
+    const { queuedAt } = shape();
+    const outage: FaultReceipt = { ...fault, startedAt: T0 + queuedAt + 100_000, readyAt: T0 + queuedAt + 200_000 };
+    expect(gradeR1(followUpTask(2_500_000), BUDGET, [outage], queueWaitFairnessFrom(slots(agent()))))
+      .toEqual({ verdict: "pass", detail: "done after 2500s (allowed 3568s incl. 1458s fair queue wait)" });
+  });
+
+  it("sums the fair waits of the first run and a follow-up", () => {
+    const graded = gradeR1(followUpTask(2_610_000, 300_000), BUDGET, [], queueWaitFairnessFrom(slots(agent(300_000))));
+    expect(graded).toEqual({ verdict: "pass", detail: "done after 2610s (allowed 3868s incl. 1858s fair queue wait)" });
+    const tooLate = gradeR1(followUpTask(3_900_000, 300_000), BUDGET, [], queueWaitFairnessFrom(slots(agent(300_000))));
+    expect(tooLate).toEqual({ verdict: "fail", detail: "done_too_late 3900s > 3868s incl. 1858s fair queue wait" });
+  });
+});
+
 describe("T-oracles", () => {
   it("grades M1 delegation: two done subtasks, part 1 delegated, and a summary of both", () => {
     const agents = { self: { id: "self", name: "Chaos codex" }, other: { id: "other", name: "Chaos claude" } };
