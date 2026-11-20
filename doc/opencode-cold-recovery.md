@@ -49,7 +49,8 @@ not finished after 90 seconds, one more waiting admission starts a capture from
 its own sandbox, because the copy speed out of a sandbox differs from one
 sandbox to the next. At most two captures run at once for one company and
 manifest; a capture counts until its copy out of the sandbox ends. A run that
-finds a saved object it cannot reuse starts its own capture at once. The first capture that saves a ready object ends the wait
+finds a saved object it cannot reuse starts its own capture as soon as a slot
+is free, without waiting for the 90 seconds. The first capture that saves a ready object ends the wait
 for every admission: an admission whose own capture is still copying reuses that
 object and abandons its capture, and an admission whose own capture fails
 reuses it too. An abandoned capture never uploads or publishes. Its copy out of
