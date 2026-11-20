@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authorizeOperatorDialog, authorizeOperatorReply, authorizeSendText } from "../src/send.js";
+import { authorizeDialogForActor, authorizeOperatorDialog, authorizeOperatorReply, authorizeSendText } from "../src/send.js";
 import { AGENT_ID, COMPANY_ID, OTHER_AGENT_ID, OTHER_COMPANY_ID } from "./support.js";
 import type { TelegramConnection } from "../src/types.js";
 
@@ -11,6 +11,8 @@ const connection: TelegramConnection = {
   assignedAgentId: AGENT_ID,
   incomingMode: "dialog_task",
   paused: false,
+  acceptUnlistedSenders: false,
+  allowedPeerIds: [],
   sessionSecretId: "secret-1",
   live: true,
 };
@@ -95,5 +97,31 @@ describe("send authorization", () => {
       companyId: COMPANY_ID,
       issueOriginId: "1001:2002",
     })).toMatchObject({ ok: true, accountId: "1001", peerId: "2002" });
+  });
+
+  it("checks a forward target with the same actor as the source", () => {
+    const other: TelegramConnection = {
+      ...connection,
+      telegramUserId: "2002",
+      assignedAgentId: OTHER_AGENT_ID,
+    };
+    expect(authorizeDialogForActor([connection, other], {
+      companyId: COMPANY_ID,
+      board: false,
+      agentId: AGENT_ID,
+      issueOriginId: "2002:9",
+    }).ok).toBe(false);
+    expect(authorizeDialogForActor([connection, other], {
+      companyId: COMPANY_ID,
+      board: false,
+      agentId: AGENT_ID,
+      issueOriginId: "1001:3003",
+    })).toMatchObject({ ok: true, accountId: "1001", peerId: "3003" });
+    expect(authorizeDialogForActor([connection, other], {
+      companyId: COMPANY_ID,
+      board: true,
+      agentId: "",
+      issueOriginId: "2002:9",
+    })).toMatchObject({ ok: true, accountId: "2002", peerId: "9" });
   });
 });

@@ -25,6 +25,9 @@ export type TelegramConnection = {
   assignedAgentId: string | null;
   incomingMode: IncomingMode;
   paused: boolean;
+  /** Board opt-in. Absent stored values stay closed. */
+  acceptUnlistedSenders: boolean;
+  allowedPeerIds: string[];
   sessionSecretId: string;
   sessionConfigPath?: string;
   live: boolean;
@@ -34,6 +37,8 @@ export type TelegramConnectionPatch = {
   assignedAgentId?: string | null;
   incomingMode?: IncomingMode;
   paused?: boolean;
+  acceptUnlistedSenders?: boolean;
+  allowedPeerIds?: string[];
 };
 
 export type InboundAttachment = {
@@ -63,6 +68,9 @@ export type InboundDirectMessage = {
   isGroup: boolean;
   isOutgoing: boolean;
   attachments: InboundAttachment[];
+  /** Present when the Telegram update names a sender. It must be the dialog peer. */
+  senderId?: string;
+  senderBot?: boolean;
   forward?: InboundForward | null;
   /** Set when media was refused before download so the caption can keep the reason. */
   mediaSkipped?: boolean;

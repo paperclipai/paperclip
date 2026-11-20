@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { upsertConnection } from "../src/connections.js";
 import { DIALOG_ORIGIN_KIND, PLUGIN_ID, TOOL_SEND_TEXT } from "../src/constants.js";
 import { containsSecretMaterial } from "../src/redaction.js";
 import { TelegramConnectPage } from "../src/ui/index.js";
@@ -121,6 +122,7 @@ describe("pc-telegram plugin", () => {
       companyId: COMPANY_ID,
       telegramUserId: "1001",
       assignedAgentId: AGENT_ID,
+      acceptUnlistedSenders: true,
     }, boardUser);
     expect(telegram.startQrLoginCount).toBe(1);
 
@@ -153,6 +155,7 @@ describe("pc-telegram plugin", () => {
       companyId: COMPANY_ID,
       telegramUserId: "1001",
       assignedAgentId: AGENT_ID,
+      acceptUnlistedSenders: true,
     }, boardUser);
     await telegram.deliver(inboundMessage());
     const [dialog] = await harness.ctx.issues.list({ companyId: COMPANY_ID, originKind: DIALOG_ORIGIN_KIND });
@@ -228,6 +231,7 @@ describe("pc-telegram plugin", () => {
       companyId: COMPANY_ID,
       telegramUserId: "1001",
       assignedAgentId: AGENT_ID,
+      acceptUnlistedSenders: true,
     }, boardUser);
     await telegram.deliver(inboundMessage());
     const [dialog] = await harness.ctx.issues.list({ companyId: COMPANY_ID, originKind: DIALOG_ORIGIN_KIND });
@@ -299,6 +303,35 @@ describe("pc-telegram plugin", () => {
       op: "delete",
       messageIds: ["18"],
     }, boardUser);
+    await upsertConnection(harness.ctx, {
+      companyId: COMPANY_ID,
+      account: { telegramUserId: "2002", username: null, displayName: "Other desk" },
+      sessionSecretId: "secret-2",
+      assignedAgentId: OTHER_AGENT_ID,
+    });
+    const foreign = await harness.ctx.issues.create({
+      companyId: COMPANY_ID,
+      title: "Telegram · Foreign",
+      description: "foreign",
+      status: "todo",
+      originKind: DIALOG_ORIGIN_KIND,
+      originId: "2002:9",
+    });
+    const foreignRef = foreign.identifier || foreign.id;
+    await expect(harness.performAction("chat-message-menu", {
+      companyId: COMPANY_ID,
+      issueRef,
+      op: "forward",
+      messageIds: ["19"],
+      targetIssueRef: foreignRef,
+    }, assigned)).rejects.toThrow(/cannot send/);
+    await expect(harness.performAction("chat-message-menu", {
+      companyId: COMPANY_ID,
+      issueRef,
+      op: "forward",
+      messageIds: ["19"],
+      targetIssueRef: foreignRef,
+    }, boardUser)).rejects.toThrow(/not connected/);
     expect(telegram.sent.map((row) => row.text)).toEqual(["From the board", "From the agent"]);
     expect(telegram.actions.map((row) => row.op)).toEqual(["delete", "forward", "delete"]);
   });

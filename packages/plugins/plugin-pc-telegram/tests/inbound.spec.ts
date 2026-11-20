@@ -5,6 +5,8 @@ import {
   INBOUND_COMPANY_QUOTA_BYTES,
   INBOUND_PEER_QUOTA_BYTES,
   admitInboundMedia,
+  admitInboundMessage,
+  inboundMediaAllowed,
   ingestInboundMessage,
   shouldAcceptInbound,
   shouldFetchInboundMedia,
@@ -29,6 +31,8 @@ const connection: TelegramConnection = {
   assignedAgentId: AGENT_ID,
   incomingMode: "dialog_task",
   paused: false,
+  acceptUnlistedSenders: true,
+  allowedPeerIds: [],
   sessionSecretId: "secret-1",
   live: true,
 };
@@ -106,7 +110,7 @@ describe("inbound issue mapping", () => {
   it("stops one peer at the peer cap and the next peer at the company cap", () => {
     const file = 4 * 1024 * 1024;
     const now = 1_700_000_000_000;
-    let ledger: { entries: Array<{ peerId: string; bytes: number; at: number }> } = { entries: [] };
+    let ledger: { entries: Array<{ peerId: string; bytes: number; at: number }>; messages: Array<{ peerId: string; at: number }> } = { entries: [], messages: [] };
     for (let index = 0; index < INBOUND_PEER_QUOTA_BYTES / file; index += 1) {
       const decision = admitInboundMedia(ledger, { peerId: "2002", bytes: file, now });
       expect(decision.ok).toBe(true);
@@ -186,6 +190,34 @@ describe("inbound issue mapping", () => {
     expect(downloadMedia).not.toHaveBeenCalled();
     expect(caption?.attachments).toEqual([]);
     expect(caption?.mediaSkipped).toBe(true);
+    const bot = await assembleInboundMessage({
+      isPrivate: true,
+      id: 7,
+      message: "I am a bot",
+      sender: { id: 2002, firstName: "Sam", bot: true },
+      media: { className: "MessageMediaDocument", size: 4 },
+      downloadMedia,
+    }, {
+      companyId: COMPANY_ID,
+      accountId: "1001",
+      allowMedia: async () => true,
+    });
+    expect(bot).toBeNull();
+    const mismatch = await assembleInboundMessage({
+      isPrivate: true,
+      id: 8,
+      message: "other person",
+      peerId: 2002,
+      sender: { id: 9, firstName: "Other" },
+      media: { className: "MessageMediaDocument", size: 4 },
+      downloadMedia,
+    }, {
+      companyId: COMPANY_ID,
+      accountId: "1001",
+      allowMedia: async () => true,
+    });
+    expect(mismatch).toBeNull();
+    expect(downloadMedia).not.toHaveBeenCalled();
     const harness = createTestHarness({ manifest });
     const issue = await ingestInboundMessage(harness.ctx, connection, caption!);
     expect(issue?.description).toContain("please check this screenshot");
@@ -225,5 +257,98 @@ describe("inbound issue mapping", () => {
     expect(shouldAcceptInbound({ ...connection, paused: true }, inboundMessage())).toBe(false);
     expect(shouldAcceptInbound(connection, inboundMessage({ isGroup: true, isPrivate: false }))).toBe(false);
     expect(shouldAcceptInbound(connection, inboundMessage({ isOutgoing: true }))).toBe(false);
+  });
+
+  it("drops a bot, a mismatched sender, an unlisted peer, and a non-user id", async () => {
+    const harness = createTestHarness({ manifest });
+    const closed = { ...connection, acceptUnlistedSenders: false, allowedPeerIds: [] };
+    expect(await ingestInboundMessage(harness.ctx, closed, inboundMessage())).toBeNull();
+    const listed = await ingestInboundMessage(
+      harness.ctx,
+      { ...closed, allowedPeerIds: ["2002"] },
+      inboundMessage(),
+    );
+    expect(listed?.originId).toBe("1001:2002");
+    expect(await ingestInboundMessage(harness.ctx, connection, inboundMessage({ senderBot: true }))).toBeNull();
+    expect(await ingestInboundMessage(harness.ctx, connection, inboundMessage({ senderId: "9" }))).toBeNull();
+    expect(await ingestInboundMessage(harness.ctx, connection, inboundMessage({ peerId: "abc" }))).toBeNull();
+    const issues = await harness.ctx.issues.list({ companyId: COMPANY_ID, originKind: DIALOG_ORIGIN_KIND });
+    expect(issues).toHaveLength(1);
+  });
+
+  it("keeps the message count when a file is admitted", () => {
+    const now = 1_700_000_000_000;
+    const withMessage = admitInboundMessage({ entries: [], messages: [] }, { peerId: "2002", now });
+    const withFile = admitInboundMedia(withMessage.ledger, { peerId: "2002", bytes: 10, now });
+    expect(withFile.ok).toBe(true);
+    expect(withFile.ledger.messages).toEqual([{ peerId: "2002", at: now }]);
+  });
+
+  it("stops the 21st message in the same minute before a comment", async () => {
+    const now = 1_700_000_000_000;
+    const spy = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const harness = createTestHarness({ manifest });
+      const first = await ingestInboundMessage(harness.ctx, connection, inboundMessage({ messageId: "1" }));
+      expect(first).not.toBeNull();
+      for (let index = 2; index <= 20; index += 1) {
+        const issue = await ingestInboundMessage(
+          harness.ctx,
+          connection,
+          inboundMessage({ messageId: String(index), text: `m${index}` }),
+        );
+        expect(issue?.id).toBe(first?.id);
+      }
+      const comments = await harness.ctx.issues.listComments(first!.id, COMPANY_ID);
+      expect(comments).toHaveLength(19);
+      expect(await ingestInboundMessage(
+        harness.ctx,
+        connection,
+        inboundMessage({ messageId: "21", text: "too many" }),
+      )).toBeNull();
+      const after = await harness.ctx.issues.listComments(first!.id, COMPANY_ID);
+      expect(after).toHaveLength(19);
+      expect(after.some((comment) => comment.body.includes("too many"))).toBe(false);
+      const stored = harness.getState({
+        scopeKind: "company",
+        scopeId: COMPANY_ID,
+        namespace: "inbound-quota",
+        stateKey: "usage",
+      }) as { messages?: unknown[] };
+      expect(stored.messages).toHaveLength(20);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not download media when the message cap is already full", async () => {
+    const harness = createTestHarness({ manifest });
+    const now = Date.now();
+    await harness.ctx.state.set({
+      scopeKind: "company",
+      scopeId: COMPANY_ID,
+      namespace: "inbound-quota",
+      stateKey: "usage",
+    }, {
+      entries: [],
+      messages: Array.from({ length: 20 }, () => ({ peerId: "2002", at: now })),
+    });
+    const downloadMedia = vi.fn(async () => Buffer.from("nope"));
+    const message = await assembleInboundMessage({
+      isPrivate: true,
+      id: 9,
+      message: "again",
+      sender: { id: 2002, firstName: "Sam" },
+      media: { className: "MessageMediaDocument", size: 4 },
+      downloadMedia,
+    }, {
+      companyId: COMPANY_ID,
+      accountId: "1001",
+      allowMedia: ({ peerId, declaredBytes }) => inboundMediaAllowed(harness.ctx, connection, peerId, declaredBytes),
+    });
+    expect(downloadMedia).not.toHaveBeenCalled();
+    expect(message?.text).toBe("again");
+    expect(message?.mediaSkipped).toBe(true);
+    expect(message?.attachments).toEqual([]);
   });
 });

@@ -128,7 +128,7 @@ export function InboxMenu(props: {
     extra: { emoji?: string; revoke?: boolean; targetIssueRef?: string },
   ) => Promise<void>;
   reactions: Record<string, string>;
-  chats: { data?: { chats?: TelegramChatRow[] } | null };
+  chats: TelegramChatRow[];
   setReply: Dispatch<SetStateAction<{ id: string; text: string } | null>>;
   composerRef: RefObject<HTMLTextAreaElement | null>;
   setSelecting: Dispatch<SetStateAction<boolean>>;
@@ -201,7 +201,7 @@ export function InboxMenu(props: {
                 </>
               ) : menu.page === "forward" ? (
                 <div className="tg-forward-list">
-                  {(chats.data?.chats ?? []).map((chat) => (
+                  {chats.map((chat) => (
                     <button
                       key={chat.issueId}
                       type="button"

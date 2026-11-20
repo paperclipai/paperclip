@@ -18,6 +18,15 @@ export type PublicConnection = {
   paused: boolean;
   live: boolean;
   hasSession: boolean;
+  acceptUnlistedSenders?: boolean;
+  allowedPeerIds?: string[];
+};
+
+type ConnectionCardPatch = {
+  assignedAgentId?: string | null;
+  paused?: boolean;
+  acceptUnlistedSenders?: boolean;
+  allowedPeerIds?: string[];
 };
 
 export type OverviewData = {
@@ -418,6 +427,14 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
                   assignedAgentId: patch.assignedAgentId,
                 });
               }
+              if ("acceptUnlistedSenders" in patch || "allowedPeerIds" in patch) {
+                await updateConnection({
+                  companyId,
+                  telegramUserId: connection.telegramUserId,
+                  ...("acceptUnlistedSenders" in patch ? { acceptUnlistedSenders: patch.acceptUnlistedSenders } : {}),
+                  ...("allowedPeerIds" in patch ? { allowedPeerIds: patch.allowedPeerIds } : {}),
+                });
+              }
               if ("paused" in patch) {
                 await setPaused({
                   companyId,
@@ -443,20 +460,30 @@ function ConnectionCard({
 }: {
   companyId: string | null;
   connection: PublicConnection;
-  onChange: (patch: { assignedAgentId?: string | null; paused?: boolean }) => Promise<void>;
+  onChange: (patch: ConnectionCardPatch) => Promise<void>;
 }) {
   const [cardError, setCardError] = useState<string | null>(null);
+  const allowedText = (connection.allowedPeerIds ?? []).join(" ");
+  const [peerDraft, setPeerDraft] = useState(allowedText);
+  useEffect(() => {
+    setPeerDraft(allowedText);
+  }, [allowedText]);
   const assigneeValue = useMemo(
     () => (connection.assignedAgentId ? `agent:${connection.assignedAgentId}` : ""),
     [connection.assignedAgentId],
   );
-  async function apply(patch: { assignedAgentId?: string | null; paused?: boolean }) {
+  async function apply(patch: ConnectionCardPatch) {
     setCardError(null);
     try {
       await onChange(patch);
     } catch (err) {
       setCardError(errorMessage(err));
     }
+  }
+  function commitPeers() {
+    const next = peerDraft.split(/[\s,]+/).filter((item) => item.length > 0);
+    if (next.join(" ") === allowedText) return;
+    void apply({ allowedPeerIds: next });
   }
   return (
     <div style={{ ...card, padding: "calc(var(--spacing) * 3)" }}>
@@ -467,6 +494,32 @@ function ConnectionCard({
         {connection.paused ? <StatusBadge label={uiText("Paused")} status="pending" /> : null}
       </div>
       <div style={muted}>{uiText("Incoming mode: dialog = task")}</div>
+      <label style={row}>
+        <input
+          type="checkbox"
+          checked={Boolean(connection.acceptUnlistedSenders)}
+          onChange={(event) => {
+            void apply({ acceptUnlistedSenders: event.target.checked });
+          }}
+        />
+        {uiText("Accept private chats from anyone")}
+      </label>
+      <label style={{ display: "grid", gap: "calc(var(--spacing) * 1.5)" }}>
+        {uiText("Allowed user ids")}
+        <input
+          value={peerDraft}
+          style={input}
+          spellCheck={false}
+          onChange={(event) => setPeerDraft(event.target.value)}
+          onBlur={() => commitPeers()}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            commitPeers();
+          }}
+        />
+        <span style={muted}>{uiText("One id per word. Other private chats stay closed.")}</span>
+      </label>
       <label style={{ display: "grid", gap: "calc(var(--spacing) * 1.5)" }}>
         {uiText("Answering agent")}
         <AssigneePicker

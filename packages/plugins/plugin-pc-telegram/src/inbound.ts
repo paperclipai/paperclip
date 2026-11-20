@@ -8,10 +8,32 @@ export const INBOUND_QUOTA_KEY = "usage";
 export const INBOUND_COMPANY_QUOTA_BYTES = 32 * 1024 * 1024;
 export const INBOUND_PEER_QUOTA_BYTES = 16 * 1024 * 1024;
 export const INBOUND_QUOTA_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const INBOUND_MINUTE_MS = 60 * 1000;
+export const INBOUND_PEER_MESSAGES_PER_MINUTE = 20;
+export const INBOUND_PEER_MESSAGES_PER_DAY = 200;
+export const INBOUND_COMPANY_MESSAGES_PER_MINUTE = 200;
+export const INBOUND_COMPANY_MESSAGES_PER_DAY = 2000;
+const USER_PEER_ID = /^[1-9]\d{0,15}$/;
 const QUOTA_NOTE = "Inbound media was skipped because the storage quota was reached.";
+
+export function directUserPeerId(value: string): boolean {
+  return USER_PEER_ID.test(value);
+}
+
+export function normalizeAllowedPeerIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !directUserPeerId(item) || ids.includes(item)) continue;
+    ids.push(item);
+    if (ids.length >= 200) break;
+  }
+  return ids;
+}
 
 export type InboundQuotaLedger = {
   entries: Array<{ peerId: string; bytes: number; at: number }>;
+  messages: Array<{ peerId: string; at: number }>;
 };
 
 export function dialogOriginId(accountId: string, peerId: string): string {
@@ -34,7 +56,17 @@ export function shouldAcceptInbound(connection: TelegramConnection, message: Inb
   if (connection.telegramUserId !== message.accountId) return false;
   if (connection.companyId !== message.companyId) return false;
   if (!message.isPrivate || message.isGroup || message.isOutgoing) return false;
-  return message.text.trim().length > 0 || message.attachments.length > 0;
+  if (message.text.trim().length === 0 && message.attachments.length === 0) return false;
+  return senderAllowed(connection, message);
+}
+
+/** A private user id, not a bot, and either listed or explicitly opted in. */
+export function senderAllowed(connection: TelegramConnection, message: InboundDirectMessage): boolean {
+  if (!directUserPeerId(message.peerId)) return false;
+  if (message.senderBot) return false;
+  if (message.senderId && message.senderId !== message.peerId) return false;
+  if (connection.acceptUnlistedSenders) return true;
+  return connection.allowedPeerIds.includes(message.peerId);
 }
 
 const PENDING_MEDIA: InboundAttachment = {
@@ -53,20 +85,80 @@ export function shouldFetchInboundMedia(connection: TelegramConnection, message:
 }
 
 export function readInboundQuota(value: unknown): InboundQuotaLedger {
-  if (!value || typeof value !== "object") return { entries: [] };
-  const raw = (value as { entries?: unknown }).entries;
-  if (!Array.isArray(raw)) return { entries: [] };
+  if (!value || typeof value !== "object") return { entries: [], messages: [] };
+  const record = value as { entries?: unknown; messages?: unknown };
   const entries: InboundQuotaLedger["entries"] = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as { peerId?: unknown; bytes?: unknown; at?: unknown };
-    const peerId = typeof record.peerId === "string" ? record.peerId : "";
-    const bytes = typeof record.bytes === "number" && Number.isFinite(record.bytes) ? record.bytes : 0;
-    const at = typeof record.at === "number" && Number.isFinite(record.at) ? record.at : 0;
-    if (!peerId || bytes <= 0 || at <= 0) continue;
-    entries.push({ peerId, bytes, at });
+  if (Array.isArray(record.entries)) {
+    for (const entry of record.entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const row = entry as { peerId?: unknown; bytes?: unknown; at?: unknown };
+      const peerId = typeof row.peerId === "string" ? row.peerId : "";
+      const bytes = typeof row.bytes === "number" && Number.isFinite(row.bytes) ? row.bytes : 0;
+      const at = typeof row.at === "number" && Number.isFinite(row.at) ? row.at : 0;
+      if (!peerId || bytes <= 0 || at <= 0) continue;
+      entries.push({ peerId, bytes, at });
+    }
   }
-  return { entries };
+  const messages: InboundQuotaLedger["messages"] = [];
+  if (Array.isArray(record.messages)) {
+    for (const entry of record.messages) {
+      if (!entry || typeof entry !== "object") continue;
+      const row = entry as { peerId?: unknown; at?: unknown };
+      const peerId = typeof row.peerId === "string" ? row.peerId : "";
+      const at = typeof row.at === "number" && Number.isFinite(row.at) ? row.at : 0;
+      if (!peerId || at <= 0) continue;
+      messages.push({ peerId, at });
+    }
+  }
+  return { entries, messages };
+}
+
+export function admitInboundMessage(
+  ledger: InboundQuotaLedger | null | undefined,
+  input: { peerId: string; now: number },
+  limits: {
+    peerPerMinute: number;
+    peerPerDay: number;
+    companyPerMinute: number;
+    companyPerDay: number;
+    minuteMs: number;
+    dayMs: number;
+  } = {
+    peerPerMinute: INBOUND_PEER_MESSAGES_PER_MINUTE,
+    peerPerDay: INBOUND_PEER_MESSAGES_PER_DAY,
+    companyPerMinute: INBOUND_COMPANY_MESSAGES_PER_MINUTE,
+    companyPerDay: INBOUND_COMPANY_MESSAGES_PER_DAY,
+    minuteMs: INBOUND_MINUTE_MS,
+    dayMs: INBOUND_QUOTA_WINDOW_MS,
+  },
+): { ok: boolean; ledger: InboundQuotaLedger } {
+  const dayCutoff = input.now - limits.dayMs;
+  const minuteCutoff = input.now - limits.minuteMs;
+  const next: InboundQuotaLedger = {
+    entries: (ledger?.entries ?? []).filter((entry) => entry.at >= dayCutoff),
+    messages: (ledger?.messages ?? []).filter((entry) => entry.at >= dayCutoff),
+  };
+  let peerDay = 0;
+  let peerMinute = 0;
+  let companyMinute = 0;
+  for (const entry of next.messages) {
+    if (entry.peerId === input.peerId) peerDay += 1;
+    if (entry.at < minuteCutoff) continue;
+    companyMinute += 1;
+    if (entry.peerId === input.peerId) peerMinute += 1;
+  }
+  if (
+    peerDay >= limits.peerPerDay
+    || next.messages.length >= limits.companyPerDay
+    || peerMinute >= limits.peerPerMinute
+    || companyMinute >= limits.companyPerMinute
+  ) {
+    return { ok: false, ledger: next };
+  }
+  return {
+    ok: true,
+    ledger: { ...next, messages: [...next.messages, { peerId: input.peerId, at: input.now }] },
+  };
 }
 
 export function admitInboundMedia(
@@ -80,7 +172,10 @@ export function admitInboundMedia(
 ): { ok: boolean; ledger: InboundQuotaLedger } {
   const cutoff = input.now - limits.windowMs;
   const entries = (ledger?.entries ?? []).filter((entry) => entry.at >= cutoff);
-  const next: InboundQuotaLedger = { entries };
+  const next: InboundQuotaLedger = {
+    entries,
+    messages: (ledger?.messages ?? []).filter((entry) => entry.at >= cutoff),
+  };
   if (input.bytes <= 0) return { ok: true, ledger: next };
   let companyUsed = 0;
   let peerUsed = 0;
@@ -93,7 +188,10 @@ export function admitInboundMedia(
   }
   return {
     ok: true,
-    ledger: { entries: [...entries, { peerId: input.peerId, bytes: input.bytes, at: input.now }] },
+    ledger: {
+      entries: [...entries, { peerId: input.peerId, bytes: input.bytes, at: input.now }],
+      messages: next.messages,
+    },
   };
 }
 
@@ -123,10 +221,13 @@ export async function inboundMediaAllowed(
       namespace: INBOUND_QUOTA_NAMESPACE,
       stateKey: INBOUND_QUOTA_KEY,
     });
-    return admitInboundMedia(readInboundQuota(stored), {
+    const ledger = readInboundQuota(stored);
+    const now = Date.now();
+    if (!admitInboundMessage(ledger, { peerId, now }).ok) return false;
+    return admitInboundMedia(ledger, {
       peerId,
       bytes: Math.max(1, declaredBytes),
-      now: Date.now(),
+      now,
     }).ok;
   } catch {
     return false;
@@ -256,13 +357,12 @@ function attachmentBytes(attachment: InboundAttachment): number {
   return Math.max(0, attachment.byteLength, attachment.bytes.byteLength);
 }
 
-async function reserveInboundAttachments(
+async function reserveInbound(
   ctx: PluginContext,
   companyId: string,
   peerId: string,
   attachments: InboundAttachment[],
-): Promise<{ accepted: InboundAttachment[]; skipped: boolean }> {
-  if (attachments.length === 0) return { accepted: [], skipped: false };
+): Promise<{ saved: boolean; accepted: InboundAttachment[]; skipped: boolean }> {
   return withDialogLock(`quota:${companyId}`, async () => {
     const key = {
       scopeKind: "company" as const,
@@ -270,21 +370,27 @@ async function reserveInboundAttachments(
       namespace: INBOUND_QUOTA_NAMESPACE,
       stateKey: INBOUND_QUOTA_KEY,
     };
+    const now = Date.now();
     let ledger = readInboundQuota(await ctx.state.get(key));
+    const message = admitInboundMessage(ledger, { peerId, now });
+    ledger = message.ledger;
+    if (!message.ok) {
+      await ctx.state.set(key, ledger);
+      return { saved: false, accepted: [], skipped: false };
+    }
     const accepted: InboundAttachment[] = [];
     let skipped = false;
-    const now = Date.now();
     for (const attachment of attachments) {
       const decision = admitInboundMedia(ledger, { peerId, bytes: attachmentBytes(attachment), now });
+      ledger = decision.ledger;
       if (!decision.ok) {
         skipped = true;
         continue;
       }
-      ledger = decision.ledger;
       accepted.push(attachment);
     }
-    if (accepted.length > 0) await ctx.state.set(key, ledger);
-    return { accepted, skipped };
+    await ctx.state.set(key, ledger);
+    return { saved: true, accepted, skipped };
   });
 }
 
@@ -304,7 +410,8 @@ async function ingestDialog(
   message: InboundDirectMessage,
   originId: string,
 ): Promise<Issue | null> {
-  const reserved = await reserveInboundAttachments(ctx, connection.companyId, message.peerId, message.attachments);
+  const reserved = await reserveInbound(ctx, connection.companyId, message.peerId, message.attachments);
+  if (!reserved.saved) return null;
   const storedFiles = await storeInboundFiles(ctx, connection.companyId, reserved.accepted);
   const notes = message.mediaSkipped || reserved.skipped ? [QUOTA_NOTE] : [];
   const existing = await ctx.issues.list({

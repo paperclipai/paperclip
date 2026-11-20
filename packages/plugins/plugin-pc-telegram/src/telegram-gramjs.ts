@@ -1,4 +1,5 @@
 import { describeInboundForward, publicForward, unknownForward, visibleForwardName, type TelegramForwardSource } from "./forward.js";
+import { directUserPeerId } from "./inbound.js";
 import {
   hasProfilePhoto,
   inlineProfilePhoto,
@@ -206,7 +207,7 @@ type GramMessage = {
   message?: unknown;
   date?: unknown;
   peerId?: unknown;
-  sender?: { username?: string | null; firstName?: string | null; lastName?: string | null; id?: unknown };
+  sender?: { username?: string | null; firstName?: string | null; lastName?: string | null; id?: unknown; bot?: boolean };
   media?: unknown;
   downloadMedia?: (progress?: (downloaded: number, total?: number) => void) => Promise<Buffer | Uint8Array | string | null>;
   fwdFrom?: {
@@ -353,7 +354,13 @@ export async function assembleInboundMessage(
   if (!message) return null;
   if (message.out || message.isGroup || message.isChannel || message.isPrivate === false) return null;
   const sender = message.sender;
-  const peerId = telegramUserId(sender?.id ?? message.peerId);
+  const senderId = sender?.id == null ? "" : telegramUserId(sender.id);
+  const dialogPeerId = message.peerId == null ? "" : peerIdOf(message.peerId);
+  const peerId = senderId || dialogPeerId;
+  if (!peerId) throw new Error("Telegram user id is missing.");
+  if (sender?.bot === true || !directUserPeerId(peerId) || (senderId !== "" && dialogPeerId !== "" && senderId !== dialogPeerId)) {
+    return null;
+  }
   const text = typeof message.message === "string" ? message.message : "";
   const hasMedia = Boolean(message.media) && typeof message.downloadMedia === "function";
   let attachments: InboundAttachment[] = [];
@@ -388,6 +395,7 @@ export async function assembleInboundMessage(
     isGroup: false,
     isOutgoing: false,
     attachments,
+    senderId: senderId || undefined,
     mediaSkipped,
     forward,
   };

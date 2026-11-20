@@ -1077,7 +1077,7 @@ export function TelegramInboxPage({
         acting={acting}
         runMenu={runMenu}
         reactions={reactions}
-        chats={chats}
+        chats={chatSource}
         setReply={setReply}
         composerRef={composerRef}
         setSelecting={setSelecting}

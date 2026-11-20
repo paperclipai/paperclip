@@ -17,14 +17,14 @@ import {
   publicConnection,
   upsertConnection,
 } from "./connections.js";
-import { chatListLabel, parseDialogOriginId } from "./inbound.js";
+import { chatListLabel, normalizeAllowedPeerIds, parseDialogOriginId } from "./inbound.js";
 import { createDialogCache, type CacheScope } from "./dialog-cache.js";
 import { HISTORY_PAGE_SIZE, boundLatestHistory, historyCacheKey, historyContentChanged, historyHitIsFresh, patchHistoryMessages, reconcileFetchedHistory, removeHistoryMessages } from "./history-slice.js";
 import { createInboxLive } from "./inbox-live.js";
 import { bubbleFromStoredBody, type ChatBubble } from "./thread.js";
 import { idleLoginStatus, reduceLogin } from "./login.js";
 import { reactionEmoji, telegramMessageIds } from "./message-menu.js";
-import { authorizeAssignedAgent, authorizeOperatorDialog, authorizeOperatorReply, authorizeSendText } from "./send.js";
+import { authorizeDialogForActor, authorizeOperatorReply, authorizeSendText } from "./send.js";
 import { deleteAccountSession } from "./secrets.js";
 import { publicChannelTitle, publicPhoto, publicPresence, publicSharedChats, unreadCount, type PeerSummary } from "./peer-card.js";
 import { refuseOperatorReport } from "./relay.js";
@@ -765,16 +765,12 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     const issue = await findDialogIssue(companyId, issueRef);
     if (!issue) throw new Error("This issue is not a Telegram dialog.");
     const connections = await listConnections(ctx, companyId, liveAccountIds());
-    const authorized = board
-      ? authorizeOperatorDialog(connections, {
-        companyId,
-        issueOriginId: issue.originId,
-      })
-      : authorizeAssignedAgent(connections, {
-        companyId,
-        agentId,
-        issueOriginId: issue.originId,
-      });
+    const authorized = authorizeDialogForActor(connections, {
+      companyId,
+      board,
+      agentId,
+      issueOriginId: issue.originId,
+    });
     if (!authorized.ok) throw new Error(authorized.error);
     const live = liveByAccount.get(authorized.accountId);
     if (!live || live.companyId !== companyId) {
@@ -806,8 +802,10 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     } else {
       const target = await findDialogIssue(companyId, readString(params.targetIssueRef));
       if (!target) throw new Error("This issue is not a Telegram dialog.");
-      const targetAuth = authorizeOperatorDialog(connections, {
+      const targetAuth = authorizeDialogForActor(connections, {
         companyId,
+        board,
+        agentId,
         issueOriginId: target.originId,
       });
       if (!targetAuth.ok) throw new Error(targetAuth.error);
@@ -969,8 +967,16 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     const assignedAgentId = params.assignedAgentId === null
       ? null
       : readString(params.assignedAgentId) || undefined;
+    const acceptUnlistedSenders = typeof params.acceptUnlistedSenders === "boolean"
+      ? params.acceptUnlistedSenders
+      : undefined;
+    const allowedPeerIds = Array.isArray(params.allowedPeerIds)
+      ? normalizeAllowedPeerIds(params.allowedPeerIds)
+      : undefined;
     const connection = await patchConnection(ctx, companyId, telegramUserId, {
       assignedAgentId: assignedAgentId === undefined ? undefined : assignedAgentId,
+      acceptUnlistedSenders,
+      allowedPeerIds,
     }, liveAccountIds());
     return publicConnection(connection);
   });

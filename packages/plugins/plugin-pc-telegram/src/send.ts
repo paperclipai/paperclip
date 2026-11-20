@@ -66,6 +66,24 @@ export function authorizeAssignedAgent(
   return { ok: true, accountId: fromIssue.accountId, peerId: fromIssue.peerId, connection };
 }
 
+/** Source and target dialogs use the same actor check. */
+export function authorizeDialogForActor(
+  connections: TelegramConnection[],
+  request: { companyId: string; board: boolean; agentId: string; issueOriginId?: string | null },
+): SendAuthorization {
+  if (request.board) {
+    return authorizeOperatorDialog(connections, {
+      companyId: request.companyId,
+      issueOriginId: request.issueOriginId,
+    });
+  }
+  return authorizeAssignedAgent(connections, {
+    companyId: request.companyId,
+    agentId: request.agentId,
+    issueOriginId: request.issueOriginId,
+  });
+}
+
 export function authorizeOperatorDialog(
   connections: TelegramConnection[],
   request: { companyId: string; issueOriginId?: string | null },

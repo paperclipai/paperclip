@@ -3,6 +3,7 @@ import {
   ACCOUNT_ENTITY_TYPE,
   DEFAULT_INCOMING_MODE,
 } from "./constants.js";
+import { normalizeAllowedPeerIds } from "./inbound.js";
 import type { IncomingMode, PublicTelegramAccount, TelegramConnection, TelegramConnectionPatch } from "./types.js";
 
 function asString(value: unknown): string | null {
@@ -29,6 +30,8 @@ export function connectionFromEntity(entity: PluginEntityRecord, liveAccountIds:
     assignedAgentId: asString(data.assignedAgentId),
     incomingMode: asIncomingMode(data.incomingMode),
     paused: asBoolean(data.paused, false),
+    acceptUnlistedSenders: asBoolean(data.acceptUnlistedSenders, false),
+    allowedPeerIds: normalizeAllowedPeerIds(data.allowedPeerIds),
     sessionSecretId: asString(data.sessionSecretId) ?? "",
     sessionConfigPath: asString(data.sessionConfigPath) ?? "",
     live: liveAccountIds.has(telegramUserId),
@@ -44,6 +47,8 @@ export function publicConnection(connection: TelegramConnection): Omit<TelegramC
     assignedAgentId: connection.assignedAgentId,
     incomingMode: connection.incomingMode,
     paused: connection.paused,
+    acceptUnlistedSenders: connection.acceptUnlistedSenders,
+    allowedPeerIds: connection.allowedPeerIds,
     live: connection.live,
     hasSession: connection.sessionSecretId.length > 0,
   };
@@ -90,6 +95,8 @@ export async function upsertConnection(
     assignedAgentId?: string | null;
     incomingMode?: IncomingMode;
     paused?: boolean;
+    acceptUnlistedSenders?: boolean;
+    allowedPeerIds?: string[];
   },
 ): Promise<TelegramConnection> {
   const existing = await findConnection(ctx, input.companyId, input.account.telegramUserId, new Set());
@@ -98,6 +105,8 @@ export async function upsertConnection(
     ? existing?.assignedAgentId ?? null
     : input.assignedAgentId;
   const paused = input.paused ?? existing?.paused ?? false;
+  const acceptUnlistedSenders = input.acceptUnlistedSenders ?? existing?.acceptUnlistedSenders ?? false;
+  const allowedPeerIds = normalizeAllowedPeerIds(input.allowedPeerIds ?? existing?.allowedPeerIds ?? []);
   await ctx.entities.upsert({
     entityType: ACCOUNT_ENTITY_TYPE,
     scopeKind: "company",
@@ -113,6 +122,8 @@ export async function upsertConnection(
       assignedAgentId,
       incomingMode,
       paused,
+      acceptUnlistedSenders,
+      allowedPeerIds,
       sessionSecretId: input.sessionSecretId,
       sessionConfigPath: input.sessionConfigPath ?? existing?.sessionConfigPath ?? "",
     },
@@ -125,6 +136,8 @@ export async function upsertConnection(
     assignedAgentId,
     incomingMode,
     paused,
+    acceptUnlistedSenders,
+    allowedPeerIds,
     sessionSecretId: input.sessionSecretId,
     sessionConfigPath: input.sessionConfigPath ?? existing?.sessionConfigPath ?? "",
     live: false,
@@ -152,6 +165,8 @@ export async function patchConnection(
     assignedAgentId: patch.assignedAgentId === undefined ? existing.assignedAgentId : patch.assignedAgentId,
     incomingMode: patch.incomingMode ?? existing.incomingMode,
     paused: patch.paused ?? existing.paused,
+    acceptUnlistedSenders: patch.acceptUnlistedSenders ?? existing.acceptUnlistedSenders,
+    allowedPeerIds: patch.allowedPeerIds ?? existing.allowedPeerIds,
   }).then((connection) => ({ ...connection, live: liveAccountIds.has(telegramUserId) }));
 }
 
