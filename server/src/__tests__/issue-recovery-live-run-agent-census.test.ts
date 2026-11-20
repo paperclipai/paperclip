@@ -28,6 +28,40 @@ function bounded<T>(work: Promise<T>, waitingFor: () => string): Promise<T> {
   return Promise.race([work, expired]).finally(() => realClearTimeout(timer));
 }
 
+async function settlePasses(passes: ReadonlySet<Promise<unknown>>, waitingFor: () => string) {
+  if (!passes.size) return;
+  let settled = false;
+  void Promise.allSettled([...passes]).then(() => { settled = true; });
+  try {
+    await bounded((async () => {
+      while (!settled) {
+        await immediate();
+        // I/O can schedule a zero-delay connection callback after the outer
+        // clock advance. Run callbacks due now without moving recovery's
+        // backstop deadlines or leaving the database wait frozen forever.
+        await vi.advanceTimersByTimeAsync(0);
+      }
+    })(), waitingFor);
+  } finally { settled = true; }
+}
+
+it("settles delivery callbacks scheduled after I/O without advancing the recovery clock", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  await vi.advanceTimersByTimeAsync(1000);
+  const now = Date.now();
+  const future = vi.fn();
+  setTimeout(future, 1);
+  const pass = immediate().then(() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+  try {
+    await settlePasses(new Set([pass]), () => "a delivery callback scheduled after I/O");
+    expect(Date.now()).toBe(now);
+    expect(future).not.toHaveBeenCalled();
+  } finally {
+    await vi.runOnlyPendingTimersAsync();
+    vi.useRealTimers();
+  }
+}, 30_000);
+
 /**
  * Staging shape: about 860 settled assigned tasks, most of them held by the
  * same few agents, and one agent whose native run stays live for the whole
@@ -47,7 +81,7 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
         nextTick = Date.now() + 10_000;
       }
       await bounded(vi.advanceTimersByTimeAsync(Math.min(1000, until - Date.now())), () => `simulated time to advance past ${at}`);
-      await bounded(Promise.allSettled([...state.passes]), () => `${state.passes.size} delivery passes started by simulated ${at} to settle`);
+      await settlePasses(state.passes, () => `${state.passes.size} delivery passes (${state.pendingPassQueues().join(", ")}) started by simulated ${at} to settle`);
       await immediate();
     }
   }
