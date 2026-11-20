@@ -368,6 +368,21 @@ describe("Coordinator pinned pages", () => {
     expect(document.activeElement).toBe(pinnedPage("/settings"));
   });
 
+  it.each([
+    ["Projects", "/routines"],
+    ["Settings", "/activity"],
+  ])("keeps focus in More on the next page after pinning %s from the keyboard", async (label, next) => {
+    await renderSidebar();
+    await click("More workspace pages");
+    const pin = morePopover()!.querySelector<HTMLButtonElement>(`button[aria-label="Pin ${label}"]`)!;
+    pin.focus();
+    expect(document.activeElement).toBe(pin);
+    await act(async () => pin.click());
+    await flush();
+    expect(morePopover()).not.toBeNull();
+    expect(document.activeElement).toBe(morePopover()!.querySelector(`a[href="${next}"]`));
+  });
+
   it("starts each group of pages in More after a divider, whichever pages are pinned", async () => {
     await renderSidebar();
     await click("More workspace pages");

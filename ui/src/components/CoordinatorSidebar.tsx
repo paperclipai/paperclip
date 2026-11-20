@@ -161,9 +161,12 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const morePages = useMemo(() => destinations.filter(item => !pinKeys.has(item.to)), [destinations, pinKeys]);
   const [moreOpen, setMoreOpen] = useState(false);
   const navigationRef = useRef<HTMLElement>(null);
-  const pinToFocus = useRef<string | null>(null);
+  const focusAfterPin = useRef<string | null>(null);
   const morePins = { ...pins, toggle: (key: string) => {
-    if (morePages.length === 1) { pinToFocus.current = key; setMoreOpen(false); }
+    const index = morePages.findIndex(item => item.to === key);
+    const neighbor = morePages[index + 1] ?? morePages[index - 1];
+    if (neighbor) focusAfterPin.current = `[data-more-page="${CSS.escape(neighbor.to)}"] a`;
+    else { focusAfterPin.current = `[data-pin-key="${CSS.escape(key)}"] a`; setMoreOpen(false); }
     pins.toggle(key);
   } };
   const [recentsOpen, setRecentsOpen] = useState(true);
@@ -179,13 +182,13 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations,
     pinnedTasks, session.isSuccess ? projects : undefined), [pinnedNavigation.pins, agents.data, destinations, pinnedTasks, projects, session.isSuccess]);
   useEffect(() => {
-    const key = pinToFocus.current;
-    if (!key) return;
-    const link = navigationRef.current?.querySelector<HTMLElement>(`[data-pin-key="${CSS.escape(key)}"] a`);
+    const selector = focusAfterPin.current;
+    if (!selector) return;
+    const link = moreContentRef.current?.querySelector<HTMLElement>(selector) ?? navigationRef.current?.querySelector<HTMLElement>(selector);
     if (!link) return;
-    pinToFocus.current = null;
+    focusAfterPin.current = null;
     link.focus();
-  }, [orderedPins]);
+  }, [orderedPins, morePages]);
   // Only project IDs and visit times are kept in memory. Labels and task lists
   // always come from the authorized API, scoped to the current person/company.
   const scope = `${companyId}:${userId}`;
@@ -233,7 +236,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         {morePages.length > 0 && <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span>More</span></button></FlyoutTrigger>
           <FlyoutContent ref={moreContentRef} tabIndex={-1} onOpenAutoFocus={(event) => { event.preventDefault(); moreContentRef.current?.focus(); }} side={isMobile ? "bottom" : "right"} align="start" className="w-56 p-1" aria-label="More workspace pages">
-            {morePages.map(({ label, to, icon: Icon, group }, index) => <div key={to}>
+            {morePages.map(({ label, to, icon: Icon, group }, index) => <div key={to} data-more-page={to}>
                 {index > 0 && morePages[index - 1]!.group !== group ? <div role="separator" className="my-1 border-t border-border" /> : null}
                 <div className="group/navigation-pin relative flex items-center rounded-sm transition-colors hover:bg-accent">
                   <Link to={to} onClick={() => { setMoreOpen(false); if (isMobile) setSidebarOpen(false); }} className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-2 py-1.5 pr-10 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
