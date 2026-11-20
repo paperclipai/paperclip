@@ -21,7 +21,33 @@ import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-loc
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 import { EXECUTION_FINALIZATION_DEADLINE_EXCEEDED, EXECUTION_FINALIZATION_DEADLINE_MESSAGE } from "./execution-control-deadline.js";
 import { NATIVE_HUMAN_SELF_HANDOFF_KEY } from "./native-runtime/native-human-self-handoff.js";
-import { supersededByIsolatedContinuationPredicate } from "./fresh-continuation-isolation.js";
+import { humanGateEvidencePredicate } from "./recovery/human-gate-evidence.js";
+
+export const FRESH_CONTINUATION_SCHEMA = "paperclip.fresh-continuation.v1" as const;
+export const ISOLATING_CONTINUATIONS = ["fresh_isolated_workspace", "remote_epoch"] as const;
+const STARTING_CONTINUATION_DELIVERIES = ["pending", "delivered"] as const;
+
+export function supersededByIsolatedContinuationPredicate() {
+  const holdRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
+  const list = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
+  return sql`coalesce((${issueRecoveryActions.ownerUserId} is null
+    and not ${humanGateEvidencePredicate(issueRecoveryActions.evidence)}
+    and coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
+    and exists (select 1 from ${issueRecoveryActions} continuation
+      where continuation.company_id = ${issueRecoveryActions.companyId}
+        and continuation.source_issue_id = ${issueRecoveryActions.sourceIssueId}
+        and continuation.id <> ${issueRecoveryActions.id}
+        and continuation.evidence#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}
+        and continuation.evidence#>>'{freshContinuation,sourceRunId}' = ${holdRunId}
+        and continuation.evidence#>>'{freshContinuation,isolation}' in (${list(ISOLATING_CONTINUATIONS)})
+        and (continuation.evidence->>'continuationDelivery' in (${list(STARTING_CONTINUATION_DELIVERIES)})
+          or (continuation.evidence->>'continuationDelivery' = 'not_requested'
+            and continuation.evidence#>>'{freshContinuation,isolation}' = 'remote_epoch'
+            and exists (select 1 from ${agentWakeupRequests} saved
+              where saved.company_id = ${issueRecoveryActions.companyId}
+                and saved.status = 'deferred_issue_execution' and saved.requested_by_actor_type = 'user'
+                and saved.payload->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text))))), false)`;
+}
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -118,10 +144,13 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
 
 /** Resolved recovery bookkeeping can still carry an effective no-replay hold. */
 export function executionBlockerPredicate() {
+  return and(executionHoldPredicate(), not(supersededByIsolatedContinuationPredicate()));
+}
+
+function executionHoldPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
     not(preDispatchExecutionWaitRecoveryActionPredicate()),
-    not(supersededByIsolatedContinuationPredicate()),
     // Holds saved before shutdown certified pre-dispatch interruptions carry
     // the same row proof; they have no unknown outcome to reconcile.
     sql`not (${issueRecoveryActions.cause} = 'legacy_execution_requires_reconciliation' and exists (
@@ -150,6 +179,25 @@ export function executionBlockerPredicate() {
         sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
     )),
   );
+}
+
+export async function isolatedContinuationForDispatch(db: Db, companyId: string, issueId: string) {
+  const [hold] = await db.select({ runId: sql<string>`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')` })
+    .from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+      executionHoldPredicate(), supersededByIsolatedContinuationPredicate(),
+    )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
+  if (!hold?.runId) return null;
+  const [record] = await db.select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`,
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${hold.runId}`,
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' = 'fresh_isolated_workspace'`,
+    inArray(sql<string>`${issueRecoveryActions.evidence}->>'continuationDelivery'`, [...STARTING_CONTINUATION_DELIVERIES]),
+  )).orderBy(desc(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`)).limit(1);
+  if (!record) return null;
+  return { recoveryActionId: record.id, sourceRunId: hold.runId,
+    pending: record.evidence.continuationDelivery === "pending" };
 }
 
 export function nativeExecutionRecoveryActionPredicate() {

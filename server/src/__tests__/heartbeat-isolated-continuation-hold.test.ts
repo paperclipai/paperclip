@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issues,
+  agentTaskSessions, agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { getExecutionBlocker } from "../services/execution-blocker.ts";
+import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../services/system-recovery-state.ts";
@@ -14,9 +18,11 @@ import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt,
 const held = vi.hoisted(() => {
   const state = {
     release: () => undefined as void,
+    calls: [] as Array<Record<string, unknown>>,
     released: Promise.resolve(),
     reset() {
       state.released = new Promise<void>((resolve) => { state.release = resolve; });
+      state.calls = [];
     },
   };
   return state;
@@ -28,7 +34,8 @@ vi.mock("../adapters/index.ts", async () => {
     ...actual,
     getServerAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
-      execute: async () => {
+      execute: async (input: Record<string, unknown>) => {
+        held.calls.push(input);
         await held.released;
         return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "done", provider: "test", model: "test" };
       },
@@ -62,10 +69,15 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     isolation?: "remote_epoch" | "fresh_isolated_workspace" | "writer_ended" | null;
     personOwned?: boolean;
     unsafeArchive?: boolean;
+    delivery?: "pending" | "delivered" | "invalidated" | "not_requested" | "coalesced";
+    savedInput?: boolean;
+    holdEvidence?: Record<string, unknown>;
+    previousCwd?: string;
   };
 
   async function killedRunAfterFreshContinuation(shape: Shape = {}) {
-    const { isolation = "remote_epoch", personOwned = false, unsafeArchive = false } = shape;
+    const { isolation = "remote_epoch", personOwned = false, unsafeArchive = false, delivery = "delivered",
+      holdEvidence = {}, previousCwd, savedInput = false } = shape;
     const userId = randomUUID(), companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const sourceRunId = randomUUID(), continuationId = randomUUID(), holdId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Board", email: `${userId}@example.test`,
@@ -106,7 +118,8 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
         nextAction: "Paperclip continues the task in a fresh run from its last saved work.",
         resolutionNote: "continued_fresh_from_last_saved", resolvedAt: recordedAt, createdAt: recordedAt, updatedAt: recordedAt,
         evidence: { runId: sourceRunId, executionReconciliation: reconciliation, freshContinuation,
-          continuationDelivery: "delivered", continuationRunId: queuedRunId, continuationSupersededByRun: true } });
+          continuationDelivery: delivery,
+          ...(delivery === "delivered" ? { continuationRunId: queuedRunId, continuationSupersededByRun: true } : {}) } });
     }
 
     const spent = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(sourceRunId, randomUUID()))!,
@@ -119,7 +132,12 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
       evidence: { runId: sourceRunId, workspaceRestoreFailure: unsafeArchive ? "restore_unsafe_archive" : "restore_failed",
         workspaceRestoreRecovery: restoreRecovery, systemRecovery: spent,
         workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: sourceRunId, status: "blocked", stage: "verifying_stop",
-          attempt: 1, attemptLimit: 6, retryable: true, requestIds: [] } } });
+          attempt: 1, attemptLimit: 6, retryable: true, requestIds: [] }, ...holdEvidence } });
+    if (savedInput) await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId } });
+    if (previousCwd) await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "codex_local", taskKey: issueId,
+      sessionParamsJson: { sessionId: "previous-session", cwd: previousCwd }, sessionDisplayId: "previous-session", lastRunId: sourceRunId });
 
     await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId, source: "automation", triggerDetail: "system",
       reason: "issue_children_completed", status: "queued", requestedByActorType: "system", requestedByActorId: "issue-children",
@@ -143,8 +161,14 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     return rows.map(row => row.id);
   }
 
-  it("does not hold the task behind the old run's workspace once the continuation moved it to a new epoch", async () => {
-    const f = await killedRunAfterFreshContinuation();
+  it.each([
+    ["a delivered remote_epoch continuation", { isolation: "remote_epoch" }],
+    ["a pending remote_epoch continuation", { isolation: "remote_epoch", delivery: "pending" }],
+    ["a delivered fresh_isolated_workspace continuation", { isolation: "fresh_isolated_workspace" }],
+    ["a pending fresh_isolated_workspace continuation", { isolation: "fresh_isolated_workspace", delivery: "pending" }],
+    ["a remote_epoch continuation that saved a person's input", { isolation: "remote_epoch", delivery: "not_requested", savedInput: true }],
+  ] as const)("does not hold the task behind the old run's workspace after %s", async (_name, shape) => {
+    const f = await killedRunAfterFreshContinuation(shape);
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.holdId)))[0])
       .toMatchObject({ status: "active" });
@@ -155,6 +179,13 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     ["the continuation reuses the old workspace", { isolation: "writer_ended" }],
     ["a person owns the hold", { personOwned: true }],
     ["the saved archive is unsafe", { unsafeArchive: true }],
+    ["the continuation was invalidated before it started", { delivery: "invalidated" }],
+    ["the continuation only repaired the workspace", { delivery: "not_requested" }],
+    ["the record was coalesced into another continuation", { delivery: "coalesced" }],
+    ["the continuation was invalidated in a new workspace", { isolation: "fresh_isolated_workspace", delivery: "invalidated" }],
+    ["the hold records an owner-gone attestation", { holdEvidence: { ownerGoneAttestation: { attestedBy: "board" } } }],
+    ["the hold records an explicit continuation", { holdEvidence: { explicitUserContinuation: { runId: randomUUID() } } }],
+    ["the hold records a reconciliation", { holdEvidence: { executionReconciliation: { runId: randomUUID() } } }],
   ] as const)("keeps the hold when %s", async (_name, shape) => {
     const f = await killedRunAfterFreshContinuation(shape);
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.holdId });
@@ -177,6 +208,33 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     } finally {
       held.release();
       await heartbeat.drainActiveRunExecutions();
+    }
+  }, 60_000);
+
+  it("starts the queued continuation in a new attempt directory when the continuation isolated a local workspace", async () => {
+    held.reset();
+    const previousCwd = await mkdtemp(path.join(os.tmpdir(), "isolated-continuation-old-"));
+    await writeFile(path.join(previousCwd, "unverified.txt"), "written by the old run\n");
+    const f = await killedRunAfterFreshContinuation({ isolation: "fresh_isolated_workspace", delivery: "pending", previousCwd });
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+      await vi.waitFor(async () => expect(await startedRunIds(f.companyId)).toEqual([f.queuedRunId]), { timeout: 20_000 });
+      const started = await runRow(f.queuedRunId);
+      expect(started.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.continuationId, forceFreshSession: true });
+      expect(await readFreshWorkspaceReadiness(db, started)).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.sourceRunId });
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.continuationId)))[0]!.evidence)
+        .toMatchObject({ continuationDelivery: "delivered", continuationRunId: f.queuedRunId });
+      await vi.waitFor(() => expect(held.calls).toHaveLength(1), { timeout: 20_000 });
+      const call = held.calls[0]!;
+      const workspace = (call.context as { paperclipWorkspace?: { cwd?: string; mode?: string } }).paperclipWorkspace;
+      expect(workspace).toMatchObject({ mode: "isolated_workspace", cwd: expect.stringContaining("isolated-workspace-attempts") });
+      expect(workspace?.cwd).not.toBe(previousCwd);
+      expect(call.runtime).toMatchObject({ sessionId: null, sessionParams: null });
+    } finally {
+      held.release();
+      await heartbeat.drainActiveRunExecutions();
+      await rm(previousCwd, { recursive: true, force: true });
     }
   }, 60_000);
 

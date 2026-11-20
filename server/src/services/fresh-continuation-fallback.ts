@@ -20,8 +20,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { issueService } from "./issues.js";
 import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { proveRunProcessGone } from "./run-process-owner.js";
-import { hasPendingRunCleanup } from "./execution-blocker.js";
-import { FRESH_CONTINUATION_SCHEMA, ISOLATING_CONTINUATIONS } from "./fresh-continuation-isolation.js";
+import { FRESH_CONTINUATION_SCHEMA, hasPendingRunCleanup, ISOLATING_CONTINUATIONS } from "./execution-blocker.js";
+import { hasHumanGateEvidence } from "./recovery/human-gate-evidence.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -295,8 +295,7 @@ async function fenceSourceWorkspace(tx: Db, run: typeof heartbeatRuns.$inferSele
  * gate again.
  */
 export function isHumanGate(hold: Pick<typeof issueRecoveryActions.$inferSelect, "ownerUserId" | "evidence">): boolean {
-  return Boolean(hold.ownerUserId || hold.evidence.ownerGoneAttestation || hold.evidence.explicitUserContinuation
-    || hold.evidence.executionReconciliation);
+  return Boolean(hold.ownerUserId) || hasHumanGateEvidence(hold.evidence);
 }
 
 const isRestoreHold = (hold: typeof issueRecoveryActions.$inferSelect) =>

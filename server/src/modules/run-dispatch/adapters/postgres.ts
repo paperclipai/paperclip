@@ -14,7 +14,8 @@ import { notifyScheduledRetryCancellation } from "../../../services/scheduled-re
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { recordedUserStop, userStopBoundaryAt } from "../../../services/run-cancellation.js";
-import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { getExecutionBlocker, isolatedContinuationForDispatch } from "../../../services/execution-blocker.js";
+import { deliverContinuationAsRun } from "../../../services/fresh-continuation-retry-fold.js";
 import { continueFreshInTransaction, recordFreshContinuationCheck } from "../../../services/fresh-continuation-fallback.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
@@ -1419,6 +1420,17 @@ export function createPostgresRunDispatchAdapter(
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
   }
 
+  async function carryIsolatedContinuationInTx(tx: Db, run: HeartbeatRun, issueId: string) {
+    if (typeof parseObject(run.contextSnapshot).freshContinuationIsolation === "string") return;
+    const isolated = await isolatedContinuationForDispatch(tx, run.companyId, issueId);
+    if (!isolated) return;
+    await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({
+      freshContinuationIsolation: isolated.recoveryActionId, forceFreshSession: true })}::jsonb` })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")));
+    if (isolated.pending) await deliverContinuationAsRun(tx, { companyId: run.companyId, issueId, runId: run.id,
+      continuation: { recoveryActionId: isolated.recoveryActionId, sourceRunId: isolated.sourceRunId, isolation: "fresh_isolated_workspace" } });
+  }
+
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -1426,6 +1438,7 @@ export function createPostgresRunDispatchAdapter(
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
       const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now, publications);
       if (!decision.stale || !issueId) {
+        if (input.expectedStatus === "queued" && issueId) await carryIsolatedContinuationInTx(tx, run, issueId);
         if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
           // Preserve the authority accepted under the issue/run locks. Later
           // preflight reads can observe a reassignment; they must not turn an
