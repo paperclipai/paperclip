@@ -94,10 +94,17 @@ describe("Runner workspace bridge", () => {
     expect(comment?.description).toContain("existing task's assignee a new or changed requirement");
     expect(comment?.description).toContain("rather than creating a duplicate task or editing that task's workspace files");
     expect(comment?.description).toContain("delivers it at the start of the assignee's next turn on that task");
-    expect(comment?.description).toContain("set resume: true for such a requirement");
+    expect(comment?.description).toContain("For routine coordination, progress updates, questions, or help requests, omit resume");
+    expect(comment?.description).toContain("Set resume: true only when requesting follow-up execution");
+    expect(comment?.description).toContain("HTTP 409 without saving the comment");
     expect(comment?.description).toContain("delivery still happens if the assignee completes the task first");
     expect(comment?.description).toContain("not as already applied");
-    expect((comment?.inputSchema as { properties?: Record<string, unknown> }).properties?.resume).toEqual({ type: "boolean" });
+    const schema = comment?.inputSchema as { required: string[]; properties: Record<string, unknown> };
+    expect(schema.required).not.toContain("resume");
+    expect(schema.properties.resume).toEqual({
+      type: "boolean",
+      description: expect.stringContaining("Omit for routine coordination, progress updates, questions, or help requests"),
+    });
   });
   it("forwards a comment's explicit resume intent to the comment API and omits it otherwise", () => {
     const taskId = "8ba8b5a2-066a-4bb2-b591-e396942ecdf5";
