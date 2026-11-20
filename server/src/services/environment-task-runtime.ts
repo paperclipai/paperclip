@@ -299,7 +299,8 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     const provider = operation.runner.harness === "codex" ? "openai" : operation.runner.harness === "claude" ? "anthropic" : operation.runner.harness;
     if (!provider || !operation.preparedLaunchId || proof?.configurationId !== operation.preparedLaunchId || proof.provider !== provider
       || (!Array.isArray(proof.projectIds) ? null : JSON.stringify([...proof.projectIds].sort())) !== JSON.stringify([...operation.projectIds].sort())
-      || (operation.credential && (operation.credential.type === "codex-auth-json" ? "openai" : "anthropic") !== provider)) {
+      || (operation.credential && (operation.credential.type === "codex-auth-json" ? "openai"
+        : operation.credential.type === "claude-env" ? "anthropic" : operation.credential.provider) !== provider)) {
       throw new Error("Plugin Runner managed project authentication validation unavailable");
     }
     requiredProjectAuthProof = proof as Record<string, unknown>;

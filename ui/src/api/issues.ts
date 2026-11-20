@@ -1,4 +1,4 @@
-import type { SetIssueTitle } from "@paperclipai/shared";
+import type { IssueInboxArchiveFilter, SetIssueTitle } from "@paperclipai/shared";
 import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS, type IssueChatBootstrap } from "@paperclipai/shared";
 import type { RunForIssue } from "./activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "./heartbeats";
@@ -207,6 +207,7 @@ export type IssueListFilters = {
   assigneeUserId?: string;
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
+  inboxArchive?: IssueInboxArchiveFilter;
   unreadForUserId?: string;
   /** Add the current board user's read state without filtering task membership. */
   includeReadState?: boolean;
@@ -250,6 +251,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("assigneeUserId", filters.assigneeUserId);
   if (filters?.touchedByUserId)
     params.set("touchedByUserId", filters.touchedByUserId);
+  if (filters?.inboxArchive) params.set("inboxArchive", filters.inboxArchive);
   if (filters?.inboxArchivedByUserId)
     params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
   if (filters?.unreadForUserId)

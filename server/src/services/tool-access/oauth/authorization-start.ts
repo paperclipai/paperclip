@@ -13,8 +13,8 @@ import type { Db } from "@paperclipai/db";
 import { companies, agents, connectionGrants, issueThreadInteractions, toolConnections, toolOauthStates } from "@paperclipai/db";
 import type { ConnectionGrantKind, ToolOAuthStartResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
-import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
-import { isPaperclipCloudConnectorStrategy, paperclipCloudConnectorConsentAllowed, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
+import { badRequest, conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../../../errors.js";
+import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, paperclipCloudConnectorConsentAllowed, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { deriveVercelConnectSubject, vercelConnectCallbackUrl, VercelConnectClientError, type VercelConnectClient } from "../../vercel-connect.js";
 
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
@@ -35,6 +35,18 @@ type Dependencies = {
   oauthEndpointsForConnection: ReturnType<typeof createOAuthDiscovery>["oauthEndpointsForConnection"];
   assertOAuthEndpointUrl: ReturnType<typeof createOAuthEndpointPolicy>["assertOAuthEndpointUrl"];
 };
+
+function cloudConnectorStartHttpError(error: unknown, providerName: string, at: Date): unknown {
+  if (!(error instanceof PaperclipCloudConnectorError)) return error;
+  if (error.status !== 429 && error.brokerReason !== "RATE_LIMITED") return error;
+  const retryAfterSeconds = error.retryAt === undefined
+    ? undefined
+    : Math.max(1, Math.ceil((error.retryAt - at.getTime()) / 1000));
+  return tooManyRequests(`${providerName} sign-in is busy right now. Try again in a moment.`, {
+    code: "paperclip_cloud_connector_rate_limited",
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+  });
+}
 
 export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies) {
   const { now, getConnectionRow, setupPolicy, fixedPersonalIdentityForReconnect, currentCloudConnector, vercelConnect, ensureOAuthClient, oauthEndpointsForConnection, assertOAuthEndpointUrl } = dependencies;
@@ -395,16 +407,21 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       returnUri.pathname = "/api/tools/oauth/cloud-connector/callback";
       returnUri.search = "";
       returnUri.hash = "";
-      const session = await cloudConnector.startAuthorization({
-        subject: authorizationSubjectAgentId
-          ? `agent:${authorizationSubjectAgentId}`
-          : subjectUserId!,
-        companyId,
-        profile: managedProfile.id,
-        ...(managedProfile.id === "workspace.all" ? { scopes: requestedScopes! } : {}),
-        returnUri: returnUri.toString(),
-        returnState: state,
-      });
+      let session;
+      try {
+        session = await cloudConnector.startAuthorization({
+          subject: authorizationSubjectAgentId
+            ? `agent:${authorizationSubjectAgentId}`
+            : subjectUserId!,
+          companyId,
+          profile: managedProfile.id,
+          ...(managedProfile.id === "workspace.all" ? { scopes: requestedScopes! } : {}),
+          returnUri: returnUri.toString(),
+          returnState: state,
+        });
+      } catch (error) {
+        throw cloudConnectorStartHttpError(error, providerName, now());
+      }
       const remoteExpiry = new Date(session.expiresAt);
       const expiresAt = Number.isFinite(remoteExpiry.getTime())
         ? new Date(
