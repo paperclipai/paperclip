@@ -94,6 +94,12 @@ describe("server image init", () => {
   });
 });
 
+describe("server image runtime tools", () => {
+  it.each(["lsof", "procps"])("installs %s in the base stage for local service ownership checks", (pkg) => {
+    expect(aptPackages(dockerfile, "base")).toContain(pkg);
+  });
+});
+
 describe("deployment manifest parity", () => {
   it.each([
     ["docker-compose.yml", compose],
