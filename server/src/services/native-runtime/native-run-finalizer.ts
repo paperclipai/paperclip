@@ -1589,7 +1589,6 @@ export async function finalizeNativeRun(input: {
     envelope.normalizationDiagnostics,
   ).ignoredAttentionRequests;
 
-  await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
   const sourceWake = run.wakeupRequestId ? await input.db.select({ payload: agentWakeupRequests.payload })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
       eq(agentWakeupRequests.companyId, run.companyId))).then((rows) => rows[0]) : null;
@@ -1626,6 +1625,9 @@ export async function finalizeNativeRun(input: {
       contract: record(contractRow.contractJson),
       result,
     });
+    // A malformed result must not withdraw a pending review. Keep cleanup
+    // after validation while rebuilding the assessment on every status retry.
+    if (attempt === 0) await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
     const assessment = {
       ...classifiedAssessment,
       ignoredAttentionRequests: [
