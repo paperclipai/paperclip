@@ -161,6 +161,8 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
       && "connectionId" in interaction.result && typeof interaction.result.connectionId === "string";
     if (interaction.status !== "pending" && !retired) continue;
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
+    if (retired && interaction.addresseeUserId !== responsibleUserId
+      && connectionIntentPayloadSchema.safeParse(interaction.payload).data?.repairConnectionId) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
     const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
     // Historical system retirements describe a service need, not a permanent
