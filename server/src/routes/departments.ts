@@ -7,10 +7,11 @@ import {
   updateDepartmentSchema,
   type Department,
 } from "@paperclipai/shared";
-import { badRequest } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
+import { accessService } from "../services/access.js";
 import { logActivity } from "../services/activity-log.js";
-import { authorizationService } from "../services/authorization.js";
+import { authorizationDeniedDetails, authorizationService } from "../services/authorization.js";
 import { departmentService } from "../services/departments.js";
 import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
@@ -144,6 +145,12 @@ export function departmentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, agent.companyId);
+    const decision = await accessService(db).decide({
+      actor: req.actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
+    });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     const memberships = await svc.setForAgent(agent.companyId, agent.id, req.body.departmentIds);
     const actor = getActorInfo(req);
     await logActivity(db, {
