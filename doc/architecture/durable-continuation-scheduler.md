@@ -100,6 +100,19 @@ another turn. Its invariant is: an assigned open issue should have either a
 live execution path, a durable reason to wait, or a visible terminal/blocking
 disposition.
 
+Pending interactions remain a reason to wait until the interaction service
+persists an answer, cancellation, or permitted supersession. A newer Retry or
+message does not implicitly resolve an unanswered question. Assigned-work
+reconciliation leaves these tasks quiet; the existing interaction-resolution
+notification makes them eligible for another check. The task and inbox show
+the question as the current blocker, while older provider failures remain in
+run history.
+
+A provider-limit hold before provider work is scheduling, so it does not send
+a cancellation toast for every held task. Its durable retry rechecks provider
+availability. When the provider reports no reset time, the fallback deadline
+is a recheck time rather than a promised reset or work-start time.
+
 ## Why DOT-2 looped
 
 DOT-2's runner repeatedly produced a successful result that reported `done`.

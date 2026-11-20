@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, environmentLeases, heartbeatRuns, issueRecoveryActions,
-  issueRelations, issues,
+  issueRelations, issues, issueThreadInteractions,
   toolApplications, toolConnections,
   nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -31,6 +31,32 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
   // The shared fixture's failures are historical; reporting tests need a current failure.
   const markFailuresFresh = (companyId: string) => db.update(heartbeatRuns).set({ finishedAt: new Date() })
     .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "failed")));
+
+  it("shows an unresolved question over an older provider failure, until the question resolves", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Question fixture", issuePrefix: `Q${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Question agent", adapterType: "paperclip_runner" });
+    const tasks = await db.insert(issues).values([
+      { companyId, title: "Question pending", status: "todo", assigneeAgentId: agentId },
+      { companyId, title: "No question", status: "todo", assigneeAgentId: agentId },
+    ]).returning();
+    for (const task of tasks) await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: task.id,
+      scopeKind: "issue", status: "failed", runtimeMode: "native", errorCode: "native_session_interrupted",
+      resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+        category: "rate_limit", httpStatus: 429, retryability: "unknown", message: "API error: 429" } } });
+    const [question] = await db.insert(issueThreadInteractions).values({ companyId, issueId: tasks[0].id,
+      kind: "ask_user_questions", status: "pending", continuationPolicy: "wake_assignee",
+      payload: { version: 1, supersedeOnUserComment: false, questions: [{ id: "scope", prompt: "Choose the scope",
+        selectionMode: "single", required: true, options: [{ id: "small", label: "Small" }, { id: "full", label: "Full" }] }] } }).returning();
+    const presentations = await taskInterruptionPresentations(db, companyId, tasks);
+    expect(presentations.get(tasks[0].id)).toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
+    expect(presentations.get(tasks[0].id)?.providerFailure).toBeUndefined();
+    expect(presentations.get(tasks[1].id)).toMatchObject({ state: "failed", providerFailure: { httpStatus: 429 } });
+    await db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.id, question.id));
+    expect(await taskInterruptionPresentation(db, tasks[0])).toMatchObject({ state: "failed", providerFailure: { httpStatus: 429 } });
+    const [historical] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, tasks[0].id));
+    expect(historical.resultJson).toMatchObject({ providerFailure: { httpStatus: 429 } });
+  });
 
   it("shows a pending native same-run resume instead of a competing Retry", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();

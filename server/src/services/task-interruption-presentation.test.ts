@@ -7,6 +7,22 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+describe("pending question presentation", () => {
+  const input = { run, agent, paused: false, approval: false, question: true };
+  it("names the unanswered question instead of a historical failure or saved Retry", () => {
+    for (const previousRun of [run, { ...run, status: "succeeded" }, undefined]) {
+      const presentation = projectTaskInterruption(issue, { ...input, run: previousRun });
+      expect(presentation).toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: "question", canRetry: false });
+      expect(presentation?.providerFailure).toBeUndefined();
+    }
+  });
+  it("preserves live work and terminal task states", () => {
+    expect(projectTaskInterruption(issue, { ...input, run: { ...run, status: "running", errorCode: null } }))
+      .toMatchObject({ state: "working" });
+    expect(projectTaskInterruption({ ...issue, status: "done" }, input)).toMatchObject({ state: "resolved" });
+  });
+});
+
 describe("saved governed wait shutdown", () => {
   const now = Date.parse("2026-11-09T12:00:00Z");
   const pending = { ...run, runtimeMode: "native", errorCode: "native_governed_wait_settlement_pending", resultJson: null };
