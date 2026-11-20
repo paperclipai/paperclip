@@ -98,6 +98,12 @@ any new fork patch; remove one when the patch is upstreamed.
 - `packages/adapter-utils/src/sandbox-bridge-start-fold.test.ts`
 - `packages/adapters/hermes/src/server/execute-sandbox.prompt-staging.test.ts`
 
+## Kubernetes tenant namespace ownership check (TECH-9509)
+
+- `packages/plugins/sandbox-providers/kubernetes/src/tenant-orchestrator.ts` refuses an existing namespace whose company label does not match; clear not-enabled error
+- `packages/plugins/sandbox-providers/kubernetes/test/unit/tenant-orchestrator.test.ts`
+- `packages/plugins/sandbox-providers/kubernetes/test/unit/plugin-lease-lifecycle.test.ts`
+
 ## Server-wide sandbox run limit (TECH-9015)
 
 - `server/src/services/heartbeat/sandbox-run-slots.ts` server-wide limit on concurrent sandbox runs; runs over it wait in the queue

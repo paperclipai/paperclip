@@ -16,7 +16,8 @@
  *        RUN_K8S_INTEGRATION_TESTS=1 pnpm test
  *
  * The namespace is derived from companySlug ("spike-e2e") + namespacePrefix
- * ("paperclip-"), resolving to "paperclip-spike-e2e".
+ * ("paperclip-"), resolving to "paperclip-spike-e2e". The sandbox-cr test uses
+ * its own slug ("spike-e2e-cr") because it runs as a different company.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -27,16 +28,21 @@ import { sandboxCrOrchestrator } from "../../src/sandbox-cr-orchestrator.js";
 import { deleteNamespaceIfExists, kubectl, readKindKubeconfig } from "./_kind-harness.js";
 
 const NAMESPACE = "paperclip-spike-e2e";
+// The two tests use different company ids, and the plugin refuses a namespace
+// labelled for another company, so each test gets its own namespace.
+const NAMESPACE_CR = "paperclip-spike-e2e-cr";
 
 describe("plugin-kubernetes end-to-end", () => {
   beforeAll(() => {
     if (process.env.RUN_K8S_INTEGRATION_TESTS !== "1") return;
     deleteNamespaceIfExists(NAMESPACE);
+    deleteNamespaceIfExists(NAMESPACE_CR);
   });
 
   afterAll(() => {
     if (process.env.RUN_K8S_INTEGRATION_TESTS !== "1") return;
     deleteNamespaceIfExists(NAMESPACE);
+    deleteNamespaceIfExists(NAMESPACE_CR);
   });
 
   // ── Job backend (stable fallback) ─────────────────────────────────────────
@@ -120,7 +126,7 @@ describe("plugin-kubernetes end-to-end", () => {
       const config = {
         inCluster: false,
         kubeconfig,
-        companySlug: "spike-e2e",
+        companySlug: "spike-e2e-cr",
         adapterType: "claude_local",
         backend: "sandbox-cr",
         imageAllowList: [] as string[],
@@ -140,12 +146,12 @@ describe("plugin-kubernetes end-to-end", () => {
 
       // Verify the Sandbox CR exists in the tenant namespace
       const sandboxes = kubectl(
-        `get sandboxes.agents.x-k8s.io -n ${NAMESPACE} -o name 2>&1`,
+        `get sandboxes.agents.x-k8s.io -n ${NAMESPACE_CR} -o name 2>&1`,
       );
       expect(sandboxes).toContain(`sandbox.agents.x-k8s.io/${lease.providerLeaseId}`);
 
       // Verify the per-run Secret exists (owned by the Sandbox CR)
-      const secrets = kubectl(`get secrets -n ${NAMESPACE} -o name`);
+      const secrets = kubectl(`get secrets -n ${NAMESPACE_CR} -o name`);
       expect(secrets).toContain(`secret/${lease.providerLeaseId}-env`);
 
       // Wait for the Sandbox pod to become Ready
@@ -155,7 +161,7 @@ describe("plugin-kubernetes end-to-end", () => {
 
       await sandboxCrOrchestrator.waitForCompletion(
         clients,
-        NAMESPACE,
+        NAMESPACE_CR,
         lease.providerLeaseId,
         { timeoutMs: 90_000, pollMs: 3000 },
       );
@@ -163,7 +169,7 @@ describe("plugin-kubernetes end-to-end", () => {
       // Resolve the pod name
       const podName = await sandboxCrOrchestrator.findPod(
         clients,
-        NAMESPACE,
+        NAMESPACE_CR,
         lease.providerLeaseId,
       );
       expect(podName).toBeTruthy();
@@ -171,7 +177,7 @@ describe("plugin-kubernetes end-to-end", () => {
       // Exec a simple echo command into the running pod
       const execResult = await execInPod(
         kc,
-        NAMESPACE,
+        NAMESPACE_CR,
         podName!,
         "agent",
         ["echo", "hello"],
@@ -194,7 +200,7 @@ describe("plugin-kubernetes end-to-end", () => {
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
       const sandboxesAfter = kubectl(
-        `get sandboxes.agents.x-k8s.io -n ${NAMESPACE} -o name 2>&1 || true`,
+        `get sandboxes.agents.x-k8s.io -n ${NAMESPACE_CR} -o name 2>&1 || true`,
       );
       expect(sandboxesAfter).not.toContain(
         `sandbox.agents.x-k8s.io/${lease.providerLeaseId}`,

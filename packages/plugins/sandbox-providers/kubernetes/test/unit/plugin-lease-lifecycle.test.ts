@@ -26,8 +26,15 @@ vi.mock("../../src/kube-client.js", () => ({
 import plugin, { DEFAULT_WORKSPACE_REMOTE_DIR, leaseRemoteCwd, resolveSyncRemoteDir } from "../../src/plugin.js";
 import { assertConfinedSandboxPath } from "../../src/file-sync.js";
 import { isTracked, reapIdleLeases, resetReuseRegistry } from "../../src/reuse-registry.js";
+import { invalidateTenantCache } from "../../src/tenant-orchestrator.js";
 
 const CONFIG = { inCluster: true, backend: "sandbox-cr" };
+
+// An existing tenant namespace, labelled for the company that owns it. The
+// plugin refuses to use an existing namespace without a matching label.
+function namespaceOwnedBy(companyId: string): Record<string, unknown> {
+  return { metadata: { name: "paperclip-test", labels: { "paperclip.io/company-id": companyId } } };
+}
 
 function leaseMetadata(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -56,6 +63,9 @@ function readySandboxCr(podName: string): Record<string, unknown> {
 }
 
 beforeEach(() => {
+  // Successful acquires are cached per namespace for 5 minutes at module level;
+  // clear it so a test never skips the ownership check because of an earlier one.
+  invalidateTenantCache();
   h.clients = {};
   h.scrub.mockReset();
   h.scrub.mockResolvedValue({ ok: true, detail: "" });
@@ -304,7 +314,7 @@ describe("quota guard and pod-ready budget", () => {
     const create = vi.fn();
     h.clients = {
       core: {
-        readNamespace: exists,
+        readNamespace: vi.fn().mockResolvedValue(namespaceOwnedBy("acme")),
         readNamespacedServiceAccount: exists,
         readNamespacedLimitRange: exists,
         readNamespacedResourceQuota: vi.fn().mockResolvedValue(FULL_QUOTA),
@@ -338,7 +348,7 @@ describe("quota guard and pod-ready budget", () => {
       create,
       clients: {
         core: {
-          readNamespace: exists,
+          readNamespace: vi.fn().mockResolvedValue(namespaceOwnedBy("acme")),
           readNamespacedServiceAccount: exists,
           readNamespacedLimitRange: exists,
           // Pod count has room (10 of 20) but CPU limits are at the cap.
@@ -549,11 +559,18 @@ describe("quota guard and pod-ready budget", () => {
 describe("lease remote working dir (TECH-8174: runs that never realize a workspace)", () => {
   // Any kube call resolves to a benign empty object, so acquire runs end to end.
   function permissiveClients(): Record<string, unknown> {
-    const group = () =>
+    const group = (overrides: Record<string, unknown> = {}) =>
       new Proxy({}, {
-        get: () => vi.fn().mockResolvedValue({ metadata: { uid: "uid-1", name: "x" }, items: [], status: {} }),
+        get: (_target, prop) => {
+          // Not thenable: an awaited client group must not look like a promise.
+          if (prop === "then" || typeof prop !== "string") return undefined;
+          if (prop in overrides) return overrides[prop];
+          return vi.fn().mockResolvedValue({ metadata: { uid: "uid-1", name: "x" }, items: [], status: {} });
+        },
       });
-    return { core: group(), batch: group(), custom: group(), rbac: group(), networking: group() };
+    // The tenant namespace already exists and belongs to this company.
+    const core = group({ readNamespace: vi.fn().mockResolvedValue(namespaceOwnedBy("acme")) });
+    return { core, batch: group(), custom: group(), rbac: group(), networking: group() };
   }
 
   it("records the pod's /workspace mount as remoteCwd at acquire, so sync works before any realizeWorkspace", async () => {
@@ -787,7 +804,7 @@ describe("reusable conversation pods", () => {
     const create = vi.fn().mockResolvedValue({ metadata: { uid: "uid-new" } });
     const clients = {
       core: {
-        readNamespace: exists,
+        readNamespace: vi.fn().mockResolvedValue(namespaceOwnedBy("evict-co")),
         readNamespacedServiceAccount: exists,
         readNamespacedLimitRange: exists,
         // Full for the first checks (the existing pod), free once the evicted pod is gone.
@@ -940,5 +957,83 @@ describe("termination receipt on release and destroy (user interrupt of a sandbo
         leaseMetadata: leaseMetadata({ backend: "job" }),
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("tenant namespace ownership at the plugin boundary", () => {
+  const ACQUIRE = {
+    driverKey: "kubernetes",
+    companyId: "acme",
+    environmentId: "env-1",
+    config: { ...CONFIG, companySlug: "ownership-check" },
+    runId: "run-1",
+  };
+
+  function clientsWith(core: Record<string, unknown>) {
+    const create = vi.fn();
+    const exists = vi.fn().mockResolvedValue({});
+    h.clients = {
+      core: {
+        readNamespacedServiceAccount: exists,
+        createNamespacedSecret: vi.fn().mockResolvedValue({}),
+        ...core,
+      },
+      rbac: { readNamespacedRole: exists, readNamespacedRoleBinding: exists },
+      networking: { readNamespacedNetworkPolicy: exists },
+      custom: { getNamespacedCustomObject: exists, createNamespacedCustomObject: create },
+    };
+    return { create };
+  }
+
+  it("refuses to acquire in a namespace labelled for another company and creates no Sandbox or Secret", async () => {
+    const createSecret = vi.fn();
+    const { create } = clientsWith({
+      readNamespace: vi.fn().mockResolvedValue(namespaceOwnedBy("some-other-company")),
+      createNamespacedSecret: createSecret,
+    });
+    await expect(plugin.definition.onEnvironmentAcquireLease!(ACQUIRE as never)).rejects.toThrow(/labelled for a different company/);
+    expect(create).not.toHaveBeenCalled();
+    expect(createSecret).not.toHaveBeenCalled();
+  });
+
+  it("tells the operator an org is not enabled when its namespace is missing and cannot be created", async () => {
+    const { create } = clientsWith({
+      readNamespace: vi.fn().mockRejectedValue(notFound()),
+      createNamespace: vi.fn().mockRejectedValue(Object.assign(new Error("forbidden"), { code: 403 })),
+    });
+    await expect(plugin.definition.onEnvironmentAcquireLease!(ACQUIRE as never)).rejects.toThrow(
+      /not enabled for Kubernetes sandboxes/,
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("destroys a lease's resources even when the namespace's label no longer matches, without reading the namespace", async () => {
+    // A pod the plugin created must always be cleanable, whatever happened to the label since.
+    const readNamespace = vi.fn().mockResolvedValue(namespaceOwnedBy("some-other-company"));
+    const deleteCr = vi.fn().mockResolvedValue({});
+    const deletePod = vi.fn().mockResolvedValue({});
+    const deleteSecret = vi.fn().mockResolvedValue({});
+    h.clients = {
+      custom: { deleteNamespacedCustomObject: deleteCr, getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()) },
+      core: {
+        readNamespace,
+        deleteNamespacedPod: deletePod,
+        deleteNamespacedSecret: deleteSecret,
+        readNamespacedPod: vi.fn().mockRejectedValue(notFound()),
+      },
+      batch: { deleteNamespacedJob: vi.fn() },
+    };
+    await plugin.definition.onEnvironmentDestroyLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata(),
+    });
+    expect(deleteCr).toHaveBeenCalled();
+    expect(deletePod).toHaveBeenCalledWith({ namespace: "paperclip-acme", name: "pc-abc-pod" });
+    expect(deleteSecret).toHaveBeenCalledWith({ namespace: "paperclip-acme", name: "pc-abc-env" });
+    expect(readNamespace).not.toHaveBeenCalled();
   });
 });

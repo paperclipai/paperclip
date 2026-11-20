@@ -44,6 +44,11 @@ const LIMIT_RANGE_NAME = "paperclip-limits";
  * To apply those, an operator must delete the per-tenant resources manually
  * (or the namespace itself).
  *
+ * Before anything is created or changed, ensureNamespace verifies that an
+ * existing namespace is labelled for this company (`paperclip.io/company-id`)
+ * and throws TenantNamespaceError otherwise, so a wrong or shared companySlug
+ * can never put one company's resources into another company's namespace.
+ *
  * Particular gotcha: switching egressMode "standard" → "cilium" leaves the
  * old paperclip-egress-allow NetworkPolicy in place alongside the new
  * CiliumNetworkPolicy. Both apply; the effective egress is the intersection.
@@ -58,31 +63,107 @@ export async function ensureTenant(clients: KubeClients, input: EnsureTenantInpu
   await ensureNetworkPolicies(clients, input);
 }
 
+export const COMPANY_ID_LABEL = "paperclip.io/company-id";
+
+/**
+ * A tenant namespace cannot be used for this run: it is missing, unlabelled, or
+ * owned by another company. Always fails the acquire before anything is created
+ * or changed in the namespace.
+ */
+export class TenantNamespaceError extends Error {
+  constructor(
+    message: string,
+    readonly reason: "not_enabled" | "label_missing" | "company_mismatch",
+  ) {
+    super(message);
+    this.name = "TenantNamespaceError";
+  }
+}
+
+/**
+ * Fail closed unless the existing namespace is labelled for this company.
+ *
+ * The namespace name comes from `companySlug` (or the company id), so a wrong or
+ * shared slug would otherwise run one company's agents in another company's
+ * namespace, with its Secrets, quota and egress policy. The message names the
+ * company this run is for, never the label value of another company: the error
+ * can reach an org's own users.
+ */
+function assertNamespaceOwnedBy(namespace: unknown, input: EnsureTenantInput): void {
+  const labels = (namespace as { metadata?: { labels?: Record<string, string> } } | null | undefined)?.metadata?.labels;
+  const label = labels?.[COMPANY_ID_LABEL];
+  if (!label) {
+    throw new TenantNamespaceError(
+      `Namespace ${input.namespace} exists but has no ${COMPANY_ID_LABEL} label, so its owner cannot be verified ` +
+        `and it will not be used for company ${input.companyId}. If it belongs to this company, an operator can label it ` +
+        `(kubectl label namespace ${input.namespace} ${COMPANY_ID_LABEL}=${input.companyId}); otherwise choose a different companySlug.`,
+      "label_missing",
+    );
+  }
+  if (label.toLowerCase() !== input.companyId.toLowerCase()) {
+    throw new TenantNamespaceError(
+      `Namespace ${input.namespace} is labelled for a different company than this run (${input.companyId}), ` +
+        `so it will not be used. Do not relabel a namespace another company uses; choose a different companySlug ` +
+        `(or leave it unset) on the sandbox environment, or fix the label if it was set wrongly.`,
+      "company_mismatch",
+    );
+  }
+}
+
 async function ensureNamespace(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
+  let existing: unknown;
   try {
-    await clients.core.readNamespace({ name: input.namespace });
-    return;
+    existing = await clients.core.readNamespace({ name: input.namespace });
   } catch (err) {
     if (!isNotFound(err)) throw err;
   }
-  await createIgnoringAlreadyExists(
-    clients.core.createNamespace({
-        body: {
-          apiVersion: "v1",
-          kind: "Namespace",
-          metadata: {
-            name: input.namespace,
-            labels: {
-              "paperclip.io/company-id": input.companyId,
-              "paperclip.io/managed-by": "paperclip-k8s-plugin",
-              "pod-security.kubernetes.io/enforce": "restricted",
-              "pod-security.kubernetes.io/audit": "restricted",
-              "pod-security.kubernetes.io/warn": "restricted",
-            },
+  // The one read both detects a missing namespace and supplies the label, so
+  // the ownership check adds no API call. It runs before every other ensure*
+  // step, so a refused namespace never gets a tenant resource created in it.
+  if (existing !== undefined) {
+    assertNamespaceOwnedBy(existing, input);
+    return;
+  }
+  try {
+    await clients.core.createNamespace({
+      body: {
+        apiVersion: "v1",
+        kind: "Namespace",
+        metadata: {
+          name: input.namespace,
+          labels: {
+            [COMPANY_ID_LABEL]: input.companyId,
+            "paperclip.io/managed-by": "paperclip-k8s-plugin",
+            "pod-security.kubernetes.io/enforce": "restricted",
+            "pod-security.kubernetes.io/audit": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted",
           },
         },
-      }),
-  );
+      },
+    });
+  } catch (err) {
+    if (isForbidden(err)) {
+      // The server identity can read namespaces but not create them (the
+      // production setup). A missing namespace then means the org was never
+      // enabled, which is an operator decision, not something to retry.
+      throw new TenantNamespaceError(
+        `Namespace ${input.namespace} does not exist, and this server cannot create namespaces. ` +
+          `This org is not enabled for Kubernetes sandboxes. An operator must create the namespace, ` +
+          `labelled ${COMPANY_ID_LABEL}=${input.companyId}, then retry.`,
+        "not_enabled",
+      );
+    }
+    if (!isAlreadyExists(err)) throw err;
+    // Another worker created it between our read and our create: check the
+    // winner's label, so a concurrent create cannot slip past the ownership check.
+    let raced: unknown;
+    try {
+      raced = await clients.core.readNamespace({ name: input.namespace });
+    } catch (readErr) {
+      if (!isNotFound(readErr)) throw readErr;
+    }
+    if (raced !== undefined) assertNamespaceOwnedBy(raced, input);
+  }
 }
 
 async function ensureServiceAccount(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
@@ -324,6 +405,11 @@ function isNotFound(err: unknown): boolean {
   return e.code === 404 || e.statusCode === 404;
 }
 
+function isForbidden(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: number; statusCode?: number };
+  return e.code === 403 || e.statusCode === 403;
+}
 function isAlreadyExists(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const e = err as { code?: number; statusCode?: number };
@@ -346,8 +432,9 @@ async function createIgnoringAlreadyExists(create: Promise<unknown>): Promise<vo
 // ensureTenant is 8-10 sequential API calls. Namespaces are provisioned once
 // and (apart from the quota) never change, so remember per namespace that the
 // current desired state was already ensured by this worker. The fingerprint
-// covers every input, so a config change (e.g. a new quota) misses the cache
-// and reconciles. The TTL bounds staleness if someone deletes the namespace or
+// covers every input, including the company id, so a config change (e.g. a new
+// quota) or a different company using the same namespace misses the cache and
+// re-runs the ownership check. Only successful ensures are cached. The TTL bounds staleness if someone deletes the namespace or
 // edits the quota out of band.
 const TENANT_ENSURE_TTL_MS = 5 * 60_000;
 const ensuredTenants = new Map<string, { fingerprint: string; expiresAt: number }>();

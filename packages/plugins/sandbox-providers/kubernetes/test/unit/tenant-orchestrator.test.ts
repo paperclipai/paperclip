@@ -7,7 +7,13 @@ import {
   invalidateTenantCache,
   isQuotaExceededMessage,
   OverCapacityError,
+  TenantNamespaceError,
 } from "../../src/tenant-orchestrator.js";
+
+// An existing tenant namespace, labelled for the company that owns it.
+function ownedBy(companyId: string) {
+  return { metadata: { name: "paperclip-test", labels: { "paperclip.io/company-id": companyId } } };
+}
 
 function makeMockClients() {
   const calls: { kind: string; name: string; namespace?: string; body?: unknown }[] = [];
@@ -98,7 +104,7 @@ describe("ensureTenant", () => {
 
   it("skips creates that already exist (idempotency)", async () => {
     const clients = makeMockClients();
-    clients.core.readNamespace.mockResolvedValue({ body: { metadata: { name: baseInput.namespace } } });
+    clients.core.readNamespace.mockResolvedValue(ownedBy(baseInput.companyId));
     await ensureTenant(clients as never, baseInput);
     expect(clients.core.createNamespace).not.toHaveBeenCalled();
   });
@@ -137,7 +143,7 @@ describe("ResourceQuota reconciliation", () => {
     const exists = vi.fn().mockResolvedValue({});
     const clients = {
       core: {
-        readNamespace: vi.fn().mockResolvedValue({}),
+        readNamespace: vi.fn().mockResolvedValue(ownedBy(input.companyId)),
         readNamespacedServiceAccount: exists,
         readNamespacedLimitRange: exists,
         readNamespacedResourceQuota: vi.fn().mockResolvedValue({
@@ -239,7 +245,7 @@ describe("ensureTenantCached concurrency and keying", () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const exists = vi.fn().mockResolvedValue({});
-    const readNamespace = vi.fn(async () => { await gate; return {}; });
+    const readNamespace = vi.fn(async () => { await gate; return ownedBy(input.companyId); });
     const clients = {
       core: {
         readNamespace,
@@ -263,6 +269,144 @@ describe("ensureTenantCached concurrency and keying", () => {
     expect(readNamespace).toHaveBeenCalledTimes(1);
     await ensureTenantCached(clients as never, reordered as never);
     expect(readNamespace).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("tenant namespace ownership check", () => {
+  const input = {
+    namespace: "paperclip-owned",
+    companyId: "11111111-1111-1111-1111-111111111111",
+    paperclipServerNamespace: "paperclip",
+    serviceAccountAnnotations: {},
+    egressMode: "standard" as const,
+    egressAllowFqdns: [] as string[],
+    egressAllowCidrs: [] as string[],
+    resourceQuota: { pods: "5", requestsCpu: "2", requestsMemory: "4Gi", limitsCpu: "4", limitsMemory: "8Gi" },
+  };
+  const OTHER_COMPANY = "22222222-2222-2222-2222-222222222222";
+
+  // Every create/update call a tenant ensure could make; none may run on a refusal.
+  function mutations(clients: ReturnType<typeof makeMockClients>) {
+    return [
+      clients.core.createNamespace,
+      clients.core.createNamespacedServiceAccount,
+      clients.core.createNamespacedResourceQuota,
+      clients.core.createNamespacedLimitRange,
+      clients.rbac.createNamespacedRole,
+      clients.rbac.createNamespacedRoleBinding,
+      clients.networking.createNamespacedNetworkPolicy,
+      clients.custom.createNamespacedCustomObject,
+    ];
+  }
+
+  it("uses an existing namespace labelled for the company (case-insensitively) and creates nothing", async () => {
+    const clients = makeMockClients();
+    clients.core.readNamespace.mockResolvedValue(ownedBy(input.companyId.toUpperCase()));
+    await ensureTenant(clients as never, input);
+    expect(clients.core.createNamespace).not.toHaveBeenCalled();
+  });
+
+  it("refuses a namespace labelled for another company, names the run's company, and creates nothing", async () => {
+    const clients = makeMockClients();
+    clients.core.readNamespace.mockResolvedValue(ownedBy(OTHER_COMPANY));
+    const error = await ensureTenant(clients as never, input).catch((e) => e);
+    expect(error).toBeInstanceOf(TenantNamespaceError);
+    expect(error.reason).toBe("company_mismatch");
+    expect(error.message).toContain("paperclip-owned");
+    expect(error.message).toContain(input.companyId);
+    // The other tenant's id must not leak into an error an org's users can see.
+    expect(error.message).not.toContain(OTHER_COMPANY);
+    for (const create of mutations(clients)) expect(create).not.toHaveBeenCalled();
+    // Refused before any later ensure step even looked at the namespace.
+    expect(clients.core.readNamespacedServiceAccount).not.toHaveBeenCalled();
+  });
+
+  it("refuses an existing namespace with no company label, and with no labels at all", async () => {
+    for (const body of [
+      { metadata: { name: "paperclip-owned", labels: { "paperclip.io/managed-by": "paperclip-k8s-plugin" } } },
+      { metadata: { name: "paperclip-owned" } },
+      {},
+    ]) {
+      const clients = makeMockClients();
+      clients.core.readNamespace.mockResolvedValue(body);
+      const error = await ensureTenant(clients as never, input).catch((e) => e);
+      expect(error).toBeInstanceOf(TenantNamespaceError);
+      expect(error.reason).toBe("label_missing");
+      expect(error.message).toContain(`kubectl label namespace paperclip-owned paperclip.io/company-id=${input.companyId}`);
+      for (const create of mutations(clients)) expect(create).not.toHaveBeenCalled();
+    }
+  });
+
+  it("fails a missing namespace with a clear not-enabled error when the server cannot create namespaces", async () => {
+    const clients = makeMockClients();
+    clients.core.createNamespace.mockRejectedValue({ code: 403, message: "namespaces is forbidden" });
+    const error = await ensureTenant(clients as never, input).catch((e) => e);
+    expect(error).toBeInstanceOf(TenantNamespaceError);
+    expect(error.reason).toBe("not_enabled");
+    expect(error.message).toContain("paperclip-owned does not exist");
+    expect(error.message).toContain("not enabled for Kubernetes sandboxes");
+    expect(error.message).not.toContain("is forbidden");
+    // No tenant resource is created in a namespace that is not there.
+    expect(clients.core.createNamespacedServiceAccount).not.toHaveBeenCalled();
+    expect(clients.networking.createNamespacedNetworkPolicy).not.toHaveBeenCalled();
+  });
+
+  it("still creates a missing namespace, labelled for the company, when the server may create namespaces", async () => {
+    const clients = makeMockClients();
+    await ensureTenant(clients as never, input);
+    const created = clients.calls.find((call) => call.kind === "Namespace");
+    expect((created?.body as { metadata: { labels: Record<string, string> } }).metadata.labels["paperclip.io/company-id"]).toBe(input.companyId);
+    expect(clients.core.createNamespacedServiceAccount).toHaveBeenCalled();
+  });
+
+  it("checks the label of a namespace another worker created between our read and our create", async () => {
+    const clients = makeMockClients();
+    clients.core.createNamespace.mockRejectedValue({ statusCode: 409 });
+    clients.core.readNamespace
+      .mockRejectedValueOnce({ code: 404 })
+      .mockResolvedValueOnce(ownedBy(OTHER_COMPANY));
+    const error = await ensureTenant(clients as never, input).catch((e) => e);
+    expect(error).toBeInstanceOf(TenantNamespaceError);
+    expect(error.reason).toBe("company_mismatch");
+    expect(clients.core.createNamespacedServiceAccount).not.toHaveBeenCalled();
+
+    // A winner with the right label is accepted.
+    const ok = makeMockClients();
+    ok.core.createNamespace.mockRejectedValue({ statusCode: 409 });
+    ok.core.readNamespace.mockRejectedValueOnce({ code: 404 }).mockResolvedValueOnce(ownedBy(input.companyId));
+    await expect(ensureTenant(ok as never, input)).resolves.not.toThrow();
+  });
+
+  it("does not cache a refusal, so a corrected label is used on the very next acquire", async () => {
+    invalidateTenantCache();
+    const clients = makeMockClients();
+    clients.core.readNamespace.mockResolvedValue({ metadata: { name: "paperclip-owned" } });
+    const now = () => 1_000;
+    await expect(ensureTenantCached(clients as never, input, now)).rejects.toBeInstanceOf(TenantNamespaceError);
+    clients.core.readNamespace.mockResolvedValue(ownedBy(input.companyId));
+    await expect(ensureTenantCached(clients as never, input, now)).resolves.toBeUndefined();
+    expect(clients.core.readNamespace).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads the namespace once per cached window and never serves another company from the cache", async () => {
+    invalidateTenantCache();
+    const clients = makeMockClients();
+    clients.core.readNamespace.mockResolvedValue(ownedBy(input.companyId));
+    let now = 1_000;
+    await ensureTenantCached(clients as never, input, () => now);
+    now += 60_000;
+    await ensureTenantCached(clients as never, input, () => now);
+    expect(clients.core.readNamespace).toHaveBeenCalledTimes(1);
+
+    // Same namespace, different company: the cached success is not reused.
+    const other = { ...input, companyId: OTHER_COMPANY };
+    await expect(ensureTenantCached(clients as never, other, () => now)).rejects.toBeInstanceOf(TenantNamespaceError);
+    expect(clients.core.readNamespace).toHaveBeenCalledTimes(2);
+
+    // After the cache window the check runs again, so a later relabel is seen.
+    now += 10 * 60_000;
+    clients.core.readNamespace.mockResolvedValue(ownedBy(OTHER_COMPANY));
+    await expect(ensureTenantCached(clients as never, input, () => now)).rejects.toBeInstanceOf(TenantNamespaceError);
   });
 });
 

@@ -91,6 +91,10 @@ Full JSON Schema in `src/manifest.ts`.
 
 ### Per-company capacity and over-capacity behavior
 
+**Tenant namespace ownership.** Before the plugin creates or changes anything in a tenant namespace, it checks that the namespace's `paperclip.io/company-id` label equals the run's company id. A namespace with a different label, or with no label, is refused and the acquire fails with an error naming the namespace and the run's company (the error never names another company's id). This always applies; there is no setting to turn it off. It protects against a wrong or shared `companySlug` running one company's agents in another company's namespace. The label is read in the same call that already checks the namespace exists, and the result is cached with the rest of the tenant setup (re-verified at most every 5 minutes; a refusal is not cached, so a corrected label takes effect on the next acquire). Releasing, destroying and resuming a lease use the namespace recorded on the lease and do not run the check, so a pod the plugin created can always be cleaned up. If the namespace does not exist and the server cannot create namespaces (the usual production setup, where an operator provisions each namespace), the run fails with a "not enabled for Kubernetes sandboxes" error instead of a raw 403. A namespace the plugin creates itself is labelled for the company automatically.
+
+*Operator migration step.* Before deploying this check, make sure every existing tenant namespace carries the label. List the ones that do not: `kubectl get namespaces -l '!paperclip.io/company-id'` (then pick the tenant namespaces from that list). For each tenant namespace that belongs to a company, run `kubectl label namespace <namespace> paperclip.io/company-id=<company id>`. A namespace shared by two companies, or with a placeholder label, must be fixed or split first; the check will refuse it from then on.
+
 Each company's tenant namespace gets a `ResourceQuota` (`paperclip-quota`). Defaults, all overridable per environment under `resourceQuota`:
 
 ```json
