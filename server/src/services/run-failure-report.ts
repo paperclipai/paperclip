@@ -14,7 +14,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
-import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
+import { isOwnedAiConnectionSelectionRejection } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
@@ -88,10 +88,8 @@ function isAiConnectionSelectionBlocker(run: HeartbeatRun, options: RunFailureRe
     run.executionStage !== "preparing" || options.phase !== "setup" ||
     run.exitCode != null || run.signal != null
   ) return false;
-  const configuration = asRecord(run.resultJson?.configurationIncomplete);
   const recovery = asRecord(run.resultJson?.executionRecovery);
-  return configuration?.reason === "ai_connection_unavailable" &&
-    isAiConnectionConfigurationReason(configuration.selectionFailure) &&
+  return isOwnedAiConnectionSelectionRejection(run.resultJson?.configurationIncomplete) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
