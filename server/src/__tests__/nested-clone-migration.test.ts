@@ -170,6 +170,20 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     expect((await f.row()).metadata?.nestedCloneMigrationPending).toBeUndefined();
   }
 
+  it("keeps a long-path clone until the replacement base preserves its config", async () => {
+    const f = await fixture();
+    if (process.platform === "win32") git(f.checkout, "config", "--unset-all", "core.symlinks");
+    git(f.checkout, "config", "core.longpaths", "true");
+    git(f.base, "config", "core.longpaths", "false");
+    const before = await currentRestorePointSnapshot(f.checkout);
+    expect(await f.migrate()).toMatchObject({ outcome: "skipped", reason: "unsupported_base_git_config" });
+    await expectUntouched(f, before);
+    git(f.base, "config", "core.longpaths", "true");
+    expect(await f.migrate()).toMatchObject({ outcome: "migrated", reason: null });
+    expect(git(f.checkout, "config", "--local", "--get", "core.longpaths")).toBe("true");
+    expect((await fs.lstat(path.join(f.checkout, ".git"))).isFile()).toBe(true);
+  });
+
   it("converts a standalone nested clone into a worktree of the shared clone with its exact state and history", async () => {
     const f = await fixture();
     const { unpushed, side } = await nestedWork(f.checkout);

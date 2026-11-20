@@ -6,6 +6,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, readManagedRepositoryPreparationFailure } from "../services/managed-repository-checkout.js";
 
+import { PROJECT_REPOSITORIES_DIR, readManagedWorkspaceRepositories, listProjectRepositoryStagingPaths } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { listLocalProjectRepositories } from "@paperclipai/adapter-utils/ssh";
+import { assertReproducibleGitFiles, assertReproducibleLocalGitConfig } from "../services/git-workspace-restoration.js";
+
+import { assertRehomeGitConfig } from "../services/isolated-repository-rehome.js";
+
 const execFile = promisify(execFileCallback);
 const directories: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
@@ -21,6 +27,64 @@ async function fixture() {
   return { root, source, target: path.join(root, "target") };
 }
 describe("atomic managed repository publication", () => {
+
+  it("keeps in-progress clone staging out of concurrent repository scans", async () => {
+    const { root, source } = await fixture();
+    const parent = path.join(root, PROJECT_REPOSITORIES_DIR);
+    await mkdir(parent);
+    await materializeManagedProjectWorkspace(path.join(parent, "repository"), {
+      repoUrl: source,
+      beforeCopy: async staging => {
+        expect(await readManagedWorkspaceRepositories(root)).toEqual([]);
+        expect(await listLocalProjectRepositories(root)).toEqual([]);
+        expect(await listProjectRepositoryStagingPaths(root)).toEqual([`${PROJECT_REPOSITORIES_DIR}/${path.basename(staging)}`]);
+      },
+    });
+  });
+  it("keeps standalone and linked checkouts when long-path config cannot be restored", async () => {
+    const { root, source, target } = await fixture();
+    await materializeManagedProjectWorkspace(target, { repoUrl: source });
+    if (process.platform === "win32") await execFile("git", ["-C", target, "config", "--unset-all", "core.symlinks"]);
+    await execFile("git", ["-C", target, "config", "core.longpaths", "true"]);
+    await expect(assertReproducibleGitFiles(target)).rejects.toThrow("unsupported_local_git_config");
+    const linked = path.join(root, "linked");
+    await execFile("git", ["-C", target, "worktree", "add", "-b", "linked", linked]);
+    await expect(assertReproducibleGitFiles(linked)).rejects.toThrow("unsupported_local_git_config");
+    expect(await readFile(path.join(target, "source.txt"), "utf8")).toBe("initial\n");
+    expect(await readFile(path.join(linked, "source.txt"), "utf8")).toBe("initial\n");
+  });
+  it.each(["missing", "false", "duplicate", "true"])("requires a replacement base to preserve long-path support: %s", async value => {
+    const { source, target } = await fixture();
+    await materializeManagedProjectWorkspace(target, { repoUrl: source });
+    if (process.platform === "win32") await execFile("git", ["-C", target, "config", "--unset-all", "core.symlinks"]);
+    await execFile("git", ["-C", target, "config", "core.longpaths", "true"]);
+    if (value !== "missing") await execFile("git", ["-C", source, "config", "core.longpaths", value === "false" ? "false" : "true"]);
+    if (value === "duplicate") await execFile("git", ["-C", source, "config", "--add", "core.longpaths", "true"]);
+    const check = assertReproducibleLocalGitConfig(target, undefined, source);
+    if (value === "true") await expect(check).resolves.toBeUndefined();
+    else await expect(check).rejects.toThrow("unsupported_base_git_config");
+    expect(await readFile(path.join(target, "source.txt"), "utf8")).toBe("initial\n");
+  });
+  it.each(["false", "duplicate", "unsupported"])("rejects non-reproducible local config: %s", async kind => {
+    const { source } = await fixture();
+    if (process.platform === "win32") await execFile("git", ["-C", source, "config", "--unset-all", "core.symlinks"]);
+    if (kind === "unsupported") await execFile("git", ["-C", source, "config", "core.hooksPath", "custom-hooks"]);
+    else {
+      await execFile("git", ["-C", source, "config", "core.longpaths", kind === "false" ? "false" : "true"]);
+      if (kind === "duplicate") await execFile("git", ["-C", source, "config", "--add", "core.longpaths", "true"]);
+    }
+    await expect(assertReproducibleLocalGitConfig(source)).rejects.toThrow("unsupported_local_git_config");
+  });
+  it("does not require long paths when the source disables them", async () => {
+    const { source, target } = await fixture();
+    await execFile("git", ["-C", source, "config", "core.symlinks", "false"]);
+    await execFile("git", ["-C", source, "config", "core.longpaths", "false"]);
+    await materializeManagedProjectWorkspace(target, { repoUrl: source });
+    await execFile("git", ["-C", target, "config", "core.longpaths", "false"]);
+    await expect(assertRehomeGitConfig(source, target)).resolves.toBeUndefined();
+    expect((await execFile("git", ["-C", source, "config", "--local", "--get", "core.symlinks"])).stdout.trim()).toBe("false");
+  });
+
   it("keeps managed repositories separate without requiring Git or touching an ancestor", async () => {
     const { source, target } = await fixture();
     await mkdir(target);
@@ -109,14 +173,14 @@ describe("atomic managed repository publication", () => {
     })).rejects.toThrow("Private staging source denied");
     expect(stagingChecked).toBe(true);
     expect(await stat(target).catch(() => null)).toBeNull();
-    expect((await readdir(root)).filter(name => name.startsWith("target.clone-"))).toEqual([]);
+    expect((await readdir(root)).filter(name => name.includes(".clone-"))).toEqual([]);
     expect(await readFile(path.join(source, "source.txt"), "utf8")).toBe("initial\n");
   });
   it("does not publish an incomplete checkout when its receipt cannot be committed", async () => {
     const { root, source, target } = await fixture();
     await expect(materializeManagedProjectWorkspace(target, { repoUrl: "https://github.com/test/source", localSource: source, beforePublish: async () => { throw new Error("receipt failed"); } })).rejects.toThrow(/receipt failed/);
     expect(await stat(target).catch(() => null)).toBeNull();
-    expect((await readdir(root)).filter(name => name.startsWith("target.clone-"))).toEqual([]);
+    expect((await readdir(root)).filter(name => name.includes(".clone-"))).toEqual([]);
     expect(await readFile(path.join(source, "source.txt"), "utf8")).toBe("initial\n");
   });
 });
