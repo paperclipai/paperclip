@@ -487,6 +487,8 @@ export interface SlackSearchStatus {
   redirectUri: string | null;
   connected: boolean;
   nativeSearchAvailable: boolean;
+  /** True only when this person opted in to DM reading and Slack granted the DM scopes. */
+  dmAccess?: boolean;
   limitation: string;
 }
 export interface SlackToolCapabilities {

@@ -122,7 +122,7 @@ export function SlackSearchView({
   onConfigure,
 }: {
   status: SlackSearchStatus;
-  onConnect: () => Promise<void>;
+  onConnect: (options: { includeDms: boolean }) => Promise<void>;
   onDisconnect: () => Promise<void>;
   onConfigure: (input: {
     clientId: string;
@@ -132,6 +132,7 @@ export function SlackSearchView({
   const id = useId();
   const [clientId, setClientId] = useState(status.clientId ?? "");
   const [clientSecret, setClientSecret] = useState("");
+  const [includeDms, setIncludeDms] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const perform = async (action: () => Promise<void>) => {
@@ -161,25 +162,74 @@ export function SlackSearchView({
         </p>
       )}
       {status.connected ? (
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-sm">Slack search connected</span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={pending}
-            onClick={() => void perform(onDisconnect)}
-          >
-            Disconnect search
-          </Button>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm">Slack search connected</span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() => void perform(onDisconnect)}
+            >
+              Disconnect search
+            </Button>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm">
+              {status.dmAccess
+                ? "Agents can read your direct messages and group DMs"
+                : "Agents cannot read your direct messages"}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              onClick={() =>
+                void perform(() => onConnect({ includeDms: !status.dmAccess }))
+              }
+            >
+              {status.dmAccess ? "Stop DM reading" : "Allow DM reading"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Changing this sends you to Slack to approve the new permissions.
+            Turning it off stops Paperclip from reading your DMs; to remove
+            the permission from Slack itself, revoke the app’s access in your
+            Slack account.
+          </p>
         </div>
       ) : (
-        <Button
-          variant="outline"
-          disabled={pending || !status.configured}
-          onClick={() => void perform(onConnect)}
-        >
-          Connect Slack search
-        </Button>
+        <div className="space-y-3">
+          <div className="flex items-start gap-2">
+            <input
+              id={`${id}-dms`}
+              type="checkbox"
+              className="mt-1"
+              checked={includeDms}
+              disabled={pending || !status.configured}
+              onChange={(e) => setIncludeDms(e.target.checked)}
+            />
+            <label htmlFor={`${id}-dms`} className="text-sm">
+              Also let agents read my direct messages and group DMs
+              <span className="block text-xs text-muted-foreground">
+                Off by default. Agents working on your tasks could read any of
+                your DMs, and what they read is kept in their run records.
+                Only in tasks you start from a DM with the bot or from
+                Paperclip, never from a channel. After reading your DMs, an
+                agent can reply in Slack only in your own DM with the bot.
+                Slack asks you to approve this separately. You can turn it off
+                any time.
+              </span>
+            </label>
+          </div>
+          <Button
+            variant="outline"
+            disabled={pending || !status.configured}
+            onClick={() => void perform(() => onConnect({ includeDms }))}
+          >
+            Connect Slack search
+          </Button>
+        </div>
       )}
       {!status.configured && (
         <p className="text-sm text-muted-foreground">
@@ -206,8 +256,11 @@ export function SlackSearchView({
               In Slack app settings, add this redirect URL under OAuth &amp;
               Permissions. Add user scopes <code>search:read.public</code>,{" "}
               <code>search:read.private</code> and{" "}
-              <code>search:read.files</code>. Find Client ID and Client Secret
-              under Basic Information.
+              <code>search:read.files</code>. To let people opt in to DM
+              reading, also add <code>im:history</code>,{" "}
+              <code>im:read</code>, <code>mpim:history</code> and{" "}
+              <code>mpim:read</code>. Find Client ID and Client Secret under
+              Basic Information.
             </p>
             <p className="text-xs font-mono break-all">
               {status.redirectUri ?? "Configure a public HTTPS URL first."}
@@ -304,8 +357,8 @@ export function SlackSearchAccess({
   return (
     <SlackSearchView
       status={query.data}
-      onConnect={async () => {
-        const result = await slackToolsApi.connect(companyId, endpointId);
+      onConnect={async (options) => {
+        const result = await slackToolsApi.connect(companyId, endpointId, options);
         window.location.assign(result.url);
       }}
       onDisconnect={async () => {
