@@ -1232,6 +1232,39 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
+  async function strandedBehindExecutionBlocker(status: string) {
+    const seeded = await strandedMention();
+    const messages = await addStrandedMessages(seeded);
+    await db.insert(issueRecoveryActions).values({ companyId: seeded.company.id, sourceIssueId: seeded.issue.id,
+      kind: "active_run_watchdog", cause: "uncertain_provider_action", ownerType: "board", status: "active",
+      fingerprint: `stranded-blocker:${seeded.run.id}`, nextAction: "Reconcile", evidence: { runId: seeded.run.id } });
+    await db.update(issues).set({ status }).where(eq(issues.id, seeded.issue.id));
+    return { seeded, messages };
+  }
+
+  it.each(["done", "cancelled"])("does not ask saved legacy delivery to run on a %s task", async status => {
+    const { messages } = await strandedBehindExecutionBlocker(status);
+    const deps = callbacks(db), queue = createHeartbeatQueue(db, deps);
+    await queue.resumeQueuedRuns();
+    await queue.resumeQueuedRuns();
+    expect(deps.resumeSavedLegacyComments).not.toHaveBeenCalled();
+    const rows = await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, messages.map(row => row.id)));
+    expect(rows).toHaveLength(messages.length);
+    for (const before of messages) {
+      expect(rows.find(row => row.id === before.id)).toMatchObject({ payload: before.payload,
+        status: "deferred_issue_execution", runId: null, finishedAt: null, error: null });
+    }
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("still delivers saved legacy comments while the task stays live", async () => {
+    const { messages } = await strandedBehindExecutionBlocker("in_progress");
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.resumeSavedLegacyComments).toHaveBeenCalledTimes(messages.length);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("retries a rejected native release on the next saved message", async () => {
     const seeded = await strandedMention("native"), messages = await addStrandedMessages(seeded);
     const deps = callbacks(db);

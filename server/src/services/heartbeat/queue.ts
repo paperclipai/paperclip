@@ -2236,7 +2236,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         logger.warn({ err, requestId: wake.id }, "saved chat source could not record its resume outcome");
       });
     }
-    const strandedQueues = await db.select({ wake: agentWakeupRequests })
+    const strandedQueues = await db.select({ wake: agentWakeupRequests, issueStatus: issues.status })
       .from(agentWakeupRequests)
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
@@ -2262,7 +2262,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const releasedNativeSources = new Set<string>();
-    for (const { wake } of strandedQueues) {
+    for (const { wake, issueStatus } of strandedQueues) {
       const ownerWake = isDependencyResolvedWakePayload(wake.payload) || isAssignmentWakePayload(wake.payload);
       if (!ownerWake && !queuedCommentIdsFromWakePayload(wake.payload).length &&
           !await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload)) continue;
@@ -2310,7 +2310,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (latest.runtimeMode === "legacy") {
         const cancelledAdmission = latest.status === "cancelled" && !latest.startedAt &&
           latest.errorCode === "execution_reconciliation_required";
-        if ((latest.status !== "cancelled" || cancelledAdmission) && await getExecutionBlocker(db, wake.companyId, String(wake.payload?.issueId))) {
+        const terminalTask = issueStatus === "done" || issueStatus === "cancelled";
+        if (!terminalTask && (latest.status !== "cancelled" || cancelledAdmission) &&
+            await getExecutionBlocker(db, wake.companyId, String(wake.payload?.issueId))) {
           await resumeSavedLegacyComments(wake.companyId, wake.id).catch(err => {
             scope.onError?.(err);
             logger.warn({ err, queueId: wake.id }, "failed to deliver saved legacy comment after recovery stopped");
