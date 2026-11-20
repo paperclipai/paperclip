@@ -100,6 +100,7 @@ tools, persistent memory, session persistence, skills, and MCP support.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | cwd | string | (assigned task workspace) | Absolute working directory override; otherwise use Paperclip's resolved task workspace |
+| startInWorkspace | boolean | true | Pass --in <cwd> so Hermes starts the session in the resolved working directory. Needs Hermes 0.21.4+; set false for older Hermes versions |
 | persistSession | boolean | true | Resume sessions across heartbeats |
 | worktreeMode | boolean | false | Use git worktree for isolated changes |
 | checkpoints | boolean | false | Enable filesystem checkpoints |
