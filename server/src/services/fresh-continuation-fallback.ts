@@ -25,6 +25,7 @@ import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
+import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isPersonOwnedFailureCode } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
@@ -150,7 +151,7 @@ async function personOwnedTaskWait(tx: Db, input: { companyId: string; issue: ty
   if (approval) return "approval_pending";
   const [question] = await tx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issue.id),
-    eq(issueThreadInteractions.status, "pending"))).limit(1);
+    eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition())).limit(1);
   if (question) return "question_pending";
   const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
     .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));
