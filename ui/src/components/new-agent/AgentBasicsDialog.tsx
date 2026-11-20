@@ -115,6 +115,10 @@ export function AgentBasicsDialog({
     ...(kimiAvailable ? [{ ...nativeRunner!, type: "kimi_runtime" }] : [])];
   const experimentalRunnerAvailable = experimental.data?.enableNativeRunner === true
     && adapters?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled && adapter.supportedRunners?.length !== 0);
+  const advancedRunnerOptions = [
+    { value: "grok", label: "Grok Build (Paperclip Runner)" },
+    { value: "opencode", label: "OpenCode (Paperclip Runner)" },
+  ].filter(option => !cloud || harnessPolicy.isCloudRunnerProviderAllowed(option.value));
   const validAdapter = choices.some((adapter) => adapter.type === adapterType)
     || (experimentalRunnerAvailable && adapterType === "paperclip_runner" && (runnerProvider !== "antigravity" || antigravityQualified)
       && isNewAgentAdapterAllowed(adapterType, { cloud, harnessPolicy, nativeRunnerEnabled: true, runnerProvider }));
@@ -320,7 +324,7 @@ export function AgentBasicsDialog({
                     );
                   })}
                 </div>
-                {experimentalRunnerAvailable && <details className="space-y-3">
+                {experimentalRunnerAvailable && advancedRunnerOptions.length > 0 && <details className="space-y-3">
                   <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
                   <div className="space-y-2">
                     <label className="text-sm text-muted-foreground">Experimental harness</label>
@@ -328,10 +332,7 @@ export function AgentBasicsDialog({
                       value={adapterType === "paperclip_runner" ? runnerProvider : ""}
                       placeholder="Choose a native harness…"
                       onValueChange={provider => { setRunnerProvider(provider); setAdapterType("paperclip_runner"); }}
-                      options={[
-                        { value: "grok", label: "Grok Build (Paperclip Runner)" },
-                        { value: "opencode", label: "OpenCode (Paperclip Runner)" },
-                      ]} />
+                      options={advancedRunnerOptions} />
                   </div>
                 </details>}
               </fieldset>

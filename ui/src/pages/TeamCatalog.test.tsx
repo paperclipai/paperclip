@@ -132,6 +132,14 @@ describe("TeamCatalog routes", () => {
     expect(resolveTeamInstallAdapterType("paperclip_runner", []))
       .toBeNull();
   });
+
+  it("preserves an allowed saved Runner only while its adapter is available", () => {
+    const harnessPolicy = createCloudHarnessPolicy(["copilot_runtime"]);
+    const options = { cloud: true, harnessPolicy, adapterConfig: { provider: "acpx", acpxAgent: "copilot" } };
+    expect(resolveTeamInstallAdapterType("paperclip_runner", [], { ...options, nativeRunnerAvailable: true })).toBe("paperclip_runner");
+    expect(resolveTeamInstallAdapterType("paperclip_runner", [], { ...options, nativeRunnerAvailable: false })).toBeNull();
+    expect(resolveTeamInstallAdapterType("paperclip_runner", [], { ...options, adapterConfig: {}, nativeRunnerAvailable: true })).toBeNull();
+  });
 });
 
 async function act(callback: () => void | Promise<void>) {
@@ -276,10 +284,10 @@ describe("TeamCatalog install preview path", () => {
     vi.clearAllMocks();
   });
 
-  async function renderPage(cloud = false) {
+  async function renderPage(cloud = false, availableHarnesses = sampleHarnesses) {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    if (cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
+    if (cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses } });
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -307,8 +315,12 @@ describe("TeamCatalog install preview path", () => {
     { cloud: true, acpxAgent: "antigravity", chooseRunner: false, expected: "paperclip_runner", onlyRunner: true },
     { cloud: true, acpxAgent: "antigravity", chooseRunner: true, expected: "paperclip_runner" },
     { cloud: true, acpxAgent: "copilot", chooseRunner: false, expected: undefined },
+    { cloud: true, acpxAgent: "copilot", chooseRunner: false, expected: undefined, availableHarnesses: ["copilot_runtime"] },
+    { cloud: true, acpxAgent: "copilot", chooseRunner: false, expected: undefined, availableHarnesses: ["claude_local", "copilot_runtime"] },
+    { cloud: true, acpxAgent: "copilot", chooseRunner: true, expected: undefined, availableHarnesses: ["copilot_runtime"] },
+    { cloud: true, acpxAgent: "copilot", chooseRunner: true, expected: undefined, availableHarnesses: ["claude_local", "copilot_runtime"], chooseLegacyFirst: true },
     { cloud: false, acpxAgent: "antigravity", chooseRunner: false, expected: undefined },
-  ])("submits the selected native team profile (cloud=$cloud, source=$acpxAgent, reset=$chooseRunner, expected=$expected)", async ({ cloud, acpxAgent, chooseRunner, expected, onlyRunner }) => {
+  ])("submits the selected native team profile (cloud=$cloud, source=$acpxAgent, reset=$chooseRunner, expected=$expected, policy=$availableHarnesses)", async ({ cloud, acpxAgent, chooseRunner, expected, onlyRunner, availableHarnesses, chooseLegacyFirst }) => {
     mockAdapterAvailability.disabled = new Set(onlyRunner ? ["claude_local", "codex_local", "grok_local", "opencode_local"] : []);
     const preview = makePreview();
     preview.portabilityPreview.manifest.agents = [{
@@ -318,10 +330,19 @@ describe("TeamCatalog install preview path", () => {
       runtimeConfig: {}, permissions: {}, permissionGrants: [], budgetMonthlyCents: 0, metadata: null,
     }];
     mockTeamCatalogApi.preview.mockResolvedValue(preview);
-    const root = await renderPage(cloud);
+    const root = await renderPage(cloud, availableHarnesses);
     await act(async () => findButton("Install team")!.click());
     await flushReact();
     if (chooseRunner) {
+      if (chooseLegacyFirst) {
+        const picker = [...document.querySelectorAll<HTMLButtonElement>('button[role="combobox"]')].find(button => /Paperclip Runner/.test(button.textContent ?? ""))!;
+        await act(async () => { picker.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+        await flushReact();
+        const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent?.trim() === "Claude Code");
+        expect(option).toBeDefined();
+        await act(async () => option!.click());
+        await flushReact();
+      }
       const picker = [...document.querySelectorAll<HTMLButtonElement>('button[role="combobox"]')]
         .find(button => /Claude Code|Paperclip Runner/.test(button.textContent ?? ""))!;
       expect(picker).toBeTruthy();

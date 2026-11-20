@@ -299,6 +299,29 @@ it("hides Google Antigravity when the runtime adapter is disabled", async () => 
   await name();
   expect(document.querySelector('input[value="antigravity_runtime"]')).toBeNull();
 });
+it.each([
+  { availableHarnesses: ["gemini_local"], expected: [] },
+  { availableHarnesses: [], expected: [] },
+  { availableHarnesses: ["grok_local"], expected: ["grok"] },
+  { availableHarnesses: ["opencode_local"], expected: ["opencode"] },
+])("filters Advanced native choices using the deployment policy ($availableHarnesses)", async ({ availableHarnesses, expected }) => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  await name();
+  const picker = document.querySelector<HTMLButtonElement>('[aria-label="Experimental harness"]');
+  if (expected.length === 0) {
+    expect(picker).toBeNull();
+    expect(document.querySelector("summary")).toBeNull();
+  } else {
+    expect(picker).toBeTruthy();
+    await act(async () => (document.querySelector("summary") as HTMLElement).click());
+    await act(async () => picker!.click());
+    expect([...document.querySelectorAll('[role="option"]')].map(option => option.getAttribute("data-value"))).toEqual(expected);
+  }
+});
+
 it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Advanced", async provider => {
   await name();
   await act(async () => (document.querySelector("summary") as HTMLElement).click());
