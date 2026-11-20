@@ -158,6 +158,16 @@ describe("legacy continuation persisted authority", () => {
     expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("queued");
     expect(await f.runs()).toHaveLength(2);
   });
+  it("repairs when a connection-intent delivery stays unsettled past its bound", async () => {
+    const f = await fixture();
+    const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "connection_intent", status: "accepted", resolvedAt: new Date(),
+      payload: { version: 1, requestingAgentId: f.agentId, serviceSlug: "github" } }).returning();
+    await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId,
+      createdAt: new Date(Date.now() - 6 * 60_000) });
+    expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("queued");
+    expect(await f.runs()).toHaveLength(2);
+  });
   it("does not roll back the ledger when a fast repair finishes before enqueue returns", async () => {
     const f = await fixture();
     await f.createRecovery(async first => {

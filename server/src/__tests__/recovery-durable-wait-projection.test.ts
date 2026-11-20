@@ -96,6 +96,28 @@ const pendingExecution = { status: "pending", currentStageId: null, currentStage
     expect((await collectDispositionRepairSourceState(db, { issue: current })).hasDurableWaitingPath).toBe(false);
   });
 
+  it("does not hold recovery on a connection-intent delivery the worker cannot settle", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
+    const payload = { version: 1, requestingAgentId: f.agentId, serviceSlug: "github" };
+    const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issue.id,
+      kind: "connection_intent", status: "accepted", resolvedAt: new Date(), payload }).returning();
+    const notWaiting = { hasDurableWaitingPath: false, durablePathReason: null };
+    // A stale undelivered row is retried without end; it is not a wait.
+    await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId,
+      createdAt: new Date(Date.now() - 6 * 60_000) });
+    let [current] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    expect(await readDispositionRepairDurableWaitingState(db, { issue: current })).toEqual(notWaiting);
+    expect(await collectDispositionRepairSourceState(db, { issue: current })).toMatchObject(notWaiting);
+
+    // A fresh row on a todo issue is never delivered by the worker; it is not a wait.
+    await db.update(connectionIntentDeliveries).set({ createdAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, card.id));
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issue.id));
+    [current] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    expect(await readDispositionRepairDurableWaitingState(db, { issue: current })).toEqual(notWaiting);
+    expect(await collectDispositionRepairSourceState(db, { issue: current })).toMatchObject(notWaiting);
+  });
+
   it.each(["user_owner", "blocker", "monitor", "execution_stage", "interaction", "approval"] as const)(
     "preserves %s precedence and resolves the original action without a wake", async reason => {
       const f = await fixture();
