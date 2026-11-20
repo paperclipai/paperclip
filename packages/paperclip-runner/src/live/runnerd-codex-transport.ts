@@ -4018,7 +4018,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: Parameters<typ
   return applyProviderObservabilityEnvironment(createCapabilityRunnerdProviderEnvironmentBase(input), input.options.observability, input.provider === "acpx");
 }
 
-const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
+export const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
   "PAPERCLIP_AI_PROVIDER_KEY",
   "PAPERCLIP_AI_PROVIDER_URL",
   "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
