@@ -1362,6 +1362,7 @@ function buildRunStatusToast(
   // Interrupt is an intentional conversation control. Its caller gives
   // feedback; the terminal event must not announce a cancelled/failed run.
   if (errorCode === "operator_interrupted") return null;
+  if (status === "cancelled" && errorCode === "provider_limit_wait") return null;
   // Workspace contention is ordinary scheduling, not a failed user action.
   if (errorCode === "workspace_busy" || errorCode === "agent_directory_busy") return null;
   const contextSource = readString(payload.contextSource);

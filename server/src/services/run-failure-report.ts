@@ -14,13 +14,16 @@ import {
 import { logger } from "../middleware/logger.js";
 import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
-import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
+import { isOwnedAiConnectionSelectionRejection } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "./project-storage-environment-reason.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE } from "./native-runtime/native-tool-receipt-limit.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { REVIEWED_CHAT_BINDING_NOT_READY } from "./reviewed-chat-binding-diagnostics.js";
+import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "./reusable-sandbox-resume-error.js";
 import { readProviderFailure } from "@paperclipai/shared";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -88,10 +91,8 @@ function isAiConnectionSelectionBlocker(run: HeartbeatRun, options: RunFailureRe
     run.executionStage !== "preparing" || options.phase !== "setup" ||
     run.exitCode != null || run.signal != null
   ) return false;
-  const configuration = asRecord(run.resultJson?.configurationIncomplete);
   const recovery = asRecord(run.resultJson?.executionRecovery);
-  return configuration?.reason === "ai_connection_unavailable" &&
-    isAiConnectionConfigurationReason(configuration.selectionFailure) &&
+  return isOwnedAiConnectionSelectionRejection(run.resultJson?.configurationIncomplete) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
@@ -175,6 +176,19 @@ function isPluginRunnerAiConnectionRequiredBlocker(run: HeartbeatRun, options: R
   const configuration = asRecord(run.resultJson?.configurationIncomplete);
   const recovery = asRecord(run.resultJson?.executionRecovery);
   return configuration?.reason === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
+/** The source project's storage cannot serve the agent's environment, refused before dispatch; the task notice names the owner action. */
+function isProjectStorageEnvironmentBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return configuration?.reason === PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
@@ -264,8 +278,27 @@ function isProviderQuotaFailure(run: HeartbeatRun, options: RunFailureReportOpti
 function isNativeProviderUsageLimitFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   if (run.status !== "failed" || run.runtimeMode !== "native" ||
       run.errorCode !== "native_provider_usage_limit" || options.phase === "setup" || run.signal != null) return false;
-  const category = readProviderFailure(asRecord(run.resultJson)?.providerFailure)?.category;
-  return category === "quota_exhausted" || category === "rate_limit";
+  const result = asRecord(run.resultJson);
+  // A same-run startup retry keeps the first attempt's providerFailure; the
+  // limit that ended the run is saved beside it.
+  return [result?.providerFailure, asRecord(asRecord(result?.providerLimitStartup)?.failure)].some(value => {
+    const category = readProviderFailure(value)?.category;
+    return category === "quota_exhausted" || category === "rate_limit";
+  });
+}
+
+/**
+ * A server restart can interrupt a run whose provider turn already ended on an
+ * exhausted allowance, before its executor saves `native_provider_usage_limit`.
+ * Restart recovery then ends the run as `provider_checkpoint_permanently_failed`.
+ * The task still takes its provider-limit wait, so the same expected failure
+ * stays unreported. The run's persisted runner terminal is the proof.
+ */
+async function isRestartEndedNativeUsageLimit(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
+  if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== "native_restart_recovery_blocked" ||
+      run.error !== "provider_checkpoint_permanently_failed" || options.phase === "setup" || run.signal != null) return false;
+  const { readPersistedNativeTerminalUsageLimit } = await import("./native-runtime/native-provider-failure-evidence.js");
+  return readPersistedNativeTerminalUsageLimit(db, run);
 }
 
 function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
@@ -287,14 +320,20 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
  * carries the task in its context, so the company/context-issue index bounds
  * the read to that task's runs created since this one.
  */
-async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
-  if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
-      run.nativeIssueId == null || options.phase === "setup" || run.signal != null) return false;
+function scheduledNativeRetryReason(run: HeartbeatRun, options: RunFailureReportOptions): string | null {
+  if (run.runtimeMode !== "native" || run.nativeIssueId == null || options.phase === "setup" || run.signal != null) return null;
+  if (run.status === "failed" && run.errorCode === NATIVE_PROVIDER_OVERLOADED_CODE) return NATIVE_PROVIDER_OVERLOADED_CODE;
+  return run.status === "failed" || run.status === "cancelled" ? NATIVE_TOOL_RECEIPT_LIMIT_CODE : null;
+}
+
+async function isScheduledNativeRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
+  const reason = scheduledNativeRetryReason(run, options);
+  if (!reason) return false;
   const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, run.companyId),
     sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${run.nativeIssueId}`, gte(heartbeatRuns.createdAt, run.createdAt),
     eq(heartbeatRuns.agentId, run.agentId),
-    eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, NATIVE_PROVIDER_OVERLOADED_CODE),
+    eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, reason),
   )).limit(1);
   return retry !== undefined;
 }
@@ -307,6 +346,17 @@ async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options
 function isScheduledReviewedChatRetry(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   return run.status === "failed" && run.errorCode === REVIEWED_CHAT_BINDING_NOT_READY &&
     options.reviewedChatRetry === "scheduled";
+}
+
+/**
+ * The sandbox provider answered a saved-sandbox resume with an HTTP 5xx before
+ * provider dispatch, and the setup path scheduled the bounded retry of the same
+ * lease. The retry owns recovery; an exhausted or unscheduled retry, and any
+ * other resume refusal, stays reportable.
+ */
+function isScheduledSandboxResumeRetry(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  return run.status === "failed" && run.errorCode === REUSABLE_SANDBOX_RESUME_FAILED_CODE &&
+    options.sandboxResumeRetry === "scheduled";
 }
 
 const providerAuthErrorCodes = new Set(["claude_auth_required", "acpx_auth_required"]);
@@ -363,13 +413,14 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   // The terminal write that ends the retry reports instead (`isNewTerminalRunFailure`).
   if (isPendingNativeRetry(run)) return Promise.resolve();
   // The setup path reports this run again once it has decided the retry.
-  if (options.reviewedChatRetry === "pending") return Promise.resolve();
+  if (options.reviewedChatRetry === "pending" || options.sandboxResumeRetry === "pending") return Promise.resolve();
   if (mode === "unexpected" && (
     isMissingSecretConfigurationBlocker(run, options) ||
     isAiConnectionSelectionBlocker(run, options) ||
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
     isRestrictedWorkspaceSourceBlocker(run, options) ||
     isPluginRunnerAiConnectionRequiredBlocker(run, options) ||
+    isProjectStorageEnvironmentBlocker(run, options) ||
     isProjectAccessDenialBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
@@ -377,6 +428,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isCodexAcpModelCapacityFailure(run, options) ||
     isAcpProviderAccessFailure(run, options) ||
     isScheduledReviewedChatRetry(run, options) ||
+    isScheduledSandboxResumeRetry(run, options) ||
     isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;
@@ -419,11 +471,16 @@ async function captureTerminalRunFailure(
         return false;
       });
       if (rejectedExternally) return;
-      const capacityRetry = await isScheduledNativeCapacityRetry(db, run, options).catch((err) => {
-        logger.warn({ err, runId: run.id }, "failed to read native capacity retry for run failure report");
+      const scheduledRetry = await isScheduledNativeRetry(db, run, options).catch((err) => {
+        logger.warn({ err, runId: run.id }, "failed to read native scheduled retry for run failure report");
         return false;
       });
-      if (capacityRetry) return;
+      if (scheduledRetry) return;
+      const restartEndedUsageLimit = await isRestartEndedNativeUsageLimit(db, run, options).catch((err) => {
+        logger.warn({ err, runId: run.id }, "failed to read native usage-limit terminal for run failure report");
+        return false;
+      });
+      if (restartEndedUsageLimit) return;
     }
 
     const taskId = readTaskId(run);

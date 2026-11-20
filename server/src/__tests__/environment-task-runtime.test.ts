@@ -5,7 +5,7 @@ import { environmentTaskErrorCodeData, environmentTaskOperationSchema, parseEnvi
   readEnvironmentTaskErrorCode, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask, isSettledReadyRunnerState, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
-import { runnerLaunchPreparationDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
+import { createRunnerProviderLaunch, runnerLaunchPreparationDigest, runnerLaunchRunDigest, runnerProviderLaunchRequirements } from "../vendor/paperclip-runner/index.js";
 
 const state = vi.hoisted(() => ({ plugin: {} as any, release: vi.fn(), identity: vi.fn(), config: vi.fn() }));
 vi.mock("../services/provider-fresh-workspace.js", () => ({
@@ -327,6 +327,26 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database(value).db, worker() as never, { companyId: "company", leaseId, operation })).resolves.toMatchObject({ kind: "accepted" });
     await expect(executeEnvironmentTask(database(value).db, worker() as never, { companyId: "company", leaseId,
       operation: { ...operation, credential: { type: "claude-env", environment: { ANTHROPIC_API_KEY: "never-leak" } } } })).rejects.toThrow("validation unavailable");
+  });
+  it.each(["grok", "copilot", "opencode"] as const)("dispatches a %s environment credential only for the matching harness", async harness => {
+    const credentials = {
+      grok: { type: "provider-env" as const, provider: "grok" as const, environment: { XAI_API_KEY: "never-leak" } },
+      copilot: { type: "provider-env" as const, provider: "copilot" as const, environment: { COPILOT_GITHUB_TOKEN: "never-leak" } },
+      opencode: { type: "provider-env" as const, provider: "opencode" as const, environment: { OPENROUTER_API_KEY: "never-leak" } },
+    };
+    const operation = { ...submit, runner: { ...submit.runner, harness }, accountIdentity: "account", credential: credentials[harness] };
+    const validated = () => {
+      const value = row();
+      Object.assign(value.lease.metadata, { runnerTaskProjectAuthValidation: { configurationId: "configuration", provider: harness, projectIds: [projectId] } });
+      return value;
+    };
+    const accepted = worker();
+    await expect(executeEnvironmentTask(database(validated()).db, accepted as never, { companyId: "company", leaseId, operation })).resolves.toMatchObject({ kind: "accepted" });
+    expect(accepted.call).toHaveBeenCalledOnce();
+    const denied = worker();
+    await expect(executeEnvironmentTask(database(validated()).db, denied as never, { companyId: "company", leaseId,
+      operation: { ...operation, credential: credentials[harness === "grok" ? "copilot" : "grok"] } })).rejects.toThrow("validation unavailable");
+    expect(denied.call).not.toHaveBeenCalled();
   });
   it.each(["allowed", "denied", "wrong-configuration", "wrong-provider", "timeout"])("records only a matching successful project validation (%s)", async mode => {
     const operation = { kind: "check_project_auth" as const, configurationId: "configuration", provider: "openai" as const, projectIds: [projectId] };
@@ -696,4 +716,18 @@ describe("plugin-provided Runner execution", () => {
     expect(() => parseEnvironmentTaskResult(submit, "attempt-1", { ...rejected, reason: "unknown" })).toThrow();
     expect(() => parseEnvironmentTaskResult({ kind: "stop" }, "attempt-1", rejected)).toThrow();
   });
+});
+
+describe("Runner launch requirements for plugin preparation", () => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  it.each([{ grokDisableWebSearch: true }, { grokEffort: "high" as const, grokDisableWebSearch: true }, { grokDisableWebSearch: false }])(
+    "passes the Runner's Grok settings %j through the task contract", settings => {
+      const requirements = runnerProviderLaunchRequirements({ provider: "acpx", acpxAgent: "grok", ...settings }, identity,
+        { model: "grok-build" }, null, "Follow the assigned instructions.");
+      const prepared = environmentTaskOperationSchema.parse({ kind: "prepare", projectIds: [], requirements });
+      expect(prepared).toMatchObject({ requirements: { settings: { acpxAgent: "grok", ...settings } } });
+      expect(createRunnerProviderLaunch(requirements, { options: {}, root: "/runner", cwd: "/workspace", codexHome: "/runner/codex",
+        providerNodeCommand: "node", opencodeProxyPath: "/runner/opencode.cjs", acpxSidecarPath: "/runner/acpx.cjs" }))
+        .toMatchObject({ agent: "grok", grokDisableWebSearch: settings.grokDisableWebSearch });
+    });
 });
