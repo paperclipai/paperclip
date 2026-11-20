@@ -60,6 +60,17 @@ export type ProviderLimitReset = {
 export type StartupProviderLimit = { failure: ProviderFailure; observedAt: Date };
 
 /**
+ * The startup refusal a hold saved when it was created. A same-run retry keeps
+ * the run's first saved failure, so only the hold names the refusal that ended it.
+ */
+function holdStartupLimit(evidence: Record<string, unknown> | null | undefined): StartupProviderLimit | undefined {
+  const saved = asRecord(asRecord(evidence).providerLimitStartup);
+  const failure = readProviderFailure(saved.failure);
+  const observedAt = typeof saved.observedAt === "string" ? new Date(saved.observedAt) : null;
+  return failure?.phase === "startup" && observedAt && Number.isFinite(observedAt.getTime()) ? { failure, observedAt } : undefined;
+}
+
+/**
  * When the provider said the usage limit resets, from the run's own durable
  * evidence. Null unless the last turn event is a provider-observed settlement
  * reporting an exhausted allowance with a reset after it, or no turn started
@@ -202,7 +213,7 @@ export async function requestProviderLimitResumeRetry(db: Db, input: {
   if (run && ["queued", "running"].includes(run.status)) return { requested: false, waitUntil: new Date(now.getTime() + 60_000) };
   if (!run || run.runtimeMode !== "native" || run.status !== "failed" || run.errorCode !== NATIVE_PROVIDER_USAGE_LIMIT)
     return done("source_run_mismatch");
-  const reset = await readNativeUsageLimitReset(db, run);
+  const reset = await readNativeUsageLimitReset(db, run, holdStartupLimit(action.evidence));
   if (!reset) return done("reset_unknown");
   if (!reset.withinAutomaticWait) {
     // Too far out to wait by itself: the hold names the reset and leaves the

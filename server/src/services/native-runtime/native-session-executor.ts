@@ -13460,11 +13460,13 @@ async function executePaperclipNativeSessionAttempt(
       // An exhausted provider allowance is not ambiguous session state: the
       // provider ended its turn. Say when it resets and whether Paperclip will
       // retry then. A failed read only loses that detail.
+      // A limit at session start has no turn event; its reset comes from this
+      // failure. The hold keeps it: the run row keeps an earlier attempt's failure.
+      const startupProviderLimit = sourceFailureCode === "native_provider_usage_limit" && providerFailure?.phase === "startup"
+        ? { failure: providerFailure, observedAt: now } : undefined;
       const providerLimit = sourceFailureCode === "native_provider_usage_limit" && phase === "terminal_failure"
         ? await import("./provider-limit-resume.js").then(async ({ planProviderLimitResume, providerLimitNextAction }) => {
-          // A limit at session start has no turn event; its reset comes from this failure.
-          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId,
-            providerFailure?.phase === "startup" ? { failure: providerFailure, observedAt: now } : undefined);
+          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId, startupProviderLimit);
           return { plan, nextAction: providerLimitNextAction(plan) };
         }).catch((failure: unknown) => {
           logger.warn({ err: failure, runId: input.execution.binding.runId }, "provider limit reset unavailable");
@@ -13833,6 +13835,10 @@ async function executePaperclipNativeSessionAttempt(
               recoveryEvidence.providerSessionEstablished,
             ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
             ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
+            ...(providerLimit && startupProviderLimit ? { providerLimitStartup: {
+              failure: outputRedactor.redact(startupProviderLimit.failure),
+              observedAt: startupProviderLimit.observedAt.toISOString(),
+            } } : {}),
           },
           nextAction:
             providerLimit
