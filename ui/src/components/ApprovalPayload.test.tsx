@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApprovalPayloadRenderer, approvalLabel } from "./ApprovalPayload";
+import { ANALYTICS_MASK_CLASS } from "../lib/analytics/privacy";
 import { ThemeProvider } from "../context/ThemeContext";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -223,6 +224,33 @@ describe("ApprovalPayloadRenderer", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps instruction files, notes, and the raw fallback inside the replay mask", () => {
+    const root = createRoot(container);
+    const selector = "." + ANALYTICS_MASK_CLASS.split(" ").join(".");
+    const cases = [
+      {
+        payload: { note: "Private note", bundle: { files: [{ path: "private.md", content: "Private instructions" }] } },
+        expected: ["Private note", "private.md", "Private instructions"],
+      },
+      { payload: { fallbackField: "Private fallback" }, expected: ["Private fallback"] },
+    ];
+    try {
+      for (const { payload, expected } of cases) {
+        act(() => {
+          root.render(
+            <ThemeProvider>
+              <ApprovalPayloadRenderer type="instruction_generation" payload={payload} />
+            </ThemeProvider>,
+          );
+        });
+        const maskedText = Array.from(container.querySelectorAll(selector), (element) => element.textContent).join(" ");
+        for (const value of expected) expect(maskedText).toContain(value);
+      }
+    } finally {
+      act(() => root.unmount());
+    }
   });
 
   it("can hide the repeated title when the card header already shows it", () => {

@@ -268,7 +268,7 @@ export function InstructionGenerationPayload({ payload }: { payload: Record<stri
   const files = instructionBundleFiles(payload);
   const note = firstNonEmptyString(payload.note);
   return (
-    <div className="mt-3 space-y-2 text-sm">
+    <div className={cn("mt-3 space-y-2 text-sm", ANALYTICS_MASK_CLASS)}>
       <PayloadField label="Title" value={payload.title} />
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">Target agent</span>
