@@ -65,6 +65,28 @@ it("run setup reuses a key without queuing behind run claims or joining their de
   expect(cycle.filter(result => result.status === "rejected")).toHaveLength(1);
 }, 30_000);
 
+it("run setup does not return the key of an agent whose deletion is in progress", async () => {
+  const agent = await newAgent();
+  await agentIdentityService(db).ensureAgentIdentity(companyId, agent.id);
+  const locked = gate(), commitDeletion = gate();
+  const deletion = db.transaction(async tx => {
+    await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agent.id)).for("update");
+    locked.open(); await commitDeletion.opened;
+    await tx.delete(agents).where(eq(agents.id, agent.id));
+  });
+  await locked.opened;
+  let setupSettled = false;
+  const setup = agentIdentityService(db).ensureAgentIdentity(companyId, agent.id).finally(() => { setupSettled = true; });
+  void setup.catch(() => undefined);
+  await vi.waitFor(async () => {
+    expect(setupSettled || await lockWaiters('select %"agents"%') === 1).toBe(true);
+  }, { timeout: 10_000, interval: 25 });
+  expect(setupSettled).toBe(false);
+  commitDeletion.open();
+  await deletion;
+  await expect(setup).rejects.toMatchObject({ status: 404 });
+}, 30_000);
+
 it("first provisioning does not wait for a run claim's share lock", async () => {
   const agent = await newAgent();
   const holding = gate(), release = gate();

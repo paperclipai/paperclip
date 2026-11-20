@@ -41,12 +41,12 @@ export function agentIdentityService(db: Db) {
     },
 
     async ensureAgentIdentity(companyId: string, agentId: string) {
-      const [existing] = await db.select().from(agentIdentityKeys).where(ownership(companyId, agentId));
-      if (existing) return resolveIdentity(existing);
       return db.transaction(async (tx) => {
         const [owner] = await tx.select({ id: agents.id }).from(agents)
           .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("key share");
         if (!owner) throw notFound("Agent not found");
+        const [existing] = await tx.select().from(agentIdentityKeys).where(ownership(companyId, agentId));
+        if (existing) return resolveIdentity(existing);
         const keys = generateKeyPairSync("ed25519");
         const publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
         const keyId = fingerprint(keys.publicKey.export({ type: "spki", format: "der" }));
