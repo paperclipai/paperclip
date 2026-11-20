@@ -89,21 +89,25 @@ describe("Runner workspace bridge", () => {
 
   it("distinguishes asking for help from requesting execution on the target task", () => {
     const comment = runnerBridgeDefinitions({ workspace: false, skills: false, api: true, mode: "standard" }).find(tool => tool.name === "comment_on_task");
-    expect(comment?.description).toContain("Omit resume when asking for help with your own task, even if the target task is blocked on yours");
-    expect(comment?.description).toContain("do more work on the target task even if it finishes before they read the comment");
-    expect(comment?.description).toContain("ask for an existing test result without resume; request a new test run with resume: true");
-    expect(comment?.description).toContain("HTTP 409 without saving the comment");
-    expect(comment?.description).toContain("Resume is not an interrupt");
-    expect(comment?.description).toContain("normally queued for the next turn");
-    expect(comment?.description).toContain("an active session goal can receive them in the current turn");
-    expect(comment?.description).toContain("rather than creating a duplicate task or editing the assignee's workspace files");
-    expect(comment?.description).toContain("not as already applied");
+    expect(comment?.description).toContain("Omit `resume` when asking for help with your own task, even if the target task is blocked on yours.");
+    expect(comment?.description).toContain("`resume` applies to the target task, not the task you are asking help with.");
+    expect(comment?.description).toContain("bounded interaction while the target is blocked; it does not resume the target's normal work.");
+    expect(comment?.description).toContain("even if the target task finishes before they read the comment.");
+    expect(comment?.description).toContain("On a finished task, this reopens the task for follow-up.");
+    expect(comment?.description).toContain("Resume does not interrupt an active run or force immediate execution.");
+    expect(comment?.description).toContain("ask for an existing test result without `resume`; request a new test run with `resume: true`.");
+    expect(comment?.description).toContain("`resume: true` returns HTTP 409 without saving the comment.");
+    expect(comment?.description).toContain("Comments on running work are normally queued for a later turn.");
+    expect(comment?.description).toContain("the live runner acknowledges steering, the comment may be delivered to the current turn instead.");
+    expect(comment?.description).toContain("Report queued comments as saved, not applied. Report live-steered comments as delivered, not completed.");
+    expect(comment?.description).toContain("rather than creating a duplicate task or editing the assignee's workspace files.");
     const schema = comment?.inputSchema as { required: string[]; properties: Record<string, { type: string; description?: string }> };
     expect(schema.required).not.toContain("resume");
     expect(schema.properties.resume?.type).toBe("boolean");
-    expect(schema.properties.resume?.description).toContain("requests for help with your own task");
-    expect(schema.properties.resume?.description).toContain("even if it finishes before they read the comment");
-    expect(schema.properties.resume?.description).toContain("HTTP 409 without saving the comment");
+    expect(schema.properties.resume?.description).toContain("This flag applies to the target task, not the caller's task.");
+    expect(schema.properties.resume?.description).toContain("even if the task finishes before they read the comment.");
+    expect(schema.properties.resume?.description).toContain("It does not interrupt a running turn or force immediate execution.");
+    expect(schema.properties.resume?.description).toContain("true returns HTTP 409 without saving the comment.");
   });
   it("forwards a comment's explicit resume intent to the comment API and omits it otherwise", () => {
     const taskId = "8ba8b5a2-066a-4bb2-b591-e396942ecdf5";
