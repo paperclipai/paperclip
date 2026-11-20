@@ -11,8 +11,8 @@ importers:
   ../../packages/plugins/sandbox-providers/boxd:
     dependencies:
       '@boxd-sh/sdk':
-        specifier: ^0.2.20
-        version: 0.2.22
+        specifier: ^0.3.2
+        version: 0.3.2
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -152,8 +152,8 @@ importers:
 
 packages:
 
-  '@boxd-sh/sdk@0.2.22':
-    resolution: {integrity: sha512-NvvYy5nblUPUM+F3EUcjgIH7uzu1ebMiEuL7tf0+4D/2CaszleSAd93S3Pn7py5ywrVLXfB5Rzj/GuABj67Z5g==}
+  '@boxd-sh/sdk@0.3.2':
+    resolution: {integrity: sha512-aUhnhF3nN/0iqP82hclSLH0YWbG6A4vB7iBWR94lMaQfQkMHjT0YX+RYcNY8QAO3y9iZniYDJCC3+zqQLgGcrA==}
     engines: {node: '>=20'}
 
   '@bufbuild/protobuf@2.16.0':
@@ -1723,9 +1723,9 @@ packages:
 
 snapshots:
 
-  '@boxd-sh/sdk@0.2.22':
+  '@boxd-sh/sdk@0.3.2':
     dependencies:
-      '@bufbuild/protobuf': 2.16.0
+      '@bufbuild/protobuf': 2.17.0
       '@grpc/grpc-js': 1.14.7
 
   '@bufbuild/protobuf@2.16.0': {}
