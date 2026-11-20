@@ -474,8 +474,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     ].join("\n"));
     // Always-approve may otherwise be enabled by compatible project settings.
     // Even approve-all runs use one host decision per requested operation.
-    await writePrivateFile(join(agentHomeDirectory, "requirements.toml"),
-      `${input.binding.grokDisableWebSearch === true ? "disable_web_search = true\n" : ""}[ui]\ndisable_bypass_permissions_mode = true\n`);
+    await writePrivateFile(join(agentHomeDirectory, "requirements.toml"), grokRequirements(input.binding.grokDisableWebSearch));
   }
   if (input.agent === "pi") {
     await writePrivateFile(
@@ -547,7 +546,10 @@ export async function prepareAcpxRuntimeSandbox(input: {
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
     ...(input.agent === "kimi" ? { KIMI_CODE_HOME: agentHomeDirectory, PAPERCLIP_KIMI_INSTRUCTIONS: kimiInstructionBinding(policy.systemInstructions).payload } : {}),
     ...(input.agent === "antigravity" ? { GEMINI_HOME: agentHomeDirectory, AGY_ACP_FORCE_FILE_STORAGE: "1" } : {}),
-    ...(input.agent === "grok" ? { GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1" } : {}),
+    ...(input.agent === "grok" ? {
+      GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1",
+      [GROK_REQUIREMENTS_ENV]: grokRequirements(input.binding.grokDisableWebSearch),
+    } : {}),
     ...(input.agent === "pi"
       ? {
           PI_CODING_AGENT_DIR: agentHomeDirectory,
@@ -616,6 +618,12 @@ export async function prepareAcpxRuntimeSandbox(input: {
     launchEnvironment: Object.freeze({ ...launchEnvironment }),
     persistedEnvironment: Object.freeze(persistedEnvironment),
   };
+}
+
+export const GROK_REQUIREMENTS_ENV = "PAPERCLIP_GROK_REQUIREMENTS";
+
+export function grokRequirements(disableWebSearch: boolean | undefined): string {
+  return `${disableWebSearch === true ? "disable_web_search = true\n" : ""}[ui]\ndisable_bypass_permissions_mode = true\n`;
 }
 
 async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined, agent: QualifiedAcpxAgent): Promise<{

@@ -1,7 +1,7 @@
 // This launcher is admitted by digest and receives a verified native executable.
 // Never resolve an executable through PATH or accept command-line overrides.
 const { isAbsolute, join } = require("node:path");
-const { constants, openSync, fstatSync, readSync, closeSync } = require("node:fs");
+const { constants, openSync, fstatSync, readSync, closeSync, writeSync, fsyncSync, renameSync, unlinkSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const executable = process.env.PAPERCLIP_GROK_VERIFIED_EXECUTABLE;
 if (!executable || !isAbsolute(executable)) {
@@ -9,6 +9,12 @@ if (!executable || !isAbsolute(executable)) {
 }
 const environment = { ...process.env };
 delete environment.PAPERCLIP_GROK_VERIFIED_EXECUTABLE;
+const requirements = environment.PAPERCLIP_GROK_REQUIREMENTS;
+delete environment.PAPERCLIP_GROK_REQUIREMENTS;
+if (requirements !== undefined && (!environment.GROK_HOME || !isAbsolute(environment.GROK_HOME)
+  || Buffer.byteLength(requirements) < 1 || Buffer.byteLength(requirements) > 64 * 1024)) {
+  throw new Error("Grok permission requirements are invalid");
+}
 
 // Grok 1.0.13 can cache the pre-refresh model list during ACP initialization.
 // Refresh an expiring subscription first, without inference or protocol output.
@@ -61,6 +67,24 @@ if (!environment.XAI_API_KEY && environment.GROK_HOME && isAbsolute(environment.
     if (refreshed.error || refreshed.status !== 0 || refreshed.signal) {
       throw new Error("Grok subscription refresh failed; reconnect Grok Build");
     }
+  }
+}
+if (requirements !== undefined) {
+  const target = join(environment.GROK_HOME, "requirements.toml");
+  const temporary = `${target}.tmp-${process.pid}`;
+  try {
+    try { unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      const bytes = Buffer.from(requirements, "utf8");
+      let written = 0;
+      while (written < bytes.length) written += writeSync(fd, bytes, written, bytes.length - written);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
+    renameSync(temporary, target);
+  } catch {
+    try { unlinkSync(temporary); } catch {}
+    throw new Error("Grok permission requirements could not be written");
   }
 }
 process.execve(executable, [executable, "agent", "--no-leader", "stdio"], environment);
