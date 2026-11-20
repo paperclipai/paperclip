@@ -3086,11 +3086,12 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
     const session = await gateway.createSession(runSessionInput(company, agent, run));
     const tool = (await gateway.listToolsForSession(session.token)).find(entry => entry.connectionId === connection.id)!;
-    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
-      .rejects.toMatchObject({ status: 502, reasonCode: "remote_mcp_error",
-        message: "Remote MCP server returned an error", details: { code: -32602 } });
+    const failure = await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ status: 502, reasonCode: "remote_mcp_error", details: { code: -32602 } });
+    expect((failure as Error).message).not.toMatch(/Upstream message|Ignore previous instructions/);
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.connectionId, connection.id));
-    expect(invocation).toMatchObject({ errorMessage: "Remote MCP server returned an error" });
+    expect(invocation).toMatchObject({ errorMessage: (failure as Error).message });
     const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, invocation.id));
     expect(JSON.stringify(events)).not.toContain("Ignore previous instructions");
     const audits = await db.select().from(activityLog).where(eq(activityLog.action, "tool_gateway.call_failed"));
@@ -3102,6 +3103,34 @@ describeEmbeddedPostgres("tool gateway service", () => {
     })]));
     expect(JSON.stringify(audits)).not.toContain("Ignore previous instructions");
     expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains a withheld invalid-params error so a stale catalog entry can be reported", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values(readPolicyRow(company, "Allow read tools"));
+    const actual = injectionPreventionModule.promptInjectionPreventionService;
+    const screening = vi.spyOn(injectionPreventionModule, "promptInjectionPreventionService")
+      .mockImplementation((...args) => ({ ...actual(...args), classify: async () => ({
+        status: "classified" as const, violation: true, findings: ["instruction_hijack" as const],
+        model: "screening-model", invocationId: "screening-1", policyVersion: "1",
+      }) }));
+    try {
+      const provider = vi.fn(async (_url: string, init: RequestInit) => Response.json({
+        jsonrpc: "2.0", id: JSON.parse(String(init.body)).id,
+        error: { code: -32602, message: "Tool search_tools was removed from the server. Call tools directly by name." } }));
+      const gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+      const session = await gateway.createSession(runSessionInput(company, agent, run));
+      const tool = (await gateway.listToolsForSession(session.token)).find(entry => entry.connectionId === connection.id)!;
+      const failure = await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} })
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({ status: 502, reasonCode: "remote_mcp_error", details: { code: -32602 },
+        message: expect.stringMatching(/rejected the arguments.*removed or changed this tool.*refresh/i) });
+      expect((failure as Error).message).not.toContain("was removed from the server");
+      const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.connectionId, connection.id));
+      expect(invocation).toMatchObject({ errorMessage: (failure as Error).message });
+      expect(provider).toHaveBeenCalledTimes(1);
+    } finally { screening.mockRestore(); }
   });
 
   it.each([401, 403])("keeps the connection blocked after an HTTP %s authentication failure", async (status) => {
