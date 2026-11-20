@@ -9,39 +9,128 @@ import type { OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { NativeProviderArtifactTransferTimeoutError } from "./native-provider-artifacts.js";
+import { isPluginRpcTimeout } from "./remote-runner-recovery-probe.js";
 
 const names = ["nodeCommand", "opencodeProxy", "opencodeExecutable"] as const;
 export const NATIVE_PROVIDER_ARTIFACT_PUBLISH_ATTEMPTS = 3;
-const sharedCaptures = new Map<string, Promise<unknown>>();
+export const NATIVE_PROVIDER_ARTIFACT_CAPTURE_HEDGE_MS = 90_000;
+
+type Latch = { promise: Promise<void>; resolve: () => void };
+type SharedCapture = {
+  running: number;
+  lastStartedAtMs: number;
+  saved: Latch;
+  settled: Latch;
+};
+
+function latch(): Latch {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+const sharedCaptures = new Map<string, SharedCapture>();
+
+function sharedCaptureFor(key: string) {
+  let shared = sharedCaptures.get(key);
+  if (!shared) {
+    shared = { running: 0, lastStartedAtMs: 0, saved: latch(), settled: latch() };
+    sharedCaptures.set(key, shared);
+  }
+  return shared;
+}
+
+function stopWith(signal: AbortSignal) {
+  let stop!: () => void;
+  const promise = new Promise<never>((_resolve, reject) => {
+    stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+  });
+  promise.catch(() => undefined);
+  return { promise, dispose: () => signal.removeEventListener("abort", stop) };
+}
+
+async function waitForSharedCapture(shared: SharedCapture, hedgeAfterMs: number, stopped: Promise<never>) {
+  const hedgeInMs = shared.lastStartedAtMs + hedgeAfterMs - Date.now();
+  if (hedgeInMs <= 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      shared.saved.promise,
+      shared.settled.promise,
+      new Promise<void>(resolve => { timer = setTimeout(resolve, hedgeInMs); }),
+      stopped,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export async function shareNativeProviderArtifactCapture<T>(input: {
   key: string;
   signal: AbortSignal;
   reuse: () => Promise<T | null>;
-  capture: () => Promise<T>;
+  capture: (signal: AbortSignal) => Promise<T>;
+  hedgeAfterMs?: number;
 }): Promise<T> {
-  const inFlight = sharedCaptures.get(input.key);
-  if (inFlight) {
-    let stop!: () => void;
-    const stopped = new Promise<never>((_resolve, reject) => {
-      stop = () => reject(input.signal.reason);
-      input.signal.addEventListener("abort", stop, { once: true });
-      if (input.signal.aborted) stop();
-    });
-    try {
-      await Promise.race([inFlight.catch(() => undefined), stopped]);
-    } finally {
-      input.signal.removeEventListener("abort", stop);
+  const hedgeAfterMs = input.hedgeAfterMs ?? NATIVE_PROVIDER_ARTIFACT_CAPTURE_HEDGE_MS;
+  const stopped = stopWith(input.signal);
+  try {
+    let shared = sharedCaptureFor(input.key);
+    while (shared.running > 0 && shared.lastStartedAtMs + hedgeAfterMs > Date.now()) {
+      await waitForSharedCapture(shared, hedgeAfterMs, stopped.promise);
+      const reused = await input.reuse();
+      if (reused) return reused;
+      shared = sharedCaptureFor(input.key);
+    }
+    return await captureOrReuse(input, shared, stopped.promise);
+  } finally {
+    stopped.dispose();
+  }
+}
+
+async function captureOrReuse<T>(
+  input: { key: string; signal: AbortSignal; reuse: () => Promise<T | null>; capture: (signal: AbortSignal) => Promise<T> },
+  shared: SharedCapture,
+  stopped: Promise<never>,
+): Promise<T> {
+  const superseded = new AbortController();
+  shared.running += 1;
+  shared.lastStartedAtMs = Date.now();
+  const own = Promise.resolve().then(() => input.capture(AbortSignal.any([input.signal, superseded.signal])));
+  own.catch(() => undefined);
+  try {
+    const first = await Promise.race([own.then(value => ({ value })), shared.saved.promise.then(() => null), stopped]);
+    if (first) {
+      shared.saved.resolve();
+      return first.value;
     }
     const reused = await input.reuse();
+    if (!reused) return await own;
+    superseded.abort(new Error("native_provider_artifacts_capture_superseded"));
+    return reused;
+  } catch (error) {
+    if (input.signal.aborted) throw error;
+    const reused = await input.reuse().catch(() => null);
     if (reused) return reused;
-  }
-  const own = input.capture();
-  sharedCaptures.set(input.key, own);
-  try {
-    return await own;
+    throw error;
   } finally {
-    if (sharedCaptures.get(input.key) === own) sharedCaptures.delete(input.key);
+    shared.running -= 1;
+    const settled = shared.settled;
+    shared.settled = latch();
+    settled.resolve();
+    if (shared.running === 0 && sharedCaptures.get(input.key) === shared) sharedCaptures.delete(input.key);
+  }
+}
+
+export class NativeProviderArtifactExportError extends Error {
+  readonly code: "native_provider_artifacts_export_timeout" | "native_provider_artifacts_export_failed";
+  constructor(cause: unknown) {
+    const code = isPluginRpcTimeout(cause) ? "native_provider_artifacts_export_timeout" : "native_provider_artifacts_export_failed";
+    super(`${code}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "NativeProviderArtifactExportError";
+    this.code = code;
   }
 }
 
@@ -134,7 +223,9 @@ export async function captureRemoteNativeProviderArtifacts<T>(
           input.context?.assertOpen();
           await input.runner.syncOut!([
             { operationId: `provider-artifacts-${randomUUID()}`, files },
-          ]);
+          ]).catch((error: unknown) => {
+            throw new NativeProviderArtifactExportError(error);
+          });
         } finally {
           // The export copy is scratch under the excluded runtime dir. A failed
           // removal must not replace the transfer outcome; it is logged instead.

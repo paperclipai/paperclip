@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeProviderArtifactSource } from "./native-provider-artifacts.js";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { NativeProviderArtifactTransferTimeoutError } from "./native-provider-artifacts.js";
+import { NativeFailedBeforeProviderTurnError } from "./failed-before-provider-turn.js";
 import {
   captureRemoteNativeProviderArtifacts,
   shareNativeProviderArtifactCapture,
@@ -52,6 +54,77 @@ describe("shared provider artifact capture", () => {
     expect(capture).toHaveBeenCalledTimes(2);
   });
 
+  it("starts a run's turn from another run's saved artifact while its own capture is still copying", async () => {
+    const key = `company:${Math.random()}`;
+    const hung = deferred<string>();
+    const fast = deferred<string>();
+    const signals: AbortSignal[] = [];
+    let ready = false;
+    const reuse = vi.fn(async () => ready ? "reused" : null);
+    const capture = vi.fn()
+      .mockImplementationOnce((signal: AbortSignal) => { signals.push(signal); return hung.promise; })
+      .mockImplementationOnce((signal: AbortSignal) => { signals.push(signal); return fast.promise; });
+    const slow = shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 });
+    const other = shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 });
+    await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(2), { interval: 1 });
+    ready = true;
+    fast.resolve("captured");
+    await expect(other).resolves.toBe("captured");
+    await expect(slow).resolves.toBe("reused");
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals[1]!.aborted).toBe(false);
+  });
+
+  it("uses a saved artifact when the run's own capture fails after another run saved one", async () => {
+    const key = `company:${Math.random()}`;
+    let ready = false;
+    const reuse = vi.fn(async () => ready ? "reused" : null);
+    const capture = vi.fn(async () => {
+      ready = true;
+      throw Object.assign(new Error('RPC call "environmentSyncOut" timed out after 330000ms'), { code: -32003 });
+    });
+    await expect(shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture }))
+      .resolves.toBe("reused");
+  });
+
+  it("starts one more capture when the shared capture runs past the hedge delay, not one per waiting run", async () => {
+    const key = `company:${Math.random()}`;
+    const hung = deferred<string>();
+    const hedge = deferred<string>();
+    let ready = false;
+    const reuse = vi.fn(async () => ready ? "reused" : null);
+    const capture = vi.fn().mockImplementationOnce(() => hung.promise).mockImplementationOnce(() => hedge.promise);
+    const runs = Array.from({ length: 8 }, () => shareNativeProviderArtifactCapture({
+      key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 50 }));
+    await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(2), { interval: 1 });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(capture).toHaveBeenCalledTimes(2);
+    ready = true;
+    hedge.resolve("captured");
+    expect((await Promise.all(runs)).sort()).toEqual(["captured", ...Array(7).fill("reused")]);
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start a capture per waiting run when the shared capture fails", async () => {
+    const key = `company:${Math.random()}`;
+    const leader = deferred<string>();
+    const replacement = deferred<string>();
+    let ready = false;
+    const reuse = vi.fn(async () => ready ? "reused" : null);
+    const capture = vi.fn().mockImplementationOnce(() => leader.promise).mockImplementationOnce(() => replacement.promise);
+    const runs = Promise.allSettled(Array.from({ length: 6 }, () => shareNativeProviderArtifactCapture({
+      key, signal: new AbortController().signal, reuse, capture })));
+    leader.reject(new Error("leader copy failed"));
+    await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(2), { interval: 1 });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(capture).toHaveBeenCalledTimes(2);
+    ready = true;
+    replacement.resolve("captured");
+    const settled = await runs;
+    expect(settled.filter(outcome => outcome.status === "rejected")).toHaveLength(1);
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+
   it("lets Stop end a wait for another run's capture", async () => {
     const key = `company:${Math.random()}`;
     const leader = deferred<string>();
@@ -99,6 +172,19 @@ describe("provider artifact transfer step", () => {
       message: "native_provider_artifacts_transfer_timeout: the download of 1024 bytes did not finish within 120 s",
     });
     expect(publish).toHaveBeenCalledTimes(3);
+  });
+
+  it("names a stalled copy out of the sandbox instead of an unknown cause", async () => {
+    vi.mocked(runner.syncOut!).mockRejectedValueOnce(new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT,
+      message: 'RPC call "environmentSyncOut" timed out after 330000ms' }));
+    const publish = vi.fn();
+    const failure = await capture(publish).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "native_provider_artifacts_export_timeout" });
+    expect(new NativeFailedBeforeProviderTurnError(null, failure)).toMatchObject({
+      technicalCause: "native_provider_artifacts_export_timeout",
+      message: "Setting up the computer took too long, so the task is continuing on a fresh one.",
+    });
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it("does not retry a failure that is not a transfer timeout", async () => {
