@@ -184,9 +184,6 @@ export function issueReferenceService(db: Db) {
       })
       .from(issues)
       .where(eq(issues.id, issueId));
-    // NO KEY UPDATE serializes rebuilds of this issue's own mentions without
-    // blocking the KEY SHARE locks that mention FK checks take on target
-    // issues. FOR UPDATE would deadlock two issues that mention each other.
     return (lock ? query.for("no key update") : query)
       .then((rows: Array<{ id: string; companyId: string; title: string; description: string | null }>) => rows[0] ?? null);
   }
