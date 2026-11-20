@@ -141,8 +141,9 @@ export function listTeamInstallAdapterTypes(
 export function resolveTeamInstallAdapterType(
   requestedType: string,
   selectableAdapterTypes: readonly string[],
+  { cloud = false, adapterConfig = {} }: { cloud?: boolean; adapterConfig?: Record<string, unknown> } = {},
 ) {
-  if (selectableAdapterTypes.includes(requestedType)) return requestedType;
+  if (selectableAdapterTypes.includes(requestedType) && (!cloud || isCloudHarnessAllowed(requestedType, adapterConfig))) return requestedType;
   if (selectableAdapterTypes.includes(TEAM_INSTALL_FALLBACK_ADAPTER_TYPE)) {
     return TEAM_INSTALL_FALLBACK_ADAPTER_TYPE;
   }
@@ -1174,6 +1175,7 @@ export function TeamInstallerDialog({
         }
         overrides[slug] = {
           adapterType: resolvedAdapterType,
+          ...(cloud ? { adapterConfig: resolvedAdapterType === "paperclip_runner" ? { provider: "codex" } : {} } : {}),
         };
       }
     }
@@ -1182,12 +1184,15 @@ export function TeamInstallerDialog({
       const adapterType = resolveTeamInstallAdapterType(
         agent.adapterType,
         selectableAdapterTypes,
+        { cloud, adapterConfig: agent.adapterConfig },
       );
       if (!adapterType) {
         throw new Error("Enable a legacy adapter before installing this team.");
       }
-      if (adapterType !== agent.adapterType) {
-        overrides[agent.slug] = { adapterType };
+      if (adapterType !== agent.adapterType || (cloud && !isCloudHarnessAllowed(agent.adapterType, agent.adapterConfig))) {
+        overrides[agent.slug] = { adapterType,
+          ...(cloud ? { adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} } : {}),
+        };
       }
     }
     const enteredSecretValues = Object.fromEntries(
@@ -1263,6 +1268,7 @@ export function TeamInstallerDialog({
         !resolveTeamInstallAdapterType(
           adapterOverrides[agent.slug] ?? agent.adapterType,
           selectableAdapterTypes,
+          { cloud, adapterConfig: adapterOverrides[agent.slug] ? {} : agent.adapterConfig },
         ),
     ),
   );
@@ -1359,6 +1365,7 @@ export function TeamInstallerDialog({
                 onRename={(slug, name) => setNameOverrides((cur) => ({ ...cur, [slug]: name }))}
                 adapterOverrides={adapterOverrides}
                 selectableAdapterTypes={selectableAdapterTypes}
+                cloud={cloud}
                 onAdapterChange={(slug, adapterType) => setAdapterOverrides((cur) => ({ ...cur, [slug]: adapterType }))}
                 secretValues={secretValues}
                 visibleSecretKeys={visibleSecretKeys}
@@ -1783,6 +1790,7 @@ export function StepPreview({
   onRename,
   adapterOverrides,
   selectableAdapterTypes,
+  cloud = false,
   onAdapterChange,
   secretValues = {},
   visibleSecretKeys = {},
@@ -1800,6 +1808,7 @@ export function StepPreview({
   onRename: (slug: string, name: string) => void;
   adapterOverrides: Record<string, string>;
   selectableAdapterTypes: readonly string[];
+  cloud?: boolean;
   onAdapterChange: (slug: string, adapterType: string) => void;
   secretValues?: Record<string, string>;
   visibleSecretKeys?: Record<string, boolean>;
@@ -1930,6 +1939,7 @@ export function StepPreview({
             const selected = resolveTeamInstallAdapterType(
               adapterOverrides[agent.slug] ?? agent.adapterType,
               selectableAdapterTypes,
+              { cloud, adapterConfig: adapterOverrides[agent.slug] ? {} : agent.adapterConfig },
             );
             return (
               <li key={agent.slug} className="flex items-center gap-2 px-3 py-2 text-sm">

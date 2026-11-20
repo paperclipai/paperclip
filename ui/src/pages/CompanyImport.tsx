@@ -1600,17 +1600,24 @@ export function CompanyImport() {
 
   function handleAdapterChange(slug: string, adapterType: string) {
     resetMutationState();
+    const source = adapterAgents.find(agent => agent.slug === slug);
+    const resetCloudProfile = cloud && source && !isCloudHarnessAllowed(source.adapterType, source.adapterConfig);
     setAdapterOverrides((prev) => ({ ...prev, [slug]: adapterType }));
     setAdapterConfigEditedSlugs(prev => {
       const next = new Set(prev);
-      next.delete(slug);
+      // Selecting the generic Runner resets its provider, even when its API
+      // adapter type matches the manifest's unsupported native profile.
+      if (adapterType === "paperclip_runner" || resetCloudProfile) next.add(slug);
+      else next.delete(slug);
       return next;
     });
     // Reset config values when adapter type changes
     setAdapterConfigValues((prev) => {
       const next = { ...prev };
-      if (adapterType === "openai_dot" || adapterType === "muse" || adapterType === "paperclip_runner") {
-        next[slug] = importAdapterValues(adapterType);
+      if (adapterType === "openai_dot" || adapterType === "muse" || adapterType === "paperclip_runner" || resetCloudProfile) {
+        next[slug] = { ...importAdapterValues(adapterType),
+          ...(adapterType === "paperclip_runner" ? { adapterSchemaValues: { provider: "codex" } } : {}),
+        };
       } else {
         delete next[slug];
       }
@@ -1813,6 +1820,10 @@ export function CompanyImport() {
       }
       overrides[agent.slug] = override;
     }
+    if (cloud && adapterAgents.some(agent => selectedImportAgentSlugs.has(agent.slug) && !isCloudHarnessAllowed(
+      overrides[agent.slug]?.adapterType ?? agent.adapterType,
+      overrides[agent.slug]?.adapterConfig ?? agent.adapterConfig,
+    ))) throw new Error("Choose an available Cloud harness for each imported agent.");
     return Object.keys(overrides).length > 0 ? overrides : undefined;
   }
 

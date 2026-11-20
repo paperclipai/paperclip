@@ -16,6 +16,7 @@ import {
   teamRoute,
 } from "./TeamCatalog";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { queryKeys } from "@/lib/queryKeys";
 
 const mockTeamCatalogApi = vi.hoisted(() => ({
   catalogList: vi.fn(),
@@ -273,9 +274,10 @@ describe("TeamCatalog install preview path", () => {
     vi.clearAllMocks();
   });
 
-  async function renderPage() {
+  async function renderPage(cloud = false) {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    if (cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -296,6 +298,51 @@ describe("TeamCatalog install preview path", () => {
     // summary grid counts
     expect(document.body.textContent).toContain("Agents");
     expect(document.body.textContent).toContain("Projects");
+  });
+
+  it.each([
+    { cloud: true, acpxAgent: "antigravity", chooseRunner: false, expected: "claude_local" },
+    { cloud: true, acpxAgent: "antigravity", chooseRunner: false, expected: "paperclip_runner", onlyRunner: true },
+    { cloud: true, acpxAgent: "antigravity", chooseRunner: true, expected: "paperclip_runner" },
+    { cloud: true, acpxAgent: "copilot", chooseRunner: false, expected: undefined },
+    { cloud: false, acpxAgent: "antigravity", chooseRunner: false, expected: undefined },
+  ])("submits the selected native team profile (cloud=$cloud, source=$acpxAgent, reset=$chooseRunner, expected=$expected)", async ({ cloud, acpxAgent, chooseRunner, expected, onlyRunner }) => {
+    mockAdapterAvailability.disabled = new Set(onlyRunner ? ["claude_local", "codex_local", "grok_local", "opencode_local"] : []);
+    const preview = makePreview();
+    preview.portabilityPreview.manifest.agents = [{
+      slug: "ceo", name: "CEO", path: "agents/ceo/AGENTS.md", skills: [], role: "ceo", title: null, icon: null,
+      capabilities: null, reportsToSlug: null, reportsToExistingAgentId: null, reportsToExistingAgentSlug: null,
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent, model: "source-only-model" },
+      runtimeConfig: {}, permissions: {}, permissionGrants: [], budgetMonthlyCents: 0, metadata: null,
+    }];
+    mockTeamCatalogApi.preview.mockResolvedValue(preview);
+    const root = await renderPage(cloud);
+    await act(async () => findButton("Install team")!.click());
+    await flushReact();
+    if (chooseRunner) {
+      const picker = [...document.querySelectorAll<HTMLButtonElement>('button[role="combobox"]')]
+        .find(button => /Claude Code|Paperclip Runner/.test(button.textContent ?? ""))!;
+      expect(picker).toBeTruthy();
+      await act(async () => { picker.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+      await flushReact();
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent?.trim() === "Paperclip Runner");
+      expect(option).toBeDefined();
+      await act(async () => option!.click());
+      await flushReact();
+    }
+    const submit = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(button => button.textContent?.includes("Install team")).at(-1)!;
+    expect(submit.disabled).toBe(false);
+    await act(async () => submit.click());
+    await flushReact();
+    const override = mockTeamCatalogApi.install.mock.calls[0]?.[2]?.adapterOverrides?.ceo;
+    if (expected) {
+      expect(override?.adapterType).toBe(expected);
+      expect(override?.adapterConfig).toEqual(expected === "paperclip_runner" ? { provider: "codex" } : {});
+    } else {
+      expect(mockTeamCatalogApi.install).toHaveBeenCalledTimes(1);
+      expect(override).toBeUndefined();
+    }
+    await act(async () => root.unmount());
   });
 
   it("opens the installer, fetches the preview, and submits the install", async () => {

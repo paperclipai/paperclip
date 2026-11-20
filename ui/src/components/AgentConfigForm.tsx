@@ -1055,7 +1055,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
   const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
-  const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
+  const connectionModels = useConnectionModels(isExternalRunner || !cloudHarnessAllowed ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
@@ -1077,8 +1077,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const fetchedModelsView = useQueryView(fetchedModelsQuery);
   const accountModelScope = accountBoundCatalog ? JSON.stringify(modelQueryKey) : null;
   useEffect(() => {
-    if (accountModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
-  }, [accountModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
+    if (accountModelScope && selectedCompanyId && cloudHarnessAllowed && !isExternalRunner && !connectionModels) void refreshConnectionModels();
+  }, [accountModelScope, selectedCompanyId, cloudHarnessAllowed, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
@@ -1100,7 +1100,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
-    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local" && adapterType !== "paperclip_runner"),
+    enabled: Boolean(selectedCompanyId && cloudHarnessAllowed && isLocal && adapterType !== "opencode_local" && adapterType !== "paperclip_runner"),
   });
   const detectedModel = detectedModelData?.model ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];

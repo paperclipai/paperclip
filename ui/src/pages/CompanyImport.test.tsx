@@ -1095,6 +1095,31 @@ describe("CompanyImport", () => {
     expect(submit.disabled).toBe(false);
   });
 
+  it.each(["paperclip_runner", "codex_local"])("submits a fresh config when Cloud replaces Antigravity with %s", async adapterType => {
+    const preview = buildMixedAdapterPreviewResult();
+    preview.manifest.agents[0] = { ...preview.manifest.agents[0], adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "google-only-model" } };
+    mockCompaniesApi.importPreview.mockResolvedValue(preview);
+    mockAdaptersApi.list.mockResolvedValue(["claude_local", "codex_local", "paperclip_runner"].map(type => ({ type, disabled: false })));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    await renderPage(true);
+    await enterGithubUrl();
+    await clickButton(text => text === "Preview import");
+    const [source] = findAdapterSelects();
+    await act(async () => {
+      source.value = adapterType;
+      source.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+    await clickButton(text => text.startsWith("Import 3 file"));
+    await settle();
+    const override = lastImportMeta().adapterOverrides?.coder;
+    expect(override?.adapterType).toBe(adapterType);
+    if (adapterType === "paperclip_runner") expect(override?.adapterConfig).toMatchObject({ provider: "codex" });
+    expect(override?.adapterConfig).toBeDefined();
+    expect(override?.adapterConfig).not.toHaveProperty("acpxAgent");
+    expect(override?.adapterConfig?.model).not.toBe("google-only-model");
+  });
+
   function lastImportMeta() {
     const call = mockCompaniesApi.importBundleAsync.mock.calls.at(-1);
     expect(call).toBeTruthy();
