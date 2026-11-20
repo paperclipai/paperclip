@@ -45,7 +45,7 @@ for (const [name, version] of required) {
       serverPackage.bundleDependencies,
     );
     assert.equal(
-      serverPackage.dependencies[name],
+      serverPackage.dependencies[name] ?? serverPackage.optionalDependencies?.[name],
       version,
       "the patched runtime must have an exact direct version",
     );
@@ -54,7 +54,7 @@ for (const [name, version] of required) {
       "npm consumers cannot apply this repository's pnpm patches",
     );
     assert.equal(
-      installed.dependencies[name],
+      installed.dependencies?.[name] ?? installed.optionalDependencies?.[name],
       version,
       "release staging must install the runtime before patching",
     );
@@ -78,12 +78,19 @@ for (const [name, version] of required) {
   });
 }
 
-test("release selection includes every chat runtime patch and the existing ACPX patch", (t) => {
+test("release selection includes every patched bundled runtime", (t) => {
   const destination = mkdtempSync(
     join(tmpdir(), "paperclip-chat-release-contract-"),
   );
   t.after(() => rmSync(destination, { recursive: true, force: true }));
-  for (const [name, version] of [...required, ["acpx", "0.13.1"]]) {
+  const expected = serverPackage.bundleDependencies.flatMap((name) => {
+    const version = serverPackage.dependencies[name] ?? serverPackage.optionalDependencies?.[name];
+    const specifier = `${name}@${version}`;
+    return version && rootPackage.pnpm.patchedDependencies[specifier]
+      ? [[name, version]]
+      : [];
+  });
+  for (const [name, version] of expected) {
     const directory = join(destination, "node_modules", name);
     mkdirSync(directory, { recursive: true });
     writeFileSync(
@@ -99,8 +106,7 @@ test("release selection includes every chat runtime patch and the existing ACPX 
   assert.deepEqual(
     selected.map(({ specifier }) => specifier).sort(),
     [
-      ...required.map(([name, version]) => `${name}@${version}`),
-      "acpx@0.13.1",
+      ...expected.map(([name, version]) => `${name}@${version}`),
     ].sort(),
   );
   writeFileSync(

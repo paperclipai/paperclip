@@ -17,8 +17,9 @@ async function detectLocalRunnerTarget(): Promise<LocalRunnerTarget> {
   target.libc = "unknown";
   try {
     const stdout = await new Promise<string>((resolve, reject) => {
+      // Cold imports can delay draining a completed child's output past one second.
       execFile("getconf", ["GNU_LIBC_VERSION"], {
-        encoding: "utf8", timeout: 1_000, killSignal: "SIGKILL", maxBuffer: 1_024,
+        encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 1_024,
       }, (error, output) => error ? reject(error) : resolve(output));
     });
     const version = /^glibc\s+(\d+\.\d+(?:\.\d+)?)$/.exec(stdout.trim())?.[1];

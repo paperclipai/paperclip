@@ -78,7 +78,7 @@ export function linkSdkInto(packageDir) {
   try {
     const stat = lstatSync(linkTarget);
     if (stat.isSymbolicLink()) {
-      if (readlinkSync(linkTarget) === relativeSdkDir) {
+      if (resolve(scopeDir, readlinkSync(linkTarget)) === sdkDir) {
         // Already linked to the in-repo SDK; nothing to do.
         return false;
       }
@@ -93,6 +93,7 @@ export function linkSdkInto(packageDir) {
     if (error?.code !== "ENOENT") throw error;
   }
 
-  symlinkSync(relativeSdkDir, linkTarget, "dir");
+  symlinkSync(process.platform === "win32" ? sdkDir : relativeSdkDir,
+    linkTarget, process.platform === "win32" ? "junction" : "dir");
   return true;
 }
