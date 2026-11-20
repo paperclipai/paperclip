@@ -110,6 +110,12 @@ export function createDeliveryWorkCoordinator(input: {
         dirty = true;
         if (!running) schedule(task.coalesceMs ?? 0);
       }
+      function applySettled(hints?: ReadonlySet<string>) {
+        for (const attempt of hints === undefined ? [undefined] : [hints, undefined]) {
+          try { task.onSettled?.(attempt); return; }
+          catch (error) { process.emitWarning(`Delivery settlement could not be applied for ${queue}: ${String(error)}`); }
+        }
+      }
       const unsubscribe = subscribeDatabaseWork(input.owner, queue, (event, hints) => {
         if (workerStopped) return;
         if (databaseWorkPending(input.owner, queue)) {
@@ -118,7 +124,7 @@ export function createDeliveryWorkCoordinator(input: {
           // replaces this deadline with an immediate wake on the normal path.
           if (!running) schedule(task.retryMs);
         }
-        if (event === "settled") { task.onSettled?.(hints); wake(); }
+        if (event === "settled") { applySettled(hints); wake(); }
       });
       const worker = { wake, async stop() {
         workerStopped = true;

@@ -5,11 +5,12 @@ use sha2::{Digest, Sha256};
 
 use super::{
     reserved_terminal_tool_bridge, sidecar_run_tool_operations, AcpxProviderSession,
-    AcpxProviderSessionConfig,
+    AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
 };
 use crate::acpx_provider_state::AcpxProviderState;
 use crate::generated_acpx_sidecar_contract::{
-    GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
+    read_generated_acpx_background_tasks, GeneratedAcpxSidecarCommand,
+    GeneratedAcpxSidecarEventType,
 };
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::ProviderToolBridge;
@@ -49,7 +50,52 @@ fn generation_digest(config: &AcpxProviderSessionConfig) -> String {
     format!("sha256:{:x}", Sha256::digest(shape.to_string().as_bytes()))
 }
 
+pub(super) fn reports_no_live_background_tasks(payload: &Value) -> bool {
+    payload
+        .get("backgroundTasks")
+        .and_then(read_generated_acpx_background_tasks)
+        == Some(0)
+}
+
 impl AcpxProviderSession {
+    pub fn can_continue_after_turn(&self) -> bool {
+        self.config.agent == "claude" && self.quiet_turn_observed && self.can_restart_after_turn()
+    }
+
+    pub fn continue_after_quiet_turn(&mut self) -> bool {
+        if !self.continues_in_process {
+            self.continues_in_process = self.can_continue_after_turn();
+        }
+        self.continues_in_process
+    }
+
+    pub fn continues_in_process(&self) -> bool {
+        self.continues_in_process
+    }
+
+    pub fn turn_start_replaced_provider(&self) -> bool {
+        self.turn_start_replaced_provider
+    }
+
+    pub(super) fn background_work_is_quiet(&mut self) -> bool {
+        let Ok(snapshot) = self
+            .transport
+            .request(GeneratedAcpxSidecarCommand::SessionSnapshot, json!({}))
+        else {
+            return false;
+        };
+        serde_json::from_value::<AcpxProviderSessionIdentity>(snapshot["identity"].clone())
+            .is_ok_and(|identity| identity == self.identity)
+            && snapshot["runId"].as_str() == Some(self.config.run_id.as_str())
+            && snapshot["turnId"].is_null()
+            && snapshot["pendingToolCount"].as_u64() == Some(0)
+            && snapshot["pendingInputCount"].as_u64() == Some(0)
+            && snapshot["pendingRuntimeRequests"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+            && reports_no_live_background_tasks(&snapshot)
+    }
+
     pub fn generation_has_run_turn(&self) -> bool {
         self.generation_has_run_turn
     }

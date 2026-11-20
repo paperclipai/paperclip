@@ -10,7 +10,7 @@ type BudgetOperation = "budget.accounting.lock_wait" | "budget.accounting.recove
 /** Operator-gated OpenTelemetry only; these spans contain no prompt, receipt,
  * credential, or provider error text. Diagnostics never change accounting. */
 type BudgetAttributes = {
-  "budget.accounting.owner"?: "run" | "decision" | "classifier" | "fast_response" | "browser";
+  "budget.accounting.owner"?: "run" | "decision" | "classifier" | "fast_response" | "browser" | "responsibility_summary";
   "budget.enforcement.queue_delay_ms"?: number;
   "budget.policy_count"?: number;
 };

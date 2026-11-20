@@ -5,6 +5,7 @@ import { expect } from "@playwright/test";
 import type { CompanySkillDetail, CompanySkillTestInput, CompanySkillTestRun, CompanySkillTestRunDetail, CompanySkillVersion } from "../../../packages/shared/src/types/company-skill.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
 import { checks, observation, project, type Entity, type InternalObservation } from "./internal-support.js";
 import { fixtureWorker } from "./internal-definition.js";
 import { integratorDefinition, observeInternal } from "./integrator-support.js";
@@ -33,8 +34,7 @@ export function recordFindsMissingLabel(record: StudioResultRecord | undefined) 
 // its output document) or the Studio run page.
 export function completionReplyLinksResult(o: StudioObservation) {
   const run = o.studioRuns[0]; if (!run) return false;
-  const completion = o.runs.find(row => row.agentId === o.leadId && (row.contextSnapshot?.chatCompletionUpdates as Array<{ id?: unknown }> | undefined)?.some(update => update?.id === run.issueId));
-  const body = o.sourceComments.find(row => !!completion && row.authorAgentId === o.leadId && row.createdByRunId === completion.id)?.body ?? "";
+  const body = studioCompletionReply(o)?.body ?? "";
   const targets = [run.issueId, run.harnessIssue?.identifier].filter((id): id is string => !!id);
   return [...body.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!).some(href => {
     // Resolve against the app's own origin, so an absolute app link equals its relative form.
@@ -43,8 +43,35 @@ export function completionReplyLinksResult(o: StudioObservation) {
       || (url.pathname.endsWith(`/skills/studio/${run.skillId}`) && url.searchParams.get("run") === run.id));
   });
 }
+/** Saved run-log receipt: the chat agent's run read its handed-off task in the done state. */
+export const COMPLETED_HANDOFF_READ_EVENT = "chat_handoff.completed_read";
+const timestamp = (v: unknown) => typeof v === "string" ? Date.parse(v) : NaN;
+/** The reply that told the person the Studio test finished: either the server's completion
+ * turn, or an earlier CEO reply that the server accepted as that report (no completion turn
+ * ran). The second is recognized only by saved state: the server settled the completion
+ * delivery with this reply, the replying run read the test task done, and the reply was
+ * posted after that read. Reply wording is not graded here. */
+function studioCompletionReply(o: StudioObservation) {
+  const test = o.studioRuns[0]; if (!test) return undefined;
+  const ceos = o.runs.filter(run => run.agentId === o.leadId && run.contextSnapshot?.issueId === o.sourceIssueId);
+  const completions = ceos.filter(run => (run.contextSnapshot?.chatCompletionUpdates as Array<{ id?: unknown }> | undefined)?.some(update => update?.id === test.issueId));
+  if (completions.length === 1) {
+    const completedAt = timestamp((completions[0]!.contextSnapshot!.chatCompletionUpdates as Array<{ completedAt?: unknown }>)[0]?.completedAt);
+    const replies = o.sourceComments.filter(row => row.authorAgentId === o.leadId && row.createdByRunId === completions[0]!.id
+      && !!row.body?.trim() && timestamp(row.createdAt) >= completedAt);
+    return replies.length === 1 ? { ...replies[0]!, run: completions[0]!, earlier: false } : undefined;
+  }
+  if (completions.length !== 0) return undefined;
+  const reported = ceos.flatMap(run => (o.completedReads?.[run.id] ?? []).filter(read => read.taskId === test.issueId)
+    .flatMap(read => o.sourceComments.filter(row => row.authorAgentId === o.leadId && row.createdByRunId === run.id
+      && !!row.body?.trim() && timestamp(row.createdAt) >= timestamp(read.createdAt)).map(row => ({ ...row, run, earlier: true }))));
+  const unique = [...new Map(reported.map(row => [row.id, row])).values()];
+  // The server must have settled the completion delivery with this exact reply; otherwise a
+  // completion turn is still owed and this reply is not the delivery.
+  return unique.length === 1 && o.completionReports?.[test.issueId] === unique[0]!.id ? unique[0] : undefined;
+}
 const root = (ctx: ChatCatalogContext, skillId: string) => `/api/companies/${ctx.input.fixtures.company.id}/skills/${skillId}`;
-interface StudioObservation extends InternalObservation { skill: CompanySkillDetail; studioRuns: CompanySkillTestRunDetail[]; pinnedVersions: Record<string, CompanySkillVersion>; sourceIssueId: string; sourceComments: Entity[] }
+interface StudioObservation extends InternalObservation { skill: CompanySkillDetail; studioRuns: CompanySkillTestRunDetail[]; pinnedVersions: Record<string, CompanySkillVersion>; sourceIssueId: string; sourceComments: Entity[]; completedReads?: Record<string, Array<{ taskId: string; createdAt: string }>>; completionReports?: Record<string, string | null> }
 async function observeStudio(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<StudioObservation> {
   const base = await observeInternal(ctx, state); const path = root(ctx, (state.skill as CompanySkillDetail).id);
   const runs = await ctx.input.api.get<CompanySkillTestRun[]>(`${path}/test-runs`);
@@ -57,7 +84,17 @@ async function observeStudio(ctx: ChatCatalogContext, state: Record<string, unkn
     pinnedVersions[run.id] = version;
   }
   const sourceIssueId = ctx.issue()?.id; if (!sourceIssueId) throw new Error("Studio source conversation is missing");
-  return { ...base, skill: await ctx.input.api.get<CompanySkillDetail>(path), studioRuns, pinnedVersions, sourceIssueId,
+  const completedReads: Record<string, Array<{ taskId: string; createdAt: string }>> = {};
+  for (const run of base.runs.filter(row => row.agentId === base.leadId && row.contextSnapshot?.issueId === sourceIssueId)) {
+    const events = await collectRunEvents<{ seq?: number; eventType?: string; createdAt?: string; payload?: { taskId?: unknown } }>((afterSeq, limit) => ctx.input.api.get(
+      `/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+    completedReads[run.id] = events.filter(event => event.eventType === COMPLETED_HANDOFF_READ_EVENT && typeof event.payload?.taskId === "string" && typeof event.createdAt === "string")
+      .map(event => ({ taskId: event.payload!.taskId as string, createdAt: event.createdAt! }));
+  }
+  // The server's saved completion delivery outcome: which reply, if any, it accepted as the report.
+  const handoffs = await ctx.input.api.get<{ items: Array<{ issueId: string; completionReportCommentId?: string | null }> }>(`/api/issues/${sourceIssueId}/chat-handoffs?limit=100`);
+  const completionReports = Object.fromEntries(handoffs.items.map(row => [row.issueId, row.completionReportCommentId ?? null]));
+  return { ...base, skill: await ctx.input.api.get<CompanySkillDetail>(path), studioRuns, pinnedVersions, sourceIssueId, completedReads, completionReports,
     sourceComments: await ctx.input.api.get<Entity[]>(`/api/issues/${sourceIssueId}/comments?order=asc`) };
 }
 function studioObservation(value: unknown): StudioObservation | undefined {
@@ -82,16 +119,21 @@ export function studioNativeRunsComplete(value: unknown): boolean {
     return Array.isArray(ids) && ids.length === 1 && typeof ids[0] === "string" && ids[0].length > 0 && ids[0].length <= 240
       && Array.isArray(updates) && updates.length === 1 && updates[0]?.id === test.issueId && updates[0]?.status === "done";
   });
+  const initialAt = timestamp(initial[0]!.startedAt), workerAt = timestamp(workers[0]!.startedAt);
+  if (![initialAt, workerAt].every(Number.isFinite) || initialAt > workerAt) return false;
+  const reply = studioCompletionReply(o);
+  if (!reply) return false;
+  if (reply.earlier) {
+    // The server suppressed the completion turn because this reply already reported it.
+    // No completion run may exist, and the reply must come after the worker started.
+    return completions.length === 0 && ceos.length === 1 && reply.run.id === initial[0]!.id && timestamp(reply.createdAt) >= workerAt;
+  }
   if (completions.length !== 1 || completions[0]!.id === initial[0]!.id) return false;
   const completion = completions[0]!, update = (completion.contextSnapshot!.chatCompletionUpdates as Array<{ completedAt?: unknown }>)[0]!;
-  const timestamp = (v: unknown) => typeof v === "string" ? Date.parse(v) : NaN;
-  const completedAt = timestamp(update.completedAt), initialAt = timestamp(initial[0]!.startedAt), workerAt = timestamp(workers[0]!.startedAt), continuationAt = timestamp(completion.startedAt);
-  if (![completedAt, initialAt, workerAt, continuationAt].every(Number.isFinite) || initialAt > workerAt || workerAt > completedAt
-    || completion.id !== initial[0]!.id && (continuationAt < completedAt || completion.contextSnapshot?.wakeReason !== "chat_task_completed"
-      || completion.contextSnapshot?.wakeSource !== "automation")) return false;
-  const responses = o.sourceComments.filter(row => row.authorAgentId === o.leadId && row.createdByRunId === completion.id
-    && !!row.body?.trim() && timestamp(row.createdAt) >= completedAt);
-  return responses.length === 1;
+  const completedAt = timestamp(update.completedAt), continuationAt = timestamp(completion.startedAt);
+  return [completedAt, continuationAt].every(Number.isFinite) && workerAt <= completedAt && continuationAt >= completedAt
+    && completion.contextSnapshot?.wakeReason === "chat_task_completed" && completion.contextSnapshot?.wakeSource === "automation"
+    && reply.run.id === completion.id;
 }
 export function gradeIntegratorSkillStudio(value: unknown) {
   const c = checks(); const o = studioObservation(value);
@@ -137,7 +179,7 @@ export const integratorSkillStudioCases = [integratorDefinition("skills", "skill
   await ctx.input.evidence("chat-skill-studio-visible-result.json", { skillId: o.skill.id, testRunId: run.id, status: run.status, issueId: run.issueId, interactions: run.interactions, url: ctx.input.page.url() });
   await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
 }, { authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "../../server/src/services/chat-completion-delivery.ts", "chat-catalog-domains/integrator-skill-studio.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/skills.yaml"],
-  oracleVersion: "paperclip.chat-catalog.skill-studio.v4", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 540_000,
+  oracleVersion: "paperclip.chat-catalog.skill-studio.v5", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 540_000,
   async act(ctx, state) {
     await pollUntil({ label: "actual bounded skill Studio output", deadlineAt: Date.now() + 240_000, intervalMs: 1000,
       load: () => observeStudio(ctx, state), accept: o => studioNativeRunsComplete(o),

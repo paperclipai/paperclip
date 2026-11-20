@@ -150,6 +150,56 @@ test('holds a version newer than the minimum age', async () => {
   assert.match(result.held[0].reason, /0\.5 days ago/);
 });
 
+test('gives only named harness releases an exception to the minimum age', async () => {
+  const harnessKeys = [
+    '@agentclientprotocol/claude-agent-acp@0.73.0',
+    '@agentclientprotocol/codex-acp@1.6.2',
+    '@anthropic-ai/claude-agent-sdk@0.3.328',
+    '@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.328',
+    '@github/copilot-darwin-arm64@1.0.88',
+    '@openai/codex@0.170.0',
+    '@openai/codex@0.170.0-win32-arm64',
+    'opencode-ai@1.18.34',
+    'opencode-linux-x64-baseline-musl@1.18.34',
+  ];
+  const harnesses = addedPackageVersions(lockfile([]), lockfile(harnessKeys));
+  const other = addedPackageVersions(lockfile([]), lockfile([
+    '@agentclientprotocol/sdk@1.9.0',
+    '@anthropic-ai/claude-agent-sdk-lookalike@1.0.0',
+    'fresh@1.0.1',
+  ]));
+  const options = { fetchPublishTime: async () => daysAgo(0.5), now, minAgeMs: 3 * DAY_MS };
+
+  const result = await checkReleaseAge(harnesses, options);
+  assert.deepEqual(result, { eligible: true, checked: harnessKeys.length, held: [] });
+  assert.match(formatReport(result, 3), /passed the release-age gate/);
+
+  const mixed = await checkReleaseAge([...harnesses, ...other], options);
+  assert.equal(mixed.eligible, false);
+  assert.deepEqual(mixed.held.map(h => h.key), other.map(h => h.key));
+});
+
+test('still requires a verified npm release for allowlisted names', async () => {
+  const entries = addedPackageVersions(lockfile([]), lockfile([
+    '@openai/codex@0.170.0',
+    '@openai/codex@0.171.0',
+    ['@openai/codex@0.172.0', '{tarball: https://example.com/codex.tgz}'],
+    '@openai/codex@https://example.com/codex.tgz',
+  ]));
+  const result = await checkReleaseAge(entries, {
+    fetchPublishTime: timesFrom({ '@openai/codex@0.170.0': new Error('npm registry returned 503') }),
+    now,
+    minAgeMs: 3 * DAY_MS,
+  });
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.held.map(h => h.reason), [
+    'registry lookup failed: npm registry returned 503',
+    'no publish time on npm',
+    'not a registry resolution: {tarball: https://example.com/codex.tgz}',
+    'not a registry version',
+  ]);
+});
+
 test('fails closed on lookup errors, missing publish times and non-registry versions', async () => {
   const entries = addedPackageVersions(
     lockfile([]),

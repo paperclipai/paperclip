@@ -221,6 +221,11 @@ function stripTerminalControls(text: string): string {
     .replace(ANSI_CSI_RE, "");
 }
 
+/** The CLI waits for another Enter after rejecting a code instead of exiting. */
+export function hasSetupTokenOAuthError(text: string): boolean {
+  return /OAuth\s+error\s*:/.test(stripTerminalControls(text));
+}
+
 /**
  * Returns true when `value` is a valid `scope` value: one to eight
  * space-separated tokens, a total length of at most {@link MAX_SCOPE_LENGTH},

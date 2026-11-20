@@ -111,6 +111,17 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("releases the wait when an unchanged weekly-limit failure is reread after its calendar reset", () => {
+    // Read two days after "resets Nov 12": the wait is over, not a year away.
+    const now = new Date("2026-11-14T10:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "You've hit your weekly limit · resets Nov 12, 6pm (UTC)",
+      resultJson: null,
+    }, now);
+    expect(classification).toEqual({ kind: "provider_quota", retryAt: now, parsedResetTime: true });
+  });
+
   it("uses the default recovery backoff when quota reset time is absent", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({

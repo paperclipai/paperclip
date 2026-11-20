@@ -53,7 +53,7 @@ describe("MarkdownBody external object decoration", () => {
     const markdown = "[View saved recommendations](/TES/issues/TES-6#document-skill-recommendations&revision=reviewed-rev)";
     const html = render(markdown, undefined, true);
     expect(html).toContain('data-sidebar-document-link="true"');
-    expect(html).toContain('href="/issues/TES-6#document-skill-recommendations&amp;revision=reviewed-rev"');
+    expect(html).toContain('href="/TES/issues/TES-6#document-skill-recommendations&amp;revision=reviewed-rev"');
     expect(html).toContain("View saved recommendations");
     expect(html).not.toContain('data-mention-kind="issue"');
     expect(render(markdown)).not.toContain("data-sidebar-document-link");

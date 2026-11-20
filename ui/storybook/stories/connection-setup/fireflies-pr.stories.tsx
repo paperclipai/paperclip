@@ -7,13 +7,11 @@ import { ConnectionSetupFlow, OAuthConnectStateScreen } from "@/features/connect
 import { ConnectorCard } from "@/pages/apps/Browse";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ActionsSection } from "@/pages/apps/app-detail/PermissionsPanel";
-import { RoutineTriggerWizard, defaultTriggerDraft } from "@/components/routine-triggers/TriggerWizard";
-import { RoutineTriggerCard } from "@/components/RoutineTriggerCard";
-import { TriggersSection } from "@/components/routine-sections/editable-sections.production";
-import { RoutineDetailContext, type RoutineDetailContextValue } from "@/components/routine-sections/context";
+import type { RoutineTrigger } from "@paperclipai/shared";
+import { RoutineWebhookDialog } from "@/components/routine-page/RoutineWebhookDialog";
 import { Button } from "@/components/ui/button";
 import { useNavigate } from "@/lib/router";
-import { WebhookReview, webhook, baseRoutine } from "../../fixtures/routineWebhooks";
+import { WebhookReview, webhook } from "../../fixtures/routineWebhooks";
 
 const fireflies = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "fireflies")!;
 const demoSecret = "storybook-only-signing-secret";
@@ -25,7 +23,7 @@ function Frame({ children }: { children: ReactNode }) {
 const meta = {
   id: "pr-reviews-fireflies-and-app-webhooks",
   title: "Apps, channels, and extensions/Connection setup/PR reviews/Fireflies and app webhooks",
-  parameters: { layout: "fullscreen", docs: { description: { component: "Coverage of PR #13890: Fireflies catalog/artwork and shared connection flow, preserved action permissions, generic webhook wizard and saved settings, and both advanced trigger editors. All network mutations are simulated. Use the toolbar to switch theme or viewport. Legacy stories only demonstrate resuming existing configurations; new webhooks use Another app or script." } },
+  parameters: { layout: "fullscreen", docs: { description: { component: "Coverage of PR #13890: Fireflies catalog/artwork and shared connection flow, preserved action permissions, and the routine webhook dialog that replaced the generic webhook wizard and advanced trigger editors: choosing a sender, the new key and agent instructions, test events, test mode, Replace key, and saved webhooks on the routine page. All network mutations are simulated. Use the toolbar to switch theme or viewport. The bearer and Fireflies-signed stories only show existing configurations; new webhooks use Another app or script." } },
     paperclip: {
       "capabilities": [
         "connection-setup/credentials",
@@ -84,37 +82,55 @@ function Permissions() {
 }
 export const RetainedPermissions: Story = { name: "08 · Permissions — retained Allowed, Ask first, Off", render: () => <Permissions /> };
 
-type WizardProps = Partial<ComponentProps<typeof RoutineTriggerWizard>>;
-function Wizard({ initialDraft = { ...defaultTriggerDraft, kind: "webhook", signingMode: "app_webhook" }, webhookSecret = demoSecret, ...props }: WizardProps) {
-  const [saved, setSaved] = useState<typeof initialDraft | null>(null);
-  const [finished, setFinished] = useState(false);
-  const [secret, setSecret] = useState(webhookSecret);
-  const [draft, setDraft] = useState(initialDraft);
-  return <Frame>{finished ? <p role="status">Setup finished in this preview. No real trigger was created.</p> : saved ? <div className="space-y-4"><p>Trigger setup saved. The secret is not stored in the draft.</p><Button onClick={() => { setSaved(null); setSecret(""); }}>Resume setup</Button></div> : <RoutineTriggerWizard routineTitle="Review a completed meeting" routineId="fireflies-storybook" initialDraft={draft} webhookUrl={demoUrl} webhookSecret={secret} onCreateWebhook={async () => {}} onRotateKey={async () => setSecret(`${demoSecret}-rotated`)} onSaveExit={(next) => { setDraft(next); setSaved(next); }} onFinish={() => setFinished(true)} {...props} />}</Frame>;
+const receivedAt = new Date().toISOString();
+function meetingWebhook(overrides: Partial<RoutineTrigger> = {}): RoutineTrigger {
+  return { ...webhook("app_webhook", 1, demoUrl), label: "Transcript ready", ...overrides };
 }
-const wizard = (step: number, props: WizardProps = {}): Story => ({ render: () => <Wizard initialDraft={{ ...defaultTriggerDraft, kind: "webhook", signingMode: "app_webhook", step, availableStep: step, created: step > 0 }} {...props} /> });
-export const ChooseWebhook = { ...wizard(0), name: "09 · Another app — choose trigger and HTTPS requirement" };
-export const ConnectApp = { ...wizard(1), name: "10 · Another app — URL, signing secret, bearer alternative" };
-export const CheckWaiting = { ...wizard(2), name: "11 · Check connection — waiting" };
-export const CheckReceived = { ...wizard(2, { checkResult: "received" }), name: "12 · Check connection — authenticated test receipt" };
-export const CheckRejected = { ...wizard(2, { checkResult: "rejected" }), name: "13 · Check connection — invalid signature" };
-export const CheckNoEvent = { ...wizard(2, { checkResult: "no_event" }), name: "14 · Check connection — nothing received" };
-export const PrivateUrl = { ...wizard(1, { webhookUrl: demoUrl.replace("https://acme.paperclip.example", "http://localhost:3104") }), name: "15 · Public HTTPS setup warning" };
-export const ResumeHiddenSecret = { ...wizard(1, { webhookSecret: "" }), name: "16 · Resume draft — hidden secret and rotation" };
-export const LegacyBearer = { ...wizard(1, { initialDraft: { ...defaultTriggerDraft, kind: "webhook", signingMode: "bearer", step: 1, availableStep: 1, created: true } }), name: "17 · Resume existing bearer webhook" };
-export const LegacySigned = { ...wizard(1, { initialDraft: { ...defaultTriggerDraft, kind: "webhook", signingMode: "fireflies_hmac", step: 1, availableStep: 1, created: true } }), name: "18 · Resume existing signed webhook" };
-export const SaveResume: Story = { ...ConnectApp, name: "19 · Save and resume walkthrough", play: async ({ canvasElement }) => { const c = within(canvasElement); await userEvent.click(await c.findByRole("button", { name: "Save & exit" })); await userEvent.click(c.getByRole("button", { name: "Resume setup" })); await expect(c.getByText(/The key is hidden after leaving setup/)).toBeVisible(); } };
-const openSettings: Story["play"] = async ({ canvasElement }) => { await userEvent.click(await within(canvasElement).findByRole("button", { name: "Edit webhook" })); };
-export const SavedSettings: Story = { name: "20 · Saved webhook settings", render: () => <WebhookReview signingMode="app_webhook" state="configured" />, play: openSettings };
-export const RotateSecret: Story = { ...SavedSettings, name: "21 · Rotated webhook secret and agent instructions", play: async (ctx) => { await openSettings!(ctx); await userEvent.click(within(ctx.canvasElement).getByRole("button", { name: "Replace key" })); await userEvent.click(within(within(document.body).getByRole("dialog")).getByRole("button", { name: "Replace key" })); await expect(await within(ctx.canvasElement).findByRole("button", { name: "Copy Secret key" })).toBeVisible(); } };
-export const DeliveryFailure: Story = { ...SavedSettings, name: "22 · Saved webhook — rejected delivery", render: () => <WebhookReview signingMode="app_webhook" state="failure" /> };
-export const AdvancedCard: Story = { name: "23 · Advanced trigger card — app_webhook", render: () => <Frame><RoutineTriggerCard trigger={webhook("app_webhook")} onSave={noop} onRotate={noop} onDelete={noop} /></Frame> };
-function AdvancedCreate() {
-  const [newTrigger, setNewTrigger] = useState({ kind: "webhook", signingMode: "app_webhook", replayWindowSec: "300", cronExpression: "" });
-  const mutation = { mutate: noop, isPending: false };
-  const context = { routine: { ...baseRoutine, triggers: [] }, newTrigger, setNewTrigger, createTrigger: mutation, updateTrigger: mutation, deleteTrigger: mutation, rotateTrigger: mutation, secretMessage: null, setSecretMessage: noop, copySecretValue: noop } as unknown as RoutineDetailContextValue;
-  return <Frame><RoutineDetailContext.Provider value={context}><TriggersSection /></RoutineDetailContext.Provider></Frame>;
+const justCreated = meetingWebhook({ setupPending: true, lastWebhookDelivery: null, lastFiredAt: null, lastResult: null });
+type DialogProps = Partial<ComponentProps<typeof RoutineWebhookDialog>>;
+/** The shipped webhook dialog with every action kept in local state; nothing is created or sent. */
+function WebhookDialog({ trigger: initialTrigger = null, secret: initialSecret = null, testing: initialTesting = false, ...props }: DialogProps) {
+  const [open, setOpen] = useState(true);
+  const [trigger, setTrigger] = useState<RoutineTrigger | null>(initialTrigger);
+  const [secret, setSecret] = useState<string | null>(initialSecret);
+  const [testing, setTesting] = useState(initialTesting);
+  const update = (change: Partial<RoutineTrigger>) => setTrigger((current) => (current ? { ...current, ...change } : current));
+  return <Frame>
+    {open ? null : <div className="space-y-4"><p role="status">Dialog closed in this preview. No webhook was saved.</p><Button onClick={() => setOpen(true)}>Open again</Button></div>}
+    <RoutineWebhookDialog
+      open={open}
+      onOpenChange={(next) => { if (!next) { if (trigger?.setupPending) update({ setupPending: false }); setTesting(false); setSecret(null); } setOpen(next); }}
+      routineTitle="Review a completed meeting"
+      trigger={trigger}
+      secret={secret}
+      testing={testing}
+      onCreate={(sender) => { setTrigger({ ...justCreated, signingMode: sender === "github" ? "github_hmac" : "app_webhook" }); setSecret(demoSecret); }}
+      onReplaceKey={() => setSecret(`${demoSecret}-rotated`)}
+      onSetPaused={(paused) => update({ enabled: !paused })}
+      onRemove={() => { setTrigger(null); setOpen(false); }}
+      onStartTest={() => { setTesting(true); update({ setupPending: true }); }}
+      onFinishTest={() => { setTesting(false); update({ setupPending: false }); }}
+      {...props}
+    />
+  </Frame>;
 }
-export const AdvancedCreateTrigger: Story = { name: "24 · Advanced trigger creation — shared signing mode", render: () => <AdvancedCreate />, play: async ({ canvasElement }) => { const c = within(canvasElement); await userEvent.click(await c.findByRole("button", { name: "New trigger" })); await expect(c.getByText(/Accept a bearer token or an HMAC-SHA256/)).toBeVisible(); await expect(c.queryByText("Replay window (seconds)")).not.toBeInTheDocument(); } };
+const dialog = (props: DialogProps = {}): Story => ({ render: () => <WebhookDialog {...props} /> });
+export const ChooseWebhook = { ...dialog(), name: "09 · Add webhook — choose what’s sending it" };
+export const ConnectApp = { ...dialog({ trigger: justCreated, secret: demoSecret }), name: "10 · Created — URL, secret key and agent instructions" };
+export const CheckWaiting = { ...dialog({ trigger: meetingWebhook({ setupPending: true }), testing: true }), name: "11 · Test mode — waiting for a test event" };
+export const CheckReceived = { ...dialog({ trigger: { ...justCreated, lastWebhookDelivery: { status: "received", receivedAt, test: true } }, secret: demoSecret }), name: "12 · Test event received" };
+export const CheckRejected = { ...dialog({ trigger: { ...justCreated, lastWebhookDelivery: { status: "rejected", receivedAt, test: true } }, secret: demoSecret }), name: "13 · Test event rejected — key didn’t match" };
+export const CheckNoEvent = { ...dialog({ trigger: meetingWebhook({ lastWebhookDelivery: null, lastFiredAt: null, lastResult: null }) }), name: "14 · Ready — no events yet" };
+export const PrivateUrl = { ...dialog({ trigger: { ...justCreated, webhookUrl: demoUrl.replace("https://acme.paperclip.example", "http://localhost:3104") }, secret: demoSecret }), name: "15 · Public HTTPS setup warning" };
+export const ResumeHiddenSecret: Story = { ...dialog({ trigger: meetingWebhook() }), name: "16 · Saved webhook — hidden key and Replace key", play: async () => { const c = within(document.body); await userEvent.click(await c.findByRole("button", { name: "Replace key" })); await expect(await c.findByRole("button", { name: "Copy Secret key" })).toBeVisible(); } };
+export const LegacyBearer = { ...dialog({ trigger: meetingWebhook({ signingMode: "bearer" }), secret: demoSecret }), name: "17 · Existing bearer webhook — new key as header value" };
+export const LegacySigned = { ...dialog({ trigger: meetingWebhook({ signingMode: "fireflies_hmac" }), secret: demoSecret }), name: "18 · Existing Fireflies-signed webhook" };
+export const SaveResume: Story = { ...ChooseWebhook, name: "19 · Create walkthrough", play: async () => { const c = within(document.body); await userEvent.click(await c.findByRole("button", { name: "Create webhook" })); await expect(await c.findByRole("button", { name: "Copy Secret key" })).toBeVisible(); await expect(c.getByText("Waiting for a test event")).toBeVisible(); await userEvent.click(c.getByRole("button", { name: "Finish without testing" })); await expect(await c.findByText(/No webhook was saved/)).toBeVisible(); } };
+const openSettings: Story["play"] = async () => { await userEvent.click(await within(document.body).findByRole("button", { name: "Open Webhook · Deployment completed" })); };
+export const SavedSettings: Story = { name: "20 · Saved webhook opened from the routine page", render: () => <WebhookReview signingMode="app_webhook" state="configured" />, play: openSettings };
+export const RotateSecret: Story = { ...SavedSettings, name: "21 · Replaced key and agent instructions", play: async (ctx) => { await openSettings!(ctx); const c = within(document.body); await userEvent.click(await c.findByRole("button", { name: "Replace key" })); await expect(await c.findByRole("button", { name: "Copy Secret key" })).toBeVisible(); await expect(c.getByRole("region", { name: "Agent instructions" })).toBeVisible(); } };
+export const DeliveryFailure: Story = { ...SavedSettings, name: "22 · Saved webhook — rejected delivery", render: () => <WebhookReview signingMode="app_webhook" state="failure" />, play: async (ctx) => { await openSettings!(ctx); await expect(await within(document.body).findByText("The last event was rejected")).toBeVisible(); } };
+export const AdvancedCard: Story = { ...dialog({ trigger: meetingWebhook() }), name: "23 · Test a live webhook without starting the routine", play: async () => { const c = within(document.body); await userEvent.click(await c.findByRole("button", { name: "Test webhook" })); await expect(await c.findByRole("button", { name: "Finish testing" })).toBeVisible(); await userEvent.click(c.getByRole("button", { name: "Finish testing" })); await expect(await c.findByRole("button", { name: "Test webhook" })).toBeVisible(); } };
+export const AdvancedCreateTrigger: Story = { name: "24 · Add a webhook from the routine’s Edit dialog", render: () => <WebhookReview signingMode="app_webhook" state="setup" />, play: async () => { const c = within(document.body); await userEvent.click(await c.findByRole("button", { name: "Edit routine" })); await userEvent.click(await c.findByRole("button", { name: "Add webhook" })); await expect(await c.findByRole("radiogroup", { name: "What’s sending the webhook?" })).toBeVisible(); } };
 export const MobileSetup = { ...ConnectApp, name: "25 · Mobile — app setup", globals: { viewport: { value: "mobile", isRotated: false } } };
 export const LightSetup = { ...ConnectApp, name: "26 · Light theme — app setup", globals: { theme: "light" } };

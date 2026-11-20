@@ -131,6 +131,13 @@ describe("project environment selection", () => {
     expect(projectsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ environmentId: "ssh" }));
   });
 
+  it("never offers a single storage option, even when the default is unavailable", async () => {
+    vi.mocked(projectsApi.environmentOptions).mockResolvedValue({ groups: [groups[1]], defaultEnvironmentId: null, error: "Default is unavailable" });
+    await renderForm();
+    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector("#project-environment")).toBeNull();
+  });
+
   it("blocks submission while discovery is pending", async () => {
     let resolve!: (value: Awaited<ReturnType<typeof projectsApi.environmentOptions>>) => void;
     vi.mocked(projectsApi.environmentOptions).mockReturnValue(new Promise(value => { resolve = value; }));
@@ -166,6 +173,21 @@ describe("project environment selection", () => {
     expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe("sandbox");
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+  });
+
+  it("uses the only remaining storage when a refresh removes the chosen one", async () => {
+    vi.mocked(projectsApi.environmentOptions).mockResolvedValueOnce({ groups, defaultEnvironmentId: "sandbox", error: null })
+      .mockResolvedValue({ groups: [groups[0]], defaultEnvironmentId: "ssh", error: null });
+    const client = await renderForm();
+    const select = container.querySelector<HTMLSelectElement>("select")!;
+    act(() => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { await client.refetchQueries({ queryKey: queryKeys.projects.environments("company-1") }); });
+    await settle();
+    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+    act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(projectsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ environmentId: "ssh", expectedStorageProviderPluginId: null }));
   });
 
   it("does not silently substitute storage when the default is unavailable", async () => {

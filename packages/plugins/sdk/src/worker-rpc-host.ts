@@ -1,6 +1,6 @@
 import { freshWorkspaceSchema } from "./workspace-provider.js";
 import { workspaceProviderBindingSchema } from "@paperclipai/shared";
-import { pluginWorkspaceParamsSchema, parseWorkspaceProviderResult } from "./workspace-provider.js";
+import { pluginWorkspaceParamsSchema, pluginWorkspacePrepareParamsSchema, parseWorkspacePrepareResult, parseWorkspaceProviderResult } from "./workspace-provider.js";
 import { environmentTaskOperationSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskParams } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
@@ -50,7 +50,8 @@ import { createPluginIdleDrain } from "./idle-drain.js";
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
 
-import type { ResourceLifecycleEvent } from "./types.js";
+import type { ResourceLifecycleEvent, ConnectorToolRunContext, ConnectorToolListConnection, ConnectorToolDescriptor } from "./types.js";
+import type { ListConnectorToolsParams, ListConnectorToolsResult } from "./protocol.js";
 import fs from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
@@ -383,6 +384,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     declaration: Pick<import("@paperclipai/shared").PluginToolDeclaration, "displayName" | "description" | "parametersSchema">;
     fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>;
   }>();
+
+  // Plugin connector handlers, keyed by `${appSlug}\u0000${toolName}` and appSlug.
+  const connectorToolHandlers = new Map<string, (params: unknown, runCtx: ConnectorToolRunContext) => Promise<ToolResult>>();
+  const connectorToolListers = new Map<string, (connection: ConnectorToolListConnection) => Promise<ConnectorToolDescriptor[]>>();
+  const connectorKey = (appSlug: string, toolName: string) => `${appSlug}\u0000${toolName}`;
 
   // Agent session event callbacks (populated by sendMessage, cleared by close)
   const sessionEventCallbacks = new Map<string, (event: AgentSessionEvent) => void>();
@@ -760,6 +766,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
         async getInstanceSecrets(projectId, companyId) {
           return callHost("projects.getInstanceSecrets", { projectId, companyId });
+        },
+        async readSnapshots(projectIds, companyId, entityType) {
+          try {
+            return await callHost("projects.readSnapshots", { projectIds, companyId, entityType });
+          } catch (error) {
+            if (error instanceof JsonRpcCallError && error.code === JSONRPC_ERROR_CODES.METHOD_NOT_FOUND) return null;
+            throw error;
+          }
         },
 
         async listWorkspaces(projectId: string, companyId: string) {
@@ -1521,6 +1535,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      connectors: {
+        register(appSlug, toolName, fn) {
+          connectorToolHandlers.set(connectorKey(appSlug, toolName), fn);
+        },
+        listTools(appSlug, fn) {
+          connectorToolListers.set(appSlug, fn);
+        },
+      },
+
       metrics: {
         async write(name: string, value: number, tags?: Record<string, string>): Promise<void> {
           await callHost("metrics.write", { name, value, tags });
@@ -1659,7 +1682,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           : method === "environmentStopLease" ? environmentStopErrorData(err)
           : method === "environmentResumeLease" ? environmentResumeErrorData(err)
           : method === "environmentTask" ? taskError ?? environmentTaskErrorCodeData(err)
-          : method === "workspaceOperation" ? workspaceOperationErrorData(err) : undefined));
+          : method === "workspaceOperation" || method === "workspacePrepare" ? workspaceOperationErrorData(err) : undefined));
     } finally {
       done?.();
     }
@@ -1715,8 +1738,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "executeTool":
         return handleExecuteTool(params as ExecuteToolParams);
+      case "listConnectorTools": {
+        const input = params as ListConnectorToolsParams;
+        const lister = connectorToolListers.get(input.appSlug);
+        if (!lister) throw methodNotImplemented("listConnectorTools");
+        return { tools: await lister(input.connection) } satisfies ListConnectorToolsResult;
+      }
       case "detectExternalObjects":
         return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "workspacePrepare": {
+        if (!plugin.definition.onWorkspacePrepare) throw methodNotImplemented("workspacePrepare");
+        const input = pluginWorkspacePrepareParamsSchema.parse(params);
+        return parseWorkspacePrepareResult(input, await plugin.definition.onWorkspacePrepare(input));
+      }
       case "workspaceOperation": {
         if (!plugin.definition.onWorkspaceOperation) throw methodNotImplemented("workspaceOperation");
         const input = pluginWorkspaceParamsSchema.parse(params);
@@ -1856,6 +1890,23 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     // Call the plugin's setup function
     await plugin.definition.setup(ctx);
 
+    // A declared static connector tool without a handler would fail every
+    // call; refuse to start instead, so the operator sees it at enable time.
+    for (const app of manifest.apps ?? []) {
+      for (const method of app.methods) {
+        if (method.transport !== "plugin" || !method.tools) continue;
+        if (method.tools.kind === "dynamic") {
+          if (!connectorToolListers.has(app.slug)) throw new Error(`Connector "${app.slug}" declares dynamic tools but registers no ctx.connectors.listTools handler`);
+          continue;
+        }
+        for (const tool of method.tools.list) {
+          if (!connectorToolHandlers.has(connectorKey(app.slug, tool.name))) {
+            throw new Error(`Connector "${app.slug}" declares tool "${tool.name}" but registers no ctx.connectors.register handler for it`);
+          }
+        }
+      }
+    }
+
     initialized = true;
 
     // Report which optional methods this plugin implements
@@ -1867,6 +1918,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onIdleDrain) supportedMethods.push("prepareIdleSleep", "releaseIdleSleep");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
     if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onWorkspacePrepare) supportedMethods.push("workspacePrepare");
     if (plugin.definition.onWorkspaceOperation) supportedMethods.push("workspaceOperation");
     if (plugin.definition.onResourceLifecycle) supportedMethods.push("resourceLifecycle");
     if (plugin.definition.onAgentLifecycle) supportedMethods.push("agentLifecycle");
@@ -2109,6 +2161,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   }
 
   async function handleExecuteTool(params: ExecuteToolParams): Promise<ToolResult> {
+    if (params.appSlug !== undefined || params.runContext.connection) {
+      const connection = params.runContext.connection;
+      if (!connection || !params.appSlug || connection.appSlug !== params.appSlug) {
+        throw new Error("A connector tool call requires its connection");
+      }
+      const handler = connectorToolHandlers.get(connectorKey(params.appSlug, params.toolName));
+      if (!handler) throw new Error(`No connector tool handler registered for "${params.appSlug}/${params.toolName}"`);
+      return handler(params.parameters, { ...params.runContext, connection });
+    }
     const entry = toolHandlers.get(params.toolName);
     if (!entry) {
       throw new Error(`No tool handler registered for "${params.toolName}"`);

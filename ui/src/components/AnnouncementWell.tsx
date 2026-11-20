@@ -14,16 +14,16 @@ import { AnnouncementCard } from "./AnnouncementCard";
 
 // Includes the command palette, sheets and dialogs created outside DialogContext.
 export const MODAL_SELECTOR = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [aria-modal="true"]:not([data-state="closed"]), dialog[open]';
-export function useModalOpen(enabled: boolean) {
+export function useModalOpen(enabled: boolean, selector = MODAL_SELECTOR) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!enabled) return;
-    const scan = () => setOpen(Boolean(document.querySelector(MODAL_SELECTOR)));
+    const scan = () => setOpen(Boolean(document.querySelector(selector)));
     scan();
     const observer = new MutationObserver(scan);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-state", "aria-modal", "open"] });
     return () => observer.disconnect();
-  }, [enabled]);
+  }, [enabled, selector]);
   return open;
 }
 

@@ -7,10 +7,11 @@ import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
-import { legacyControllerBootId, legacyControllerProvenGone } from "./legacy-controller-lease.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE, legacyControllerBootId, legacyControllerProvenGone } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
+import { failedPreparationOwnsBoundedRetry } from "./failed-preparation-retry.js";
 import { hasVerifiedPreparationLog } from "./verified-preparation-log.js";
 import { executionStartedEventPredicate, isPreDispatchResourceWait, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 
@@ -19,7 +20,7 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "runtimeModeResolvedAt" | "errorCode" | "error" | "resultJson" | "runnerProfileJson" |
   "contextSnapshot" | "processPid" | "processGroupId" | "processStartedAt" |
   "sessionIdAfter" | "issueId" | "nativeIssueId" | "nativeSessionId" | "executionStage" |
-  "controllerBootId" | "controllerLeaseExpiresAt">;
+  "controllerBootId" | "controllerLeaseExpiresAt"> & { runnerInstanceId?: string | null };
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 const EMPTY_LOG_SHA256 = createHash("sha256").digest("hex");
 
@@ -68,7 +69,12 @@ async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinato
   return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId
     && lease.metadata?.pendingCleanupInFlight !== true && hasRemoteTerminationReceipt(lease))
     && await hasSettledFailedPreparationEvidence(db, run, historicalRetryAncestor)
-    && await hasVerifiedWorkspaceRepair(db, run);
+    && (!holdsPreparedFiles(run) || await hasVerifiedWorkspaceRepair(db, run));
+}
+
+function holdsPreparedFiles(run: Run) {
+  return run.runnerProfileJson?.remoteWorkspace != null || run.resultJson?.workspaceRestoreFailure != null
+    || hasRequiredWorkspaceRecovery(run.resultJson);
 }
 
 async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalRetryAncestor = false): Promise<boolean> {
@@ -102,8 +108,8 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     !(emptyLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt"].includes(key)) && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
     || Object.entries(run.runnerProfileJson ?? {}).some(([key, value]) => !["adapterDispatch", "remoteWorkspace",
-      "chatControlRecoveryAdmission"].includes(key) && !(key === "nativeWorkspaceOwnerStopProof"
-        && isRetainedWorkspaceWorkerStopProof(value, run.id)))
+      "chatControlRecoveryAdmission"].includes(key) && !(key === "aiConnectionNonAssigneeCommentWake" && typeof value === "boolean")
+      && !(key === "nativeWorkspaceOwnerStopProof" && isRetainedWorkspaceWorkerStopProof(value, run.id)))
     || run.resultJson?.stopReason !== "adapter_failed"
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
@@ -129,7 +135,10 @@ export function isInterruptedNativePreparationCandidate(run: Run): boolean {
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   // Restart recovery records this certificate only after revoking a preparing
   // controller. A generic process-lost error cannot establish safe replay.
-  const lostPreparation = run.status === "failed" && run.errorCode === "process_lost"
+  const lostPreparation = run.status === "failed"
+    && (run.errorCode === "process_lost" || run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE
+      || hasRequiredWorkspaceRecovery(run.resultJson)
+        && failedPreparationOwnsBoundedRetry({ ...run, runnerInstanceId: run.runnerInstanceId ?? null }))
     && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   // Older shutdown records predate structured cancellation. Current records
   // identify unexpected system interruption without relying on an error label.
@@ -239,7 +248,7 @@ async function isCancelledUnclaimedWorkspaceWaitRetry(db: Db, run: Run): Promise
       heartbeatRuns.nativeIssueId, heartbeatRuns.nativeSessionId, heartbeatRuns.sessionIdAfter].map(column => isNull(column)),
     noProviderOutputPredicate(),
     sql`${heartbeatRuns.runnerProfileJson} #>> '{adapterDispatch,adapterType}' = 'paperclip_runner'`,
-    sql`(${heartbeatRuns.runnerProfileJson} - 'adapterDispatch' - 'chatControlRecoveryAdmission') = '{}'::jsonb`,
+    sql`(${heartbeatRuns.runnerProfileJson} - 'adapterDispatch' - 'chatControlRecoveryAdmission' - 'aiConnectionNonAssigneeCommentWake') = '{}'::jsonb`,
     sql`${heartbeatRuns.resultJson}->'executionRecovery'->>'kind' = 'workspace_wait'`,
     sql`${heartbeatRuns.resultJson}->'executionRecovery'->'providerWorkStarted' = 'false'::jsonb`,
     sql`(${heartbeatRuns.resultJson} - 'cancellation' - 'workspaceBusy' - 'executionRecovery') = '{}'::jsonb`,

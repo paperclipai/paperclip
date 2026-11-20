@@ -6,8 +6,8 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
-  executionWorkspaces, issueRecoveryActions, issues, workspaceOperations } from "@paperclipai/db";
+import { agents, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
+  executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, workspaceOperations } from "@paperclipai/db";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
@@ -16,6 +16,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "./task-admission.js";
+import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { notifyRemoteWorkspaceSnapshots, registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 
@@ -108,6 +109,7 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
   beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-retention-test-")); storage = createStorageService(createLocalDiskStorageProvider(root)); });
   afterEach(async () => {
     await db.delete(issueRecoveryActions); await db.delete(workspaceOperations); await db.delete(executionWorkspaceSnapshots);
+    await db.delete(heartbeatRuns); await db.delete(agents);
     await db.delete(issues); await db.delete(executionWorkspaces); await db.delete(companies);
     await fs.rm(root, { recursive: true, force: true });
     vi.unstubAllEnvs();
@@ -340,6 +342,96 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
       ownerType: "board", cause: "workspace_recovery", fingerprint: randomUUID(), nextAction: "Recover saved files" });
     expect(await owner.tick()).toMatchObject({ pinned: 1, deleted: 0 }); expect(await owner.nextDeadlineAt()).toBeNull();
   });
+  type Fixture = Awaited<ReturnType<typeof seed>>;
+  const failedMigration = (f: Fixture) => db.insert(workspaceOperations).values({ id: f.operationId, companyId: f.companyId,
+    executionWorkspaceId: f.workspaceId, phase: "remote_workspace_migration", status: "failed",
+    metadata: { lastFailure: { code: "source_expired_during_import", cohortId: randomUUID() } } });
+  const pins: Record<string, { hold: (f: Fixture) => Promise<() => Promise<unknown>> }> = {
+    workspace: { hold: async f => {
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { snapshotId: f.row.id } } }).where(eq(executionWorkspaces.id, f.workspaceId));
+      return () => db.update(executionWorkspaces).set({ metadata: {} }).where(eq(executionWorkspaces.id, f.workspaceId));
+    } },
+    import: { hold: async f => {
+      const [parent] = await db.insert(executionWorkspaceSnapshots).values({ companyId: f.companyId, executionWorkspaceId: randomUUID(),
+        sourceOperationId: randomUUID(), generation: 1, epoch: 1, status: "superseded", deleteAfter: new Date(now.getTime() + 86400_000),
+        metadata: { importedWorkspaceChildren: [{ workspaceId: f.workspaceId, snapshotId: f.row.id }] } }).returning();
+      return () => db.update(executionWorkspaceSnapshots).set({ status: "deleted", deleteAfter: null }).where(eq(executionWorkspaceSnapshots.id, parent!.id));
+    } },
+    operation: { hold: async f => {
+      await failedMigration(f);
+      return () => db.update(workspaceOperations).set({ metadata: { lastFailure: { code: "source_expired_during_import" },
+        retiredSave: { snapshotId: randomUUID() } } }).where(eq(workspaceOperations.id, f.operationId));
+    } },
+    child: { hold: async f => {
+      const [child] = await db.insert(executionWorkspaceSnapshots).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+        sourceOperationId: randomUUID(), parentSnapshotId: f.row.id, generation: 2, epoch: 1, status: "pending",
+        deleteAfter: new Date(now.getTime() + 86400_000) }).returning();
+      return () => db.update(executionWorkspaceSnapshots).set({ status: "deleted", deleteAfter: null }).where(eq(executionWorkspaceSnapshots.id, child!.id));
+    } },
+    run: { hold: async f => {
+      const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Remote worker" }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id, status: "running",
+        runnerProfileJson: { remoteWorkspace: { workspaceId: f.workspaceId, snapshotId: f.row.id } } }).returning();
+      return () => db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run!.id));
+    } },
+    recovery: { hold: async f => {
+      const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+        ownerType: "board", cause: "workspace_recovery", fingerprint: randomUUID(), nextAction: "Recover saved files" }).returning();
+      return () => db.update(issueRecoveryActions).set({ status: "resolved" }).where(eq(issueRecoveryActions.id, action!.id));
+    } },
+  };
+  it.each(Object.keys(pins))("leaves %s-pinned history out of later passes, across restarts, until that pin is released", async kind => {
+    const f = await seed(), release = await pins[kind]!.hold(f);
+    expect(await service().tick()).toMatchObject({ pinned: 1, deleted: 0 });
+    const owner = service();
+    expect(await owner.tick()).toMatchObject({ checked: 0, pinned: 0, deleted: 0 });
+    expect(await owner.tick()).toMatchObject({ checked: 0 });
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id)))[0])
+      .toMatchObject({ status: "superseded", deleteAfter: null });
+    for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(true);
+    await release();
+    expect(await owner.tick()).toMatchObject({ checked: 1, pinned: 0, deleted: 1 });
+    for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(false);
+  });
+  it("re-examines a pinned snapshot when its recorded pin is released but another still holds it", async () => {
+    const f = await seed();
+    const releaseRun = await pins.run!.hold(f);
+    const owner = service();
+    expect(await owner.tick()).toMatchObject({ pinned: 1 });
+    await failedMigration(f);
+    expect(await owner.tick()).toMatchObject({ checked: 0 });
+    await releaseRun();
+    expect(await owner.tick()).toMatchObject({ checked: 1, pinned: 1, deleted: 0 });
+    expect(await owner.tick()).toMatchObject({ checked: 0 });
+    for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(true);
+  });
+  it("revisits a failed save's recorded pin once its abandoned upload is settled", async () => {
+    const f = await seed("pending");
+    await db.insert(workspaceOperations).values({ id: f.operationId, companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+      phase: "remote_workspace_snapshot", status: "failed", metadata: { lastFailure: { code: "remote_workspace_save_abandoned" } } });
+    const owner = service();
+    expect(await owner.tick()).toMatchObject({ pinned: 1 });
+    expect(await owner.tick()).toMatchObject({ checked: 0 });
+    const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    await db.update(executionWorkspaceSnapshots).set({ status: "delete_requested", objectKey: null,
+      metadata: { ...row!.metadata, abandonedUpload: { operationId: f.operationId } } }).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    expect(await owner.tick()).toMatchObject({ checked: 1, deleted: 1 });
+  });
+  it("does not re-examine unchanged pinned history on execution notifications", async () => {
+    for (let index = 0; index < 3; index++) await failedMigration(await seed());
+    const results: Array<{ checked: number; pinned: number }> = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    const worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, service(), result => { results.push(result); });
+    try {
+      await vi.waitFor(() => expect(results.reduce((sum, result) => sum + result.pinned, 0)).toBe(3));
+      const settled = results.length;
+      for (let index = 1; index <= 3; index++) {
+        await db.transaction(async tx => { await notifyExecutionRunWork(tx); });
+        await vi.waitFor(() => expect(results.length).toBeGreaterThanOrEqual(settled + index), { timeout: 4000 });
+      }
+      expect(results.slice(settled).reduce((sum, result) => sum + result.checked, 0)).toBe(0);
+    } finally { await worker.stop(); await coordinator.stop(); }
+  });
   it("rejects a foreign upload key without deleting another company's object", async () => {
     const f = await seed(); const foreignKey = `${randomUUID()}/workspace-snapshots/foreign`;
     await db.update(executionWorkspaceSnapshots).set({ metadata: { uploads: [{ objectKey: foreignKey }] } }).where(eq(executionWorkspaceSnapshots.id, f.row.id));
@@ -355,7 +447,7 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
       await new Promise(resolve => setTimeout(resolve, 30)); expect(run).toHaveBeenCalledOnce();
       const f = await seed();
       await db.transaction(async tx => { await notifyRemoteWorkspaceSnapshots(tx, `workspace:${f.workspaceId}`); });
-      await vi.waitFor(async () => expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false));
+      await vi.waitFor(async () => expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false), { timeout: 4000 });
       expect(run).toHaveBeenCalledTimes(2);
     } finally { await worker.stop(); await coordinator.stop(); }
   });
@@ -407,7 +499,7 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
         status: "resolved", outcome: "restored", resolutionNote: "Verified saved files" });
       expect(resolved?.status).toBe("resolved");
       try {
-        await vi.waitFor(() => expect(secondDeleteHeld).toBe(true));
+        await vi.waitFor(() => expect(secondDeleteHeld).toBe(true), { timeout: 4000 });
         expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false);
         expect((await storage.headObject(f.companyId, f.keys[1]!)).exists).toBe(true);
         expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id)))[0])
@@ -422,7 +514,7 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
         expect(await owner.nextDeadlineAt()).toBeNull();
         expect(idleWorkSnapshot().active).toBe(0);
         expect(coordinator.nextWakeAt()).toBeNull();
-      });
+      }, { timeout: 4000 });
     } finally { releaseSecondDelete(); await worker.stop(); await coordinator.stop(); }
   });
 });

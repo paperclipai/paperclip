@@ -219,6 +219,76 @@ describe("TaskChatInteractionCard", () => {
     expect(writeText).toHaveBeenCalledWith(argumentsHash);
   });
 
+  it("shows a proposed bar inline in the timeline and never in the composer", async () => {
+    const { barProposalFixture } = await import("../../../storybook/fixtures/responsibility-bars");
+    const proposal = barProposalFixture("percentage") as unknown as IssueThreadInteraction;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    const renderAs = (presentation: "timeline" | "takeover") => flushSync(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <TaskChatInteractionCard item={interactionItem(proposal)} presentation={presentation} showPendingRequest />
+        </QueryClientProvider>,
+      );
+    });
+    renderAs("timeline");
+    expect(container.querySelector('[data-testid="bar-proposal"]')).not.toBeNull();
+    expect(container.textContent).toContain("On track at 90% or more; at risk from 68%");
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+    renderAs("takeover");
+    expect(container.textContent).toBe("");
+  });
+
+  it("shows a proposed automation inline in the timeline and never in the composer", async () => {
+    const { automationProposalFixture } = await import("../../../storybook/fixtures/automation-proposals");
+    const proposal = automationProposalFixture("webhook") as unknown as IssueThreadInteraction;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    const renderAs = (presentation: "timeline" | "takeover") => flushSync(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <TaskChatInteractionCard item={interactionItem(proposal)} presentation={presentation} showPendingRequest />
+        </QueryClientProvider>,
+      );
+    });
+    renderAs("timeline");
+    expect(container.querySelector('[data-testid="automation-proposal"]')).not.toBeNull();
+    expect(container.textContent).toContain("From a webhook, when another system calls it");
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+    renderAs("takeover");
+    expect(container.textContent).toBe("");
+  });
+
+  it("shows a pending routine offer inline in the timeline and never in the composer", () => {
+    const offer = {
+      ...createRequestConfirmation(),
+      id: "offer-1",
+      kind: "suggest_routine",
+      continuationPolicy: "none",
+      createdByAgentId: "agent-1",
+      title: 'Repeat "Weekly pricing summary"?',
+      summary: "Every Monday at 9 AM",
+      payload: {
+        version: 1, title: "Weekly pricing summary", instructions: "Summarize pricing changes.", message: null,
+        cadence: { frequency: "weekly", dayOfWeek: "monday", dayOfMonth: null, time: "09:00" },
+        cadenceLabel: "Every Monday at 9 AM", cronExpression: "0 9 * * 1", assigneeAgentId: "agent-1", projectId: null,
+      },
+      result: null,
+    } as unknown as IssueThreadInteraction;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    const renderAs = (presentation: "timeline" | "takeover") => flushSync(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <TaskChatInteractionCard item={interactionItem(offer)} presentation={presentation} showPendingRequest />
+        </QueryClientProvider>,
+      );
+    });
+    renderAs("timeline");
+    expect(container.querySelector('[data-testid="routine-suggestion"]')).not.toBeNull();
+    expect(container.textContent).toContain("Every Monday at 9 AM");
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+    renderAs("takeover");
+    expect(container.textContent).toBe("");
+  });
+
   it("does not render a pending confirmation in the timeline", () => {
     flushSync(() => {
       root.render(
@@ -260,6 +330,32 @@ describe("TaskChatInteractionCard", () => {
     const preview = row!.textContent ?? "";
     expect(preview).toContain("The creative-brief document is saved on this task. It covers: Brand voice and audience: Gen Z core buyers and holiday gift buyers. Style rules: see the brief and old new notes.");
     expect(preview).not.toMatch(/[`*_~[\]]|(^|\s)- /);
+  });
+
+  // Full cohort 11: the unanswered-question chip and the composer takeover showed the same
+  // pending question at once, both with id "interaction-<id>", so the page had a duplicate id.
+  it("keeps the interaction id unique while its timeline chip and takeover card are both shown", () => {
+    const interaction = pendingAskUserQuestionsInteraction;
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(interaction)} showUnansweredQuestion onReviewRequest={() => {}} />
+            <div data-testid="task-chat-composer-takeover">
+              <TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" />
+            </div>
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    const anchors = container.querySelectorAll(`[id="interaction-${interaction.id}"]`);
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]!.getAttribute("data-testid")).toBe("task-chat-unanswered-question");
+    const takeover = container.querySelector(`[data-testid="task-chat-composer-takeover"] [data-interaction-id="${interaction.id}"]`);
+    expect(takeover).not.toBeNull();
+    expect(takeover!.id).toBe("");
+    const ids = [...container.querySelectorAll("[id]")].map(node => node.id);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it("renders a plan confirmation as a linked document preview", () => {
@@ -520,7 +616,7 @@ describe("TaskChatInteractionCard", () => {
       </ThemeProvider></TooltipProvider></QueryClientProvider>,
     ));
 
-    const link = container.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    const link = container.querySelector('a[href="/PAP/issues/PAP-42#document-preview"]');
     expect(link?.textContent).toBe("two screenshots");
     const prompt = link?.closest(".paperclip-markdown");
     expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
@@ -707,6 +803,38 @@ describe("TaskChatInteractionCard", () => {
     )?.parentElement;
     expect(reasonGroup?.className).toContain("space-y-2");
     expect(reasonGroup?.className).not.toContain("mt-3");
+  });
+
+  it("opens the revision note for a plan even when the request does not require a reason", async () => {
+    const reject = vi.fn();
+    const interaction = createRequestConfirmation({
+      sourceRunId: "run-plan",
+      title: "Confirm the two-step plan",
+      payload: {
+        version: 1,
+        prompt: "Please review the plan.",
+        acceptLabel: "Confirm",
+        rejectLabel: "Request changes",
+        rejectRequiresReason: false,
+        target: { type: "issue_document", issueId: "issue-1", key: "plan", revisionId: "revision-1", revisionNumber: 1 },
+      },
+    });
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover"
+              onAcceptInteraction={vi.fn()} onRejectInteraction={reject} onUploadImage={vi.fn()} />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    const requestChanges = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.trim() === "Request changes");
+    flushSync(() => requestChanges?.click());
+    expect(reject).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="plan-revision-composer"]')).not.toBeNull();
+    expect(container.textContent).toContain("(optional)");
   });
 
   it("shows one question at a time and preserves answers across pages", async () => {

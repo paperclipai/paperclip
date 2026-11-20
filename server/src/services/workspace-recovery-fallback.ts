@@ -27,7 +27,7 @@ import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSa
 import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { NATIVE_NO_REPLAY_HOLD_CAUSE, PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, isRetainedFileHold,
-  retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
+  isSupersededWorkspaceExportHold, retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
 import { captureReadOnlyWorkspaceArchive, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
@@ -348,9 +348,11 @@ export async function continueFromLastSavedWorkspace(input: Source & {
     // decision owns the block: it is kept and no continuation is started.
     const ownsBlock = holdOwnsBlockedStatus(action, issue, run);
     const dispatchable = issue.status !== "blocked" || ownsBlock;
+    // A superseded export's files were not unverifiable: saving them kept failing.
+    const could = isSupersededWorkspaceExportHold(action.evidence) ? "could not save" : "could not verify";
     const userText = quarantine.state === "captured"
-      ? "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files are attached to the task, unapplied."
-      : "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files could not be read.";
+      ? `Paperclip ${could} the previous run's unsaved files, so the task continues from the last saved version. Those files are attached to the task, unapplied.`
+      : `Paperclip ${could} the previous run's unsaved files, so the task continues from the last saved version. Those files could not be read.`;
     const evidence = { ...action.evidence, automaticRecovery: undefined, [RETAINED_SOURCE_FALLBACK_CHECK_KEY]: undefined,
       retainedSourceFallback: { ...fallback, failureCode: current.system.failure?.code ?? null, recordedAt: now.toISOString() },
       workspaceRecovery: { ...(readWorkspaceRecovery(action.evidence) ?? {}), message: userText, retryable: false },

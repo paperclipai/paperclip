@@ -4,12 +4,15 @@ import { validDevicePrivateInput, type DevicePrivateInput } from "./external-dev
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium, test, type Cookie } from "@playwright/test";
+import { recordPrivateChildFailure } from "./private-child-failure.js";
+import type { PrivateBrowserStep } from "./external-private-browser-steps.js";
 import { validGrokRoutinePrivateInput, matchesConfiguredGrokRoutine, type GrokRoutinePrivateInput } from "./external-grok-private-contract.js";
 import { validSlackIdentityInput, validSlackWizardIdentityInput, matchingSlackIdentityPreview, type SlackIdentityPrivateInput } from "./external-slack-identity-contract.js";
 import { validSlackSetupPrivate, type SlackSetupPrivateInput } from "./external-slack-setup-private-contract.js";
 interface Request { mode: "secure-key" | "canary" | "gateway-token-rotation" | "company-secret-create" | "personal-secret-create" | "grok-routine-configure" | "slack-identity-confirm" | "slack-endpoint-configure" | "slack-wizard-confirm" | "slack-wizard-resume" | "slack-endpoint-reconnect" | "device-approve" | "device-expired"; device?: DevicePrivateInput; slackSetup?:SlackSetupPrivateInput; slackIdentity?:SlackIdentityPrivateInput; grok?:GrokRoutinePrivateInput; companyId?:string; companyMetadata?:{name?:string;key?:string}; personal?:{definitionId:string;userId:string;viaMySecrets?:boolean}; gateway?: { id: string; oldTokenId: string; otherToken: string; endpointPath: string; readName: string; pendingTokenId?: string }; baseURL: string; setupURL: string; providerURL: string; credential: string; cookies: Cookie[]; executablePath?: string; channel?: string }
 /** Separate Node process: no Playwright Test worker, API-step listener or artifact
  * recorder exists. This module never enables tracing, video or screenshots. */
+let step: PrivateBrowserStep = "request";
 async function main() {
   let attached = false; try { test.info(); attached = true; } catch { /* expected outside Test */ }
   if (attached) throw new Error("Private browser worker cannot run inside Playwright Test");
@@ -17,24 +20,24 @@ async function main() {
   if (!input.credential || input.credential.length > (input.mode === "grok-routine-configure" ? 16384 : 8192) || !["secure-key", "canary", "gateway-token-rotation", "company-secret-create", "personal-secret-create", "grok-routine-configure", "slack-identity-confirm", "slack-endpoint-configure", "slack-wizard-confirm", "slack-wizard-resume", "slack-endpoint-reconnect", "device-approve", "device-expired"].includes(input.mode)) throw new Error("Invalid private browser request");
   const base = new URL(input.baseURL);
   if (base.hostname !== "127.0.0.1" || base.protocol !== "http:" || new URL(input.setupURL).origin !== base.origin) throw new Error("Private browser target is outside the disposable loopback instance");
-  const browser = await chromium.launch({ headless: true, ...(input.executablePath ? { executablePath: input.executablePath } : {}), ...(input.channel ? { channel: input.channel } : {}) });
+  step = "launch"; const browser = await chromium.launch({ headless: true, ...(input.executablePath ? { executablePath: input.executablePath } : {}), ...(input.channel ? { channel: input.channel } : {}) });
   try {
     const context = await browser.newContext({ baseURL: base.origin });
-    await context.addCookies(input.cookies); const page = await context.newPage(); page.setDefaultTimeout(30_000);
+    await context.addCookies(input.cookies); const page = await context.newPage(); page.setDefaultTimeout(30_000); step = input.mode;
     if (input.mode === "device-approve" || input.mode === "device-expired") {
       if (!validDevicePrivateInput(input.mode, input.baseURL, input.setupURL, input.companyId, input.device, input.credential) || !input.device) throw new Error("Invalid finite device verification request");
-      const session = await context.request.get("/api/auth/get-session");
+      step = "device-session"; const session = await context.request.get("/api/auth/get-session");
       if (!session.ok() || (await session.json()).user?.id !== input.device.userId) throw new Error("Device UI requires the same signed-in fixture person");
       const description = page.waitForResponse(response => {
         const url = new URL(response.url());
         return url.origin === base.origin && url.pathname === "/api/mcp/device" && url.searchParams.get("user_code") === input.credential && response.request().method() === "GET";
       });
-      await page.goto(input.setupURL, { waitUntil: "domcontentloaded" });
+      step = "device-describe"; await page.goto(input.setupURL, { waitUntil: "domcontentloaded" });
       const described = await description;
       if (input.mode === "device-expired") {
         const body = await described.json();
         if (described.status() !== 404 || body.error !== "invalid_request") throw new Error("Expired device UI did not receive the actual issuer rejection");
-        await page.getByText(/expired|invalid/i).first().waitFor();
+        step = "device-expired-page"; await page.getByText(/expired|invalid/i).first().waitFor();
         if (await page.getByRole("button", { name: "Connect organization", exact: true }).isVisible()) throw new Error("Expired device still offers approval");
         return { processIsolation: true, testRunnerAttached: false, tracingEnabled: false, videoEnabled: false, apiStepRecorder: false, deviceSessionVerified: true, expiredPageVisible: true };
       }
@@ -42,13 +45,13 @@ async function main() {
       const request = await described.json();
       if (request.clientName !== "Paperclip disposable CLI" || request.requestedCompanyId !== input.companyId || request.requiresSignIn !== false || request.requestedWrite !== false || request.requestedConfigure !== false || request.agentConnection === true
         || !request.companies?.some((company: { id: string; name: string }) => company.id === input.companyId && company.name === input.device!.companyName)) throw new Error("Device consent does not match the exact owned read-only request");
-      await page.getByRole("heading", { name: "Connect Paperclip disposable CLI to Paperclip", exact: true }).waitFor();
+      step = "device-consent-page"; await page.getByRole("heading", { name: "Connect Paperclip disposable CLI to Paperclip", exact: true }).waitFor();
       await page.getByText(input.credential.toUpperCase(), { exact: true }).waitFor();
       await page.getByText(input.device.companyName, { exact: true }).waitFor();
       await page.getByText("Read all of your Paperclip data", { exact: true }).waitFor();
       if (await page.getByText("Write all of your Paperclip data", { exact: true }).isVisible()) throw new Error("Device read-only request unexpectedly offers write authority");
       const approval = page.waitForResponse(response => new URL(response.url()).origin === base.origin && new URL(response.url()).pathname === "/api/mcp/device/consent" && response.request().method() === "POST");
-      await page.getByRole("button", { name: "Connect organization", exact: true }).click();
+      step = "device-approve"; await page.getByRole("button", { name: "Connect organization", exact: true }).click();
       const approved = await approval, submitted = approved.request().postDataJSON();
       if (!approved.ok() || (await approved.json()).status !== "approved" || submitted.userCode !== input.credential || submitted.companyId !== input.companyId || submitted.decision !== "approve" || submitted.allowWrites !== false || submitted.allowConfiguration !== false) throw new Error("Actual device UI did not approve exactly the selected read-only company/code");
       await page.getByRole("heading", { name: "Access approved", exact: true }).waitFor();
@@ -222,7 +225,7 @@ async function main() {
         await page.getByRole('listitem').filter({hasText:entry.definition.key}).getByRole('button',{name:'Set value',exact:true}).click();
       } else await page.getByRole('button',{name:'Set my value',exact:true}).click();
       const dialog=personalSecretEntryDialog(page);await dialog.getByRole('heading',{name:/^Set your value/}).waitFor();
-      if(!await dialog.getByText('Personal publishing credential',{exact:true}).isVisible())throw new Error('Wrong personal credential form');
+      if(!await dialog.getByRole('heading',{name:'Set your value for Personal publishing credential',exact:true}).isVisible())throw new Error('Wrong personal credential form');
       await dialog.getByRole('textbox').fill(input.credential);
       const created=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/companies/${input.companyId}/me/user-secrets`&&response.request().method()==='POST'&&response.status()===201);
       await dialog.getByRole('button',{name:'Save value',exact:true}).click();const secret=await(await created).json() as {id:string;ownerUserId:string;userSecretDefinitionId:string};
@@ -234,16 +237,17 @@ async function main() {
       if(!validCompanySecretMetadata(input.companyMetadata))throw new Error("Invalid requested company secret metadata");
       const requestedName=input.companyMetadata?.name??"Deployment API key",requestedKey=input.companyMetadata?.key;
       if(!input.companyId||!/^[a-f0-9-]{36}$/i.test(input.companyId)||!new URL(input.setupURL).pathname.endsWith("/company/settings/secrets"))throw new Error("Invalid finite company secret operation");
-      await page.goto(input.setupURL,{waitUntil:"domcontentloaded"});await page.getByRole("button",{name:"New secret",exact:true}).click();
-      const dialog=page.getByRole("dialog",{name:"Create secret",exact:true});await dialog.getByLabel("Name",{exact:true}).fill(requestedName);
-      if(requestedKey){await dialog.getByRole("button",{name:"Edit",exact:true}).click();await dialog.getByLabel("Key",{exact:true}).fill(requestedKey);}
-      await dialog.getByLabel("Provider",{exact:true}).selectOption("local_encrypted");
+      await page.goto(input.setupURL,{waitUntil:"domcontentloaded"});await page.getByRole("button",{name:"New secret",exact:true}).first().click();
+      const dialog=page.getByRole("dialog").filter({has:page.getByRole("radiogroup",{name:"Who provides the value",exact:true})});await dialog.getByLabel("Name",{exact:true}).fill(requestedName);
+      await dialog.getByRole("radiogroup",{name:"Who provides the value",exact:true}).getByRole("radio",{name:/^Organization\b/}).click();
+      if(requestedKey){const more=dialog.getByRole("button",{name:"More options",exact:true});if(await more.getAttribute("aria-expanded")!=="true")await more.click();await dialog.getByLabel("Key",{exact:true}).fill(requestedKey);}
+      const storedIn=dialog.getByLabel("Stored in",{exact:true});if(await storedIn.count()){const local=await storedIn.locator("option").evaluateAll(options=>options.map(option=>(option as HTMLOptionElement).value).filter(value=>value.startsWith("local_encrypted:")));if(local.length!==1)throw new Error("Paperclip-encrypted storage is not a single choice");await storedIn.selectOption(local[0]!);}
       await dialog.getByLabel("Value",{exact:true}).fill(input.credential);
       const created=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/companies/${input.companyId}/secrets`&&response.request().method()==="POST"&&response.status()===201);
       await dialog.getByRole("button",{name:"Create secret",exact:true}).click();const response=await created,posted=response.request().postDataJSON() as {name?:string;key?:string};
       if(posted.name!==requestedName||requestedKey&&posted.key!==requestedKey)throw new Error("Outgoing company secret metadata differs from the actual request");
-      const submittedKey=requestedKey??posted.key??requestedName,secret=await response.json() as {id:string;companyId:string;name:string;key:string;scope:string;status:string};
-      if(secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.name!==requestedName||secret.key!==canonicalCompanySecretKey(submittedKey))throw new Error("Saved company secret metadata differs from the actual request");
+      const submittedKey=requestedKey??posted.key??requestedName,secret=await response.json() as {id:string;companyId:string;name:string;key:string;scope:string;status:string;provider:string};
+      if(secret.companyId!==input.companyId||secret.provider!=="local_encrypted"||secret.scope!=="company"||secret.status!=="active"||secret.name!==requestedName||secret.key!==canonicalCompanySecretKey(submittedKey))throw new Error("Saved company secret metadata differs from the actual request");
       if(!/^[a-f0-9-]{36}$/i.test(secret.id))throw new Error("Invalid created secret identity");await dialog.waitFor({state:"hidden"});
       await page.getByText(requestedName,{exact:true}).first().waitFor();
       const storageClean=await page.evaluate(secret=>!JSON.stringify([Object.entries(localStorage),Object.entries(sessionStorage),document.body.innerText,location.href]).includes(secret),input.credential);
@@ -292,20 +296,23 @@ async function main() {
       await writeFile(path.join(path.dirname(process.argv[2]!), "token.json"), JSON.stringify({id:replacement.id,token:replacement.token}), {mode:0o600});
       return {processIsolation:true,testRunnerAttached:false,tracingEnabled:false,videoEnabled:false,apiStepRecorder:false,newTokenId:replacement.id,tokenUiVisible:true,newWorkedBeforeRevocation,oldWorkedUntilRevocation,revealedPending:!!g.pendingTokenId,oldRevoked:true,newWorksAfter:fresh.ok,oldStatusAfter:old.status,otherWorksAfter:other.ok};
     }
-    await page.goto(input.setupURL, { waitUntil: "domcontentloaded" });
+    step = "secure-key-address"; await page.goto(input.setupURL, { waitUntil: "domcontentloaded" });
     await page.getByRole("textbox", { name: "MCP server URL", exact: true }).fill(input.providerURL); await page.getByRole("button", { name: "Continue", exact: true }).click();
     await page.getByRole("button", { name: "Check link", exact: true }).click();
-    const key = page.getByLabel("App key", { exact: true }); await key.waitFor({ state: "visible" });
+    step = "secure-key-field"; const key = page.getByLabel("App key", { exact: true }); await key.waitFor({ state: "visible" });
     const passwordInput = await key.getAttribute("type") === "password", autocompleteOff = await key.getAttribute("autocomplete") === "off";
-    await key.fill(input.credential);
+    step = "secure-key-connect"; await key.fill(input.credential);
     const created = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/tools/apps/connect") && response.request().method() === "POST" && response.status() === 201);
     await page.getByRole("button", { name: "Check link", exact: true }).click();
     const connectionId = (await (await created).json() as { connectionId: string }).connectionId;
     if (!/^[a-f0-9-]{36}$/i.test(connectionId)) throw new Error("Secure setup did not return a bounded connection identity");
-    await page.getByRole("heading", { name: /is ready\./i }).waitFor({ state: "visible" });
+    step = "secure-key-ready"; await page.getByRole("heading", { name: /is ready\./i }).waitFor({ state: "visible" });
     const storageClean = await page.evaluate(secret => !JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage), location.href]).includes(secret), input.credential);
     await page.getByRole("button", { name: "View connection", exact: true }).click(); await key.waitFor({ state: "detached" });
     return { processIsolation: true, testRunnerAttached: false, tracingEnabled: false, videoEnabled: false, apiStepRecorder: false, connectionId, challengeVisible: true, passwordInput, autocompleteOff, humanSubmittedSecurely: true, visibleReady: true, storageClean };
   } finally { await browser.close(); }
 }
-main().then(receipt => process.stdout.write(JSON.stringify(receipt))).catch(() => { process.stderr.write("Private browser operation failed; diagnostics withheld"); process.exitCode = 1; });
+main().then(receipt => process.stdout.write(JSON.stringify(receipt))).catch(async (error: unknown) => {
+  await recordPrivateChildFailure(path.dirname(process.argv[2]!), step, error);
+  process.stderr.write("Private browser operation failed; diagnostics withheld"); process.exitCode = 1;
+});

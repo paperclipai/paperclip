@@ -1,6 +1,6 @@
 import { prepareChatCatalogRespondent } from "./chat-catalog-respondent.js";
 import type { ChatPrivateInputs } from "./chat-private-inputs.js";
-import type { ChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
+import { chatCatalogProviderRuns, type ChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
 import { runHiringTemplateFlow } from "./hiring-template-flow.js";
 import { gradeHiringTemplateTurns } from "./hiring-template-turn-accounting.js";
 import type { HiringTemplateEvidence } from "./hiring-template-scoring.js";
@@ -13,7 +13,7 @@ import type {
 } from "../../packages/shared/src/types/issue.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
-import { chatProviderRuns, classifyPreDispatchExecutionWait, isBlockedUnstartedWake, isReassignedUnstartedWake, verifyChatAdmissionWaitCoverage, type ChatAdmissionWait } from "./non-execution-wake.js";
+import { chatProviderRuns, classifyPreDispatchExecutionWait, isAssigneeChangedUnstartedRun, isBlockedUnstartedWake, verifyChatAdmissionWaitCoverage, type ChatAdmissionWait } from "./non-execution-wake.js";
 import { collectRunEvents } from "./run-observations.js";
 import { chatMarker } from "./chat-cases.js";
 import { assertChatRememberedAfterRestart, assertChatStartupStopped, isChatStopReady, runChatHardeningFlow } from "./chat-hardening.js";
@@ -82,6 +82,7 @@ export interface ChatRun {
   sessionIdBefore?: string | null;
   sessionIdAfter?: string | null;
   startedAt?: string | null;
+  createdAt?: string;
   nativeIssueId?: string | null;
 }
 type Comment = {
@@ -323,7 +324,7 @@ export async function collectChatRunEvidence(
   const providerNeverStarted = run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
-  const reassignedBeforeStart = isReassignedUnstartedWake(run);
+  const reassignedBeforeStart = isAssigneeChangedUnstartedRun(run);
   const terminalBeforeStart = run.status === "cancelled" && run.errorCode === "issue_terminal_status" &&
     run.startedAt === null && run.logStore === null && run.logRef === null;
   return {
@@ -429,7 +430,10 @@ export async function runChatFlow(input: ChatFlowInput) {
   const admissionAccounting = execution.suite.id === "kimi-qualification" && caseId === "stop-new-resume" && execution.profile.generation === "native";
   let admissionWaits: ChatAdmissionWait[] = [];
   let stoppedForSessionReset: string | undefined;
-  const providerRuns = () => admissionAccounting ? chatProviderRuns(runs, admissionWaits) : runs.filter(run => !isResetRun(run));
+  // A catalog task's queued run retired by reassignment before it started, with
+  // the new assignee's run present, is lifecycle: kept in `runs`, not provider work.
+  const providerRuns = () => admissionAccounting ? chatProviderRuns(runs, admissionWaits)
+    : catalogDescriptor ? chatCatalogProviderRuns(runs.filter(run => !isResetRun(run)), issue) : runs.filter(run => !isResetRun(run));
   const settings = await api.get<Record<string, unknown>>(
     "/api/instance/settings/experimental",
   );

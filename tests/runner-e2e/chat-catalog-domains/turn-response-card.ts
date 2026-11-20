@@ -15,6 +15,9 @@ export interface TurnResponseCard {
   text: string;
   /** The exact record a confirmation card asks the person to review, when it names one. */
   target?: Record<string, unknown>;
+  /** Markdown link targets in the card fields the page renders as Markdown (a question form's description and
+   * question prompts; a confirmation's prompt and details). Option labels and help text render as plain text. */
+  links: string[];
 }
 
 interface RunLike { id: string; agentId?: string; status?: string; resultJson?: Record<string, unknown> | null }
@@ -39,6 +42,21 @@ function shownQuestionForm(payload: Row | undefined): Row | undefined {
   return questionSet !== undefined ? { ...rest, questionSet } : { ...rest, questions };
 }
 
+/** Link targets the card's Markdown renders as clickable links: inline links, autolinks and reference links whose
+ * definition exists, outside code. Code spans and fenced blocks show their text literally, and a reference
+ * definition that no link uses renders nothing. */
+export function renderedMarkdownLinks(text: string): string[] {
+  const prose = text.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "").replace(/(`+)[\s\S]*?\1/g, "");
+  const unwrap = (target: string) => target.startsWith("<") && target.endsWith(">") ? target.slice(1, -1) : target;
+  const label = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+  const definitions = new Map<string, string>();
+  for (const match of prose.matchAll(/^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*(\S+)/gm)) if (!definitions.has(label(match[1]!))) definitions.set(label(match[1]!), unwrap(match[2]!));
+  const body = prose.replace(/^[ \t]{0,3}\[[^\]\n]+\]:[^\n]*$/gm, "");
+  const references = [...body.matchAll(/(?<![!\]])\[([^\]\n]+)\](?:\[([^\]\n]*)\])?(?!\()/g)]
+    .map(match => definitions.get(label(match[2] || match[1]!))).filter((target): target is string => !!target);
+  return [...[...body.matchAll(/(?<!!)\[[^\]\n]*\]\(\s*([^)\s]+)/g)].map(match => unwrap(match[1]!)),
+    ...[...body.matchAll(/<((?:https?:\/\/|\/)[^>\s]+)>/g)].map(match => match[1]!), ...references];
+}
 /** True when the product decided that a card owns this run's conversation response. */
 export function runEndedOnCard(run: RunLike): boolean {
   const decision = record(run.resultJson?.presentationDecision);
@@ -66,11 +84,17 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
       const answerable = parsed.data.questions.filter(question => !!question.prompt.trim()
         && (question.options.length >= 2 || question.options.some(option => option.freeText)));
       if (!answerable.length) continue;
-      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shownQuestionForm(payload))).join("\n") });
+      // The shown form is the canonical questionSet when present, else the legacy questions; both render each
+      // prompt with Markdown, and the questionSet also renders its description.
+      const shown = shownQuestionForm(payload), form = record(shown?.questionSet);
+      const prompts = [form?.questions, shown?.questions].flatMap(list => Array.isArray(list) ? list.map(question => record(question)?.prompt) : []);
+      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shown)).join("\n"),
+        links: strings(form?.description, ...prompts).flatMap(renderedMarkdownLinks) });
     } else if (row.kind === "request_confirmation") {
       if (!payload || payload.toolAction || payload.secretProposal || payload.connectionAuthorization || typeof payload.prompt !== "string" || !payload.prompt.trim()) continue;
       cards.push({ id: row.id, kind: "request_confirmation", runId: row.sourceRunId,
         text: strings(row.title, row.summary, payload.prompt, payload.detailsMarkdown, payload.acceptLabel, payload.rejectLabel, payload.declineReasonPlaceholder).join("\n"),
+        links: strings(payload.prompt, payload.detailsMarkdown).flatMap(renderedMarkdownLinks),
         ...(record(payload.target) ? { target: record(payload.target) } : {}) });
     }
   }
@@ -80,4 +104,8 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
 /** The written reply plus the text of cards that answered the person in its place. */
 export function replyOrCardText(reply: string, cards: readonly TurnResponseCard[]): string {
   return [reply, ...cards.map(card => card.text)].filter(text => !!text.trim()).join("\n");
+}
+/** The rendered reply links plus the links the response cards render, as one list for link checks. */
+export function replyOrCardLinks(links: readonly string[], cards: readonly TurnResponseCard[]): string[] {
+  return [...new Set([...links, ...cards.flatMap(card => card.links)])];
 }

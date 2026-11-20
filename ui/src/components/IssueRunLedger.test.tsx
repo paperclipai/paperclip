@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue } from "../api/heartbeats";
 import { IssueRunLedgerContent } from "./IssueRunLedger";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => (
@@ -319,6 +320,7 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("Retry exhausted");
     expect(container.textContent).toContain("no further automatic retry will be queued");
     expect(container.textContent).toContain("Manual intervention required");
+    expect(replayLeaks("Bounded retry exhausted after 4 scheduled attempts", container)).toEqual({ rendered: true, recorded: false });
   });
 
   it("labels max-turn stops and continuation retries without confusing them with per-run turns", () => {

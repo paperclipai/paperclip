@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, caseAccessSources, caseEvents, caseHandoffs, caseIssueLinks, cases, chatConversations, companies, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { handoffCaseSchema, isUuidLike, type DoneCaseHandoffInput, type HandoffCaseInput, type HandoffCaseResult } from "@paperclipai/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { casesDisabledError } from "./cases-disabled.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { withExternalAdmissionGuard, type ExternalAdmissionTransaction } from "../modules/external-agents/index.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
@@ -51,7 +52,7 @@ function companyAllowed(actor: AuthorizationActor, companyId: string) {
 }
 
 async function assertEnabled(db: Db) {
-  if (!(await instanceSettingsService(db).getExperimental()).enableCases) throw forbidden("Cases are disabled");
+  if (!(await instanceSettingsService(db).getExperimental()).enableCases) throw casesDisabledError();
 }
 
 function result(row: CaseHandoffRow, issue: Pick<IssueRow, "id" | "identifier">, actor: AuthorizationActor, replayed: boolean): HandoffCaseResult {

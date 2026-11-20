@@ -803,6 +803,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let require_external_sandbox = args
         .iter()
         .any(|value| value == "--require-external-sandbox");
+    let forbid_plan_collaboration = args
+        .iter()
+        .any(|value| value == "--forbid-plan-collaboration");
     let expected_canonical_task_context = argument(&args, "--expected-canonical-task-context")
         .map(|value| serde_json::from_str::<Value>(&value))
         .transpose()?;
@@ -1324,6 +1327,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(delay) = argument(&args, "--thread-start-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
                 }
+                // A definite provider startup rejection, as Codex answers when
+                // its sandbox helper cannot start (no thread is created).
+                if let Some(reason) = argument(&args, "--reject-thread-start") {
+                    send(json!({"id": id, "error": {"code": -32603, "message": reason}}))?;
+                    continue;
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
                         || message.pointer("/params/permissions").is_some())
@@ -1756,6 +1765,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     return Err("turn/start omitted the external sandbox boundary".into());
                 }
+                if forbid_plan_collaboration
+                    && message.pointer("/params/collaborationMode").is_some()
+                {
+                    return Err("turn/start requested a collaboration mode outside planning".into());
+                }
                 if let Some(pid_file) = escaped_tool_pid_file.as_deref() {
                     if turn_start_count == 0 {
                         std::process::Command::new("perl")
@@ -1975,7 +1989,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // A loaded host can accept a turn long before it starts it.
                 if let Some(delay) = argument(&args, "--turn-started-delay-ms") {
-                    thread::sleep(Duration::from_millis(delay.parse()?));
+                    let delay = Duration::from_millis(delay.parse()?);
+                    let started = Instant::now();
+                    if let Some(interval) = argument(&args, "--turn-started-progress-ms") {
+                        let interval = Duration::from_millis(interval.parse()?);
+                        let mut server = 0;
+                        while started.elapsed() + interval < delay {
+                            thread::sleep(interval);
+                            server += 1;
+                            send(
+                                json!({"method": "mcpServer/startupStatus/updated", "params": {
+                                    "name": format!("startup-{server}"),
+                                    "status": "failed",
+                                    "error": "fixture server unavailable"
+                                }}),
+                            )?;
+                        }
+                    }
+                    thread::sleep(delay.saturating_sub(started.elapsed()));
                 }
                 // A test can hold the start until it has detached the controller.
                 if let Some(gate) = argument(&args, "--turn-started-gate").map(PathBuf::from) {

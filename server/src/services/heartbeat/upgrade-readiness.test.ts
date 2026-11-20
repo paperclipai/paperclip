@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, environmentLeases, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agents, agentWakeupRequests, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, environmentLeases, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -47,6 +47,60 @@ describe("upgrade readiness", () => {
     for (const before of [{ ...idle, activeRuns: 2 }, { ...idle, pendingWakes: 1 }, { ...idle, draining: true }]) {
       expect(report({ rows, before }).ready).toBe(false);
     }
+  });
+  describe("handoff verdict", () => {
+    const busy = (rows: Parameters<typeof summarizeUpgradeReadiness>[0]["rows"], pendingWakes = 0, unsavedWakes = 0) => report({ rows,
+      activeRunIds: rows.map(row => row.id), before: { ...idle, activeRuns: rows.length, pendingWakes, unsavedWakes },
+      after: { ...idle, activeRuns: rows.length, pendingWakes, unsavedWakes } });
+    it("agrees with the version 1 verdict when every execution is recoverable", () => {
+      expect(busy([{ id: "a", recoverable: true }, { id: "b", recoverable: true }])).toMatchObject({ version: 1, ready: true,
+        blockingRuns: 0, handoff: { version: 1, ready: true, recoverableRuns: 2, restartableRuns: 0, blockingRuns: 0, pendingWakes: 0, unsavedWakes: 0 } });
+    });
+    it("is ready with unlaunched runs and saved pending wakes, and leaves the version 1 fields unchanged", () => {
+      const rows = [{ id: "live", recoverable: true }, { id: "preparing", recoverable: false, restartable: true },
+        { id: "launching", recoverable: false, restartable: true }];
+      expect(busy(rows, 2)).toMatchObject({ version: 1, ready: false, activeRuns: 3, recoverableRuns: 1, blockingRuns: 2,
+        pendingWakes: 2, handoff: { version: 1, ready: true, recoverableRuns: 1, restartableRuns: 2, blockingRuns: 0, pendingWakes: 2, unsavedWakes: 0 } });
+    });
+    it("is not ready while a pending wake has not saved its wake and run", () => {
+      const rows = [{ id: "live", recoverable: true }];
+      expect(busy(rows, 2, 1).handoff).toMatchObject({ ready: false, blockingRuns: 0, pendingWakes: 2, unsavedWakes: 1 });
+      // Seen in either read of the counters.
+      expect(report({ rows, activeRunIds: ["live"], before: { ...idle, activeRuns: 1, pendingWakes: 1, unsavedWakes: 1 },
+        after: { ...idle, activeRuns: 1 } }).handoff).toMatchObject({ ready: false, unsavedWakes: 1 });
+    });
+    it("treats every pending wake as unsaved without a valid saved count", () => {
+      const rows = [{ id: "live", recoverable: true }];
+      for (const unsavedWakes of [undefined, -1, 3, 0.5, Number.NaN]) {
+        expect(report({ rows, activeRunIds: ["live"], before: { ...idle, activeRuns: 1, pendingWakes: 2, unsavedWakes },
+          after: { ...idle, activeRuns: 1 } }).handoff, String(unsavedWakes)).toMatchObject({ ready: false, pendingWakes: 2, unsavedWakes: 2 });
+      }
+    });
+    it("is not ready while a started execution has no recovery evidence", () => {
+      const rows = [{ id: "live", recoverable: true }, { id: "preparing", recoverable: false, restartable: true },
+        { id: "legacy-child", recoverable: false }];
+      expect(busy(rows)).toMatchObject({ ready: false, blockingRuns: 2,
+        handoff: { ready: false, recoverableRuns: 1, restartableRuns: 1, blockingRuns: 1 } });
+    });
+    it("counts an execution this report could not observe as a blocker", () => {
+      const rows = [{ id: "preparing", recoverable: false, restartable: true }];
+      expect(report({ rows, activeRunIds: ["preparing", "unseen"], after: { ...idle, activeRuns: 2 } }).handoff)
+        .toMatchObject({ ready: false, restartableRuns: 1, blockingRuns: 1 });
+      expect(report({ rows, activeRunIds: ["preparing"], after: { ...idle, activeRuns: 2 } }).handoff)
+        .toMatchObject({ ready: false, restartableRuns: 1, blockingRuns: 1 });
+    });
+    it("never counts one execution in two classes", () => {
+      expect(busy([{ id: "a", recoverable: true, restartable: true }]).handoff)
+        .toMatchObject({ ready: true, recoverableRuns: 1, restartableRuns: 0, blockingRuns: 0 });
+    });
+    it("stays not ready while draining or truncated", () => {
+      const rows = [{ id: "preparing", recoverable: false, restartable: true }];
+      expect(report({ rows, activeRunIds: ["preparing"], before: { ...idle, activeRuns: 1, draining: true } }).handoff)
+        .toMatchObject({ ready: false, blockingRuns: 0 });
+      const many = Array.from({ length: 1_001 }, (_, i) => ({ id: String(i), recoverable: false, restartable: true }));
+      expect(report({ rows: many, activeRunIds: many.map(row => row.id), before: { ...idle, activeRuns: many.length },
+        after: { ...idle, activeRuns: many.length } })).toMatchObject({ truncated: true, handoff: { ready: false } });
+    });
   });
 });
 
@@ -259,6 +313,97 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     expect((await readUpgradeReadiness(db, input)).ready).toBe(false); // the in-flight local tail is still unknown
     expect(await readUpgradeReadiness(db, { activeRunIds: new Set(), counters: () => idle })).toMatchObject({ ready: true, activeRuns: 0 });
   });
+  it("classifies a run with no launched agent work as restartable, and any started work as a blocker", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    const owner = await currentNativeControllerIdentity();
+    await db.insert(companies).values({ id: companyId, name: "Restartable", issuePrefix: `S${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Restartable", role: "engineer", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Preparing", status: "in_progress", assigneeAgentId: agentId });
+    const unlaunched = { runtimeMode: "native", nativePhase: "observed", processPid: null, processGroupId: null,
+      processStartedAt: null, sessionIdBefore: null, sessionIdAfter: null, executionStage: null, controllerBootId: null,
+      runnerProfileJson: { nativePreparationFencingVersion: 1 } };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, nativeIssueId: issueId, status: "running",
+      runnerInstanceId: randomUUID(), nativeSessionId: randomUUID(), ...unlaunched });
+    const claimed = { controllerBootId: owner.bootId, leaseOwner: "controller-lease", controllerGeneration: 1,
+      leaseExpiresAt: new Date(Date.now() + 60_000), phase: "observed", failureCode: null };
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, ...claimed });
+    const input = { activeRunIds: new Set([runId]), counters: () => ({ ...idle, activeRuns: 1, pendingWakes: 1, unsavedWakes: 0 }) };
+    const restartable = { ready: false, activeRuns: 1, recoverableRuns: 0, blockingRuns: 1, pendingWakes: 1,
+      handoff: { version: 1, ready: true, recoverableRuns: 0, restartableRuns: 1, blockingRuns: 0, pendingWakes: 1 } };
+    const blocking = { ready: false, blockingRuns: 1, handoff: { ready: false, restartableRuns: 0, blockingRuns: 1 } };
+    try {
+      expect(await readUpgradeReadiness(db, input)).toMatchObject(restartable);
+      for (const patch of [{ processPid: process.pid }, { processGroupId: process.pid }, { processStartedAt: new Date() },
+        { sessionIdBefore: "provider-session" }, { sessionIdAfter: "provider-session" }, { nativePhase: "result_accepted" },
+        { runnerProfileJson: {} }, { runtimeMode: "legacy" }]) {
+        await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, runId));
+        expect(await readUpgradeReadiness(db, input), JSON.stringify(patch)).toMatchObject(blocking);
+        await db.update(heartbeatRuns).set(unlaunched).where(eq(heartbeatRuns.id, runId));
+      }
+      for (const patch of [{ failureCode: "uncertain" }, { phase: "workspace_finalizing" }]) {
+        await db.update(nativeRunFinalizations).set(patch).where(eq(nativeRunFinalizations.runId, runId));
+        expect(await readUpgradeReadiness(db, input), JSON.stringify(patch)).toMatchObject(blocking);
+        await db.update(nativeRunFinalizations).set(claimed).where(eq(nativeRunFinalizations.runId, runId));
+      }
+      await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
+      expect(await readUpgradeReadiness(db, input)).toMatchObject(blocking);
+      await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, agentId));
+      await db.insert(nativeRunnerCheckpoints).values({ runId, companyId, issueId, part: "header", material: {} });
+      expect(await readUpgradeReadiness(db, input)).toMatchObject(blocking);
+      await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, runId));
+      // The executor records this request before any backend may start a runner.
+      for (const event of [{ eventType: "native.process_start_requested" }, { eventType: "adapter.invoke" },
+        { eventType: "lifecycle", sourceEventId: "runner-event-1" }]) {
+        const [{ id }] = await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, ...event })
+          .returning({ id: heartbeatRunEvents.id });
+        expect(await readUpgradeReadiness(db, input), event.eventType).toMatchObject(blocking);
+        await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, id));
+      }
+      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, eventType: "lifecycle" });
+      expect(await readUpgradeReadiness(db, input)).toMatchObject(restartable);
+      // A direct-adapter preparation that has not reached dispatch is requeued by process-loss recovery.
+      const legacyPreparing = { runtimeMode: "legacy", nativePhase: null, executionStage: "preparing", controllerBootId: randomUUID() };
+      await db.update(heartbeatRuns).set(legacyPreparing).where(eq(heartbeatRuns.id, runId));
+      expect(await readUpgradeReadiness(db, input)).toMatchObject(restartable);
+      for (const patch of [{ executionStage: "dispatching" }, { controllerBootId: null }, { processPid: process.pid }]) {
+        await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, runId));
+        expect(await readUpgradeReadiness(db, input), JSON.stringify(patch)).toMatchObject(blocking);
+        await db.update(heartbeatRuns).set({ ...legacyPreparing, processPid: null }).where(eq(heartbeatRuns.id, runId));
+      }
+    } finally {
+      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+  it("blocks the handoff while a wake admission waits on the agent lock with nothing saved", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Unsaved wake", issuePrefix: `W${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Unsaved wake", role: "engineer", adapterType: "process",
+      status: "idle", adapterConfig: { command: "true" } });
+    const { heartbeatService } = await import("../heartbeat.js");
+    const heartbeat = heartbeatService(db);
+    const saved = () => db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    const lock = await db.$client.reserve();
+    let wake: Promise<unknown> | undefined;
+    try {
+      await lock.unsafe("begin");
+      await lock.unsafe(`select id from agents where id = '${agentId}' for update`);
+      wake = heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual",
+        requestedByActorType: "user", requestedByActorId: "readiness-user" });
+      await vi.waitFor(async () => {
+        const locks = await db.execute(sql`select 1 from pg_stat_activity where wait_event_type = 'Lock' and query like '%from agents where id =%for update%'`);
+        expect(locks.length).toBeGreaterThan(0);
+      }, { timeout: 20_000, interval: 100 });
+      expect(await saved()).toEqual([]);
+      expect((await heartbeat.readUpgradeReadiness()).handoff).toMatchObject({ ready: false, pendingWakes: 1, unsavedWakes: 1 });
+    } finally {
+      await lock.unsafe("rollback"); lock.release();
+      await wake;
+      await heartbeat.drainActiveRunExecutions();
+    }
+    expect(await saved()).toHaveLength(1);
+    expect((await heartbeat.readUpgradeReadiness()).handoff).toMatchObject({ pendingWakes: 0, unsavedWakes: 0 });
+  }, 60_000);
   it("cancels a locked probe within its SQL budget and releases its connection", async () => {
     const probeDb = createDb(database.connectionString, { maxConnections: 1 });
     const lock = await db.$client.reserve();

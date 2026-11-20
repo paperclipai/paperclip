@@ -96,3 +96,31 @@ describe("implementation-independent GitHub credential broker", () => {
       url: "https://core.example.test", token: "runtime-capability", script: "run-this" } }).success).toBe(false);
   });
 });
+
+describe("configured environment", () => {
+  const configured = { ...submit, configuredEnvironment: { STRIPE_SECRET_KEY: "fixture-value", EMPTY_OK: "" } };
+  it("accepts bounded variables on submit and on a handoff resume", () => {
+    expect(environmentTaskOperationSchema.parse(configured)).toEqual(configured);
+    const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+    const resume = { kind: "resume", identity, bootstrapTicket: "synthetic", configuredEnvironment: { A: "1" } };
+    expect(environmentTaskOperationSchema.parse(resume)).toEqual(resume);
+  });
+  it.each([
+    ["an invalid name", { "1BAD": "x" }],
+    ["a dashed name", { "BAD-NAME": "x" }],
+    ["a NUL byte", { GOOD: "a\0b" }],
+    ["too many variables", Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`K${index}`, "x"]))],
+    ["an oversized value", { BIG: "x".repeat(65_536) }],
+    ["an oversized total", Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`K${index}`, "x".repeat(60_000)]))],
+  ])("rejects %s", (_label, configuredEnvironment) => {
+    expect(environmentTaskOperationSchema.safeParse({ ...configured, configuredEnvironment }).success).toBe(false);
+  });
+  it("has no digest field", () => {
+    expect(environmentTaskOperationSchema.safeParse({ ...configured, configuredEnvironmentDigest: `hmac-sha256:${"b".repeat(64)}` }).success).toBe(false);
+  });
+  it("lets a provider advertise support", () => {
+    const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` }, configuredEnvironmentVersion: 1 };
+    expect(environmentTaskResultSchema.parse(description)).toEqual(description);
+    expect(environmentTaskResultSchema.safeParse({ ...description, configuredEnvironmentVersion: 2 }).success).toBe(false);
+  });
+});
