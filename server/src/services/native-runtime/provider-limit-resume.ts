@@ -7,7 +7,7 @@ import {
   issues,
   type Db,
 } from "@paperclipai/db";
-import { readProviderFailure } from "@paperclipai/shared";
+import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -56,16 +56,34 @@ export type ProviderLimitReset = {
   estimated?: true;
 };
 
+/** A provider limit that refused the session before any turn started. */
+export type StartupProviderLimit = { failure: ProviderFailure; observedAt: Date };
+
+/**
+ * The startup refusal a hold saved when it was created. A same-run retry keeps
+ * the run's first saved failure, so only the hold names the refusal that ended it.
+ */
+function holdStartupLimit(evidence: Record<string, unknown> | null | undefined): StartupProviderLimit | undefined {
+  const saved = asRecord(asRecord(evidence).providerLimitStartup);
+  const failure = readProviderFailure(saved.failure);
+  const observedAt = typeof saved.observedAt === "string" ? new Date(saved.observedAt) : null;
+  return failure?.phase === "startup" && observedAt && Number.isFinite(observedAt.getTime()) ? { failure, observedAt } : undefined;
+}
+
 /**
  * When the provider said the usage limit resets, from the run's own durable
- * events. Null unless the last turn event is a provider-observed settlement
- * reporting an exhausted allowance with a reset after it. A rate limit that
- * names no reset (Claude's "try again later") waits the default cooldown, the
- * same wait that holds the agent's new work, so the task is not stranded.
+ * evidence. Null unless the last turn event is a provider-observed settlement
+ * reporting an exhausted allowance with a reset after it, or no turn started
+ * and the provider refused the session itself with an exhausted allowance. A
+ * rate limit that names no reset (Claude's "try again later") waits the
+ * default cooldown, the same wait that holds the agent's new work, so the task
+ * is not stranded.
  */
 export async function readNativeUsageLimitReset(
   db: Pick<Db, "select">,
-  run: { id: string; companyId: string },
+  run: { id: string; companyId: string; resultJson?: unknown; finishedAt?: Date | null; updatedAt?: Date },
+  /** The current failure, before the run's own result records it. */
+  startup?: StartupProviderLimit,
 ): Promise<ProviderLimitReset | null> {
   const [lastTurn] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload,
     createdAt: heartbeatRunEvents.createdAt })
@@ -73,11 +91,21 @@ export async function readNativeUsageLimitReset(
       eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
       inArray(heartbeatRunEvents.eventType, [...TURN_STARTED_EVENTS, ...TURN_SETTLED_EVENTS]),
     )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-  // An unsettled or unobserved turn may still be working: its outcome is unknown.
-  if (!lastTurn || lastTurn.eventType !== "turn.failed" || !isProvenTurnSettlement(lastTurn)) return null;
-  const failure = providerFailureOf(lastTurn.payload);
+  let failure: ProviderFailure | null;
+  let observedAt: Date;
+  if (lastTurn) {
+    // An unsettled or unobserved turn may still be working: its outcome is unknown.
+    if (lastTurn.eventType !== "turn.failed" || !isProvenTurnSettlement(lastTurn)) return null;
+    failure = providerFailureOf(lastTurn.payload);
+    observedAt = lastTurn.createdAt;
+  } else {
+    // No turn started, so no provider work began; only the session start's own refusal counts.
+    failure = startup?.failure ?? readProviderFailure(asRecord(run.resultJson).providerFailure);
+    const settledAt = startup?.observedAt ?? run.finishedAt ?? run.updatedAt;
+    if (failure?.phase !== "startup" || !settledAt) return null;
+    observedAt = settledAt;
+  }
   if (!failure || !LIMIT_CATEGORIES.includes(failure.category)) return null;
-  const observedAt = lastTurn.createdAt;
   const typed = failure.retryAt ? new Date(failure.retryAt) : null;
   const reported = typed && Number.isFinite(typed.getTime()) ? typed : parseProviderQuotaClockReset(failure.message, observedAt);
   // An exhausted allowance without a reset still needs a person; a rate limit passes by itself.
@@ -103,10 +131,11 @@ export type ProviderLimitResumePlan =
   | { automatic: false; resetAt: Date | null; estimated?: true };
 
 /** Whether this failed run's task continues by itself once the limit resets. */
-export async function planProviderLimitResume(db: Pick<Db, "select">, runId: string): Promise<ProviderLimitResumePlan> {
+export async function planProviderLimitResume(db: Pick<Db, "select">, runId: string,
+  startup?: StartupProviderLimit): Promise<ProviderLimitResumePlan> {
   const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
   if (!run) return { automatic: false, resetAt: null };
-  const reset = await readNativeUsageLimitReset(db, run);
+  const reset = await readNativeUsageLimitReset(db, run, startup);
   if (!reset) return { automatic: false, resetAt: null };
   // A reset beyond the bounded wait is still reported; only the automatic Retry is bounded.
   const actorId = reset.withinAutomaticWait ? await accountableUser(db, run) : null;
@@ -184,7 +213,7 @@ export async function requestProviderLimitResumeRetry(db: Db, input: {
   if (run && ["queued", "running"].includes(run.status)) return { requested: false, waitUntil: new Date(now.getTime() + 60_000) };
   if (!run || run.runtimeMode !== "native" || run.status !== "failed" || run.errorCode !== NATIVE_PROVIDER_USAGE_LIMIT)
     return done("source_run_mismatch");
-  const reset = await readNativeUsageLimitReset(db, run);
+  const reset = await readNativeUsageLimitReset(db, run, holdStartupLimit(action.evidence));
   if (!reset) return done("reset_unknown");
   if (!reset.withinAutomaticWait) {
     // Too far out to wait by itself: the hold names the reset and leaves the

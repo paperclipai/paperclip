@@ -7,6 +7,10 @@ import { assertDistributionManifestCapabilities } from "./distribution-plugin-ca
 
 export type BundledPluginRegistration = Pick<PluginRecord, "pluginKey" | "packageName" | "version" | "manifestJson">;
 
+export function pluginManifestJson(manifest: PaperclipPluginManifestV1): PaperclipPluginManifestV1 {
+  return JSON.parse(JSON.stringify(manifest)) as PaperclipPluginManifestV1;
+}
+
 export interface BundledPluginPackageIdentity {
   kind: "bundled_image";
   catalogKey: string;
@@ -88,7 +92,7 @@ export function createBundledPluginPackageResolver(installs: readonly ResolvedBu
         const install = byKey.get(plugin.pluginKey)!;
         if (!verifiedManifest) return { compatible: false, pluginKey: plugin.pluginKey, code: "missing_manifest_evidence", reason: "Image manifest evidence is required" };
         assertManifest(install, verifiedManifest);
-        if (!isDeepStrictEqual(verifiedManifest, plugin.manifestJson)) throw new Error("Approved plugin manifest does not match the image");
+        if (!isDeepStrictEqual(pluginManifestJson(verifiedManifest), pluginManifestJson(plugin.manifestJson))) throw new Error("Approved plugin manifest does not match the image");
         return { compatible: true, identity: {
           kind: "bundled_image", catalogKey: install.key, pluginKey: plugin.pluginKey,
           packageName: plugin.packageName, version: plugin.version,

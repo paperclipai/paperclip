@@ -39,7 +39,7 @@ function owners(overrides: Record<string, unknown> = {}) {
       for (const outcome of ["imported", "unchanged"]) input.onOutcome?.(outcome);
       return { inspected: 2, imported: 1, unchanged: 1, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} };
     },
-    runEvidenceDeferrals: () => ({}),
+    runEvidencePage: async (_db: Db, options: { kinds: string[] }) => { calls.push(options.kinds[0] === "log" ? "runLogs" : "providerTraces"); return { items: [] }; },
     eligibility: vi.fn(async () => ({ eligible: false, blockers: ["skills_require_migration", "volume_free_storage_flags_required"] })),
     record: vi.fn(async () => undefined),
     ...overrides,
@@ -54,7 +54,7 @@ describe("online durable-data migration pass", () => {
     const fixture = owners();
     const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
     expect(fixture.calls).toEqual(["agentFiles", "skillObjects", "skillSnapshots", "skillVersions", "skillInstallations",
-      "runtimeSkillAssets", "workspaceCompanies", "localWorkspaces", "nativeHarnessBackups", "nativeControllers"]);
+      "runtimeSkillAssets", "runLogs", "providerTraces", "workspaceCompanies", "localWorkspaces", "nativeHarnessBackups", "nativeControllers"]);
     expect(result).toEqual({
       state: "completed",
       counts: { agentFiles: 1, skillObjects: 1, skillSnapshots: 1, skillInstallations: 1, runtimeSkillRuns: 1, nativeHarnessBackups: 1, nativeControllers: 1 },
@@ -72,7 +72,10 @@ describe("online durable-data migration pass", () => {
         { skillId: "s1", companyId: "c", status: "blocked", reason: "Saved version does not cover the installed inventory", code: "saved_version_incomplete" },
         { skillId: "s2", companyId: "c", status: "blocked", reason: "network down" },
         { skillId: "s3", companyId: "c", status: "linked_local" }] }) }),
-      runEvidenceDeferrals: () => ({ "run_logs:native_log_archive_source_unsettled": 2 }),
+      runEvidencePage: async (_db: Db, input: { kinds: string[] }) => ({ items: input.kinds[0] === "log" ? [
+        { kind: "log", id: "r1", state: "blocked", reason: "native_log_archive_source_unsettled" },
+        { kind: "log", id: "r2", state: "blocked", reason: "native_log_archive_source_unsettled" },
+      ] : [] }),
     });
     const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
     expect(result.deferred).toMatchObject({ "skills:saved_version_incomplete": 1, "skills:blocked": 1, "skills:linked_local": 1,
@@ -214,6 +217,50 @@ describe("online durable-data migration pass", () => {
     expect(agentFiles).toHaveBeenCalledOnce();
   });
 
+  describe("run evidence", () => {
+    it("moves log and trace pages before checking final eligibility and reports only current blockers", async () => {
+      let moved = false;
+      const runEvidencePage = vi.fn(async (_db: Db, input: { kinds: string[]; afterRunId?: string }) => {
+        if (input.kinds[0] === "trace") return { items: [{ kind: "trace", id: "t1", state: "migrated" }] };
+        if (input.afterRunId) { moved = true; return { items: [] }; }
+        return { items: [{ kind: "log", id: "r1", state: "migrated" }], nextRunId: "r1" };
+      });
+      const fixture = owners({ runEvidencePage, eligibility: async () => ({ eligible: moved, blockers: moved ? [] : ["run_logs_require_migration"] }) });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result).toMatchObject({ eligible: true, blockers: [], counts: { runLogs: 1, providerTraces: 1 } });
+      expect(runEvidencePage).toHaveBeenNthCalledWith(2, db, expect.objectContaining({ afterRunId: "r1", kinds: ["log"], limit: 1 }));
+      expect(runEvidencePage).toHaveBeenNthCalledWith(3, db, expect.objectContaining({ kinds: ["trace"], signal: expect.any(AbortSignal) }));
+    });
+
+    it("retains active-source and owner-busy blockers without hiding them behind a completed pass", async () => {
+      const fixture = owners({ runEvidencePage: async (_db: Db, input: { kinds: string[] }) => input.kinds[0] === "trace"
+        ? { items: [], busy: true }
+        : { items: [{ kind: "log", id: "active", state: "blocked", reason: "legacy_writer_not_settled" },
+          { kind: "log", id: "unknown", state: "blocked", reason: "unsafe /private/source secret" }] } });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.eligible).toBe(false);
+      expect(result.deferred).toMatchObject({ "run_logs:legacy_writer_not_settled": 1, "run_logs:migration_failed": 1, "provider_traces:owner_busy": 1 });
+      expect(JSON.stringify(result)).not.toContain("secret");
+    });
+
+    it("resumes log paging from the saved cursor when the shared pass budget is spent", async () => {
+      let clock = 0;
+      const runEvidencePage = vi.fn(async (_db: Db, input: { kinds: string[]; afterRunId?: string }) => {
+        if (input.kinds[0] === "log" && !input.afterRunId) {
+          clock = 10;
+          return { items: [{ kind: "log", id: "r1", state: "migrated" }], nextRunId: "r1" };
+        }
+        return { items: [] };
+      });
+      const fixture = owners({ runEvidencePage });
+      expect(await runOnlineDurableDataMigration(db, { budgetMs: 10, now: () => clock }, fixture.owners))
+        .toMatchObject({ state: "budget_exhausted", resumePhase: "run_logs", counts: { runLogs: 1 } });
+      expect(await runOnlineDurableDataMigration(db, { budgetMs: 10, now: () => clock }, fixture.owners))
+        .toMatchObject({ state: "completed" });
+      expect(runEvidencePage).toHaveBeenNthCalledWith(2, db, expect.objectContaining({ kinds: ["log"], afterRunId: "r1" }));
+    });
+  });
+
   describe("workspaces", () => {
     const workspace = (n: number) => ({ companyId: "c1", workspaceId: `w${n}`, cursor: `20:w${n}` });
 
@@ -229,7 +276,7 @@ describe("online durable-data migration pass", () => {
         migrateWorkspace: vi.fn(async () => { fixture.calls.push("migrateWorkspace"); return { alreadyMigrated: true, reasons: [] }; }),
       });
       const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
-      expect(fixture.calls.slice(fixture.calls.indexOf("runtimeSkillAssets"))).toEqual(["runtimeSkillAssets", "workspaceCompanies",
+      expect(fixture.calls.slice(fixture.calls.indexOf("runtimeSkillAssets"))).toEqual(["runtimeSkillAssets", "runLogs", "providerTraces", "workspaceCompanies",
         "reconcile:c1", "reconcile:c2", "localWorkspaces", "inventoryWorkspace", "migrateWorkspace", "nativeHarnessBackups", "nativeControllers"]);
       expect(workspaceOperations).toHaveBeenCalledWith(db, { companyId: "c1", signal: expect.any(AbortSignal) });
       expect(result.counts).toMatchObject({ workspaceOperations: 2, workspaces: 1 });

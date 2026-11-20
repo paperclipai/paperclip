@@ -91,7 +91,10 @@ export type GitCacheRestorationStep = "recipe" | "trash_recovery" | "source_chec
 export type WorkspaceRestorationFailureKind = "remote_unavailable" | "auth_rejected" | "commit_unavailable" | "timeout"
   | "verification" | "filesystem" | "git_command" | "unknown";
 
+export const GIT_CACHE_RESTORATION_FAILED_CODE = "git_cache_restoration_failed";
+
 export class GitCacheRestorationFailure extends Error {
+  readonly code = GIT_CACHE_RESTORATION_FAILED_CODE;
   readonly step: GitCacheRestorationStep | null;
   readonly kind: WorkspaceRestorationFailureKind | null;
   constructor(diagnostic: { step: GitCacheRestorationStep; kind: WorkspaceRestorationFailureKind } | null = null) {

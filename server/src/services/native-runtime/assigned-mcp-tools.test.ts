@@ -131,6 +131,44 @@ describe("assigned MCP runner tools", () => {
     expect(f.executeTool).not.toHaveBeenCalled();
   });
 
+  it("names the closest permitted assigned tools when a name is mistyped, without calling any of them", async () => {
+    const read = descriptor("github_bot:read_pull_request");
+    const begin = descriptor("github_bot:begin_review", "write");
+    const submit = descriptor("github_bot:submit_review", "write");
+    const f = fixture([read, begin, submit, ...Array.from({ length: 6 }, (_, i) => descriptor(`calendar:event_${i}`))]);
+    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "github_bot", limit: 20 } }) as { tools: Array<{ name: string }> };
+    const alias = (tool: ToolGatewayDescriptor) => page.tools.find(entry => entry.name.includes(tool.name.split(":")[1]!))!.name;
+    const unknown = (name: string, mode?: "planning") =>
+      assigned.execute({ tool: callName, arguments: { name, arguments: {} } }, mode).then(() => "", (error: Error) => error.message);
+
+    const dropped = await unknown(`${alias(begin).slice(0, -6)}${alias(begin).slice(-5)}`);
+    expect(dropped).toMatch(/^assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools\./);
+    expect(dropped).toContain(`Closest assigned names: ${alias(begin)}`);
+    expect(dropped).not.toContain("calendar");
+
+    const borrowed = await unknown(`${alias(submit).slice(0, -12)}${alias(read).slice(-12)}`);
+    expect(borrowed).toContain(`Closest assigned names: ${alias(submit)}`);
+
+    const planning = await unknown(`${alias(begin).slice(0, -1)}0`, "planning");
+    expect(planning).toBe("assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools. Search assigned tools again and use the returned name.");
+
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: `${alias(read)}x` } }))
+      .rejects.toThrow(`Closest assigned names: ${alias(read)}`);
+
+    const oversized = `${alias(read)}${"x".repeat(8 * 1024 * 1024)}`;
+    expect(await unknown(oversized)).not.toContain("Closest assigned names");
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: oversized } }))
+      .rejects.toThrow("schemaTool must match an authorized inputSchemaRef. Omit schemaTool");
+
+    f.listToolsForNamedGateway.mockResolvedValue([read, submit]);
+    expect(await unknown(`${alias(begin).slice(0, -1)}0`)).not.toContain(alias(begin));
+
+    f.listToolsForNamedGateway.mockRejectedValue(new Error("gateway_token_revoked"));
+    expect(await unknown(`${alias(read).slice(0, -1)}0`)).toBe("assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools. Search assigned tools again and use the returned name.");
+    expect(f.executeTool).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "on_demand"] as const)("advertises usable page limits through MCP discovery (%s)", async delivery => {
     const f = fixture(Array.from({ length: 25 }, (_, i) => descriptor(`operation_${i}`)));
     const assigned = await createAssignedMcpTools({ ...f, delivery });

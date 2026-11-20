@@ -328,12 +328,18 @@ const blockerIssueFields = {
   executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
 };
 
+export async function getExecutionOwnershipBlocker(db: Db, companyId: string, issueId: string): Promise<ExecutionBlocker | null> {
+  const ownership = await getConversationOwnershipBlocker(db, companyId, issueId);
+  return ownership ? { ...ownership, recoveryActionId: null } : null;
+}
+
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: {
   conversationResetCommentId?: string | null;
   /** The current issue row held under this transaction's issue lock. */
   lockedIssue?: Pick<typeof issues.$inferSelect, keyof typeof blockerIssueFields>;
   /** The native run being dispatched; its own scheduled resume does not block it. */
   resumingNativeRunId?: string | null;
+  recoveryHoldOnly?: boolean;
 }): Promise<ExecutionBlocker | null> {
   const lockedIssue = options?.lockedIssue;
   const conversation = lockedIssue?.id === issueId && lockedIssue.companyId === companyId
@@ -365,8 +371,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
       eq(issueComments.id, conversation.conversationBoundaryCommentId),
     )).limit(1) : [];
 
-  const ownership = await getConversationOwnershipBlocker(db, companyId, issueId);
-  if (ownership) return { ...ownership, recoveryActionId: null };
+  const ownership = options?.recoveryHoldOnly ? null : await getExecutionOwnershipBlocker(db, companyId, issueId);
+  if (ownership) return ownership;
   const [action] = restoreHold ? [restoreHold] : await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),

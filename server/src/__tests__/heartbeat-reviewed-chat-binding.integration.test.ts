@@ -25,6 +25,7 @@ import {
   nativeRunResults,
   statusDecisionEffects,
   workAssessments,
+  type Db,
 } from "@paperclipai/db";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -38,6 +39,7 @@ import {
 } from "../services/native-runtime/chat-attachment-reuse.js";
 import * as chatAttachmentReuse from "../services/native-runtime/chat-attachment-reuse.js";
 import { decideIssueReviewPathRecovery } from "../services/recovery/review-path-recovery.js";
+import { materializeNativeToolReceiptLimitContinuation } from "../services/native-runtime/native-provider-capacity-retry.js";
 import { resolveCurrentWakeCommentsBinding } from "../services/native-runtime/current-wake-comments.js";
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
@@ -449,6 +451,50 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
       expect((await db.select().from(issueThreadInteractions)
         .where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("pending");
     });
+  });
+
+  it("reauthorizes a fresh-session continuation of a reviewed chat turn from its message batch", async () => {
+    const failedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId, companyId, agentId, status: "cancelled", runtimeMode: "native", nativeIssueId: issueId,
+      invocationSource: "assignment", triggerDetail: "system",
+      contextSnapshot: { ...context, paperclipHarnessCheckedOut: false, paperclipExternalChatExecutionBound: true },
+    });
+    const retryId = await db.transaction((tx) => materializeNativeToolReceiptLimitContinuation({
+      tx: tx as unknown as Db, companyId, issueId, runId: failedRunId, agentId,
+    }));
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retryId));
+    const retryContext = retry!.contextSnapshot as Record<string, unknown>;
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, retryId));
+    await db.update(issues).set({ executionRunId: retryId }).where(eq(issues.id, issueId));
+    const reasons: string[] = [];
+    const attestRetry = () => attestReviewedExternalChatRun({
+      db, ...binding, runId: retryId, contextSnapshot: { ...retryContext }, onDenied: (reason) => reasons.push(reason),
+    });
+    try {
+      await expect(attestRetry()).resolves.toBe(true);
+      expect(reasons).toEqual([]);
+      await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, userId));
+      try {
+        await expect(attestRetry()).resolves.toBe(false);
+        expect(reasons).toEqual(["principal_denied"]);
+      } finally {
+        await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, userId));
+      }
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+        .toEqual({ ...before, executionRunId: retryId, updatedAt: expect.any(Date) });
+    } finally {
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retryId));
+    }
+    expect(retryContext).toMatchObject({ source: `chat:${provider}`, wakeCommentIds: [commentId], retryOfRunId: failedRunId });
+    expect(retryContext).not.toHaveProperty("paperclipHarnessCheckedOut");
+    expect(retryContext).not.toHaveProperty("paperclipExternalChatExecutionBound");
+    expect(decideIssueReviewPathRecovery({
+      issueId, sourceRunId: retryId, assigneeAgentId: agentId, contextSnapshot: retryContext,
+      reviewAttention: { state: "stalled", paths: [], reason: "Review path consumed" }, existingWake: false,
+    })).toMatchObject({ kind: "enqueue", contextSnapshot: { wakeCommentIds: [commentId] } });
   });
 
   it("denies recovery after access revocation or a changed company, task, or message binding", async () => {

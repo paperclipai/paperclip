@@ -46,6 +46,11 @@ export interface RunFailureReportOptions {
    * decision; a scheduled retry owns recovery and reports its own outcome.
    */
   reviewedChatRetry?: "pending" | "scheduled" | "not_scheduled";
+  /**
+   * The bounded retry decision for a saved-sandbox resume that the provider
+   * answered with an HTTP 5xx, with the same `pending` handshake.
+   */
+  sandboxResumeRetry?: "pending" | "scheduled" | "not_scheduled";
 }
 
 export interface RunFailureException {
