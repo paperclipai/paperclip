@@ -29,6 +29,10 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function isReviewerReworkExecutionState(executionState: unknown): boolean {
+  return readNonEmptyString(parseObject(executionState).status) === "changes_requested";
+}
+
 export function issueRunPriorityRank(priority: string | null | undefined) {
   switch (priority) {
     case "critical": return 0;
@@ -125,7 +129,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
     agent: Pick<Agent, "id" | "companyId">;
     queuedRuns: R[];
     dependencyReadiness: Map<string, { isDependencyReady: boolean }>;
-    issueById: Map<string, { status: string; priority: string | null; createdByUserId?: string | null }>;
+    issueById: Map<string, { status: string; priority: string | null; createdByUserId?: string | null; executionState?: unknown }>;
     shareDeferred?: (runId: string) => boolean;
     now: Date;
   },
@@ -192,6 +196,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       requestedByUser: requestedByUser(run),
       sourceEndedAt: sourceRunId ? sourceEndedAt.get(sourceRunId) ?? null : null,
       readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
+      rework: isReviewerReworkExecutionState(issue?.executionState),
       priorityRank: issueRunPriorityRank(issue?.priority),
       shareDeferred: input.shareDeferred?.(run.id) ?? false,
       personTask: Boolean(issue?.createdByUserId) || Boolean(issueId && personTreeIssueIds.has(issueId)),
@@ -301,7 +306,13 @@ export async function agentQueuedRunLine(
   const [dependencyReadiness, issueRows] = issueIds.length
     ? await Promise.all([
       issuesSvc.listDependencyReadiness(agent.companyId, issueIds),
-      db.select({ id: issues.id, status: issues.status, priority: issues.priority, createdByUserId: issues.createdByUserId }).from(issues)
+      db.select({
+        id: issues.id,
+        status: issues.status,
+        priority: issues.priority,
+        createdByUserId: issues.createdByUserId,
+        executionState: issues.executionState,
+      }).from(issues)
         .where(and(eq(issues.companyId, agent.companyId), inArray(issues.id, issueIds))),
     ])
     : [new Map<string, { isDependencyReady: boolean }>(), []];

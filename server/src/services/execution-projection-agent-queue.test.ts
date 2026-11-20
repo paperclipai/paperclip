@@ -31,10 +31,15 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
       await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running",
         startedAt: minutesAgo(90), createdAt: minutesAgo(90) });
     }
-    async function queue(input: { priority: "critical" | "high" | "medium" | "low"; createdMinutesAgo: number; wakeReason?: string }) {
+    async function queue(input: {
+      priority: "critical" | "high" | "medium" | "low";
+      createdMinutesAgo: number;
+      wakeReason?: string;
+      executionState?: Record<string, unknown> | null;
+    }) {
       const issueId = randomUUID(), runId = randomUUID();
       await db.insert(issues).values({ id: issueId, companyId, title: `Task ${input.priority}`, assigneeAgentId: agentId,
-        status: "in_progress", priority: input.priority });
+        status: "in_progress", priority: input.priority, executionState: input.executionState ?? null });
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued", issueId,
         createdAt: minutesAgo(input.createdMinutesAgo),
         contextSnapshot: { issueId, ...(input.wakeReason ? { wakeReason: input.wakeReason } : {}) } });
@@ -45,25 +50,31 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
 
   it("names the agent, its limit and each run's place in the order dispatch starts them", async () => {
     const f = await fixture({ maxConcurrentRuns: 2, running: 2 });
-    // Created oldest first, but dispatch starts a person's retry first, then by priority.
+    // Created oldest first, but dispatch starts a person's retry first, then reviewer rework, then by priority.
     const lowOld = await f.queue({ priority: "low", createdMinutesAgo: 30 });
     const medium = await f.queue({ priority: "medium", createdMinutesAgo: 20 });
     const critical = await f.queue({ priority: "critical", createdMinutesAgo: 10 });
+    const rework = await f.queue({
+      priority: "low",
+      createdMinutesAgo: 2,
+      wakeReason: "execution_changes_requested",
+      executionState: { status: "changes_requested" },
+    });
     const personRetry = await f.queue({ priority: "low", createdMinutesAgo: 5, wakeReason: "task_retry" });
 
-    const projections = await executionProjectionsForRuns(db, f.companyId, [lowOld, medium, critical, personRetry], now);
+    const projections = await executionProjectionsForRuns(db, f.companyId, [lowOld, medium, critical, rework, personRetry], now);
     const queueOf = (runId: string) => projections.get(runId)?.agentQueue;
     expect(projections.get(critical)).toMatchObject({
       phase: "queued",
       label: "Waiting for Codie",
       cause: "agent_at_capacity",
-      agentQueue: { agentId: f.agentId, agentName: "Codie", maxConcurrentRuns: 2, runningCount: 2, position: 2, queuedCount: 4 },
+      agentQueue: { agentId: f.agentId, agentName: "Codie", maxConcurrentRuns: 2, runningCount: 2, position: 3, queuedCount: 5 },
     });
-    expect([personRetry, critical, medium, lowOld].map(runId => queueOf(runId)?.position)).toEqual([1, 2, 3, 4]);
+    expect([personRetry, rework, critical, medium, lowOld].map(runId => queueOf(runId)?.position)).toEqual([1, 2, 3, 4, 5]);
 
     // The position is the dispatch line itself, not a client-side sort.
     const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
-    expect(await agentQueuedRunLine(db, issueService(db), agent!, now)).toEqual([personRetry, critical, medium, lowOld]);
+    expect(await agentQueuedRunLine(db, issueService(db), agent!, now)).toEqual([personRetry, rework, critical, medium, lowOld]);
   });
 
   it("does not claim a run waits on the limit while the agent has a free slot", async () => {
