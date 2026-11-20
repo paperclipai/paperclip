@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 
@@ -14,6 +14,7 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
 import { executePaperclipNativeSession, NATIVE_PROVIDER_STARTUP_REJECTED } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
+import { requestProviderLimitResumeRetry } from "./provider-limit-resume.js";
 import { heartbeatService } from "../heartbeat.js";
 import { requestTaskRetry } from "../task-retry.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
@@ -46,7 +47,10 @@ describe("native session.open the provider rejected before any provider work", (
     message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
     ...fields });
 
-  async function rejectSessionOpen(failure: Error, attempt = 0, options: { remote?: boolean; recoveryHistory?: Record<string, unknown>[] } = {}) {
+  async function rejectSessionOpen(failure: Error, attempt = 0,
+    options: { remote?: boolean; recoveryHistory?: Record<string, unknown>[]; resumesProviderSession?: boolean;
+      /** What an earlier attempt of this same run saved; the retry claim keeps it. */
+      priorResultJson?: Record<string, unknown> } = {}) {
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Plan the change", status: "in_progress", workMode: "standard",
       assigneeAgentId: agentId, createdByUserId: "board-user", responsibleUserId: "board-user" });
@@ -54,7 +58,7 @@ describe("native session.open the provider rejected before any provider work", (
     const runId = randomUUID();
     const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
       nativeIssueId: issueId, responsibleUserId: "board-user", invocationSource: "assignment", triggerDetail: "system",
-      contextSnapshot: { issueId } }).returning();
+      contextSnapshot: { issueId }, ...(options.priorResultJson ? { resultJson: options.priorResultJson } : {}) }).returning();
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const native = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
@@ -71,7 +75,10 @@ describe("native session.open the provider rejected before any provider work", (
         contract: buildNativeCompletionContract(issue, { revision: contract.revision }) },
       interactionResponses: [], credentialBindings: [],
     };
-    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, runId));
+    const sessionCheckpoint = options.resumesProviderSession
+      ? { sessionId: native.normalizedSessionId, providerSessionId: randomUUID(), terminal: null } : undefined;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution,
+      ...(sessionCheckpoint ? { sessionCheckpoint } : {}) } }).where(eq(heartbeatRuns.id, runId));
     provider.execute.mockReset().mockRejectedValue(failure);
     await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId,
       ...(options.remote ? { runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "test", remoteCwd: "/workspace",
@@ -148,5 +155,45 @@ describe("native session.open the provider rejected before any provider work", (
     expect(coordinator.failureDetail?.nextAction).toContain("Retry starts a new run");
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     await expect(taskInterruptionPresentation(db, issue)).resolves.toMatchObject({ state: "failed", canRetry: true });
+  }, 120_000);
+
+  it("holds a remote startup rate limit until the reset its own attempt reported, then retries the task", async () => {
+    // Staging PAPERCLIP-BACKEND-8Z: attempt 1 met a 429 and saved its failure; the
+    // same-run retry after that reset met the limit again with a later reset.
+    const now = Date.now();
+    const limit = (retryAt: Date) => startupFailure({ provider: "anthropic", category: "rate_limit", httpStatus: 429,
+      retryAt: retryAt.toISOString(), message: "API error: 429 This request would exceed your account's rate limit. Please try again later" });
+    const firstReset = new Date(now - 10 * 60_000);
+    const secondReset = new Date(now + 30 * 60_000);
+    const { issueId, runId, coordinator } = await rejectSessionOpen(rejection(limit(secondReset)), 1, { remote: true,
+      priorResultJson: { providerFailure: limit(firstReset) } });
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: null });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run.errorCode).toBe("native_provider_usage_limit");
+    // The run row still names the first attempt's reset; the hold names this attempt's.
+    expect((run.resultJson as Record<string, Record<string, unknown>>).providerFailure.retryAt).toBe(firstReset.toISOString());
+    // The run row also names the limit that ended it, which keeps the expected wait out of Sentry.
+    expect((run.resultJson as Record<string, unknown>).providerLimitStartup).toMatchObject({
+      failure: expect.objectContaining({ phase: "startup", category: "rate_limit", retryAt: secondReset.toISOString() }) });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(hold).toMatchObject({ cause: "native_provider_usage_limit",
+      evidence: expect.objectContaining({ providerLimitResetAt: secondReset.toISOString() }) });
+    expect(hold.nextAction).toContain(`resets at ${secondReset.toISOString()}`);
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }))
+      .resolves.toEqual({ requested: false, waitUntil: secondReset });
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }, new Date(secondReset.getTime() + 1000)))
+      .resolves.toMatchObject({ requested: true });
+  }, 120_000);
+
+  it("stops a repeated remote startup rejection on a run that resumes its predecessor's provider session", async () => {
+    const first = await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, resumesProviderSession: true });
+    expect(first.coordinator).toMatchObject({ phase: "retryable_failure",
+      failureDetail: expect.objectContaining({ recoveryMode: "exact_checkpoint_resume", originalFailureCode: "provider_session_open_rejected" }) });
+    const firstHistory = first.coordinator.recoveryHistory as Record<string, unknown>[];
+    expect(firstHistory.at(-1)).toMatchObject({ disposition: "retryable_failure", startupFailureSignature: expect.any(String) });
+    const { coordinator } = await rejectSessionOpen(exitProven(rejection(startupFailure())), 1, { remote: true,
+      resumesProviderSession: true, recoveryHistory: firstHistory });
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null,
+      failureDetail: expect.objectContaining({ nextAction: expect.stringContaining("bwrap: loopback: Failed RTM_NEWADDR") }) });
   }, 120_000);
 });

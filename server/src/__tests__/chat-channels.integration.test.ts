@@ -7546,12 +7546,37 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
         ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } })
         : undefined);
-      await expect(githubChatReviewService(db, f.providerFetch).execute({
-        companyId: f.companyId,
-        agentId: f.assignedAgentId,
-        issueId: task.id,
-        runId: run.id,
-      }, "read_pull_request", { section: "metadata" })).rejects.toThrow("older pull request head");
+      const staleSession = { companyId: f.companyId, agentId: f.assignedAgentId, issueId: task.id, runId: run.id };
+      const superseded = githubChatReviewService(db, f.providerFetch).execute(staleSession, "read_pull_request", { section: "metadata" });
+      await expect(superseded).rejects.toMatchObject({
+        status: 409,
+        details: { reasonCode: "github_review_superseded", retryable: false, requestedCommit: "b".repeat(40),
+          currentCommit: "c".repeat(40), newerReviewQueued: true },
+      });
+      await expect(superseded).rejects.toThrow(/older pull request head.*newer automatic review for that commit is already queued.*Stop this review/s);
+      await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: randomUUID(), webhookSecret: f.webhookSecret,
+        payload: { ...payload, action: "synchronize", before: "c".repeat(40),
+          pull_request: { ...payload.pull_request, head: { sha: "d".repeat(40) } } },
+      }));
+      const waiting = (await readChatDeliveriesByEndpointId(f.endpoint.id)).filter((row) =>
+        (row.normalizedEvent.githubAutomatic as { context?: { headSha?: string } } | undefined)?.context?.headSha === "d".repeat(40));
+      expect(waiting).toHaveLength(1);
+      expect(waiting[0]).toMatchObject({ conversationId: null });
+      f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
+        ? Response.json({ ...payload.pull_request, head: { sha: "d".repeat(40) } })
+        : undefined);
+      await expect(githubChatReviewService(db, f.providerFetch).execute(staleSession, "read_pull_request", { section: "metadata" }))
+        .rejects.toMatchObject({ status: 409, details: { reasonCode: "github_review_superseded", currentCommit: "d".repeat(40), newerReviewQueued: true } });
+      f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
+        ? Response.json({ ...payload.pull_request, head: { sha: "e".repeat(40) } })
+        : undefined);
+      const unqueued = githubChatReviewService(db, f.providerFetch).execute(staleSession, "read_pull_request", { section: "metadata" });
+      await expect(unqueued).rejects.toMatchObject({
+        status: 409,
+        details: { reasonCode: "github_review_superseded", currentCommit: "e".repeat(40), newerReviewQueued: false },
+      });
+      await expect(unqueued).rejects.toThrow(/no newer automatic review is queued.*Stop this review/s);
     });
     async function reviewCheckWorkerFixture(status: "running" | "failed" = "failed") {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
@@ -66087,7 +66112,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["person", "person_with_input_before_stop", "person_after_held_admission", "person_paused_after_accept", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
+  it.each(["person", "person_with_input_before_stop", "person_after_held_admission", "person_paused_after_accept", "person_with_superseded_continuation", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
     const f = await currentGitHubTaskRetryFixture(initiator === "person_with_input_before_stop");
     try {
       const companyId = f.fixture.companyId, issueId = f.issue.id;
@@ -66190,6 +66215,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(joined).toMatchObject({ accepted: true, requestId: request.requestId, chatActionId: request.chatActionId });
       }
       expect(request).toMatchObject({ accepted: true, stale: false, chatActionId: expect.any(String) });
+      if (initiator === "person_with_superseded_continuation") await db.insert(heartbeatRuns).values({ companyId,
+        agentId: f.fixture.assignedAgentId, status: "cancelled", errorCode: "issue_execution_lock_changed", runtimeMode: "legacy",
+        issueId, retryOfRunId: sourceRunId, finishedAt: new Date(), contextSnapshot: { issueId } });
       const chatAction = async () => (await db.select().from(chatActions).where(eq(chatActions.id, request.chatActionId!)))[0];
       expect((await chatAction()).payload.sourceAuthorizationPending).toBe(true);
 

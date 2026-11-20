@@ -14,7 +14,7 @@ export interface ProviderLimitWaitDependencies {
   }) => Promise<{ updated: boolean; run?: HeartbeatRun | null }>;
   setWakeupStatus: (wakeupRequestId: string | null | undefined, status: "cancelled", patch: { finishedAt: Date; error: string }) => Promise<unknown>;
   appendRunEvent: (run: HeartbeatRun, event: {
-    eventType: string; stream: "system"; level: "warn"; message: string; payload: Record<string, unknown>;
+    eventType: string; stream: "system"; level: "info" | "warn"; message: string; payload: Record<string, unknown>;
   }) => Promise<unknown>;
   scheduleBoundedRetryForRun: (run: HeartbeatRun, agent: Agent, opts: {
     now: Date; retryReason: string; wakeReason: string; maxAttempts: number; delayMs: number;
@@ -55,9 +55,9 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     });
     if (!cooldown) return false;
     const resetAt = cooldown.resetAt.toISOString();
-    const message = `The provider usage limit for this agent is expected to reset at ${resetAt}${
-      cooldown.resetReported ? "" : " (no reset time was reported, so Paperclip waits one hour)"
-    }. Paperclip will start this work then.`;
+    const message = cooldown.resetReported
+      ? `This agent's provider usage limit has a reported reset at ${resetAt}. Work is held; a retry must recheck availability before starting work.`
+      : `This agent's provider usage limit has no reported reset time. Work is held; a retry can recheck availability after ${resetAt}; the limit may still apply then.`;
     const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
       error: message, errorCode: "provider_limit_wait", finishedAt: now,
       resultJson: {
@@ -95,10 +95,10 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
         }
       }
       await appendRunEvent(deferred, {
-        eventType: "lifecycle", stream: "system", level: "warn",
+        eventType: "lifecycle", stream: "system", level: scheduled ? "info" : "warn",
         message: scheduled
-          ? `Waiting for the provider usage limit to reset at ${resetAt} before starting work`
-          : `The provider usage limit resets at ${resetAt}; this wake could not schedule its retry and released the task`,
+          ? `Waiting to recheck the provider usage limit after ${resetAt} before starting work`
+          : "Waiting for provider availability; this wake could not schedule its recheck and released the task",
         payload: { resetAt, resetReported: cooldown.resetReported, category: cooldown.category, sourceRunId: cooldown.sourceRunId, retryScheduled: scheduled },
       }).catch((err: unknown) => logger.warn({ err, runId: run.id }, "failed to record the provider limit wait"));
       await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: message })

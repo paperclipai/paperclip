@@ -73,6 +73,13 @@ projects keep their stored owner. This change does not migrate managed storage
 or detach projects that contain existing work. A managed project run in an
 incompatible environment fails with `project_environment_incompatible` before a
 workspace provider operation, with a message naming the storage and environment.
+On a volume-free server, execution admission refuses that run earlier. When the
+task source's project storage cannot serve the selected environment, the run
+fails `configuration_incomplete` with reason
+`project_storage_environment_incompatible` and the same message. The task notice
+names the owner action, and run-failure reporting does not send it to Sentry.
+A task that moves to another project keeps its selected source, so the source
+project's storage still decides compatibility.
 
 ## Project Configuration
 
