@@ -7197,9 +7197,19 @@ export function noteRemoteBootstrapRestartProven(runId: string, stopped: "absent
   provenRemoteBootstrapRestarts.set(runId, stopped);
 }
 
+type RemoteBootstrapRestartProofOutcome = Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>;
+const REMOTE_BOOTSTRAP_RESTART_PROOF_OUTCOME_LIMIT = 1_000;
+const remoteBootstrapRestartProofOutcomes = new Map<string, RemoteBootstrapRestartProofOutcome>();
+
 export function recordRemoteBootstrapRestartProof(runId: string,
-  stopped: Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>): boolean {
+  stopped: RemoteBootstrapRestartProofOutcome): boolean {
   provenRemoteBootstrapRestarts.delete(runId);
+  remoteBootstrapRestartProofOutcomes.delete(runId);
+  remoteBootstrapRestartProofOutcomes.set(runId, stopped);
+  if (remoteBootstrapRestartProofOutcomes.size > REMOTE_BOOTSTRAP_RESTART_PROOF_OUTCOME_LIMIT) {
+    const oldest = remoteBootstrapRestartProofOutcomes.keys().next().value;
+    if (oldest !== undefined) remoteBootstrapRestartProofOutcomes.delete(oldest);
+  }
   if (stopped !== "absent_confirmed" && stopped !== "stopped" && stopped !== "killed") return false;
   provenRemoteBootstrapRestarts.set(runId, stopped);
   return true;
@@ -7239,6 +7249,21 @@ export function hasRemoteBootstrapRestartProof(runId: string): boolean {
 
 export function takeRemoteBootstrapRestartProof(runId: string): boolean {
   return provenRemoteBootstrapRestarts.delete(runId);
+}
+
+export function remoteBootstrapRestartRefusalDiagnostic(input: {
+  restartKind: string | null;
+  sameRun: boolean;
+  providerUnopened: boolean;
+  runId: string;
+}): string {
+  if (input.restartKind !== "bootstrap_incomplete") return "";
+  const proof = hasRemoteBootstrapRestartProof(input.runId)
+    ? "held"
+    : remoteBootstrapRestartProofOutcomes.get(input.runId) ?? "not_recorded";
+  remoteBootstrapRestartProofOutcomes.delete(input.runId);
+  return `; bootstrap_restart=${input.sameRun ? "same_run" : "other_run"},`
+    + `provider=${input.providerUnopened ? "unopened" : "opened"},proof=${proof}`;
 }
 
 export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
@@ -17676,7 +17701,13 @@ async function createRunnerdBackendWithinSessionClaim(
           notSuspendedRunId: input.execution.binding.runId,
         };
       }
-      throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)})`);
+      const restartRefusal = source === "host_preparation" ? remoteBootstrapRestartRefusalDiagnostic({
+        restartKind: input.restartRecovery?.kind ?? null,
+        sameRun: runnerState.runId === input.execution.binding.runId,
+        providerUnopened: remoteProviderStateNeverOpened(input.execution, providerState),
+        runId: input.execution.binding.runId,
+      }) : "";
+      throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)}${restartRefusal})`);
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
       root,
