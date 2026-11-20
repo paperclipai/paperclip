@@ -93,7 +93,7 @@ const support = await getEmbeddedPostgresTestSupport();
           if (toolkit.action === "remove") accounts = accounts.filter(account => account.id !== toolkit.account_id);
         }
         results[toolkit.name] = toolkit.name === failedToolkit ? { toolkit: toolkit.name, accounts: [{ status: "ACTIVE" }] }
-          : toolkit.action === "add" ? { redirect_url: "https://connect.composio.dev/link/test" }
+          : toolkit.action === "add" ? { toolkit: toolkit.name, accounts: toolkit.name === "circleback_mcp" ? accounts : [], redirect_url: "https://connect.composio.dev/link/test" }
           : listResult ?? { toolkit: toolkit.name, accounts: toolkit.name === "circleback_mcp" ? accounts : [] };
       }
       return Response.json({ jsonrpc: "2.0", id: request.id, result: { structuredContent: { data: { results } } } });
@@ -317,7 +317,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it("adds another account without a task or an agent grant, even when an account is already active", async () => {
     const f = await fixture(); f.activate();
     const result = await f.access.manageComposioAppAccount(f.connection.id, "circleback_mcp", { action: "add" }, f.actor);
-    expect(result.authorizationUrl).toBe("https://connect.composio.dev/link/test");
+    expect(result).toMatchObject({ status: "authorization_required", authorizationUrl: "https://connect.composio.dev/link/test" });
     expect(f.operations).toEqual(["add"]);
     expect(await db.select().from(issues).where(eq(issues.companyId, f.company.id))).toHaveLength(0);
     expect((await f.access.getEffectiveProfilesForAgent(f.company.id, f.agent.id)).allowedTools).toEqual([]);

@@ -56,6 +56,11 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
   return observed && !incomplete ? [...accounts.values()] : undefined;
 }
 
+export function composioAddAccountLink(response: unknown): string | null {
+  payloadsFrom(response);
+  return extractRemoteMcpPending(response, "composio", "COMPOSIO_MANAGE_CONNECTIONS")?.links[0]?.url ?? null;
+}
+
 /** Only the requested toolkit can establish success; other accounts are unrelated. */
 export function composioAppSetupResult(response: unknown, toolkit: string): ComposioAppSetupResult {
   const payloads = payloadsFrom(response);
