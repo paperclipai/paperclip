@@ -14,16 +14,14 @@ import { buildCodexRunnerConfig } from "./config-fields";
 import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
 import { defaultCreateValues } from "@/components/agent-config-defaults";
 import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
-import { queryKeys } from "@/lib/queryKeys";
 
 beforeAll(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); });
 
-async function renderMarkup(node: ReactNode, expand?: string, inspect?: (container: HTMLElement) => void, cloud = false): Promise<string> {
+async function renderMarkup(node: ReactNode, expand?: string, inspect?: (container: HTMLElement) => void): Promise<string> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   const client = new QueryClient();
-  if (cloud) client.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
   await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>));
   if (expand) await act(async () => {
     container.querySelector(`[aria-label="${expand}"]`)?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -51,10 +49,11 @@ async function renderRunner(config: Record<string, unknown>, expand?: string, in
         mark={() => undefined}
         models={[]}
         hideInstructionsFile
+        cloudHarnessesOnly={cloud}
         openAiDotEnabled={openAiDotEnabled}
       />
     </TooltipProvider>,
-    expand, inspect, cloud,
+    expand, inspect,
   );
 }
 

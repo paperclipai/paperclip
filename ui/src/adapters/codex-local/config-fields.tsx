@@ -1,6 +1,5 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectPopover } from "../../components/ui/select";
 import { AdapterMark } from "../../components/AdapterMark";
-import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isCloudRunnerProviderAllowed } from "@/lib/cloud-harness-policy";
 import { MuseRunnerConnection } from "../../components/MuseRunnerConnection";
 import { GrokBotConnection } from "../../components/GrokBotConnection";
@@ -85,9 +84,9 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
   managedSandboxOnly,
+  cloudHarnessesOnly = false,
   hideRunnerHarness,
 }: AdapterConfigFieldsProps) {
-  const cloud = Boolean(useCloudInstance());
   const runnerManaged = adapterType === "paperclip_runner";
   // The execution engine picks which binary runs on the execution host, and the
   // ACP sub-fields below name host paths. The platform-managed environment owns
@@ -295,7 +294,7 @@ export function CodexLocalConfigFields({
             <SelectTrigger className="w-full" aria-label="Harness"><SelectValue /></SelectTrigger>
             <SelectContent>
               {!isPaperclipRunnerProvider(runnerProvider) && <SelectItem value={runnerProvider} disabled>{runnerProvider} (unknown provider)</SelectItem>}
-              {runnerHarnessOptions.filter(option => !cloud || isCloudRunnerProviderAllowed(option.value)).map((option) => (
+              {runnerHarnessOptions.filter(option => !cloudHarnessesOnly || isCloudRunnerProviderAllowed(option.value)).map((option) => (
                 <SelectItem key={option.value} value={option.value}>
                   <AdapterMark type={option.adapter} className="size-4" />
                   {option.label}
@@ -360,7 +359,7 @@ export function CodexLocalConfigFields({
             }}>
             <SelectTrigger className="w-full" aria-label="ACP agent"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => !cloud || (profile.qualified && isCloudRunnerProviderAllowed("acpx", profile.value))).map(profile => (
+              {PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => !cloudHarnessesOnly || (profile.qualified && isCloudRunnerProviderAllowed("acpx", profile.value))).map(profile => (
                 <SelectItem key={profile.value} value={profile.value} disabled={!profile.qualified}>
                   <AdapterMark type={profile.value === "cursor" ? "cursor" : `${profile.value}_local`} className="size-4" />
                   {profile.label}{profile.qualified ? "" : " — qualification pending"}
