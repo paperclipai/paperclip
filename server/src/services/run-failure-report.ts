@@ -269,6 +269,20 @@ function isNativeProviderUsageLimitFailure(run: HeartbeatRun, options: RunFailur
   return category === "quota_exhausted" || category === "rate_limit";
 }
 
+/**
+ * A server restart can interrupt a run whose provider turn already ended on an
+ * exhausted allowance, before its executor saves `native_provider_usage_limit`.
+ * Restart recovery then ends the run as `provider_checkpoint_permanently_failed`.
+ * The task still takes its provider-limit wait, so the same expected failure
+ * stays unreported. The run's persisted runner terminal is the proof.
+ */
+async function isRestartEndedNativeUsageLimit(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
+  if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== "native_restart_recovery_blocked" ||
+      run.error !== "provider_checkpoint_permanently_failed" || options.phase === "setup" || run.signal != null) return false;
+  const { readPersistedNativeTerminalUsageLimit } = await import("./native-runtime/native-provider-failure-evidence.js");
+  return readPersistedNativeTerminalUsageLimit(db, run);
+}
+
 function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const result = asRecord(run.resultJson);
   return run.status === "failed" && run.errorCode === "codex_transient_upstream" &&
@@ -431,6 +445,11 @@ async function captureTerminalRunFailure(
         return false;
       });
       if (scheduledRetry) return;
+      const restartEndedUsageLimit = await isRestartEndedNativeUsageLimit(db, run, options).catch((err) => {
+        logger.warn({ err, runId: run.id }, "failed to read native usage-limit terminal for run failure report");
+        return false;
+      });
+      if (restartEndedUsageLimit) return;
     }
 
     const taskId = readTaskId(run);

@@ -502,6 +502,12 @@ describe("buildBrowserSentryInitOptions", () => {
     expect(options.tracesSampleRate).toBe(0);
   });
 
+  it("ignores only Firefox for iOS's injected-script errors", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+
+    expect(buildBrowserSentryInitOptions(DSN).ignoreErrors).toEqual(["__firefox__"]);
+  });
+
   it("adds diagnostics without a transaction filter", async () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 
@@ -662,6 +668,24 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
     // `HttpContext` is the only default integration that writes
     // `event.request`. With it removed, the field never appears.
     expect((captured as unknown as Record<string, unknown>).request).toBeUndefined();
+  });
+
+  it.each([
+    ["TypeError", "undefined is not an object (evaluating 'window.__firefox__.reader')"],
+    ["ReferenceError", "Can't find variable: __firefox__"],
+  ])("drops a global %s from Firefox for iOS's injected scripts and keeps the app's own errors", async (type, message) => {
+    const captured: Array<Record<string, unknown>> = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    try {
+      const injected = type === "TypeError" ? new TypeError(message) : new ReferenceError(message);
+      window.onerror?.call(window, `${type}: ${message}`, "https://example.test/MYB/decisions", 1, 19, injected);
+      window.onerror?.call(window, "TypeError: app failure", "https://example.test/assets/index.js", 1, 1, new TypeError("app failure"));
+      await Sentry.flush(2000);
+      expect(captured.map((event) => (event.exception as { values: Array<{ value: string }> }).values[0]?.value))
+        .toEqual(["app failure"]);
+    } finally {
+      await Sentry.close();
+    }
   });
 
   it("an event captured after a console call and a fetch call carries no breadcrumb", async () => {
