@@ -425,6 +425,7 @@ import {
 import { AgentQueueWaitChip } from "@/components/AgentQueueWait";
 import { agentQueueWaitOf, isWaitingToStart } from "@/lib/agent-queue-wait";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { taskChatShellLayoutClass } from "@/lib/task-list-side-panel";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
@@ -8628,13 +8629,7 @@ export function TaskDetailSurface({ conversation, tasksTab, embeddedIssueRef }: 
               value="chat"
               className={
                 taskChatShellEnabled
-                  ? isMobile
-                    ? streamlinedTaskDetailEnabled
-                      ? "flex min-h-0 flex-1 flex-col"
-                      : "-mx-4 flex min-h-0 flex-1 flex-col"
-                    : streamlinedTaskDetailEnabled
-                      ? "flex min-h-0 flex-col"
-                      : "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col"
+                  ? taskChatShellLayoutClass({ isMobile, streamlined: streamlinedTaskDetailEnabled, embedded })
                   : undefined
               }
             >

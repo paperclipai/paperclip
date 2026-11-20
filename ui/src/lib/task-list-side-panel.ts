@@ -54,3 +54,11 @@ export function withSidePanelTaskRef(searchParams: URLSearchParams, taskRef: str
   else next.delete(TASK_LIST_SIDE_PANEL_PARAM);
   return next;
 }
+
+/** The chat shell pulls itself out to the page gutters; an embedded surface has none, so it must not. */
+export function taskChatShellLayoutClass(input: { isMobile: boolean; streamlined: boolean; embedded: boolean }): string {
+  const fill = input.isMobile && !input.embedded;
+  if (input.streamlined || input.embedded) return fill ? "flex min-h-0 flex-1 flex-col" : "flex min-h-0 flex-col";
+  if (fill) return "-mx-4 flex min-h-0 flex-1 flex-col";
+  return "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col";
+}

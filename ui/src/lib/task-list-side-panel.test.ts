@@ -7,6 +7,7 @@ import {
   readSidePanelTaskRef,
   resolveTaskListSidePanelPresentation,
   shouldOpenTaskInSidePanel,
+  taskChatShellLayoutClass,
   withSidePanelTaskRef,
 } from "./task-list-side-panel";
 
@@ -102,5 +103,19 @@ describe("side panel task param", () => {
     expect(opened.toString()).toBe("view=all&q=deploy&status=todo&task=PAP-7");
     expect(withSidePanelTaskRef(opened, null).toString()).toBe("view=all&q=deploy&status=todo");
     expect(list.toString()).toBe("view=all&q=deploy&status=todo");
+  });
+});
+
+describe("taskChatShellLayoutClass", () => {
+  it("pulls the page chat out to the gutters", () => {
+    expect(taskChatShellLayoutClass({ isMobile: false, streamlined: false, embedded: false })).toContain("md:-mx-6");
+  });
+
+  it("keeps the streamlined page chat free of offsets", () => {
+    expect(taskChatShellLayoutClass({ isMobile: false, streamlined: true, embedded: false })).not.toContain("-mx");
+  });
+
+  it("adds no negative offsets inside the embedded side panel", () => {
+    expect(taskChatShellLayoutClass({ isMobile: false, streamlined: false, embedded: true })).not.toContain("-m");
   });
 });
