@@ -2189,7 +2189,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         .toEqual(linked.map(task => task.issueId).sort());
       await f.reconnect();
       await sweepAll();
-      const wakeup = await f.deliverAll([card!.id]);
+      expect((await f.cardsFor([owner.issueId])).find(row => row.id === card!.id)!.status).toBe("expired");
+      await db.update(issueThreadInteractions).set({ status: "expired", resolvedAt: new Date(),
+        result: { version: 1, outcome: "expired", connectionId: f.account.connectionId } })
+        .where(eq(issueThreadInteractions.id, second!.interactionId!));
+      const wakeup = await f.deliverAll([card!.id, second!.interactionId!]);
+      expect(wakeup).toHaveBeenCalledWith(owner.agentId, expect.objectContaining({
+        payload: expect.objectContaining({ issueId: owner.issueId }) }));
       for (const task of linked) {
         expect(wakeup).toHaveBeenCalledWith(task.agentId, expect.objectContaining({
           payload: expect.objectContaining({ issueId: task.issueId }) }));
