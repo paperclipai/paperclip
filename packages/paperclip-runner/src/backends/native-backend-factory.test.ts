@@ -33,6 +33,8 @@ import {
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
 import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
+import * as acpxNativeBackend from "./codex-acpx-native-backend.js";
+import * as opencodeNativeBackend from "./opencode-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
 function execution(
@@ -621,6 +623,80 @@ describe("native backend factory", () => {
         dynamicTools: true,
       },
     });
+  });
+
+  it("forwards environment to OpenCode backend when opencodeEnvironment is omitted", async () => {
+    const spy = vi.spyOn(opencodeNativeBackend, "createOpenCodeNativeSessionBackend");
+    try {
+      createNativeSessionBackend(opencodeExecution(), {
+        opencodeRuntimeDirectory: "/runtime",
+        environment: { TEST_VAR: "inherited" },
+      });
+      expect(spy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          environment: { TEST_VAR: "inherited" },
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("prefers opencodeEnvironment over environment for OpenCode backend", async () => {
+    const spy = vi.spyOn(opencodeNativeBackend, "createOpenCodeNativeSessionBackend");
+    try {
+      createNativeSessionBackend(opencodeExecution(), {
+        opencodeRuntimeDirectory: "/runtime",
+        environment: { TEST_VAR: "inherited" },
+        opencodeEnvironment: { TEST_VAR: "explicit" },
+      });
+      expect(spy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          environment: { TEST_VAR: "explicit" },
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("forwards environment to ACPX backend when acpxEnvironment is omitted", async () => {
+    const spy = vi.spyOn(acpxNativeBackend, "createAcpxNativeSessionBackend");
+    try {
+      createNativeSessionBackend(acpxExecution(), {
+        acpxRuntimeDirectory: "/runtime",
+        environment: { TEST_VAR: "inherited" },
+      });
+      expect(spy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          environment: { TEST_VAR: "inherited" },
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("prefers acpxEnvironment over environment for ACPX backend", async () => {
+    const spy = vi.spyOn(acpxNativeBackend, "createAcpxNativeSessionBackend");
+    try {
+      createNativeSessionBackend(acpxExecution(), {
+        acpxRuntimeDirectory: "/runtime",
+        environment: { TEST_VAR: "inherited" },
+        acpxEnvironment: { TEST_VAR: "explicit" },
+      });
+      expect(spy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          environment: { TEST_VAR: "explicit" },
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it.each(["codex" as const, "claude" as const, "grok" as const])(

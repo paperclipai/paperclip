@@ -89,7 +89,7 @@ export function createNativeSessionBackend(
     return createOpenCodeNativeSessionBackend(input, {
       completionFeedback: options.completionFeedback,
       runtimeDirectory: options.opencodeRuntimeDirectory,
-      environment: options.opencodeEnvironment,
+      environment: options.opencodeEnvironment ?? options.environment,
       command: options.opencodeCommand,
       runnerInstanceId: options.runnerInstanceId,
       onSpawn: options.onSpawn,
@@ -103,7 +103,7 @@ export function createNativeSessionBackend(
     }
     return createAcpxNativeSessionBackend(input, {
       runtimeDirectory: options.acpxRuntimeDirectory,
-      environment: options.acpxEnvironment,
+      environment: options.acpxEnvironment ?? options.environment,
       ...(input.provider.agent === "codex"
         ? {
             managedCodexCredentialSourcePath:
