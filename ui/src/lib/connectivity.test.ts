@@ -287,7 +287,6 @@ describe("probeServerHealth", () => {
     vi.useFakeTimers();
     try {
       let probeSignal: AbortSignal | undefined;
-      // A fetch that only settles when its signal aborts, like a hung server.
       vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
         probeSignal = init?.signal ?? undefined;
         return new Promise<Response>((_resolve, reject) => {
@@ -297,8 +296,6 @@ describe("probeServerHealth", () => {
       const result = probeServerHealth();
       await vi.advanceTimersByTimeAsync(10_000);
       expect(await result).toEqual({ reachable: false, retryAfterMs: null });
-      // A fetch wrapper outside the app can drop this rejection; Sentry then
-      // drops only this marked reason.
       expect(probeSignal?.aborted).toBe(true);
       expect(isIntentionalAbortReason(probeSignal?.reason)).toBe(true);
     } finally {
