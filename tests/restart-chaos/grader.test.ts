@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { crossingFaults, gradeR2, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
+import { QUEUE_HANDOFF_TOLERANCE_MS, queueWaitFairnessFrom, type AgentSlots } from "./agent-slots.js";
+import { crossingFaults, gradeR1, gradeR2, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
 import { BENCH_EXPECTED, parseBenchRecord, r1TestChecksSlug, stallWakeChecks, workloadDefinitions } from "./workloads.js";
@@ -188,6 +189,91 @@ describe("R1–R6 grading on fixture timelines", () => {
     const late = record([sample(700_000, "done", [run("r2", "succeeded", 300_000, 690_000)])], { restAt: T0 + 700_000 });
     expect(gradeTask(late, [k4], 600_000, oracle()).rules.R1.verdict).toBe("pass");
     expect(gradeTask(late, [], 600_000, oracle()).rules.R1.detail).toMatch(/done_too_late/);
+  });
+});
+
+describe("R1 fair queue wait credit", () => {
+  const BUDGET = 2_200_000;
+  const WAIT = 1_509_000;
+  const CREATED = 50;
+  const STARTED = CREATED + WAIT;
+  type SlotRun = AgentSlots["runs"][number];
+  const slotRun = (runId: string, created: number, started: number, finished: number | null): SlotRun =>
+    ({ runId, agentId: "agent-oc", createdAt: T0 + created, startedAt: T0 + started, finishedAt: finished === null ? null : T0 + finished });
+  const own = (started: number = STARTED): SlotRun => ({ runId: "r1", agentId: "agent-oc", createdAt: T0 + CREATED, startedAt: T0 + started, finishedAt: null });
+  const fullAgent = (): SlotRun[] => [
+    slotRun("o1", -900_000, -800_000, 400_000),
+    slotRun("o2", -900_000, -700_000, 900_000),
+    slotRun("o3", -900_000, -600_000, STARTED),
+    slotRun("o4", -900_000, -500_000, 2_000_000),
+    slotRun("o5", 10, 400_000, 2_100_000),
+    slotRun("o6", 20, 901_000, 2_100_000),
+  ];
+  const slots = (runs: SlotRun[]): AgentSlots => ({ agents: [{ agentId: "agent-oc", maxConcurrentRuns: 4 }], runs: [own(), ...runs] });
+  const queued = (tookMs: number, wait = WAIT) => record([
+    sample(60_000, "in_progress", [run("r1", "queued", CREATED, null, { startedAt: null })]),
+    sample(CREATED + wait + 5_000, "in_progress", [run("r1", "running", CREATED, null, { startedAt: iso(CREATED + wait) })]),
+    sample(tookMs, "done", [run("r1", "succeeded", CREATED, tookMs - 1_000, { startedAt: iso(CREATED + wait) })]),
+  ], { restAt: T0 + tookMs, faultIds: [] });
+  const t031 = () => queued(BUDGET + 87_000);
+
+  it("credits a fair 1,509 s FIFO queue wait that left the task 87 s over the old budget", () => {
+    expect(gradeR1(t031(), BUDGET, [])).toEqual({ verdict: "fail", detail: "done_too_late 2287s > 2200s" });
+    const graded = gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(fullAgent())));
+    expect(graded).toEqual({ verdict: "pass", detail: "done after 2287s (allowed 3709s incl. 1509s fair queue wait)" });
+  });
+
+  it("fails as an unfair queue wait when a newer run started ahead of the queued run", () => {
+    const runs = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: T0 + 300_000 } : entry);
+    const graded = gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(runs)));
+    expect(graded.verdict).toBe("fail");
+    expect(graded.detail).toMatch(/^unfair_queue_wait run o6 created .* ahead of r1/);
+    const task = gradeTask(t031(), [], BUDGET, oracle(), undefined, { queueWait: queueWaitFairnessFrom(slots(runs)) });
+    expect(task.signature).toBe("R1:unfair_queue_wait:A1:K1");
+  });
+
+  it("fails as an unfair queue wait when the agent had an idle slot during the wait", () => {
+    const runs = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, startedAt: T0 + 931_000 } : entry);
+    const graded = gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(runs)));
+    expect(graded.verdict).toBe("fail");
+    expect(graded.detail).toContain(`idle slot from ${iso(900_000)} to ${iso(931_000)} while r1 was queued`);
+  });
+
+  it("allows a same-second slot hand-off within the tolerance", () => {
+    const runs = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, startedAt: T0 + 900_000 + QUEUE_HANDOFF_TOLERANCE_MS } : entry);
+    expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(runs))).verdict).toBe("pass");
+  });
+
+  it("does not credit a wait it cannot prove fair", () => {
+    expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(null)).detail)
+      .toBe("done_too_late 2287s > 2200s (queue wait not credited: no agent slot evidence for r1)");
+    const runs = fullAgent().map(entry => entry.runId === "o6" ? { ...entry, createdAt: null } : entry);
+    expect(gradeR1(t031(), BUDGET, [], queueWaitFairnessFrom(slots(runs))).detail)
+      .toBe("done_too_late 2287s > 2200s (queue wait not credited: no createdAt for o6, which started while r1 was queued)");
+  });
+
+  it("leaves a short queue wait unchanged", () => {
+    const wait = 3_000;
+    const runs = [slotRun("o1", -900_000, -800_000, CREATED + wait), slotRun("o2", 10, 1_000, 900_000)];
+    const fairness = queueWaitFairnessFrom({ agents: [{ agentId: "agent-oc", maxConcurrentRuns: 4 }], runs: [own(CREATED + wait), ...runs] });
+    const inBudget = queued(BUDGET - 10_000, wait);
+    expect(gradeR1(inBudget, BUDGET, [], fairness)).toEqual(gradeR1(inBudget, BUDGET, []));
+    expect(gradeR1(inBudget, BUDGET, [], fairness)).toEqual({ verdict: "pass", detail: "done after 2190s (allowed 2200s)" });
+    expect(gradeR1(queued(BUDGET + 87_000, wait), BUDGET, [], fairness).verdict).toBe("fail");
+  });
+
+  it("credits only the first run's initial wait, not outage time inside it or later retries", () => {
+    const outage: FaultReceipt = { ...fault, startedAt: T0 + 100_000, readyAt: T0 + 200_000 };
+    const graded = gradeR1(queued(BUDGET + 1_550_000), BUDGET, [outage], queueWaitFairnessFrom(slots(fullAgent())));
+    expect(graded).toEqual({ verdict: "fail", detail: "done_too_late 3750s > 3709s incl. 1409s fair queue wait" });
+    const retried = record([sample(BUDGET + 87_000, "done", [
+      run("r0", "failed", 0, 1_000),
+      run("r1", "succeeded", CREATED, BUDGET, { startedAt: iso(STARTED), retryOfRunId: "r0" }),
+    ])], { restAt: T0 + BUDGET + 87_000, faultIds: [] });
+    const retriedGrade = gradeR1(retried, BUDGET, [], queueWaitFairnessFrom(slots(fullAgent())));
+    expect(retriedGrade.verdict).toBe("fail");
+    expect(retriedGrade.detail).toMatch(/^done_too_late 2287s > 2200s/);
+    expect(retriedGrade.detail).not.toContain("fair queue wait");
   });
 });
 

@@ -109,6 +109,25 @@ describe("TaskObserver", () => {
     expect(observer.done).toBe(true);
   });
 
+  it("extends the deadline once by the first run's queue wait when it starts", async () => {
+    let createdAt = 0;
+    let startedAt: number | null = null;
+    const { api } = fakeApi({ "/runs": () => [{ runId: "r1", status: startedAt === null ? "queued" : "running",
+      createdAt: new Date(createdAt).toISOString(), startedAt: startedAt === null ? null : new Date(startedAt).toISOString() }] }, "in_progress");
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    const deadline = observer.record.deadlineAt!;
+    createdAt = start;
+    await observer.poll(start + 1_000);
+    expect(observer.record.deadlineAt).toBe(deadline);
+    startedAt = start + 600_000;
+    await observer.poll(start + 601_000);
+    expect(observer.record.deadlineAt).toBe(deadline + 600_000);
+    await observer.poll(start + 602_000);
+    expect(observer.record.deadlineAt).toBe(deadline + 600_000);
+  });
+
   it("keeps watching unexplained idle work until the stall limit, then records the stall", async () => {
     const { api } = fakeApi({}, "in_progress");
     const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);

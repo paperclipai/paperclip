@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApiError, type ChaosApi } from "./api.js";
-import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
+import { ACTIVE_RUN_STATUSES, firstRunQueueWait, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
 import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
@@ -218,6 +218,7 @@ export class TaskObserver {
   private stallSince: number | null = null;
   /** First sample of the current stretch with the server ready (H1 holds the pause across it). */
   private readySince: number | null = null;
+  private queueWaitExtended = false;
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
   done = false;
@@ -491,10 +492,19 @@ export class TaskObserver {
   /** Outages extend the deadline: R1 allows budget plus outage time. */
   extendDeadline(ms: number) { if (this.record.deadlineAt !== null) this.record.deadlineAt += ms; }
 
+  private extendForFirstQueueWait() {
+    if (this.queueWaitExtended) return;
+    const wait = firstRunQueueWait(this.record);
+    if (!wait) return;
+    this.queueWaitExtended = true;
+    this.extendDeadline(wait.startedAt - wait.createdAt);
+  }
+
   async poll(now = Date.now()): Promise<void> {
     if (this.done || !this.record.issueId) return;
     const sample = await this.sample(now);
     this.record.samples.push(sample);
+    this.extendForFirstQueueWait();
     await this.captureRemoteFilesAtDone(sample);
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();

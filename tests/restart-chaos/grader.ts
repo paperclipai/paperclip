@@ -1,6 +1,7 @@
 import { UI_RETRY_BLOCKED_BY_MODAL, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
 import { gradeDiskFullRetry, isDiskFullFault } from "./disk-full-faults.js";
+import type { QueueWaitFairness } from "./agent-slots.js";
 import { enforcedUniversalFailures, gradeUniversal, type SlotFree, type UniversalBounds, type UniversalDbEvidence } from "./universal.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
@@ -62,7 +63,26 @@ export function expectedFinalStatus(record: TaskRecord): string {
   return record.plan.workload === "G1" && g1Decision(record.plan.nonce) === "reject" ? "cancelled" : "done";
 }
 
-export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly FaultReceipt[]): RuleResult {
+export function firstRunQueueWait(record: TaskRecord): { runId: string; createdAt: number; startedAt: number } | null {
+  const latest = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
+  for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
+  const first = [...latest.values()].filter(run => Number.isFinite(ms(run.createdAt)))
+    .sort((a, b) => ms(a.createdAt) - ms(b.createdAt))[0];
+  if (!first || first.retryOfRunId || !Number.isFinite(ms(first.startedAt))) return null;
+  const createdAt = ms(first.createdAt);
+  const startedAt = ms(first.startedAt);
+  return startedAt > createdAt ? { runId: first.id, createdAt, startedAt } : null;
+}
+
+function faultOverlapMs(faults: readonly FaultReceipt[], from: number, to: number): number {
+  return faults.reduce((total, fault) => {
+    const [start, stop] = faultWindow(fault);
+    const overlap = Math.min(stop, to) - Math.max(start, from);
+    return total + (Number.isFinite(overlap) && overlap > 0 ? overlap : 0);
+  }, 0);
+}
+
+export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly FaultReceipt[], queueWait?: QueueWaitFairness): RuleResult {
   if (record.launchError) return { verdict: "fail", detail: `launch_failed: ${record.launchError}` };
   if (record.retry) return { verdict: "n/a", detail: "task rested needing Retry; graded under R3" };
   const expected = expectedFinalStatus(record);
@@ -70,11 +90,21 @@ export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly F
   if (record.finalStatus !== expected) {
     return { verdict: "fail", detail: `rested_not_done (status ${record.finalStatus ?? "unknown"}, no Retry offered)` };
   }
-  const allowed = budgetMs + outageOverlapMs(record, faults);
+  const base = budgetMs + outageOverlapMs(record, faults);
   const took = (record.restAt ?? Number.POSITIVE_INFINITY) - record.createdAt!;
+  const seconds = (value: number) => Math.round(value / 1000);
+  if (took <= base) return { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(base)}s)` };
+  const wait = firstRunQueueWait(record);
+  const fairness = wait && queueWait ? queueWait(wait.runId, wait.createdAt, wait.startedAt) : null;
+  if (fairness?.verdict === "unfair") {
+    return { verdict: "fail", detail: `unfair_queue_wait ${fairness.reason}; done ${seconds(took)}s > ${seconds(base)}s without queue credit` };
+  }
+  const credit = wait && fairness?.verdict === "fair" ? Math.max(0, wait.startedAt - wait.createdAt - faultOverlapMs(faults, wait.createdAt, wait.startedAt)) : 0;
+  const allowed = base + credit;
+  const note = credit ? ` incl. ${seconds(credit)}s fair queue wait` : fairness?.verdict === "unproven" ? ` (queue wait not credited: ${fairness.reason})` : "";
   return took <= allowed
-    ? { verdict: "pass", detail: `${expected} after ${Math.round(took / 1000)}s (allowed ${Math.round(allowed / 1000)}s)` }
-    : { verdict: "fail", detail: `done_too_late ${Math.round(took / 1000)}s > ${Math.round(allowed / 1000)}s` };
+    ? { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(allowed)}s${note})` }
+    : { verdict: "fail", detail: `done_too_late ${seconds(took)}s > ${seconds(allowed)}s${note}` };
 }
 
 export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
@@ -253,10 +283,10 @@ export function gradeR6(record: TaskRecord): RuleResult {
 }
 
 export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], budgetMs: number, oracle: OracleResult,
-  universalDb?: UniversalDbEvidence, queue: { bounds?: UniversalBounds; slotFree?: SlotFree } = {}): TaskGrade {
+  universalDb?: UniversalDbEvidence, queue: { bounds?: UniversalBounds; slotFree?: SlotFree; queueWait?: QueueWaitFairness } = {}): TaskGrade {
   const crossing = crossingFaults(record, faults);
   const rules: Record<RuleId, RuleResult> = {
-    R1: gradeR1(record, budgetMs, faults),
+    R1: gradeR1(record, budgetMs, faults, queue.queueWait),
     R2: gradeR2(record, oracle),
     R3: gradeR3(record),
     R4: gradeR4(record),
