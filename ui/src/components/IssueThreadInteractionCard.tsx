@@ -50,6 +50,10 @@ import { ProposalJustification } from "../pages/secrets/proposal-review";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
+import { RoutineSuggestionCard } from "@/components/RoutineSuggestionCard";
+import { BarProposalCard } from "@/components/responsibilities/BarProposalCard";
+import { AutomationProposalCard } from "@/components/responsibilities/AutomationProposalCard";
+import { DashboardChangesCard } from "@/components/responsibilities/DashboardChangesCard";
 import { QuestionForm } from "./task-chat/QuestionForm";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorTaskCommitment } from "./coordinator/CoordinatorTaskCommitment";
@@ -4445,6 +4449,19 @@ export function IssueThreadInteractionCard({
         </div>
       </CoordinatorTaskCommitment>
     </InteractionAudienceContext.Provider>;
+  }
+  if (interaction.kind === "suggest_routine") {
+    return <RoutineSuggestionCard interaction={interaction} />;
+  }
+  if (interaction.kind === "propose_responsibility_bar") {
+    return <BarProposalCard interaction={interaction} />;
+  }
+
+  if (interaction.kind === "propose_automation") {
+    return <AutomationProposalCard interaction={interaction} />;
+  }
+  if (interaction.kind === "propose_dashboard_changes") {
+    return <DashboardChangesCard interaction={interaction} />;
   }
   if (!compactDecision && interaction.kind === "connection_intent" && interaction.payload.accessRequest) {
     return (

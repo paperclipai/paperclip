@@ -79,6 +79,7 @@ const apiPrefixes: Record<string, string> = {
   "instance-server-metrics.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",
+  "issue-document-batch.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
   "link-previews.ts": "/api",
@@ -95,18 +96,29 @@ const apiPrefixes: Record<string, string> = {
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
+  "routine-suggestions.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
   "tailscale-connections.ts": "/api",
+  "responsibilities.ts": "/api",
+  "responsibility-areas.ts": "/api",
+  "responsibility-bars.ts": "/api",
+  "responsibility-dashboard.ts": "/api",
+  "responsibility-summaries.ts": "/api",
+  "responsibility-automation.ts": "/api",
+  "responsibility-status-reports.ts": "/api",
+  "responsibility-metrics.ts": "/api",
+  "responsibility-runs.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "voice-sessions.ts": "/api",
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
+  "workload-identity.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -130,6 +142,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   "POST /api/instance/connector-events/wake",
   "POST /api/instance/ephemeral-enrollment/prepare",
   "GET /api/instance/ephemeral-enrollment/eligibility",
+  "POST /api/instance/ephemeral-enrollment/migrate",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -202,6 +215,7 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "connection-event-wake.ts") return routePath;
+  if (file === "workload-identity.ts" && routePath.startsWith("/oidc/")) return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
@@ -1323,6 +1337,18 @@ describe("openapi routes", () => {
     }
     expect(spec.paths[`${base}/greeting`].post.responses["200"].content["application/json"].schema)
       .toMatchObject({ type: "object", required: ["started"], properties: { started: { type: "boolean" } } });
+  });
+
+  it("documents bounded bulk keyed document reads for native discovery", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/issue-documents"].get;
+    expect(operation.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: "query", name: "key", required: true }),
+      expect.objectContaining({ in: "query", name: "issueIds", required: true, schema: expect.objectContaining({ type: "string", maxLength: 8000 }) }),
+      expect.objectContaining({ in: "query", name: "includeBody", required: false, schema: expect.objectContaining({ enum: ["true", "false"] }) }),
+    ]));
+    expect(operation.responses["413"]).toBeDefined();
+    expect(operation.description).toContain("save_api_response");
   });
 
   it("covers the mounted server routes exactly", () => {

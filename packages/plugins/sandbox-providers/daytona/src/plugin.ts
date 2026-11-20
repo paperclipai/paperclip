@@ -9,7 +9,7 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, PluginEnvironmentRunnerIngressError, PluginEnvironmentStopError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentAcquisitionError, PluginEnvironmentCreationCleanupError, PluginEnvironmentRunnerIngressError, PluginEnvironmentStopError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
   PluginEnvironmentCreationCleanup,
@@ -591,6 +591,8 @@ function isValidUrl(value: string): boolean {
 // The message names the operation and the bound so an operator sees at once
 // that the sandbox connection is unresponsive, not that the operation is slow.
 class SandboxLivenessTimeoutError extends Error {
+  readonly code = "ETIMEDOUT";
+
   constructor(operation: string, timeoutMs: number) {
     super(
       `Daytona sandbox liveness call "${operation}" did not respond within ${timeoutMs} ms; `
@@ -1299,15 +1301,20 @@ async function createSandbox(
     if (options.claimCleanup && !options.claimCleanup()) throw createError;
     // Observe the create failure before compensating deletion can stall or fail.
     const diagnostic = options.onCreateFailure?.();
+    let removedState: PluginEnvironmentAcquisitionProviderState | undefined;
     try {
       // A not-found lookup after an uncertain create is not a deletion receipt:
       // the provider may still materialize the request. Keep the name in the
       // error so cleanup can be reconciled rather than declaring success.
-      await destroyFailedCreation(config, cleanup, params.driverKey);
+      removedState = await destroyFailedCreation(config, cleanup, params.driverKey);
     } catch (cleanupError) {
       const status = creationHttpStatus(createError);
       throw new PluginEnvironmentCreationCleanupError([createError, cleanupError],
         `Daytona sandbox creation failed${status === undefined ? "" : ` (HTTP ${status})`}; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
+    }
+    if (removedState === "error" && diagnostic && creationHttpStatus(createError) === undefined) {
+      throw new PluginEnvironmentAcquisitionError("Daytona could not start the sandbox; it was removed.",
+        { ...diagnostic, providerState: "error" }, createError);
     }
     throw createError;
   }
@@ -1331,7 +1338,7 @@ async function destroyFailedCreation(
   config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
   driverKey: string,
   requireDurableObservation = false,
-): Promise<void> {
+): Promise<PluginEnvironmentAcquisitionProviderState | undefined> {
   if (cleanup.providerLeaseId !== `paperclip-create-${cleanup.attemptId}` ||
       cleanup.accountFingerprint !== sandboxAccountDiscriminator(config) ||
       cleanup.labels["paperclip-provider"] !== "daytona" ||
@@ -1358,7 +1365,7 @@ async function destroyFailedCreation(
     // observed with exact ownership cannot materialize as a new allocation.
     if (cleanup.observedProviderLeaseId && error instanceof DaytonaNotFoundError) {
       idleActivity.confirm(observationProof, true);
-      return;
+      return undefined;
     }
     throw error;
   }
@@ -1375,8 +1382,11 @@ async function destroyFailedCreation(
   }
   idleActivity.observe(allocation, providerActivityKey(identity, config, orphan.id));
   const deletionProof = idleActivity.proof(providerActivityKey(identity, config, orphan.id));
+  const observedState = typeof orphan.state === "string" && REPORTED_CREATE_STATES.has(orphan.state)
+    ? orphan.state as PluginEnvironmentAcquisitionProviderState : undefined;
   await withLivenessTimeout("sandbox.failedCreateDelete", 15_000, () => orphan.delete(10, true));
   idleActivity.confirm(deletionProof);
+  return observedState;
 }
 
 // Daytona states reported as-is after a create deadline; any other is `other`.

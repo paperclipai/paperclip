@@ -527,6 +527,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
         turn_scoped: turn_scoped(args)?,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     if host_control.is_some() && !config.connect_url.starts_with("listen://") {
         return Err(LocalRunnerError::invalid(

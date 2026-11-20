@@ -1,4 +1,13 @@
 import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
+import {
+  AwsMcpCredentialError,
+  isAwsMcpConnection,
+  resolveAwsMcpAuthorization,
+  sharedAwsMcpCredentialMinter,
+  type AwsMcpClients,
+} from "./connectors/aws/mcp-credentials.js";
+import { workloadIdentityService } from "./workload-identity.js";
+import { retryTransientLockContention } from "./transient-lock-contention.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
   approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
@@ -22,7 +31,7 @@ import type { BudgetServiceHooks } from "./budgets.js";
 import type { PromptInjectionDetectorMetadata } from "@paperclipai/shared";
 import { connectionManagementService, type ConnectionManagementContext } from "./connection-management.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { measureToolDiscovery, measureRunPhase } from "./execution-preparation-timing.js";
+import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { callGoogleWorkspaceRest, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
@@ -80,7 +89,7 @@ import { connectionSourceSlug, pluginAppSlug } from "@paperclipai/shared";
 import { pluginAppCatalogFor } from "./plugin-app-catalog.js";
 import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import { inferToolRisk } from "./tool-risk-inference.js";
-import { executePluginConnectionTool as executePluginConnectionWorkerTool, pluginCatalogEntryCurrent, pluginConnectionIdentity, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "./plugin-connector-runtime.js";
+import { executePluginConnectionTool as executePluginConnectionWorkerTool, pluginCatalogEntryCurrent, pluginConnectionIdentity, pluginConnectionToolTimeoutMs, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "./plugin-connector-runtime.js";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -102,6 +111,7 @@ import {
   ne,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -619,6 +629,7 @@ const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
   "provider_retry_requested",
   "oauth_insufficient_scope",
   "oauth_refreshed_retry_required",
+  "credentials_refreshed_retry_required",
   "provider_task_pending",
   "provider_task_cancelled",
   "provider_task_expired",
@@ -1400,6 +1411,8 @@ export function createToolGatewayService(
     }) => Promise<typeof connectionGrants.$inferSelect>;
     /** Test seam for resolving Vercel Connect credentials. */
     vercelConnectClient?: VercelConnectClient | null;
+    /** Test seam for the AWS calls behind minted AWS MCP credentials. */
+    awsMcpClients?: AwsMcpClients;
     /** Test seam for reproducing the managed-argument drift expiry race. */
     beforeManagedArgumentDriftExpiry?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
@@ -1655,6 +1668,9 @@ export function createToolGatewayService(
     options.vercelConnectClient === undefined
       ? createVercelConnectClient()
       : options.vercelConnectClient;
+  const signAwsConnectionToken = (input: { companyId: string; connectionId: string; audience: string }) =>
+    workloadIdentityService(db).signConnectionToken(input);
+  const awsMcpMinter = sharedAwsMcpCredentialMinter(db, signAwsConnectionToken, options.awsMcpClients);
   const protocolLimits = mcpGatewayProtocolLimits(
     options.mcpGatewayProtocolLimits,
   );
@@ -1814,17 +1830,26 @@ export function createToolGatewayService(
 
   async function connectedMcpToolsForCompany(
     companyId: string,
-    selectedConnectionIds?: string[],
+    scope?: { connectionIds: ReadonlySet<string>; preserveToolNames?: true },
   ): Promise<ToolGatewayDescriptor[]> {
-    if (selectedConnectionIds?.length === 0) return [];
+    if (scope?.connectionIds.size === 0) return [];
+    // Equal gateway base names require the same short connection UUID. Include
+    // these peers in the catalog snapshot so their eligible tools still affect naming.
+    let connectionScope: SQL | undefined;
+    if (scope?.preserveToolNames) {
+      const prefixes = [...new Set(Array.from(scope.connectionIds, shortStableId))];
+      connectionScope = sql`split_part(${toolConnections.id}::text, '-', 1) = any(${sql.param(prefixes)}::text[])`;
+    } else if (scope) {
+      connectionScope = inArray(toolConnections.id, [...scope.connectionIds]);
+    }
     // Read each connection and application row once. Selecting them in the
     // catalog join repeats the full connection row (config included) for
     // every tool, and one connection can expose hundreds of tools. Both reads
     // share one read-only snapshot, so they agree like a single join, and the
     // second read gets only the connections that have listed tools.
-    const { connectionRows, catalogRows } = await db.transaction(
+    const readCatalog = () => db.transaction(
       async (tx) => {
-        const catalogRows = await tx
+        const catalogRows = await measureRunPhase("connectors.discovery.connections.transaction.catalog_entries", async () => await tx
           .select({ catalogEntry: toolCatalogEntries })
           .from(toolCatalogEntries)
           .innerJoin(
@@ -1842,10 +1867,10 @@ export function createToolGatewayService(
               eq(toolCatalogEntries.status, "active"),
               isNull(toolCatalogEntries.quarantinedAt),
               connectedMcpConnectionFilter(companyId),
-              selectedConnectionIds ? inArray(toolConnections.id, selectedConnectionIds) : undefined,
+              connectionScope,
             ),
           )
-          .orderBy(toolConnections.name, toolCatalogEntries.name);
+          .orderBy(toolConnections.name, toolCatalogEntries.name));
         const connectionIds = [
           ...new Set(
             catalogRows.map(({ catalogEntry }) => catalogEntry.connectionId),
@@ -1853,7 +1878,7 @@ export function createToolGatewayService(
         ];
         if (connectionIds.length === 0)
           return { connectionRows: [], catalogRows };
-        const connectionRows = await tx
+        const connectionRows = await measureRunPhase("connectors.discovery.connections.transaction.matched_connections", async () => await tx
           .select({
             connection: toolConnections,
             application: toolApplications,
@@ -1868,44 +1893,64 @@ export function createToolGatewayService(
               inArray(toolConnections.id, connectionIds),
               connectedMcpConnectionFilter(companyId),
             ),
-          );
+          ));
         return { connectionRows, catalogRows };
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );
-    const connectionRowsById = new Map(
-      connectionRows.map((row) => [row.connection.id, row]),
-    );
-    const rows = catalogRows.flatMap(({ catalogEntry }) => {
-      const connectionRow = connectionRowsById.get(catalogEntry.connectionId);
-      return connectionRow ? [{ catalogEntry, ...connectionRow }] : [];
+    const { connectionRows, catalogRows } = await measureRunPhase("connectors.discovery.connections.transaction", async () => {
+      const rows = await readCatalog();
+      recordConnectionCatalogCounts(rows.catalogRows.length, rows.connectionRows.length);
+      return rows;
     });
+    const eligibleRows = await measureRunPhase("connectors.discovery.connections.availability", async () => {
+      const connectionRowsById = new Map(
+        connectionRows.map((row) => [row.connection.id, row]),
+      );
+      const rows = catalogRows.flatMap(({ catalogEntry }) => {
+        const connectionRow = connectionRowsById.get(catalogEntry.connectionId);
+        return connectionRow ? [{ catalogEntry, ...connectionRow }] : [];
+      });
 
-    // A plugin connector's tools reach agents only while its plugin is ready
-    // and still declares the app. Disabled plugins keep their saved setup.
-    const pluginApps = await pluginAppCatalogFor(db, connectionRows.map(({ connection }) => connection));
-    const featureSettings = connectionRows.some(({ application }) => getAppDefinitionForApplicationKey(application.applicationKey)?.experimentalFeatureKey)
-      ? await instanceSettingsService(db).getExperimental() : undefined;
-    const eligibleRows = rows.filter(
-      ({ catalogEntry, connection, application }) =>
-        pluginApps.isAvailable(connectionSourceSlug(connection)) &&
-        (!featureSettings || isConnectorFeatureEnabled(getAppDefinitionForApplicationKey(application.applicationKey), featureSettings)) &&
-        !isRetiredComposioConnection(connection) &&
-        !(nativeProviderCatalogFor(connection) && !nativeProviderCatalogFor(connection)!.isCurrentEntry(catalogEntry)) &&
-        !(restConnectorFor(connection) && !restConnectorFor(connection)!.isCurrent(catalogEntry)) &&
-        !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
-        (((isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) && application.type === "rest_api") ||
-        (connection.transport === "mcp_remote" &&
-          application.type === "mcp_http") ||
-        (connection.transport === "local_stdio" &&
-          application.type === "mcp_stdio") ||
-        // Legacy top-level plugin tools keep their original names and are
-        // listed by the plugin tool path, gated by this connection's installs.
-        (connection.transport === "plugin" &&
-          application.type === "paperclip_plugin" &&
-          !pluginConnectionIdentity(connection)?.legacyTools &&
-          pluginCatalogEntryCurrent(connection, catalogEntry))),
-    );
+      // A plugin connector's tools reach agents only while its plugin is ready
+      // and still declares the app. Disabled plugins keep their saved setup.
+      const pluginApps = await pluginAppCatalogFor(db, connectionRows.map(({ connection }) => connection));
+      const featureSettings = connectionRows.some(({ application }) => getAppDefinitionForApplicationKey(application.applicationKey)?.experimentalFeatureKey)
+        ? await instanceSettingsService(db).getExperimental() : undefined;
+      return rows.filter(
+        ({ catalogEntry, connection, application }) =>
+          pluginApps.isAvailable(connectionSourceSlug(connection)) &&
+          (!featureSettings || isConnectorFeatureEnabled(getAppDefinitionForApplicationKey(application.applicationKey), featureSettings)) &&
+          !isRetiredComposioConnection(connection) &&
+          !(nativeProviderCatalogFor(connection) && !nativeProviderCatalogFor(connection)!.isCurrentEntry(catalogEntry)) &&
+          !(restConnectorFor(connection) && !restConnectorFor(connection)!.isCurrent(catalogEntry)) &&
+          !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
+          (((isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) && application.type === "rest_api") ||
+          (connection.transport === "mcp_remote" &&
+            application.type === "mcp_http") ||
+          (connection.transport === "local_stdio" &&
+            application.type === "mcp_stdio") ||
+          // Legacy top-level plugin tools keep their original names and are
+          // listed by the plugin tool path, gated by this connection's installs.
+          (connection.transport === "plugin" &&
+            application.type === "paperclip_plugin" &&
+            !pluginConnectionIdentity(connection)?.legacyTools &&
+            pluginCatalogEntryCurrent(connection, catalogEntry))),
+      );
+    });
+    return measureRunPhase("connectors.discovery.connections.descriptors", () => {
+      const tools = buildConnectedCatalogDescriptors(eligibleRows);
+      return scope?.preserveToolNames
+        ? tools.filter((tool) => tool.connectionId && scope.connectionIds.has(tool.connectionId))
+        : tools;
+    });
+  }
+
+  function buildConnectedCatalogDescriptors(eligibleRows: Array<{
+    catalogEntry: typeof toolCatalogEntries.$inferSelect;
+    connection: typeof toolConnections.$inferSelect;
+    application: typeof toolApplications.$inferSelect;
+  }>): ToolGatewayDescriptor[] {
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
         const toolSlug = slugSegment(catalogEntry.toolName, "tool");
@@ -2652,7 +2697,7 @@ export function createToolGatewayService(
     tool?: ToolGatewayDescriptor | null;
   }) {
     const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
-    await db.insert(toolCallEvents).values({
+    await retryTransientLockContention(() => db.insert(toolCallEvents).values({
       companyId: input.session.companyId,
       invocationId: input.invocationId ?? null,
       actionRequestId: input.actionRequestId ?? null,
@@ -2695,7 +2740,7 @@ export function createToolGatewayService(
               ...(input.detectorMetadata ? { promptInjection: input.detectorMetadata } : {}),
             }
           : null,
-    });
+    }));
   }
 
   async function reflectToolActionInteractionLifecycle(input: {
@@ -3562,9 +3607,15 @@ export function createToolGatewayService(
   }
 
   /** Shared connection descriptors and task restrictions; no provider calls. */
-  async function connectionToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
+  async function connectionToolsForContext(
+    session: ToolGatewaySession,
+    candidateConnectionIds?: ReadonlySet<string>,
+  ): Promise<ToolGatewayDescriptor[]> {
     const guestBotConnection = await measureRunPhase("connectors.discovery.github", () => githubGuestBotConnectionForSession(db, session));
-    let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId)))
+    let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(
+      session.companyId,
+      candidateConnectionIds && { connectionIds: candidateConnectionIds, preserveToolNames: true },
+    )))
       .filter(isModelVisibleTool)
       .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
     const connectionIds = [...new Set(connectedTools.flatMap((tool) => tool.connectionId ? [tool.connectionId] : []))];
@@ -4703,6 +4754,9 @@ export function createToolGatewayService(
         });
       }
     }
+    if (isAwsMcpConnection(connection)) {
+      return resolveAwsMcpHeaders(session, connection, grant, resolveOptions);
+    }
     const oauth = asRecord(asRecord(connection.config)?.oauth);
     if (
       isPaperclipCloudConnectorStrategy(oauth?.strategy) &&
@@ -4815,6 +4869,35 @@ export function createToolGatewayService(
       }
     }
     return headers;
+  }
+
+  /** AWS's Authorization header is minted per connection at call time and never stored. */
+  async function resolveAwsMcpHeaders(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+    resolveOptions: { forceRefresh?: boolean },
+  ): Promise<Record<string, string>> {
+    try {
+      return await resolveAwsMcpAuthorization({
+        minter: awsMcpMinter, connection, grant, forceRefresh: resolveOptions.forceRefresh,
+        readRef: (ref) => resolveGrantSecretValue(session, connection, grant, ref),
+      });
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError) {
+        await markRemoteConnectionHealth(connection, "missing_secret", "A configured credential secret could not be resolved.");
+        throw error;
+      }
+      const known = error instanceof AwsMcpCredentialError
+        ? error
+        : new AwsMcpCredentialError("aws_unavailable", 503, "AWS credentials could not be prepared. Try again.", "degraded");
+      await markRemoteConnectionHealth(connection, known.health, known.message);
+      throw new ToolGatewayHttpError(known.status, known.message, known.code, {
+        connectionId: connection.id,
+        grantId: grant.id,
+        ...(known.awsErrorName ? { awsError: known.awsErrorName } : {}),
+      });
+    }
   }
 
   function credentialVersionRefHash(value: Record<string, unknown>): string {
@@ -5032,6 +5115,7 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
     parameters: unknown,
+    requestedTimeoutMs: number | undefined,
   ) {
     const [connection] = await db.select().from(toolConnections).where(and(
       eq(toolConnections.companyId, session.companyId),
@@ -5041,6 +5125,24 @@ export function createToolGatewayService(
     if (!connection || !identity || !tool.upstreamToolName) {
       throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found", { tool: tool.name });
     }
+    const executionTimeoutMs = timeoutMs(
+      Number.isFinite(requestedTimeoutMs) ? requestedTimeoutMs : pluginConnectionToolTimeoutMs(connection, tool.upstreamToolName),
+      tool,
+    );
+    return runWithTimeout(
+      runPluginConnectionTool(session, tool.upstreamToolName, connection, identity, parameters, executionTimeoutMs),
+      executionTimeoutMs,
+    );
+  }
+
+  async function runPluginConnectionTool(
+    session: ToolGatewaySession,
+    toolName: string,
+    connection: typeof toolConnections.$inferSelect,
+    identity: NonNullable<ReturnType<typeof pluginConnectionIdentity>>,
+    parameters: unknown,
+    executionTimeoutMs: number,
+  ) {
     const grant = await resolveConnectionGrant(session, connection);
     let credential: { kind: "api_key"; value: string } | undefined;
     if (connection.authKind === "api_key") {
@@ -5053,7 +5155,7 @@ export function createToolGatewayService(
       result = await executePluginConnectionWorkerTool(db, {
         pluginKey: identity.pluginKey,
         appSlug: identity.appSlug,
-        toolName: tool.upstreamToolName,
+        toolName,
         parameters,
         runContext: {
           agentId: session.agentId ?? "",
@@ -5069,6 +5171,7 @@ export function createToolGatewayService(
             ...(credential ? { credential } : {}),
           },
         },
+        timeoutMs: executionTimeoutMs,
       });
     } catch (error) {
       const unavailable = findPluginWorkerUnavailableError(error);
@@ -8094,6 +8197,15 @@ export function createToolGatewayService(
               responseTimeoutMs: ms,
             });
       };
+      // AWS refused the minted token: drop it everywhere and rebuild this call's headers with a fresh one.
+      const remintAwsCredentials = async () => {
+        awsMcpMinter.evict(connection.companyId, connection.id);
+        resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
+        credentialHeaders = { ...projectedConnectionHeaders(connection), ...resolvedCredentials };
+        builtHeaders = buildRemoteHeaders({ session, connection, credentialHeaders, callerHeaders });
+        headers = builtHeaders.headers;
+        headerSummary = builtHeaders.summary;
+      };
       const requireExplicitRetryAfterOAuthRefresh = async (refreshedResponse: Response): Promise<never> => {
         // The provider rejected this dispatch, but automatic replay is unsafe:
         // a server can apply a request before returning 401. A caller retry
@@ -8108,10 +8220,14 @@ export function createToolGatewayService(
             refreshedResponse.headers.get("x-request-id") ??
             refreshedResponse.headers.get("traceparent"),
         };
+        // AWS credentials are minted, not OAuth tokens: say what actually happened.
+        const minted = isAwsMcpConnection(connection);
         throw new ToolGatewayHttpError(
           409,
-          "The provider rejected the saved OAuth token, which has now been refreshed. Retry the action explicitly; the original call was not replayed.",
-          "oauth_refreshed_retry_required",
+          minted
+            ? "AWS refused the saved credentials, and Paperclip has made new ones. Retry the action explicitly; the original call was not replayed."
+            : "The provider rejected the saved OAuth token, which has now been refreshed. Retry the action explicitly; the original call was not replayed.",
+          minted ? "credentials_refreshed_retry_required" : "oauth_refreshed_retry_required",
           { connectionId: connection.id, catalogEntryId: entry.id, execution },
         );
       };
@@ -8200,7 +8316,7 @@ export function createToolGatewayService(
         // declares form questions; it is kept apart from sessions that only
         // read (resources, prompts, listing), which declare none.
         const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:elicit-form:${endpoint}`;
-        requestHeaders = await getMcpHttpSession({
+        const openSession = () => getMcpHttpSession({
           scope,
           send: sendForNegotiation,
           headers,
@@ -8208,6 +8324,15 @@ export function createToolGatewayService(
           eraKey,
           elicitationForm: true,
         });
+        try {
+          requestHeaders = await openSession();
+        } catch (error) {
+          if (!(error instanceof McpHttpInitializationError && error.status === 401 && isAwsMcpConnection(connection))) throw error;
+          // AWS refused the cached token while opening the session. No tool ran,
+          // so mint a fresh token and open the session once more.
+          await remintAwsCredentials();
+          requestHeaders = await openSession();
+        }
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         if (sessionId) mcpSession = { scope, headers, sessionId };
         const negotiated = mcpProtocolVersionOf(requestHeaders);
@@ -8465,6 +8590,11 @@ export function createToolGatewayService(
         });
         headers = builtHeaders.headers;
         headerSummary = builtHeaders.summary;
+        await requireExplicitRetryAfterOAuthRefresh(response);
+      }
+      if (response.status === 401 && isAwsMcpConnection(connection)) {
+        // The cached AWS token was refused: mint a fresh one, never replay the call.
+        await remintAwsCredentials();
         await requireExplicitRetryAfterOAuthRefresh(response);
       }
       if (
@@ -9900,7 +10030,7 @@ export function createToolGatewayService(
               )
             : args.tool.providerType === "paperclip_plugin_connection"
               // Test calls run plugin connector tools through the same worker path.
-              ? { result: await runWithTimeout(executePluginConnectionTool(args.session, args.tool, args.parameters), executionTimeoutMs) } as unknown as Awaited<ReturnType<typeof executeLocalStdioTool>>
+              ? { result: await executePluginConnectionTool(args.session, args.tool, args.parameters, args.timeoutMs) } as unknown as Awaited<ReturnType<typeof executeLocalStdioTool>>
               : null;
       if (!connectedMcpExecution) {
         throw new ToolGatewayHttpError(
@@ -10784,7 +10914,7 @@ export function createToolGatewayService(
       const result = connectedMcpExecution
         ? connectedMcpExecution.result
         : tool.providerType === "paperclip_plugin_connection"
-          ? await runWithTimeout(executePluginConnectionTool(session, tool, parameters), executionTimeoutMs)
+          ? await executePluginConnectionTool(session, tool, parameters, executionTimeoutMs)
         : tool.providerType !== "paperclip_plugin"
           ? await runWithTimeout(
               executeBuiltinTool(session, tool, parameters, invocation.id),
@@ -11828,7 +11958,7 @@ export function createToolGatewayService(
       // Prompt assembly needs authorization, not a full discovery listing. Share
       // descriptors and policy decisions, but only authorize candidate sources;
       // discovery admission pressure must not remove guidance or reset sessions.
-      const tools = (await connectionToolsForContext(session))
+      const tools = (await connectionToolsForContext(session, candidateIds))
         .filter((tool) => tool.connectionId && candidateIds.has(tool.connectionId));
       const decisions = await decideToolsForListing(tools, (tool) => policyInputForTool({ session, tool }));
       const visible = new Set(decisions.flatMap(({ tool, decision }) =>
@@ -11963,7 +12093,7 @@ export function createToolGatewayService(
       await assertAgentInCompany(binding.companyId, binding.agentId);
       if (await githubGuestBotConnectionForSession(db, session)) return [];
       const tools = await measureRunPhase("connectors.browser_use.catalog", async () => {
-        const candidates = await connectedMcpToolsForCompany(binding.companyId, connections.map(connection => connection.id));
+        const candidates = await connectedMcpToolsForCompany(binding.companyId, { connectionIds: new Set(connections.map(connection => connection.id)) });
         const decisions = await decideToolsForListing(candidates, tool => policyInputForTool({ session, tool }));
         return decisions.filter(({ decision }) => decision.allowed || decision.decision === "require_approval").map(({ tool }) => tool);
       });
@@ -13765,7 +13895,7 @@ export function createToolGatewayService(
         const result = recoveredGitHubPublication ?? (connectedMcpExecution
           ? connectedMcpExecution.result
           : tool.providerType === "paperclip_plugin_connection"
-            ? await runWithTimeout(executePluginConnectionTool(session, tool, effectiveParameters), executionTimeoutMs)
+            ? await executePluginConnectionTool(session, tool, effectiveParameters, input.timeoutMs)
           : tool.providerType === "paperclip_plugin"
             ? await runWithTimeout(
                 pluginToolDispatcher!.executeTool(

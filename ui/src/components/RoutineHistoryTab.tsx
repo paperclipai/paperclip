@@ -1005,6 +1005,7 @@ function summarizeTriggerSnapshot(trigger: RoutineRevisionSnapshotTriggerV1): st
     const replay = trigger.replayWindowSec != null ? `replay ${trigger.replayWindowSec}s` : "";
     return [trigger.signingMode, replay].filter(Boolean).join(" · ");
   }
+  if (trigger.kind === "heartbeat") return "Standing check on each wake-up";
   return "API";
 }
 

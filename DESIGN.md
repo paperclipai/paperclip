@@ -236,6 +236,53 @@ reminder; dismissing one clears the composer and stays effective after reload fo
 that person and task. Other inputs keep a pending indicator that can reopen them;
 resolving or skipping the input removes that indicator.
 
+A routine offer is not an input the agent waits on, so it stays in the
+conversation instead of above the composer. After an agent finishes a task that
+recurs, its offer appears directly after the completion message as a card from
+that agent: its name and avatar, its one-sentence offer, what would repeat and
+the cadence in plain words ("Every Monday at 9 AM"), with **No thanks** and
+**Make it a routine**. Accepting replaces the card with one line, "Routine set
+up:" and a link to the routine. Declining, a cancelled task, or a withdrawn
+offer leaves nothing in the conversation. Offers never appear in the inbox.
+
+A proposed bar is the same kind of card. On a responsibility's page, **Edit the
+bar** (or **Set the bar** when it has none) opens a conversation with an agent
+about how success is measured; **Edit by hand** stays beside it, and is the only
+action when no agent can hold the conversation. The conversation is a task,
+whose description links back to the responsibility. While it is open the page
+says so with a link into it. The agent's proposal appears in the conversation as
+a card from that agent, and also on the responsibility's page: the bar sentence,
+the kind of measure, what is measured, the bar itself ("At least 90%", "Yes",
+"Between 12 and 24 months"), the current reading when the agent counted one, and
+one line on how status is read ("On track at 90% or more; at risk from 68%"),
+with **Not right** and **Use this bar**. **Not right** asks what should change
+and sends it into the conversation, which carries on. Accepting leaves one line,
+"Bar set:" and the sentence; a declined or replaced proposal leaves one muted
+line. Proposed bars never appear in the inbox.
+
+The Dashboard's Outline v2 view carries an edit module for the same kind of
+conversation about the whole dashboard. An empty dashboard shows only the
+module: **Create your custom dashboard**, one line in the owner's words, one
+primary button naming the agent ("Start with Chief") and a quiet **Add an area
+yourself** (the only action, with a few words, when no agent can do it). A
+populated dashboard shows one quiet row below every area, **Edit your
+dashboard**, with a small **Versions** beside it, and nothing more until it is
+used. While the conversation is open the module says so with a link into it.
+Proposed changes appear in the module and in the conversation as one card,
+grouped by area: a new sentence plainly, a reworded one with the old sentence
+struck through above it, a move with where it came from, a removal struck
+through with "Let go" and the agent's reason. Any change can be dropped before
+**Apply changes**; dropping a new area drops what is filed under it, marked
+"Goes with" that area. After applying, one line says what changed with
+**Undo**. **Versions** lists when, who, the one-line summary and **Restore**,
+with no diff viewer. Applying and restoring never delete anything, and none of
+this appears in the inbox.
+
+Every view of a responsibility draws its metric through one helper and one
+meter. A volume or percentage fills toward its target, a range shows its bounds
+as a band with the reading as a marker on it, and a yes or no shows its answer
+with no bar.
+
 ## Proposed color foundation
 
 Review **Design proposals → Foundations → Colors** in Storybook

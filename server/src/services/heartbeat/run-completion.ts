@@ -1746,6 +1746,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ...(providerFailure ? { providerFailure: { ...providerFailure,
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
+      ...(environmentProviderUnavailable?.environmentId ? { environmentProvider: {
+        environmentId: environmentProviderUnavailable.environmentId,
+        environmentName: environmentProviderUnavailable.environmentName } } : {}),
       ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
       // Names the configured setup command that exited non-zero, for the task page.
       ...setupCommandFailureResultJson(outerErr, readFailureReportSecrets()),

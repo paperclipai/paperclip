@@ -59,6 +59,7 @@ describe("Cloud direct PostHog event shape", () => {
       const intended = {
         distinct_id: "workspace:stack-123",
         stack_id: "stack-123",
+        attributed_via: "none",
         environment: "staging",
         $groups: { workspace: "stack-123" },
         ...("agent_id" in inputDims ? { agent_id: inputDims.agent_id } : {}),
@@ -85,6 +86,7 @@ describe("Cloud direct PostHog event shape", () => {
       distinct_id: "user-1",
       user_id: "user-1",
       company_id: "company-1",
+      attributed_via: "request",
       $session_id: "sess-1",
       $window_id: "win-1",
       $groups: { workspace: "stack-123" },

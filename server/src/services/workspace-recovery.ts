@@ -41,6 +41,7 @@ import { capturePolicyRearmDueCondition, retainedSourceFallbackDueCondition, sto
 import { rearmExhaustedCapturePolicy } from "./workspace-recovery-capture-policy.js";
 import { rearmExhaustedStopProof } from "./workspace-recovery-stop-proof.js";
 import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
+import { expediteFreshContinuationChecks } from "./fresh-continuation-fallback.js";
 import { reusableSandboxNotKeptAfterReplacementSql } from "./reusable-sandbox-kept-marker.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
@@ -473,6 +474,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         // A settled restore hold returns its warm sandbox to reuse. A hold that
         // fails any guard keeps its protection; the saved files still count.
         await settleRecoveredWorkspaceRestoreHolds(tx as unknown as Db, input);
+        await expediteFreshContinuationChecks(tx as unknown as Db, input);
         return persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
           action: "issue.workspace_recovered", entityType: "issue", entityId: input.issueId, runId: input.runId,
           details: { recoveryActionId: input.actionId, summary: "Saved work recovered." } });

@@ -294,7 +294,8 @@ export const pluginManagedRoutineDeclarationSchema = z.object({
   activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).optional(),
   variables: z.array(routineVariableSchema).optional(),
   triggers: z.array(z.object({
-    kind: z.enum(ROUTINE_TRIGGER_KINDS),
+    // Standing checks (`heartbeat`) belong to responsibilities, not plugins.
+    kind: z.enum(ROUTINE_TRIGGER_KINDS.filter((kind) => kind !== "heartbeat") as ["schedule", "webhook", "api"]),
     label: z.string().trim().max(120).nullable().optional(),
     enabled: z.boolean().optional(),
     cronExpression: z.string().trim().min(1).optional().nullable(),

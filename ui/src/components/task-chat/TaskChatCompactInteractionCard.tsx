@@ -20,8 +20,12 @@ import {
   Loader2,
   MessageSquareQuote,
   Plug,
+  Repeat,
+  LayoutList,
   Search,
+  Target,
   X,
+  Zap,
 } from "lucide-react";
 import type { IssueDocument } from "@paperclipai/shared";
 import type {
@@ -32,6 +36,10 @@ import { InteractionPreparationNotice } from "@/components/InteractionPreparatio
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
 import { ToolActionAuditHashCopy } from "@/components/ToolActionAuditHashCopy";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
+import { RoutineSuggestionCard } from "@/components/RoutineSuggestionCard";
+import { BarProposalCard } from "@/components/responsibilities/BarProposalCard";
+import { AutomationProposalCard } from "@/components/responsibilities/AutomationProposalCard";
+import { DashboardChangesCard } from "@/components/responsibilities/DashboardChangesCard";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
@@ -125,6 +133,26 @@ const KIND_COPY = {
     fallbackTitle: "Connect service",
     label: "Connection",
     icon: Plug,
+  },
+  suggest_routine: {
+    fallbackTitle: "Routine offer",
+    label: "Routine",
+    icon: Repeat,
+  },
+  propose_responsibility_bar: {
+    fallbackTitle: "Proposed bar",
+    label: "Bar",
+    icon: Target,
+  },
+  propose_automation: {
+    fallbackTitle: "Proposed automation",
+    label: "Automation",
+    icon: Zap,
+  },
+  propose_dashboard_changes: {
+    fallbackTitle: "Proposed dashboard changes",
+    label: "Dashboard",
+    icon: LayoutList,
   },
 } as const;
 
@@ -547,6 +575,30 @@ function ReceiptDisclosure({
       <p className="text-sm text-foreground">
         {interaction.payload.requestingAgentName} requested access to{" "}
         {interaction.payload.serviceName}.
+      </p>
+    );
+  } else if (interaction.kind === "suggest_routine") {
+    request = (
+      <p className="text-sm text-foreground">
+        Repeat {interaction.payload.title}: {interaction.payload.cadenceLabel}.
+      </p>
+    );
+  } else if (interaction.kind === "propose_responsibility_bar") {
+    request = (
+      <p className="text-sm text-foreground">
+        {interaction.payload.bar.standard} ({interaction.payload.templateLabel}: {interaction.payload.targetLabel}).
+      </p>
+    );
+  } else if (interaction.kind === "propose_automation") {
+    request = (
+      <p className="text-sm text-foreground">
+        {interaction.payload.title}: {interaction.payload.startLabel}.
+      </p>
+    );
+  } else if (interaction.kind === "propose_dashboard_changes") {
+    request = (
+      <p className="text-sm text-foreground">
+        {interaction.payload.message ?? (interaction.payload.changes.length === 1 ? "1 change to the dashboard." : `${interaction.payload.changes.length} changes to the dashboard.`)}
       </p>
     );
   } else {
@@ -1996,6 +2048,20 @@ export function TaskChatCompactInteractionCard({
     && interaction.kind !== "request_item_verdicts"
     && !(interaction.kind === "request_confirmation" && (interaction.payload.toolAction || interaction.payload.secretProposal || interaction.payload.connectionAuthorization))) {
     return <CoordinatorInteractionReceipt interaction={interaction} />;
+  }
+
+  if (interaction.kind === "suggest_routine") {
+    return <RoutineSuggestionCard interaction={interaction} />;
+  }
+
+  if (interaction.kind === "propose_responsibility_bar") {
+    return <BarProposalCard interaction={interaction} />;
+  }
+  if (interaction.kind === "propose_automation") {
+    return <AutomationProposalCard interaction={interaction} />;
+  }
+  if (interaction.kind === "propose_dashboard_changes") {
+    return <DashboardChangesCard interaction={interaction} />;
   }
 
   if (interaction.kind === "connection_intent") {
