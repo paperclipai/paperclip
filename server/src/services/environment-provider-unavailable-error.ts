@@ -66,8 +66,8 @@ export function readTransientSandboxCreationRefusal(error: unknown): { message: 
   const acquisition = readEnvironmentAcquisitionDiagnostic(error);
   const envelope = readEnvironmentAcquireErrorDiagnostic(error);
   const timedOut = acquisition !== null && acquisition.elapsedMs >= acquisition.budgetMs;
-  const httpStatus = envelope?.httpStatus !== undefined && TRANSIENT_HTTP_STATUSES.has(envelope.httpStatus) ? envelope.httpStatus : undefined;
-  const errorCode = envelope?.errorCode !== undefined && TRANSIENT_ERROR_CODES.has(envelope.errorCode) ? envelope.errorCode : undefined;
+  const httpStatus = envelope?.httpStatus !== undefined && isRetryableEnvironmentHttpStatus(envelope.httpStatus) ? envelope.httpStatus : undefined;
+  const errorCode = envelope?.errorCode !== undefined && isRetryableEnvironmentErrorCode(envelope.errorCode) ? envelope.errorCode : undefined;
   if (!timedOut && httpStatus === undefined && errorCode === undefined) return null;
   const evidence = httpStatus !== undefined ? ` (HTTP ${httpStatus})` : errorCode !== undefined ? ` (${errorCode})` : "";
   return { message: evidence === ""
