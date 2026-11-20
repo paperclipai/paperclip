@@ -7,7 +7,7 @@ import { paperclipHumanAvatarUrl } from "../lib/issue-chat-human-author";
 import { defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, taskListOrderToIssueSort, type TaskListColumnId, type TaskListSort, type TaskListOrder } from "../lib/task-list";
 import { sortIssues } from "../lib/issue-sort";
 import { timeAgo } from "../lib/timeAgo";
-import { IssueRow, type IssueRowDensity } from "./IssueRow";
+import { IssueRow, type IssueRowArchiveAction, type IssueRowDensity } from "./IssueRow";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { TaskListColumnHeader, TaskListColumnSettings, TaskListViewport } from "./TaskListColumns";
 import { TaskRowGroup } from "./TaskRowGroup";
@@ -69,7 +69,7 @@ function TaskChatPreload({ companyId, refs }: { companyId: string; refs: readonl
 }
 
 /** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
-export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId, onOpenIssue, openIssueId = null }: {
+export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId, getArchiveAction, onOpenIssue, openIssueId = null }: {
   items: readonly TaskListItem[];
   allItems?: readonly TaskListItem[];
   initialColumns?: readonly TaskListColumnId[];
@@ -86,6 +86,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   onSortChange?: (sort: TaskListSort | undefined) => void;
   /** Preload the chat of the top rows for this company. Only a page's main task list sets this. */
   preloadCompanyId?: string | null;
+  getArchiveAction?: (issue: Issue) => IssueRowArchiveAction | undefined;
   /** Rows open the task here on a plain click instead of navigating to the task page. */
   onOpenIssue?: (issue: Issue) => void;
   /** The task shown beside the list; its row stays highlighted. */
@@ -135,6 +136,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
       <Fragment key={issue.id}>
         <IssueRow
           issue={issue} presentation="task" appearance="refreshed" density={density} issueLinkState={issueLinkState}
+          archiveAction={getArchiveAction?.(issue)}
           unreadState={item.unread ? "visible" : "hidden"}
           selected={openIssueId === issue.id}
           onOpenIssue={onOpenIssue ? () => onOpenIssue(issue) : undefined}

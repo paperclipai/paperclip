@@ -3121,6 +3121,9 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.isUnreadForMe !== undefined
       ? { isUnreadForMe: issue.isUnreadForMe }
       : {}),
+    ...(issue.isArchivedForMe !== undefined
+      ? { isArchivedForMe: issue.isArchivedForMe }
+      : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     interruption: issue.interruption ?? null,
     successfulRunHandoff: issue.successfulRunHandoff ?? null,
@@ -8816,6 +8819,15 @@ export function issueRoutes(
       res.status(400).json({ error: "ids and parentIds require view=index or view=rows without attention" });
       return;
     }
+    const inboxArchive = req.query.inboxArchive;
+    if (inboxArchive !== undefined && ((inboxArchive !== "include" && inboxArchive !== "archived") || attention)) {
+      res.status(400).json({ error: "inboxArchive must be include or archived and cannot be used with attention" });
+      return;
+    }
+    if (inboxArchive && (req.actor.type !== "board" || !req.actor.userId)) {
+      res.status(403).json({ error: "inboxArchive requires board authentication" });
+      return;
+    }
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -8983,6 +8995,9 @@ export function issueRoutes(
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
+      inboxArchive: inboxArchive && req.actor.type === "board" && req.actor.userId
+        ? { mode: inboxArchive, userId: req.actor.userId }
+        : undefined,
       unreadForUserId,
       readStateForUserId: includeReadState ? getActorInfo(req).actorId : undefined,
       projectId: uuidFilters.projectId,
@@ -9040,7 +9055,7 @@ export function issueRoutes(
       requestKey,
       // The new collection projections must reflect read/archive/undo mutations
       // immediately. Keep in-flight coalescing and ETags, without a stale TTL body.
-      allowTtlCache: view === "compact",
+      allowTtlCache: view === "compact" && !inboxArchive,
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         return prepareIssueListForActor(req, companyId, listFilters, view, { reportPagination: true });
