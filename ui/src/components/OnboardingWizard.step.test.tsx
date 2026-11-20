@@ -489,9 +489,6 @@ describe("OnboardingWizard — which step it lands on", () => {
   });
 
   it("lets the customer clear the organization name after coming back to it", async () => {
-    // The name backfill fills an empty name from the created company. On step 1
-    // an empty name is the customer clearing the field, so a backfill there
-    // put the old name back as soon as the last character was deleted.
     const companiesBefore = companyState.companies;
     companyState.companies = [
       ...companiesBefore,

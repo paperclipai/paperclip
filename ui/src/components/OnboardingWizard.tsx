@@ -908,11 +908,6 @@ function OnboardingWizardInner({
   // `companyName.trim()`. An existing company opened on the mission step could
   // not leave it. Nothing reached that state until the dashboard started
   // opening agentless companies there.
-  //
-  // Not on step 1. There the field is the customer's, and an empty name means
-  // they cleared it: a backfill would put the old name back on the last
-  // Backspace. Step 1 cannot go forward with an empty name, so the steps after
-  // it still get the backfill they need.
   useEffect(() => {
     if (!effectiveOnboardingOpen || !createdCompanyId || companyName || step === 1) return;
     const company = companies.find((c) => c.id === createdCompanyId);
