@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { pipeline, Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation, type SandboxSyncResult } from "./sandbox-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
@@ -30,6 +31,8 @@ const SSH_STDIN_COMMAND = "IFS= read -r paperclip_ssh_command_b64 || exit 125; p
 
 export interface SshConnectionConfig {
   useHostAuth?: boolean;
+  tailscaleSocket?: string;
+  tailscaleIdentity?: string;
   host: string;
   port: number;
   username: string;
@@ -52,6 +55,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
   spec: SshRemoteExecutionSpec;
   defaultCwd?: string | null;
   maxBufferBytes?: number | null;
+  fileSync?: boolean;
 }): CommandManagedRuntimeRunner {
   const defaultCwd = input.defaultCwd?.trim() || input.spec.remoteCwd;
   const maxBufferBytes =
@@ -60,6 +64,10 @@ export function createSshCommandManagedRuntimeRunner(input: {
       : 1024 * 1024;
 
   return {
+    ...(input.fileSync ? {
+      syncIn: (operations, options) => transferSshWorkspaceFiles(input.spec, "in", operations, options?.minimumTimeoutMs),
+      syncOut: (operations, options) => transferSshWorkspaceFiles(input.spec, "out", operations, options?.minimumTimeoutMs),
+    } satisfies Pick<CommandManagedRuntimeRunner, "syncIn" | "syncOut"> : {}),
     execute: async (commandInput): Promise<RunProcessResult> => {
       const startedAt = new Date().toISOString();
       const command = commandInput.command.trim();
@@ -123,6 +131,37 @@ export function createSshCommandManagedRuntimeRunner(input: {
   };
 }
 
+async function transferSshWorkspaceFiles(spec: SshRemoteExecutionSpec, direction: "in" | "out",
+  operations: SandboxSyncOperation[], minimumTimeoutMs = 300_000): Promise<SandboxSyncResult> {
+  if (!Number.isFinite(minimumTimeoutMs) || minimumTimeoutMs <= 0) throw new Error("Invalid SSH transfer timeout");
+  const timeoutMs = Math.min(MAX_SANDBOX_SYNC_TIMEOUT_MS, Math.max(300_000, minimumTimeoutMs));
+  for (const operation of operations) {
+    if (operation.postUploadCommands?.length || operation.files.some(file => file.kind !== "file")) {
+      throw new Error("SSH workspace transport supports archive files only");
+    }
+  }
+  const results: SandboxSyncResult["operations"] = [];
+  for (const operation of operations) {
+    let bytesTransferred = 0;
+    for (const file of operation.files) {
+      if (direction === "in") {
+        const source = await fs.lstat(file.sourcePath);
+        if (!source.isFile()) throw new Error("SSH archive source must be a regular file");
+        const temporary = `${file.targetPath}.upload-${randomUUID()}`;
+        await streamLocalFileToSsh({ spec, localFile: file.sourcePath, timeoutMs,
+          remoteScript: `umask 077; trap ${shellQuote(`rm -f ${shellQuote(temporary)}`)} EXIT; cat > ${shellQuote(temporary)} && mv -f ${shellQuote(temporary)} ${shellQuote(file.targetPath)}` });
+        bytesTransferred += source.size;
+      } else {
+        await streamSshToLocalFile({ spec, localFile: file.targetPath, timeoutMs, exclusive: true,
+          remoteScript: `test -f ${shellQuote(file.sourcePath)} && test ! -L ${shellQuote(file.sourcePath)} && cat ${shellQuote(file.sourcePath)}` });
+        bytesTransferred += (await fs.stat(file.targetPath)).size;
+      }
+    }
+    results.push({ operationId: operation.operationId, filesTransferred: operation.files.length, bytesTransferred });
+  }
+  return { operations: results };
+}
+
 export interface SshEnvLabSupport {
   supported: boolean;
   reason: string | null;
@@ -178,8 +217,14 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
   }
   if (parsed.useHostAuth !== undefined && typeof parsed.useHostAuth !== "boolean") return null;
 
+  if (parsed.tailscaleSocket !== undefined && (typeof parsed.tailscaleSocket !== "string" || !/^\/[A-Za-z0-9_./-]+$/.test(parsed.tailscaleSocket))) return null;
+
+  if (parsed.tailscaleIdentity && !parsed.tailscaleSocket) return null;
+
   return {
     ...(typeof parsed.useHostAuth === "boolean" ? { useHostAuth: parsed.useHostAuth } : {}),
+    ...(typeof parsed.tailscaleSocket === "string" ? { tailscaleSocket: parsed.tailscaleSocket } : {}),
+    ...(typeof parsed.tailscaleIdentity === "string" ? { tailscaleIdentity: parsed.tailscaleIdentity } : {}),
     host,
     port: portValue,
     username,
@@ -382,7 +427,7 @@ async function withTempFile(
 }
 
 async function createSshAuthArgs(
-  config: Pick<SshConnectionConfig, "privateKey" | "knownHosts" | "strictHostKeyChecking">,
+  config: Pick<SshConnectionConfig, "privateKey" | "knownHosts" | "strictHostKeyChecking" | "tailscaleSocket" | "tailscaleIdentity" | "host">,
 ): Promise<{ args: string[]; cleanup: () => Promise<void> }> {
   const tempFiles: Array<() => Promise<void>> = [];
   const sshArgs = [
@@ -393,6 +438,15 @@ async function createSshAuthArgs(
     "-o",
     `StrictHostKeyChecking=${config.strictHostKeyChecking ? "yes" : "no"}`,
   ];
+
+  if (config.tailscaleIdentity && !config.tailscaleSocket) throw new Error("Tailscale connection is unavailable");
+  if (config.tailscaleSocket) {
+    if (!net.isIP(config.host) && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(config.host)) throw new Error("Invalid Tailscale host");
+    if (!/^\/[A-Za-z0-9_./-]+$/.test(config.tailscaleSocket)) throw new Error("Invalid Tailscale socket path");
+    const configuredCli = process.env.PAPERCLIP_TAILSCALE_CLI?.trim();
+    const cli = configuredCli ? shellQuote(configuredCli).replaceAll("%", "%%") : "tailscale";
+    sshArgs.push("-o", `ProxyCommand=${cli} --socket=${config.tailscaleSocket} nc %h %p`);
+  }
 
   if (config.strictHostKeyChecking) {
     if (config.knownHosts) {
@@ -662,6 +716,7 @@ async function streamLocalFileToSsh(input: {
   localFile: string;
   remoteScript: string;
   progress?: TransferProgress;
+  timeoutMs?: number;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
@@ -672,6 +727,7 @@ async function streamLocalFileToSsh(input: {
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
+  let timer: ReturnType<typeof setTimeout> | undefined;
   await new Promise<void>((resolve, reject) => {
     const source = createReadStream(input.localFile);
     const ssh = spawn("ssh", sshArgs, {
@@ -688,6 +744,8 @@ async function streamLocalFileToSsh(input: {
       ssh.kill("SIGTERM");
       reject(error);
     };
+
+    if (input.timeoutMs) timer = setTimeout(() => fail(new Error("SSH archive upload timed out")), input.timeoutMs);
 
     ssh.stderr?.on("data", (chunk) => {
       sshStderr += String(chunk);
@@ -709,7 +767,7 @@ async function streamLocalFileToSsh(input: {
       }
       resolve();
     });
-  }).finally(auth.cleanup);
+  }).finally(async () => { clearTimeout(timer); await auth.cleanup(); });
 }
 
 async function streamSshToLocalFile(input: {
@@ -717,6 +775,8 @@ async function streamSshToLocalFile(input: {
   remoteScript: string;
   localFile: string;
   progress?: TransferProgress;
+  timeoutMs?: number;
+  exclusive?: boolean;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
@@ -727,11 +787,12 @@ async function streamSshToLocalFile(input: {
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
+  let timer: ReturnType<typeof setTimeout> | undefined;
   await new Promise<void>((resolve, reject) => {
     const ssh = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const sink = createWriteStream(input.localFile, { mode: 0o600 });
+    const sink = createWriteStream(input.localFile, { mode: 0o600, ...(input.exclusive ? { flags: "wx" } : {}) });
 
     let sshStderr = "";
     let settled = false;
@@ -753,6 +814,8 @@ async function streamSshToLocalFile(input: {
       sink.destroy();
       reject(error);
     };
+
+    if (input.timeoutMs) timer = setTimeout(() => fail(new Error("SSH archive download timed out")), input.timeoutMs);
 
     const onStreamFinished = (error: NodeJS.ErrnoException | null) => {
       if (error) {
@@ -779,7 +842,7 @@ async function streamSshToLocalFile(input: {
       sshClosed = true;
       settle();
     });
-  }).finally(auth.cleanup);
+  }).finally(async () => { clearTimeout(timer); await auth.cleanup(); });
 }
 
 async function importGitWorkspaceToSsh(input: {

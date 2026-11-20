@@ -27,6 +27,22 @@ describe("mcp app view index", () => {
     expect(index.forRun("run-3")).toEqual([]);
   });
 
+  it("omits GitHub identity widgets while retaining other app views", () => {
+    const githubIdentity = {
+      applicationName: "GitHub",
+      upstreamToolName: "get_me",
+      resourceUri: "ui://github-mcp-server/get-me",
+    };
+    const index = createMcpAppViewIndex([
+      view("profile-1", githubIdentity),
+      view("meeting"),
+      view("profile-2", githubIdentity),
+      view("github-result", { ...githubIdentity, upstreamToolName: "search_pull_requests", resourceUri: "ui://github-mcp-server/pull-requests" }),
+      view("other-app-profile", { upstreamToolName: "get_me", resourceUri: "ui://another-app/profile" }),
+    ]);
+    expect(index.forRun("run-1").map((v) => v.id)).toEqual(["meeting", "github-result", "other-app-profile"]);
+  });
+
   it("builds one index per loaded list and answers each reply without rescanning", () => {
     // Realistic upper bound: 200 saved views over 100 runs, 2,000 rendered replies.
     const views = Array.from({ length: 200 }, (_, index) => view(`v${index}`, { runId: `run-${index % 100}` }));

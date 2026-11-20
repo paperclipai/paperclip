@@ -99,6 +99,7 @@ impl CommandExecutor for SelectedExecutor {
     fn provider_poll_is_live(&self) -> bool {
         match self {
             Self::LocalFacade(executor) => executor.provider_poll_is_live(),
+            Self::Acpx(executor) => executor.provider_poll_is_live(),
             _ => false,
         }
     }
@@ -400,6 +401,23 @@ impl CommandExecutor for NativeProviderCommandExecutor {
             _ => {}
         }
         Ok(())
+    }
+
+    fn observe_fresh_durable_state(&mut self) -> Result<(), DurableRunnerError> {
+        if self.state_dir.join(CODEX_PROVIDER_STATE_FILE).exists() {
+            CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config)
+                .await_new_run_attach()?;
+        }
+        Ok(())
+    }
+
+    fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.defer_parked_acpx_restore(),
+            _ => Err(DurableRunnerError::invalid(
+                "parked ACPX recovery requires an ACPX checkpoint",
+            )),
+        }
     }
 
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {

@@ -18,9 +18,12 @@ export interface LinkPreview {
 
 export interface LinkPreviewResult {
   preview: LinkPreview | null;
-  /** Demand-driven cache lifetime; this does not schedule a refresh. */
+  /** Remaining cache lifetime; zero means stale. This does not schedule a refresh. */
   maxAgeMs: number;
 }
+
+export const LINK_PREVIEW_BATCH_LIMIT = 50;
+export interface LinkPreviewBatchResult { results: Record<string, LinkPreviewResult> }
 
 /** Recognition only. Never contacts a remote service or changes navigation. */
 export function recognizeLinkPreview(href: string | null | undefined): LinkPreviewTarget | null {

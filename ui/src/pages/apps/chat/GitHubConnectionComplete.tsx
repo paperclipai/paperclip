@@ -12,6 +12,8 @@ import { Dialog, DialogContent, DialogFooter, DialogTitle } from "@/components/u
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { Link } from "@/lib/router";
 import { GitHubAppBranding, gitHubBotMention } from "./GitHubAppIdentity";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export type GitHubConnectionCompleteLocationState = {
   githubConnectionComplete?: {
@@ -45,7 +47,7 @@ export function GitHubConnectionComplete({
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent
-        className="max-h-(--sz-85dvh) overflow-y-auto sm:max-w-xl"
+        className={cn("max-h-(--sz-85dvh) overflow-y-auto sm:max-w-xl", ANALYTICS_MASK_CLASS)}
         aria-describedby={undefined}
         onCloseAutoFocus={onCloseAutoFocus ? (event) => {
           event.preventDefault();
@@ -70,7 +72,7 @@ export function GitHubConnectionComplete({
                   </Link>
                   {endpoint.providerAccountLabel && <>
                     <span aria-hidden="true">·</span>
-                    <span className="inline-flex items-center gap-1.5">
+                    <span className={cn("inline-flex items-center gap-1.5", ANALYTICS_MASK_CLASS)}>
                       <AppLogo name="GitHub" brandKey="github" compact className="size-4! rounded-sm bg-transparent" />
                       {endpoint.providerAccountLabel}
                     </span>

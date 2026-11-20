@@ -52,6 +52,7 @@ export const PROGRAMS = [
   "packages/plugins/plugin-workspace-diff/tsconfig.test.json",
   "packages/plugins/sdk/tsconfig.test.json",
   ...SANDBOX_PROVIDERS.map((directory) => `${directory}/tsconfig.test.json`),
+  "scripts/scale-ramp/tsconfig.json",
   "tests/runner-acceptance/tsconfig.json",
   "tests/tsconfig.playwright.json",
 ];

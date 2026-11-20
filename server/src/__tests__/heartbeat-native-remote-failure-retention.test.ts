@@ -4,6 +4,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { activityLog, agents, agentWakeupRequests, authUsers, companyMemberships, environmentLeases, environments, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { beforeAll, expect, it, vi } from "vitest";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { DurablePrpControlPlane } from "../vendor/paperclip-runner/index.js";
 import * as storageBackend from "../storage/index.js";
 import { getStorageService } from "../storage/index.js";
@@ -172,7 +173,7 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
         requestedCwd: remoteCwd,
         // The reattach resume tells the provider the reconnect grace (RC-54).
         runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
-      });
+        });
       expect(acquireAllocation).not.toHaveBeenCalled();
       expect(resumed).toHaveBeenCalledOnce();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
@@ -193,6 +194,43 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
       if (mode === "provider_history") expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId)))
         .toEqual(expect.arrayContaining([expect.objectContaining({ eventType: "tool.execution.started", sourceSeq: 1 })]));
+    } finally {
+      await arranged?.restore();
+    }
+  }, 60_000);
+
+  it("keeps reattaching through a gateway refusal during a graceful hand-off and continues the same run", async () => {
+    const gateway = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n</html>\r\n",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode: 502 })) });
+    const continued = new Error("fixture stops after the reattached runner continues");
+    let claimed: { db: Awaited<ReturnType<typeof fixture.seedRun>>["db"]; runId: string } | undefined;
+    const reached = vi.fn(async (): Promise<never> => {
+      const [run] = await claimed!.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, claimed!.runId));
+      const [owner] = await claimed!.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, claimed!.runId));
+      expect(run.status).toBe("running");
+      expect(owner.controllerGeneration).toBe(2);
+      throw continued;
+    });
+    let refusals = 0;
+    let arranged: Awaited<ReturnType<typeof arrangeRemoteRestart>> | undefined;
+    try {
+      arranged = await arrangeRemoteRestart("GATEWAY-DURING-HANDOFF", {
+        resumeLease: async ({ lease }) => { if (refusals++ === 0) throw gateway; return lease; },
+        execute: reached,
+      });
+      const { f, db, heartbeat, acquireAllocation, readyAllocation } = arranged;
+      claimed = { db, runId: f.runId };
+      const { claims } = await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ kind: "reattach_remote_runner", runId: f.runId })]);
+      await heartbeat.drainActiveRunExecutions();
+      expect(readyAllocation).toHaveBeenCalledTimes(2);
+      expect(acquireAllocation).not.toHaveBeenCalled();
+      expect(reached).toHaveBeenCalledOnce();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(run.error).toBe(continued.message);
+      expect(run.error).not.toContain("Bad Gateway");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
     } finally {
       await arranged?.restore();
     }

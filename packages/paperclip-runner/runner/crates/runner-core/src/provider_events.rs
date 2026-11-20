@@ -404,6 +404,20 @@ pub fn project_acpx_state_event(
                 }),
             )
         }
+        AcpxProviderStateEvent::ProviderTurnStarted { turn_id } => {
+            require_projected_turn(context, turn_id)?;
+            one(
+                "turn.started",
+                EventPriority::P0,
+                json!({
+                    "provider": "acpx",
+                    "providerTurnId": turn_id,
+                    "status": "inProgress",
+                    "turn": {"id": turn_id, "status": "inProgress"},
+                    "origin": crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_TURN_ORIGIN,
+                }),
+            )
+        }
         AcpxProviderStateEvent::Process(details) => one(
             "harness.diagnostic",
             EventPriority::P1,

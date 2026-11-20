@@ -35,6 +35,8 @@ function queue(seed: number, size: number): QueuedRunDispatchFacts[] {
       readinessRank: pick([0, 0, 1, 2, 3]),
       priorityRank: pick([0, 1, 2, 3, 4]),
       shareDeferred: next() < 0.1,
+      personTask: next() < 0.3,
+      cleanContinuation: next() < 0.2,
     };
   });
 }

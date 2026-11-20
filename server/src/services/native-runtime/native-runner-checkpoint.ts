@@ -2,13 +2,16 @@ import { readNativeCheckpointRetirement } from "./native-runner-checkpoint-retir
 import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { createHash } from "node:crypto";
-import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql, type SQL } from "drizzle-orm";
-import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
+import { and, eq, exists, gt, isNotNull, isNull, lte, inArray, notExists, or, sql, type SQL } from "drizzle-orm";
+import { checkpointDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, primeDatabaseWorkTransactionId, type Db } from "@paperclipai/db";
 import { inspectDurablePrpCheckpointHeader, inspectUnauthenticatedBootstrapCheckpoint, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher, deriveLocalEncryptedInstanceSecret } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
+import { NATIVE_RETAINED_OWNER_WAIT } from "./native-recovery-wait-codes.js";
+import { OWN_PROCESS_START_EVENT_TYPES } from "../native-process-start-events.js";
+import { SAME_RUN_RESUME_DISPOSITION } from "./same-run-resume-disposition.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
@@ -76,9 +79,12 @@ export async function lockNativeRunnerCheckpointOwner(
   // wall time. Sampling in the locking SELECT can precede its lock wait.
   // Keep both steps in one statement without another database round trip.
   const locked = nativeRunnerCheckpointOwnerLock(tx, owner);
-  const [owned] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
-    leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, phase: locked.phase, now: sql<Date>`clock_timestamp()` }).from(locked);
-  if (!owned) throw new Error("native_runner_checkpoint_owner_lost");
+  const [row] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
+    leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, phase: locked.phase, now: sql<Date>`clock_timestamp()`,
+    xid: sql<string>`pg_current_xact_id()::text` }).from(locked);
+  if (!row) throw new Error("native_runner_checkpoint_owner_lost");
+  const { xid, ...owned } = row;
+  primeDatabaseWorkTransactionId(tx, xid);
   return owned;
 }
 
@@ -113,11 +119,74 @@ export async function validateNativeRunnerCheckpointOwner(
           eq(heartbeatRuns.issueId, owner.issueId), inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
           notExists(tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
             .where(eq(nativeRunFinalizations.runId, heartbeatRuns.id))))) : [];
+    const [unstartedSuccessor] = !successor && !preparingSuccessor && !waitingSuccessor && task?.executionRunId && task.executionRunId !== owner.runId
+      ? await unstartedSuccessorOfOwner(tx, owner, task.executionRunId) : [];
     if (!current.resultId || newWork || !task
-      || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor && !waitingSuccessor)) {
+      || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor && !waitingSuccessor && !unstartedSuccessor)) {
       throw new Error("native_runner_checkpoint_owner_lost");
     }
   }
+}
+
+class SuccessorCoordinatorCreated extends Error {}
+
+async function lockSuccessorRows(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
+  const coordinatorRow = (db: CheckpointTransaction) => db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+    .where(and(eq(nativeRunFinalizations.runId, successorRunId), eq(nativeRunFinalizations.companyId, owner.companyId)));
+  for (let pass = 0; ; pass++) {
+    try {
+      return await tx.transaction(async locking => {
+        const [coordinator] = await coordinatorRow(locking).for("share");
+        const [run] = await locking.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, successorRunId), eq(heartbeatRuns.companyId, owner.companyId))).for("share");
+        if (run && !coordinator && pass < 2 && (await coordinatorRow(locking)).length) throw new SuccessorCoordinatorCreated();
+        return { coordinator, run };
+      });
+    } catch (error) {
+      if (!(error instanceof SuccessorCoordinatorCreated)) throw error;
+    }
+  }
+}
+
+async function unstartedSuccessorOfOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
+  const { coordinator, run } = await lockSuccessorRows(tx, owner, successorRunId);
+  if (!run) return [];
+  const resumeClaim = sql`${nativeRunFinalizations.recoveryHistory}->-1`;
+  const waitsOnlyForOwner = (waiting: SQL) => sql`(coalesce(${waiting}, 'null'::jsonb) = 'null'::jsonb
+    or (${waiting}->>'runId' = ${owner.runId} and ${waiting}->>'controllerBootId' = ${owner.bootId}))`;
+  const noProcess = and(isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt));
+  const preparing = and(isNull(nativeRunFinalizations.runId), eq(heartbeatRuns.runtimeMode, "legacy"),
+    eq(heartbeatRuns.issueId, owner.issueId), eq(heartbeatRuns.executionStage, "preparing"), isNotNull(heartbeatRuns.controllerBootId),
+    gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`), noProcess);
+  const admitted = and(eq(nativeRunFinalizations.companyId, owner.companyId), eq(nativeRunFinalizations.issueId, owner.issueId),
+    eq(nativeRunFinalizations.attempt, 0), isNull(nativeRunFinalizations.resultId),
+    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativeIssueId, owner.issueId),
+    sql`${heartbeatRuns.nativeSessionId} = (select source.native_session_id from heartbeat_runs source
+      where source.id = ${owner.runId} and source.company_id = ${owner.companyId})`,
+    or(noProcess, sql`${heartbeatRuns.runnerProfileJson}->>'inheritedProcessIdentityRunId' = ${owner.runId}`),
+    or(
+      and(eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.leaseOwner),
+        isNull(nativeRunFinalizations.leaseExpiresAt), isNull(nativeRunFinalizations.failureCode),
+        sql`jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) = 0`),
+      and(eq(nativeRunFinalizations.phase, "retryable_failure"),
+        eq(nativeRunFinalizations.failureCode, NATIVE_RETAINED_OWNER_WAIT), isNull(nativeRunFinalizations.leaseOwner),
+        waitsOnlyForOwner(sql`${nativeRunFinalizations.failureDetail}->'waitingForOwner'`)),
+      and(eq(nativeRunFinalizations.phase, "observed"), isNotNull(nativeRunFinalizations.leaseOwner),
+        gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+        sql`${resumeClaim}->>'disposition' = ${SAME_RUN_RESUME_DISPOSITION}`,
+        sql`${resumeClaim}->>'controllerBootId' = ${nativeRunFinalizations.controllerBootId}`,
+        waitsOnlyForOwner(sql`${resumeClaim}->'evidence'->'waitingForOwner'`)),
+    ));
+  return tx.select({ runId: heartbeatRuns.id }).from(heartbeatRuns)
+    .leftJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id)).where(and(
+      eq(heartbeatRuns.id, successorRunId), eq(heartbeatRuns.companyId, owner.companyId), eq(heartbeatRuns.status, "running"),
+      notExists(tx.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
+        eq(nativeRunnerCheckpoints.companyId, owner.companyId), eq(nativeRunnerCheckpoints.runId, successorRunId)))),
+      notExists(tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+        eq(heartbeatRunEvents.companyId, owner.companyId), eq(heartbeatRunEvents.runId, successorRunId),
+        isNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType, [...OWN_PROCESS_START_EVENT_TYPES])))),
+      coordinator ? admitted : preparing,
+    ));
 }
 
 export async function assertNativeRunnerCheckpointOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointOwner, newWork: boolean) {
@@ -125,12 +194,39 @@ export async function assertNativeRunnerCheckpointOwner(tx: CheckpointTransactio
   await validateNativeRunnerCheckpointOwner(tx, owner, locked, newWork);
 }
 
+const ROUTINE_CHECKPOINT_SAVE_SQL = `
+  with locked_owner as (
+    select lease_expires_at from native_run_finalizations
+    where company_id = $1::uuid and issue_id = $2::uuid and run_id = $3::uuid and controller_boot_id = $4::text
+      and controller_generation = $5::integer and lease_owner = $6::text
+    for update
+  ), owner as (
+    select 1 from locked_owner where lease_expires_at > clock_timestamp()
+  ), written as (
+    insert into "native_runner_checkpoints" (company_id, issue_id, run_id, part, material)
+    select $1::uuid, $2::uuid, $7::uuid, part.value ->> 'part', part.value -> 'material'
+    from owner cross join jsonb_array_elements($8::jsonb) as part(value)
+    on conflict (run_id, part) do update set material = excluded.material, updated_at = now()
+    returning 1
+  )
+  select (select count(*)::int from owner) as owned, (select count(*)::int from written) as written`;
+
 export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpointOwner) {
   const persistenceDb = checkpointDb(db);
   let previousWork = new Set<string>();
   return async (checkpoint: DurablePrpCheckpoint): Promise<void> => {
     if (checkpoint.runId !== owner.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
     const changed = encryptParts(owner, checkpoint.changedRecords);
+    if (changed.length > 0 && !checkpoint.reset && checkpoint.removedRecords.length === 0 && !checkpoint.changedRecords.has("header")
+      && !checkpoint.predecessor && owner.runId === owner.authorityRunId) {
+      const [saved] = await persistenceDb.$client.unsafe<{ owned: number; written: number }[]>(ROUTINE_CHECKPOINT_SAVE_SQL, [
+        owner.companyId, owner.issueId, owner.authorityRunId, owner.bootId, String(owner.generation), owner.leaseOwner, owner.runId,
+        JSON.stringify(changed.map(part => ({ part: part.part, material: part.material })))]);
+      if (saved?.owned === 1 && saved.written === changed.length) {
+        previousWork = new Set(checkpoint.workCommandIds);
+        return;
+      }
+    }
     await persistenceDb.transaction(async tx => {
       if (owner.runId !== owner.authorityRunId) {
         await lockSourceRecoveryCoordinators(tx, owner.companyId, [owner.runId, owner.authorityRunId]);

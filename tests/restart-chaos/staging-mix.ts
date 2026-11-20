@@ -61,7 +61,8 @@ export interface StagingMixRecord {
 
 export interface CompletionEvidence {
   completedAt: number | null;
-  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null; answersFollowUp?: boolean }>;
+  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null; answersFollowUp?: boolean;
+    doneRejected?: boolean }>;
 }
 
 export interface RetryBanner { firstShownAt: number; lastShownAt: number; shownMs: number; visibleSince: number | null; errorCode: string | null }
@@ -398,9 +399,14 @@ export function hasDispositions(completion: CompletionEvidence | null | undefine
   return Boolean(completion?.runs.some(run => run.acceptedDisposition !== null));
 }
 
+function countsAsDone(run: CompletionEvidence["runs"][number] | undefined, comments: readonly CommentEvidence[], nonce: string): run is CompletionEvidence["runs"][number] {
+  return run?.acceptedDisposition === "done"
+    && (!run.doneRejected || comments.some(comment => comment.runId === run.runId && isDoneComment(comment.body, nonce)));
+}
+
 export function completedAtAnchor(completion: CompletionEvidence | null | undefined, comments: readonly CommentEvidence[], nonce: string):
   { at: number | null; source: "accepted_result" | "completed_at" | "done_comment" | null } {
-  const accepted = (completion?.runs ?? []).filter(run => run.acceptedDisposition === "done" && run.acceptedAt !== null).map(run => run.acceptedAt!);
+  const accepted = (completion?.runs ?? []).filter(run => countsAsDone(run, comments, nonce) && run.acceptedAt !== null).map(run => run.acceptedAt!);
   if (accepted.length) return { at: Math.min(...accepted), source: "accepted_result" };
   if (completion?.completedAt != null) return { at: completion.completedAt, source: "completed_at" };
   const comment = firstDoneCommentAt(comments, nonce);
@@ -415,11 +421,11 @@ export function completionRunIds(comments: readonly CommentEvidence[], nonce: st
     const byId = new Map(completion.runs.flatMap(run => run.runId ? [[run.runId, run] as const] : []));
     const reportedAt = (runId: string) => {
       const run = byId.get(runId);
-      if (run?.acceptedDisposition === "done" && run.acceptedAt !== null) return run.acceptedAt;
+      if (countsAsDone(run, comments, nonce) && run.acceptedAt !== null) return run.acceptedAt;
       const posted = comments.filter(comment => comment.runId === runId && typeof comment.createdAt === "number").map(comment => comment.createdAt!);
       return posted.length ? Math.min(...posted) : run?.startedAt ?? Number.POSITIVE_INFINITY;
     };
-    const accepted = completion.runs.filter(run => run.acceptedDisposition === "done" && run.runId).map(run => run.runId!);
+    const accepted = completion.runs.filter(run => countsAsDone(run, comments, nonce) && run.runId).map(run => run.runId!);
     const ordered = [...new Set([...accepted, ...summaries])].sort((a, b) => reportedAt(a) - reportedAt(b));
     return ordered.filter((runId, index) => index === 0 || !byId.get(runId)?.answersFollowUp);
   }
@@ -489,7 +495,7 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
   if (task.followUpAfterMs !== null) {
     const errors = artifacts.stagingMix?.followUpErrors ?? [];
     checks.push({ name: "follow_up_posted", ok: Boolean(followUp?.commentId),
-      detail: followUp?.commentId ? `comment ${followUp.commentId}` : `never posted${errors.length ? `; errors: ${errors.slice(-3).join(" | ")}` : ""}` });
+      detail: followUp?.commentId ? `comment ${followUp.commentId}${followUp.duringRun ? "" : " after the run ended"}` : `never posted${errors.length ? `; errors: ${errors.slice(-3).join(" | ")}` : ""}` });
   }
   const afterEnd = artifacts.stagingMix?.afterEndFollowUps ?? [];
   const range = task.followUpAfterMs !== null ? followUpAfterEndRange() : null;
@@ -621,11 +627,14 @@ export async function stagingMixStep(input: StagingMixStepInput): Promise<void> 
         if (commentId && !state.followUp) state.followUp = { at: now, commentId, duringRun: false, inOverlap: overlap, error: null };
       }
     }
-  } else if (task.followUpAfterMs !== null && !state.followUp && running) {
+  } else if (task.followUpAfterMs !== null && !state.followUp) {
     const plannedAt = record.createdAt + task.followUpAfterMs;
     const latestAt = Math.min(plannedAt + task.holdMs, record.createdAt + Math.round(task.rounds * ROUND_SECONDS * 1_000 * 0.85));
-    if (now >= plannedAt && (overlap || now >= latestAt)) {
-      const followUp: NonNullable<StagingMixRecord["followUp"]> = { at: now, commentId: null, duringRun: true, inOverlap: overlap, error: null };
+    const runs = sample.runs ?? [];
+    const lastEnd = Math.max(0, ...runs.map(run => Date.parse(run.finishedAt ?? "") || 0));
+    const afterRunEnd = !running && !runs.some(run => ACTIVE.has(run.status)) && lastEnd > 0 && now >= Math.max(plannedAt, latestAt);
+    if (running ? now >= plannedAt && (overlap || now >= latestAt) : afterRunEnd) {
+      const followUp: NonNullable<StagingMixRecord["followUp"]> = { at: now, commentId: null, duringRun: running, inOverlap: overlap, error: null };
       try {
         const comment = await input.api.post<{ id?: string }>(`/api/issues/${record.issueId}/comments`, { body: followUpComment(input.nonce),
           clientRequestId: followUpRequestId(record.issueId, input.nonce) });
@@ -634,9 +643,11 @@ export async function stagingMixStep(input: StagingMixStepInput): Promise<void> 
       } catch (error) {
         followUp.error = error instanceof Error ? error.message : String(error);
       }
-      if (followUp.commentId) state.followUp = followUp;
-      else (state.followUpErrors ??= []).push(followUp.error!);
-      input.note("staging_mix_follow_up", { ...followUp });
+      if (followUp.commentId) {
+        state.followUp = followUp;
+        if (afterRunEnd) (state.afterEndFollowUps ??= []).push({ afterRunEndAt: lastEnd, at: now, delayMs: now - lastEnd, commentId: followUp.commentId });
+      } else (state.followUpErrors ??= []).push(followUp.error!);
+      input.note("staging_mix_follow_up", { ...followUp, ...(afterRunEnd ? { afterRunEndAt: lastEnd } : {}) });
     }
   }
   noteRetryBanner(state, retryShown(sample), now, latestFailureCode(sample));
@@ -661,10 +672,12 @@ export function latestFailureCode(sample: Pick<TaskSample, "runs">): string | nu
   return failed[0]?.errorCode ?? failed[0]?.failureCause ?? null;
 }
 
+export const BANNER_MAX_UNSAMPLED_MS = 2 * 60_000;
+
 export function noteRetryBanner(state: StagingMixRecord, shown: boolean, now: number, errorCode: string | null): void {
   const banner = state.retryBanner;
   if (!shown) {
-    if (banner?.visibleSince != null) { banner.shownMs += now - banner.visibleSince; banner.visibleSince = null; }
+    if (banner?.visibleSince != null) { banner.shownMs = bannerShownMs(banner, now); banner.visibleSince = null; }
     return;
   }
   if (!banner) { state.retryBanner = { firstShownAt: now, lastShownAt: now, shownMs: 0, visibleSince: now, errorCode }; return; }
@@ -674,7 +687,9 @@ export function noteRetryBanner(state: StagingMixRecord, shown: boolean, now: nu
 }
 
 export function bannerShownMs(banner: RetryBanner, now: number): number {
-  return banner.shownMs + (banner.visibleSince === null ? 0 : now - banner.visibleSince);
+  if (banner.visibleSince === null) return banner.shownMs;
+  const until = Math.min(now, banner.lastShownAt + BANNER_MAX_UNSAMPLED_MS);
+  return banner.shownMs + Math.max(0, until - banner.visibleSince);
 }
 
 export function collectStagingMixArtifacts(record: TaskRecord,

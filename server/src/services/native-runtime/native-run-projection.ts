@@ -51,7 +51,7 @@ export async function settleNativeTerminalWake(tx: Db, run: Pick<typeof heartbea
   const [current] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
     .where(claim).for("update").limit(1);
   if (!current) return;
-  await notifyExternalConversationSettlement(tx, { companyId: run.companyId });
+  await notifyExternalConversationSettlement(tx, { companyId: run.companyId, runId: run.id });
   await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
   await tx.update(agentWakeupRequests).set({
     status: run.status === "succeeded" ? "completed" : run.status,
@@ -174,7 +174,7 @@ export async function projectCommittedRun(input: {
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
-    await notifyExecutionRunWork(tx, { companyId: input.run.companyId });
+    await notifyExecutionRunWork(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     const [after] = await tx
       .update(heartbeatRuns)

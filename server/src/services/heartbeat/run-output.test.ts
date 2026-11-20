@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import type { StorageProvider } from "../../storage/types.js";
 import { createHeartbeatRunOutput, isNewRunLog } from "./run-output.js";
-import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import { generateKeyPairSync } from "node:crypto";
 import { reportStorageOutageWaitsTo, runInOwnStorageScope } from "../../storage/storage-unavailable.js";
@@ -102,7 +102,7 @@ describe("claiming the run log during a storage outage (storage chaos ST1)", () 
       const pending = (update as (t: unknown) => { set: (v: Partial<Run>) => unknown })(table);
       return { set: (values: Partial<Run>) => { writes.push(values); return pending.set(values); } };
     };
-    const appendRunEvent = vi.fn(async () => undefined);
+    const appendRunEvent = vi.fn(async (_run: unknown, _event: { payload?: { reason?: string } }) => undefined);
     const authority = vi.fn(async () => undefined);
     const seen: Array<{ writes: number; events: number; phase: string | undefined; message: string | undefined }> = [];
     let calls = 0;
@@ -396,5 +396,129 @@ describe("object-backed diagnostic recording", () => {
     expect(row.lastOutputSeq).toBe(110);
     expect(row.lastOutputBytes).toBe(10000);
     expect(writes.filter((write) => write.lastOutputSeq !== undefined)).toHaveLength(2);
+  });
+
+  it.each(["succeeds", "fails"] as const)("holds the log's finalization until a reattach's deferred re-verification %s", async (outcome) => {
+    const row = { ...newRunRow, runtimeMode: "native", logStore: "s3_segments", logRef: "company/agent/run", lastOutputSeq: 4 } as Run;
+    const db = createRunRowDb(row);
+    let releaseRead!: () => void;
+    const read = vi.fn(async () => {
+      await new Promise<void>(resolve => { releaseRead = resolve; });
+      if (outcome === "fails") throw new Error("object store read failed");
+      return { content: "", nextOffset: 0, eof: true };
+    });
+    const appendRunEvent = vi.fn(async (_run: unknown, _event: { payload?: { reason?: string } }) => undefined);
+    const output = createHeartbeatRunOutput(db, {
+      run: row, runId: row.id, issueId: null, secretKeys: new Set(),
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      runLogStore: {
+        begin: async () => ({ store: "s3_segments", logRef: "company/agent/run", initialBytes: 4_000_000, initialSequence: 4,
+          initialSourceCursor: 900 }),
+        append: async () => 0, enqueue: async () => ({ committed: Promise.resolve(0) }), flush: async () => undefined,
+        read: read as never,
+      },
+      appendRunEvent: appendRunEvent as never, getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+      deferNativeLogRecovery: true,
+    });
+    await output.begin(row);
+    await vi.waitFor(() => expect(read).toHaveBeenCalled());
+    let settled = false;
+    const settling = output.settleDeferredLogRecovery().then(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    releaseRead();
+    await settling;
+    expect(settled).toBe(true);
+    if (outcome === "fails") expect(appendRunEvent.mock.calls.some(([, event]) => event.payload?.reason === "object_log_persistence_failed")).toBe(true);
+  });
+
+  it("settles at once when no log re-verification was deferred", async () => {
+    const row = { ...newRunRow } as Run;
+    const output = createHeartbeatRunOutput(createRunRowDb(row), {
+      run: row, runId: row.id, issueId: null, secretKeys: new Set(),
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      runLogStore: { begin: async () => ({ store: "local_file", logRef: "run.ndjson" }), append: async () => 0 } as never,
+      appendRunEvent: vi.fn(async () => undefined) as never, getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+    });
+    await expect(output.settleDeferredLogRecovery()).resolves.toBeUndefined();
+  });
+
+  it.each([false, true])("lets a reattach start before its existing log is re-verified (deferred %s)", async (deferNativeLogRecovery) => {
+    const row = { ...newRunRow, runtimeMode: "native", logStore: "s3_segments", logRef: "company/agent/run", lastOutputSeq: 4 } as Run;
+    const db = createRunRowDb(row);
+    let releaseRead!: () => void;
+    const readStarted = vi.fn();
+    const read = vi.fn(async () => {
+      readStarted();
+      await new Promise<void>(resolve => { releaseRead = resolve; });
+      return { content: "", nextOffset: 0, eof: true };
+    });
+    const output = createHeartbeatRunOutput(db, {
+      run: row, runId: row.id, issueId: null, secretKeys: new Set(),
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      runLogStore: {
+        begin: async () => ({ store: "s3_segments", logRef: "company/agent/run", initialBytes: 4_000_000, initialSequence: 4,
+          initialSourceCursor: 900 }),
+        append: async () => 0, enqueue: async () => ({ committed: Promise.resolve(0) }), flush: async () => undefined,
+        read: read as never,
+      },
+      appendRunEvent: vi.fn(async () => undefined) as never, getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+      deferNativeLogRecovery,
+    });
+    let begun = false;
+    const beginning = output.begin(row).then(() => { begun = true; });
+    await vi.waitFor(() => expect(readStarted).toHaveBeenCalled());
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(begun).toBe(deferNativeLogRecovery);
+    releaseRead();
+    await beginning.catch(() => undefined);
+  });
+});
+
+describe("secret-bound environment values in local run output", () => {
+  it("masks resolved secret values in the stored log, excerpt, live event, and adapter events", async () => {
+    const { publishLiveEvent } = await import("../live-events.js");
+    vi.mocked(publishLiveEvent).mockClear();
+    const secret = "sk_test_synthetic_local_0123456789";
+    const shortSecret = "pin42";
+    const plain = "https://plain.example.test/api";
+    const env = { STRIPE_KEY: secret, SHORT_PIN: shortSecret, PLAIN_URL: plain };
+    const secretKeys = new Set(["STRIPE_KEY", "SHORT_PIN"]);
+    const row = { ...newRunRow };
+    const chunks: string[] = [];
+    const events = vi.fn(async (_run: unknown, _event: { payload?: Record<string, unknown> }) => undefined);
+    const output = createHeartbeatRunOutput(createRunRowDb(row), {
+      run: row as Run,
+      runId: row.id!,
+      issueId: null,
+      runLogStore: {
+        begin: async () => ({ store: "local_file", logRef: "company/agent/run.ndjson" }),
+        append: async (_handle, event) => {
+          chunks.push(event.chunk);
+          return Buffer.byteLength(event.chunk);
+        },
+        enqueue: undefined,
+        flush: async () => undefined,
+      },
+      identityRedactor: createAgentIdentityRedactor(undefined, secretEnvironmentValues(env, secretKeys)),
+      secretKeys,
+      appendRunEvent: events as never,
+      getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+    });
+    const handlers = await output.begin(row as Run);
+    await handlers.onLog("stdout", `STRIPE_KEY=${secret.slice(0, 12)}`);
+    await handlers.onLog("stdout", `${secret.slice(12)}\nSHORT_PIN=${shortSecret}\nPLAIN_URL=${plain}\n`);
+    await handlers.onAdapterEvent({ eventType: "tool.output", stream: "stdout", level: "info", message: `echo ${secret}`,
+      payload: { output: `${secret}\n` } });
+    await handlers.onAdapterMeta({ adapterType: "process", command: "synthetic", commandArgs: ["--token", secret],
+      env: { ...env } } as never);
+    const stored = chunks.join("");
+    expect(stored).toBe(`STRIPE_KEY=***REDACTED***\nSHORT_PIN=${shortSecret}\nPLAIN_URL=${plain}\n`);
+    expect(output.stdoutExcerpt).not.toContain(secret.slice(12));
+    expect(JSON.stringify(vi.mocked(publishLiveEvent).mock.calls)).not.toContain(secret.slice(12));
+    const persistedEvents = JSON.stringify(events.mock.calls.map(([, event]) => event));
+    expect(persistedEvents).not.toContain(secret);
+    expect(persistedEvents).toContain("***REDACTED***");
+    expect(persistedEvents).toContain(plain);
   });
 });

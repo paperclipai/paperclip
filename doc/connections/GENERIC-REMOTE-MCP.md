@@ -79,6 +79,37 @@ Optional assigned apps do not emit run-start connection warnings, including
 unavailable shared apps. Their health state and reconnect controls remain in
 Apps. An unrelated run does not need to act on that state.
 
+### Connecting another Paperclip instance
+
+Every Paperclip serves its assistant connection at `/mcp/paperclip` (see
+[Public Paperclip MCP connection](../public-mcp.md)). Pasting that address
+connects your agents to another instance — for example a colleague's — so they
+can file and follow tasks there. Paperclip recognizes the address and, using
+only the address you typed (nothing the other server says):
+
+- names the connection after that instance with its distinctive part first —
+  `acme Paperclip` for `acme.paperclip.app`, `localhost-3101 Paperclip` for a
+  local instance — and prefixes its tools with the same host-derived label,
+  so agents see
+  `mcp.acme-paperclip-<id>:paperclip-create-task` (native runners:
+  `app_mcp_acme_paperclip_…_paperclip_create_task_…`), never a bare
+  `create_task` that looks like their own. Other address-based connections
+  keep their existing tool names. Setup records the prefix on the connection
+  (`paperclipPeerToolNamespace`) when it is created, so renaming or
+  reconnecting never changes tool names that saved tool-name rules, agents or
+  pending approvals refer to. Paperclip connections created before this keep
+  their original names;
+- adds agent instructions (template `paperclip.peer`, editable and
+  resettable under **Agent instructions** on the connection's Permissions page)
+  saying these tools act on a different
+  Paperclip, that agents keep using their own Paperclip tools for their own
+  work, and that links from the other instance must be quoted in full;
+- refuses the address of this same instance (`paperclip_self_connection`,
+  422), because its tools are already built in.
+
+Actions start on, as for any other connection. A name or instructions you
+supply yourself are kept.
+
 ### Slack app access
 
 If Slack reports that MCP access is disabled for the app, ask the Slack app
@@ -91,7 +122,7 @@ this as a setup error and keeps the connection available for retry. See
 
 The connect screen states the sign-in choice in one line, **Paperclip asks the
 server how to sign in.**, with a **Change** link, the same shape as the access
-line below it. **Change** lists five options, each with its fields directly
+line below it. **Change** lists five options (six for organization connections), each with its fields directly
 beneath it when selected:
 
 - **Let Paperclip check** — the default; Paperclip probes and walks you through it.
@@ -101,6 +132,10 @@ beneath it when selected:
   Paperclip first.
 - **Custom headers** — for servers that name their own headers.
 - **No sign-in needed** — the server is open to anyone with the address.
+- **Machine sign-in** — organization connections only. Paperclip signs in as a
+  client you registered with the provider, using a Paperclip key or a client
+  secret, with no person involved. It runs its own setup and test in place of
+  **Check link**. See [Machine sign-in](./MCP-CLIENT-CREDENTIALS.md).
 
 **Done** collapses the list back to a one-line summary of the choice. It stays
 open while the chosen option still needs a value.

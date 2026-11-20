@@ -449,6 +449,8 @@ export const CLOUD_CONTROL_AUDIENCE = "paperclip-cloud-control/v1";
 export const CLOUD_CONTROL_JWS_TYPE = "paperclip-cloud-control+jwt";
 export const CLOUD_CONTROL_ACTIONS = [
   "ephemeral-enrollment:prepare",
+  "ephemeral-enrollment:eligibility",
+  "ephemeral-enrollment:migrate",
   "task-drain:read",
   "task-drain:read-body",
   "task-drain:start",

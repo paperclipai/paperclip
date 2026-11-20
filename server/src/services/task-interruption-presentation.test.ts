@@ -7,6 +7,39 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+describe("pending question presentation", () => {
+  const failed = { ...run, errorCode: "native_session_interrupted", resultJson: null };
+  const input = { run: failed, agent, paused: false, approval: false, question: true };
+  it("names the unanswered question instead of a historical failure, preserving an available manual Retry", () => {
+    for (const previousRun of [failed, { ...failed, status: "succeeded" }, undefined]) {
+      const presentation = projectTaskInterruption(issue, { ...input, run: previousRun });
+      expect(presentation).toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: "question",
+        canRetry: previousRun?.status === "failed" });
+      expect(presentation?.providerFailure).toBeUndefined();
+    }
+  });
+  it("does not offer another Retry while saved input or a Retry is pending", () => {
+    const wait = { id: "saved-input", requestedAt: new Date(), sourceRunId: failed.id };
+    for (const pending of [{ wait }, { retryWait: wait }])
+      expect(projectTaskInterruption(issue, { ...input, ...pending })).toMatchObject({ canRetry: false });
+  });
+  it("shows the question while automatic continuation waits, without offering to move it forward", () => {
+    for (const pendingSince of [undefined, Date.now() - 16 * 60_000])
+      expect(projectTaskInterruption(issue, { ...input, freshContinuation: { state: "continuing", pendingSince } }))
+        .toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
+  });
+  it("preserves other current user gates", () => {
+    for (const [gate, userAction] of [[{ approval: true }, "approval"], [{ paused: true }, "resume"],
+      [{ ownerStopRequired: true }, "confirm_owner_stop"]] as const)
+      expect(projectTaskInterruption(issue, { ...input, ...gate })).toMatchObject({ state: "waiting_for_user", userAction, canRetry: false });
+  });
+  it("preserves live work and terminal task states", () => {
+    expect(projectTaskInterruption(issue, { ...input, run: { ...run, status: "running", errorCode: null } }))
+      .toMatchObject({ state: "working" });
+    expect(projectTaskInterruption({ ...issue, status: "done" }, input)).toMatchObject({ state: "resolved" });
+  });
+});
+
 describe("saved governed wait shutdown", () => {
   const now = Date.parse("2026-11-09T12:00:00Z");
   const pending = { ...run, runtimeMode: "native", errorCode: "native_governed_wait_settlement_pending", resultJson: null };
@@ -308,6 +341,21 @@ describe("intentional native Stop presentation", () => {
   });
 });
 
+describe("intentional legacy Stop presentation", () => {
+  it("clears the failed-attempt notice only after the requested Stop is acknowledged", () => {
+    const stopped = { ...run, runtimeMode: "legacy" as const, status: "cancelled", finishedAt: new Date(), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user" }, reason: "Stop", recordedAt: new Date().toISOString() },
+      executionCancellation: { state: "acknowledged", proof: "preparation_settled" },
+    } };
+    const input = { run: stopped, agent, paused: false, approval: false };
+    expect(projectTaskInterruption(issue, input)).toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(issue, { ...input, run: { ...stopped, resultJson: { ...stopped.resultJson,
+      executionCancellation: { state: "requested" } } } })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { ...input, paused: true })).toMatchObject({ userAction: "resume" });
+    expect(projectTaskInterruption(issue, { ...input, approval: true })).toMatchObject({ userAction: "approval" });
+  });
+});
+
 it("preserves a provider explanation on a failed task without changing retry authority", () => {
   const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
     category: "rate_limit", message: "API error: 429 This request would exceed your account's rate limit.",
@@ -421,8 +469,9 @@ describe("scheduled resource wait presentation", () => {
   });
 
   it("keeps failure retries, user gates and failed Retry preparation authoritative", () => {
-    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure" },
-      agent, paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure",
+      scheduledRetryAt: new Date(now - 10 * 60_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: true, approval: false }, now))
       .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: false, approval: false,
@@ -555,6 +604,15 @@ describe("automatic scheduled retry", () => {
       .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: new Date(now + 60_000).toISOString() });
   });
 
+  it.each(["transient_failure", "native_environment_blocker"])(
+    "keeps a just-due %s retry working while the dispatcher promotes it", scheduledRetryReason => {
+      for (const overdueMs of [0, 1_000, 30_000, 119_000]) {
+        expect(projectTaskInterruption({ ...issue, status: "in_progress" }, { run: { ...scheduled, runtimeMode: "native",
+          scheduledRetryReason, scheduledRetryAt: new Date(now - overdueMs) }, agent, paused: false, approval: false }, now))
+          .toMatchObject({ state: "working", canRetry: false });
+      }
+    });
+
   it("offers Retry once the scheduled retry is past due with nothing else pending", () => {
     expect(projectTaskInterruption(issue, { run: { ...scheduled, scheduledRetryAt: new Date(now - 10 * 60_000) }, agent,
       paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
@@ -563,6 +621,35 @@ describe("automatic scheduled retry", () => {
   it("offers Retry once the scheduled retries are exhausted", () => {
     expect(projectTaskInterruption(issue, { run: { ...scheduled, status: "failed", errorCode: "transient_failure_retry_exhausted",
       scheduledRetryAt: new Date(now - 60_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+});
+
+describe("hand-off of a run that failed before any provider work", () => {
+  const now = Date.parse("2026-11-13T15:08:12Z");
+  const failed = { ...run, runtimeMode: "native" as const, errorCode: "adapter_failed", finishedAt: new Date(now - 3_000),
+    resultJson: { failureCause: "native_predecessor_retirement_unproven", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+  const inProgress = { ...issue, status: "in_progress" };
+
+  it("shows the task as working while its fresh-sandbox continuation is being queued", () => {
+    for (const failureCause of ["native_predecessor_retirement_unproven", "native_failed_before_provider_turn"]) {
+      expect(projectTaskInterruption(inProgress, { run: { ...failed, resultJson: { ...failed.resultJson, failureCause } },
+        agent, paused: false, approval: false }, now)).toMatchObject({ state: "working", canRetry: false });
+    }
+  });
+
+  it("keeps the task working after the fallback is recorded while its continuation is still being scheduled", () => {
+    const recorded = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false } } };
+    expect(projectTaskInterruption(inProgress, { run: recorded, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "working", canRetry: false });
+  });
+
+  it("offers Retry when the continuation was refused or never queued", () => {
+    const refused = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false },
+      continuationScheduling: "refused" } };
+    expect(projectTaskInterruption(inProgress, { run: refused, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(inProgress, { run: { ...failed, finishedAt: new Date(now - 31_000) }, agent, paused: false, approval: false }, now))
       .toMatchObject({ state: "failed", canRetry: true });
   });
 });

@@ -12,6 +12,15 @@ export function preparedStatements<Shape extends string, Statement>(prepare: (db
   };
 }
 
+export function preparedStatement<Statement>(prepare: (db: Db) => Statement) {
+  const statements = new WeakMap<Db, Statement>();
+  return (db: Db): Statement => {
+    let statement = statements.get(db);
+    if (!statement) statements.set(db, statement = prepare(db));
+    return statement;
+  };
+}
+
 export function columnPlaceholder(name: string, column: DriverValueEncoder<unknown, unknown>): Param {
   return new Param(sql.placeholder(name), column);
 }

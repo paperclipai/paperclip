@@ -707,6 +707,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       privateKey: parsed.config.privateKey,
       knownHosts: parsed.config.knownHosts,
       strictHostKeyChecking: parsed.config.strictHostKeyChecking,
+      ...(parsed.config.tailscaleSocket ? { tailscaleSocket: parsed.config.tailscaleSocket, tailscaleIdentity: parsed.config.tailscaleIdentity } : {}),
       remoteCwd,
     },
   };

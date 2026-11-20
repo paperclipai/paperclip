@@ -100,7 +100,8 @@ describe("a held task with a pending decision after its remote runner was lost",
     const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.runId, canRetry: true,
       runError: "runner_remote_process_identity_unavailable", workspaceRecovery: { status: "recovered" } });
-    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true, observedRunId: f.runId });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: shape === "parkedQuestion" ? "waiting_for_user" : "failed",
+      userAction: shape === "parkedQuestion" ? "question" : null, canRetry: true, observedRunId: f.runId });
     const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
       actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
     expect(receipt).toMatchObject({ accepted: true });
@@ -295,7 +296,7 @@ describe("a held task with a pending decision after its remote runner was lost",
         .toEqual({ successors: 1, deferred: [] });
     }, 60_000);
 
-    it("reads every saved decision wait on a task list in one bounded query", async () => {
+    it("keeps question and saved decision reads bounded on a task list", async () => {
       const f = await heldOnConfirmation();
       const source = await currentIssue(f.issueId);
       const listed = await db.insert(issues).values(Array.from({ length: 40 }, (_, index) => ({
@@ -317,7 +318,8 @@ describe("a held task with a pending decision after its remote runner was lost",
       try {
         await taskInterruptionPresentations(db, f.companyId, [source, ...listed]);
       } finally { client.debug = previous; }
-      expect(statements.length).toBeLessThanOrEqual(2);
+      expect(statements.length).toBeLessThanOrEqual(3);
+      expect(statements.filter(query => /\bas held\s*\(/.test(query))).toHaveLength(1);
       const waits = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
         eq(agentWakeupRequests.status, "deferred_issue_execution")));
       const held = await pendingContinuationDecisionWaits(db, f.companyId, waits.map(wait => ({ id: wait.id,

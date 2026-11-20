@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, type ProjectRepository } from "@paperclipai/shared";
+import { PROJECT_COLORS, type Project, type ProjectRepository } from "@paperclipai/shared";
 import { X } from "lucide-react";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -23,7 +23,8 @@ export function NewProjectDialog() {
     ? <NewProjectForm key={selectedCompanyId} companyId={selectedCompanyId} onClose={closeNewProject} /> : null;
 }
 
-export function NewProjectForm({ companyId, onClose }: { companyId: string; onClose: () => void }) {
+/** `onCreated` runs with the new project before the form closes (a caller filing it somewhere, say). */
+export function NewProjectForm({ companyId, onClose, onCreated }: { companyId: string; onClose: () => void; onCreated?: (project: Project) => Promise<unknown> | void }) {
   const client = useQueryClient();
   const [name, setName] = useState("");
   const [color] = useState(() => PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)]!);
@@ -42,9 +43,10 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
 
   const create = useMutation({
     mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id), ...(selectedGroup ? { environmentId, expectedStorageProviderPluginId: selectedGroup.storageProviderPluginId } : {}) }),
-    onSuccess: (project) => {
+    onSuccess: async (project) => {
       trackRecentProject(project.id, companyId);
       void client.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
+      await onCreated?.(project);
       onClose();
     },
   });

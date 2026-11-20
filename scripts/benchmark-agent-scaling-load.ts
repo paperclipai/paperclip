@@ -6,10 +6,15 @@
  *
  *   deltas  an `item.delta` per text chunk, committed as the server's port
  *           commits them: the first after another event at once, later ones
- *           in one transaction per DELTA_BATCH_MS or 100 deltas
- *           (DELTA_BATCH_MS=0: one transaction per delta, as before batching)
- *   events  appendHeartbeatRunEvent for an `item.completed`, then the real
- *           controller checkpoint save, which overlaps the next append
+ *           together after DELTA_BATCH_MS or 100 deltas, and the deltas that
+ *           arrive while a batch commits all in the next batch
+ *           (DELTA_BATCH_MS=0: one append per delta, as before batching)
+ *   events  the recorded mix of other events (EVENT_MIX). A runner event
+ *           (`tool.execution.*`, `item.completed`) is a native source append
+ *           that registers a chat progress wake, then the real controller
+ *           checkpoint save, which overlaps the next append. A
+ *           `run.performance.span` is written by the server's own run trace:
+ *           an ordinary append with no wake and no checkpoint
  *   lease   every LEASE_S, one renewal of all leases through the shared
  *           schedule (LEASE_MODE=single: one transaction per run, as before).
  *           In batch mode LEASE_S is at most 20: the schedule renews a remote
@@ -33,10 +38,17 @@
  *
  *   pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-agent-scaling-load.ts
  *
+ * PROFILE sets the per-agent rates: `recorded` (default) is the median of
+ * recorded hosted native runs, 0.2 deltas/s and 0.5 other events/s; `burst`
+ * is a run's busiest minute, 2.5 deltas/s and 3 other events/s; `stress` is
+ * the earlier assumption, 20 deltas/s and 1 other event/s. API_PER_S is 0.3
+ * in every profile. Each rate can still be set on its own.
+ *
  * Optional: AGENTS (50), SECONDS (20), SOURCES (deltas,events,lease,api),
- * DELTAS_PER_S (20), EVENTS_PER_S (1), API_PER_S (0.3), LEASE_S (20),
- * DELTA_BYTES (120), EVENT_KIB (2), DELTA_BATCH_MS (250), LEASE_MODE (batch),
- * DATABASE_POOL_MAX (driver default 10).
+ * PROFILE (recorded), DELTAS_PER_S, EVENTS_PER_S, API_PER_S, LEASE_S (20),
+ * EVENT_MIX (recorded, or one event type for all other events),
+ * DELTA_BYTES (120), EVENT_KIB (2), SPAN_BYTES (600), DELTA_BATCH_MS (250),
+ * LEASE_MODE (batch), DATABASE_POOL_MAX (driver default 10).
  */
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -59,12 +71,38 @@ const express = serverRequire("express") as typeof import("express");
 
 const number = (name: string, fallback: number) => Number(process.env[name] ?? fallback);
 const AGENTS = number("AGENTS", 50), SECONDS = number("SECONDS", 20);
-const RATES = { deltas: number("DELTAS_PER_S", 20), events: number("EVENTS_PER_S", 1), api: number("API_PER_S", 0.3),
-  lease: 1 / number("LEASE_S", 20) };
+const PROFILES = {
+  recorded: { deltas: 0.2, events: 0.5, api: 0.3 },
+  burst: { deltas: 2.5, events: 3, api: 0.3 },
+  stress: { deltas: 20, events: 1, api: 0.3 },
+};
+const PROFILE = (process.env.PROFILE ?? "recorded") as keyof typeof PROFILES;
+assert(PROFILE in PROFILES, `Unknown PROFILE ${PROFILE}`);
+const RATES = { deltas: number("DELTAS_PER_S", PROFILES[PROFILE].deltas), events: number("EVENTS_PER_S", PROFILES[PROFILE].events),
+  api: number("API_PER_S", PROFILES[PROFILE].api), lease: 1 / number("LEASE_S", 20) };
+// Rows per event type among the other events of recorded hosted native runs.
+const RECORDED_EVENT_MIX = { "run.performance.span": 10_030, "tool.execution.progressed": 6_951, "item.completed": 4_705,
+  "tool.execution.started": 2_150, "tool.execution.completed": 2_150 };
+const EVENT_MIX: Record<string, number> = !process.env.EVENT_MIX || process.env.EVENT_MIX === "recorded"
+  ? RECORDED_EVENT_MIX : { [process.env.EVENT_MIX]: 1 };
+// One cycle of 100 slots, each type in proportion to its rows. Agents start
+// at different slots so the fleet sends the mix at every moment.
+const EVENT_CYCLE = (() => {
+  const total = Object.values(EVENT_MIX).reduce((sum, rows) => sum + rows, 0);
+  const shares = Object.entries(EVENT_MIX).map(([type, rows]) => ({ type, exact: rows / total * 100 }));
+  const slots = shares.map(share => ({ ...share, count: Math.floor(share.exact) }));
+  for (const slot of [...slots].sort((a, b) => (b.exact - b.count) - (a.exact - a.count))
+    .slice(0, 100 - slots.reduce((sum, slot) => sum + slot.count, 0))) slot.count += 1;
+  const cycle: string[] = [];
+  for (let index = 0; cycle.length < 100; index++) {
+    for (const slot of slots) if (index < slot.count) cycle.push(slot.type);
+  }
+  return cycle;
+})();
 type Source = keyof typeof RATES;
 const SOURCES = (process.env.SOURCES ?? "deltas,events,lease,api").split(",").map(value => value.trim()).filter(Boolean) as Source[];
 for (const source of SOURCES) assert(source in RATES, `Unknown source ${source}`);
-const DELTA_BYTES = number("DELTA_BYTES", 120), EVENT_KIB = number("EVENT_KIB", 2);
+const DELTA_BYTES = number("DELTA_BYTES", 120), EVENT_KIB = number("EVENT_KIB", 2), SPAN_BYTES = number("SPAN_BYTES", 600);
 const DELTA_BATCH_MS = number("DELTA_BATCH_MS", 250), DELTA_BATCH_MAX = 100;
 const LEASE_BATCHED = (process.env.LEASE_MODE ?? "batch") !== "single";
 // The shared schedule renews a remote lease on its own 20 s after the last
@@ -120,7 +158,9 @@ try {
     fleet.push({ agentId: agent!.id, issueId: issue!.id, runId, leaseOwner, write, records, checkpoint, seq: 0,
       checkpointTail: Promise.resolve(), appendTail: Promise.resolve() as Promise<unknown>,
       deltaQueue: [] as Array<{ input: AppendHeartbeatRunEventInput; settle: (error?: unknown) => void }>,
-      deltaTimer: null as ReturnType<typeof setTimeout> | null, streamedSinceBoundary: false, token: createLocalAgentJwt(agent!.id, companyId, "process", runId, null)! });
+      deltaTimer: null as ReturnType<typeof setTimeout> | null, streamedSinceBoundary: false,
+      openBatch: null as Array<{ input: AppendHeartbeatRunEventInput; settle: (error?: unknown) => void }> | null,
+      eventSlot: Math.floor(index * EVENT_CYCLE.length / Math.max(1, AGENTS)), token: createLocalAgentJwt(agent!.id, companyId, "process", runId, null)! });
   }
 
   const app = express();
@@ -149,12 +189,29 @@ try {
   const flushDeltas = (agent: Agent) => {
     if (agent.deltaTimer !== null) clearTimeout(agent.deltaTimer);
     agent.deltaTimer = null;
-    const batch = agent.deltaQueue;
-    if (batch.length === 0) return;
-    agent.deltaQueue = [];
+    if (agent.deltaQueue.length === 0) return;
     agent.streamedSinceBoundary = true;
-    agent.appendTail = agent.appendTail.then(() => appendHeartbeatRunEventBatch(db, batch.map(item => item.input), () => {}))
-      .then(() => { for (const item of batch) item.settle(); }, error => { for (const item of batch) item.settle(error); });
+    // As the port: one batch waits behind the batch that is committing, and
+    // takes every delta queued when it starts, unless a runner event came first.
+    if (agent.openBatch) {
+      agent.openBatch.push(...agent.deltaQueue);
+      agent.deltaQueue = [];
+      return;
+    }
+    const batch = agent.deltaQueue;
+    agent.deltaQueue = [];
+    agent.openBatch = batch;
+    agent.appendTail = agent.appendTail.then(() => {
+      if (agent.openBatch === batch) {
+        agent.openBatch = null;
+        batch.push(...agent.deltaQueue);
+        agent.deltaQueue = [];
+        if (agent.deltaTimer !== null) clearTimeout(agent.deltaTimer);
+        agent.deltaTimer = null;
+      }
+      return appendHeartbeatRunEventBatch(db, batch.map(item => item.input), () => {})
+        .then(() => { for (const item of batch) item.settle(); }, error => { for (const item of batch) item.settle(error); });
+    });
   };
   const appendDelta = (agent: Agent) => {
     const { input } = eventInput(agent, "item.delta", DELTA_BYTES);
@@ -173,15 +230,29 @@ try {
   const append = (agent: Agent, eventType: string, bytes: number) => {
     const { seq, event, input } = eventInput(agent, eventType, bytes);
     flushDeltas(agent);
+    agent.openBatch = null;
     agent.streamedSinceBoundary = false;
     const queued = agent.appendTail.then(() => appendHeartbeatRunEvent(db, input)).then(() => ({ seq, event }));
     agent.appendTail = queued.catch(() => undefined);
     return queued;
   };
+  // The server's run trace appends its spans directly: not a runner event, so
+  // no source sequence, no wake, no checkpoint, and no place in the run's
+  // stream of runner events.
+  const appendSpan = (agent: Agent) => {
+    const payload = { schema: "paperclip.run-performance-span.v1", span: "tool.call", parentSpan: "task.turn",
+      durationMs: 12.5, outcome: "ok", detail: randomBytes(Math.ceil(SPAN_BYTES * 0.75)).toString("base64") };
+    return appendHeartbeatRunEvent(db, { companyId, agentId: agent.agentId, runId: agent.runId,
+      eventType: "run.performance.span", stream: "system", level: "info", message: "runner span: tool.call (12.5ms)", payload });
+  };
+  const eventsByType: Record<string, number> = {};
   const operations: Record<Source, (agent: Agent) => Promise<unknown>> = {
     deltas: agent => appendDelta(agent),
     events: async agent => {
-      const { seq, event } = await append(agent, "item.completed", EVENT_KIB * 1024);
+      const eventType = EVENT_CYCLE[(agent.eventSlot++) % EVENT_CYCLE.length]!;
+      eventsByType[eventType] = (eventsByType[eventType] ?? 0) + 1;
+      if (eventType === "run.performance.span") { await appendSpan(agent); return; }
+      const { seq, event } = await append(agent, eventType, EVENT_KIB * 1024);
       const changed = new Map([[`event:${seq}`, JSON.stringify(event)], ["cursor", JSON.stringify({ ackedSourceSeq: seq })]]);
       for (const [key, value] of changed) agent.records.set(key, value);
       // The save is serial per controller and does not block the next frame.
@@ -203,6 +274,7 @@ try {
   for (const source of SOURCES) if (!(LEASE_BATCHED && source === "lease")) await operations[source](fleet[0]!);
   await fleet[0]!.checkpointTail;
   assert.equal(checkpointFailures, 0, `checkpoint save failed during warm-up: ${firstCheckpointError}`);
+  for (const eventType of Object.keys(eventsByType)) delete eventsByType[eventType];
 
   const stats = Object.fromEntries(SOURCES.map(source => [source, { done: 0, failed: 0, late: [] as number[], firstError: "" }])) as
     Record<Source, { done: number; failed: number; late: number[]; firstError: string }>;
@@ -298,7 +370,7 @@ try {
         donePerSecond: round(stat.done / seconds), lateMs: { p50: quantile(stat.late, 0.5), p99: quantile(stat.late, 0.99),
           max: stat.late.length ? round(stat.late.reduce((max, value) => Math.max(max, value), -Infinity)) : null } }];
     })),
-    deltaBatchMs: DELTA_BATCH_MS, leaseMode: LEASE_BATCHED ? "batch" : "single", leasesLost,
+    profile: PROFILE, eventsIssuedByType: eventsByType, deltaBatchMs: DELTA_BATCH_MS, leaseMode: LEASE_BATCHED ? "batch" : "single", leasesLost,
     checkpointSaves: { failed: checkpointFailures, firstError: firstCheckpointError || undefined },
   }, null, 2));
 } finally {

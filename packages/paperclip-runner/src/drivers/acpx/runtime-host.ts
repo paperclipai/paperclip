@@ -2,7 +2,7 @@ import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
 import type { AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
-import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
+import { acpxInstructionsAdmissionError, recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
 import { composeCopilotSystemInstructions } from "./copilot-profile.js";
 import { resolveClaudeEffort } from "./claude-effort.js";
 import { resolveGrokEffort } from "./grok-effort.js";
@@ -10,6 +10,7 @@ import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
+import type { ClaudeProviderCycleItem } from "./claude-provider-turns.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -158,6 +159,20 @@ export interface AcpxRuntimeTurn {
 }
 
 /** Minimal third-party ACP runtime surface admitted by the host boundary. */
+export type AcpxProviderTurnBinding = {
+  onPermissionRequest: AcpxHostPermissionHandler;
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
+  busy(): boolean;
+};
+
+export interface AcpxProviderCycleStream {
+  next(): Promise<ClaudeProviderCycleItem | null>;
+  adopt(binding: AcpxProviderTurnBinding): boolean;
+  drop(): void;
+  cancel(): boolean;
+  decisionFor(toolCallId: unknown): Promise<boolean> | null;
+}
+
 export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
@@ -168,6 +183,8 @@ export interface AcpxRuntimePort {
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
   backgroundTaskState?(): ClaudeBackgroundTaskState | null;
+  providerCycles?(): AcpxProviderCycleStream | null;
+  providerTurnsAvailable?(): boolean;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -897,6 +914,14 @@ export class AcpxRuntimeHost {
     return this.#runtime.backgroundTaskState?.() ?? null;
   }
 
+  providerCycles(): AcpxProviderCycleStream | null {
+    return this.#runtime.providerCycles?.() ?? null;
+  }
+
+  providerTurnsAvailable(): boolean {
+    return this.#runtime.providerTurnsAvailable?.() ?? false;
+  }
+
   async controlGoal(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -1393,7 +1418,7 @@ async function cleanupRuntimeResources(
 function boundedInstructions(value: string | undefined): string {
   const instructions = value ?? "";
   if (Buffer.byteLength(instructions) > 256 * 1024) {
-    throw new Error("ACPX system instructions exceed their bounded size");
+    throw acpxInstructionsAdmissionError("ACPX system instructions exceed their bounded size");
   }
   return instructions;
 }

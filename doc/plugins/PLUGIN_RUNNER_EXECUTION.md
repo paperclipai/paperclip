@@ -102,8 +102,12 @@ reconciliation for the same task.
 
 ## Credentials and tools
 
-Core can transfer a selected Codex account or a direct Claude credential.
+Core can transfer a selected Codex account, a direct Claude credential, or the
+API credential of a Grok, Copilot or OpenCode connection. See
+[typed credentials](PLUGIN_ENVIRONMENT_TASKS.md#typed-credentials).
 Other managed routes fail closed until they have a typed credential contract.
+A Grok subscription login, Claude provider routing, and an OpenCode gateway
+without a key also fail closed.
 Do not put credentials in task metadata, journals, logs, or errors.
 
 Assigned MCP tools run through the Core gateway over PRP.
@@ -181,6 +185,18 @@ reuses it on retry. If an interrupted finalization has no recorded placement,
 Core retries its original request without placement. This preserves the
 operation ID and the provider's established routing for requests made before
 this upgrade.
+
+A storage provider can declare `workspaceProvider.workspaceEnvironmentVersion: 1`.
+When the run's selected environment uses one of that same plugin's environment
+drivers, Core then adds `environment: { id, driverKey, config }` to the run's
+`prepare` requests, including verification and fresh preparation. `config` is
+the environment's driver config, the same value the driver's acquire receives.
+Core omits the field for providers that do not declare the version, for
+environments of another plugin or a non-plugin driver, and for requests made
+without the run's environment, such as reservation reconciliation, retry
+candidate selection, and finalization. The field is
+context only: it does not change the operation ID, when Core acquires the task
+lease, or the order of workspace and environment work.
 
 Before dispatching preparation for an unbound workspace, Core records the
 run and agent, plus the task placement when present. Inspection replays the
@@ -281,6 +297,19 @@ back off from 5 minutes, doubling up to 4 hours. A successful inspection or
 removal clears the record, and a reopen, which raises the lifecycle generation,
 discards it. Other wakes, including provider upgrades, wait for the next attempt
 time. Core keeps the record through workspace metadata updates.
+
+When a successful terminal cleanup inspection keeps the workspace, Core records
+`metadata.terminalInspectionHold` and does not send `inspect` again while the
+hold applies. A workspace kept for local data (dirty or untracked files, or
+local-only data) is held until something changes it. A clean workspace that is
+neither merged nor recoverable is checked again after 1 hour, then on an
+interval that doubles up to 24 hours, because the remote can change without
+touching the workspace. Any of these ends a hold early: a change notice that
+names the workspace or a task in its tree, a new lifecycle generation, a write
+to the workspace row (for example a new binding or status), a task in its tree
+finishing again, or new delivery evidence. A new inspected HEAD restarts the
+interval. Only a kept workspace is held. An inspection that finds the workspace
+removable proceeds to removal as before and clears any hold.
 
 The optional `prepared.destinationRef` records the resolved delivery branch as
 `refs/heads/<branch>`, up to 266 characters including the prefix. Providers should

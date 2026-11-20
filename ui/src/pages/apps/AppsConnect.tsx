@@ -5,7 +5,7 @@ import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnec
 import { AiProviderSetup } from "@/components/ai-connections/AiProviderSetup";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
 import { useEffect } from "react";
-import { isRetiredComposioConnection } from "@paperclipai/shared";
+import { isPluginAppSlug, isRetiredComposioConnection } from "@paperclipai/shared";
 import { findComposioCatalogApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
@@ -39,7 +39,8 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
   const aiAccounts = useQuery({ queryKey: ["ai-connections", selectedCompanyId], queryFn: () => aiConnectionsApi.list(selectedCompanyId!), enabled: Boolean(selectedCompanyId && aiReconnectRequested) });
   const aiAccountsView = useQueryView(aiAccounts);
   const aiReconnect = aiAccounts.data?.connections.find(c => c.id === reconnectId);
-  const gallery = useQuery({ queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"), queryFn: () => toolsApi.listGallery(selectedCompanyId!), enabled: !!selectedCompanyId && !!source?.startsWith("ai-router-") });
+  const pluginApp = isPluginAppSlug(source);
+  const gallery = useQuery({ queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"), queryFn: () => toolsApi.listGallery(selectedCompanyId!), enabled: !!selectedCompanyId && (!!source?.startsWith("ai-router-") || pluginApp) });
   const galleryView = useQueryView(gallery);
   const router = gallery.data?.apps.find(app => app.slug === source)?.aiConnectionRouter;
   const toolkit = searchParams.get("targetToolkit");
@@ -55,6 +56,15 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
   useEffect(() => {
     if (hasSavedComposio) navigate(`/apps?source=composio&targetToolkit=${encodeURIComponent(toolkit!)}`, { replace: true });
   }, [hasSavedComposio, toolkit, navigate]);
+  const legacyCopilotLink = source === "github" && searchParams.get("method") === "copilot-token";
+  useEffect(() => {
+    if (!legacyCopilotLink) return;
+    const params = new URLSearchParams(searchParams);
+    params.delete("appKey");
+    params.set("source", "github-copilot");
+    navigate(`/apps/connect?${params.toString()}`, { replace: true });
+  }, [legacyCopilotLink, searchParams, navigate]);
+  if (legacyCopilotLink) return null;
   if (reuseComposio && selectedCompanyId && (saved.isPending || savedView.kind === "reconnecting" || hasSavedComposio)) return <p role="status" className="text-sm text-muted-foreground">Checking saved Composio accounts…</p>;
   if (reuseComposio && savedView.kind === "error") return <div className="space-y-3">
     <QueryErrorState error={saved.error} action="load your Composio accounts" onRetry={savedView.retry} retrying={savedView.isFetching} />
@@ -95,6 +105,16 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
     if (galleryView.kind === "error") return <QueryErrorState error={gallery.error} action="load the connector" onRetry={galleryView.retry} retrying={galleryView.isFetching} />;
     if (!router) return <p role="alert">This connection pool plugin is unavailable. Enable it in Plugins.</p>;
     return <AiConnectionPoolConnector pluginKey={router.pluginKey} />;
+  }
+  // A plugin-provided connector is known only from the host gallery, which
+  // also registers it for the setup flow's catalog lookups.
+  if (pluginApp) {
+    if (gallery.isPending || galleryView.kind === "reconnecting") return <p role="status">Loading connector…</p>;
+    if (galleryView.kind === "error") return <QueryErrorState error={gallery.error} action="load the connector" onRetry={galleryView.retry} retrying={galleryView.isFetching} />;
+    if (!gallery.data?.apps.some(app => app.slug === source)) return <div className="space-y-3">
+      <p role="alert">This connector is unavailable. Ask an instance admin to enable its plugin.</p>
+      <Button variant="ghost" onClick={() => navigate("/apps")}>Back to Connectors</Button>
+    </div>;
   }
   return <ConnectionSetupFlow byoOnly={byoOnly} credentialSource={credentialSource} host="page"
     onComplete={returningToSkills ? returnToSkills : undefined}

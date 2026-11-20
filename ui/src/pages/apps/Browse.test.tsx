@@ -11,6 +11,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { AiManagedConnectionSummary } from "@paperclipai/shared";
 import type { AggregatorAppCatalogEntry } from "@paperclipai/shared/aggregator-app-catalog";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const aggregatorCatalogMock = vi.hoisted(() => [] as AggregatorAppCatalogEntry[]);
 // Counts identity normalizations made by the page (not by the catalog module itself), as a
@@ -55,6 +56,8 @@ vi.mock("@/api/ai-connection-pools", () => ({ aiConnectionPoolsApi: { list: pool
 
 const assistantConnectionsMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/publicMcp", () => ({ publicMcpApi: { connections: assistantConnectionsMock } }));
+const tailscaleConnectionsMock = vi.hoisted(() => vi.fn(async () => [] as Array<{ id: string; companyId: string; name: string; status: string }>));
+vi.mock("@/api/tailscale", () => ({ tailscaleApi: { list: tailscaleConnectionsMock } }));
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -63,6 +66,7 @@ const listAiConnectionsMock = vi.hoisted(() => vi.fn());
 const setAiDefaultMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: listAiConnectionsMock, setDefault: setAiDefaultMock } }));
 const listUserDirectoryMock = vi.hoisted(() => vi.fn());
+const boardAccessMock = vi.hoisted(() => vi.fn());
 const archiveConnectionMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -99,12 +103,13 @@ vi.mock("@/api/tools", () => ({
 vi.mock("@/api/access", () => ({
   accessApi: {
     listUserDirectory: (companyId: string) => listUserDirectoryMock(companyId),
+    getCurrentBoardAccess: boardAccessMock,
   },
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
-    <a href={to}>{children}</a>
+  Link: ({ children, to, className }: { children: React.ReactNode; to: string; className?: string }) => (
+    <a href={to} className={className}>{children}</a>
   ),
   useNavigate: () => navigateMock,
 }));
@@ -199,6 +204,7 @@ describe("Connectors landing page", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    boardAccessMock.mockReset().mockResolvedValue({ source: "session", isInstanceAdmin: true });
     accountIdentity.userId = "board-user"; accountIdentity.settled = true;
     assistantConnectionsMock.mockReset().mockResolvedValue([]);
     syncComposioAppsMock.mockReset().mockImplementation((...args) => listComposioAppsMock(...args));
@@ -302,6 +308,35 @@ describe("Connectors landing page", () => {
     await act(() => button!.click());
     expect(navigateMock).toHaveBeenCalledWith("/apps/assistant-connection");
     expect(chatSetupMock).not.toHaveBeenCalled();
+  });
+
+  it("finds Tailscale in Connectors and opens network setup without creating a tool connection", async () => {
+    await renderBrowse(false);
+    await search("Tailscale");
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Connect Tailscale"]');
+    expect(button).not.toBeNull();
+    await act(() => button!.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/tailscale");
+    expect(container.textContent).not.toContain("No connectors match");
+  });
+
+  it("does not advertise Tailscale setup or request tailnets for non-instance-admin members", async () => {
+    boardAccessMock.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    await renderBrowse(false);
+    await search("Tailscale");
+    expect(container.querySelector('[aria-label="Connect Tailscale"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="tailscale"]')).toBeNull();
+    expect(tailscaleConnectionsMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a connected tailnet in Installed and removes it when disconnected", async () => {
+    tailscaleConnectionsMock.mockResolvedValueOnce([{ id: "tailnet", companyId: "company-1", name: "Home tailnet", status: "connected" }]);
+    const client = await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.querySelector('[data-app-slug="tailscale"]')?.textContent).toContain("Home tailnet");
+    await act(async () => { await client.invalidateQueries({ queryKey: ["tailscale-connections", "company-1"] }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="tailscale"]')).toBeNull();
   });
 
   it("keeps assistant setup in the Paperclip catalog when filtering connection sources", async () => {
@@ -551,6 +586,8 @@ describe("Connectors landing page", () => {
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('“Composio account”');
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Accounts and sign-in are managed in Composio.");
     expect(document.querySelectorAll('[role="dialog"] a[href="/apps/conn-notion/permissions"]')).toHaveLength(1);
+    expect(replayLeaks("Meeting notes", document.querySelector('[role="dialog"]')!)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Composio account", document.querySelector('[role="dialog"]')!)).toEqual({ rendered: true, recorded: false });
     expect(openNewIssueMock).not.toHaveBeenCalled();
   });
 
@@ -1219,8 +1256,11 @@ describe("Connectors landing page", () => {
     expect([...row.querySelectorAll("button")].some(button => /^(Connect|Add connection|Reconnect|Finish setup)$/.test(button.textContent?.trim() ?? ""))).toBe(false);
     await act(() => { row.querySelector<HTMLButtonElement>('button[aria-label^="Manage "]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
     await flushReact();
+    expect(replayLeaks("Notebook account", row)).toEqual({ rendered: true, recorded: false });
     await act(() => { [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === "Remove connection")!.click(); });
     await flushReact();
+    const removeDialog = document.querySelector('[role="alertdialog"]')!;
+    expect(replayLeaks("Notebook account", removeDialog)).toEqual({ rendered: true, recorded: false });
     await act(() => { [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Remove connection")!.click(); });
     await flushReact();
     expect(archiveConnectionMock).toHaveBeenCalledWith("saved-notebook");
@@ -1274,10 +1314,38 @@ describe("Connectors landing page", () => {
     expect(container.textContent).not.toContain("Chat with agents");
     await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
-    const copilot = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Connect Copilot")!;
-    expect(copilot).toBeTruthy();
-    await act(() => void copilot.click());
-    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github&method=copilot-token");
+  });
+
+  it("lists GitHub Copilot as its own connector and keeps saved Copilot accounts off the GitHub card", async () => {
+    listGalleryMock.mockResolvedValue({ apps: ["github", "github-copilot"].map(getAppStoreDefinition) });
+    listApplicationsMock.mockResolvedValue({ applications: [application({
+      id: "github-app", name: "GitHub", applicationKey: "app-gallery:github", metadata: { sourceTemplateKey: "github" },
+    })] });
+    listConnectionsMock.mockResolvedValue({ connections: [
+      connection({ id: "github-tools", applicationId: "github-app", name: "octocat", config: { sourceTemplateKey: "github" } }),
+      connection({
+        id: "copilot-account", applicationId: "github-app", name: "My Copilot", connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key",
+        config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } },
+      }),
+    ] });
+    await renderBrowse();
+    const github = container.querySelector('[data-app-slug="github"]')!;
+    const copilot = container.querySelector('[data-app-slug="github-copilot"]')!;
+    expect(github.querySelector("h2")?.textContent).toBe("GitHub");
+    expect(copilot.querySelector("h2")?.textContent).toBe("GitHub Copilot");
+    expect(github.textContent).toContain("octocat");
+    expect(github.textContent).not.toContain("My Copilot");
+    expect(github.textContent).not.toContain("Copilot");
+    expect(copilot.textContent).toContain("My Copilot");
+    expect(copilot.textContent).not.toContain("octocat");
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Connect Copilot")).toBe(false);
+  });
+
+  it("opens Copilot setup from the GitHub Copilot card", async () => {
+    listGalleryMock.mockResolvedValue({ apps: ["github", "github-copilot"].map(getAppStoreDefinition) });
+    await renderBrowse();
+    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub Copilot"]')!.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github-copilot");
   });
 
   it("names what the card will actually ask for", async () => {
@@ -1388,6 +1456,7 @@ describe("Connectors landing page", () => {
       "notion",
       "slack",
       "speko",
+      "tailscale",
       "telegram",
       "custom-mcp",
     ]);
@@ -1649,6 +1718,42 @@ describe("Connectors landing page", () => {
         tone: "success",
       }),
     );
+  });
+
+  it("tells the user when Paperclip could not end Google access and links to Google's page", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection()] });
+    archiveConnectionMock.mockResolvedValueOnce({
+      ...connection(), status: "archived",
+      removal: { providerAccess: { provider: "google", result: "not_ended", outcomes: ["broker_unavailable"] } },
+    });
+
+    await renderBrowse();
+    const menuTrigger = container.querySelector<HTMLButtonElement>('button[aria-label="Manage devinfoley@gmail.com connection"]');
+    await act(async () => {
+      menuTrigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    await flushReact();
+    const removeItem = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent?.trim() === "Remove connection");
+    await act(async () => {
+      removeItem?.dispatchEvent(new Event("click", { bubbles: true }));
+    });
+    await flushReact();
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Remove connection");
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Connection removed",
+      tone: "warn",
+      body: expect.stringContaining("Paperclip removed the connection but couldn't end its access at Google."),
+      action: expect.objectContaining({ label: "Open Google account connections" }),
+    }));
+    expect(JSON.stringify(pushToastMock.mock.calls.at(-1))).not.toContain("broker_unavailable");
   });
 
   it("retains the confirmed pool revision when a concurrent edit rejects removal", async () => {

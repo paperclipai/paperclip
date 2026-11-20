@@ -3,7 +3,8 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { DATABASE_WORK_CHANNEL, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { workSignalDebug } from "./work-signal-debug.js";
+import { DATABASE_WORK_CHANNEL, DATABASE_WORK_NOTIFICATION_MAX_BYTES, DATABASE_WORK_TOPIC_NOTIFICATIONS_MAX_BYTES, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, primeDatabaseWorkTransactionId, publishDatabaseWorkSettled, receiveDatabaseWorkNotification, reconcileDatabaseWork, reconcileDatabaseWorkNotifications, setDatabaseWorkReconnectHint, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -15,6 +16,32 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.execute(sql`create table work_signal_test (id text primary key)`);
   }, 90_000);
   afterAll(async () => { await temporary?.cleanup(); });
+
+  it("does not touch the debug attribution log on the signal path when the flag is off", async () => {
+    const signal = vi.spyOn(workSignalDebug, "signal");
+    const event = vi.spyOn(workSignalDebug, "event");
+    try {
+      await db.transaction(async tx => {
+        await signalDatabaseWork(tx, "debug-off", "{\"companyId\":\"c\"}");
+        await tx.execute(sql`insert into work_signal_test values ('debug-off')`);
+      });
+      publishDatabaseWorkSettled(db, "debug-off");
+      expect(signal).not.toHaveBeenCalled();
+      expect(event).not.toHaveBeenCalled();
+    } finally { signal.mockRestore(); event.mockRestore(); }
+  });
+
+  it("sends a topic's declared reconnect hint, and an unscoped reload to other topics, when notifications reconnect", () => {
+    const received: Array<[string, string[] | undefined]> = [];
+    const stopHinted = subscribeDatabaseWork(db, "reconnect-hinted", (event, hints) => received.push(["hinted", hints && [...hints]]));
+    const stopPlain = subscribeDatabaseWork(db, "reconnect-plain", (event, hints) => received.push(["plain", hints && [...hints]]));
+    try {
+      setDatabaseWorkReconnectHint(db, "reconnect-hinted", "{\"reload\":true}");
+      reconcileDatabaseWorkNotifications(db);
+      expect(received).toEqual(expect.arrayContaining([["hinted", ["{\"reload\":true}"]], ["plain", undefined]]));
+      expect(received).toHaveLength(2);
+    } finally { stopHinted(); stopPlain(); }
+  });
 
   it("defers nested savepoint notifications until the outer commit and preserves return values", async () => {
     const events: string[] = [];
@@ -145,6 +172,49 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { release(); await serverDone?.catch(() => {}); unsubscribe(); }
   });
 
+  it("resolves an uncertain transaction with a transaction id that a statement returned", async () => {
+    await expect(db.transaction(async tx => {
+      const [{ xid }] = await tx.execute(sql`select pg_current_xact_id()::text as xid`);
+      primeDatabaseWorkTransactionId(tx, xid as string);
+      await signalDatabaseWork(tx, "primed-disconnect");
+      await tx.execute(sql`insert into work_signal_test values ('primed-disconnect')`);
+      const [{ pid }] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      await db.execute(sql`select pg_terminate_backend(${pid as number})`);
+      await tx.execute(sql`select 1`);
+    })).rejects.toThrow();
+    expect(databaseWorkPending(db, "primed-disconnect")).toBe(true);
+    await reconcileDatabaseWork(db, "primed-disconnect");
+    expect(databaseWorkPending(db, "primed-disconnect")).toBe(false);
+    expect(await db.execute(sql`select * from work_signal_test where id = 'primed-disconnect'`)).toHaveLength(0);
+  });
+
+  it("publishes a settled wake at once outside a transaction, and inside one only after the outermost commit", async () => {
+    const events: Array<[string, string[]]> = [];
+    const unsubscribe = subscribeDatabaseWork(db, "settled-after-commit", (event, hints) => events.push([event, [...hints ?? []]]));
+    try {
+      publishDatabaseWorkSettled(db, "settled-after-commit", "outside");
+      expect(events).toEqual([["settled", ["outside"]]]);
+      events.length = 0;
+      await db.transaction(async tx => {
+        publishDatabaseWorkSettled(tx, "settled-after-commit", "committed");
+        await tx.transaction(async savepoint => { publishDatabaseWorkSettled(savepoint, "settled-after-commit", "released"); });
+        await expect(tx.transaction(async savepoint => {
+          publishDatabaseWorkSettled(savepoint, "settled-after-commit", "rolled-back-savepoint");
+          throw new Error("savepoint rollback");
+        })).rejects.toThrow("savepoint rollback");
+        expect(events).toEqual([]);
+      });
+      expect(events).toEqual([["settled", ["committed"]], ["settled", ["released"]]]);
+      events.length = 0;
+      await expect(db.transaction(async tx => {
+        publishDatabaseWorkSettled(tx, "settled-after-commit", "rolled-back");
+        throw new Error("outer rollback");
+      })).rejects.toThrow("outer rollback");
+      expect(events).toEqual([]);
+      expect(databaseWorkPending(db, "settled-after-commit")).toBe(false);
+    } finally { unsubscribe(); }
+  });
+
   it("recovers after a real backend disconnect without replaying the queue write", async () => {
     await expect(db.transaction(async tx => {
       await signalDatabaseWork(tx, "disconnect");
@@ -195,6 +265,17 @@ describe("work signal query boundaries", () => {
     await expect(connection.transaction(async (tx: any) => { await signalDatabaseWork(tx, "failed"); write(); })).rejects.toThrow("disconnected");
     expect(write).not.toHaveBeenCalled();
     expect(databaseWorkPending(connection, "failed")).toBe(false);
+  });
+  it("reads no transaction id when a statement of the transaction already returned it", async () => {
+    const execute = vi.fn();
+    const connection = installDatabaseWorkSignals({ execute, transaction: async (callback: any) => callback({ execute, transaction: async () => {} }) });
+    primeDatabaseWorkTransactionId(connection, "outside");
+    await connection.transaction(async (tx: any) => {
+      primeDatabaseWorkTransactionId(tx, "42");
+      await signalDatabaseWork(tx, "primed");
+      await signalDatabaseWork(tx, "primed-again");
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
   it("rejects registration on an autocommit root", async () => {
     const connection = installDatabaseWorkSignals({ execute: vi.fn(), transaction: vi.fn() });
@@ -270,8 +351,11 @@ describe("database work scope identity", () => {
       expect(notifyStatements).toBe(0);
     }));
     expect(result).toMatchObject({ statements: 1, sent: ["a", "b", "c"], delivered: ["a", "b", "c"], failure: null });
-    expect(result.payloads.map(payload => JSON.parse(payload))).toEqual(["a", "b", "c"].map(name =>
-      ({ version: 1, origin: expect.any(String), topic: name })));
+    expect(result.payloads.map(payload => JSON.parse(payload))).toEqual([
+      { version: 1, origin: expect.any(String), topic: "a", hints: ["one", "two"] },
+      { version: 1, origin: expect.any(String), topic: "b" },
+      { version: 1, origin: expect.any(String), topic: "c" },
+    ]);
   });
 
   it("sends nothing for a transaction that signals nothing", async () => {
@@ -354,5 +438,150 @@ describe("database work scope identity", () => {
       await root.transaction(callback).catch(() => {});
       await root.transaction(callback);
     })).toMatchObject({ statements: 5, delivered: ["a", "a", "b", "b", "c"] });
+  });
+
+  function legacyReceive(payload: string): string | null {
+    if (payload.length > 1024) return null;
+    let value: { version?: unknown; origin?: unknown; topic?: unknown };
+    try { value = JSON.parse(payload); } catch { return null; }
+    if (!value || value.version !== 1 || typeof value.origin !== "string"
+      || typeof value.topic !== "string" || !/^[a-zA-Z0-9:_-]{1,200}$/.test(value.topic)) return null;
+    return value.topic;
+  }
+  function receiving(topics: string[]) {
+    const receiver = createDb(temporary.connectionString, { maxConnections: 1 });
+    const wakes: Array<[string, string[] | null]> = [];
+    const stops = topics.map(name => subscribeDatabaseWork(receiver, name, (event, hints) => {
+      wakes.push([name, hints ? [...hints] : null]);
+      expect(event).toBe("settled");
+    }));
+    return {
+      receiver, wakes,
+      deliver(payloads: string[]) { for (const payload of payloads) receiveDatabaseWorkNotification(receiver, payload); },
+      async close() { for (const stop of stops) stop(); await receiver.$client.end({ timeout: 1 }); },
+    };
+  }
+
+  it("carries a commit's deduplicated hints, so another process wakes only those scopes", async () => {
+    const other = receiving(["hinted", "unhinted", "mixed"]);
+    try {
+      const result = await run(root => root.transaction(async tx => {
+        await signalDatabaseWork(tx, "hinted", "company-1");
+        await tx.transaction(async nested => {
+          await signalDatabaseWork(nested, "hinted", "company-2");
+          publishDatabaseWorkSettled(nested, "hinted", "company-1");
+        });
+        await tx.transaction(async nested => { await signalDatabaseWork(nested, "hinted", "rolled-back"); rollback(); }).catch(() => {});
+        await signalDatabaseWork(tx, "unhinted");
+        await signalDatabaseWork(tx, "mixed", "company-3");
+        publishDatabaseWorkSettled(tx, "mixed");
+      }));
+      expect(result).toMatchObject({ statements: 1, sent: ["hinted", "unhinted", "mixed"], failure: null });
+      expect(result.payloads.map(payload => JSON.parse(payload).hints)).toEqual([["company-1", "company-2"], undefined, undefined]);
+      other.deliver(result.payloads);
+      expect(other.wakes).toEqual([["hinted", ["company-1", "company-2"]], ["unhinted", null], ["mixed", null]]);
+      expect(result.payloads.map(legacyReceive)).toEqual(["hinted", "unhinted", "mixed"]);
+    } finally { await other.close(); }
+  });
+
+  it("scopes an unhinted signal alongside a hinted one to the hinted set, locally and in another process", async () => {
+    const other = receiving(["alongside"]);
+    const local: Array<string[] | null> = [];
+    const stop = subscribeDatabaseWork(db, "alongside", (event, hints) => { if (event === "settled") local.push(hints ? [...hints] : null); });
+    try {
+      const result = await run(root => root.transaction(async tx => {
+        await signalDatabaseWork(tx, "alongside");
+        await signalDatabaseWork(tx, "alongside", "company-1");
+      }));
+      expect(local).toEqual([["company-1"]]);
+      expect(result.payloads.map(payload => JSON.parse(payload).hints)).toEqual([["company-1"]]);
+      other.deliver(result.payloads);
+      expect(other.wakes).toEqual([["alongside", ["company-1"]]]);
+    } finally { stop(); await other.close(); }
+  });
+
+  it("splits many hints into payloads an older receiver still reads, within the per-topic byte cap", async () => {
+    const hints = Array.from({ length: 80 }, (_, index) => JSON.stringify({ companyId: `company-${String(index).padStart(4, "0")}` }));
+    const other = receiving(["many"]);
+    try {
+      const result = await run(root => root.transaction(async tx => { for (const hint of hints) await signalDatabaseWork(tx, "many", hint); }));
+      expect(result.statements).toBe(1);
+      expect(result.payloads.length).toBeGreaterThan(1);
+      for (const payload of result.payloads) expect(Buffer.byteLength(payload)).toBeLessThanOrEqual(DATABASE_WORK_NOTIFICATION_MAX_BYTES);
+      expect(result.payloads.reduce((total, payload) => total + Buffer.byteLength(payload), 0))
+        .toBeLessThanOrEqual(DATABASE_WORK_TOPIC_NOTIFICATIONS_MAX_BYTES);
+      expect(result.payloads.flatMap(payload => JSON.parse(payload).hints)).toEqual(hints);
+      expect(result.payloads.map(legacyReceive)).toEqual(result.payloads.map(() => "many"));
+      other.deliver(result.payloads);
+      expect(other.wakes.flatMap(([, received]) => received ?? ["*"])).toEqual(hints);
+    } finally { await other.close(); }
+  });
+
+  it("falls back to one unscoped notification when a topic's hints exceed the byte cap", async () => {
+    const tooMany = Array.from({ length: 400 }, (_, index) => `scope-${index}-${"x".repeat(20)}`);
+    const tooLong = "y".repeat(DATABASE_WORK_NOTIFICATION_MAX_BYTES);
+    const other = receiving(["overflow", "long-hint"]);
+    try {
+      const result = await run(root => root.transaction(async tx => {
+        for (const hint of tooMany) await signalDatabaseWork(tx, "overflow", hint);
+        await signalDatabaseWork(tx, "long-hint", "short");
+        await signalDatabaseWork(tx, "long-hint", tooLong);
+      }));
+      expect(result.payloads.map(payload => JSON.parse(payload))).toEqual([
+        { version: 1, origin: expect.any(String), topic: "overflow" },
+        { version: 1, origin: expect.any(String), topic: "long-hint" },
+      ]);
+      other.deliver(result.payloads);
+      expect(other.wakes).toEqual([["overflow", null], ["long-hint", null]]);
+    } finally { await other.close(); }
+  });
+
+  it("treats a malformed or unknown-version hint list as unscoped and ignores unusable or own-origin payloads", async () => {
+    const other = receiving(["remote"]);
+    const warn = vi.spyOn(process, "emitWarning");
+    try {
+      const own = await run(root => root.transaction(async tx => { await signalDatabaseWork(tx, "remote", "mine"); }));
+      const ownEvents: string[] = [];
+      const stopOwn = subscribeDatabaseWork(db, "remote", event => ownEvents.push(event));
+      try { receiveDatabaseWorkNotification(db, own.payloads[0]!); } finally { stopOwn(); }
+      expect(ownEvents).toEqual([]);
+      const origin = "another-process";
+      const payload = (value: Record<string, unknown>) => JSON.stringify({ version: 1, origin, topic: "remote", ...value });
+      other.deliver([
+        payload({ hints: "company-1" }),
+        payload({ hints: ["company-1", 7] }),
+        payload({ hints: [] }),
+        payload({ hints: null }),
+        payload({ version: 2, hints: ["company-1"] }),
+        payload({}),
+      ]);
+      expect(other.wakes).toEqual(Array.from({ length: 6 }, () => ["remote", null]));
+      other.wakes.length = 0;
+      expect(() => other.deliver([
+        "not json", "null", "[]", "7", JSON.stringify({ origin, topic: "remote", hints: ["a"] }),
+        payload({ version: "1" }), payload({ version: 1.5 }), payload({ version: 0 }), payload({ origin: 4 }),
+        payload({ topic: "bad topic" }), payload({ hints: ["a".repeat(9000)] }),
+      ])).not.toThrow();
+      expect(other.wakes).toEqual([]);
+      other.deliver([payload({ hints: ["company-9"] })]);
+      expect(other.wakes).toEqual([["remote", ["company-9"]]]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); await other.close(); }
+  });
+
+  it("logs the received hints in the remote notification debug event", async () => {
+    const enabled = vi.spyOn(workSignalDebug, "enabled", "get").mockReturnValue(true);
+    const event = vi.spyOn(workSignalDebug, "event").mockImplementation(() => {});
+    const other = receiving([]);
+    try {
+      other.deliver([
+        JSON.stringify({ version: 1, origin: "another-process", topic: "debugged", hints: ["company-1", "company-2"] }),
+        JSON.stringify({ version: 1, origin: "another-process", topic: "debugged" }),
+      ]);
+      expect(event.mock.calls.filter(([, name]) => name === "remote_notification")).toEqual([
+        ["debugged", "remote_notification", { hints: JSON.stringify(["company-1", "company-2"]) }],
+        ["debugged", "remote_notification", { hints: null }],
+      ]);
+    } finally { enabled.mockRestore(); event.mockRestore(); await other.close(); }
   });
 });

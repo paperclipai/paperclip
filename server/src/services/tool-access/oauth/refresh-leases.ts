@@ -1,4 +1,5 @@
 import { oauthConfig } from "./metadata.js";
+import { usesClientCredentials } from "./client-credentials.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -266,6 +267,33 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
           )
           .returning();
         if (claimed) return { grant: claimed, leaseId };
+      }
+      if (currentLeaseId && !leaseIsActive && usesClientCredentials(connection)) {
+        // Machine sign-in has no refresh token that an interrupted refresh
+        // could have consumed, so an abandoned lease is safe to take over:
+        // the next request simply asks for a new token.
+        const leaseId = randomUUID();
+        const providerTenant = {
+          ...(latest.providerTenant ?? {}),
+          oauth: {
+            ...withoutOAuthGrantRefreshLease(oauth),
+            refreshLease: { id: leaseId, expiresAt: new Date(Date.now() + OAUTH_REFRESH_LEASE_MS).toISOString() },
+          },
+        };
+        const [claimed] = await db
+          .update(connectionGrants)
+          .set({ providerTenant, updatedAt: now() })
+          .where(
+            and(
+              eq(connectionGrants.id, latest.id),
+              eq(connectionGrants.companyId, latest.companyId),
+              eq(connectionGrants.status, "active"),
+              sql`${connectionGrants.providerTenant} #>> '{oauth,refreshLease,id}' = ${currentLeaseId}`,
+            ),
+          )
+          .returning();
+        if (claimed) return { grant: claimed, leaseId };
+        continue;
       }
       if (currentLeaseId && !leaseIsActive) {
         throw unprocessable(

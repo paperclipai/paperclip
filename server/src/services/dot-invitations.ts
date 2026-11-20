@@ -39,7 +39,7 @@ export function dotInvitationService(db: Db, provider: "openai_dot" | "grok_bot"
       return agent ? describe(agent) : null;
     },
     async create(companyId: string, operatorId: string, details?: { name?: string; botName?: string; role?: typeof agents.$inferSelect.role; reportsTo?: string | null }) {
-      if (!await dotRunnerBroker(db).enabled(provider)) throw unprocessable(`Enable ${providerName} and Assistant connections (MCP) in experimental settings.`);
+      if (!await dotRunnerBroker(db).enabled(provider)) throw unprocessable(`Enable ${providerName} in experimental settings.`);
       const database = db;
       const lockKey = `paperclip:${source}:${companyId}:${operatorId}`;
       return withDedicatedDbConnection(db, lockDb => lockDb.transaction(async lock => {
