@@ -491,7 +491,6 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
     expect(retryContext).toMatchObject({ source: `chat:${provider}`, wakeCommentIds: [commentId], retryOfRunId: failedRunId });
     expect(retryContext).not.toHaveProperty("paperclipHarnessCheckedOut");
     expect(retryContext).not.toHaveProperty("paperclipExternalChatExecutionBound");
-    // A review-path recovery built from the successor keeps the same batch.
     expect(decideIssueReviewPathRecovery({
       issueId, sourceRunId: retryId, assigneeAgentId: agentId, contextSnapshot: retryContext,
       reviewAttention: { state: "stalled", paths: [], reason: "Review path consumed" }, existingWake: false,
