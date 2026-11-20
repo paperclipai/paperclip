@@ -439,7 +439,7 @@
     "packages/shared/src/types/project.ts": "50b9d9c51cb38d5862e287c1a47726716603f21c",
     "packages/shared/src/types/quota.ts": "a0686a9afb3111a4de093f66200dc0c9152e883e",
     "packages/shared/src/types/resource-memberships.ts": "9eab6fad50facf3e489f8c40e5bedd92e1d1faf8",
-    "packages/shared/src/types/responsibility.ts": "f577647e59db25b6bba04fb2f9ab36a00afbb371",
+    "packages/shared/src/types/responsibility.ts": "ca7eb329f98b9fc20fef3d8d25017edcfb230a0e",
     "packages/shared/src/types/routine.ts": "6b2f2fd27187c19f98afe99f926460ded2752f20",
     "packages/shared/src/types/runtime-exposure.ts": "785f053a7ad5448cde94f36738cdb90585bbc92e",
     "packages/shared/src/types/search.ts": "4e208a9b1942991bfe5f29ef58ec71625e2693e9",
