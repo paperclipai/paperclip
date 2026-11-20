@@ -104,7 +104,7 @@ describePostgres("heartbeat provider usage limit wait", () => {
       message: "API error: 429 This request would exceed your account's rate limit. Please try again later", ...overrides } },
   });
 
-  it("defers new work until the reported reset instead of dispatching a doomed run", async () => {
+  it("defers new work to a recheck without claiming an unreported reset", async () => {
     const limited = rateLimited(16);
     const f = await seed([limited]);
     const resetAt = new Date(limited.finishedAt.getTime() + 60 * 60_000);
@@ -120,6 +120,8 @@ describePostgres("heartbeat provider usage limit wait", () => {
       },
     });
     expect(finished.error).toContain(resetAt.toISOString());
+    expect(finished.error).toContain("recheck");
+    expect(finished.error).not.toMatch(/expected to reset|start this work then/);
     const successors = await db.select().from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, f.agentId));
     const retry = successors.find(run => run.status === "scheduled_retry");
@@ -132,7 +134,7 @@ describePostgres("heartbeat provider usage limit wait", () => {
     expect(issue.status).not.toBe("blocked");
     // The persisted projection names the wait and its reset.
     expect((await executionProjectionsForRuns(db, f.companyId, [retry!.id])).get(retry!.id)).toMatchObject({
-      label: "Waiting for usage limit reset", phase: "retry_scheduled",
+      label: "Waiting for provider usage", phase: "retry_scheduled",
       nextAction: expect.stringContaining(retry!.scheduledRetryAt!.toISOString()),
     });
 

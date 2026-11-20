@@ -142,6 +142,7 @@ export function userParticipationActivityCondition(companyId: string, userId: st
     AND ${activityLog.actorType} = 'user'
     AND ${activityLog.actorId} = ${userId}
     AND NOT ${automaticReadRecoveryCleanupCondition()}
+    AND COALESCE(${activityLog.details}->>'source', '') <> 'needs_you_responsibility_repair'
     AND NOT (
       ${activityLog.action} = 'issue.inbox_touched'
       AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'

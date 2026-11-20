@@ -12,6 +12,7 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 export const RUNTIME_ASSET_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const TOUCH_MS = 60 * 60_000;
 const touched = new Map<string, number>();
+const refreshing = new Map<string, Promise<unknown>>();
 const observers = new Set<() => void>();
 const root = () => path.join(resolvePaperclipInstanceRoot(), "runtime-context-assets");
 function paths(digest: string) {
@@ -24,9 +25,27 @@ function paths(digest: string) {
  * protects the short interval between preparation and durable run pinning. */
 export async function withRuntimeAssetUse<T>(digest: string, consume: (locked: boolean) => Promise<T>, mutation = false): Promise<T> {
   const target = paths(digest);
-  const last = touched.get(target.manifest);
-  const fresh = last !== undefined && Date.now() - last < TOUCH_MS;
-  if (fresh && !mutation) return consume(false);
+  if (!mutation) {
+    if (leaseFresh(target.manifest)) return consume(false);
+    const inflight = refreshing.get(target.manifest);
+    if (inflight) {
+      await inflight.catch(() => undefined);
+      if (leaseFresh(target.manifest)) return consume(false);
+    } else {
+      const refresh = useLocked(target, consume, false);
+      refreshing.set(target.manifest, refresh);
+      try { return await refresh; } finally { if (refreshing.get(target.manifest) === refresh) refreshing.delete(target.manifest); }
+    }
+  }
+  return useLocked(target, consume, leaseFresh(target.manifest));
+}
+
+function leaseFresh(manifest: string) {
+  const last = touched.get(manifest);
+  return last !== undefined && Date.now() - last < TOUCH_MS;
+}
+
+async function useLocked<T>(target: ReturnType<typeof paths>, consume: (locked: boolean) => Promise<T>, fresh: boolean): Promise<T> {
   await ensureSkillCacheDirectory(path.dirname(target.bundle), true);
   return withDirectoryPublicationLock(target.bundle, async () => {
     const result = await consume(true);
