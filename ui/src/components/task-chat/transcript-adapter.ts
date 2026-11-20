@@ -2486,6 +2486,14 @@ function mergeMcpStartupFailures(
   return [...byServer.values()];
 }
 
+function sameTurnAgent(
+  meta: SettledTurnMergeMeta,
+  bubble: Pick<TaskChatMessageItem, "agent" | "authorName">,
+): boolean {
+  if (meta.agentKey && bubble.agent?.id) return meta.agentKey === bubble.agent.id;
+  return !meta.agentName || !bubble.authorName || meta.agentName === bubble.authorName;
+}
+
 export function coalesceSettledTurns(
   items: readonly TaskChatItem[],
   metaById: ReadonlyMap<string, SettledTurnMergeMeta>,
@@ -2534,11 +2542,7 @@ export function coalesceSettledTurns(
         heldIdx >= 0
           ? metaFor((out[heldIdx] as TaskChatTurnItem).id)
           : undefined;
-      if (
-        heldMeta?.agentName &&
-        item.authorName &&
-        item.authorName !== heldMeta.agentName
-      ) {
+      if (heldMeta && !sameTurnAgent(heldMeta, item)) {
         heldIdx = -1;
       }
     } else {
@@ -2575,12 +2579,7 @@ export function attachSettledTurns(
       prev.attachedTurn == null
     ) {
       const meta = metaById.get(item.id);
-      const sameAgent =
-        meta != null &&
-        (meta.agentName == null ||
-          prev.authorName == null ||
-          meta.agentName === prev.authorName);
-      if (sameAgent) {
+      if (meta != null && sameTurnAgent(meta, prev)) {
         out[out.length - 1] = { ...prev, attachedTurn: item };
         continue;
       }
