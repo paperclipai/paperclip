@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { NativeProviderTerminalFailure, NativeSessionProtocolIntegrityError, SANDBOX_DISK_FULL_FAILURE_CODE } from "../../vendor/paperclip-runner/index.js";
 import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode } from "./native-session-executor.js";
-import { NATIVE_SANDBOX_DISK_FULL } from "./native-sandbox-disk-full.js";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
+import { isSandboxProviderDiskFullError, NATIVE_SANDBOX_DISK_FULL } from "./native-sandbox-disk-full.js";
 import { NativeSessionDiagnostics } from "./native-session-diagnostics.js";
 
 const turnLostOnRestore = () => new NativeProviderTerminalFailure("provider_turn_lost_on_restore", true);
@@ -67,5 +68,33 @@ describe("a native run that ends because its sandbox disk filled", () => {
 
   it("uses the runner's own code", () => {
     expect(NATIVE_SANDBOX_DISK_FULL).toBe(SANDBOX_DISK_FULL_FAILURE_CODE);
+  });
+});
+
+describe("a run setup that the sandbox provider refused because the sandbox disk is full", () => {
+  const daytonaRefusal = () => new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+    message: "internal server error: failed to create session config directory: "
+      + "mkdir /home/daytona/.daytona/sessions/paperclip-78f6ce53: no space left on device" });
+
+  it("names the full disk from the provider plugin's refusal, also when it is wrapped", () => {
+    expect(isSandboxProviderDiskFullError(daytonaRefusal())).toBe(true);
+    expect(isSandboxProviderDiskFullError(new Error("Reconnect failed", { cause: daytonaRefusal() }))).toBe(true);
+    expect(isSandboxProviderDiskFullError(new AggregateError([new Error("other"), daytonaRefusal()], "setup failed"))).toBe(true);
+  });
+
+  it("names the full disk from the runner's named failure", () => {
+    const launch = Object.assign(new Error("sandbox_disk_full: the sandbox disk is full, so the runner cannot be started"),
+      { code: SANDBOX_DISK_FULL_FAILURE_CODE });
+    expect(isSandboxProviderDiskFullError(new Error("setup failed", { cause: launch }))).toBe(true);
+  });
+
+  it("keeps a full disk on the Paperclip host and other plugin errors as they are", () => {
+    const hostDisk = Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    expect(isSandboxProviderDiskFullError(hostDisk)).toBe(false);
+    expect(isSandboxProviderDiskFullError(new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "unauthorized: authentication failed: Bearer token validation error" }))).toBe(false);
+    expect(isSandboxProviderDiskFullError(new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT,
+      message: "no space left on device" }))).toBe(false);
+    expect(isSandboxProviderDiskFullError(null)).toBe(false);
   });
 });
