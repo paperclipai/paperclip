@@ -49,8 +49,10 @@ not finished after 90 seconds, one more waiting admission starts a capture from
 its own sandbox, because the copy speed out of a sandbox differs from one
 sandbox to the next. The first capture that saves a ready object ends the wait
 for every admission: an admission whose own capture is still copying reuses that
-object and stops its copy, and an admission whose own capture fails reuses it
-too. Admissions on different servers may still upload the same closure
+object and abandons its capture, and an admission whose own capture fails
+reuses it too. An abandoned capture never uploads or publishes. Its copy out of
+the sandbox is not interrupted: that provider call runs until it ends or reaches
+its own timeout, and its local files are then removed. Admissions on different servers may still upload the same closure
 independently.
 
 Each capture has the 512 MiB limit; a run can retain at most three pending

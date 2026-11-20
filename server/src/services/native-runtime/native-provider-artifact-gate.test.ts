@@ -106,6 +106,22 @@ describe("shared provider artifact capture", () => {
     expect(signals[0]!.aborted).toBe(true);
   });
 
+  it("ends the slow capture when a waiting run finds a copy another server saved", async () => {
+    const key = `company:${Math.random()}`;
+    const hung = deferred<string>();
+    const signals: AbortSignal[] = [];
+    let ready = false;
+    const reuse = vi.fn(async () => ready ? "reused" : null);
+    const capture = vi.fn().mockImplementationOnce((signal: AbortSignal) => { signals.push(signal); return hung.promise; });
+    const slow = shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 });
+    ready = true;
+    const waiting = shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 });
+    await expect(waiting).resolves.toBe("reused");
+    await expect(slow).resolves.toBe("reused");
+    expect(signals[0]!.aborted).toBe(true);
+    expect(capture).toHaveBeenCalledOnce();
+  });
+
   it("starts one more capture when the shared capture runs past the hedge delay, not one per waiting run", async () => {
     const key = `company:${Math.random()}`;
     const hung = deferred<string>();

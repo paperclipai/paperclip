@@ -16,12 +16,6 @@ export const NATIVE_PROVIDER_ARTIFACT_PUBLISH_ATTEMPTS = 3;
 export const NATIVE_PROVIDER_ARTIFACT_CAPTURE_HEDGE_MS = 90_000;
 
 type Latch = { promise: Promise<void>; resolve: () => void };
-type SharedCapture = {
-  running: number;
-  lastStartedAtMs: number;
-  saved: Latch;
-  settled: Latch;
-};
 
 function latch(): Latch {
   let resolve!: () => void;
@@ -29,12 +23,66 @@ function latch(): Latch {
   return { promise, resolve };
 }
 
-const sharedCaptures = new Map<string, SharedCapture>();
+export type ShareNativeProviderArtifactCaptureInput<T> = {
+  key: string;
+  signal: AbortSignal;
+  reuse: () => Promise<T | null>;
+  capture: (signal: AbortSignal) => Promise<T>;
+  hedgeAfterMs?: number;
+};
+
+class SharedArtifactCapture {
+  private running = 0;
+  private lastStartedAtMs = 0;
+  private readonly saved = latch();
+  private settled = latch();
+
+  constructor(private readonly key: string) {}
+
+  tryStart(hedgeAfterMs: number) {
+    if (this.running > 0 && this.lastStartedAtMs + hedgeAfterMs > Date.now()) return false;
+    this.running += 1;
+    this.lastStartedAtMs = Date.now();
+    return true;
+  }
+
+  async waitForChange(hedgeAfterMs: number, stopped: Promise<never>) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.saved.promise,
+        this.settled.promise,
+        new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, this.lastStartedAtMs + hedgeAfterMs - Date.now())); }),
+        stopped,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  get savedCopy() {
+    return this.saved.promise;
+  }
+
+  markSaved() {
+    this.saved.resolve();
+  }
+
+  finish() {
+    this.running -= 1;
+    const settled = this.settled;
+    this.settled = latch();
+    settled.resolve();
+    if (this.running === 0 && sharedCaptures.get(this.key) === this) sharedCaptures.delete(this.key);
+  }
+}
+
+const sharedCaptures = new Map<string, SharedArtifactCapture>();
 
 function sharedCaptureFor(key: string) {
   let shared = sharedCaptures.get(key);
   if (!shared) {
-    shared = { running: 0, lastStartedAtMs: 0, saved: latch(), settled: latch() };
+    shared = new SharedArtifactCapture(key);
     sharedCaptures.set(key, shared);
   }
   return shared;
@@ -51,38 +99,16 @@ function stopWith(signal: AbortSignal) {
   return { promise, dispose: () => signal.removeEventListener("abort", stop) };
 }
 
-async function waitForSharedCapture(shared: SharedCapture, hedgeAfterMs: number, stopped: Promise<never>) {
-  const hedgeInMs = shared.lastStartedAtMs + hedgeAfterMs - Date.now();
-  if (hedgeInMs <= 0) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      shared.saved.promise,
-      shared.settled.promise,
-      new Promise<void>(resolve => { timer = setTimeout(resolve, hedgeInMs); }),
-      stopped,
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-export async function shareNativeProviderArtifactCapture<T>(input: {
-  key: string;
-  signal: AbortSignal;
-  reuse: () => Promise<T | null>;
-  capture: (signal: AbortSignal) => Promise<T>;
-  hedgeAfterMs?: number;
-}): Promise<T> {
+export async function shareNativeProviderArtifactCapture<T>(input: ShareNativeProviderArtifactCaptureInput<T>): Promise<T> {
   const hedgeAfterMs = input.hedgeAfterMs ?? NATIVE_PROVIDER_ARTIFACT_CAPTURE_HEDGE_MS;
   const stopped = stopWith(input.signal);
   try {
     let shared = sharedCaptureFor(input.key);
-    while (shared.running > 0 && shared.lastStartedAtMs + hedgeAfterMs > Date.now()) {
-      await waitForSharedCapture(shared, hedgeAfterMs, stopped.promise);
+    while (!shared.tryStart(hedgeAfterMs)) {
+      await shared.waitForChange(hedgeAfterMs, stopped.promise);
       const reused = await input.reuse();
       if (reused) {
-        shared.saved.resolve();
+        shared.markSaved();
         return reused;
       }
       shared = sharedCaptureFor(input.key);
@@ -94,19 +120,17 @@ export async function shareNativeProviderArtifactCapture<T>(input: {
 }
 
 async function captureOrReuse<T>(
-  input: { key: string; signal: AbortSignal; reuse: () => Promise<T | null>; capture: (signal: AbortSignal) => Promise<T> },
-  shared: SharedCapture,
+  input: ShareNativeProviderArtifactCaptureInput<T>,
+  shared: SharedArtifactCapture,
   stopped: Promise<never>,
 ): Promise<T> {
   const superseded = new AbortController();
-  shared.running += 1;
-  shared.lastStartedAtMs = Date.now();
   const own = Promise.resolve().then(() => input.capture(AbortSignal.any([input.signal, superseded.signal])));
   own.catch(() => undefined);
   try {
-    const first = await Promise.race([own.then(value => ({ value })), shared.saved.promise.then(() => null), stopped]);
+    const first = await Promise.race([own.then(value => ({ value })), shared.savedCopy.then(() => null), stopped]);
     if (first) {
-      shared.saved.resolve();
+      shared.markSaved();
       return first.value;
     }
     const reused = await input.reuse();
@@ -117,14 +141,10 @@ async function captureOrReuse<T>(
     if (input.signal.aborted) throw error;
     const reused = await input.reuse().catch(() => null);
     if (!reused) throw error;
-    shared.saved.resolve();
+    shared.markSaved();
     return reused;
   } finally {
-    shared.running -= 1;
-    const settled = shared.settled;
-    shared.settled = latch();
-    settled.resolve();
-    if (shared.running === 0 && sharedCaptures.get(input.key) === shared) sharedCaptures.delete(input.key);
+    shared.finish();
   }
 }
 
