@@ -261,6 +261,15 @@ Verification: `not-run` — Withdraw through each permitted actor, reload termin
 
 Gaps: No agent skip authority or generic manual expiry API.
 
+The board-only attention close route
+(`POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/close`,
+`mode: "withdraw"`) runs this same withdraw flow for every interaction kind and
+also lets a person withdraw a pending card that outlived its closed task (no
+wake). Its `archive`/`snooze` modes and the `…/transfer` route ("Route to @x",
+sets `addresseeUserId` after checking the new owner can answer) are board-only
+presentation and routing changes, not agent capabilities. Evidence:
+[route tests](../../server/src/__tests__/attention-close.test.ts).
+
 ### `skip`
 
 API: `present` — POST /api/issues/{id}/interactions/{interactionId}/skip.
@@ -466,6 +475,14 @@ Verification: `not-run` — Board decisions and revision request, reload audit +
 
 Gaps: Request-revision concurrency/replay not claimed as equivalent to approve/reject; payload integrations remain explicit.
 
+Withdraw (PAP-749 task 2b): POST /api/approvals/{id}/cancel and the attention
+close route with `mode: "withdraw"` cancel an open approval as out of date. They
+are board-only and never approve: the gate stays closed, `decidedByUserId` and
+the reason are recorded, `approval.cancelled` is logged and the requesting agent
+is woken. Hire requests return 422 (reject them instead); a resolved approval
+returns 409 `attention_already_closed`. Evidence: `source-only` plus
+[route tests](../../server/src/__tests__/attention-close.test.ts); no agent path.
+
 ### `resubmit`
 
 API: `present` — POST /api/approvals/{id}/resubmit.
@@ -619,5 +636,22 @@ Policy: External chat source cannot steer/coalesce into unrelated provider turn.
 Evidence: `source-only` — [answer delivery](../../server/src/services/question-response-delivery.ts), [channel authority](../../server/src/services/chat-channels.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live proof.
 
 Verification: `not-run` — Answer in actual configured channel -> one persisted result/useful originating reply; wrong/unlinked/expired sender denied. Overlap two conversations and verify no cross-delivery/replay.
+
+Slack presentation uses opaque native response tokens for text, choices,
+multiple selections, custom answers, validated text, ordinary confirmations,
+checklists, item verdicts, suggested tasks, and connection decline. Permission
+grants, governed approvals, and forms that exceed native limits retain authenticated
+Paperclip review. Link clicks are passive and confer no decision authority.
+Current company, audience, identity, connection, and governed-action checks apply.
+Selections map back to the canonical response through the existing transaction
+and callback receipt. Terminal cards retain the submitted answer only in the
+original authorized conversation. Native multi-choice continuation validates the
+exact saved selection mapping; a native answer token cannot be substituted by a
+Board receipt. Later review replies follow the
+[existing wake and connection-delivery receipts](../../server/src/services/chat-interaction-continuation.ts).
+For automation-origin connection requests, validated receipts can recover the
+conversation from the published prompt. Local Slack proof covers eleven formats
+with a deterministic protocol fixture; production agent authority and other
+provider paths retain their independent verification requirements.
 
 Gaps: Slack/Discord/Telegram/email/iMessage and runtime paths independently not-run until driven.

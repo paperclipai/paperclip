@@ -1,10 +1,17 @@
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectorToolPolicy } from "../../connectors/tool-policy.js";
+
+function pluginDeclaredRisk(descriptor: { annotations?: Record<string, unknown> | null }) {
+  const declared = descriptor.annotations?.paperclipRisk;
+  return declared === "read" || declared === "write" || declared === "destructive" ? declared : "write";
+}
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { createToolRuntimeSlots } from "../runtime/slots.js";
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { stableHash, descriptorHash } from "../../tool-catalog-hash.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
+import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
@@ -14,6 +21,8 @@ import { connectionGrants, toolApplications, toolCatalogEntries, toolConnections
 import type { ToolCatalogRefreshResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, isGoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
+import { logger } from "../../../middleware/logger.js";
+import { mcpSkillsService } from "../../mcp-skills.js";
 import { isRailwayEndpoint, isRailwayToolBlocked } from "../../railway.js";
 
 import type { ToolAccessAudit } from "../audit.js";
@@ -25,7 +34,7 @@ import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js
 import { classifyRisk, shouldQuarantineNewEntries, isGoogleWorkspaceToolAllowed, type McpToolDescriptor } from "./descriptors.js";
 import { toConnection } from "../connections/projection.js";
 import { toCatalogEntry } from "./projection.js";
-import { healthFailureHttpStatus, sanitizeHttpFailure } from "./failures.js";
+import { healthFailureHttpStatus, isCallerAuthorizationFailure, sanitizeHttpFailure, unreachableServerRemediation } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -37,6 +46,7 @@ type PublicationDependencies = {
   audit: ToolAccessAudit;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   discoverTools: ToolCatalogDiscovery["discoverTools"];
+  discoverSkills?: ToolCatalogDiscovery["discoverSkills"];
   assertConnectorConnectionSetupEnabled: ConnectionSetupPolicy["assertConnectorConnectionSetupEnabled"];
   updateConnectionHealth: ConnectionHealth["updateConnectionHealth"];
   vaultGrantForConnection: ConnectionCredentialAccess["vaultGrantForConnection"];
@@ -44,7 +54,24 @@ type PublicationDependencies = {
   enableCatalogEntriesByDefault: CatalogDefaultAccess["enableCatalogEntriesByDefault"];
 };
 
-export function createToolCatalogPublication(db: Db, { now, audit, getConnectionRow, discoverTools, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault }: PublicationDependencies) {
+export function createToolCatalogPublication(db: Db, { now, audit, getConnectionRow, discoverTools, discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault }: PublicationDependencies) {
+  /**
+   * MCP Skills: list the skills a server publishes and reconcile them. A
+   * skill problem never fails the tool catalog refresh it rides on.
+   */
+  async function refreshSkills(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo) {
+    if (!discoverSkills) return;
+    try {
+      const listed = await discoverSkills(connection, actor);
+      if (!listed?.fresh) return;
+      await mcpSkillsService(db).reconcileListing(connection, listed.entries, actor?.actorId
+        ? { actorType: actor.actorType ?? "user", actorId: actor.actorId }
+        : undefined);
+    } catch (error) {
+      logger.warn({ err: error, connectionId: connection.id }, "Could not refresh the skills this app publishes");
+    }
+  }
+
   async function refreshCatalog(
     connectionId: string,
     actor?: ActorInfo,
@@ -57,6 +84,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       credentialHeaders?: Record<string, string>;
     } = {},
   ): Promise<ToolCatalogRefreshResult> {
+    await actor?.managementContext?.reauthorize();
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") throw unprocessable("AI connections do not have a tool catalog");
     await assertConnectorConnectionSetupEnabled(connection);
@@ -71,6 +99,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         unavailableServices,
       );
     } catch (error) {
+      if (isCallerAuthorizationFailure(error, actor)) throw error;
       if (
         error instanceof HttpError &&
         asRecord(error.details).code === "github_access_changed"
@@ -95,6 +124,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         code: failure.code,
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
+        ...unreachableServerRemediation(error, actor),
       }));
     }
 
@@ -115,8 +145,8 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
     const existingByName = new Map(
       existingRows.map((entry) => [entry.toolName, entry]),
     );
-    const nativeProvider = Boolean(nativeProviderCatalogFor(connection));
-    if (connection.config.sourceTemplateKey === "google-workspace"
+    const nativeProvider = Boolean(nativeProviderCatalogFor(connection) || restConnectorFor(connection));
+    if (connection.config.sourceTemplateKey === "google-workspace" || connection.transport === "plugin"
       || nativeProvider || isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
       const discoveredNames = new Set(descriptors.map((descriptor) => descriptor.name));
       // The catalog is shared, but discovery uses only the caller's grant. A
@@ -189,7 +219,13 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         refreshOptions.quarantineManagedOAuthDraft === true);
     const safeDefault = asRecord(connection.config).safeDefault === true;
     for (const descriptor of descriptors) {
-      const riskLevel = classifyRisk(descriptor, connectorPolicy.sourceTemplateKey);
+      // A plugin-served connection's tools carry the risk its plugin declared
+      // (statically, or per connection from its worker). Other transports keep
+      // the reviewed classifier; a remote server cannot set this annotation's
+      // effect because it is read only for plugin connections.
+      const riskLevel = connection.transport === "plugin"
+        ? pluginDeclaredRisk(descriptor)
+        : classifyRisk(descriptor, connectorPolicy.sourceTemplateKey);
       const hash = descriptorHash(descriptor, riskLevel);
       const schemaHash = stableHash(descriptor.inputSchema ?? {});
       const existing = existingByName.get(descriptor.name);
@@ -220,7 +256,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         id: existing?.id, companyId: connection.companyId, applicationId: connection.applicationId,
         connectionId: connection.id, name: existing?.name ?? descriptor.name, toolName: descriptor.name, entryKind: "tool",
         title: descriptor.title ?? null, description: descriptor.description ?? null,
-        inputSchema: descriptor.inputSchema ?? {}, annotations: descriptor.annotations ?? {}, riskLevel,
+        inputSchema: descriptor.inputSchema ?? {}, annotations: descriptor.annotations ?? {}, uiMeta: descriptor.ui ?? null, icons: descriptor.icons ?? null, riskLevel,
         isReadOnly: riskLevel === "read", isWrite: riskLevel === "write", isDestructive: riskLevel === "destructive",
         status, versionHash: hash, schemaHash, firstSeenAt: existing?.firstSeenAt ?? refreshedAt, lastSeenAt: refreshedAt,
         quarantinedAt: existing
@@ -243,7 +279,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         const rows = await tx.insert(toolCatalogEntries).values(chunk)
           .onConflictDoUpdate({ target: [toolCatalogEntries.connectionId, toolCatalogEntries.name], set: {
             title: sql`excluded.title`, description: sql`excluded.description`, inputSchema: sql`excluded.input_schema`,
-            annotations: sql`excluded.annotations`, riskLevel: sql`excluded.risk_level`, isReadOnly: sql`excluded.is_read_only`,
+            annotations: sql`excluded.annotations`, uiMeta: sql`excluded.ui_meta`, icons: sql`excluded.icons`, riskLevel: sql`excluded.risk_level`, isReadOnly: sql`excluded.is_read_only`,
             isWrite: sql`excluded.is_write`, isDestructive: sql`excluded.is_destructive`,
             status: sql`CASE WHEN ${toolCatalogEntries.status} = 'disabled' AND ${toolCatalogEntries.quarantineReason} IS DISTINCT FROM 'mcp_tool_removed' THEN 'disabled' ELSE excluded.status END`,
             versionHash: sql`excluded.version_hash`, schemaHash: sql`excluded.schema_hash`, lastSeenAt: sql`excluded.last_seen_at`,
@@ -267,7 +303,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       : refreshOptions.enableAllByDefault
       ? { ...connection.transportConfig, quarantineNewEntries: false }
       : connection.transportConfig;
-    const [updatedConnection] = await db
+    const [updatedConnection] = await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         config: normalizedConfig,
@@ -285,7 +321,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         updatedAt: refreshedAt,
       })
       .where(eq(toolConnections.id, connection.id))
-      .returning();
+      .returning());
 
     if (connection.transport === "local_stdio") {
       await ensureRuntimeSlot(updatedConnection);
@@ -318,6 +354,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         actor,
       }, tx));
     }
+    await refreshSkills(updatedConnection, actor);
     await audit({
       companyId: connection.companyId,
       connectionId: connection.id,

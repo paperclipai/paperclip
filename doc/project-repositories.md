@@ -32,7 +32,7 @@ editable through Configuration and the workspace API. One workspace remains prim
 Tasks materialize the other distinct repositories as editable checkouts inside their
 workspace, including when no local folders are configured. Local execution and sandbox
 staging use the same layout; sandbox restore preserves each repository's Git history.
-See [Project Repository Checkouts](DEVELOPING.md#project-repository-checkouts) for paths,
+See [Project Repository Checkouts](workspace-repositories.md#project-repository-checkouts) for paths,
 ignore rules, and reuse behavior. Responsible-user credential rules still apply.
 A repository selection never delegates credentials.
 
@@ -72,6 +72,14 @@ another person's personal repositories. Managed GitHub grants refresh installati
 access; PAT connections use paginated `/user/repos`. Provider failures are reported
 without exposing provider error bodies or credential material. Successful connections
 remain selectable when another connection fails.
+
+Task repository preparation distinguishes a temporary provider refusal from a
+completed catalog that denies access. Before provider dispatch, known HTTP
+availability failures and exhausted quotas use the existing bounded infrastructure
+retry and provider deadline. Each successor discovers repositories again under the
+same responsible user's current grants. Empty successful catalogs, revoked grants,
+and permission denials remain terminal. A partial catalog can authorize a requested
+repository only when that repository is present.
 
 `ConnectionSetupFlow` owns provider setup in both Apps and project dialogs. Task
 intents retain their existing callback protocol. Standalone dialogs verify the saved

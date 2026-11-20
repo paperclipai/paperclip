@@ -1,3 +1,4 @@
+import { writeToolReviewChange } from "../../tool-review-work-notifications.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolApplications, toolActionRequests, toolCatalogEntries, toolConnections, toolInvocations } from "@paperclipai/db";
@@ -86,7 +87,7 @@ listActionRequests: async (
           if (!readable) invalidRequestIds.push(request.id);
         }
         if (invalidRequestIds.length > 0) {
-          await db
+          await writeToolReviewChange(db, companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -99,7 +100,7 @@ listActionRequests: async (
                 eq(toolActionRequests.status, "pending"),
                 inArray(toolActionRequests.id, invalidRequestIds),
               ),
-            );
+            ));
         }
         const hiddenIds = new Set([
           ...invalidRequestIds,

@@ -59,6 +59,27 @@ describe("ArtifactRow", () => {
     expect(link?.querySelector("img")?.getAttribute("src")).toBe("/sheet.png");
   });
 
+  it("shows the document icon in place of a thumbnail that cannot be loaded, and gives a new picture its own chance", () => {
+    const render = (thumbnailUrl: string) => act(() => root.render(<ArtifactRow subject={testSubject({ kind: "image", filename: "contact-sheet.png", thumbnailUrl })} now={NOW} />));
+    render("/gone.png");
+    const row = () => container.querySelector('[data-testid="artifact-v1-row"]');
+    expect(row()?.textContent).not.toContain("PNG");
+    act(() => { container.querySelector('img[src="/gone.png"]')!.dispatchEvent(new Event("error")); });
+    expect(container.querySelector('img[src="/gone.png"]')).toBeNull();
+    expect(row()?.textContent).toContain("PNG");
+    expect(row()?.querySelector('button[data-testid="artifact-v1-row-open"]')?.getAttribute("aria-label")).toBe("Open contact-sheet.png");
+    render("/fresh.png");
+    expect(container.querySelector('img[src="/fresh.png"]')).not.toBeNull();
+    expect(row()?.textContent).not.toContain("PNG");
+  });
+
+  it("shows the document icon for a video whose stream cannot be loaded", () => {
+    act(() => root.render(<ArtifactRow subject={testSubject({ kind: "video", filename: "reel.webm", videoUrl: "/api/files/gone.webm" })} now={NOW} />));
+    act(() => { container.querySelector("video")!.dispatchEvent(new Event("error")); });
+    expect(container.querySelector("video")).toBeNull();
+    expect(container.querySelector('[data-testid="artifact-v1-row"]')?.textContent).toContain("WEBM");
+  });
+
   it("keeps an anchor's address while a plain click runs the handler and a modifier click follows the link", () => {
     const onClick = vi.fn();
     act(() => root.render(<ArtifactRow subject={testSubject({ kind: "document", filename: "notes.md" })} href="/api/attachments/n/content" external onClick={onClick} now={NOW} />));

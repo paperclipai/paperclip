@@ -53,3 +53,17 @@ it("settles when a module import started by another consumer fails", async () =>
   expect(container.textContent).toBe("Ready");
   expect(fetch).toHaveBeenCalledOnce();
 });
+
+it("does not load agent tabs that have not opted into task side panels", async () => {
+  const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+  client.setQueryData(queryKeys.plugins.uiContributions, [{ ...contribution,
+    slots: [{ type: "detailTab", entityTypes: ["agent"], id: "details", displayName: "Details", exportName: "Details" }],
+  }]);
+  function TaskConsumer() {
+    const { slots } = usePluginSlots({ slotTypes: ["detailTab"], entityType: "agent", taskSidePanel: true });
+    return <span>{slots.length}</span>;
+  }
+  await act(async () => root.render(<QueryClientProvider client={client}><TaskConsumer /></QueryClientProvider>));
+  expect(container.textContent).toBe("0");
+  expect(fetch).not.toHaveBeenCalled();
+});

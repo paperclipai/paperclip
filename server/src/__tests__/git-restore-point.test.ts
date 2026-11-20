@@ -7,6 +7,7 @@ import {
   applyRestorePoint,
   captureRestorePoint,
   currentRestorePointSnapshot,
+  decodeRestorePointPayload,
   importRestorePoint,
   openRestorePoint,
   RestorePointRestoreFailure,
@@ -96,7 +97,8 @@ describe("git restore points", () => {
     const { payload, manifest } = captured!;
     expect(manifest.head).toBe(git(work, "rev-parse", "HEAD"));
     expect(manifest.prerequisites).toEqual(upstream());
-    expect(await currentRestorePointSnapshot(work)).toEqual({ head: manifest.head, index: manifest.index, worktree: manifest.worktree, modes: manifest.modes });
+    expect(await currentRestorePointSnapshot(work)).toEqual({ head: manifest.head, index: manifest.index, worktree: manifest.worktree, ignored: null, modes: manifest.modes });
+    expect(manifest.schema).toBe("paperclip.git-restore-point-payload.v1");
 
     const restored = await freshClone("restored");
     expect(() => git(restored, "cat-file", "-e", `${manifest.head}^{commit}`)).toThrow();
@@ -197,6 +199,23 @@ describe("git restore points", () => {
       .rejects.toMatchObject({ reason: "restore_point_history_too_large" });
   });
 
+  it("refuses more preserved commits than the limit before checking each one", async () => {
+    const extra = Array.from({ length: 51 }, (_, index) => index.toString(16).padStart(40, "0"));
+    await expect(captureRestorePoint({ cwd: work, upstreamCommits: upstream(), preserveCommits: extra }))
+      .rejects.toMatchObject({ reason: "restore_point_history_too_large" });
+  });
+
+  it("saves preserved commits that exist and ignores ones that do not", async () => {
+    await write(work, "orphan.txt", "only reachable from a preserved commit\n");
+    git(work, "add", "orphan.txt"); git(work, "commit", "-q", "-m", "orphan");
+    const orphan = git(work, "rev-parse", "HEAD");
+    git(work, "reset", "-q", "--hard", "HEAD~1");
+    git(work, "reflog", "expire", "--expire=now", "--all");
+    const { manifest } = (await captureRestorePoint({ cwd: work, upstreamCommits: upstream(),
+      preserveCommits: [orphan, "f".repeat(40)] }))!;
+    expect(manifest.preserved).toEqual([orphan]);
+  });
+
   it("keeps capture objects out of the repository", async () => {
     await write(work, "notes/todo.md", "untracked work\n");
     const before = git(work, "count-objects", "-v");
@@ -226,6 +245,125 @@ describe("git restore points", () => {
     await importRestorePoint({ repositoryCwd: restored, payload: captured!.payload });
     expect(git(restored, "cat-file", "-t", lost)).toBe("commit");
     expect(git(restored, "for-each-ref", "refs/paperclip-restore-import/")).toBe("");
+  });
+
+  describe("ignored files", () => {
+    async function ignoredWork() {
+      await write(work, ".gitignore", "node_modules/\n.env\n*.tsbuildinfo\nevidence/\ndist/\n");
+      git(work, "commit", "-q", "-am", "ignore build output");
+      git(work, "push", "-q", "origin", "HEAD:master");
+      await write(work, "ui/tsconfig.tsbuildinfo", "{\"version\":\"5\"}\n");
+      await write(work, "evidence/run.log", "agent evidence\n", 0o600);
+      await write(work, "dist/app.js", "regenerable\n");
+      await write(work, "node_modules/pkg/index.js", "regenerable\n");
+      await write(work, ".env", "TOKEN=never-saved\n");
+    }
+
+    it("saves ignored files that are not regenerable, as a v2 payload", async () => {
+      await ignoredWork();
+      const captured = await captureRestorePoint({ cwd: work, upstreamCommits: upstream() });
+      expect(captured).not.toBeNull();
+      const { manifest, payload } = captured!;
+      expect(manifest).toMatchObject({ schema: "paperclip.git-restore-point-payload.v2", index: null, worktree: null, ignored: expect.any(String) });
+      expect(manifest.modes).toEqual([{ path: "evidence/run.log", mode: 0o600 }]);
+      expect(await currentRestorePointSnapshot(work)).toMatchObject({ ignored: manifest.ignored });
+      const restored = await freshClone("restored-ignored");
+      const imported = await importRestorePoint({ repositoryCwd: restored, payload });
+      expect(git(restored, "ls-tree", "-r", "--name-only", manifest.ignored!).split("\n").sort()).toEqual(["evidence/run.log", "ui/tsconfig.tsbuildinfo"]);
+      await applyRestorePoint({ cwd: restored, manifest: imported });
+      expect(await read(restored, "ui/tsconfig.tsbuildinfo")).toBe("{\"version\":\"5\"}\n");
+      expect(await read(restored, "evidence/run.log")).toBe("agent evidence\n");
+      expect((await fs.stat(path.join(restored, "evidence/run.log"))).mode & 0o777).toBe(0o600);
+      for (const missing of ["dist/app.js", "node_modules/pkg/index.js", ".env"]) {
+        await expect(fs.access(path.join(restored, missing))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      expect(git(restored, "status", "--porcelain")).toBe("");
+    });
+
+    it("fails closed instead of overwriting an existing ignored file", async () => {
+      await ignoredWork();
+      const { payload } = (await captureRestorePoint({ cwd: work, upstreamCommits: upstream() }))!;
+      const restored = await freshClone("restored-conflict");
+      await write(restored, "evidence/run.log", "newer local evidence\n");
+      const imported = await importRestorePoint({ repositoryCwd: restored, payload });
+      await expect(applyRestorePoint({ cwd: restored, manifest: imported })).rejects.toBeInstanceOf(RestorePointRestoreFailure);
+      expect(await read(restored, "evidence/run.log")).toBe("newer local evidence\n");
+    });
+
+    it("restores ignored files byte for byte despite line ending attributes", async () => {
+      await write(work, ".gitattributes", "* text=auto\n");
+      git(work, "add", ".gitattributes"); git(work, "commit", "-q", "-m", "normalize text");
+      git(work, "push", "-q", "origin", "HEAD:master");
+      await ignoredWork();
+      await write(work, "evidence/windows.txt", "line one\r\nline two\r\n");
+      const { manifest, payload } = (await captureRestorePoint({ cwd: work, upstreamCommits: upstream() }))!;
+      const restored = await freshClone("restored-crlf");
+      const imported = await importRestorePoint({ repositoryCwd: restored, payload });
+      await applyRestorePoint({ cwd: restored, manifest: imported });
+      expect(await fs.readFile(path.join(restored, "evidence/windows.txt"))).toEqual(Buffer.from("line one\r\nline two\r\n"));
+      expect(manifest.ignored).toBeDefined();
+    });
+
+    it("removes the files a failed restore wrote, so a retry succeeds", async () => {
+      await ignoredWork();
+      const { payload } = (await captureRestorePoint({ cwd: work, upstreamCommits: upstream() }))!;
+      const restored = await freshClone("restored-partial");
+      await fs.writeFile(path.join(restored, "ui"), "a file where a directory is needed\n");
+      const imported = await importRestorePoint({ repositoryCwd: restored, payload });
+      await expect(applyRestorePoint({ cwd: restored, manifest: imported })).rejects.toBeInstanceOf(RestorePointRestoreFailure);
+      await expect(fs.access(path.join(restored, "evidence/run.log"))).rejects.toMatchObject({ code: "ENOENT" });
+      await fs.rm(path.join(restored, "ui"));
+      await applyRestorePoint({ cwd: restored, manifest: imported });
+      expect(await read(restored, "evidence/run.log")).toBe("agent evidence\n");
+      expect(await read(restored, "ui/tsconfig.tsbuildinfo")).toBe("{\"version\":\"5\"}\n");
+    });
+
+    it("saves a quoted-looking ignored path from inside the workspace, never the file it names", async () => {
+      await ignoredWork();
+      await write(work, ".gitignore", "node_modules/\n.env\n*.tsbuildinfo\nevidence/\ndist/\n\"*\n");
+      git(work, "commit", "-q", "-am", "ignore quoted names");
+      git(work, "push", "-q", "origin", "HEAD:master");
+      const outside = path.join(root, "outside-secret.txt");
+      await fs.writeFile(outside, "outside the workspace\n");
+      const crafted = `"${outside}"`;
+      await write(work, crafted, "workspace file with a quoted name\n");
+      const { payload } = (await captureRestorePoint({ cwd: work, upstreamCommits: upstream() }))!;
+      const restored = await freshClone("restored-quoted");
+      const imported = await importRestorePoint({ repositoryCwd: restored, payload });
+      await applyRestorePoint({ cwd: restored, manifest: imported });
+      expect(await read(restored, crafted)).toBe("workspace file with a quoted name\n");
+    });
+
+    it("keeps an ignored symlink's target bytes exactly", async () => {
+      await ignoredWork();
+      const target = Buffer.from([0x2e, 0x2e, 0x2f, 0x66, 0xff, 0x6f]);
+      try { await fs.symlink(target, path.join(work, "evidence", "odd-link")); }
+      catch { return; }
+      const { payload } = (await captureRestorePoint({ cwd: work, upstreamCommits: upstream() }))!;
+      const restored = await freshClone("restored-link");
+      const imported = await importRestorePoint({ repositoryCwd: restored, payload });
+      await applyRestorePoint({ cwd: restored, manifest: imported });
+      expect(await fs.readlink(path.join(restored, "evidence", "odd-link"), { encoding: "buffer" })).toEqual(target);
+    });
+
+    it("skips an ignored nested repository", async () => {
+      await ignoredWork();
+      git(work, "init", "-q", path.join(work, "evidence/nested"));
+      await write(work, "evidence/nested/file.txt", "inside a nested repository\n");
+      await expect(captureRestorePoint({ cwd: work, upstreamCommits: upstream() })).rejects.toBeInstanceOf(RestorePointSkip);
+    });
+
+    it("rejects a v1 payload that claims an ignored tree", async () => {
+      await ignoredWork();
+      const { payload } = (await captureRestorePoint({ cwd: work, upstreamCommits: upstream() }))!;
+      const magic = Buffer.from("PCRP-PLAIN1\n");
+      const length = payload.readUInt32BE(magic.length);
+      const manifest = JSON.parse(payload.subarray(magic.length + 4, magic.length + 4 + length).toString("utf8"));
+      const bytes = Buffer.from(JSON.stringify({ ...manifest, schema: "paperclip.git-restore-point-payload.v1" }));
+      const size = Buffer.alloc(4); size.writeUInt32BE(bytes.length);
+      const forged = Buffer.concat([magic, size, bytes, payload.subarray(magic.length + 4 + length)]);
+      expect(() => decodeRestorePointPayload(forged)).toThrow(RestorePointRestoreFailure);
+    });
   });
 
   it("skips a nested untracked repository", async () => {

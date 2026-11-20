@@ -91,8 +91,12 @@ export function slackThreadChannelId(threadId: string): string | null {
   return channelId || null;
 }
 
+export function slackThreadRootMessageId(threadId: string): string | null {
+  return /^slack:[^:]+:([^:]+)$/.exec(threadId)?.[1] ?? null;
+}
+
 export function slackOrphanFollowUp(threadId: string, messageId: string): boolean {
-  const rootMessageId = /^slack:[^:]+:(.+)$/.exec(threadId)?.[1];
+  const rootMessageId = slackThreadRootMessageId(threadId);
   return Boolean(rootMessageId) && rootMessageId !== messageId;
 }
 
@@ -102,9 +106,15 @@ export function stripSlackTitleMentions(text: string): string {
 
 export function slackMessageMeetsMentionRequirement(
   endpoint: Pick<EndpointRow, "requireAtMention">,
-  thread: Pick<Thread, "isDM">,
+  thread: Pick<Thread, "id" | "isDM">,
   trigger: ChatSdkMessageCallbackEvent["trigger"],
-  message: Pick<Message, "isMention">,
+  message: Pick<Message, "id" | "isMention">,
 ): boolean {
-  return !endpoint.requireAtMention || thread.isDM || trigger === "mention" || message.isMention === true;
+  return (
+    !endpoint.requireAtMention ||
+    thread.isDM ||
+    (Boolean(message.id) && slackOrphanFollowUp(thread.id, message.id)) ||
+    trigger === "mention" ||
+    message.isMention === true
+  );
 }

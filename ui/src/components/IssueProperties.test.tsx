@@ -18,10 +18,12 @@ import { getLastProjectId } from "../lib/recent-projects";
 import { IssueProperties } from "./IssueProperties";
 import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 import { queryKeys } from "../lib/queryKeys";
+import { ApiError } from "../api/client";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   adapterModels: vi.fn(),
+  runtimeState: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -35,6 +37,7 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  getContextUsage: vi.fn(),
   getDocument: vi.fn(),
   listAcceptedPlanDecompositions: vi.fn(),
   listAttachments: vi.fn(),
@@ -46,6 +49,10 @@ const mockIssuesApi = vi.hoisted(() => ({
   upsertWatchdog: vi.fn(),
   deleteWatchdog: vi.fn(),
   unarchiveFromInbox: vi.fn(),
+}));
+
+const mockRoutinesApi = vi.hoisted(() => ({
+  get: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -90,6 +97,10 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
+vi.mock("../api/routines", () => ({
+  routinesApi: mockRoutinesApi,
+}));
+
 vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
 }));
@@ -104,6 +115,7 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
+  useOptionalToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
 vi.mock("../hooks/useProjectOrder", () => ({
@@ -628,10 +640,13 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.runtimeState.mockResolvedValue(null);
+    mockRoutinesApi.get.mockReset();
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.getContextUsage.mockResolvedValue(null);
     mockIssuesApi.getDocument.mockResolvedValue(null);
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
@@ -670,6 +685,92 @@ describe("IssueProperties", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it.each([true, false])("reserves the usage-limit row while runtime data loads (inline: %s)", async (inline) => {
+    let resolveRuntimeState!: (value: unknown) => void;
+    const runtimeState = new Promise<unknown>((resolve) => { resolveRuntimeState = resolve; });
+    mockAgentsApi.runtimeState.mockReturnValueOnce(runtimeState);
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline,
+    });
+
+    try {
+      const row = container.querySelector('[data-property-label="Usage limit"]')
+        ?.closest('[data-property-row="true"]');
+      expect(row).toBeTruthy();
+      expect(row?.querySelector('[role="status"]')?.getAttribute("aria-label"))
+        .toBe("Loading usage limit");
+      const nextRow = row?.nextElementSibling;
+
+      await act(async () => {
+        resolveRuntimeState({
+          stateJson: {
+            providerRateLimits: {
+              schema: "paperclip.provider.rate_limits.v1",
+              provider: "openai",
+              observedAt: new Date().toISOString(),
+              windows: [{
+                id: "primary",
+                label: "5-hour window",
+                shortLabel: "5h",
+                windowMinutes: 300,
+                usedPercent: 42,
+                resetsAt: null,
+                status: "allowed",
+              }],
+              credits: null,
+              limitReached: null,
+            },
+          },
+        });
+      });
+      await waitForAssertion(() => {
+        expect(row?.querySelector('button[aria-label="Provider usage limit: 5h 42%"]')).toBeTruthy();
+      });
+
+      expect(container.querySelector('[data-property-label="Usage limit"]')
+        ?.closest('[data-property-row="true"]')).toBe(row);
+      expect(row?.nextElementSibling).toBe(nextRow);
+      expect(row?.querySelector('[role="status"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it.each([null, "user-1"])("does not reserve a usage-limit row without an agent (user: %s)", async (assigneeUserId) => {
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeUserId }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    try {
+      await flush();
+      expect(container.querySelector('[data-property-label="Usage limit"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it.each(["missing", "forbidden"])("hides the usage-limit placeholder when runtime data is %s", async (outcome) => {
+    if (outcome === "forbidden") {
+      mockAgentsApi.runtimeState.mockRejectedValueOnce(new ApiError("Forbidden", 403, null));
+    }
+    const root = renderProperties(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    try {
+      await waitForAssertion(() => {
+        expect(container.querySelector('[data-property-label="Usage limit"]')).toBeNull();
+      });
+    } finally {
+      act(() => root.unmount());
+    }
   });
 
   it("marks the task-detail property typography and section rhythm", () => {
@@ -1137,6 +1238,77 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("Morgan Product");
       expect(container.textContent).not.toContain("via ");
     });
+
+    act(() => root.unmount());
+  });
+
+  it("links a routine-created task back to its source routine under Relationships", async () => {
+    mockRoutinesApi.get.mockResolvedValue({ id: "routine-1", title: "Nightly triage" });
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      const row = container
+        .querySelector('[data-property-label="Routine"]')
+        ?.closest('[data-property-row="true"]');
+      const link = row?.querySelector("a");
+      expect(link?.getAttribute("href")).toBe("/routines/routine-1");
+      expect(link?.textContent).toContain("Nightly triage");
+    });
+    expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-1");
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row while the source routine is still loading", async () => {
+    mockRoutinesApi.get.mockReturnValue(new Promise(() => {}));
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-1");
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row when the source routine no longer exists", async () => {
+    mockRoutinesApi.get.mockRejectedValue(new ApiError("Not found", 404, null));
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-gone" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-gone");
+    });
+    await flush();
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row for tasks not created by a routine", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+    expect(mockRoutinesApi.get).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });
@@ -2286,15 +2458,18 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("discovers Copilot overrides with the assignee connection and environment", async () => {
-    const binding = { provider: "github", method: "api_key", mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" };
-    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "Copilot", role: "engineer", status: "active",
+  it.each([
+    { name: "Copilot", acpxAgent: "copilot", provider: "github", method: "api_key", model: "gpt-5.6-luna", label: "Copilot Luna" },
+    { name: "Antigravity", acpxAgent: "antigravity", provider: "google", method: "subscription", model: "gemini-exact", label: "Personal Gemini" },
+  ] as const)("discovers $name overrides with the assignee connection and environment", async ({ acpxAgent, provider, method, model, label }) => {
+    const binding = { provider, method, mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" };
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: acpxAgent, role: "engineer", status: "active",
       adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
-      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      adapterConfig: { provider: "acpx", acpxAgent, model },
       runtimeConfig: { aiConnection: binding } }]);
-    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "Copilot Luna" }]);
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: model, label }]);
     const { root, queryClient } = renderPropertiesWithQueryClient(container, {
-      issue: createIssue({ assigneeAgentId: "agent-1", assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-luna" } } }),
+      issue: createIssue({ assigneeAgentId: "agent-1", assigneeAdapterOverrides: { adapterConfig: { model } } }),
       childIssues: [], onUpdate: vi.fn(), inline: true,
     });
     await flush();
@@ -2304,7 +2479,7 @@ describe("IssueProperties", () => {
     expect(modelTrigger).toBeDefined();
     await act(async () => modelTrigger!.click());
     await waitForAssertion(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", {
-      environmentId: "daytona-1", provider: "acpx", acpxAgent: "copilot", agentId: "agent-1", aiConnection: binding,
+      environmentId: "daytona-1", provider: "acpx", acpxAgent, agentId: "agent-1", aiConnection: binding,
     }));
     await act(async () => { await queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false }); });
     expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1);
@@ -2951,6 +3126,7 @@ describe("IssueProperties", () => {
     };
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
       executionState: createExecutionState({ monitor: baseMonitorState }),
       monitorAttemptCount: 1,
@@ -2964,6 +3140,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(252) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(132) } }),
       monitorNextCheckAt: new Date(at(192)),
@@ -2973,6 +3150,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, attemptCount: 3 } }),
       monitorAttemptCount: 3,
@@ -2981,6 +3159,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Attempt 3");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(0) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(0) } }),
     }));
@@ -2989,6 +3168,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("checking momentarily…");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
     }));
@@ -2997,6 +3177,17 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 1:38 PM · fires on next tick");
 
     renderMonitor(createIssue({
+      status: "blocked",
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("Automatic checks paused");
+    expect(monitorRowText()).toContain("Check now to request a manual check");
+    expect(monitorRowText()).not.toMatch(/overdue|next tick/i);
+
+    renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy(),
       executionState: createExecutionState({ monitor: {
         ...baseMonitorState,

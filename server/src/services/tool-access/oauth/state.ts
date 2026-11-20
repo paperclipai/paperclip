@@ -1,3 +1,4 @@
+import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -28,6 +29,7 @@ function assertSameOAuthActor(
   if (!expected.actorType || !expected.actorId) {
     throw forbidden(
       "OAuth sign-in state is not bound to an authenticated board session",
+      { code: "oauth_session_mismatch" },
     );
   }
   if (
@@ -36,11 +38,13 @@ function assertSameOAuthActor(
   ) {
     throw forbidden(
       "OAuth sign-in must be completed by the user who started it",
+      { code: "oauth_session_mismatch" },
     );
   }
   if (expected.sessionId && expected.sessionId !== actual.sessionId) {
     throw forbidden(
       "OAuth sign-in must be completed from the same authenticated session",
+      { code: "oauth_session_mismatch" },
     );
   }
 }
@@ -74,9 +78,9 @@ async function validateOAuthState(
       .where(eq(toolOauthStates.state, state))
       .limit(1);
     if (!stateRow)
-      throw badRequest("OAuth state was not found or has already been used");
+      throw badRequest("OAuth state was not found or has already been used", { code: "oauth_state_missing" });
     if (stateRow.expiresAt.getTime() <= Date.now())
-      throw badRequest("OAuth state has expired");
+      throw badRequest("OAuth state has expired", { code: "oauth_state_expired" });
     if (stateRow.subjectUserId) {
       if (
         actor?.actorType !== "user" ||
@@ -84,6 +88,7 @@ async function validateOAuthState(
       ) {
         throw forbidden(
           "OAuth callback user does not match the requested subject",
+      { code: "oauth_session_mismatch" },
         );
       }
     } else {
@@ -107,7 +112,7 @@ async function consumeOAuthState(
       .where(eq(toolOauthStates.state, state))
       .returning();
     if (!consumed)
-      throw badRequest("OAuth state was not found or has already been used");
+      throw badRequest("OAuth state was not found or has already been used", { code: "oauth_state_missing" });
     return consumed;
   }
 
@@ -124,17 +129,19 @@ async function rejectPendingOAuthInteraction(
     stateRow: typeof toolOauthStates.$inferSelect,
     actor: ActorInfo | undefined,
   ) {
-    if (!stateRow.interactionId) return;
+    const interactionId = stateRow.interactionId;
+    if (!interactionId) return;
     const now = new Date();
     const linked = await db
       .select({
         kind: issueThreadInteractions.kind,
+        issueId: issueThreadInteractions.issueId,
         payload: issueThreadInteractions.payload,
       })
       .from(issueThreadInteractions)
       .where(
         and(
-          eq(issueThreadInteractions.id, stateRow.interactionId),
+          eq(issueThreadInteractions.id, interactionId),
           eq(issueThreadInteractions.companyId, stateRow.companyId),
         ),
       )
@@ -152,36 +159,40 @@ async function rejectPendingOAuthInteraction(
         })
         .where(
           and(
-            eq(issueThreadInteractions.id, stateRow.interactionId),
+            eq(issueThreadInteractions.id, interactionId),
             eq(issueThreadInteractions.companyId, stateRow.companyId),
             eq(issueThreadInteractions.status, "pending"),
           ),
         );
       return;
     }
-    await db
-      .update(issueThreadInteractions)
-      .set({
-        status: "rejected",
-        result: {
-          version: 1,
-          outcome: "rejected",
-          // Paperclip's own words: the provider's explanation is untrusted and
-          // this reason is rendered in the thread (PAP-17108).
-          reason:
-            "Authorization was declined or cancelled in the provider's window",
-        },
-        resolvedByUserId: actor?.actorType === "user" ? actor.actorId : null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issueThreadInteractions.id, stateRow.interactionId),
-          eq(issueThreadInteractions.companyId, stateRow.companyId),
-          eq(issueThreadInteractions.status, "pending"),
-        ),
-      );
+    if (!linked) return;
+    await db.transaction(async tx => {
+      await notifyIssueReviewState(tx, { companyId: stateRow.companyId, issueId: linked.issueId });
+      await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "rejected",
+          result: {
+            version: 1,
+            outcome: "rejected",
+
+
+            reason:
+              "Authorization was declined or cancelled in the provider's window",
+          },
+          resolvedByUserId: actor?.actorType === "user" ? actor.actorId : null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, stateRow.companyId),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        );
+    });
   }
   return { peekOAuthState, validateOAuthState, consumeOAuthState, rejectPendingOAuthInteraction };
 }

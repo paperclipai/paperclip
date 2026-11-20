@@ -1,3 +1,4 @@
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
@@ -13,6 +14,8 @@ import { withoutOAuthRefreshLease, type OAuthRefreshLeases } from "./refresh-lea
 import { oauthExpiresAtMs, oauthSecretRef } from "./client-settings.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { singleFlight } from "../single-flight.js";
+import { usesClientCredentials } from "./client-credentials.js";
+import { requireClientCredentials, type ClientCredentialsService } from "./client-credentials-service.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -26,9 +29,11 @@ type LegacyRefreshDependencies = {
   leases: Pick<OAuthRefreshLeases, "acquireOAuthRefreshLease" | "clearOAuthRefreshLease">;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   exchangeOAuthToken: ReturnType<typeof createOAuthClientProtocol>["exchangeOAuthToken"];
+  /** Absent only in narrow test harnesses that never use machine sign-in. */
+  requestClientCredentialsToken?: ClientCredentialsService["requestClientCredentialsToken"];
 };
 
-export function createLegacyOAuthRefresh(db: Db, { now, secrets, store, leases, getConnectionRow, exchangeOAuthToken }: LegacyRefreshDependencies) {
+export function createLegacyOAuthRefresh(db: Db, { now, secrets, store, leases, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken }: LegacyRefreshDependencies) {
   // These maps remove duplicate work inside one service instance. OAuth also
 // uses the database refresh lease below as its cross-process boundary.
 const oauthRefreshFlights = new Map<string, Promise<unknown>>();
@@ -59,7 +64,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         reauthorizationRequiredAt: now().toISOString(),
       },
     };
-    const [updated] = await db
+    const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         status: "draft",
@@ -87,7 +92,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         )`,
         ),
       )
-      .returning();
+      .returning());
     if (updated) {
       await syncCredentialBindings(updated);
       emitConnectionUpdated(updated, connection, "credential_refresh");
@@ -137,12 +142,15 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         },
       );
     }
-    const client = await oauthClientForConnection(
+    // Machine sign-in uses only the connection's own vault credentials and its
+    // pinned token endpoint, never a deployment-wide client.
+    const machineSignIn = usesClientCredentials(connection);
+    const client = machineSignIn ? null : await oauthClientForConnection(
       connection,
       oauth.provider,
       actor,
     );
-    if (!client.clientId)
+    if (client && !client.clientId)
       throw unprocessable(
         `OAuth client id is not configured for ${oauth.provider}`,
       );
@@ -179,9 +187,9 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         : null;
     let token: Awaited<ReturnType<typeof exchangeOAuthToken>>;
     try {
-      token = await exchangeOAuthToken({
+      token = machineSignIn || !client ? await requireClientCredentials(requestClientCredentialsToken)(connection, actor) : await exchangeOAuthToken({
         tokenUrl: oauth.tokenUrl,
-        clientId: client.clientId,
+        clientId: client.clientId!,
         clientSecret: client.clientSecret,
         tokenEndpointAuthMethod: storedOAuthTokenEndpointAuthMethod(
           oauth,
@@ -366,6 +374,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
       heartbeatRunId?: string | null;
     },
   ): Promise<typeof toolConnections.$inferSelect> {
+    await actor?.managementContext?.reauthorize();
     const oauth = oauthConfig(connection);
     if (
       typeof oauth.tokenUrl !== "string" ||

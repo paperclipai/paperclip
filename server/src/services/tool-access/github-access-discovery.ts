@@ -1,5 +1,7 @@
+import { providerRetryAt } from "../provider-retry-after.js";
 import { randomUUID } from "node:crypto";
 import { unprocessable } from "../../errors.js";
+import { readGitHubRepositoryCatalogFailure } from "./github-repository-catalog-failure.js";
 
 function gitHubRepositoryOwnerType(repository: Record<string, unknown>) {
   const type = recordValue(repository.owner) ? repository.owner.type : undefined;
@@ -30,10 +32,13 @@ export async function loadGitHubTokenRepositories(
         signal: AbortSignal.timeout(15_000),
       },
     );
-    if (!response.ok)
+    if (!response.ok) {
+      const unavailable = readGitHubRepositoryCatalogFailure(response);
+      if (unavailable) throw unavailable;
       throw unprocessable(
         "Could not load GitHub repositories. Reconnect GitHub and try again.",
       );
+    }
     const rows: unknown = await response.json();
     if (!Array.isArray(rows))
       throw unprocessable("GitHub returned invalid repositories");
@@ -103,15 +108,19 @@ export async function loadGitHubGrantMetadata(
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {
-      throw unprocessable(
+      const unavailable = readGitHubRepositoryCatalogFailure(response);
+      const failure = unprocessable(
         "GitHub could not verify this account's installation access",
         {
+          retryAt: unavailable?.retryAt ?? providerRetryAt(response.headers.get("retry-after")),
           code:
             response.status === 401
               ? "oauth_reauthorization_required"
               : "github_access_check_failed",
         },
       );
+      if (unavailable) failure.cause = unavailable;
+      throw failure;
     }
     const value = (await response.json()) as unknown;
     if (!recordValue(value))
@@ -158,6 +167,8 @@ export async function loadGitHubGrantMetadata(
   const owners = new Set<string>();
   const selections = new Set<"all" | "selected">();
   const managementUrls = new Set<string>();
+  const suspendedManagementUrls = new Set<string>();
+  let suspendedCount = 0;
   const repositories = new Map<
     string,
     { id: string; fullName: string; installationId: string; ownerType?: "personal" | "organization"; private?: boolean }
@@ -165,7 +176,6 @@ export async function loadGitHubGrantMetadata(
   for (const installation of installations) {
     const installationId = githubId(installation.id);
     if (!installationId) continue;
-    installationIds.push(installationId);
     // Older grants predate the broker's appSlug field. GitHub's installation
     // response identifies this token's app without choosing an environment.
     if (
@@ -175,6 +185,16 @@ export async function loadGitHubGrantMetadata(
     ) {
       resolvedAppSlug = installation.app_slug;
     }
+    // GitHub keeps listing a suspended installation and its repositories, but
+    // user tokens lose write access and private-repository reads until an
+    // owner unsuspends it, so it grants no usable access.
+    if (installation.suspended_at) {
+      const suspendedUrl = githubInstallationManagementUrl(installation.html_url);
+      if (suspendedUrl) suspendedManagementUrls.add(suspendedUrl);
+      suspendedCount += 1;
+      continue;
+    }
+    installationIds.push(installationId);
     if (
       installation.repository_selection === "all" ||
       installation.repository_selection === "selected"
@@ -222,6 +242,19 @@ export async function loadGitHubGrantMetadata(
     const installationUrl = resolvedAppSlug
       ? `https://github.com/apps/${resolvedAppSlug}/installations/new`
       : "https://github.com/settings/installations";
+    if (installationIds.length === 0 && suspendedCount > 0) {
+      throw unprocessable(
+        "The Paperclip GitHub installation is suspended. Unsuspend it on GitHub before refreshing access.",
+        {
+          code: "github_installation_required",
+          installationUrl,
+          managementUrl:
+            suspendedManagementUrls.size === 1
+              ? suspendedManagementUrls.values().next().value!
+              : "https://github.com/settings/installations",
+        },
+      );
+    }
     throw unprocessable(
       "GitHub access is required. Install Paperclip and grant at least one repository before refreshing access.",
       {

@@ -2,6 +2,13 @@
   "schemaVersion": 1,
   "providers": [
     {
+      "slug": "1password",
+      "provider": "1Password",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/1password.svg",
+      "darkAsset": "/brands/apps/1password-dark.svg"
+    },
+    {
       "slug": "agentmail",
       "provider": "AgentMail",
       "catalogVisible": true,
@@ -31,6 +38,13 @@
       "provider": "Asana",
       "catalogVisible": true,
       "localAsset": "/brands/apps/asana.svg"
+    },
+    {
+      "slug": "aws",
+      "provider": "Amazon Web Services",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/aws.svg",
+      "darkAsset": "/brands/apps/aws-dark.svg"
     },
     {
       "slug": "bedrock",
@@ -75,6 +89,12 @@
       "provider": "Candid",
       "catalogVisible": false,
       "localAsset": "/brands/apps/candid.png"
+    },
+    {
+      "slug": "circleback",
+      "provider": "Circleback",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/circleback.png"
     },
     {
       "slug": "clickhouse",
@@ -172,6 +192,13 @@
       "catalogVisible": true,
       "localAsset": "/brands/apps/github.svg",
       "darkAsset": "/brands/apps/github-dark.svg"
+    },
+    {
+      "slug": "github-copilot",
+      "provider": "GitHub Copilot",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/github-copilot.svg",
+      "darkAsset": "/brands/apps/github-copilot-dark.svg"
     },
     {
       "slug": "gmail",
@@ -479,7 +506,7 @@
     {
       "slug": "vercel",
       "provider": "Vercel",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/vercel.svg",
       "darkAsset": "/brands/apps/vercel-dark.svg"
     },
@@ -708,6 +735,12 @@
       "provider": "Unikraft",
       "catalogVisible": true,
       "localAsset": "/brands/apps/unikraft.svg"
+    },
+    {
+      "slug": "tailscale",
+      "provider": "Tailscale",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/tailscale.png"
     }
   ]
 }

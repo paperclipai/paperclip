@@ -12,7 +12,7 @@ export async function projectSkillSetupIdentity(db: Db, companyId: string, actor
   let connectionId: string | null = null, refreshGrantId: string | null = null;
   if (actor?.type === 'agent' && actor.source === 'agent_jwt') {
     if (!actor.runId || !actor.agentId || actor.companyId !== companyId) throw forbidden('Project skill setup requires an authenticated agent run.');
-    const identity = await captureRunIdentity(db, { companyId, agentId: actor.agentId, runId: actor.runId });
+    const identity = await captureRunIdentity(db, { companyId, agentId: actor.agentId, runId: actor.runId }, { readScope: 'identity' });
     userId = identity.run.responsibleUserId;
     // Only reuse the connection already authorized by managed GitHub delivery
     // for this active run. Responsibility alone cannot discover another grant.

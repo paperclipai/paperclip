@@ -1,6 +1,8 @@
+import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
-import { and, desc, eq, inArray, lte } from "drizzle-orm";
+import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   environmentCustomImageSetupSessions,
@@ -288,6 +290,14 @@ export function environmentCustomImageService(
 ) {
   const environments = environmentService(db);
   const secrets = secretService(db);
+
+  function writeSetup<T>(write: (tx: Db) => PromiseLike<T>): Promise<T> {
+    return db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.customImageExpiry);
+      await notifyEnvironmentCleanup(tx);
+      return write(tx as unknown as Db);
+    });
+  }
 
   async function getTemplateById(id: string): Promise<EnvironmentCustomImageTemplate | null> {
     const row = await db
@@ -594,7 +604,7 @@ export function environmentCustomImageService(
   ): Promise<EnvironmentCustomImageSetupSession> {
     const status = normalizePersistedStatus(providerSession.status, fallbackStatus);
     const now = new Date();
-    const row = await db
+    const row = await writeSetup(tx => tx
       .update(environmentCustomImageSetupSessions)
       .set({
         providerLeaseId: providerSession.providerLeaseId ?? null,
@@ -607,7 +617,7 @@ export function environmentCustomImageService(
       })
       .where(eq(environmentCustomImageSetupSessions.id, session.id))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null));
     if (!row) throw notFound("Environment customImage setup session not found");
     return toSession(row);
   }
@@ -619,7 +629,7 @@ export function environmentCustomImageService(
     metadata?: Record<string, unknown> | null;
   }): Promise<EnvironmentCustomImageSetupSession> {
     const now = new Date();
-    const row = await db
+    const row = await writeSetup(tx => tx
       .update(environmentCustomImageSetupSessions)
       .set({
         status: input.status,
@@ -630,7 +640,7 @@ export function environmentCustomImageService(
       })
       .where(eq(environmentCustomImageSetupSessions.id, input.sessionId))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null));
     if (!row) throw notFound("Environment customImage setup session not found");
     return toSession(row);
   }
@@ -833,7 +843,7 @@ export function environmentCustomImageService(
         [SOURCE_ENVIRONMENT_CONFIG_FINGERPRINT_METADATA_KEY]: fingerprint,
         [SETUP_RPC_COMPANY_ID_METADATA_KEY]: provider.rpcCompanyId,
       };
-      await db.insert(environmentCustomImageSetupSessions).values({
+      await writeSetup(tx => tx.insert(environmentCustomImageSetupSessions).values({
         id: sessionId,
         environmentId: input.environmentId,
         templateId: selectedTemplate?.id ?? null,
@@ -846,7 +856,7 @@ export function environmentCustomImageService(
         metadata: setupMetadata,
         createdAt: now,
         updatedAt: now,
-      });
+      }));
 
       try {
         const providerSession = await callProviderStart({
@@ -1018,6 +1028,8 @@ export function environmentCustomImageService(
                 supersededRows.map((row) => row.id),
               ));
           }
+          await notifyEnvironmentCleanup(tx);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.customImageExpiry);
           await tx
             .update(environmentCustomImageSetupSessions)
             .set({
@@ -1351,6 +1363,17 @@ export function environmentCustomImageService(
         await callProviderDeleteTemplate({ template, provider: deleteProvider, reason: "disabled" });
       }
       return template;
+    },
+
+    nextSetupCleanupAt: async (): Promise<number | null> => {
+      const [row] = await db.select({ nextAt: sql<Date | string | null>`min(${environmentCustomImageSetupSessions.expiresAt})` })
+        .from(environmentCustomImageSetupSessions)
+        .where(inArray(environmentCustomImageSetupSessions.status, [...ACTIVE_SETUP_STATUSES]));
+      if (!row || row.nextAt === undefined) throw new Error("Setup expiry query returned no result");
+      if (row.nextAt === null) return null;
+      const deadline = new Date(row.nextAt).getTime();
+      if (!Number.isFinite(deadline)) throw new Error("Setup expiry query returned an invalid deadline");
+      return deadline;
     },
 
     cleanupExpiredSetupSessions: async (input: {
