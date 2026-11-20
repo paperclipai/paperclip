@@ -122,6 +122,42 @@ describe("shared provider artifact capture", () => {
     expect(capture).toHaveBeenCalledOnce();
   });
 
+  it("starts its own capture once instead of asking again when a saved copy cannot be reused", async () => {
+    const key = `company:${Math.random()}`;
+    const hung = deferred<string>();
+    const reuse = vi.fn(async () => null);
+    const capture = vi.fn()
+      .mockImplementationOnce(() => hung.promise)
+      .mockImplementationOnce(async () => "captured")
+      .mockImplementationOnce(async () => "own");
+    const slow = shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 });
+    const hedge = shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 });
+    await expect(hedge).resolves.toBe("captured");
+    const late = shareNativeProviderArtifactCapture({ key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 });
+    await expect(late).resolves.toBe("own");
+    expect(reuse.mock.calls.length).toBeLessThan(6);
+    hung.resolve("late");
+    await slow;
+  });
+
+  it("never runs more than two captures at once however many hedge windows pass", async () => {
+    const key = `company:${Math.random()}`;
+    const hung = deferred<string>();
+    const hedge = deferred<string>();
+    let ready = false;
+    const reuse = vi.fn(async () => ready ? "reused" : null);
+    const capture = vi.fn().mockImplementationOnce(() => hung.promise).mockImplementationOnce(() => hedge.promise);
+    const runs = Array.from({ length: 6 }, () => shareNativeProviderArtifactCapture({
+      key, signal: new AbortController().signal, reuse, capture, hedgeAfterMs: 10 }));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(reuse.mock.calls.length).toBeLessThan(20);
+    ready = true;
+    hedge.resolve("captured");
+    expect((await Promise.all(runs)).sort()).toEqual(["captured", ...Array(5).fill("reused")]);
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+
   it("starts one more capture when the shared capture runs past the hedge delay, not one per waiting run", async () => {
     const key = `company:${Math.random()}`;
     const hung = deferred<string>();
