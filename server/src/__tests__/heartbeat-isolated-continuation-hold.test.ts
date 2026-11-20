@@ -1,16 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agentTaskSessions, agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issues,
+  agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { getExecutionBlocker } from "../services/execution-blocker.ts";
-import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.ts";
+import { settleHoldIntoAbandonedEpochContinuation } from "../services/fresh-continuation-fallback.ts";
+import { HUMAN_GATE_EVIDENCE_KEYS, hasHumanGateEvidence } from "../services/recovery/human-gate-evidence.ts";
+import { recoverRetainedWorkspace } from "../services/workspace-recovery.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../services/system-recovery-state.ts";
@@ -18,11 +17,9 @@ import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt,
 const held = vi.hoisted(() => {
   const state = {
     release: () => undefined as void,
-    calls: [] as Array<Record<string, unknown>>,
     released: Promise.resolve(),
     reset() {
       state.released = new Promise<void>((resolve) => { state.release = resolve; });
-      state.calls = [];
     },
   };
   return state;
@@ -34,8 +31,7 @@ vi.mock("../adapters/index.ts", async () => {
     ...actual,
     getServerAdapter: vi.fn(() => ({
       supportsLocalAgentJwt: false,
-      execute: async (input: Record<string, unknown>) => {
-        held.calls.push(input);
+      execute: async () => {
         await held.released;
         return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "done", provider: "test", model: "test" };
       },
@@ -70,17 +66,11 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     personOwned?: boolean;
     unsafeArchive?: boolean;
     delivery?: "pending" | "delivered" | "delegated" | "invalidated" | "not_requested" | "coalesced";
-    savedInput?: boolean;
-    queuedRun?: "system" | "person" | null;
-    deliveredTo?: "dispatching" | "other_waiting" | "other_started" | "other_unstarted";
     holdEvidence?: Record<string, unknown>;
-    previousCwd?: string;
   };
 
   async function killedRunAfterFreshContinuation(shape: Shape = {}) {
-    const { isolation = "remote_epoch", personOwned = false, unsafeArchive = false, delivery = "delivered",
-      holdEvidence = {}, previousCwd, savedInput = false, queuedRun = "system",
-      deliveredTo = "dispatching" } = shape;
+    const { isolation = "remote_epoch", personOwned = false, unsafeArchive = false, delivery = "delivered", holdEvidence = {} } = shape;
     const userId = randomUUID(), companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const sourceRunId = randomUUID(), continuationId = randomUUID(), holdId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Board", email: `${userId}@example.test`,
@@ -108,16 +98,6 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
       failureDetail: isolation ? { replacementDenied: "fresh_continuation" } : {} });
 
     const queuedRunId = randomUUID(), wakeId = randomUUID();
-    let deliveredRunId = queuedRunId;
-    if (deliveredTo !== "dispatching") {
-      deliveredRunId = randomUUID();
-      await db.insert(heartbeatRuns).values({ id: deliveredRunId, companyId, agentId, issueId, invocationSource: "automation",
-        triggerDetail: "system", createdAt: minutesAgo(3), contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_recovery_action_restored" },
-        ...(deliveredTo === "other_waiting" ? { status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60 * 60_000),
-          scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure" }
-          : deliveredTo === "other_started" ? { status: "succeeded", startedAt: minutesAgo(3), finishedAt: minutesAgo(2) }
-          : { status: "cancelled", errorCode: "execution_reconciliation_required", finishedAt: minutesAgo(3) }) });
-    }
     if (isolation) {
       const freshContinuation = { schema: "paperclip.fresh-continuation.v1", sourceRunId, trigger: "continuation_wake",
         failureCode: "native_restart_recovery_blocked", delivery: "recorded", recordedAt: recordedAt.toISOString(), isolation,
@@ -132,7 +112,7 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
         resolutionNote: "continued_fresh_from_last_saved", resolvedAt: recordedAt, createdAt: recordedAt, updatedAt: recordedAt,
         evidence: { runId: sourceRunId, executionReconciliation: reconciliation, freshContinuation,
           continuationDelivery: delivery,
-          ...(delivery === "delivered" ? { continuationRunId: deliveredRunId, continuationSupersededByRun: true } : {}) } });
+          ...(delivery === "delivered" ? { continuationRunId: queuedRunId, continuationSupersededByRun: true } : {}) } });
     }
 
     const spent = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(sourceRunId, randomUUID()))!,
@@ -146,24 +126,15 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
         workspaceRestoreRecovery: restoreRecovery, systemRecovery: spent,
         workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: sourceRunId, status: "blocked", stage: "verifying_stop",
           attempt: 1, attemptLimit: 6, retryable: true, requestIds: [] }, ...holdEvidence } });
-    if (savedInput) await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
-      reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: userId,
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_children_completed", status: "queued", requestedByActorType: "system", requestedByActorId: "issue-children",
       payload: { issueId } });
-    if (previousCwd) await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "codex_local", taskKey: issueId,
-      sessionParamsJson: { sessionId: "previous-session", cwd: previousCwd }, sessionDisplayId: "previous-session", lastRunId: sourceRunId });
-
-    if (queuedRun) {
-      const person = queuedRun === "person";
-      await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId, source: person ? "on_demand" : "automation",
-        triggerDetail: person ? "manual" : "system", reason: person ? "issue_commented" : "issue_children_completed", status: "queued",
-        requestedByActorType: person ? "user" : "system", requestedByActorId: person ? userId : "issue-children", payload: { issueId } });
-      await db.insert(heartbeatRuns).values({ id: queuedRunId, companyId, agentId, issueId, invocationSource: person ? "on_demand" : "automation",
-        triggerDetail: person ? "manual" : "system", status: "queued", wakeupRequestId: wakeId, createdAt: minutesAgo(2),
-        ...(person ? {} : { scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure" }),
-        contextSnapshot: { issueId, taskId: issueId, wakeReason: person ? "issue_commented" : "issue_children_completed" } });
-      await db.update(agentWakeupRequests).set({ runId: queuedRunId }).where(eq(agentWakeupRequests.id, wakeId));
-    }
-    return { userId, companyId, agentId, issueId, sourceRunId, continuationId, holdId, queuedRunId, deliveredRunId };
+    await db.insert(heartbeatRuns).values({ id: queuedRunId, companyId, agentId, issueId, invocationSource: "automation",
+      triggerDetail: "system", status: "queued", wakeupRequestId: wakeId, createdAt: minutesAgo(2),
+      scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_children_completed" } });
+    await db.update(agentWakeupRequests).set({ runId: queuedRunId }).where(eq(agentWakeupRequests.id, wakeId));
+    return { userId, companyId, agentId, issueId, sourceRunId, continuationId, holdId, queuedRunId };
   }
 
   async function runRow(id: string) {
@@ -177,49 +148,63 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     return rows.map(row => row.id);
   }
 
-  it.each([
-    ["a delivered remote_epoch continuation", { isolation: "remote_epoch" }],
-    ["a pending remote_epoch continuation", { isolation: "remote_epoch", delivery: "pending" }],
-    ["a delivered fresh_isolated_workspace continuation", { isolation: "fresh_isolated_workspace" }],
-    ["a pending fresh_isolated_workspace continuation", { isolation: "fresh_isolated_workspace", delivery: "pending" }],
-    ["a remote_epoch continuation that saved a person's input", { isolation: "remote_epoch", delivery: "not_requested", savedInput: true, queuedRun: null }],
-    ["a remote_epoch continuation whose saved input was admitted as a run", { isolation: "remote_epoch", delivery: "not_requested", queuedRun: "person" }],
-  ] as const)("does not hold the task behind the old run's workspace after %s", async (_name, shape) => {
-    const f = await killedRunAfterFreshContinuation(shape);
+  async function holdRow(id: string) {
+    return (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
+  }
+
+  async function recoverHold(f: { companyId: string; issueId: string; sourceRunId: string; holdId: string }) {
+    await recoverRetainedWorkspace({ db, companyId: f.companyId, issueId: f.issueId, runId: f.sourceRunId, actionId: f.holdId,
+      environmentRuntime: {} as Parameters<typeof recoverRetainedWorkspace>[0]["environmentRuntime"] });
+  }
+
+  it.each(["pending", "delivered", "delegated", "not_requested"] as const)(
+    "workspace recovery settles its late hold into a %s remote_epoch continuation of the same run", async delivery => {
+    const f = await killedRunAfterFreshContinuation({ isolation: "remote_epoch", delivery });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.holdId });
+    await recoverHold(f);
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
-    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.holdId)))[0])
-      .toMatchObject({ status: "active" });
+    expect(await holdRow(f.holdId)).toMatchObject({ status: "resolved", outcome: "restored",
+      resolutionNote: "continued_fresh_from_last_saved", evidence: { coalescedIntoRecoveryActionId: f.continuationId } });
   });
 
   it.each([
     ["no continuation was recorded", { isolation: null }],
+    ["the continuation is a local fresh_isolated_workspace", { isolation: "fresh_isolated_workspace" }],
     ["the continuation reuses the old workspace", { isolation: "writer_ended" }],
+    ["the continuation was invalidated", { delivery: "invalidated" }],
+    ["the continuation was coalesced elsewhere", { delivery: "coalesced" }],
     ["a person owns the hold", { personOwned: true }],
     ["the saved archive is unsafe", { unsafeArchive: true }],
-    ["the continuation was invalidated before it started", { delivery: "invalidated" }],
-    ["the continuation only repaired the workspace and no run waits", { delivery: "not_requested", queuedRun: null }],
-    ["the record was coalesced into another continuation", { delivery: "coalesced" }],
-    ["the continuation was invalidated in a new workspace", { isolation: "fresh_isolated_workspace", delivery: "invalidated" }],
     ["the hold records an owner-gone attestation", { holdEvidence: { ownerGoneAttestation: { attestedBy: "board" } } }],
     ["the hold records an explicit continuation", { holdEvidence: { explicitUserContinuation: { runId: randomUUID() } } }],
     ["the hold records a reconciliation", { holdEvidence: { executionReconciliation: { runId: randomUUID() } } }],
+    ["the hold records a null-valued owner-gone attestation", { holdEvidence: { ownerGoneAttestation: null } }],
   ] as const)("keeps the hold when %s", async (_name, shape) => {
     const f = await killedRunAfterFreshContinuation(shape);
+    expect(await settleHoldIntoAbandonedEpochContinuation(db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.sourceRunId, actionId: f.holdId })).toBe(false);
+    expect(await holdRow(f.holdId)).toMatchObject({ status: "active" });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.holdId });
   });
 
-  it("starts the queued continuation at the execution gate instead of withholding it", async () => {
+  it("treats a present human-gate key as a person's decision in both SQL and TypeScript, whatever its value", () => {
+    for (const key of HUMAN_GATE_EVIDENCE_KEYS) {
+      expect(hasHumanGateEvidence({ [key]: null })).toBe(true);
+      expect(hasHumanGateEvidence({ [key]: false })).toBe(true);
+    }
+    expect(hasHumanGateEvidence({})).toBe(false);
+    expect(hasHumanGateEvidence(null)).toBe(false);
+  });
+
+  it("starts the queued continuation at the execution gate once recovery settled its late hold", async () => {
     held.reset();
-    const f = await killedRunAfterFreshContinuation();
+    const f = await killedRunAfterFreshContinuation({ isolation: "remote_epoch" });
     const heartbeat = heartbeatService(db);
     try {
+      await recoverHold(f);
       await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
-      await vi.waitFor(async () => {
-        const queued = await runRow(f.queuedRunId);
-        expect(queued.status).not.toBe("queued");
-      }, { timeout: 20_000 });
-      const queued = await runRow(f.queuedRunId);
-      expect(queued.errorCode).not.toBe("execution_reconciliation_required");
+      await vi.waitFor(async () => expect((await runRow(f.queuedRunId)).status).not.toBe("queued"), { timeout: 20_000 });
+      expect((await runRow(f.queuedRunId)).errorCode).not.toBe("execution_reconciliation_required");
       expect(await startedRunIds(f.companyId)).toEqual([f.queuedRunId]);
       expect(await runRow(f.sourceRunId)).toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked" });
     } finally {
@@ -228,104 +213,12 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     }
   }, 60_000);
 
-  it("starts the queued continuation in a new attempt directory when the continuation isolated a local workspace", async () => {
+  it("still withholds the queued run when a person owns the late hold", async () => {
     held.reset();
-    const previousCwd = await mkdtemp(path.join(os.tmpdir(), "isolated-continuation-old-"));
-    await writeFile(path.join(previousCwd, "unverified.txt"), "written by the old run\n");
-    const f = await killedRunAfterFreshContinuation({ isolation: "fresh_isolated_workspace", delivery: "pending", previousCwd });
+    const f = await killedRunAfterFreshContinuation({ isolation: "remote_epoch", personOwned: true });
     const heartbeat = heartbeatService(db);
     try {
-      await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
-      await vi.waitFor(async () => expect(await startedRunIds(f.companyId)).toEqual([f.queuedRunId]), { timeout: 20_000 });
-      const started = await runRow(f.queuedRunId);
-      expect(started.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.continuationId, forceFreshSession: true });
-      expect(await readFreshWorkspaceReadiness(db, started)).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.sourceRunId });
-      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.continuationId)))[0]!.evidence)
-        .toMatchObject({ continuationDelivery: "delivered", continuationRunId: f.queuedRunId });
-      await vi.waitFor(() => expect(held.calls).toHaveLength(1), { timeout: 20_000 });
-      const call = held.calls[0]!;
-      const workspace = (call.context as { paperclipWorkspace?: { cwd?: string; mode?: string } }).paperclipWorkspace;
-      expect(workspace).toMatchObject({ mode: "isolated_workspace", cwd: expect.stringContaining("isolated-workspace-attempts") });
-      expect(workspace?.cwd).not.toBe(previousCwd);
-      expect(call.runtime).toMatchObject({ sessionId: null, sessionParams: null });
-    } finally {
-      held.release();
-      await heartbeat.drainActiveRunExecutions();
-      await rm(previousCwd, { recursive: true, force: true });
-    }
-  }, 60_000);
-
-  it("starts a person's admitted message after a remote_epoch continuation that saved it", async () => {
-    held.reset();
-    const f = await killedRunAfterFreshContinuation({ isolation: "remote_epoch", delivery: "not_requested", queuedRun: "person" });
-    const heartbeat = heartbeatService(db);
-    try {
-      await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
-      await vi.waitFor(async () => expect((await runRow(f.queuedRunId)).status).not.toBe("queued"), { timeout: 20_000 });
-      expect((await runRow(f.queuedRunId)).errorCode).not.toBe("execution_reconciliation_required");
-      expect(await startedRunIds(f.companyId)).toEqual([f.queuedRunId]);
-    } finally {
-      held.release();
-      await heartbeat.drainActiveRunExecutions();
-    }
-  }, 60_000);
-
-  type Row = [string, Shape, { shown: boolean; starts: boolean; stamped: boolean }];
-  const stateTable: Row[] = [
-    ["remote_epoch, pending", { isolation: "remote_epoch", delivery: "pending" }, { shown: false, starts: true, stamped: false }],
-    ["remote_epoch, delivered to the dispatching run", { isolation: "remote_epoch" }, { shown: false, starts: true, stamped: false }],
-    ["remote_epoch, delivered to another waiting run", { isolation: "remote_epoch", deliveredTo: "other_waiting" }, { shown: false, starts: true, stamped: false }],
-    ["remote_epoch, delivered to a run that ended unstarted", { isolation: "remote_epoch", deliveredTo: "other_unstarted" }, { shown: false, starts: true, stamped: false }],
-    ["remote_epoch, delegated", { isolation: "remote_epoch", delivery: "delegated" }, { shown: false, starts: true, stamped: false }],
-    ["remote_epoch, not_requested with a waiting run", { isolation: "remote_epoch", delivery: "not_requested" }, { shown: false, starts: true, stamped: false }],
-    ["remote_epoch, invalidated", { isolation: "remote_epoch", delivery: "invalidated" }, { shown: true, starts: false, stamped: false }],
-    ["remote_epoch, coalesced", { isolation: "remote_epoch", delivery: "coalesced" }, { shown: true, starts: false, stamped: false }],
-    ["fresh_isolated_workspace, pending", { isolation: "fresh_isolated_workspace", delivery: "pending" }, { shown: false, starts: true, stamped: true }],
-    ["fresh_isolated_workspace, delivered to the dispatching run", { isolation: "fresh_isolated_workspace" }, { shown: false, starts: true, stamped: true }],
-    ["fresh_isolated_workspace, delivered to another waiting run", { isolation: "fresh_isolated_workspace", deliveredTo: "other_waiting" }, { shown: false, starts: false, stamped: false }],
-    ["fresh_isolated_workspace, delivered to a run that already started", { isolation: "fresh_isolated_workspace", deliveredTo: "other_started" }, { shown: false, starts: true, stamped: false }],
-    ["fresh_isolated_workspace, delivered to a run that ended unstarted", { isolation: "fresh_isolated_workspace", deliveredTo: "other_unstarted" }, { shown: false, starts: true, stamped: true }],
-    ["fresh_isolated_workspace, delivered to a run that ended unstarted, nothing waiting", { isolation: "fresh_isolated_workspace", deliveredTo: "other_unstarted", queuedRun: null }, { shown: true, starts: false, stamped: false }],
-    ["fresh_isolated_workspace, delegated", { isolation: "fresh_isolated_workspace", delivery: "delegated" }, { shown: true, starts: false, stamped: false }],
-    ["fresh_isolated_workspace, not_requested", { isolation: "fresh_isolated_workspace", delivery: "not_requested" }, { shown: true, starts: false, stamped: false }],
-    ["fresh_isolated_workspace, invalidated", { isolation: "fresh_isolated_workspace", delivery: "invalidated" }, { shown: true, starts: false, stamped: false }],
-    ["writer_ended, delivered", { isolation: "writer_ended" }, { shown: true, starts: false, stamped: false }],
-    ["remote_epoch, delivered, a person owns the hold", { isolation: "remote_epoch", personOwned: true }, { shown: true, starts: false, stamped: false }],
-  ];
-
-  it.each(stateTable)("state table: %s", async (_name, shape, expected) => {
-    held.reset();
-    const f = await killedRunAfterFreshContinuation(shape);
-    const shown = await getExecutionBlocker(db, f.companyId, f.issueId);
-    expect(shown?.recoveryActionId ?? null).toBe(expected.shown ? f.holdId : null);
-    if (shape.queuedRun === null) return;
-    const heartbeat = heartbeatService(db);
-    try {
-      await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
-      await vi.waitFor(async () => expect((await runRow(f.queuedRunId)).status).not.toBe("queued"), { timeout: 20_000 });
-      const dispatched = await runRow(f.queuedRunId);
-      if (expected.starts) {
-        expect(dispatched.startedAt).not.toBeNull();
-        expect(dispatched.errorCode).not.toBe("execution_reconciliation_required");
-      } else {
-        expect(dispatched).toMatchObject({ startedAt: null, errorCode: "execution_reconciliation_required" });
-      }
-      expect(dispatched.contextSnapshot?.freshContinuationIsolation ?? null).toBe(expected.stamped ? f.continuationId : null);
-      if (expected.stamped) {
-        expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.continuationId)))[0]!.evidence)
-          .toMatchObject({ continuationDelivery: "delivered", continuationRunId: f.queuedRunId });
-      }
-    } finally {
-      held.release();
-      await heartbeat.drainActiveRunExecutions();
-    }
-  }, 60_000);
-
-  it("still withholds the queued run when a person owns the hold", async () => {
-    held.reset();
-    const f = await killedRunAfterFreshContinuation({ personOwned: true });
-    const heartbeat = heartbeatService(db);
-    try {
+      await recoverHold(f);
       await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
       await vi.waitFor(async () => expect((await runRow(f.queuedRunId)).status).toBe("cancelled"), { timeout: 20_000 });
       expect(await runRow(f.queuedRunId)).toMatchObject({ startedAt: null, errorCode: "execution_reconciliation_required" });

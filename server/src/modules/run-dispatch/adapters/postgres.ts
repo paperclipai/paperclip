@@ -14,8 +14,7 @@ import { notifyScheduledRetryCancellation } from "../../../services/scheduled-re
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { recordedUserStop, userStopBoundaryAt } from "../../../services/run-cancellation.js";
-import { getExecutionBlocker, isolatedContinuationForDispatch } from "../../../services/execution-blocker.js";
-import { deliverContinuationAsRun } from "../../../services/fresh-continuation-retry-fold.js";
+import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { continueFreshInTransaction, recordFreshContinuationCheck } from "../../../services/fresh-continuation-fallback.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
@@ -1323,7 +1322,6 @@ export function createPostgresRunDispatchAdapter(
     const recovery = await getExecutionBlocker(tx, run.companyId, issueId, {
       conversationResetCommentId: deriveCommentId(contextSnapshot),
       resumingNativeRunId: run.runtimeMode === "native" ? run.id : null,
-      dispatchRunId: run.id,
     });
     if (recovery) return { issueId, facts: null, executionBlocker: recovery, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
@@ -1421,24 +1419,6 @@ export function createPostgresRunDispatchAdapter(
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
   }
 
-  async function carryIsolatedContinuationInTx(tx: Db, run: HeartbeatRun, issueId: string) {
-    const isolated = await isolatedContinuationForDispatch(tx, { companyId: run.companyId, issueId, runId: run.id });
-    if (!isolated) return;
-    if (parseObject(run.contextSnapshot).freshContinuationIsolation !== isolated.recoveryActionId) {
-      await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({
-        freshContinuationIsolation: isolated.recoveryActionId, forceFreshSession: true })}::jsonb` })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")));
-    }
-    const continuation = { recoveryActionId: isolated.recoveryActionId, sourceRunId: isolated.sourceRunId, isolation: "fresh_isolated_workspace" };
-    if (isolated.action === "deliver") await deliverContinuationAsRun(tx, { companyId: run.companyId, issueId, runId: run.id, continuation });
-    if (isolated.action === "redeliver") {
-      await tx.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
-        continuationRunId: run.id, continuationRedeliveredFromUnstartedRun: true })}::jsonb` })
-        .where(and(eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.id, isolated.recoveryActionId),
-          sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'delivered'`));
-    }
-  }
-
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -1446,7 +1426,6 @@ export function createPostgresRunDispatchAdapter(
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
       const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now, publications);
       if (!decision.stale || !issueId) {
-        if (input.expectedStatus === "queued" && issueId) await carryIsolatedContinuationInTx(tx, run, issueId);
         if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
           // Preserve the authority accepted under the issue/run locks. Later
           // preflight reads can observe a reassignment; they must not turn an

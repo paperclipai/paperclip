@@ -9,5 +9,5 @@ export function humanGateEvidencePredicate(evidence: SQL | unknown): SQL {
 }
 
 export function hasHumanGateEvidence(evidence: Record<string, unknown> | null | undefined): boolean {
-  return HUMAN_GATE_EVIDENCE_KEYS.some(key => Boolean(evidence?.[key]));
+  return Boolean(evidence) && HUMAN_GATE_EVIDENCE_KEYS.some(key => Object.hasOwn(evidence!, key));
 }

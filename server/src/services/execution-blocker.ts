@@ -21,67 +21,6 @@ import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-loc
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 import { EXECUTION_FINALIZATION_DEADLINE_EXCEEDED, EXECUTION_FINALIZATION_DEADLINE_MESSAGE } from "./execution-control-deadline.js";
 import { NATIVE_HUMAN_SELF_HANDOFF_KEY } from "./native-runtime/native-human-self-handoff.js";
-import { humanGateEvidencePredicate } from "./recovery/human-gate-evidence.js";
-
-export const FRESH_CONTINUATION_SCHEMA = "paperclip.fresh-continuation.v1" as const;
-export const ISOLATING_CONTINUATIONS = ["fresh_isolated_workspace", "remote_epoch"] as const;
-const holdRunIdSql = () => sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
-
-function liveTaskRunSql(excludeRunId: SQL) {
-  return sql`exists (select 1 from ${heartbeatRuns} live
-    where live.company_id = ${issueRecoveryActions.companyId}
-      and live.status in ('queued', 'running', 'scheduled_retry')
-      and live.id::text is distinct from ${excludeRunId}
-      and (live.issue_id = ${issueRecoveryActions.sourceIssueId}
-        or live.native_issue_id = ${issueRecoveryActions.sourceIssueId}
-        or live.context_snapshot->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text))`;
-}
-
-function continuationRunSql(condition: SQL) {
-  return sql`exists (select 1 from ${heartbeatRuns} delivered
-    where delivered.company_id = continuation.company_id
-      and delivered.id::text = continuation.evidence->>'continuationRunId'
-      and ${condition})`;
-}
-
-const unstartedEndedRun = sql`(delivered.started_at is null and delivered.status not in ('queued', 'running', 'scheduled_retry'))`;
-
-function isolatedContinuationAdmits(dispatchRunId: string | null) {
-  const delivery = sql`continuation.evidence->>'continuationDelivery'`;
-  const isolation = sql`continuation.evidence#>>'{freshContinuation,isolation}'`;
-  const savedPersonInput = sql`exists (select 1 from ${agentWakeupRequests} saved
-    where saved.company_id = ${issueRecoveryActions.companyId}
-      and saved.status = 'deferred_issue_execution' and saved.requested_by_actor_type = 'user'
-      and saved.payload->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text)`;
-  const remote = dispatchRunId
-    ? sql`(${delivery} in ('pending', 'delivered', 'delegated')
-        or (${delivery} = 'not_requested' and (${savedPersonInput} or ${liveTaskRunSql(holdRunIdSql())})))`
-    : sql`(${delivery} in ('pending', 'delegated')
-        or (${delivery} = 'delivered' and (${continuationRunSql(sql`(delivered.started_at is not null or delivered.status in ('queued', 'running', 'scheduled_retry'))`)}
-          or ${liveTaskRunSql(holdRunIdSql())}))
-        or (${delivery} = 'not_requested' and (${savedPersonInput} or ${liveTaskRunSql(holdRunIdSql())})))`;
-  const local = dispatchRunId
-    ? sql`(${delivery} = 'pending'
-        or (${delivery} = 'delivered' and (continuation.evidence->>'continuationRunId' = ${dispatchRunId}
-          or ${continuationRunSql(sql`(delivered.started_at is not null or ${unstartedEndedRun})`)})))`
-    : sql`(${delivery} = 'pending'
-        or (${delivery} = 'delivered' and (${continuationRunSql(sql`(delivered.started_at is not null or delivered.status in ('queued', 'running', 'scheduled_retry'))`)}
-          or (${continuationRunSql(unstartedEndedRun)} and ${liveTaskRunSql(holdRunIdSql())}))))`;
-  return sql`((${isolation} = 'remote_epoch' and ${remote}) or (${isolation} = 'fresh_isolated_workspace' and ${local}))`;
-}
-
-export function supersededByIsolatedContinuationPredicate(options: { dispatchRunId?: string | null } = {}) {
-  return sql`coalesce((${issueRecoveryActions.ownerUserId} is null
-    and not ${humanGateEvidencePredicate(issueRecoveryActions.evidence)}
-    and coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
-    and exists (select 1 from ${issueRecoveryActions} continuation
-      where continuation.company_id = ${issueRecoveryActions.companyId}
-        and continuation.source_issue_id = ${issueRecoveryActions.sourceIssueId}
-        and continuation.id <> ${issueRecoveryActions.id}
-        and continuation.evidence#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}
-        and continuation.evidence#>>'{freshContinuation,sourceRunId}' = ${holdRunIdSql()}
-        and ${isolatedContinuationAdmits(options.dispatchRunId ?? null)})), false)`;
-}
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -177,11 +116,7 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
 }
 
 /** Resolved recovery bookkeeping can still carry an effective no-replay hold. */
-export function executionBlockerPredicate(options: { dispatchRunId?: string | null } = {}) {
-  return and(executionHoldPredicate(), not(supersededByIsolatedContinuationPredicate(options)));
-}
-
-function executionHoldPredicate() {
+export function executionBlockerPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
     not(preDispatchExecutionWaitRecoveryActionPredicate()),
@@ -213,32 +148,6 @@ function executionHoldPredicate() {
         sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
     )),
   );
-}
-
-export async function isolatedContinuationForDispatch(db: Db, input: { companyId: string; issueId: string; runId: string }) {
-  const [hold] = await db.select({ runId: sql<string>`${holdRunIdSql()}` })
-    .from(issueRecoveryActions).where(and(
-      eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
-      executionHoldPredicate(), supersededByIsolatedContinuationPredicate({ dispatchRunId: input.runId }),
-    )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
-  if (!hold?.runId) return null;
-  const [record] = await db.select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
-    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`,
-    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${hold.runId}`,
-    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' = 'fresh_isolated_workspace'`,
-    inArray(sql<string>`${issueRecoveryActions.evidence}->>'continuationDelivery'`, ["pending", "delivered"]),
-  )).orderBy(desc(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`)).limit(1);
-  if (!record) return null;
-  const continuation = { recoveryActionId: record.id, sourceRunId: hold.runId };
-  if (record.evidence.continuationDelivery === "pending") return { ...continuation, action: "deliver" as const };
-  const deliveredRunId = typeof record.evidence.continuationRunId === "string" ? record.evidence.continuationRunId : null;
-  if (deliveredRunId === input.runId) return { ...continuation, action: "carry" as const };
-  const [delivered] = deliveredRunId ? await db.select({ startedAt: heartbeatRuns.startedAt, status: heartbeatRuns.status })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, deliveredRunId))) : [];
-  if (delivered && !delivered.startedAt && !["queued", "running", "scheduled_retry"].includes(delivered.status))
-    return { ...continuation, action: "redeliver" as const };
-  return null;
 }
 
 export function nativeExecutionRecoveryActionPredicate() {
@@ -431,7 +340,6 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   /** The native run being dispatched; its own scheduled resume does not block it. */
   resumingNativeRunId?: string | null;
   recoveryHoldOnly?: boolean;
-  dispatchRunId?: string | null;
 }): Promise<ExecutionBlocker | null> {
   const lockedIssue = options?.lockedIssue;
   const conversation = lockedIssue?.id === issueId && lockedIssue.companyId === companyId
@@ -444,7 +352,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   const [restoreHold] = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
-    executionBlockerPredicate({ dispatchRunId: options?.dispatchRunId }),
+    executionBlockerPredicate(),
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     restoreHoldPredicate(),
   )).orderBy(desc(issueRecoveryActions.updatedAt)).limit(1);
@@ -468,7 +376,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   const [action] = restoreHold ? [restoreHold] : await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
-    executionBlockerPredicate({ dispatchRunId: options?.dispatchRunId }),
+    executionBlockerPredicate(),
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
     options?.resumingNativeRunId ? not(ownNativeResumePredicate(options.resumingNativeRunId)) : undefined,

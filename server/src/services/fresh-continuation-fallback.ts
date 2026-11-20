@@ -20,7 +20,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { issueService } from "./issues.js";
 import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { proveRunProcessGone } from "./run-process-owner.js";
-import { FRESH_CONTINUATION_SCHEMA, hasPendingRunCleanup, ISOLATING_CONTINUATIONS } from "./execution-blocker.js";
+import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { hasHumanGateEvidence } from "./recovery/human-gate-evidence.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
@@ -69,7 +69,7 @@ export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPers
  * backs off and is checked again; it never charges the task's failure budget.
  */
 
-export { FRESH_CONTINUATION_SCHEMA };
+export const FRESH_CONTINUATION_SCHEMA = "paperclip.fresh-continuation.v1" as const;
 export const FRESH_CONTINUATION_ACTOR = "fresh-continuation" as const;
 /** Cause of the record written when the run left no hold of its own. Not an execution blocker. */
 export const FRESH_CONTINUATION_CAUSE = "fresh_continuation" as const;
@@ -370,7 +370,7 @@ export async function freshContinuationIsolatesRun(db: Db, input: { companyId: s
     delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'` }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, input.companyId),
     sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${input.runId}`,
-    inArray(sql<string>`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}'`, [...ISOLATING_CONTINUATIONS]))).limit(1);
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' in ('fresh_isolated_workspace', 'remote_epoch')`)).limit(1);
   if (!record) return false;
   // Only the recorded continuation carries the isolation marker that prepares
   // the new workspace, so while it is pending it must be the task's next run.
@@ -700,6 +700,36 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   logger.info({ runId: run.id, issueId: issue.id, failureCode: run.errorCode, trigger: input.trigger, delivery },
     "Unfinished run continues in a fresh run from saved work");
   return { kind: "continued", recoveryActionId: primaryId, delivery, isolation };
+}
+
+export async function settleHoldIntoAbandonedEpochContinuation(db: Db, input: {
+  companyId: string; issueId: string; runId: string; actionId: string; now?: Date;
+}): Promise<boolean> {
+  const now = input.now ?? new Date();
+  return db.transaction(async raw => {
+    const tx = raw as unknown as Db;
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.id, input.runId)));
+    if (!issue || !run) return false;
+    const [hold] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, issue.id), eq(issueRecoveryActions.id, input.actionId))).for("update");
+    if (!hold || !["active", "escalated"].includes(hold.status) || isHumanGate(hold) || hold.evidence.runId !== run.id
+      || hold.evidence.workspaceRestoreFailure === "restore_unsafe_archive"
+      || readSystemRecovery(hold.evidence)?.state !== "exhausted") return false;
+    const [prior] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, issue.id), sql`${issueRecoveryActions.id} <> ${hold.id}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${run.id}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' = 'remote_epoch'`,
+      inArray(sql<string>`${issueRecoveryActions.evidence}->>'continuationDelivery'`, ["pending", "delivered", "delegated", "not_requested"])))
+      .orderBy(desc(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`)).limit(1).for("update");
+    if (!prior) return false;
+    await settleLateHolds(tx, { companyId: input.companyId, issue, run, prior, holds: [hold], now });
+    logger.info({ runId: run.id, issueId: issue.id, recoveryActionId: hold.id, continuationId: prior.id },
+      "Workspace recovery hold settled into the continuation that already moved the task to a new workspace epoch");
+    return true;
+  });
 }
 
 async function settleLateHolds(tx: Db, input: { companyId: string; issue: typeof issues.$inferSelect; run: typeof heartbeatRuns.$inferSelect;
