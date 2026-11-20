@@ -2,11 +2,18 @@ import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { readConfigFile } from "../config-file.js";
 
-const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
+const OPENAI_MODELS_PATH = "/models";
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_MODELS_TIMEOUT_MS = 5000;
 const OPENAI_MODELS_CACHE_TTL_MS = 60_000;
 
-let cached: { keyFingerprint: string; expiresAt: number; models: AdapterModel[] } | null = null;
+type CodexDiscoveryTarget = {
+  baseUrl: string;
+  apiKey: string | null;
+};
+
+let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null =
+  null;
 
 function fingerprint(apiKey: string): string {
   return `${apiKey.length}:${apiKey.slice(-6)}`;
@@ -31,6 +38,18 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
   ]).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
 }
 
+/** Match Codex runtime: expand `{env:VAR}` from process.env; leave unresolved intact. */
+function expandEnvPlaceholders(value: string): string {
+  return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
+    const resolved = process.env[name];
+    return resolved !== undefined && resolved.length > 0 ? resolved : match;
+  });
+}
+
+function normalizeBaseUrl(raw: string): string {
+  return expandEnvPlaceholders(raw.trim()).replace(/\/+$/, "");
+}
+
 function resolveOpenAiApiKey(): string | null {
   const envKey = process.env.OPENAI_API_KEY?.trim();
   if (envKey) return envKey;
@@ -41,11 +60,94 @@ function resolveOpenAiApiKey(): string | null {
   return configKey && configKey.length > 0 ? configKey : null;
 }
 
-async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
+function resolveNamedApiKey(envKeyName: string): string | null {
+  const expandedName = expandEnvPlaceholders(envKeyName).trim();
+  if (!expandedName) return null;
+  const value = process.env[expandedName]?.trim();
+  return value && value.length > 0 ? value : null;
+}
+
+/**
+ * Resolve discovery base URL + credentials together so custom gateways use the
+ * same account Codex would at runtime (`env_key` + expanded `base_url`).
+ *
+ * Prefer OPENAI_BASE_URL (+ OPENAI_API_KEY); else selected PAPERCLIP_CODEX_PROVIDERS
+ * entry; else default OpenAI.
+ */
+function resolveCodexDiscoveryTarget(): CodexDiscoveryTarget {
+  const envUrl = process.env.OPENAI_BASE_URL?.trim();
+  if (envUrl) {
+    return {
+      baseUrl: normalizeBaseUrl(envUrl),
+      apiKey: resolveOpenAiApiKey(),
+    };
+  }
+
+  const fromProviders = resolveTargetFromCodexProviders();
+  if (fromProviders) return fromProviders;
+
+  return {
+    baseUrl: DEFAULT_OPENAI_BASE_URL,
+    apiKey: resolveOpenAiApiKey(),
+  };
+}
+
+/** Prefer OPENAI_BASE_URL; else active PAPERCLIP_CODEX_PROVIDERS base_url; else OpenAI. */
+function resolveOpenAiBaseUrl(): string {
+  return resolveCodexDiscoveryTarget().baseUrl;
+}
+
+/**
+ * True when Codex model discovery should call a non-default OpenAI-compatible
+ * gateway. Default OpenAI discovery is skipped for the built-in adapter because
+ * api.openai.com returns image/audio/embedding models Codex cannot run.
+ */
+export function hasCustomCodexModelsBaseUrl(): boolean {
+  return resolveOpenAiBaseUrl() !== DEFAULT_OPENAI_BASE_URL;
+}
+
+function resolveTargetFromCodexProviders(): CodexDiscoveryTarget | null {
+  const raw = process.env.PAPERCLIP_CODEX_PROVIDERS?.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as { providers?: unknown; model_provider?: unknown };
+    if (!record.providers || typeof record.providers !== "object" || Array.isArray(record.providers)) {
+      return null;
+    }
+    const providers = record.providers as Record<string, unknown>;
+    const selected =
+      typeof record.model_provider === "string" && record.model_provider.trim().length > 0
+        ? record.model_provider.trim()
+        : null;
+    if (!selected) return null;
+    const entry = providers[selected];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const provider = entry as { base_url?: unknown; env_key?: unknown };
+    const baseUrlRaw = provider.base_url;
+    if (typeof baseUrlRaw !== "string" || baseUrlRaw.trim().length === 0) return null;
+
+    const envKeyRaw = provider.env_key;
+    const apiKey =
+      typeof envKeyRaw === "string" && envKeyRaw.trim().length > 0
+        ? resolveNamedApiKey(envKeyRaw)
+        : resolveOpenAiApiKey();
+
+    return {
+      baseUrl: normalizeBaseUrl(baseUrlRaw),
+      apiKey,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchOpenAiModels(apiKey: string, baseUrl: string): Promise<AdapterModel[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_MODELS_TIMEOUT_MS);
   try {
-    const response = await fetch(OPENAI_MODELS_ENDPOINT, {
+    const response = await fetch(`${baseUrl}${OPENAI_MODELS_PATH}`, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
@@ -72,28 +174,40 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
 
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
-  const apiKey = resolveOpenAiApiKey();
+  const { baseUrl, apiKey } = resolveCodexDiscoveryTarget();
   const fallback = dedupeModels(codexFallbackModels);
   if (!apiKey) return fallback;
 
   const now = Date.now();
   const keyFingerprint = fingerprint(apiKey);
-  if (!forceRefresh && cached && cached.keyFingerprint === keyFingerprint && cached.expiresAt > now) {
+  if (
+    !forceRefresh &&
+    cached &&
+    cached.keyFingerprint === keyFingerprint &&
+    cached.baseUrl === baseUrl &&
+    cached.expiresAt > now
+  ) {
     return cached.models;
   }
 
-  const fetched = await fetchOpenAiModels(apiKey);
+  const fetched = await fetchOpenAiModels(apiKey, baseUrl);
   if (fetched.length > 0) {
     const merged = mergedWithFallback(fetched);
     cached = {
       keyFingerprint,
+      baseUrl,
       expiresAt: now + OPENAI_MODELS_CACHE_TTL_MS,
       models: merged,
     };
     return merged;
   }
 
-  if (cached && cached.keyFingerprint === keyFingerprint && cached.models.length > 0) {
+  if (
+    cached &&
+    cached.keyFingerprint === keyFingerprint &&
+    cached.baseUrl === baseUrl &&
+    cached.models.length > 0
+  ) {
     return cached.models;
   }
 
