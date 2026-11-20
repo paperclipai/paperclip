@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { announcementIdSchema, type Announcement } from "@paperclipai/shared";
 import { announcementsApi } from "@/api/announcements";
 import { announcementStoragePrefix, readAnnouncementDismissals, saveAnnouncementDismissal } from "@/lib/announcement-dismissals";
+import { intentionalAbortReason } from "@/lib/intentional-abort";
 
 export const ANNOUNCEMENT_SETTLE_MS = 3000;
 interface Options {
@@ -61,7 +62,7 @@ export function useAnnouncement(options: Options) {
     function suspend() {
       generation++;
       clearTimeout(settleTimer);
-      fetchController?.abort();
+      fetchController?.abort(intentionalAbortReason());
       fetchController = null;
       setState(null);
     }
@@ -112,7 +113,7 @@ export function useAnnouncement(options: Options) {
       setState(null);
       // Invalidate any response that started before this dismissal.
       generation++;
-      fetchController?.abort();
+      fetchController?.abort(intentionalAbortReason());
       try { channel?.postMessage(id); } catch { /* Storage events are the fallback. */ }
       void sync(id, savedLocally);
     };
@@ -126,8 +127,8 @@ export function useAnnouncement(options: Options) {
       disposed = true;
       generation++;
       clearTimeout(settleTimer);
-      fetchController?.abort();
-      for (const controller of writes.values()) controller.abort();
+      fetchController?.abort(intentionalAbortReason());
+      for (const controller of writes.values()) controller.abort(intentionalAbortReason());
       channel?.close();
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("online", onOnline);
