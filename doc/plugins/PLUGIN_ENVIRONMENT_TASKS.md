@@ -88,7 +88,8 @@ other variable:
 | `copilot` | `COPILOT_GITHUB_TOKEN` |
 | `opencode` | `OPENROUTER_API_KEY`, or `PAPERCLIP_AI_PROVIDER_URL` with `PAPERCLIP_AI_PROVIDER_KEY` |
 
-`ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS` exports this list. Every value
+`ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS` exports this list. A server test
+checks every set against the names that the Runner forwards to each provider. Every value
 is non-empty and contains no NUL byte. The `provider` always matches the
 Runner harness of the task. Set the variables in the environment of the Runner
 process. The Runner gives each variable only to its provider.
