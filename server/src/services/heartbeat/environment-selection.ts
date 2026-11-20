@@ -39,11 +39,6 @@ import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspa
 
 type Issue = typeof issues.$inferSelect;
 
-/** Whether git cache expiration removed this archived workspace's local files.
- * Remote storage migration keeps the expired workspace's local restore recipe
- * but rebinds its cwd to the saved snapshot, so that recipe no longer matches
- * the workspace. Reopening restores such a workspace from its snapshot, so only
- * the current lifecycle's expiration marker is read here. */
 function gitCacheExpirationRemovedWorkspace(workspace: Parameters<typeof readGitCacheExpiration>[0]) {
   if (!readRemoteWorkspaceAuthority(workspace.metadata)) return readGitCacheExpiration(workspace)?.workspaceRemoved === true;
   const expiration = parseObject(workspace.metadata?.gitCacheExpiration);

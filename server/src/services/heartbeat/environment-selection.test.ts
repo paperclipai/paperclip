@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, environments, environmentLeases, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environments, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -283,13 +283,13 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
       expect(result.reusableExistingExecutionWorkspace).toBeNull();
     });
 
-    // Remote storage migration moves an expired workspace to a saved snapshot
-    // and rebinds its cwd, but keeps the local restore recipe that names the
-    // removed worktree. That recipe no longer matches the workspace.
     async function migratedToRemoteStorage(generation: number) {
       const f = await expired();
       restoration.removed = false;
       const worktreePath = join(home, "removed-worktree");
+      const snapshotId = randomUUID();
+      await db.insert(executionWorkspaceSnapshots).values({ id: snapshotId, companyId: f.issue.companyId, executionWorkspaceId: f.saved.id,
+        sourceOperationId: randomUUID(), generation: 1, epoch: 1, status: "committed" });
       await db.update(executionWorkspaces).set({
         cwd: `/workspaces/${f.saved.id}`, providerRef: null, providerType: "cloud_sandbox",
         cleanupReason: "reproducible_git_cache_expired", closedAt: new Date("2020-01-01T00:00:00Z"),
@@ -299,22 +299,21 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
             projectId: f.project.id, sourcePath: home, worktreePath, gitBranchOwnershipVersion: 1, verifiedAt: "2020-01-01T00:00:00.000Z" },
           gitCacheExpiration: { schema: "paperclip.git-cache-expiration.v1", generation: 3, workspaceRemoved: true, completed: true,
             worktreeTrash: join(home, ".expired"), worktreeAdmin: join(home, ".git", "worktrees", "removed"), baseTrash: null },
-          remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: randomUUID(), location: null, writerRunId: null,
+          remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId, location: null, writerRunId: null,
             dirty: false, source: { kind: "git", repoUrl: "https://example.test/repo.git", ref: "a".repeat(40), branchName: "saved" } } },
       }).where(eq(executionWorkspaces.id, f.saved.id));
       return f;
     }
 
-    it("reopens an expired workspace migrated to remote storage without validating its superseded local recipe", async () => {
-      const { input, issue, saved, svc } = await migratedToRemoteStorage(3);
-      const reopen = vi.spyOn(svc, "reopenClosedIsolatedExecutionWorkspaceForIssue").mockImplementation(async () => {
-        await executionWorkspaceService(db).update(saved.id, { status: "active" });
-        return { ok: true, reopened: true, workspace: (await svc.getStoredById(issue.companyId, saved.id))!, generation: 4 };
-      });
-      vi.spyOn(svc, "clearReopenPendingConsumptionForUnconsumedReopen").mockResolvedValue({ cleared: true });
+    it("reopens an expired workspace migrated to remote storage from its saved snapshot", async () => {
+      const { input, issue, saved } = await migratedToRemoteStorage(3);
       const result = await selectHeartbeatEnvironment(db, input);
-      expect(reopen).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: saved.id }));
       expect(result.reusableExistingExecutionWorkspace).toMatchObject({ id: saved.id, status: "active" });
+      const stored = await executionWorkspaceService(db).getStoredById(issue.companyId, saved.id);
+      expect(stored).toMatchObject({ id: saved.id, status: "active", closedAt: null, cleanupReason: null, cwd: `/workspaces/${saved.id}` });
+      expect(stored?.metadata?.lifecycleGeneration).toBe(4);
+      const [bound] = await db.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues).where(eq(issues.id, issue.id));
+      expect(bound?.executionWorkspaceId).toBe(saved.id);
     });
 
     it("does not treat a remote workspace's expiration from an earlier lifecycle as current", async () => {
