@@ -114,6 +114,9 @@ Open `/search` or the navigation search entry.
 ### `toasts`
 
 Keep a company page open while another person or agent updates a task.
+Task notifications show the task title and actor/comment or concrete change.
+Routine updates without a useful change stay quiet. Comment-driven updates
+combine the comment and change into one notification.
 See [toast semantics](../../doc/TOASTS.md) for eligibility and suppression rules.
 
 ## Driving it with Playwright and the Paperclip CLI
@@ -229,7 +232,10 @@ activity, company isolation, local-board, and persisted run-task attribution.
 viewer-specific projection; [UI delivery](../../ui/src/context/LiveUpdatesProvider.hook.test.tsx)
 checks eligibility gating, cache updates, stale callbacks, and existing suppression.
 [UI cache handling](../../ui/src/context/LiveUpdatesProvider.test.ts) checks visible
-comment refresh when authenticated events omit hydration metadata.
+comment refresh when authenticated events omit hydration metadata, task-title
+headings, comment previews, status changes, quiet updates, and legacy fallbacks.
+[Notification projection](../../server/src/realtime/activity-toast-details.test.ts)
+checks allowed fields, preview bounds, and combined comment/update details.
 The `task toasts follow personal involvement in multiplayer` case in the
 [authenticated browser suite](../../tests/e2e/multi-user-authenticated.spec.ts)
 exercises quiet unrelated updates, read-only visits, first/historical mentions,

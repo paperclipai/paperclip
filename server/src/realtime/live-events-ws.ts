@@ -367,8 +367,8 @@ export function setupLiveEventsWebSocketServer(
           : event;
       }
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;
-      // Company-wide invalidations carry no task-derived content. Authorized
-      // clients obtain details through viewer-filtered HTTP reads.
+      // Company-wide invalidations carry no arbitrary task details. Task-read
+      // authorization permits the narrow notification projection below.
       if (event.type === "activity.logged") return { ...event, payload: {
         action: payload.action, entityType: payload.entityType, entityId: payload.entityId,
         // A handoff can attach the first case to a task. Its already-authorized
@@ -379,7 +379,7 @@ export function setupLiveEventsWebSocketServer(
         ...(payload.entityType === "issue"
           ? { taskIdentityChanged: issueActivityChangesTaskIdentity(payload.action, payload.details) }
           : {}),
-        // The task read check above authorizes attribution, but not arbitrary details.
+        // The task read check above authorizes notification content, but not arbitrary details.
         ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
         ...await recentSubtaskParents(db, context!.actor, event.companyId, payload, reads),
       } };

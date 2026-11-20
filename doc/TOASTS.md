@@ -63,10 +63,23 @@ never persisted or published on the shared company event bus.
 Authorized events still reach cache handling and component subscribers when
 eligibility is false. Lookup failure is logged but does not discard the authorized
 event. Existing task/run privacy checks and payload redaction remain in force.
-Task activity titles, fallback text, and links use the authorized task identifier.
-If the optional identifier lookup fails, the event still arrives and uses `Task`
-unless the browser already has the identifier. Permission-check failures do not
-use this fallback.
+Task activity notifications use the task title as their heading. The body names
+the actor and previews the comment or describes the change, including the old
+and new status when available. Markdown in comment previews becomes plain text.
+Updates without a meaningful change stay quiet. Comment-driven updates produce
+one notification with the comment and its changes. Creation notifications name
+the creator. The title is limited to 120 characters and the body to 240.
+
+After task-read authorization, the server adds the persisted task title and a
+closed `notificationDetails` projection of the already-redacted activity. This
+projection allows bounded comment IDs/previews, known status/priority values,
+assignment/change flags, and comment/reopen context. It does not copy arbitrary
+activity details, task descriptions, or raw change receipts. The title uses the
+existing company-scoped identifier lookup; no extra database read is required.
+If that optional lookup fails, the event still arrives. The browser uses a cached
+title or `Task`; task identifiers remain in navigation links. Permission-check
+failures do not use this fallback. Older servers can supply cached titles and
+legacy activity details, but unspecified updates remain quiet.
 When an authenticated comment event omits the comment ID, the visible task thread
 refreshes through its authorized HTTP read instead of trying to hydrate the comment.
 Closed sockets cannot deliver stale notifications after account/company changes.

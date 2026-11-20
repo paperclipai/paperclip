@@ -1,10 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { agents, authUsers, companyMemberships, issues, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { activityToastDetails } from "./activity-toast-details.js";
 
 const TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
 
-/** Called only after the viewer can read the activity's task. Never copy details. */
+/** Called only after the viewer can read the activity's task. Never copy arbitrary details. */
 export async function activityToastIdentity(
   db: Db,
   companyId: string,
@@ -18,19 +19,24 @@ export async function activityToastIdentity(
   const issueId = payload.entityType === "issue" && typeof payload.entityId === "string"
     ? payload.entityId : null;
   let issueIdentifier: string | null = null;
+  let issueTitle: string | null = null;
   if (issueId) {
     try {
       const [issue] = await db
-        .select({ identifier: issues.identifier })
+        .select({ identifier: issues.identifier, title: issues.title })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
         .limit(1);
       issueIdentifier = issue?.identifier ?? null;
+      issueTitle = issue?.title ?? null;
     } catch (err) {
       logger.warn({ err, companyId, issueId }, "task toast identifier lookup failed");
     }
   }
-  const identity = { ...actorIdentity, ...(issueId ? { issueIdentifier } : {}) };
+  const identity = { ...actorIdentity, ...(issueId ? {
+    issueIdentifier, issueTitle,
+    notificationDetails: activityToastDetails(payload.action, payload.details),
+  } : {}) };
   if (!actorId) return identity;
 
   if (actorType === "agent") {

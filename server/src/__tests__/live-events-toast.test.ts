@@ -30,7 +30,7 @@ function database(onPredicate: (kind: "where" | "join", condition: SQL) => void 
       innerJoin: (_table: unknown, condition: SQL) => { onPredicate("join", condition); return query; },
       where: (condition: SQL) => { onPredicate("where", condition); return query; },
       limit: async () => {
-        if (table === "issues") return [{ id: "task", identifier: "PAP-1234" }];
+        if (table === "issues") return [{ id: "task", identifier: "PAP-1234", title: "Fix task notifications" }];
         if (table === "company_memberships") return fields.name ? [{ name: "Alex Example", image: "/alex.png" }] : [{ id: "membership" }];
         if (table === "agents") return [{ name: "Coder", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "bubblegum-sky" } }];
         return [];
@@ -132,6 +132,48 @@ describe("authenticated activity notifications", () => {
         expect(event.payload.taskIdentityChanged).toBe(false);
       }
       expect(messages[3].payload.issueIdentifier).toBe("PAP-1234");
+    } finally {
+      socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it.each(["authenticated", "local_trusted"] as const)("delivers useful task content through the real socket (%s)", async deploymentMode => {
+    const server = createServer();
+    setupLiveEventsWebSocketServer(server, database() as never, { deploymentMode,
+      resolveCloudActor: async () => ({ userId: "viewer", companyIds: ["company"] }) });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/companies/company/events/ws`);
+    try {
+      await once(socket, "open");
+      const messages: Array<{ payload: Record<string, unknown> }> = [];
+      socket.on("message", data => messages.push(JSON.parse(data.toString())));
+      const activity = (entityId: string, action: string, details: Record<string, unknown>) => publishLiveEvent({
+        companyId: "company", type: "activity.logged", payload: {
+          action, entityType: "issue", entityId, actorType: "system", issueTitle: "Spoofed title", details,
+          notificationDetails: { bodySnippet: "Spoofed preview" },
+        },
+      });
+      const changes = { status: { from: "in_progress", to: "done" }, description: { from: "private old", to: "private new" } };
+      if (deploymentMode === "authenticated") activity("hidden", "issue.comment_added", { bodySnippet: "Hidden comment" });
+      let delivery = once(socket, "message");
+      activity("visible", "issue.updated", { source: "comment", changes, secret: "private token" });
+      await delivery;
+      delivery = once(socket, "message");
+      activity("visible", "issue.comment_added", { commentId: "comment-1", bodySnippet: "Ready for review", changes, secret: "private token" });
+      await delivery;
+      expect(messages).toHaveLength(2);
+      expect(messages[0].payload).toMatchObject({ issueTitle: "Fix task notifications", notificationDetails: {
+        source: "comment", status: "done", statusFrom: "in_progress", descriptionChanged: true,
+      } });
+      expect(messages[1].payload).toMatchObject({ issueTitle: "Fix task notifications", notificationDetails: {
+        commentId: "comment-1", bodySnippet: "Ready for review", status: "done", statusFrom: "in_progress", descriptionChanged: true,
+      } });
+      if (deploymentMode === "authenticated") {
+        expect(messages[1].payload).not.toHaveProperty("details");
+        expect(JSON.stringify(messages)).not.toMatch(/private token|private old|private new|Spoofed|Hidden comment/);
+      }
     } finally {
       socket.terminate();
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -247,7 +289,7 @@ describe("authenticated activity notifications", () => {
       socket.on("message", (data) => messages.push(JSON.parse(data.toString())));
       const activity = (entityId: string, actorType = "user") => publishLiveEvent({ companyId: "company", type: "activity.logged", payload: {
         action: "issue.created", entityType: "issue", entityId, actorType, actorId: actorType === "user" ? "viewer" : "agent",
-        issueIdentifier: "SPOOF-1",
+        issueIdentifier: "SPOOF-1", issueTitle: "Untrusted title",
         details: { bodySnippet: "private comment", secret: "not for the socket" },
       } });
       if (deploymentMode === "authenticated") activity("hidden");
@@ -255,7 +297,7 @@ describe("authenticated activity notifications", () => {
       activity("visible");
       await first;
       expect(messages).toHaveLength(1);
-      expect(messages[0].payload).toMatchObject({ action: "issue.created", entityType: "issue", entityId: "visible", issueIdentifier: "PAP-1234", actorType: "user", actorId: "viewer", actorName: "Alex Example", actorImage: "/alex.png" });
+      expect(messages[0].payload).toMatchObject({ action: "issue.created", entityType: "issue", entityId: "visible", issueIdentifier: "PAP-1234", issueTitle: "Fix task notifications", notificationDetails: {}, actorType: "user", actorId: "viewer", actorName: "Alex Example", actorImage: "/alex.png" });
       if (deploymentMode === "authenticated") expect(messages[0].payload).not.toHaveProperty("details");
       const second = once(socket, "message");
       activity("visible", "agent");
@@ -269,8 +311,9 @@ describe("authenticated activity notifications", () => {
         details: { title: "Secret new title", hiddenAt: null },
       } });
       await third;
-      // A rename or hide is flagged with a closed boolean; its content stays off the socket.
+      // Rename flags and the persisted title are allowed; arbitrary activity text stays off the socket.
       expect(messages[2].payload.taskIdentityChanged).toBe(true);
+      expect(messages[2].payload.notificationDetails).toEqual({ titleChanged: true });
       if (deploymentMode === "authenticated") expect(JSON.stringify(messages[2].payload)).not.toContain("Secret new title");
     } finally {
       socket.terminate();
