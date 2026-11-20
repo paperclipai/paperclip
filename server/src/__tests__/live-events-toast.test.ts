@@ -337,9 +337,10 @@ describe("activity profile query boundaries", () => {
       action: "issue.updated", entityType: "issue", entityId: "task-A", actorType: "system",
     })).toMatchObject({ issueIdentifier: "PAP-1234" });
     expect(predicates[0]).toEqual({ sql: '("issues"."company_id" = $1 and "issues"."id" = $2)', params: ["company-A", "task-A"] });
-    expect(predicates).toHaveLength(3);
+    expect(predicates).toHaveLength(4);
     expect(predicates[1].params).toEqual(["company-A", "task-A"]);
     expect(predicates[2].params).toEqual(["company-A", "task-A"]);
+    expect(predicates[3]).toEqual({ sql: '"instance_settings"."singleton_key" = $1', params: ["default"] });
   });
 
   it("requires the exact company, human actor, and active membership before reading a person profile", async () => {

@@ -339,6 +339,25 @@ describe("live-event run read boundaries", () => {
         expect(JSON.stringify(payload)).not.toContain(registered);
         expect(JSON.stringify(payload)).not.toContain(registered.slice(0, 9));
       }
+      const titleWithPath = `${homedir()}/notify-task ${registered}`;
+      await db.update(issues).set({ title: titleWithPath }).where(eq(issues.id, issueId));
+      const deliverTitle = async (action: string) => {
+        const message = once(socket, "message");
+        publishLiveEvent({ companyId, type: "activity.logged", payload: { action, entityType: "issue", entityId: issueId,
+          actorType: "system", details: { status: "blocked" } } });
+        const [bytes] = await message;
+        return JSON.parse(bytes.toString()).payload;
+      };
+      const maskedTitle = await redactActivityDetails(db, await registry.redactForIssue(companyId, issueId, { issueTitle: titleWithPath }));
+      for (const action of ["issue.created", "issue.updated"]) {
+        const payload = await deliverTitle(action);
+        expect(payload.issueTitle).toBe(maskedTitle?.issueTitle);
+        expect(JSON.stringify(payload)).not.toContain(homedir());
+      }
+      await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: false });
+      const unmaskedTitle = await registry.redactForIssue(companyId, issueId, { issueTitle: titleWithPath });
+      expect((await deliverTitle("issue.updated")).issueTitle).toBe(unmaskedTitle.issueTitle);
+      await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: true });
       const foreignIssueId = randomUUID();
       await db.insert(issues).values({ id: foreignIssueId, companyId, title: "Other task" });
       const [foreign] = await db.insert(issueComments).values({ companyId, issueId: foreignIssueId, body: registered }).returning();

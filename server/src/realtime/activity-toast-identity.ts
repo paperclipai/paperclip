@@ -4,7 +4,6 @@ import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { redactActivityDetails } from "../services/activity-log.js";
-import { sanitizeRecord } from "../redaction.js";
 import { activityToastDetails } from "./activity-toast-details.js";
 
 const TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
@@ -50,9 +49,7 @@ export async function activityToastIdentity(
       }
       if (issueTitle || bodySnippet) {
         const registeredSafe = await createRunSecretRedactionRegistry(db).redactForIssueNotification(companyId, issueId, { issueTitle, bodySnippet });
-        const safe = bodySnippet
-          ? await redactActivityDetails(db, registeredSafe)
-          : sanitizeRecord(registeredSafe);
+        const safe = await redactActivityDetails(db, registeredSafe);
         issueTitle = typeof safe?.issueTitle === "string" ? safe.issueTitle : null;
         notificationDetails = activityToastDetails(payload.action, { ...details, bodySnippet: safe?.bodySnippet });
       }

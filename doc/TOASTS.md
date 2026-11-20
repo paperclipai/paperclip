@@ -78,8 +78,9 @@ activity details, task descriptions, or raw change receipts. The title uses the
 existing company-scoped identifier lookup. Comment previews read the complete
 non-deleted comment by company, task, and comment ID. Task-registered secrets are
 redacted from the complete title/comment before the preview is shortened, using
-the same task redaction registry as HTTP reads. Activity text also retains its
-pattern-based credential and configured username redaction. The notification
+the same task redaction registry as HTTP reads. Titles and comment previews both apply the existing
+pattern-based credential and configured username redaction, including creation
+and update events without a comment. The notification
 path uses the existing task-context indexes in two ordered reads, each limited to
 129 rows. It accepts at most 128 distinct runs, 64 unique secrets and 64 KiB of
 unique encrypted material, with a 16 KiB registry limit per run. Exceeding a limit
