@@ -11429,7 +11429,11 @@ export function createToolGatewayService(
         input.body.displaySlug ??
         input.body.slug ??
         slugSegment(input.body.name, "gateway");
-      const gateway = await db.transaction(async tx => {
+      // The create locks the agent row, then its insert takes key-share on the
+      // company and profile rows. A writer that locks those in the other order
+      // can make this transaction the deadlock victim. The rolled-back attempt
+      // wrote nothing, so a bounded retry of the whole transaction is safe.
+      const gateway = await retryTransientLockContention(() => db.transaction(async tx => {
         await assertAgentToolAssignmentInteractions(tx as unknown as Db,
           input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : input.actor?.agentId,
           input.companyId, input.body.agentId ? [input.body.agentId] : []);
@@ -11482,7 +11486,7 @@ export function createToolGatewayService(
           })
           .onConflictDoNothing();
         return gateway;
-      });
+      }));
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
