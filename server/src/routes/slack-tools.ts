@@ -125,7 +125,9 @@ export function slackToolRoutes(db: Db, publicBaseUrl?: string) {
     res
       .set("Cache-Control", "no-store")
       .json(
-        await oauth.start(companyId, String(req.params.endpointId), userId),
+        await oauth.start(companyId, String(req.params.endpointId), userId, {
+          includeDms: (req.body as { includeDms?: unknown } | undefined)?.includeDms === true,
+        }),
       );
   });
   router.delete("/companies/:companyId/slack/endpoints/:endpointId/search", async (req, res) => {

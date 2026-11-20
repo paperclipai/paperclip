@@ -136,7 +136,12 @@ A linked person can then connect or disconnect their own search grant. State,
 secret bindings, refresh and grants reuse the existing connection infrastructure.
 Grants bind company, endpoint, Slack workspace, linked Slack identity and app
 configuration revision. Concurrent disconnect invalidates in-flight callbacks.
-No DM-search scopes are requested.
+Search never covers direct messages. A person may separately opt in, when
+connecting, to letting agents read their own DMs and group DMs: that requests the
+extra user scopes `im:history`, `im:read`, `mpim:history` and `mpim:read` (add them
+to the Slack app so people can opt in). Without the opt-in only the search scopes
+are requested, and only the scopes the person approved in that attempt are
+recorded. A token refresh never widens them.
 
 **Native RTS search is not enabled on current runtimes.** Slack's
 [Real-time Search API](https://docs.slack.dev/apis/web-api/real-time-search-api/)

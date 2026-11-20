@@ -1,4 +1,9 @@
-import { SLACK_SEARCH_USER_SCOPES as _SLACK_SEARCH_USER_SCOPES, slackSearchConfigSchema } from "@paperclipai/shared";
+import {
+  SLACK_ALL_PERSONAL_USER_SCOPES,
+  SLACK_SEARCH_USER_SCOPES as _SLACK_SEARCH_USER_SCOPES,
+  slackScopesAllowDmReads,
+  slackSearchConfigSchema,
+} from "@paperclipai/shared";
 import { SLACK_NATIVE_SEARCH_LIMITATION } from "./slack-native-search.js";
 import { syncConnectionCredentialBindings } from "../connection-credential-bindings.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -31,6 +36,8 @@ import { logger } from "../../middleware/logger.js";
 
 // Defined in @paperclipai/shared so the app manifest can request the same scopes.
 export const SLACK_SEARCH_USER_SCOPES: string[] = [..._SLACK_SEARCH_USER_SCOPES];
+/** Every scope a personal connection may hold; DM scopes only when the person opted in. */
+const ALLOWED_PERSONAL_SCOPES: string[] = [...SLACK_ALL_PERSONAL_USER_SCOPES];
 const SLACK_ERROR_CODE = /^[a-z_]{1,64}$/;
 const SLACK_OAUTH_ERROR_MESSAGES: Record<string, string> = {
   bad_client_secret:
@@ -282,23 +289,26 @@ export function slackSearchOAuthService(
         ),
       );
     const binding = grant?.providerTenant?.slackSearch;
+    const connected = !!(
+      binding &&
+      binding.endpointId === endpointId &&
+      config.success &&
+      binding.clientRevision === config.data.revision &&
+      (!grant?.providerTenant?.oauth?.accessTokenExpiresAt ||
+        Date.parse(grant.providerTenant.oauth.accessTokenExpiresAt) >
+          Date.now() ||
+        grant.credentialSecretRefs.some(
+          (ref) => ref.configPath === "oauth.refresh_token",
+        ))
+    );
     return {
       configured: config.success,
       clientId: config.success ? config.data.clientId : null,
       redirectUri: publicBaseUrl ? redirectUri() : null,
-      connected: !!(
-        binding &&
-        binding.endpointId === endpointId &&
-        config.success &&
-        binding.clientRevision === config.data.revision &&
-        (!grant?.providerTenant?.oauth?.accessTokenExpiresAt ||
-          Date.parse(grant.providerTenant.oauth.accessTokenExpiresAt) >
-            Date.now() ||
-          grant.credentialSecretRefs.some(
-            (ref) => ref.configPath === "oauth.refresh_token",
-          ))
-      ),
+      connected,
       nativeSearchAvailable: false,
+      // True only when this person opted in to DM reading and Slack granted the DM scopes.
+      dmAccess: connected && slackScopesAllowDmReads(grant?.providerTenant?.oauth?.scopes),
       limitation: SLACK_NATIVE_SEARCH_LIMITATION,
     };
   }
@@ -410,14 +420,20 @@ export function slackSearchOAuthService(
           identity.team_id !== bound.workspaceId
         )
           throw forbidden("Slack search refresh returned a different identity");
-        const scopes =
-          typeof user.scope === "string"
-            ? user.scope.split(",")
-            : (grant.providerTenant?.oauth?.scopes ?? []);
+        const approved = grant.providerTenant?.oauth?.scopes ?? [];
+        const returned =
+          typeof user.scope === "string" ? user.scope.split(",") : approved;
         if (
-          scopes.some((scope) => !SLACK_SEARCH_USER_SCOPES.includes(scope)) ||
-          !scopes.includes("search:read.public")
+          returned.some((scope) => !ALLOWED_PERSONAL_SCOPES.includes(scope)) ||
+          !returned.includes("search:read.public")
         )
+          throw forbidden(
+            "Slack search refresh returned unexpected permissions",
+          );
+        // A refresh never widens what the person approved: DM scopes Slack still carries do not turn DM
+        // reading on for a connection that did not opt in.
+        const scopes = returned.filter((scope) => approved.includes(scope));
+        if (!scopes.includes("search:read.public"))
           throw forbidden(
             "Slack search refresh returned unexpected permissions",
           );
@@ -553,7 +569,15 @@ export function slackSearchOAuthService(
       });
       return status(companyId, endpointId, userId);
     },
-    async start(companyId: string, endpointId: string, userId: string) {
+    async start(
+      companyId: string,
+      endpointId: string,
+      userId: string,
+      options: { includeDms?: boolean } = {},
+    ) {
+      const requestedScopes = options.includeDms === true
+        ? ALLOWED_PERSONAL_SCOPES
+        : SLACK_SEARCH_USER_SCOPES;
       const row = await linked(companyId, endpointId, userId);
       const config = configSchema.parse(
         object(row.connection.config).slackSearch,
@@ -574,13 +598,13 @@ export function slackSearchOAuthService(
         createdByActorType: "user",
         createdByActorId: userId,
         subjectUserId: userId,
-        requestedScopes: SLACK_SEARCH_USER_SCOPES,
+        requestedScopes,
         expiresAt: new Date(Date.now() + 10 * 60_000),
       });
       const url = new URL("https://slack.com/oauth/v2/authorize");
       url.search = new URLSearchParams({
         client_id: config.clientId,
-        user_scope: SLACK_SEARCH_USER_SCOPES.join(","),
+        user_scope: requestedScopes.join(","),
         state,
         redirect_uri: redirect,
         team: row.endpoint.providerAccountId!,
@@ -643,12 +667,19 @@ export function slackSearchOAuthService(
         throw forbidden(
           "Authorize the same Slack user and workspace that you linked in Paperclip",
         );
-      const scopes = String(user.scope ?? "").split(",");
+      const granted = String(user.scope ?? "").split(",");
+      const requested = Array.isArray(pending.requestedScopes)
+        ? (pending.requestedScopes as string[])
+        : SLACK_SEARCH_USER_SCOPES;
       if (
-        scopes.some((scope) => !SLACK_SEARCH_USER_SCOPES.includes(scope)) ||
-        !scopes.includes("search:read.public")
+        granted.some((scope) => !ALLOWED_PERSONAL_SCOPES.includes(scope)) ||
+        !granted.includes("search:read.public")
       )
         throw forbidden("Slack returned an unexpected search grant");
+      // Slack user tokens can carry scopes from an earlier authorization (a person who opted in to DMs and
+      // later reconnects without). Record only what this attempt asked for, so the choice made now decides
+      // whether DM reading is on.
+      const scopes = granted.filter((scope) => requested.includes(scope));
       const identity = await slackClient(
         user.access_token,
         fetchImpl,

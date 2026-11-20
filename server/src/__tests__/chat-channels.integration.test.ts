@@ -11169,13 +11169,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     let releaseExchange: (() => void) | undefined;
     let holdExchange = false;
     let exchangeStarted = false;
+    let grantedScope = "search:read.public,search:read.private,search:read.files";
     const oauthFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith("/auth.test")) return Response.json({ ok: true, user_id: "UTOOLS", team_id: "T-PAPERCLIP" });
       if (String(input).endsWith("/oauth.v2.access")) {
         exchangeStarted = true;
         if (holdExchange) await new Promise<void>(resolve => { releaseExchange = resolve; });
         const params = new URLSearchParams(String(init?.body));
-        const tokens = { id: "UTOOLS", access_token: "xoxp-search-only-test", refresh_token: "xoxe-refresh-test", expires_in: params.get("grant_type") === "refresh_token" ? 3600 : 1, scope: "search:read.public,search:read.private,search:read.files" };
+        const tokens = { id: "UTOOLS", access_token: "xoxp-search-only-test", refresh_token: "xoxe-refresh-test", expires_in: params.get("grant_type") === "refresh_token" ? 3600 : 1, scope: grantedScope };
         return Response.json(params.get("grant_type") === "refresh_token" ? { ok: true, ...tokens } : { ok: true, team: { id: "T-PAPERCLIP" }, authed_user: tokens });
       }
       throw new Error("Unexpected OAuth request");
@@ -11213,6 +11214,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     releaseExchange!();
     await rejected;
     await expect(oauth.status(fixture.companyId, endpoint.id, "owner-user")).resolves.toMatchObject({ connected: false });
+    // DM reading is opt-in per person: not requested, not granted, and a grant Slack widens on its own is refused.
+    holdExchange = false;
+    const defaultStart = await oauth.start(fixture.companyId, endpoint.id, "owner-user");
+    expect(new URL(defaultStart.url).searchParams.get("user_scope")).not.toContain("im:history");
+    // Slack may return scopes from an earlier opt-in. The default connect still succeeds, but records only what
+    // was requested, so DM reading stays off; a refresh never widens it either.
+    grantedScope = "search:read.public,search:read.private,search:read.files,im:history,im:read,mpim:history,mpim:read";
+    await oauth.complete(new URL(defaultStart.url).searchParams.get("state")!, "dm-code-1", "owner-user");
+    await expect(oauth.status(fixture.companyId, endpoint.id, "owner-user")).resolves.toMatchObject({ connected: true, dmAccess: false });
+    await expect(oauth.accessToken(fixture.companyId, endpoint.id, "owner-user")).resolves.toMatchObject({ scopes: ["search:read.public", "search:read.private", "search:read.files"] });
+    await expect(oauth.status(fixture.companyId, endpoint.id, "owner-user")).resolves.toMatchObject({ dmAccess: false });
+    // A scope outside the personal set is still refused.
+    const strayStart = await oauth.start(fixture.companyId, endpoint.id, "owner-user");
+    grantedScope = "search:read.public,chat:write";
+    await expect(oauth.complete(new URL(strayStart.url).searchParams.get("state")!, "dm-code-stray", "owner-user")).rejects.toThrow("unexpected search grant");
+    grantedScope = "search:read.public,search:read.private,search:read.files,im:history,im:read,mpim:history,mpim:read";
+    const dmStart = await oauth.start(fixture.companyId, endpoint.id, "owner-user", { includeDms: true });
+    expect(new URL(dmStart.url).searchParams.get("user_scope")).toBe("search:read.public,search:read.private,search:read.files,im:history,im:read,mpim:history,mpim:read");
+    grantedScope = "search:read.public,search:read.private,search:read.files,im:history,im:read,mpim:history,mpim:read";
+    await oauth.complete(new URL(dmStart.url).searchParams.get("state")!, "dm-code-2", "owner-user");
+    await expect(oauth.status(fixture.companyId, endpoint.id, "owner-user")).resolves.toMatchObject({ connected: true, dmAccess: true });
+    await oauth.disconnect(fixture.companyId, endpoint.id, "owner-user");
+    await expect(oauth.status(fixture.companyId, endpoint.id, "owner-user")).resolves.toMatchObject({ connected: false, dmAccess: false });
+    grantedScope = "search:read.public,search:read.private,search:read.files";
     await expect(oauth.status(randomUUID(), endpoint.id, "owner-user")).rejects.toThrow("not found");
     const { toolProfiles, toolProfileBindings } = await import("@paperclipai/db");
     const [slackProfile] = await db.select().from(toolProfiles).where(and(eq(toolProfiles.companyId, fixture.companyId), eq(toolProfiles.profileKey, `slack-bot:${endpoint.id}`)));

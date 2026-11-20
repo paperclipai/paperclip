@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   SLACK_DEFAULT_BOT_SCOPES,
-  SLACK_SEARCH_USER_SCOPES,
+  SLACK_ALL_PERSONAL_USER_SCOPES,
   slackBotScopes,
   type SlackOptInScopeGroup,
 } from "./slack-scopes.js";
@@ -76,7 +76,7 @@ export function buildSlackAppManifest(input: {
     oauth_config: {
       scopes: {
         bot: slackBotScopes(input.optInScopeGroups),
-        ...(input.searchRedirectUri ? { user: [...SLACK_SEARCH_USER_SCOPES] } : {}),
+        ...(input.searchRedirectUri ? { user: [...SLACK_ALL_PERSONAL_USER_SCOPES] } : {}),
       },
       ...(input.redirectUri || input.searchRedirectUri
         ? { redirect_urls: [...new Set([input.redirectUri, input.searchRedirectUri].filter((url): url is string => !!url))] }

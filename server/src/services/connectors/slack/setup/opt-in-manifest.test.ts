@@ -200,7 +200,7 @@ describe("Slack opt-in manifest machinery", () => {
       [row] = await db!.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
       const oauth = (row!.manifest as any).oauth_config;
       expect(oauth.redirect_urls).toEqual([before!.callbackUri, searchUri]);
-      expect(oauth.scopes.user).toEqual(["search:read.public", "search:read.private", "search:read.files"]);
+      expect(oauth.scopes.user).toEqual(["search:read.public", "search:read.private", "search:read.files", "im:history", "im:read", "mpim:history", "mpim:read"]);
     });
 
     it("ignores the personal-search additions when hashing the install manifest", () => {
