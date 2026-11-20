@@ -94,6 +94,12 @@ type DurableWaitingFacts = {
   hasPendingConnectionDelivery: boolean;
 };
 
+// The delivery worker only continues issues in these statuses, and retries an
+// unsettled row without end. A row is a wait only while the worker can still
+// settle it soon; after the bound, recovery owns the issue again.
+const CONNECTION_DELIVERY_ISSUE_STATUSES = new Set(["in_progress", "in_review"]);
+const connectionDeliveryIsFresh = sql`${connectionIntentDeliveries.createdAt} > now() - interval '5 minutes'`;
+
 function dispositionRepairDurablePathReason(issue: DispositionRepairIssue, facts: DurableWaitingFacts) {
   return issue.assigneeUserId
     ? "user_owner"
@@ -107,7 +113,7 @@ function dispositionRepairDurablePathReason(issue: DispositionRepairIssue, facts
             ? "interaction"
             : facts.hasPendingApproval
               ? "approval"
-              : facts.hasPendingConnectionDelivery
+              : facts.hasPendingConnectionDelivery && CONNECTION_DELIVERY_ISSUE_STATUSES.has(issue.status)
                 ? "connection_delivery"
                 : null;
 }
@@ -143,7 +149,8 @@ export async function readDispositionRepairDurableWaitingState(
         and ${issueThreadInteractions.companyId} = ${connectionIntentDeliveries.companyId}
       where ${connectionIntentDeliveries.companyId} = ${issue.companyId}
         and ${issueThreadInteractions.issueId} = ${issue.id}
-        and ${connectionIntentDeliveries.deliveredAt} is null) as "hasPendingConnectionDelivery"`);
+        and ${connectionIntentDeliveries.deliveredAt} is null
+        and ${connectionDeliveryIsFresh}) as "hasPendingConnectionDelivery"`);
   const durablePathReason = dispositionRepairDurablePathReason(issue, facts!);
   return { hasDurableWaitingPath: durablePathReason !== null, durablePathReason };
 }
@@ -260,7 +267,7 @@ export async function collectDispositionRepairSourceState(
           ),
         ),
       // A resolved connection intent hands its continuation to the delivery
-      // worker. Until that wake exists, the undelivered row is the next step.
+      // worker. Until that wake exists, a fresh undelivered row is the next step.
       db
         .select({ interactionId: connectionIntentDeliveries.interactionId })
         .from(connectionIntentDeliveries)
@@ -276,6 +283,7 @@ export async function collectDispositionRepairSourceState(
             eq(connectionIntentDeliveries.companyId, issue.companyId),
             eq(issueThreadInteractions.issueId, issue.id),
             isNull(connectionIntentDeliveries.deliveredAt),
+            connectionDeliveryIsFresh,
           ),
         )
         .limit(1),
