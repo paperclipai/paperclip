@@ -75,6 +75,7 @@ export function createClaudeStreamParser() {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
+  let promptBlockedReason: string | null = null;
   const assistantTexts: string[] = [];
   const messageUsage = new Map<string, UsageSummary>();
   let anonymousMessage = 0;
@@ -91,6 +92,14 @@ export function createClaudeStreamParser() {
       if (type === "system" && asString(event.subtype, "") === "init") {
         sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
         model = asString(event.model, model);
+        continue;
+      }
+
+      if (type === "system" && asString(event.subtype, "") === "informational") {
+        const outcome = parseObject(event.prompt_submit_outcome);
+        if (asString(outcome.kind, "") === "blocked_by_hook") {
+          promptBlockedReason = asString(outcome.reason, "").trim() || "blocked by hook";
+        }
         continue;
       }
 
@@ -138,6 +147,7 @@ export function createClaudeStreamParser() {
         usageBasis: "per_run" as const,
         summary: assistantTexts.join("\n\n").trim(),
         resultJson: null as Record<string, unknown> | null,
+        promptBlockedReason,
       };
     }
 
@@ -162,6 +172,7 @@ export function createClaudeStreamParser() {
       usageBasis: "per_run" as const,
       summary,
       resultJson: finalResult,
+      promptBlockedReason,
     };
   };
 }
