@@ -94,6 +94,8 @@ For each active watchdog the tick:
 
 When the subtree changes between scans (someone restarts work, adds a blocker, or accepts an interaction) the stop fingerprint changes too, and the watchdog will be woken again for the new state — even if the previous run already disposed of an earlier fingerprint.
 
+Reconciliation isolates errors for each configured watchdog. A failed watchdog is logged with its company and issue IDs and counted in `failed`; other watchdogs still run. The configuration stays active, and the task-watchdog recovery work keeps a failed watchdog as retry debt, as it does for an incomplete subtree. Reopening a reusable review task for the configured agent clears its prior user assignee.
+
 ---
 
 ## What the watchdog agent does
