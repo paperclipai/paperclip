@@ -791,6 +791,7 @@ export class CapabilityMockControlPlaneAdapter implements CapabilityMockControlP
           title: requireText(command.title, "interaction title"),
           prompt: requireText(command.prompt, "interaction prompt"),
           payload: clone(command.payload ?? {}),
+          ...(command.addresseeUserId === undefined ? {} : { addresseeUserId: command.addresseeUserId }),
           targetRevisionId: command.targetRevisionId ?? null,
           continuationPolicy: command.continuationPolicy,
           result: null,
