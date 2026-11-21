@@ -482,7 +482,8 @@ export function skillSourceService(db: Db) {
           const commit = await read(`/repos/${parts[0]}/${parts[1]!.replace(/\.git$/i, '')}/commits/${encodeURIComponent(candidate)}`) as { sha: string };
           trackingRef = candidate; commitSha = commit.sha; prefix = suffix.slice(count).join('/'); break;
         } catch (error) {
-          if (!(error instanceof Error && 'details' in error && (error.details as { status?: number })?.status === 404)) throw error;
+          const details = error instanceof Error && 'details' in error ? error.details as { status?: number; code?: string } | null : null;
+          if (details?.status !== 404 && !(details?.status === 422 && details.code === 'skill_source_ref_unavailable')) throw error;
         }
       }
       if (!trackingRef) throw unprocessable('GitHub branch or commit was not found.');

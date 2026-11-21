@@ -16,11 +16,38 @@ afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); });
 describe('GitHub source authorization', () => {
   it('identifies a missing tracked branch instead of suggesting another connection', async () => {
     mocks.headers.mockResolvedValue({ Authorization: 'Bearer allowed' });
-    const fetch = vi.fn().mockResolvedValue(new Response('', { status: 422 }));
+    const fetch = vi.fn().mockResolvedValue(Response.json({ message: 'No commit found for SHA: main' }, { status: 422 }));
     vi.stubGlobal('fetch', fetch);
     await expect(skillSourceGitHubReader(db, 'missing-ref-company', actor({ type: 'board', userId: 'alice' }), 'connection')('/repos/acme/private/commits/main'))
       .rejects.toMatchObject({ details: { code: 'skill_source_ref_unavailable' }, message: expect.stringContaining('branch or revision') });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    { message: 'Validation Failed' },
+    { message: 'No commit found for SHA: other-ref' },
+    { message: 'No commit found for SHA: feature/skills sensitive-provider-text' },
+    { message: null },
+    null,
+  ])('does not classify unrelated 422 bodies as missing refs: %j', async body => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(body, { status: 422 })));
+    const read = skillSourceGitHubReader(db, 'company', actor({ type: 'board' }), null);
+    await expect(read('/repos/acme/public/commits/feature%2Fskills')).rejects.toMatchObject({
+      details: { code: 'skill_source_github_read_failed', status: 422 },
+      message: 'GitHub could not complete the read. Try again.',
+    });
+  });
+  it('recognizes the exact missing slash-containing ref without exposing the response body', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ message: 'No commit found for SHA: feature/skills' }, { status: 422 })));
+    const read = skillSourceGitHubReader(db, 'company', actor({ type: 'board' }), null);
+    await expect(read('/repos/acme/public/commits/feature%2Fskills')).rejects.toMatchObject({
+      details: { code: 'skill_source_ref_unavailable', status: 422 },
+      message: 'The tracked GitHub branch or revision is unavailable. Use the repository’s default branch or update its configured ref.',
+    });
+  });
+  it.each(['', 'not JSON'])('does not classify an invalid 422 body as a missing ref: %j', async body => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 422 })));
+    const read = skillSourceGitHubReader(db, 'company', actor({ type: 'board' }), null);
+    await expect(read('/repos/acme/public/commits/main')).rejects.toMatchObject({ details: { code: 'skill_source_github_read_failed', status: 422 } });
   });
   it('uses one lease across metadata, snapshot and auditing, then permits another complete scan', async () => {
     const fixture = githubFixture({ 'SKILL.md': '---\nname: example\ndescription: Useful instructions\n---\nRead the document.' });

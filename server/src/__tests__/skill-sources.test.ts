@@ -561,6 +561,41 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     expect(again.imported[0]!.id).toBe(result.imported[0]!.id);
     expect(await companySkillService(db).listVersions(isolatedCompany, result.imported[0]!.id)).toHaveLength(1);
   });
+  it.each(['main', 'feature/new-skills', sha])('imports a folder after missing longer ref candidates for %s', async ref => {
+    const id = randomUUID();
+    await db.insert(companies).values({ id, name: 'Folder URL', issuePrefix: `F${id.slice(0, 6)}` });
+    const fixture = githubFixture({ 'deep/one/SKILL.md': md('one'), 'elsewhere/SKILL.md': md('other') });
+    const attempted: string[] = [];
+    const read = Object.assign(async (request: string) => {
+      if (request.includes('/commits/')) {
+        const candidate = decodeURIComponent(request.split('/commits/')[1]!);
+        attempted.push(candidate);
+        if (candidate !== ref && candidate !== sha) throw unprocessable('The tracked GitHub branch or revision is unavailable.', { status: 422, code: 'skill_source_ref_unavailable' });
+      }
+      return fixture(request);
+    }, { openSnapshot: fixture.openSnapshot });
+    const result = await skillSourceService(db).importFromUrl(id, `https://github.com/acme/skills/tree/${ref}/deep/one`, { ...context, read: () => read });
+    expect(result.imported).toHaveLength(1);
+    expect(result.imported[0]!.metadata).toMatchObject({ trackingRef: ref, skillSourcePath: 'deep/one/SKILL.md' });
+    expect(attempted.slice(0, 3)).toEqual([`${ref}/deep/one`, `${ref}/deep`, ref]);
+  });
+  it('reports a missing branch after one attempt per ref/path split', async () => {
+    const attempts: string[] = [];
+    const read = Object.assign(async (request: string) => {
+      attempts.push(decodeURIComponent(request.split('/commits/')[1]!));
+      throw unprocessable('Unavailable', { status: attempts.length % 2 ? 422 : 404, code: 'skill_source_ref_unavailable' });
+    }, { openSnapshot: githubFixture({}).openSnapshot });
+    await expect(skillSourceService(db).importFromUrl(companyId, 'https://github.com/acme/missing/tree/main/deep/one', { ...context, read: () => read }))
+      .rejects.toThrow('GitHub branch or commit was not found.');
+    expect(attempts).toEqual(['main/deep/one', 'main/deep', 'main']);
+  });
+  it.each([401, 403, 429, 500, 503, 422])('does not try shorter refs for a non-missing GitHub error %s', async status => {
+    const error = unprocessable('GitHub read failed safely.', { status, code: 'skill_source_github_read_failed' });
+    const request = vi.fn(async () => { throw error; });
+    const read = Object.assign(request, { openSnapshot: githubFixture({}).openSnapshot });
+    await expect(skillSourceService(db).importFromUrl(companyId, 'https://github.com/acme/missing/tree/main/deep/one', { ...context, read: () => read })).rejects.toBe(error);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
   it('checks per-skill policies for additions and deselection before publishing', async () => {
     const service = skillSourceService(db);
     files = { 'protected/SKILL.md': md('protected') }; commit = sha;
