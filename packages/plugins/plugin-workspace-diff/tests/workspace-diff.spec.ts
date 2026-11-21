@@ -325,6 +325,25 @@ describe("plugin workspace diff service", () => {
     expect(headRenamed?.patches[0]?.patch).not.toContain("foo/extra");
   }, 20_000);
 
+  it("keeps tracked patches when diff.mnemonicPrefix or diff.noprefix is enabled", async () => {
+    const repoRoot = await createTempRepo();
+    await runGit(repoRoot, ["config", "diff.mnemonicPrefix", "true"]);
+    await fs.writeFile(path.join(repoRoot, "tracked-unstaged.txt"), "bravo\nmnemonic\n", "utf8");
+
+    const mnemonicDiff = await workspaceDiffService().getDiff(createWorkspace(repoRoot), workingTreeQuery());
+    const mnemonicFile = mnemonicDiff.files.find((file) => file.path === "tracked-unstaged.txt");
+    expect(mnemonicFile).toMatchObject({ additions: 1, deletions: 0 });
+    expect(mnemonicFile?.patches[0]?.patch).toContain("diff --git a/tracked-unstaged.txt b/tracked-unstaged.txt");
+    expect(mnemonicFile?.patches[0]?.patch).toContain("+mnemonic");
+
+    await runGit(repoRoot, ["config", "diff.noprefix", "true"]);
+    const noPrefixDiff = await workspaceDiffService().getDiff(createWorkspace(repoRoot), workingTreeQuery());
+    const noPrefixFile = noPrefixDiff.files.find((file) => file.path === "tracked-unstaged.txt");
+    expect(noPrefixFile).toMatchObject({ additions: 1, deletions: 0 });
+    expect(noPrefixFile?.patches[0]?.patch).toContain("diff --git a/tracked-unstaged.txt b/tracked-unstaged.txt");
+    expect(noPrefixFile?.patches[0]?.patch).toContain("+mnemonic");
+  }, 20_000);
+
   it("scopes working-tree and head diffs to subdirectory workspaces with workspace-relative paths", async () => {
     const repoRoot = await createTempRepo();
     const appDir = path.join(repoRoot, "packages", "app");

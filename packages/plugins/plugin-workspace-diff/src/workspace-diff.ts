@@ -427,6 +427,8 @@ async function buildTrackedPatch(input: {
   const patchOutput = await readPatchOutput(input.cwd, [
     "diff",
     "--relative",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
     "--no-ext-diff",
     "--find-renames",
     "--unified=3",
