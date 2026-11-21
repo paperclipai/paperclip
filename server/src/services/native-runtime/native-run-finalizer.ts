@@ -47,6 +47,7 @@ import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../i
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { laterConversationTurn, laterTurns } from "./native-response-presentation-query.js";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -994,6 +995,19 @@ async function hasLaterAppliedStatusDecision(db: Db, input: {
   return Boolean(later);
 }
 
+// A later turn of the conversation that started replaced this turn, even after
+// it released the execution run (for example, it failed at setup).
+async function laterConversationTurnStarted(db: Db, run: {
+  id: string; companyId: string; agentId: string; issueId: string;
+}) {
+  // Compare stored timestamps; a JavaScript Date drops their microseconds.
+  const [turn] = await db.select({ id: laterTurns.id }).from(laterTurns)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+      eq(heartbeatRuns.agentId, run.agentId)))
+    .where(laterConversationTurn(run.issueId)).limit(1);
+  return Boolean(turn);
+}
+
 /** Recover only the already accepted answer. Neither issue disposition nor
  * provider state is repaired here; an unsafe native session stays quarantined. */
 export async function repairCommittedNativeChatResponse(
@@ -1205,7 +1219,8 @@ async function recoverCommittedNativeChatResponseInScope(
         && (!issue.executionRunId || issue.executionRunId === run.id)
         && run.contextSnapshot?.issueId === issue.id
         && typeof run.contextSnapshot.conversationSessionGeneration === "number"
-        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
+        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration
+        && !(await laterConversationTurnStarted(tx, { ...run, issueId: issue.id }));
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
       const ordinaryTaskReply = (!conversation || currentConversation) &&
