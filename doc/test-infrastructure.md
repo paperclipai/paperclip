@@ -566,3 +566,10 @@ It checks the actual manifest generation, refusal of work under the owned hold,
 and a second useful write after release. This boundary does not exercise the
 production plugin database loader or plugin jobs. Unsupported manifests, active
 manual resources, and missing completion receipts remain sleep blockers.
+
+## Database-work test teardown
+
+Database-work tests that intentionally roll back signaled writes must stop their
+coordinator and call `reconcileDatabaseWork` for the affected queue during
+teardown. Deleting fixture rows does not retire process-local uncertain
+transactions; retaining them can add unrelated retry deadlines to the next test.
