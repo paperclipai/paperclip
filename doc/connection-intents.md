@@ -36,7 +36,7 @@ The manually configured Paperclip MCP server also advertises `connections_search
 ## Security and lifecycle
 
 - Company, agent, run, task, and responsible user come only from the signed legacy runtime token or the native server-owned binding and stored execution identity.
-- Tokens are scoped to connection intents, expire after one hour, and are rejected when the heartbeat is no longer running.
+- Tokens are scoped to connection intents and live as long as their heartbeat run: every request is rejected as soon as the run is no longer running, and the token's one-hour `exp` claim is not a deadline for connection intents. GitHub credential tokens keep their timestamp expiry.
 - The thread payload contains service identity, requesting-agent identity, a safe phase, and an optional human-selected audience bound to an OAuth draft. It never contains credentials or authorization URLs.
 - OAuth state is linked to the interaction. The same-origin callback finalizes the existing connection pipeline, posts only interaction ID/outcome to its opener, and redirects back to the task if there is no opener.
 - Personal OAuth defaults to the addressed user and creates an explicit delegation to the requesting agent. Reuse and installs are additive.

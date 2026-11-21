@@ -26,7 +26,7 @@ describe("runtime connection tools token", () => {
     });
   });
 
-  it("rejects tampering and expiry", () => {
+  it("rejects tampering but defers connection token lifetime to the bound run", () => {
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-runtime-tools-secret");
     vi.setSystemTime(new Date("2026-08-26T12:00:00.000Z"));
     const minted = createRuntimeToolsToken({
@@ -37,6 +37,16 @@ describe("runtime connection tools token", () => {
     })!;
     expect(verifyRuntimeToolsToken(`${minted.token.slice(0, -1)}x`)).toBeNull();
     vi.setSystemTime(new Date("2026-08-26T13:00:01.000Z"));
+    expect(verifyRuntimeToolsToken(minted.token)).toMatchObject({ run_id: "run-1" });
+  });
+
+  it("retains the separate GitHub credential capability expiry", () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-runtime-tools-secret");
+    vi.setSystemTime(new Date("2026-08-26T12:00:00Z"));
+    const minted = createRuntimeToolsToken({ agentId: "agent-1", companyId: "company-1", runId: "run-1", responsibleUserId: "user-1", scope: "github_credentials" })!;
     expect(verifyRuntimeToolsToken(minted.token)).toBeNull();
+    expect(verifyRuntimeToolsToken(minted.token, "github_credentials")).toMatchObject({ scope: "github_credentials" });
+    vi.setSystemTime(new Date(minted.expiresAt));
+    expect(verifyRuntimeToolsToken(minted.token, "github_credentials")).toBeNull();
   });
 });
