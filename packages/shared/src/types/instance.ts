@@ -1,6 +1,6 @@
 import type { FeedbackDataSharingPreference } from "./feedback.js";
 
-export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
+export const DAILY_RETENTION_PRESETS = [1, 3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
 export interface BackupRetentionPolicy {

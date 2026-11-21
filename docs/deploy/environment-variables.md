@@ -16,6 +16,8 @@ All environment variables that Paperclip uses for server configuration.
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string |
 | `PAPERCLIP_HOME` | `~/.paperclip` | Base directory for all Paperclip data |
 | `PAPERCLIP_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances) |
+| `PAPERCLIP_DB_BACKUP_DIR` | (instance config `database.backup.dir`) | Output directory for automated database backups. Home-aware (`~/...` expands). Commonly paired with `PAPERCLIP_DB_BACKUP_REQUIRE_MOUNTED=true` when the directory lives on a dedicated backup volume. |
+| `PAPERCLIP_DB_BACKUP_REQUIRE_MOUNTED` | `false` | When `true`, each database backup refuses to run unless `PAPERCLIP_DB_BACKUP_DIR` (or the configured backup dir) is a mount point — its device differs from its parent's. Prevents a lost backup volume from being silently recreated on the root filesystem by the recursive backup `mkdir`, which would refill the primary disk. Pair with a systemd `ExecStartPre=/usr/bin/mountpoint -q <dir>` service guard for start-time enforcement. |
 | `PAPERCLIP_DEPLOYMENT_MODE` | `local_trusted` | Runtime mode override |
 | `PAPERCLIP_DEPLOYMENT_EXPOSURE` | `private` | Exposure policy when deployment mode is `authenticated` |
 | `PAPERCLIP_API_URL` | (auto-derived) | Paperclip API base URL. When set externally (e.g., via Kubernetes ConfigMap, load balancer, or reverse proxy), the server preserves the value instead of deriving it from the listen host and port. Useful for deployments where the public-facing URL differs from the local bind address. |
