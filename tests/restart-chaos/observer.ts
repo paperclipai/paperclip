@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApiError, type ChaosApi } from "./api.js";
-import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
+import { ACTIVE_RUN_STATUSES, creditedQueueWaits, creditedRunQueuedMs, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
 import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
@@ -218,6 +218,7 @@ export class TaskObserver {
   private stallSince: number | null = null;
   /** First sample of the current stretch with the server ready (H1 holds the pause across it). */
   private readySince: number | null = null;
+  private readonly queueWaitsExtended = new Set<string>();
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
   done = false;
@@ -491,10 +492,19 @@ export class TaskObserver {
   /** Outages extend the deadline: R1 allows budget plus outage time. */
   extendDeadline(ms: number) { if (this.record.deadlineAt !== null) this.record.deadlineAt += ms; }
 
+  private extendForQueueWaits() {
+    for (const wait of creditedQueueWaits(this.record)) {
+      if (this.queueWaitsExtended.has(wait.runId)) continue;
+      this.queueWaitsExtended.add(wait.runId);
+      this.extendDeadline(wait.startedAt - wait.createdAt);
+    }
+  }
+
   async poll(now = Date.now()): Promise<void> {
     if (this.done || !this.record.issueId) return;
     const sample = await this.sample(now);
     this.record.samples.push(sample);
+    this.extendForQueueWaits();
     await this.captureRemoteFilesAtDone(sample);
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
@@ -542,7 +552,8 @@ export class TaskObserver {
         if (this.done) return;
       }
     }
-    if (this.record.deadlineAt !== null && now > this.record.deadlineAt && !this.supervisor.faultInProgress) {
+    const queuedMs = Math.min(creditedRunQueuedMs(this.record, now), this.definition.budgetMs);
+    if (this.record.deadlineAt !== null && now > this.record.deadlineAt + queuedMs && !this.supervisor.faultInProgress) {
       if (this.restCandidateSince !== null && this.restCandidateSince <= this.record.deadlineAt
         && now - this.restCandidateSince < REST_CONFIRM_MS) return;
       this.record.timedOut = true;

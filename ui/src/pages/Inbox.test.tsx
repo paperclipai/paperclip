@@ -2650,6 +2650,19 @@ describe("FailedRunInboxRow", () => {
     container.remove();
   });
 
+  it.each([false, true])("shows the question over historical errors and preserves manual Retry=%s", canRetry => {
+    const root = createRoot(container);
+    const issue = createIssue({ interruption: { intentId: null, responsibility: "user", state: "waiting_for_user",
+      nextRetryAt: null, canRetry, userAction: "question", sourceRunIds: ["run-1"], observedRunId: "run-1" } });
+    act(() => root.render(<FailedRunInboxRow run={createFailedRun({ issueId: issue.id, error: "API error: 429" })}
+      issueById={new Map([[issue.id, issue]])} agentName="Worker" issueLinkState={null}
+      onDismiss={() => {}} onRetry={() => {}} isRetrying={false} />));
+    expect(container.textContent).toContain("Respond to the pending question");
+    expect(container.textContent).not.toContain("429");
+    expect(container.textContent?.includes("Retry")).toBe(canRetry);
+    act(() => root.unmount());
+  });
+
   it.each(["working", "failed"] as const)("shows saved-work shutdown guidance while %s without Retry", state => {
     const root = createRoot(container);
     const message = state === "working" ? "Your work is saved. Paperclip is finishing shutdown."

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { ApiUnavailableError } from "@/api/response";
 import { createConnectivityStore, probeServerHealth, type ConnectivityStore, type ProbeResult } from "./connectivity";
+import { isIntentionalAbortReason } from "./intentional-abort";
 
 const outage = new ApiError("Paperclip is restarting", 503, { error: "tenant_app_unavailable" });
 const down: ProbeResult = { reachable: false, retryAfterMs: null };
@@ -280,5 +281,25 @@ describe("probeServerHealth", () => {
       { status: 503, headers: { "Retry-After": "4" } },
     )));
     expect(await probeServerHealth()).toEqual({ reachable: false, retryAfterMs: 4_000 });
+  });
+
+  it("marks its own timeout abort as intentional", async () => {
+    vi.useFakeTimers();
+    try {
+      let probeSignal: AbortSignal | undefined;
+      vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        probeSignal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          probeSignal?.addEventListener("abort", () => reject(probeSignal?.reason), { once: true });
+        });
+      }));
+      const result = probeServerHealth();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await result).toEqual({ reachable: false, retryAfterMs: null });
+      expect(probeSignal?.aborted).toBe(true);
+      expect(isIntentionalAbortReason(probeSignal?.reason)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

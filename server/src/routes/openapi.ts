@@ -13046,6 +13046,15 @@ registerCurrentRoute({
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:profiles",
+  method: "get",
+  path: "/api/companies/{companyId}/tools/profiles/summary",
+  tags: ["tool-access"],
+  summary: "List tool access profile summaries",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:profiles",
   method: "post",
   path: "/api/companies/{companyId}/tools/profiles",
   tags: ["tool-access"],
