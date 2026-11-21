@@ -15,6 +15,8 @@ import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
+import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, agentWakeupRequests, approvals, issueApprovals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
@@ -609,6 +611,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id));
     expect(ledger).toHaveLength(1);
     expect(ledger[0].costCents).toBe(12);
+  });
+
+  it("accounts a resumed Codex thread by its session delta after cumulative checkpoints", async () => {
+    const f = await fixture();
+    await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id, status: "succeeded", sessionIdAfter: "codex-thread",
+      createdAt: new Date(Date.now() - 60_000), usageJson: { rawInputTokens: 4_000_000, rawInputIncludesCached: false, rawCachedInputTokens: 9_000_000, rawOutputTokens: 400_000 } });
+    const parsed = parseCodexJsonl(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 15_000_000, cached_input_tokens: 10_000_000, output_tokens: 500_000 } }));
+    const result: AdapterExecutionResult = { ...f.input.adapterResult, provider: "openai", biller: "openai", billingType: "api", model: "gpt-6-sol", costUsd: null,
+      sessionId: "codex-thread", sessionParams: { sessionId: "codex-thread" }, usage: parsed.usage, usageBasis: parsed.usageBasis };
+    const spool = await mkdtemp(join(tmpdir(), "paperclip-codex-session-receipts-"));
+    try {
+      const recorder = await usageReceipts.createRunUsageRecorder(db, { companyId: f.run.companyId, runId: f.run.id, adapterType: "codex_local" }, spool);
+      await recorder.capture({ ...result, complete: true });
+      const captured = await recorder.complete(result);
+      await f.completion.completeRun({ ...f.input, adapterResult: { ...result, ...captured, usageComplete: captured.complete } });
+    } finally { await rm(spool, { recursive: true, force: true }); }
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id))).toMatchObject([
+      { inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 100_000, costStatus: "estimated", costCents: 320 },
+    ]);
+    expect(await read(f.run.id)).toMatchObject({ costAccountingPending: false, costAccountedAt: expect.any(Date),
+      usageJson: { usageSource: "session_delta", rawInputTokens: 5_000_000, rawCachedInputTokens: 10_000_000, rawOutputTokens: 500_000 } });
   });
 
   it.each([
