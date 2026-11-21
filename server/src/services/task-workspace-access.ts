@@ -3,7 +3,7 @@ import { agents, executionWorkspaces, heartbeatRuns, issues, projects, projectWo
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { forbidden } from "../errors.js";
 import { accessService } from "./access.js";
-import { executionWorkspaceReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { executionWorkspaceReadSqlCondition, type AuthorizationActor, type AuthorizationDecision } from "./authorization.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { assertSelectedWorkspaceTrust, runRetainsIssueIdentity, taskRepositoryRunColumns, taskRepositoryResponsibleUserMatches } from "./task-repository-acquisition.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
@@ -77,11 +77,25 @@ export async function assertTaskWorkspaceSourceProjectAccess(
     // project supplies no workspace files, task access is enough to run it.
     if (options.taskContainerOnly && decision.reason === "deny_project_private"
       && await personalProjectHasNoWorkspaceFiles(db, companyId, projectId)) return;
-    if (actor.type === "agent" && decision.reason === "deny_low_trust_boundary") {
-      throw new ProjectAccessDeniedError(projectId);
-    }
-    throw forbidden(decision.explanation);
+    throwSourceProjectAccessDenied(actor, projectId, decision);
   }
+}
+
+export async function assertTaskCreateWorkspaceSourceProjectAccess(
+  db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, projectId: string | null,
+) {
+  if (!projectId) return;
+  const decision = await measureRunPhase("workspace.access.authorization", () => accessService(db as Db).decideProjectForIssueCreate({
+    actor, companyId, projectId,
+  }));
+  if (!decision.allowed) throwSourceProjectAccessDenied(actor, projectId, decision);
+}
+
+function throwSourceProjectAccessDenied(actor: AuthorizationActor, projectId: string, decision: AuthorizationDecision): never {
+  if (actor.type === "agent" && decision.reason === "deny_low_trust_boundary") {
+    throw new ProjectAccessDeniedError(projectId);
+  }
+  throw forbidden(decision.explanation);
 }
 
 async function personalProjectHasNoWorkspaceFiles(db: Db | DbTransaction, companyId: string, projectId: string) {

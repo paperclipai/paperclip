@@ -39,7 +39,7 @@ import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, pendingUserRequestRowCondition, touchedByUserCondition, userParticipationActivityCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
 import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
-import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
+import { assertExecutionWorkspaceRecordAccess, assertTaskCreateWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
@@ -11028,7 +11028,7 @@ export function issueService(db: Db) {
             assigneeAgentId: issueData.assigneeAgentId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides,
             executionWorkspaceSettings, executionWorkspacePolicy: readableSource.executionWorkspacePolicy, sourceWorkspaceId: projectWorkspaceId,
             typedSelection: Boolean(workspaceIntent), projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
-          await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId);
+          await assertTaskCreateWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId);
         }
         if (executionWorkspaceId && workspaceSelectionActor) {
           const [readableWorkspace] = await tx.select({ id: executionWorkspaces.id, projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
