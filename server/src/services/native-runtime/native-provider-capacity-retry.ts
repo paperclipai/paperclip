@@ -1,9 +1,9 @@
 import { notifyIssueAttentionRetentionWork } from "../retention-work-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { agentWakeupRequests, heartbeatRuns, type Db } from "@paperclipai/db";
-import { accountingForScheduledRetry, executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import { and, eq, sql } from "drizzle-orm";
+import { agentWakeupRequests, environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
+import { accountingForScheduledRetry, executionRetryAttemptCount } from "../execution-recovery-attempt.js";
 import { NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_DELAY_MS, NATIVE_TOOL_RECEIPT_LIMIT_HINT,
   NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS, NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE, nativeRunHasStopRequest } from "./native-tool-receipt-limit.js";
@@ -13,6 +13,8 @@ import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_CONTINUATI
   NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MESSAGE } from "./native-agent-blocker.js";
 import { NativeStatusRaceError } from "./status-decision-committer.js";
 import { freshSessionRetryContext } from "./fresh-session-retry-context.js";
+import { NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE, NATIVE_ACCOUNT_CHANGE_CONTINUATION_DELAY_MS, NATIVE_ACCOUNT_CHANGE_HINT,
+  NATIVE_ACCOUNT_CHANGE_MAX_CONTINUATIONS, NATIVE_ACCOUNT_CHANGE_MESSAGE } from "./native-account-change-continuation.js";
 
 type NativeRetryTarget = {
   tx: Db;
@@ -96,6 +98,35 @@ export async function materializeNativeAgentBlockerContinuation(input: NativeRet
   });
 }
 
+export async function materializeNativeAccountChangeContinuation(input: NativeRetryTarget): Promise<string | null> {
+  const [run] = await input.tx.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
+    eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.nativeIssueId, input.issueId),
+  )).for("update");
+  if (!run || run.runtimeMode !== "native" || nativeRunHasStopRequest(run.resultJson)
+    || executionRetryAttemptCount(run, NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE) >= NATIVE_ACCOUNT_CHANGE_MAX_CONTINUATIONS) return null;
+  const [refusedResume] = await input.tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    sql`${environmentLeases.metadata}#>>'{runnerTaskAdmissionRejection,reason}' = 'account_binding_mismatch'`,
+    sql`coalesce(${environmentLeases.metadata}->>'runnerTaskResumeFrom', '') <> ''`,
+  )).limit(1);
+  if (!refusedResume) return null;
+  return materializeNativeFreshSessionRetry(input, {
+    reason: NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE,
+    maxRetries: NATIVE_ACCOUNT_CHANGE_MAX_CONTINUATIONS,
+    delayMs: () => NATIVE_ACCOUNT_CHANGE_CONTINUATION_DELAY_MS,
+    message: NATIVE_ACCOUNT_CHANGE_MESSAGE,
+    idempotencyPrefix: "native-account-change",
+    exhaustedError: "native_account_change_continuation_exhausted",
+    refuseStopped: true,
+    context: source => ({
+      livenessContinuationSourceRunId: source.id,
+      livenessContinuationReason: NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE,
+      livenessContinuationInstruction: NATIVE_ACCOUNT_CHANGE_HINT,
+    }),
+  });
+}
+
 async function materializeNativeFreshSessionRetry(input: NativeRetryTarget, lane: NativeRetryLane) {
   const [run] = await input.tx.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
@@ -108,7 +139,7 @@ async function materializeNativeFreshSessionRetry(input: NativeRetryTarget, lane
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.retryOfRunId, run.id),
   )).limit(1);
   if (existing) return existing.id;
-  const attempt = executionFailureRetryCount(run) + 1;
+  const attempt = executionRetryAttemptCount(run, lane.reason) + 1;
   if (attempt > lane.maxRetries) throw new Error(lane.exhaustedError);
   const now = new Date();
   const dueAt = new Date(now.getTime() + lane.delayMs(attempt));
