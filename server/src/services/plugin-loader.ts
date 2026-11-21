@@ -1,4 +1,4 @@
-import { resolveBundledPluginRuntimeLoader } from "./bundled-plugin-runtime.js";
+import { pluginWorkerImportArgs, resolveBundledPluginRuntimeLoader } from "./bundled-plugin-runtime.js";
 import { finishServiceShutdown } from "../shutdown.js";
 /**
  * PluginLoader — discovery, installation, and runtime activation of plugins.
@@ -2463,9 +2463,9 @@ export function pluginLoader(
       };
 
       if (prebuiltOnly) {
-        workerOptions.execArgv = ["--import", resolveBundledPluginRuntimeLoader()];
+        workerOptions.execArgv = pluginWorkerImportArgs(resolveBundledPluginRuntimeLoader());
       } else if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+        workerOptions.execArgv = pluginWorkerImportArgs(DEV_TSX_LOADER_PATH);
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
