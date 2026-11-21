@@ -252,7 +252,11 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const loginChannel = companyId ? `telegram-login:${companyId}` : "telegram-login:none";
+  const loginChannel = !companyId
+    ? "telegram-login:none"
+    : loginId
+      ? `telegram-login:${companyId}:${loginId}`
+      : `telegram-login:${companyId}`;
   const loginStream = usePluginStream<{ status?: LoginStatus }>(loginChannel, companyId ? { companyId } : undefined);
 
   const status = login.data ?? { state: "idle" as const };

@@ -119,6 +119,16 @@ export type InboxStreamEvent = {
   photo?: string | null;
 };
 
+export function profileEventMatches(
+  event: Pick<InboxStreamEvent, "issueRef" | "accountId" | "peerId">,
+  profile: { issueRef: string; accountId: string; peerId: string },
+): boolean {
+  if (!profile.issueRef) return false;
+  if (event.issueRef && event.issueRef === profile.issueRef) return true;
+  if (!profile.peerId || !event.peerId || event.peerId !== profile.peerId) return false;
+  return !event.accountId || !profile.accountId || event.accountId === profile.accountId;
+}
+
 /** Worker parks inbox-wait for 12s. The abort sits past that plus a slow-link RTT, under the 30s host RPC cap. */
 export const INBOX_ABORT_MS = 28_000;
 

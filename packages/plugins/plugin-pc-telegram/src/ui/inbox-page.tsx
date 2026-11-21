@@ -32,6 +32,7 @@ import {
   INBOX_ABORT_MS,
   absorbStreamAhead,
   mergeLoadedChats,
+  profileEventMatches,
   bubbleNode,
   captureFeedAnchor,
   queueStreamBubble,
@@ -117,9 +118,8 @@ export function TelegramInboxPage({
   const menuAction = usePluginAction("chat-message-menu");
   const refreshThread = useRef(thread.refresh);
   const refreshChats = useRef(chats.refresh);
-  const profilePeer = useRef("");
-  profilePeer.current = profileRef ?? "";
   const refreshProfile = useRef(profile.refresh);
+  const openProfile = useRef({ issueRef: "", accountId: "", peerId: "" });
   refreshThread.current = thread.refresh;
   refreshChats.current = chats.refresh;
   refreshProfile.current = profile.refresh;
@@ -220,10 +220,7 @@ export function TelegramInboxPage({
     if (ref && !knownChats.some((chat) => (chat.identifier || chat.issueId) === ref)) {
       refreshChats.current();
     }
-    if (event.peerId && profilePeer.current && event.peerId === profilePeer.current) {
-      const accountOk = !event.accountId || !openAccount.current || event.accountId === openAccount.current || profilePeer.current !== openPeer.current;
-      if (accountOk) refreshProfile.current();
-    }
+    if (profileEventMatches(event, openProfile.current)) refreshProfile.current();
     if (ref && (event.preview != null || event.activityAt || event.photo !== undefined || typeof event.unread === "number")) {
       setRowPatches((current) => ({
         ...current,
@@ -740,6 +737,11 @@ export function TelegramInboxPage({
   const headerPresence = transcript?.presence || openChat?.presence || null;
   const headerStatus = presenceText(headerPresence, ru);
   const profileChat = listed.find((chat) => (chat.identifier || chat.issueId) === profileRef);
+  openProfile.current = {
+    issueRef: profileRef ?? "",
+    accountId: profileChat?.accountId || (profileRef && profileRef === issueRef ? openAccount.current : "") || "",
+    peerId: profileChat?.peerId || (profileRef && profileRef === issueRef ? openPeer.current : "") || "",
+  };
   const profileName = profile.data?.name || profileChat?.label || (profileRef === issueRef ? label : uiText("Telegram"));
   const profilePhoto = safePhoto(profile.data?.photo) || safePhoto(profileChat?.photo) || (profileRef === issueRef ? headerPhoto : null);
   const profilePresence = profile.data?.presence || profileChat?.presence || (profileRef === issueRef ? headerPresence : null);

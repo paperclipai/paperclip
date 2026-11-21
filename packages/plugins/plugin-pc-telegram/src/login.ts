@@ -4,6 +4,12 @@ export function idleLoginStatus(): LoginStatus {
   return { state: "idle" };
 }
 
+/** Company-wide readers must not see a QR token or a cloud-password hint. */
+export function publicLoginStatus(status: LoginStatus): LoginStatus {
+  if (status.state === "qr_pending" || status.state === "password_required") return idleLoginStatus();
+  return status;
+}
+
 export function reduceLogin(current: LoginStatus, event: LoginEvent): LoginStatus {
   if (event.type === "cancel") {
     if ("loginId" in current && current.loginId !== event.loginId) {

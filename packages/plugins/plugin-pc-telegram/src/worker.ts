@@ -34,7 +34,7 @@ import {
   TELEGRAM_OUTBOUND_NAMESPACE,
   TELEGRAM_OUTBOUND_STATE_KEY,
 } from "./relay.js";
-import { reduceLogin } from "./login.js";
+import { publicLoginStatus, reduceLogin } from "./login.js";
 import { redactValue } from "./redaction.js";
 import { authorizeSendText } from "./send.js";
 import {
@@ -131,7 +131,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     if (!ctx) return;
     const channel = `${LOGIN_STREAM_CHANNEL}:${companyId}`;
     ctx.streams.open(channel, companyId);
-    ctx.streams.emit(channel, { companyId, status });
+    ctx.streams.emit(channel, { companyId, status: publicLoginStatus(status) });
+    if ("loginId" in status && status.loginId) {
+      const privateChannel = `${channel}:${status.loginId}`;
+      ctx.streams.open(privateChannel, companyId);
+      ctx.streams.emit(privateChannel, { companyId, status });
+    }
   }
 
   function loginStillCurrent(pending: PendingLogin): boolean {

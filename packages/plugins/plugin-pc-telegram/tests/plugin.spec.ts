@@ -389,4 +389,81 @@ describe("pc-telegram plugin", () => {
     expect(html).toContain("dialog = task");
     secretFree(html);
   });
+
+  it("pages chats in one activity order", async () => {
+    const plugin = createTelegramUserClientPlugin({
+      createClient: createMockTelegram().factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const created = [];
+    for (let index = 0; index < 40; index += 1) {
+      created.push(await harness.ctx.issues.create({
+        companyId: COMPANY_ID,
+        title: `Chat ${index}`,
+        status: "todo",
+        originKind: DIALOG_ORIGIN_KIND,
+        originId: `1001:${2000 + index}`,
+      }));
+    }
+    const original = harness.ctx.issues.list.bind(harness.ctx.issues);
+    const limits: number[] = [];
+    harness.ctx.issues.list = async (input) => {
+      if (input?.originKind === DIALOG_ORIGIN_KIND) limits.push(input.limit ?? 0);
+      const rows = await original(input);
+      if (input?.originKind !== DIALOG_ORIGIN_KIND) return rows;
+      return rows.map((row, index) => ({
+        ...row,
+        updatedAt: new Date(Date.UTC(2026, 0, 1) + index * 1000),
+      }));
+    };
+    const first = await harness.getData<{ chats: Array<{ issueId: string }>; nextCursor: string | null }>("chats", {
+      companyId: COMPANY_ID,
+    });
+    const second = await harness.getData<{ chats: Array<{ issueId: string }>; nextCursor: string | null }>("chats", {
+      companyId: COMPANY_ID,
+      cursor: "30",
+    });
+    expect(limits.every((limit) => limit >= 40)).toBe(true);
+    expect(first.chats).toHaveLength(30);
+    expect(first.chats[0]?.issueId).toBe(created[39]?.id);
+    expect(first.nextCursor).toBe("30");
+    expect(second.chats.map((chat) => chat.issueId)).toEqual(created.slice(0, 10).reverse().map((issue) => issue.id));
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("keeps the login QR off the company stream and an unscoped read", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const emitted: Array<{ channel: string; event: unknown }> = [];
+    harness.ctx.streams.emit = (channel, event) => {
+      emitted.push({ channel, event });
+    };
+    const started = await harness.performAction<{ loginId: string }>("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.requirePassword("secret-hint");
+    const companyChannel = `telegram-login:${COMPANY_ID}`;
+    const privateEvents = emitted.filter((row) => row.channel === `${companyChannel}:${started.loginId}`);
+    const companyEvents = emitted.filter((row) => row.channel === companyChannel);
+    expect(companyEvents.length).toBeGreaterThan(0);
+    expect(JSON.stringify(companyEvents)).not.toContain("imageDataUrl");
+    expect(JSON.stringify(companyEvents)).not.toContain("secret-hint");
+    expect(JSON.stringify(privateEvents)).toContain("data:image/svg+xml");
+    expect(JSON.stringify(privateEvents)).toContain("secret-hint");
+    expect(await harness.getData("login-status", { companyId: COMPANY_ID })).toEqual({ state: "idle" });
+    expect(await harness.getData("login-status", {
+      companyId: COMPANY_ID,
+      loginId: "00000000-0000-4000-8000-000000000000",
+    })).toEqual({ state: "idle" });
+    const visible = await harness.getData<{ state: string; hint?: string | null }>("login-status", {
+      companyId: COMPANY_ID,
+      loginId: started.loginId,
+    });
+    expect(visible).toMatchObject({ state: "password_required", hint: "secret-hint" });
+  });
 });

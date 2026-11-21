@@ -22,7 +22,7 @@ import { createDialogCache, type CacheScope } from "./dialog-cache.js";
 import { HISTORY_PAGE_SIZE, boundLatestHistory, historyCacheKey, historyContentChanged, historyHitIsFresh, patchHistoryMessages, reconcileFetchedHistory, removeHistoryMessages } from "./history-slice.js";
 import { createInboxLive } from "./inbox-live.js";
 import { bubbleFromStoredBody, type ChatBubble } from "./thread.js";
-import { idleLoginStatus, reduceLogin } from "./login.js";
+import { idleLoginStatus, publicLoginStatus, reduceLogin } from "./login.js";
 import { reactionEmoji, telegramMessageIds } from "./message-menu.js";
 import { authorizeDialogForActor, authorizeOperatorReply, authorizeSendText } from "./send.js";
 import { deleteAccountSession } from "./secrets.js";
@@ -474,7 +474,9 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     if (!companyId) return { chats: [], nextCursor: null };
     const rawCursor = Number(params.cursor);
     const cursor = Number.isFinite(rawCursor) && rawCursor > 0 ? Math.floor(rawCursor) : 0;
-    const issues = await listDialogIssues(companyId, cursor + CHAT_PAGE_SIZE + 1);
+    // The host prefix is not Telegram activity order. Load one capped snapshot,
+    // sort it, then slice, so a later page cannot skip a chat that sorts ahead.
+    const issues = await listDialogIssues(companyId, DIALOG_LIST_CAP);
     const chats = await Promise.all(issues.map(async (issue) => {
       const updatedAt = issue.updatedAt instanceof Date
         ? issue.updatedAt.toISOString()
@@ -830,11 +832,12 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
       if (pending && pending.companyId === companyId) return pending.status;
       const settled = loginResults.get(loginId);
       if (settled && settled.companyId === companyId) return settled.status;
+      return idleLoginStatus();
     }
     const pending = [...pendingLogins.values()].find((entry) => entry.companyId === companyId);
-    if (pending) return pending.status;
+    if (pending) return publicLoginStatus(pending.status);
     const settled = [...loginResults.values()].reverse().find((entry) => entry.companyId === companyId);
-    return settled?.status ?? idleLoginStatus();
+    return publicLoginStatus(settled?.status ?? idleLoginStatus());
   });
 
   ctx.actions.register(ACTION_START_LOGIN, async (params, actionCtx) => {
