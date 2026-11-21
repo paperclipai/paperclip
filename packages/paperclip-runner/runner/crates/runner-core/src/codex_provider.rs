@@ -15,8 +15,8 @@ use crate::durable::QualifiedLaunchArtifact;
 use crate::durable::{redact_text, CursorCloudLaunchProfile, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
-    is_node_interpreter, BoundedLogBuffer, ProcessExitFact, ProcessOutput, SupervisedProcess,
-    VerifiedProcessArgument, VerifiedProcessLaunch,
+    is_node_interpreter, BoundedLogBuffer, OversizedStdoutPolicy, ProcessExitFact, ProcessOutput,
+    SupervisedProcess, VerifiedProcessArgument, VerifiedProcessLaunch,
 };
 use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
 use crate::provider_events::normalized_codex_terminal_event_type;
@@ -75,6 +75,7 @@ pub(crate) fn runtime_notification_codex_args(
 }
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+const APP_SERVER_RETAINED_STRING_BYTES: usize = 64 * 1024;
 const QUALIFIED_OPENCODE_VERSION: &str = "1.18.34";
 const CURSOR_CLOUD_PROXY_VERSION: &str = "cursor-cloud-v1";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -1209,11 +1210,14 @@ impl CodexProvider {
                 }
                 let launch = verified_cursor_cloud_launch(profile)?;
                 observe(ProviderStartupObservation::SpawnStarting)?;
-                SupervisedProcess::spawn_verified_with_environment_keys(
+                SupervisedProcess::spawn_verified_with_environment_keys_and_stdout_policy(
                     &launch,
                     Duration::from_secs(2),
                     CODEX_APP_SERVER_MAX_FRAME_BYTES,
                     &environment_keys,
+                    OversizedStdoutPolicy::BoundJsonStrings {
+                        retained_string_bytes: APP_SERVER_RETAINED_STRING_BYTES,
+                    },
                 )
             } else if config.provider == "opencode" {
                 let profile = opencode_launch_profile.ok_or_else(|| {
@@ -1231,21 +1235,27 @@ impl CodexProvider {
                 }
                 let launch = verified_opencode_launch(profile)?;
                 observe(ProviderStartupObservation::SpawnStarting)?;
-                SupervisedProcess::spawn_verified_with_environment_keys(
+                SupervisedProcess::spawn_verified_with_environment_keys_and_stdout_policy(
                     &launch,
                     Duration::from_secs(2),
                     CODEX_APP_SERVER_MAX_FRAME_BYTES,
                     &environment_keys,
+                    OversizedStdoutPolicy::BoundJsonStrings {
+                        retained_string_bytes: APP_SERVER_RETAINED_STRING_BYTES,
+                    },
                 )
             } else {
                 observe(ProviderStartupObservation::SpawnStarting)?;
-                SupervisedProcess::spawn_in_directory_with_environment_keys(
+                SupervisedProcess::spawn_in_directory_with_environment_keys_and_stdout_policy(
                     &config.command,
                     &launch_args,
                     Duration::from_secs(2),
                     CODEX_APP_SERVER_MAX_FRAME_BYTES,
                     &environment_keys,
                     Path::new(&config.cwd),
+                    OversizedStdoutPolicy::BoundJsonStrings {
+                        retained_string_bytes: APP_SERVER_RETAINED_STRING_BYTES,
+                    },
                 )
             }
         })();

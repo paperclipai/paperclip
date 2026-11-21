@@ -1847,6 +1847,46 @@ fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
 }
 
 #[test]
+fn oversized_file_change_does_not_close_the_app_server_session() {
+    let directory = temporary_directory("oversized-file-change");
+    let config = provider_config(&directory, &["--oversized-file-change"]);
+    let mut provider = CodexProvider::start(&config, None).expect("start fake Codex provider");
+    provider
+        .start_turn("Change the large schema.", &config.cwd)
+        .expect("start provider turn");
+
+    let deadline = event_deadline();
+    let mut saw_file_change = false;
+    let mut saw_completion = false;
+    while std::time::Instant::now() < deadline && !saw_completion {
+        match provider.poll().expect("poll provider event") {
+            Some(CodexProviderEvent::Notification { method, params })
+                if method == "item/completed" && params["item"]["type"] == "fileChange" =>
+            {
+                let diff = params["item"]["changes"][0]["diff"].as_str().unwrap();
+                assert!(diff.starts_with(&"x".repeat(64 * 1024)));
+                assert!(diff.ends_with("...[paperclip-runner truncated 5177344 bytes]"));
+                saw_file_change = true;
+            }
+            Some(CodexProviderEvent::Notification { method, .. }) if method == "turn/completed" => {
+                saw_completion = true;
+            }
+            Some(CodexProviderEvent::ProtocolFailure { diagnostic }) => {
+                panic!("oversized notification closed the session: {diagnostic}");
+            }
+            Some(CodexProviderEvent::Exited { .. }) => {
+                panic!("provider exited before the terminal notification");
+            }
+            _ => std::thread::sleep(std::time::Duration::from_millis(1)),
+        }
+    }
+    assert!(saw_file_change);
+    assert!(saw_completion);
+    provider.shutdown().expect("stop provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn codex_goal_autostart_binds_the_provider_turn_authority() {
     let directory = temporary_directory("goal-autostart");
     let config = provider_config(&directory, &["--goal-autostart"]);
