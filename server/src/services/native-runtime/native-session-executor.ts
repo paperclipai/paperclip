@@ -12561,13 +12561,22 @@ async function executePaperclipNativeSessionAttempt(
       input.useRunnerd && input.backend === undefined
         ? await timeController("backend_setup", () => executionContext ? executionContext.wait(createExecutionBackend) : createExecutionBackend())
         : null;
+    let releasedRecoveryUnavailable: Error | undefined;
+    let recovered: Awaited<ReturnType<NonNullable<NonNullable<typeof runnerdBackend>["recoverSession"]>>> | undefined;
     if (remoteWarmRecovery) {
       const recovery = remoteWarmRecovery;
       if (executionContext) await executionContext.wait(() => recovery.revalidate(leaseOwner));
       else await recovery.revalidate(leaseOwner);
-      const recovered = await runnerdBackend?.recoverSession?.(remoteWarmRecovery.checkpoint, {
-        signal: executionContext?.signal ?? new AbortController().signal,
-      });
+      try {
+        recovered = await runnerdBackend?.recoverSession?.(remoteWarmRecovery.checkpoint, {
+          signal: executionContext?.signal ?? new AbortController().signal,
+        });
+      } catch (error) {
+        if (!recovery.releasedSource || !(error instanceof Error) || error.message !== "native_runner_reuse_unavailable") throw error;
+        releasedRecoveryUnavailable = error;
+      }
+    }
+    if (remoteWarmRecovery && !releasedRecoveryUnavailable) {
       if (!recovered?.recovered || !recovered.session) throw new Error("runner_state_identity_mismatch: remote_warm_session_unproven");
       const movedSession = remoteWarmRecovery.portableSourceTaskId !== undefined;
       // A portable resume already starts a new Runner. Its run attachment
@@ -12616,9 +12625,9 @@ async function executePaperclipNativeSessionAttempt(
           )).then(rows => rows[0])
       : null;
     let remoteCleanupLease = await readRemoteCleanupLease();
-    const continueAfterUnavailableReuse = async (error: unknown) => {
+    const continueAfterUnavailableReuse = async (error: unknown, recovering = false) => {
       const target = input.runnerExecutionTarget;
-      const releasedRecovery = remoteWarmRecovery?.releasedSource ? remoteWarmRecovery : undefined;
+      const releasedRecovery = recovering && remoteWarmRecovery?.releasedSource ? remoteWarmRecovery : undefined;
       const retainedOwner = existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession)
         : relaunchReleased?.owner ?? (releasedRecovery ? releasedRecoveryOwner : undefined);
       if (!(error instanceof Error) || error.message !== "native_runner_reuse_unavailable" || !retainedOwner
@@ -12655,6 +12664,7 @@ async function executePaperclipNativeSessionAttempt(
       remoteCleanupLease = await readRemoteCleanupLease();
       return true;
     };
+    if (releasedRecoveryUnavailable && !await continueAfterUnavailableReuse(releasedRecoveryUnavailable, true)) throw releasedRecoveryUnavailable;
     const portTarget = input.runnerExecutionTarget;
     if (input.useRunnerd && !input.backend && !existingWarmSession && portTarget?.kind === "remote" && portTarget.transport === "sandbox"
       && portTarget.runner && !portTarget.runnerTask && portTarget.sandboxLeaseAcquisition?.outcome === "resumed"
