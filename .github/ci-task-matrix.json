@@ -140,6 +140,11 @@
       "task": "ci:docker"
     }
   ],
+  "installer": [
+    {
+      "task": "ci:installer"
+    }
+  ],
   "sandbox_provider_tests": [
     {
       "task": "ci:sandbox-providers"

@@ -215,6 +215,16 @@
       "outputs": [],
       "cache": false
     },
+    "//#ci:installer": {
+      "inputs": [
+        "scripts/install.sh",
+        "scripts/install-sh-bash32.Dockerfile",
+        "scripts/install-sh-fixtures/**",
+        "scripts/test-install-sh-docker.sh"
+      ],
+      "outputs": [],
+      "cache": false
+    },
     "//#ci:canary": {
       "inputs": [
         "server/**",

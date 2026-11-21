@@ -680,6 +680,52 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  installer:
+    name: Installer (incl. bash 3.2)
+    needs: gate
+    if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.installer.run) }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 30
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Installer (incl. bash 3.2)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      # Same reason as the Docker context lane: not every runner the gate can
+      # select ships the Buildx plugin.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      # install.sh is shipped to users as a curl-to-bash one-liner, so no
+      # TypeScript suite ever exercises it. It ran unguarded until 2026-09-09,
+      # when a bash 4 expansion in parse_bool made the published installer fail
+      # immediately on every stock Mac (macOS ships bash 3.2 as /bin/bash) and
+      # nothing caught it. This lane runs it under a real bash 3.2.
+      - name: Run installer checks
+        run: ./scripts/test-install-sh-docker.sh
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
   # Sandbox providers are outside the root workspace, so no other lane runs their
   # tests. The `//#ci:sandbox-providers` inputs in turbo.json select this job: the
   # providers, the plugin SDK, and the shared package the SDK depends on.
@@ -811,7 +857,7 @@ jobs:
   verify:
     name: verify
     if: ${{ always() }}
-    needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support]
+    needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, installer, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support]
     runs-on: ${{ needs.gate.outputs.runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
@@ -830,7 +876,7 @@ jobs:
           const plan = process.env.CI_PLAN ? JSON.parse(process.env.CI_PLAN) : null;
           if (plan) assert.equal(plan.version, 1, 'Supported task plan required');
           if (plan?.testSelection) assert.equal(results.test_selection.result, 'success', 'Published selection must succeed');
-          for (const job of ["typecheck_release_registry","general_tests","verify_paperclip_runner","build","docker_context_integrity","sandbox_provider_tests","verify_serialized_server","canary_dry_run","verify_runner_e2e_support"]) {
+          for (const job of ["typecheck_release_registry","general_tests","verify_paperclip_runner","build","docker_context_integrity","installer","sandbox_provider_tests","verify_serialized_server","canary_dry_run","verify_runner_e2e_support"]) {
             if (plan) assert.equal(typeof plan.jobs[job]?.run, 'boolean', 'Missing suite decision: ' + job);
             const selected = process.env.FULL_CI === 'true' && (!plan || plan.jobs[job].run);
             assert.equal(results[job].result, selected ? 'success' : 'skipped', job);
