@@ -5,7 +5,7 @@ import { agents, authUsers, companies, companyMemberships, createDb, issues, pri
 import { AGENT_INTERACTION_PERMISSION_KEYS, type AgentInteractionPermissionKey } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { agentInteractionDenial, assertAgentInteraction, type AgentInteractionInput } from "../services/agent-interaction-policy.js";
+import { agentInteractionDenial, assertAgentInteraction, isAgentQuestionToHumans, type AgentInteractionInput } from "../services/agent-interaction-policy.js";
 import { authorizationService, authorizationDeniedDetails } from "../services/authorization.js";
 import { withPluginInteractionOrigin } from "../services/plugin-interaction-context.js";
 
@@ -48,7 +48,7 @@ describe("agent interaction authorization", () => {
     ["canReceiveMentionsFromAgents", "incoming", "mention"], ["canCommentOnOtherTasks", "outgoing", "comment"],
     ["canReceiveCommentsFromAgents", "incoming", "comment"], ["canEditOtherTasks", "outgoing", "edit"],
     ["canReceiveTaskEditsFromAgents", "incoming", "edit"], ["canConfigureOtherAgents", "outgoing", "configure"],
-    ["canReceiveConfigurationChangesFromAgents", "incoming", "configure"],
+    ["canReceiveConfigurationChangesFromAgents", "incoming", "configure"], ["canAskHumans", "outgoing", "ask_human"],
   ];
   it.each(cases)("%s independently restricts its operation and can be restored", async (key, direction, operation) => {
     const f = await seed();
@@ -67,6 +67,15 @@ describe("agent interaction authorization", () => {
     expect(await agentInteractionDenial(db, action)).toBeNull();
     await db.update(agents).set({ permissions: {} }).where(eq(agents.id, policyAgentId));
     expect(await agentInteractionDenial(db, action)).toBeNull();
+  });
+
+  it.each([
+    ["agent", "ask_user_questions", null, true], ["agent", "request_confirmation", null, true],
+    ["agent", "request_checkbox_confirmation", null, true], ["agent", "ask_user_questions", "manager-agent", false],
+    ["agent", "request_confirmation", "manager-agent", false], ["agent", "suggest_tasks", null, false],
+    ["board", "ask_user_questions", null, false],
+  ] as const)("treats a %s %s card addressed to %s as a question to people: %s", (actorType, kind, addresseeAgentId, expected) => {
+    expect(isAgentQuestionToHumans({ actorType, kind, addresseeAgentId })).toBe(expected);
   });
 
   it("uses current ownership including conversations, never creator or manager relationships", async () => {
