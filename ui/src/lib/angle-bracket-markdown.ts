@@ -40,16 +40,11 @@
  * walk the inline runs character by character.
  */
 
+import { createMarkdownFenceTracker, stripTrailingCr } from "./markdown-fence";
+
 /** Characters that make the markdown parser treat a `<` as opening HTML. */
 const HTML_OPENER_RE = /[A-Za-z!/?]/;
 
-// An opening fence may follow blockquote/list container markers. Capture the
-// whole prefix so the closing scan can preserve that container context.
-const FENCE_OPEN_RE =
-  /^( {0,3}(?:(?:> ?|(?:[-+*]|\d{1,9}[.)]) +))*)(`{3,}|~{3,})(.*)$/;
-const LIST_MARKER_RE = /(?:[-+*]|\d{1,9}[.)]) +/g;
-const BLOCKQUOTE_MARKER_RE = />/g;
-const FENCE_CLOSE_RE = /^( *)(`{3,}|~{3,})[ \t]*$/;
 /** Blockquote container markers, stripped before measuring block indent. */
 const BLOCKQUOTE_PREFIX_RE = /^ {0,3}(?:> ?)+/;
 /** Four spaces or a tab: the indent that opens a CommonMark indented code block. */
@@ -61,24 +56,12 @@ const AUTOLINK_URI_RE = /^<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>\x00-\x1f]*>/;
 const AUTOLINK_EMAIL_RE =
   /^<[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*>/;
 /** A pointed-bracket link destination may hold spaces but never `<` or `>`. */
-const POINTED_DESTINATION_RE = /^<[^<>\n]*>/;
+const POINTED_DESTINATION_RE = /^<[^<>\r\n]*>/;
 
 type Mode = "escape" | "unescape";
 
 function isHtmlOpener(char: string | undefined): boolean {
   return char !== undefined && HTML_OPENER_RE.test(char);
-}
-
-function stripBlockquotePrefix(line: string, depth: number): string | null {
-  let rest = line;
-
-  for (let i = 0; i < depth; i += 1) {
-    const marker = /^ {0,3}> ?/.exec(rest);
-    if (!marker) return null;
-    rest = rest.slice(marker[0].length);
-  }
-
-  return rest;
 }
 
 /**
@@ -209,67 +192,18 @@ function transformAngleBrackets(markdown: string, mode: Mode): string {
     chunk = [];
   };
 
-  let fenceChar = ""; // "" when not inside a fenced code block
-  let fenceLen = 0;
-  let fenceBlockquoteDepth = 0;
-  let fenceCloseIndentMax = 3;
-  // A paragraph is open while the previous line held inline content. Indented
-  // code cannot interrupt a paragraph, so a 4-space-indented line is a lazy
-  // continuation of the prose above it rather than code.
+  const fenceTracker = createMarkdownFenceTracker();
   let paragraphOpen = false;
 
   for (const line of lines) {
-    if (fenceChar) {
+    if (fenceTracker.step(line)) {
       flushChunk();
       out.push(line);
-
-      const closeCandidate = stripBlockquotePrefix(line, fenceBlockquoteDepth);
-      const closeMatch = closeCandidate ? FENCE_CLOSE_RE.exec(closeCandidate) : null;
-
-      if (closeMatch) {
-        const indent = closeMatch[1].length;
-        const run = closeMatch[2];
-        if (indent <= fenceCloseIndentMax && run[0] === fenceChar && run.length >= fenceLen) {
-          fenceChar = "";
-          fenceLen = 0;
-          fenceBlockquoteDepth = 0;
-          fenceCloseIndentMax = 3;
-        }
-      }
-
+      paragraphOpen = false;
       continue;
     }
 
-    const fenceMatch = FENCE_OPEN_RE.exec(line);
-
-    if (fenceMatch) {
-      const prefix = fenceMatch[1];
-      const run = fenceMatch[2];
-      const char = run[0];
-      const rest = fenceMatch[3];
-
-      // A backtick info string may not itself contain a backtick (CommonMark);
-      // such a line is not a valid opening fence.
-      if (!(char === "`" && rest.includes("`"))) {
-        const listMarkers = prefix.match(LIST_MARKER_RE) ?? [];
-        flushChunk();
-        out.push(line);
-        fenceChar = char;
-        fenceLen = run.length;
-        fenceBlockquoteDepth = (prefix.match(BLOCKQUOTE_MARKER_RE) ?? []).length;
-        // A list's continuation indent includes its marker and following spaces.
-        // A closing fence may add CommonMark's normal 0–3 spaces after that.
-        fenceCloseIndentMax =
-          (listMarkers.length > 0 ? listMarkers.reduce((sum, marker) => sum + marker.length, 0) : 0) + 3;
-        paragraphOpen = false;
-        continue;
-      }
-    }
-
-    // Block structure is measured on the line's own content, after any
-    // blockquote markers, so quoted prose and quoted code are classified the
-    // same way as their unquoted equivalents.
-    const content = line.replace(BLOCKQUOTE_PREFIX_RE, "");
+    const content = stripTrailingCr(line).replace(BLOCKQUOTE_PREFIX_RE, "");
 
     if (content.trim().length === 0) {
       flushChunk();

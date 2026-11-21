@@ -27,80 +27,23 @@
  * allowed on the opening fence).
  */
 
-// An opening fence may follow blockquote/list container markers. Capture the
-// whole prefix so the closing scan can preserve that container context.
-const FENCE_OPEN_RE =
-  /^( {0,3}(?:(?:> ?|(?:[-+*]|\d{1,9}[.)]) +))*)(`{3,}|~{3,})(.*)$/;
-const LIST_MARKER_RE = /(?:[-+*]|\d{1,9}[.)]) +/g;
-const BLOCKQUOTE_MARKER_RE = />/g;
-const FENCE_CLOSE_RE = /^( *)(`{3,}|~{3,})[ \t]*$/;
+import { createMarkdownFenceTracker } from "./markdown-fence";
+
 // A block-level escaped blockquote marker: `\>` at column 0, allowing only the
 // 0–3 spaces of insignificant leading indent CommonMark permits before a block.
 const ESCAPED_BLOCKQUOTE_RE = /^( {0,3})\\>/;
-
-function stripBlockquotePrefix(line: string, depth: number): string | null {
-  let rest = line;
-
-  for (let i = 0; i < depth; i += 1) {
-    const marker = /^ {0,3}> ?/.exec(rest);
-    if (!marker) return null;
-    rest = rest.slice(marker[0].length);
-  }
-
-  return rest;
-}
 
 export function unescapeBlockquoteMarkers(markdown: string): string {
   if (!markdown.includes("\\>")) return markdown;
 
   const lines = markdown.split("\n");
-  let fenceChar = ""; // "" when not inside a fenced code block
-  let fenceLen = 0;
-  let fenceBlockquoteDepth = 0;
-  let fenceCloseIndentMax = 3;
+  const fenceTracker = createMarkdownFenceTracker();
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
 
-    if (fenceChar) {
-      const closeCandidate = stripBlockquotePrefix(line, fenceBlockquoteDepth);
-      const closeMatch = closeCandidate ? FENCE_CLOSE_RE.exec(closeCandidate) : null;
-
-      if (closeMatch) {
-        const indent = closeMatch[1].length;
-        const run = closeMatch[2];
-        if (indent <= fenceCloseIndentMax && run[0] === fenceChar && run.length >= fenceLen) {
-          fenceChar = "";
-          fenceLen = 0;
-          fenceBlockquoteDepth = 0;
-          fenceCloseIndentMax = 3;
-        }
-      }
-
+    if (fenceTracker.step(line)) {
       continue;
-    }
-
-    const fenceMatch = FENCE_OPEN_RE.exec(line);
-
-    if (fenceMatch) {
-      const prefix = fenceMatch[1];
-      const run = fenceMatch[2];
-      const char = run[0];
-      const rest = fenceMatch[3];
-
-      // A backtick info string may not itself contain a backtick (CommonMark);
-      // such a line is not a valid opening fence.
-      if (!(char === "`" && rest.includes("`"))) {
-        const listMarkers = prefix.match(LIST_MARKER_RE) ?? [];
-        fenceChar = char;
-        fenceLen = run.length;
-        fenceBlockquoteDepth = (prefix.match(BLOCKQUOTE_MARKER_RE) ?? []).length;
-        // A list's continuation indent includes its marker and following spaces.
-        // A closing fence may add CommonMark's normal 0–3 spaces after that.
-        fenceCloseIndentMax =
-          (listMarkers.length > 0 ? listMarkers.reduce((sum, marker) => sum + marker.length, 0) : 0) + 3;
-        continue;
-      }
     }
 
     if (ESCAPED_BLOCKQUOTE_RE.test(line)) {
