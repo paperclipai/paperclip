@@ -121,6 +121,13 @@ export function assertCompletionRequirementMutation(input: {
   });
 }
 
+export function assertNoPluginCompletionRequirementSupply(input: Record<string, unknown> | undefined) {
+  if (!input || !Object.prototype.hasOwnProperty.call(input, "completionRequirement")) return;
+  throw forbidden("Plugins cannot set the completion requirement", {
+    code: "completion_requirement_protected",
+  });
+}
+
 export async function assertDeliveryAttestationSatisfied(
   db: Db,
   input: { companyId: string; issueId: string; projectWorkspaceId: string | null; completionRequirement: string | null; completionRequirementRevision: number },
