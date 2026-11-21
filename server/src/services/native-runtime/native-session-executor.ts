@@ -12198,6 +12198,7 @@ async function executePaperclipNativeSessionAttempt(
   let reusingReleasedRunner = false;
   let relaunchReleased: { owner?: ReturnType<typeof createPluginRunnerTaskOwner>; source: DurableRecoveryIdentity;
     runner: { version: string; digest: string }; published?: true } | undefined;
+  let releasedRecoveryOwner: ReturnType<typeof createPluginRunnerTaskOwner> | undefined;
   let managedCredentialSession: NativeSession | undefined;
   let githubAccess: NativeGitHubAccess | undefined;
   let releaseGitHubRun: (() => void) | undefined;
@@ -12523,7 +12524,10 @@ async function executePaperclipNativeSessionAttempt(
       pluginTaskDescription,
       retainedPluginTaskOwner: existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession) : relaunchReleased?.owner,
       relaunchReleased: relaunchReleased ? { source: relaunchReleased.source, runner: relaunchReleased.runner } : undefined,
-      onPluginTaskOwner: owner => { if (relaunchReleased && !relaunchReleased.owner) relaunchReleased.owner = owner; },
+      onPluginTaskOwner: owner => {
+        if (relaunchReleased && !relaunchReleased.owner) relaunchReleased.owner = owner;
+        else if (remoteWarmRecovery?.releasedSource && !releasedRecoveryOwner) releasedRecoveryOwner = owner;
+      },
       beginRetainedRunAttachment: existingWarmSession && reusingReleasedRunner ? beginRetainedRunAttachment(existingWarmSession) : undefined,
       durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
       remoteWarmRecovery: remoteWarmRecovery ? (recovery => ({
@@ -12614,10 +12618,12 @@ async function executePaperclipNativeSessionAttempt(
     let remoteCleanupLease = await readRemoteCleanupLease();
     const continueAfterUnavailableReuse = async (error: unknown) => {
       const target = input.runnerExecutionTarget;
-      const retainedOwner = existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession) : relaunchReleased?.owner;
+      const releasedRecovery = remoteWarmRecovery?.releasedSource ? remoteWarmRecovery : undefined;
+      const retainedOwner = existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession)
+        : relaunchReleased?.owner ?? (releasedRecovery ? releasedRecoveryOwner : undefined);
       if (!(error instanceof Error) || error.message !== "native_runner_reuse_unavailable" || !retainedOwner
         || retainedOwner.retiredBeforeClaim() !== true
-        || remoteWarmRecovery || warmConfigDigest === null || target?.kind !== "remote" || target.transport !== "sandbox"
+        || (remoteWarmRecovery && !releasedRecovery) || warmConfigDigest === null || target?.kind !== "remote" || target.transport !== "sandbox"
         || !target.runnerTask || runnerdBackend === null) return false;
       const retainedTaskId = target.sandboxLeaseAcquisition?.providerLeaseId;
       if (existingWarmSession) await existingWarmSession.close({ reason: "retained Runner was unavailable for reuse" });
@@ -12629,6 +12635,15 @@ async function executePaperclipNativeSessionAttempt(
         }
       }
       relaunchReleased = undefined;
+      if (releasedRecovery) {
+        if (remoteWarmRecoveryPending) {
+          if (executionContext) await executionContext.wait(() => releasedRecovery.revalidate(leaseOwner));
+          else await releasedRecovery.revalidate(leaseOwner);
+        }
+        remoteWarmRecovery = undefined;
+        remoteWarmRecoveryPending = false;
+        releasedRecoveryOwner = undefined;
+      }
       const inspect = () => target.runnerTask!({ kind: "describe" }, executionContext ? { executionContext } : undefined);
       const description = environmentTaskResultSchema.parse(await (executionContext ? executionContext.wait(inspect) : inspect()));
       if (description.kind !== "description" || description.taskId === retainedTaskId) return false;

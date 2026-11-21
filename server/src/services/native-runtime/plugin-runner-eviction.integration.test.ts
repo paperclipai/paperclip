@@ -68,14 +68,15 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
   nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "after inspection", "bare unavailable", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).flatMap(mode =>
     (["retired", "abrupt"] as const).map(exit => [harness, mode, exit] as const))),
-    ...(["codex", "claude"] as const).map(harness => [harness, "relaunch after inspection", "retired"] as const)])("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
+    ...(["codex", "claude"] as const).flatMap(harness => (["relaunch after inspection", "detached after inspection"] as const).map(mode => [harness, mode, "retired"] as const))])("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const thisCase: { teardown?: () => Promise<void> } = {};
     currentCase = thisCase;
-    const detached = mode === "detached" || mode === "missing state" || mode === "foreign state";
+    const afterInspection = mode === "after inspection" || mode === "detached after inspection";
+    const detached = mode === "detached" || mode === "missing state" || mode === "foreign state" || mode === "detached after inspection";
     const denied = mode.startsWith("missing") || mode.endsWith("state");
     const relaunch = mode === "relaunch after inspection";
-    const unavailableResume = mode === "after inspection" || mode === "bare unavailable" || relaunch;
+    const unavailableResume = afterInspection || mode === "bare unavailable" || relaunch;
     const reusesLease = mode === "reused lease" || unavailableResume;
     const instructionCopy = (id: string) => ({ runId: id, root: workspace, preparationKey: "unchanged-fixture-instructions", hasChanges: async () => false, collectStopped: async () => {} });
     const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}-${exit}-${randomUUID().slice(0, 8)}`);
@@ -253,7 +254,7 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
         resumeAttempts++;
         expect(inspectedLive).toBe(true);
         expect(operation.runner?.runId).toBe(relaunch ? authorityRunId : undefined);
-        if (mode === "after inspection" || relaunch) await evictRetained!();
+        if (afterInspection || relaunch) await evictRetained!();
         expect(handles.get(taskA)?.isExitConfirmed?.()).toBe(mode !== "bare unavailable");
         return { kind: "resume", taskId, outcome: "unavailable" };
       }
@@ -266,7 +267,7 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
         return { kind: "resume", taskId, outcome: "resumed" };
       }
       if (operation.kind === "stop") {
-        if (mode === "after inspection" && taskId === taskA) await new Promise(done => setTimeout(done, 300));
+        if (afterInspection && taskId === taskA) await new Promise(done => setTimeout(done, 300));
         await host.close();
       }
       if (operation.kind === "complete") { expect(handles.get(taskId)?.isExitConfirmed?.()).toBe(true); }
@@ -405,7 +406,7 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
       expect((await supervisor()).snapshot.providerSessionId).toBe(providerSessionId);
       const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
       expect(submissions).toBe(2);
-      if (mode === "after inspection" || relaunch) expect({ resumeAttempts, acquisitions }).toEqual({ resumeAttempts: 1, acquisitions: 1 });
+      if (afterInspection || relaunch) expect({ resumeAttempts, acquisitions }).toEqual({ resumeAttempts: 1, acquisitions: 1 });
       expect(releases[1]!.runId).toBe(runB);
       expect(claims).toEqual([]);
       if (harness === "codex") {
