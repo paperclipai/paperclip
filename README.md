@@ -22,6 +22,8 @@
   <a href="https://www.star-history.com/paperclipai/paperclip"><img src="https://api.star-history.com/badge?repo=paperclipai/paperclip" alt="Star History Rank" /></a>
 </p>
 
+<p align="center"><strong>English</strong> · <a href="README.tr.md">Türkçe</a></p>
+
 <br/>
 
 <div align="center">
