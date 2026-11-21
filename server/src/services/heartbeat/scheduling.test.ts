@@ -827,14 +827,18 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     it("bounds global scans during repeated ordinary checkout and release writes", async () => {
       const f = await fixture();
       const at = new Date(Date.now() + 300_000);
+      const [ordinary] = await db
+        .insert(issues)
+        .values({ companyId: f.company.id, title: "Ordinary work", status: "todo" })
+        .returning();
       await db.update(issues).set({ status: "todo", monitorNextCheckAt: at }).where(eq(issues.id, f.issue.id));
       const next = vi.spyOn(f.scheduler, "nextIssueMonitorAt");
       const tick = vi.spyOn(f.scheduler, "tickIssueMonitors");
       await start(f);
       const service = issueService(db);
       for (let i = 0; i < 12; i++) {
-        await service.checkout(f.issue.id, f.agent.id, ["todo"], null);
-        await service.release(f.issue.id, f.agent.id, null);
+        await service.checkout(ordinary!.id, f.agent.id, ["todo"], null);
+        await service.release(ordinary!.id, f.agent.id, null);
         await advance(2000);
       }
       expect(next).toHaveBeenCalledOnce();
