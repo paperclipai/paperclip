@@ -27,12 +27,23 @@ function defaultDebugLog(fields: Record<string, unknown>, message: string): void
   console.debug(message, fields);
 }
 
-function defaultGitDescribeCommand(): string {
+function defaultGitDescribeCommand(
+  root: string,
+  pathExists: PathExists = existsSync,
+  realpath: Realpath = realpathSync,
+): string {
+  if (
+    !process.env.GIT_DIR &&
+    !hasGitMetadataBeforeNodeModulesBoundary(safeRealpath(root, realpath), pathExists)
+  ) {
+    throw new Error("The package root is not inside a Git checkout");
+  }
+
   return execFileSync(
     "git",
     ["describe", "--tags", "--match", "v*", "--long", "--dirty"],
     {
-      cwd: packageRoot,
+      cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1500,
@@ -160,7 +171,6 @@ export function resolveServerVersion(
   } = {},
 ): string {
   const packageVersion = opts.packageVersion ?? pkg.version ?? "0.0.0";
-  const gitDescribeCommand = opts.gitDescribeCommand ?? defaultGitDescribeCommand;
   const debugLog = opts.debugLog ?? defaultDebugLog;
   const resolvedPackageRoot = opts.packageRoot ?? packageRoot;
 
@@ -178,7 +188,10 @@ export function resolveServerVersion(
   }
 
   try {
-    const parsedVersion = parseGitDescribeVersion(gitDescribeCommand());
+    const output = opts.gitDescribeCommand
+      ? opts.gitDescribeCommand()
+      : defaultGitDescribeCommand(resolvedPackageRoot, opts.pathExists, opts.realpath);
+    const parsedVersion = parseGitDescribeVersion(output);
     if (parsedVersion) return parsedVersion;
 
     debugLog(
