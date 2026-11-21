@@ -7,11 +7,8 @@ import {
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
 
-// The legacy login-prompt markers. The Claude CLI prints these words when it
-// asks the user to log in. The detector matches them against any probe output
-// line, which includes the raw stdout and stderr. This scope is pre-existing.
 const CLAUDE_LOGIN_PROMPT_RE =
-  /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
+  /(?:\bnot\s+logged\s+in\b|\bplease\s+log\s+in\b|\bplease\s+run\s+(?:`?claude\s+login`?|\/login)|\blogin\s+required\b|\brequires\s+login\b|\bauthentication\s+required\b|\binvalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
 
 // The token-failure markers. An assistant or model event can print these same
 // words as ordinary prose, so the detector matches them only against the parsed
@@ -247,10 +244,17 @@ export function detectClaudeLoginRequired(input: {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
 
-  // The legacy login-prompt markers keep their broad scope. They match against
-  // every output line, which includes the parsed result, the parsed errors, and
-  // the raw stdout and stderr.
-  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
+  const promptLines = [
+    resultText,
+    ...extractClaudeErrorMessages(parsed ?? {}),
+    input.stderr,
+    ...input.stdout
+      .split(/\r?\n/)
+      .filter((line) => {
+        const event = parseJson(line);
+        return typeof event !== "object" || event === null;
+      }),
+  ]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
