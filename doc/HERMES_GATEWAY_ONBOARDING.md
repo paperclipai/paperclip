@@ -68,6 +68,30 @@ development only, the join payload can set
 `dangerouslyAllowInsecureRemoteHttp: true`, and the smoke scripts expose the
 same escape hatch as `HERMES_GATEWAY_ALLOW_INSECURE_HTTP=1`.
 
+## Multiple Hermes Profiles
+
+Run one gateway for all profiles. Do not start one gateway per profile.
+
+Enable `gateway.multiplex_profiles` in the Hermes gateway config. The default
+profile then owns the shared API listener. The gateway serves each other
+profile under a `/p/<profile>/` URL prefix. For example:
+`GET /p/<profile>/v1/models` and `POST /p/<profile>/v1/runs`.
+
+Create one Paperclip agent for each Hermes profile. Set `apiBaseUrl` to
+`http://<hermes-host>:8642/p/<profile>`. The adapter keeps the path of the base
+URL. It appends `/v1/runs...` to that path. The profile prefix therefore stays
+in every request.
+
+Use the `API_SERVER_KEY` of that gateway in each agent. The shared listener
+validates every request against the key that it started with.
+
+A dashboard URL on port `9119` rewrites only the root and `/chat` paths to
+`/api`; a `/p/<profile>` prefix passes through unchanged. When a request
+needs the profile prefix, use the API-server port (`8642` by default).
+
+A request with a prefix that names an unknown profile returns `404`. A request
+without a prefix runs as the default profile.
+
 ## Invite From Paperclip
 
 In the board UI:
