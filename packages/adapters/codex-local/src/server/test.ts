@@ -28,8 +28,10 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import {
+  buildApiKeyAuthContents,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
+  resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
 } from "./codex-home.js";
@@ -256,7 +258,7 @@ async function prepareCodexHelloProbe(input: {
       env: {
         ...input.env,
         CODEX_HOME: probeHome,
-        _PAPERCLIP_CODEX_AUTH_JSON: JSON.stringify({ OPENAI_API_KEY: input.probeApiKey }),
+        _PAPERCLIP_CODEX_AUTH_JSON: buildApiKeyAuthContents(input.probeApiKey),
       },
       cleanup,
     };
@@ -342,6 +344,44 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  if (!targetIsRemote) {
+    // Adapter configuration cannot redirect server-owned managed roots.
+    delete env.PAPERCLIP_HOME;
+    delete env.PAPERCLIP_INSTANCE_ID;
+  }
+  const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
+  if (configuredCodexHome) {
+    env.CODEX_HOME = configuredCodexHome;
+  } else if (!targetIsRemote) {
+    const managedHome = resolveManagedCodexHomeDir(process.env, ctx.companyId);
+    if (!isManagedCodexHomePath(process.env, ctx.companyId, managedHome)) {
+      checks.push({
+        code: "codex_managed_home_invalid",
+        level: "error",
+        message: "Refusing to seed Codex credentials outside the company managed home.",
+      });
+      return {
+        adapterType: ctx.adapterType,
+        status: summarizeStatus(checks),
+        checks,
+        testedAt: new Date().toISOString(),
+      };
+    }
+    // Resolve the managed home from the server env only. Adapter-config env
+    // must not pick the seed target (PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID).
+    // A config-supplied OPENAI_API_KEY still seeds API-key auth explicitly.
+    // An explicitly empty config key means "no API key": pass null so the
+    // host OPENAI_API_KEY fallback in prepareManagedCodexHome does not apply.
+    // Only an omitted key keeps the host fallback.
+    const configSetsApiKey = Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY");
+    const configApiKey = isNonEmpty(env.OPENAI_API_KEY) ? env.OPENAI_API_KEY : null;
+    env.CODEX_HOME = await prepareManagedCodexHome(
+      process.env,
+      async () => {},
+      ctx.companyId,
+      configSetsApiKey ? { apiKey: configApiKey } : {},
+    );
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
@@ -396,7 +436,9 @@ export async function testEnvironment(
         code: "codex_native_auth_present",
         level: "info",
         message: "Codex is authenticated via its own auth configuration.",
-        detail: codexAuth.email ? `Logged in as ${codexAuth.email}.` : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
+        detail: codexAuth.email
+          ? `Logged in as ${codexAuth.email}.`
+          : `Credentials found in ${path.join(codexHome ?? codexHomeDir(), "auth.json")}.`,
       });
     } else {
       checks.push({

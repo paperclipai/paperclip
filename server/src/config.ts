@@ -34,10 +34,50 @@ import {
 } from "./home-paths.js";
 import { loadStorageConfig, type StorageConfig } from "./storage/config.js";
 
+const loadedEnvRealPaths = new Set<string>();
+
+function loadEnvFileOnce(envPath: string): void {
+  if (!existsSync(envPath)) return;
+  // existsSync + realpathSync is inherently racy: an optional .env can be
+  // removed or swapped between the check and the read. Optional env loading is
+  // best-effort and must never crash module load / server startup, so swallow
+  // any transient FS error here.
+  try {
+    const real = realpathSync(envPath);
+    if (loadedEnvRealPaths.has(real)) return;
+    loadedEnvRealPaths.add(real);
+    loadDotenv({ path: envPath, override: false, quiet: true });
+  } catch {
+    // Optional env loading should not block startup.
+  }
+}
+
+// Walk from CWD up to the project root to find .env files that should be
+// loaded.  In monorepos the server CWD is often a subdirectory (e.g.
+// `server/`) while the user's .env lives at the repository root.  We stop
+// at the first directory that looks like a project boundary (.git or
+// pnpm-workspace.yaml).
+function findProjectRootEnvPath(): string | null {
+  let dir = resolve(process.cwd());
+  while (true) {
+    const isProjectRoot =
+      existsSync(resolve(dir, ".git")) ||
+      existsSync(resolve(dir, "pnpm-workspace.yaml"));
+    if (isProjectRoot) {
+      const envCandidate = resolve(dir, ".env");
+      return existsSync(envCandidate) ? envCandidate : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
 if (!isCloudManagedInstance()) {
   const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
   if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
-    loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
+    loadEnvFileOnce(PAPERCLIP_ENV_FILE_PATH);
   }
 
   const CWD_ENV_PATH = resolve(process.cwd(), ".env");
@@ -49,7 +89,15 @@ if (!isCloudManagedInstance()) {
     cwdEnvExists,
     isPaperclipEnvFile: isSameFile,
   })) {
-    loadDotenv({ path: CWD_ENV_PATH, override: false, quiet: true });
+    loadEnvFileOnce(CWD_ENV_PATH);
+  }
+
+  const projectRootEnvPath = findProjectRootEnvPath();
+  if (projectRootEnvPath && shouldLoadWorkingDirectoryEnv({
+    cwdEnvExists: true,
+    isPaperclipEnvFile: projectRootEnvPath === PAPERCLIP_ENV_FILE_PATH,
+  })) {
+    loadEnvFileOnce(projectRootEnvPath);
   }
 
   if (basename(dirname(PAPERCLIP_ENV_FILE_PATH)) === ".paperclip") {
@@ -59,7 +107,6 @@ if (!isCloudManagedInstance()) {
 }
 
 const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
-
 type DatabaseMode = "embedded-postgres" | "postgres";
 
 export interface Config extends StorageConfig {
