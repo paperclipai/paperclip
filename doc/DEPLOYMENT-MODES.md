@@ -120,6 +120,53 @@ routes, and child-runtime configuration, even when provider variables are
 temporarily stale. Self-hosted deployments continue to use their configured
 `PAPERCLIP_PUBLIC_URL` and do not participate in this protocol.
 
+### Local agent session confinement
+
+Agents in the local execution environment run as the server's operating-system
+user. Each local OpenCode session starts inside a per-session operating-system
+scope that all of its processes inherit: macOS uses a Seatbelt profile through
+`sandbox-exec`, and Linux uses a Landlock domain (Landlock ABI 3, Linux 6.2 or
+newer, so that hidden files also cannot be truncated). The session keeps its own saved
+state, its own company directory and the shared instance directories. It cannot
+read other sessions' saved state or provider homes, other companies'
+directories, run logs,
+provider traces, storage, backups, the database files, `secrets/` or the
+instance `.env`. Locations configured outside the instance directory
+(`PAPERCLIP_RUNNER_STATE_DIR`, `PAPERCLIP_STORAGE_LOCAL_DIR`,
+`PAPERCLIP_SECRETS_MASTER_KEY_FILE` and the embedded database directory) are
+hidden the same way. On macOS it also cannot connect to the embedded database port
+or run set-user-ID programs such as `ps`; use `pgrep` instead.
+
+When the server runs from an installed package (an npm install or a container
+image, not a Git checkout), its installation is read-only inside the scope, so a
+session cannot change code that the server runs later. A source checkout stays
+writable, because developers point agents at it.
+
+The scope protects instance state. It is not a full operating-system user
+boundary: a session can still change other files that the server's user owns
+outside these paths.
+
+`PAPERCLIP_LOCAL_AGENT_CONFINEMENT` selects the behavior:
+
+- `auto` (default): confine where the host supports it. The server proves this
+  once per process by applying a real scope. If the proof fails, sessions run
+  without confinement and the server logs a warning once. If the proof passes,
+  a launch that cannot apply its scope fails instead of running unconfined.
+- `required`: refuse to start a local session that cannot be confined. The run
+  fails permanently with the named code `runner_confinement_unavailable`, and
+  recovery does not retry it.
+- `off`: never confine.
+
+On Linux, a hidden path's parent directories accept no new entries inside the
+scope. A server whose instance state lies in a shared temporary directory
+(`/tmp`, `/var/tmp` or the OS temporary directory) therefore does not confine
+sessions on Linux. `auto` logs a warning once, and `required` refuses.
+
+Other providers start their own operating-system sandboxes, which cannot nest
+inside this scope. They stay unconfined until they are qualified. Sessions that
+were already running when the server upgraded keep running unconfined until
+their runner exits.
+
 ## 4. Onboarding UX Contract
 
 Default onboarding remains interactive and flagless:
