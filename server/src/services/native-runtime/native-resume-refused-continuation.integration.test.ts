@@ -17,10 +17,8 @@ import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { heartbeatService } from "../heartbeat.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
-import { NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE, NATIVE_ACCOUNT_CHANGE_CONTINUATION_DELAY_MS, NATIVE_ACCOUNT_CHANGE_HINT,
-  NATIVE_ACCOUNT_CHANGE_MESSAGE } from "./native-account-change-continuation.js";
-
-type Reason = "account_binding_mismatch" | "session_state_unavailable";
+import { NATIVE_RESUME_REFUSED_CONTINUATION_CODE, NATIVE_RESUME_REFUSED_CONTINUATION_DELAY_MS, nativeResumeRefusedHint,
+  nativeResumeRefusedMessage, type NativeResumeRefusalReason as Reason } from "./native-resume-refused-continuation.js";
 
 describe("native run whose environment refuses to resume its saved session", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -29,9 +27,9 @@ describe("native run whose environment refuses to resume its saved session", () 
   const agentId = randomUUID();
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("native-account-change-");
+    temporary = await startEmbeddedPostgresTestDatabase("native-resume-refused-");
     db = createDb(temporary.connectionString);
-    await db.insert(companies).values({ id: companyId, name: "Account change", issuePrefix: "NAC" });
+    await db.insert(companies).values({ id: companyId, name: "Resume refused", issuePrefix: "NRR" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Codex agent", status: "active", adapterType: "paperclip_runner",
       adapterConfig: { provider: "codex", model: "test-model" } });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user", status: "active", membershipRole: "member" });
@@ -90,19 +88,21 @@ describe("native run whose environment refuses to resume its saved session", () 
     expect(refused.holds).toEqual([expect.objectContaining({ cause: "runner_task_admission_rejected", ownerType: "board" })]);
   }
 
-  it("continues a resumed session refused for its account binding once in a fresh session", async () => {
-    const refused = await refuseAdmission({ reason: "account_binding_mismatch", resumedFrom: "prior-task" });
+  const reasons: Reason[] = ["account_binding_mismatch", "session_state_unavailable"];
+
+  it.each(reasons)("continues a resumed session refused with %s once in a fresh session", async reason => {
+    const refused = await refuseAdmission({ reason, resumedFrom: "prior-task" });
     const [retry] = refused.retries;
     expect(refused.retries).toHaveLength(1);
-    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE,
-      scheduledRetryAttempt: 1, errorCode: NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE,
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: NATIVE_RESUME_REFUSED_CONTINUATION_CODE,
+      scheduledRetryAttempt: 1, errorCode: NATIVE_RESUME_REFUSED_CONTINUATION_CODE, error: nativeResumeRefusedMessage(reason),
       contextSnapshot: { issueId: refused.issueId, forceFreshSession: true, retryOfRunId: refused.runId,
-        livenessContinuationSourceRunId: refused.runId, livenessContinuationReason: NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE,
-        livenessContinuationInstruction: NATIVE_ACCOUNT_CHANGE_HINT } });
+        livenessContinuationSourceRunId: refused.runId, livenessContinuationReason: NATIVE_RESUME_REFUSED_CONTINUATION_CODE,
+        livenessContinuationInstruction: nativeResumeRefusedHint(reason) } });
     expect(retry!.contextSnapshot).not.toHaveProperty("wakeCommentId");
-    expect(retry!.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(NATIVE_ACCOUNT_CHANGE_CONTINUATION_DELAY_MS);
+    expect(retry!.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(NATIVE_RESUME_REFUSED_CONTINUATION_DELAY_MS);
     expect(refused.coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "runner_task_admission_rejected",
-      failureDetail: expect.objectContaining({ successorRunId: retry!.id, nextAction: NATIVE_ACCOUNT_CHANGE_MESSAGE }) });
+      failureDetail: expect.objectContaining({ successorRunId: retry!.id, nextAction: nativeResumeRefusedMessage(reason) }) });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, refused.runId));
     expect(run).toMatchObject({ status: "failed", errorCode: "runner_task_admission_rejected" });
     expect(refused.holds).toHaveLength(0);
@@ -113,17 +113,18 @@ describe("native run whose environment refuses to resume its saved session", () 
     await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry!.id));
   }, 120_000);
 
-  it("stops when a fresh session is refused", async () => {
-    expectPermanentRefusal(await refuseAdmission({ reason: "account_binding_mismatch", resumedFrom: null }));
+  it("names why the saved session could not be resumed", () => {
+    expect(nativeResumeRefusedHint("account_binding_mismatch")).toContain("account binding changed");
+    expect(nativeResumeRefusedHint("session_state_unavailable")).toContain("could not find the saved session state");
+  });
+
+  it.each(reasons)("stops when a fresh session is refused with %s", async reason => {
+    expectPermanentRefusal(await refuseAdmission({ reason, resumedFrom: null }));
   }, 120_000);
 
-  it("stops when the fresh continuation itself is refused the same way", async () => {
-    expectPermanentRefusal(await refuseAdmission({ reason: "account_binding_mismatch", resumedFrom: "prior-task",
-      scheduledRetryReason: NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE, scheduledRetryAttempt: 1 }));
-  }, 120_000);
-
-  it("keeps a refusal for unavailable saved session state permanent", async () => {
-    expectPermanentRefusal(await refuseAdmission({ reason: "session_state_unavailable", resumedFrom: "prior-task" }));
+  it.each(reasons)("stops when the fresh continuation itself is refused with %s", async reason => {
+    expectPermanentRefusal(await refuseAdmission({ reason, resumedFrom: "prior-task",
+      scheduledRetryReason: NATIVE_RESUME_REFUSED_CONTINUATION_CODE, scheduledRetryAttempt: 1 }));
   }, 120_000);
 
   it("does not continue a run a person stopped", async () => {

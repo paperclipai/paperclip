@@ -1,7 +1,7 @@
 import { notifyIssueAttentionRetentionWork } from "../retention-work-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
 import { accountingForScheduledRetry, executionRetryAttemptCount } from "../execution-recovery-attempt.js";
 import { NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
@@ -13,8 +13,9 @@ import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_CONTINUATI
   NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MESSAGE } from "./native-agent-blocker.js";
 import { NativeStatusRaceError } from "./status-decision-committer.js";
 import { freshSessionRetryContext } from "./fresh-session-retry-context.js";
-import { NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE, NATIVE_ACCOUNT_CHANGE_CONTINUATION_DELAY_MS, NATIVE_ACCOUNT_CHANGE_HINT,
-  NATIVE_ACCOUNT_CHANGE_MAX_CONTINUATIONS, NATIVE_ACCOUNT_CHANGE_MESSAGE } from "./native-account-change-continuation.js";
+import { NATIVE_RESUME_REFUSAL_REASONS, NATIVE_RESUME_REFUSED_CONTINUATION_CODE, NATIVE_RESUME_REFUSED_CONTINUATION_DELAY_MS,
+  NATIVE_RESUME_REFUSED_MAX_CONTINUATIONS, type NativeResumeRefusalReason, nativeResumeRefusedHint, nativeResumeRefusedMessage,
+} from "./native-resume-refused-continuation.js";
 
 type NativeRetryTarget = {
   tx: Db;
@@ -98,33 +99,37 @@ export async function materializeNativeAgentBlockerContinuation(input: NativeRet
   });
 }
 
-export async function materializeNativeAccountChangeContinuation(input: NativeRetryTarget): Promise<string | null> {
+export async function materializeNativeResumeRefusedContinuation(input: NativeRetryTarget)
+  : Promise<{ retryId: string; reason: NativeResumeRefusalReason } | null> {
   const [run] = await input.tx.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
     eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.nativeIssueId, input.issueId),
   )).for("update");
   if (!run || run.runtimeMode !== "native" || nativeRunHasStopRequest(run.resultJson)
-    || executionRetryAttemptCount(run, NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE) >= NATIVE_ACCOUNT_CHANGE_MAX_CONTINUATIONS) return null;
-  const [refusedResume] = await input.tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    || executionRetryAttemptCount(run, NATIVE_RESUME_REFUSED_CONTINUATION_CODE) >= NATIVE_RESUME_REFUSED_MAX_CONTINUATIONS) return null;
+  const refusalReason = sql<string>`${environmentLeases.metadata}#>>'{runnerTaskAdmissionRejection,reason}'`;
+  const [refusedResume] = await input.tx.select({ reason: refusalReason }).from(environmentLeases).where(and(
     eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-    sql`${environmentLeases.metadata}#>>'{runnerTaskAdmissionRejection,reason}' = 'account_binding_mismatch'`,
+    inArray(refusalReason, [...NATIVE_RESUME_REFUSAL_REASONS]),
     sql`coalesce(${environmentLeases.metadata}->>'runnerTaskResumeFrom', '') <> ''`,
   )).limit(1);
   if (!refusedResume) return null;
-  return materializeNativeFreshSessionRetry(input, {
-    reason: NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE,
-    maxRetries: NATIVE_ACCOUNT_CHANGE_MAX_CONTINUATIONS,
-    delayMs: () => NATIVE_ACCOUNT_CHANGE_CONTINUATION_DELAY_MS,
-    message: NATIVE_ACCOUNT_CHANGE_MESSAGE,
-    idempotencyPrefix: "native-account-change",
-    exhaustedError: "native_account_change_continuation_exhausted",
+  const reason = refusedResume.reason as NativeResumeRefusalReason;
+  const retryId = await materializeNativeFreshSessionRetry(input, {
+    reason: NATIVE_RESUME_REFUSED_CONTINUATION_CODE,
+    maxRetries: NATIVE_RESUME_REFUSED_MAX_CONTINUATIONS,
+    delayMs: () => NATIVE_RESUME_REFUSED_CONTINUATION_DELAY_MS,
+    message: nativeResumeRefusedMessage(reason),
+    idempotencyPrefix: "native-resume-refused",
+    exhaustedError: "native_resume_refused_continuation_exhausted",
     refuseStopped: true,
     context: source => ({
       livenessContinuationSourceRunId: source.id,
-      livenessContinuationReason: NATIVE_ACCOUNT_CHANGE_CONTINUATION_CODE,
-      livenessContinuationInstruction: NATIVE_ACCOUNT_CHANGE_HINT,
+      livenessContinuationReason: NATIVE_RESUME_REFUSED_CONTINUATION_CODE,
+      livenessContinuationInstruction: nativeResumeRefusedHint(reason),
     }),
   });
+  return { retryId, reason };
 }
 
 async function materializeNativeFreshSessionRetry(input: NativeRetryTarget, lane: NativeRetryLane) {

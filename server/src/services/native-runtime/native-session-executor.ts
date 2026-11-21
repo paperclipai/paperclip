@@ -67,8 +67,8 @@ import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@pa
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { findNativeFailedBeforeProviderTurn, NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE, NativeFailedBeforeProviderTurnError } from "./failed-before-provider-turn.js";
-import { materializeNativeAccountChangeContinuation } from "./native-provider-capacity-retry.js";
-import { NATIVE_ACCOUNT_CHANGE_MESSAGE } from "./native-account-change-continuation.js";
+import { materializeNativeResumeRefusedContinuation } from "./native-provider-capacity-retry.js";
+import { nativeResumeRefusedMessage } from "./native-resume-refused-continuation.js";
 import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import {
   inspectSandboxSessionRunner, retireSandboxRunnerPortHolders, sandboxSessionRunnerExited, type SandboxSessionRunnerInspection,
@@ -13807,14 +13807,14 @@ async function executePaperclipNativeSessionAttempt(
             failureTask.executionRunId === input.execution.binding.runId) &&
           (!failureTask.checkoutRunId ||
             failureTask.checkoutRunId === input.execution.binding.runId);
-        const accountChangeSuccessorId = !ownershipUnverified && stillOwnsTask && phase === "terminal_failure"
+        const resumeRefusedSuccessor = !ownershipUnverified && stillOwnsTask && phase === "terminal_failure"
           && sourceFailureCode === "runner_task_admission_rejected"
-          ? await materializeNativeAccountChangeContinuation({ tx: tx as unknown as Db,
+          ? await materializeNativeResumeRefusedContinuation({ tx: tx as unknown as Db,
             companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId,
             runId: input.execution.binding.runId, agentId: input.execution.binding.agentId })
           : null;
         let failureBlockStatusVersion: number | undefined;
-        if (stillOwnsTask && recoveryProjection.issueStatus && !accountChangeSuccessorId) {
+        if (stillOwnsTask && recoveryProjection.issueStatus && !resumeRefusedSuccessor) {
           const projected = await issueService(tx as unknown as Db).update(
             input.execution.binding.issueId,
             { status: recoveryProjection.issueStatus },
@@ -13834,10 +13834,10 @@ async function executePaperclipNativeSessionAttempt(
             .where(eq(issues.id, input.execution.binding.issueId));
         }
         if (!stillOwnsTask) return;
-        if (accountChangeSuccessorId) {
+        if (resumeRefusedSuccessor) {
           await tx.update(nativeRunFinalizations).set({
             failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) || ${JSON.stringify({
-              successorRunId: accountChangeSuccessorId, nextAction: NATIVE_ACCOUNT_CHANGE_MESSAGE })}::jsonb`,
+              successorRunId: resumeRefusedSuccessor.retryId, nextAction: nativeResumeRefusedMessage(resumeRefusedSuccessor.reason) })}::jsonb`,
           }).where(and(eq(nativeRunFinalizations.runId, input.execution.binding.runId),
             eq(nativeRunFinalizations.companyId, input.execution.binding.companyId)));
           return;

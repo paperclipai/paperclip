@@ -155,13 +155,14 @@ A new run prepares its current assignments. Provider compatibility checks remain
 in the existing backends. Missing or incompatible retained state fails closed.
 
 A driver can refuse a `submit` with `admission_rejected`. Core records the
-reason on the lease, fails the run, and stops automatic retries. One case
-continues automatically: the run supplied `resumeFrom` and the reason is
-`account_binding_mismatch`. The account changed after the saved session
-started, so Core schedules one continuation in a fresh provider session in the
-same workspace. That run supplies no `resumeFrom`. If the driver refuses it
-too, the run fails and automatic retries stop. A `session_state_unavailable`
-refusal always stops automatic retries.
+reason on the lease and fails the run. When the run supplied `resumeFrom`, the
+saved session cannot be resumed: the account changed after it started
+(`account_binding_mismatch`), or its saved state is unavailable
+(`session_state_unavailable`). Core then schedules one continuation in a fresh
+provider session in the same workspace, and tells the agent which reason
+applied. That run supplies no `resumeFrom`. If the driver refuses it too, or
+refuses a run that did not supply `resumeFrom`, the run fails and automatic
+retries stop.
 
 ## Setup verification
 
