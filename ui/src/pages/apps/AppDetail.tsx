@@ -215,6 +215,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   const managedPersonalUserId = managedIdentityGrant?.kind === "user"
     ? managedIdentityGrant.subjectUserId ?? connection?.createdByUserId ?? null
     : null;
+  const canRemove = grantsQuery.data?.capabilities.canRemove ?? grantsQuery.data?.capabilities.canConfigure ?? false;
   const canReconnect = managedIdentityGrant?.kind === "user"
     ? Boolean(
       managedPersonalUserId
@@ -563,7 +564,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
         <p className="text-sm text-muted-foreground">Remove each obsolete connection separately. Removing this one does not remove other connections.</p>
         <Button variant="outline" onClick={() => navigate("/apps/connect?source=composio")}>Add Composio MCP connection</Button>
       </section>
-      {grantsQuery.data?.capabilities.canConfigure === true && <DangerZone
+      {canRemove && <DangerZone
         appName={appName}
         removing={disconnectRemote.isPending}
         onRemove={() => disconnectRemote.mutate()}
@@ -750,7 +751,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 }}
               />
               {managesRemoteMcpAccess && isRemoteMcpConnectorId(connection.config?.sourceTemplateKey) && <RemoteMcpManagement
-                providerName={baseAppName} canReconnect={canReconnect} canDisconnect={grantsQuery.data?.capabilities.canConfigure === true}
+                providerName={baseAppName} canReconnect={canReconnect} canDisconnect={canRemove}
                 busy={disconnectRemote.isPending}
                 onReconnect={() => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`)}
                 onManage={() => window.open(remoteMcpProviders[connection.config?.sourceTemplateKey as keyof typeof remoteMcpProviders].dashboardUrl, "_blank", "noopener,noreferrer")}
@@ -762,6 +763,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 </section>
               )}
               </>}
+              {canRemove && !managesRemoteMcpAccess && <DangerZone
+                appName={appName}
+                removing={disconnectRemote.isPending}
+                onRemove={() => disconnectRemote.mutate()}
+              />}
             </div>
       )}
       </div>

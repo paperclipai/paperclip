@@ -16,6 +16,7 @@ import {
   createDb,
   heartbeatRuns,
   issues,
+  principalPermissionGrants,
   managedAgentProfiles,
   routines,
   routineTriggers,
@@ -141,11 +142,11 @@ async function createAgent(db: ReturnType<typeof createDb>, companyId: string) {
     .then((rows) => rows[0]!);
 }
 
-function createRouteApp(db: ReturnType<typeof createDb>) {
+function createRouteApp(db: ReturnType<typeof createDb>, actor?: express.Request["actor"]) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = {
+    req.actor = actor ?? {
       type: "board",
       userId: "board-user",
       userName: "Board User",
@@ -198,6 +199,7 @@ describeEmbeddedPostgres("tool connection removal", () => {
     await db.delete(toolApplications);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
@@ -637,6 +639,50 @@ describeEmbeddedPostgres("tool connection removal", () => {
     // A second removal has nothing left to stop.
     const again = await service.archiveConnection(connectionId, company.id);
     expect(again.removal.runtimeSlotsStopped).toBe(0);
+  });
+
+  it.each([
+    { role: "owner", scoped: true, expected: 200 },
+    { role: "admin", scoped: true, expected: 200 },
+    { role: "admin", expected: 200 },
+    { role: "operator", scoped: true, expected: 403 },
+    { role: "operator", expected: 403 },
+    { role: "operator", own: true, expected: 200 },
+    { role: "operator", personalGrant: true, expected: 403 },
+    { role: "viewer", own: true, expected: 403 },
+    { role: "admin", suspended: true, expected: 404 },
+    { role: "admin", foreign: true, expected: 404 },
+  ])("enforces removal authority for $role (scope=$scoped, own=$own, suspended=$suspended, foreign=$foreign, personalGrant=$personalGrant)", async ({ role, scoped, own, personalGrant, suspended, foreign, expected }) => {
+    const company = await createCompany(db);
+    const membershipCompany = foreign ? await createCompany(db) : company;
+    const userId = `remover-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: userId, name: "Remover", email: `${userId}@fixture.test`, createdAt: new Date(), updatedAt: new Date() });
+    const status = suspended ? "suspended" : "active";
+    await db.insert(companyMemberships).values({ companyId: membershipCompany.id, principalType: "user", principalId: userId,
+      status, membershipRole: role });
+    if (scoped) await db.insert(principalPermissionGrants).values({ companyId: membershipCompany.id, principalType: "user", principalId: userId,
+      permissionKey: "tools:manage_connections", scope: { connectionIds: [randomUUID()] } });
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id, name: "Personal app", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: company.id, applicationId: application!.id,
+      name: "Personal account", uid: randomUUID(), enabled: true, transport: "mcp_remote", credentialPolicy: "per_user", status: "active", createdByUserId: own ? userId : "another-user" }).returning();
+    if (personalGrant) await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection!.id,
+      kind: "user", subjectUserId: userId, status: "active" });
+    const app = createRouteApp(db, { type: "board", source: "cloud_tenant", userId, isInstanceAdmin: false,
+      companyIds: suspended ? [] : [membershipCompany.id], memberships: [{ companyId: membershipCompany.id, status, membershipRole: role }] });
+    const response = await request(app).delete(`/api/tool-connections/${connection!.id}`).expect(expected);
+    if (!suspended && !foreign) {
+      const capabilities = await request(app).get(`/api/tool-connections/${connection!.id}/grants`).expect(200);
+      expect(capabilities.body.capabilities.canRemove).toBe(expected === 200);
+      if (scoped && role !== "operator") expect(capabilities.body.capabilities.canConfigure).toBe(false);
+    }
+    const [saved] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+    expect(saved!.status).toBe(expected === 200 ? "archived" : "active");
+    const receipts = await db.select().from(activityLog).where(and(eq(activityLog.companyId, company.id), eq(activityLog.action, "tool_connection.archived")));
+    if (expected === 200) {
+      expect(response.body).toMatchObject({ id: connection!.id, status: "archived", enabled: false });
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({ actorType: "user", actorId: userId });
+    } else expect(receipts).toHaveLength(0);
   });
 
   it("removes over the route with a secret-free receipt, then requires fresh credentials to reconnect", async () => {
