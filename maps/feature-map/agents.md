@@ -31,11 +31,6 @@ Agent access: [companion](../agent-access-map/agents.md).
 
 Use New agent from the roster or `/agents/new`.
 
-The agent header's **Duplicate** action copies instruction files and sends the
-source agent ID with the create request (or the hire request when approval is
-required). Core restores masked configuration values from that authorized source.
-The new agent response still hides plain environment values.
-
 Submitting the name creates an inactive record before adapter selection or account setup.
 A name-only draft returns to adapter selection when reopened.
 Save & exit keeps its configuration; Finish setup on the agent returns to the

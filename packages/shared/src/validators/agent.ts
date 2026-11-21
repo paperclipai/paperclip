@@ -174,7 +174,7 @@ export const agentRuntimeSettingsPatchSchema = z.object({
 export type AgentRuntimeSettingsPatch = z.infer<typeof agentRuntimeSettingsPatchSchema>;
 
 export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true }),
+  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true, duplicateFromAgentId: true }),
 )
   .partial()
   .extend({

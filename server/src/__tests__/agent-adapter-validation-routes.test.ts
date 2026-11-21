@@ -182,7 +182,7 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
-async function createApp(actorOverride: Record<string, unknown> = {}) {
+async function createApp(actorOverride: Record<string, unknown> = {}, requiresApproval = false) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -206,7 +206,7 @@ async function createApp(actorOverride: Record<string, unknown> = {}) {
         where: vi.fn(async () => [
           {
             id: "company-1",
-            requireBoardApprovalForNewAgents: false,
+            requireBoardApprovalForNewAgents: requiresApproval,
           },
         ]),
       })),
@@ -374,6 +374,7 @@ describe("agent routes adapter validation", () => {
 
     afterEach(() => {
       mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_company, config) => config);
+      mockApprovalService.create.mockReset();
     });
 
     const payload = () => ({
@@ -383,6 +384,31 @@ describe("agent routes adapter validation", () => {
         GOOGLE_WORKSPACE_CLI_CONFIG_DIR: masked,
         API_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
       } },
+    });
+
+    it("redacts approval-required duplicate replies without replacing the stored configuration", async () => {
+      mockApprovalService.create.mockImplementation(async (_company, input) => ({ id: "approval-1", ...input }));
+      const app = await createApp({}, true);
+      const direct = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send(payload()));
+      expect(direct.status).toBe(409);
+      const response = await requestApp(app, base => request(base).post("/api/companies/company-1/agent-hires").send(payload()));
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      const storedPayload = mockApprovalService.create.mock.calls[0][1].payload;
+      expect(storedPayload.adapterConfig.env.TZ.value).toBe("Asia/Seoul");
+      expect(storedPayload.requestedConfigurationSnapshot.adapterConfig.env.TZ.value).toBe("Asia/Seoul");
+      expect(response.body.approval.payload.adapterConfig.env.TZ).toEqual(masked);
+      expect(response.body.approval.payload.requestedConfigurationSnapshot.adapterConfig.env.TZ).toEqual(masked);
+      expect(JSON.stringify(response.body)).not.toContain("Asia/Seoul");
+    }, 60000);
+
+    it("does not forward the create-only copy intent on agent updates", async () => {
+      const app = await createApp();
+      const response = await requestApp(app, base => request(base).patch(`/api/agents/${sourceId}`).send({
+        title: "Updated", duplicateFromAgentId: sourceId,
+      }));
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalled();
+      expect(mockAgentService.update.mock.calls[0][1]).not.toHaveProperty("duplicateFromAgentId");
     });
 
     for (const route of ["agents", "agent-hires"]) {

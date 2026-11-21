@@ -3010,6 +3010,24 @@ export function agentRoutes(
     };
   }
 
+  function redactHireApproval(approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null) {
+    if (!approval) return approval;
+    const payload = redactEventPayload(approval.payload) ?? {};
+    const adapterConfig = asRecord(approval.payload.adapterConfig);
+    if (adapterConfig) payload.adapterConfig = redactAgentAdapterConfig(adapterConfig);
+    const snapshot = asRecord(approval.payload.requestedConfigurationSnapshot);
+    const snapshotAdapterConfig = asRecord(snapshot?.adapterConfig);
+    if (snapshotAdapterConfig) {
+      payload.requestedConfigurationSnapshot = {
+        ...asRecord(payload.requestedConfigurationSnapshot),
+        adapterConfig: redactAgentAdapterConfig(snapshotAdapterConfig),
+      };
+    }
+    // Redact a separate response object. Approval activation must retain the
+    // stored configuration, never the display-only placeholders.
+    return { ...approval, payload };
+  }
+
   async function restoreDuplicateConfiguration(
     req: Request,
     companyId: string,
@@ -4582,7 +4600,7 @@ export function agentRoutes(
             }, decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
           });
         }
-        res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval, idempotent: true });
+        res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval: redactHireApproval(approval), idempotent: true });
         return;
       }
       if (hireInput.adapterConfig && agentHarnessType(hireInput.adapterType ?? "process", hireInput.adapterConfig)
@@ -4724,7 +4742,7 @@ export function agentRoutes(
             const priorApprovalId = (match.details as Record<string, unknown> | null)?.approvalId;
             const existingApproval =
               typeof priorApprovalId === "string" ? await approvalsSvc.getById(priorApprovalId) : null;
-            return { status: 200, body: { agent: redactAgentRowForResponse(existingAgent), approval: existingApproval, idempotent: true } };
+            return { status: 200, body: { agent: redactAgentRowForResponse(existingAgent), approval: redactHireApproval(existingApproval), idempotent: true } };
           }
         }
       }
@@ -4890,7 +4908,7 @@ export function agentRoutes(
         });
       }
 
-      return { status: 201, body: { agent: { ...redactAgentRowForResponse(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) }, approval } };
+      return { status: 201, body: { agent: { ...redactAgentRowForResponse(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) }, approval: redactHireApproval(approval) } };
     };
 
     const outcome = runId
