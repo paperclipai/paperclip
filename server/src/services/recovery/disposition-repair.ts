@@ -6,12 +6,12 @@ import {
   approvals,
   heartbeatRuns,
   issueApprovals,
-  issueRelations,
   issueThreadInteractions,
   issueWorkProducts,
   issues,
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
+import { listIssueDependencyReadinessMap } from "../issues.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
@@ -149,22 +149,14 @@ export async function collectDispositionRepairSourceState(
   const issue = input.issue;
   const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes] =
     await Promise.all([
-      db
-        .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
-        .from(issueRelations)
-        .innerJoin(
-          issues,
-          and(eq(issues.companyId, issueRelations.companyId), eq(issues.id, issueRelations.issueId)),
-        )
-        .where(
-          and(
-            eq(issueRelations.companyId, issue.companyId),
-            eq(issueRelations.relatedIssueId, issue.id),
-            eq(issueRelations.type, "blocks"),
-            notInArray(issues.status, ["done", "cancelled"]),
-            sql`${issues.hiddenAt} is null`,
-          ),
-        ),
+      listIssueDependencyReadinessMap(db, issue.companyId, [issue.id]).then(async (readiness) => {
+        const unresolved = readiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [];
+        if (unresolved.length === 0) return [];
+        return db
+          .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(and(eq(issues.companyId, issue.companyId), inArray(issues.id, unresolved)));
+      }),
       db
         .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
