@@ -1,0 +1,13 @@
+{
+  "retrievedAt": "2026-11-06",
+  "providers": [
+    {
+      "slug": "wally",
+      "provider": "Wally",
+      "localAsset": "/brands/apps/wally.svg",
+      "linkedFrom": "https://www.runwally.com/",
+      "sha256": "e7932effc9a996460055af3ca223e228b7c9da9ed3d19faad31f12fe5a5a7bb3",
+      "note": "Official Wally color mark supplied by RunAnywhere, the vendor, retained without modification. One asset for both themes; it keeps contrast on the existing Paperclip gray icon frame."
+    }
+  ]
+}

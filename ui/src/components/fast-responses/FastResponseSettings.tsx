@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  aiConnectionCatalogSlug,
   FAST_RESPONSE_DEFAULT_MODEL,
   type FastResponseSettings,
   type AiManagedConnectionSummary,
@@ -122,7 +123,7 @@ export function FastResponseSettingsView({
           name: c.name,
           description:
             c.status === "connected" ? "Connected" : "Needs attention",
-          icon: <AppLogo name={c.provider} brandKey={c.provider} size={24} />,
+          icon: <AppLogo name={c.provider} brandKey={aiConnectionCatalogSlug(c.provider, c.routing)} size={24} />,
         }))}
         onSelect={(grantId) => {
           const c = choices.find((c) => c.grantId === grantId)!;
