@@ -38,6 +38,20 @@ function defaultConfig(): PaperclipConfig {
 }
 
 describe("config store", () => {
+  it("saves a config without an optional LLM while retaining the previous version", () => {
+    const configPath = createConfigPath();
+    const source: PaperclipConfig = {
+      ...defaultConfig(),
+      llm: { provider: "openai", apiKey: "invalid-test-key" },
+    };
+    fs.writeFileSync(configPath, `${JSON.stringify(source, null, 2)}\n`);
+
+    const { llm: _llm, ...update } = source;
+    expect(writeConfig(update, configPath)).toBe(true);
+    expect(readConfig(configPath)?.llm).toBeUndefined();
+    expect(readConfig(`${configPath}.backup`)?.llm).toEqual(source.llm);
+  });
+
   it("preserves top-level and nested extension keys during a known-field update", () => {
     const configPath = createConfigPath();
     fs.writeFileSync(configPath, JSON.stringify({
@@ -119,7 +133,7 @@ describe("config store", () => {
     const backupPath = backupInvalidConfig(configPath);
     expect(backupPath).toBe(`${configPath}.invalid-2`);
     expect(fs.readFileSync(backupPath)).toEqual(invalidBytes);
-    expect(open).toHaveBeenCalledWith(backupPath, "r");
+    expect(open).toHaveBeenCalledWith(backupPath, "r+");
     expect(open).toHaveBeenCalledWith(path.dirname(configPath), "r");
     expect(sync).toHaveBeenCalled();
     expect(() => writeConfig(defaultConfig(), configPath)).toThrow(/Refusing to overwrite invalid config/);
