@@ -348,6 +348,41 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect(await assigneeOf(fixture.issueId)).toEqual({ a: null, u: null });
     });
 
+    it("records the ownership change in the activity log", async () => {
+      const fixture = await ownerless({});
+      await interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId },
+        questionCreateInput(fixture.runId), { agentId: fixture.agentId });
+      const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, fixture.issueId));
+      const adoption = rows.find((row) => (row.details as Record<string, unknown> | null)?.source === "wake_assignee_interaction_adoption");
+      expect(adoption).toMatchObject({ action: "issue.updated", agentId: fixture.agentId });
+      expect(adoption!.details).toMatchObject({
+        assigneeAgentId: fixture.agentId,
+        _previous: { assigneeAgentId: null, assigneeUserId: null },
+      });
+    });
+
+    it("lets the caller deny the adoption, persisting no assignee and no interaction", async () => {
+      const fixture = await ownerless({});
+      const denied = new Error("tasks:assign denied");
+      await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId },
+        questionCreateInput(fixture.runId), { agentId: fixture.agentId },
+        { authorizeWakeTargetAdoption: async () => { throw denied; } })).rejects.toBe(denied);
+      expect(await assigneeOf(fixture.issueId)).toEqual({ a: null, u: null });
+      expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    });
+
+    it("does not ask for adoption authorization when the issue already has an owner", async () => {
+      const fixture = await seedSourceQuestionFixture({});
+      const owner = randomUUID();
+      await db.insert(agents).values(activeCodexAgentRow(owner, fixture.companyId, "Owner", "engineer"));
+      await db.update(issues).set({ assigneeAgentId: owner }).where(eq(issues.id, fixture.issueId));
+      const authorize = vi.fn(async () => { throw new Error("must not run"); });
+      await interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId },
+        questionCreateInput(fixture.runId), { agentId: fixture.agentId },
+        { authorizeWakeTargetAdoption: authorize });
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
     it("leaves an existing assignee untouched", async () => {
       const fixture = await seedSourceQuestionFixture({});
       const other = randomUUID();

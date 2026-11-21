@@ -228,6 +228,8 @@ type CreateInteractionOptions = {
   supersedePendingSiblingInteractions?: boolean;
   replayAcceptedInteractionIds?: readonly string[];
   requireAcceptedReplay?: boolean;
+  /** Runs before an ownerless issue is assigned to the creating agent. Throw to deny. */
+  authorizeWakeTargetAdoption?: () => Promise<void>;
 };
 
 type InteractionWakeup = (
@@ -5212,10 +5214,27 @@ export function issueThreadInteractionService(
                 { code: "interaction_wake_target_unbound", issueId: issue.id },
               );
             }
+            await options.authorizeWakeTargetAdoption?.();
             await tx.update(issues)
               .set({ assigneeAgentId: actor.agentId, updatedAt: new Date() })
               .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
             issueRow.assigneeAgentId = actor.agentId;
+            await logActivity(tx as unknown as Db, {
+              companyId: issue.companyId,
+              actorType: "agent",
+              actorId: actor.agentId,
+              agentId: actor.agentId,
+              runId: data.sourceRunId ?? null,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                identifier: issueRow.identifier,
+                assigneeAgentId: actor.agentId,
+                source: "wake_assignee_interaction_adoption",
+                _previous: { assigneeAgentId: null, assigneeUserId: null },
+              },
+            });
           }
           if (data.addresseeUserId) {
             await assertInteractionAddresseeUserAvailable(tx as unknown as Db, issue, issueRow, data.addresseeUserId);
