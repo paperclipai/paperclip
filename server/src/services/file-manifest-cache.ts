@@ -6,9 +6,10 @@ export type FileManifestEntry = { path: string; size: number; sha256: string; ex
 
 // Cache only identities/digests, not file contents. ctime prevents an ordinary
 // writer from hiding a modification by restoring mtime. Every use still checks
-// paths, file types, count and mode; changed files are hashed again.
+// paths, file types, count and trustworthy mode bits; changed files are hashed again.
 const verifiedFiles = new Map<string, { signature: string; digest: string }>();
 const MAX_VERIFIED_FILES = 128_000;
+const SYNTHETIC_MODE_FILESYSTEMS = new Set([0x517bn, 0xff534d42n, 0xfe534d42n]);
 let activeFileIo = 0;
 const waitingFileIo: Array<() => void> = [];
 async function withFileIo<T>(action: () => Promise<T>): Promise<T> {
@@ -36,6 +37,10 @@ export async function verifyFileManifest(directory: string, files: readonly File
 export async function inspectFileManifest(directory: string, files: readonly FileManifestEntry[]): Promise<"verified" | "missing" | "changed"> {
   const expected = new Map(files.map(file => [file.path, file]));
   const seen = new Set<string>();
+  let modesAreReliable: Promise<boolean> | undefined;
+  const enforceModes = () => modesAreReliable ??= fs.statfs(directory, { bigint: true })
+    .then(stat => !SYNTHETIC_MODE_FILESYSTEMS.has(stat.type))
+    .catch(() => true);
   async function walk(relative: string): Promise<boolean> {
     const root = path.join(directory, relative);
     const rootStat = await fs.lstat(root);
@@ -51,8 +56,10 @@ export async function inspectFileManifest(directory: string, files: readonly Fil
         return withFileIo(async () => {
           const target = path.join(directory, name);
           const stat = await fs.lstat(target, { bigint: true });
-          if (!stat.isFile() || stat.size !== BigInt(file.size) || Boolean(stat.mode & 0o111n) !== file.executable
-            || (file.mode !== undefined && Number(stat.mode & 0o555n) !== file.mode)) return false;
+          if (!stat.isFile() || stat.size !== BigInt(file.size)) return false;
+          const modeMatches = Boolean(stat.mode & 0o111n) === file.executable
+            && (file.mode === undefined || Number(stat.mode & 0o555n) === file.mode);
+          if (!modeMatches && await enforceModes()) return false;
           const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.mode}`;
           const previous = verifiedFiles.get(target);
           if (previous?.signature === signature && previous.digest === file.sha256) return true;

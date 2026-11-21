@@ -142,7 +142,11 @@ pending delete/existence requests; incomplete cleanup retains the receipt for re
   path escapes, links, duplicate paths, wrong sizes, modes and digests.
 - Warm checks inspect directory entries and file identity/size/mode/mtime/ctime.
   Unchanged files avoid content reads and hashing. Changed identities are hashed again;
-  altered runtime copies are rebuilt. No marker alone establishes integrity.
+  altered runtime copies are rebuilt. CIFS and SMB mounts can report synthetic mode
+  bits for every file. On those filesystems, verification ignores mode differences but
+  still checks paths, types, counts, sizes, identities, timestamps and SHA-256 digests.
+  It also keeps the existing symbolic-link protections. No marker alone establishes
+  integrity.
 - Native asset packaging also caches manifests and asset references, checking both
   the selected source and delivered asset on reuse. It retains no repository bodies.
   Source edits invalidate the reference; missing or corrupt copies rebuild from verified bytes.
