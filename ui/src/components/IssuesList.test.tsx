@@ -382,6 +382,44 @@ describe("IssuesList", () => {
     container.remove();
   });
 
+
+  it.each([true, false].flatMap(streamlined => [undefined, "project-1"].flatMap(projectId =>
+    [["todo", "monitoring"], ["done", "cancelled"], []].map(statuses => ({ streamlined, projectId, statuses })),
+  )))("keeps hierarchy rows within selected statuses through loading and refetch ($streamlined, $projectId, $statuses)", async ({ streamlined, projectId, statuses }) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: projectId ? 390 : 1280 });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ statuses, groupBy: "none" }));
+    const parent = createIssue({ id: "parent", title: "Matching parent", status: statuses[0] === "done" ? "done" : "todo", createdByUserId: "person", projectId: projectId ?? null });
+    const children = [
+      createIssue({ id: "active-child", title: "Active child", status: "todo" }),
+      createIssue({ id: "done-child", title: "Done child", status: "done" }),
+      createIssue({ id: "cancelled-child", title: "Cancelled child", status: "cancelled" }),
+      createIssue({ id: "monitor-child", title: "Monitor child", status: "in_progress", displayStatus: "monitoring" }),
+      createIssue({ id: "working-child", title: "Working child", status: "in_progress" }),
+    ].map(issue => ({ ...issue, parentId: parent.id, createdByAgentId: "agent", projectId: projectId ?? null }));
+    let resolveChildren: (rows: Issue[]) => void = () => undefined;
+    mockIssuesApi.list.mockImplementation((_company, filters) => filters.parentIds?.includes(parent.id)
+      ? new Promise<Issue[]>(resolve => { resolveChildren = resolve; }) : Promise.resolve([]));
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={[parent]} agents={[]} projects={[]}
+      projectId={projectId} viewStateKey="paperclip:test-issues" enableAgentCreatedVisibilityFilter
+      onUpdateIssue={() => undefined} />, container);
+    const titles = () => [...container.querySelectorAll('[data-testid="issue-row"] > span:first-child')].map(row => row.textContent);
+    const expected = [parent, ...children.filter(issue => statuses.length === 0 || statuses.includes(issue.displayStatus ?? issue.status))].map(issue => issue.title).sort();
+    try {
+      await waitForAssertion(() => expect(mockIssuesApi.list.mock.calls.some(([, filters]) => filters.parentIds?.includes(parent.id))).toBe(true));
+      expect(titles().filter(title => title !== parent.title)).toEqual([]);
+      await act(() => resolveChildren(children));
+      await waitForAssertion(() => expect(queryClient.isFetching()).toBe(0));
+      await waitForAssertion(() => expect(titles().sort()).toEqual(expected));
+      const calls = mockIssuesApi.list.mock.calls.length;
+      await act(() => { void queryClient.invalidateQueries(); });
+      await waitForAssertion(() => expect(mockIssuesApi.list.mock.calls.length).toBeGreaterThan(calls));
+      await act(() => resolveChildren(children.map(issue => ({ ...issue }))));
+      await waitForAssertion(() => expect(queryClient.isFetching()).toBe(0));
+      await waitForAssertion(() => expect(titles().sort()).toEqual(expected));
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
   it.each([[true, true], [true, false], [false, true], [false, false]])("defaults task and subtask lists to newest updates (streamlined=%s, nesting=%s)", async (streamlined, nesting) => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
     const items = [
