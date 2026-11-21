@@ -122,6 +122,7 @@ import {
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
 import { useCloudInstance } from "../hooks/useCloudInstance";
+import { readOnboardingActionSession } from "./onboarding-actions";
 import { PillGuy } from "./onboarding/PillGuy";
 import { SleepingZs } from "./onboarding/SleepingZs";
 import {
@@ -1892,13 +1893,14 @@ function OnboardingWizardInner({
       setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
       return;
     }
+    const actionSession = readOnboardingActionSession();
     setLoading(true);
     setError(null);
     captureOnboardingStepCompleted("review");
     try {
       await agentChatsApi.startOnboarding(createdCompanyId, createdAgentId);
       captureOnboardingStepCompleted("launch", "succeeded");
-      if (!stillTheSameCompany(createdCompanyId)) return;
+      if (!stillTheSameCompany(createdCompanyId) || readOnboardingActionSession() !== actionSession) return;
       onboardingAnalytics.finished();
       const prefix = createdCompanyPrefix;
       const agentId = createdAgentId;
@@ -2303,6 +2305,7 @@ function OnboardingWizardInner({
     setLoading(true);
     setError(null);
     const companyIdAtStart = createdCompanyIdRef.current;
+    const actionSession = readOnboardingActionSession();
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -2311,7 +2314,7 @@ function OnboardingWizardInner({
       // taken over the wizard, and adopting the company just created would
       // fight it — and would leave the customer on a company they never
       // navigated to.
-      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
+      if (!canCommitCreatedCompany(companyIdAtStart, company.id) || readOnboardingActionSession() !== actionSession) return;
       setCreatedCompanyId(company.id);
       // Keep the mirror current rather than waiting for the next render:
       // anything downstream that asks `stillTheSameCompany` in this tick would
