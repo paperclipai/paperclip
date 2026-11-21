@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApprovalPayloadRenderer, approvalLabel } from "./ApprovalPayload";
+import { ANALYTICS_MASK_CLASS } from "../lib/analytics/privacy";
 import { ThemeProvider } from "../context/ThemeContext";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -181,6 +182,74 @@ describe("ApprovalPayloadRenderer", () => {
       act(() => {
         root.unmount();
       });
+    }
+  });
+
+  it("renders every instruction_generation file and the note, not just the summary", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="instruction_generation"
+            payload={{
+              title: "Routine docs cleanup",
+              description: "Minor wording fix",
+              agentId: "agent-target-1",
+              note: "Hidden note text",
+              bundle: {
+                files: [
+                  { path: "AGENTS.md", content: "# Entry body", baseHash: null },
+                  { path: "docs/TOOLS.md", content: "Tools body" },
+                ],
+              },
+            }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Routine docs cleanup");
+    expect(text).toContain("agent-target-1");
+    expect(text).toContain("Hidden note text");
+    expect(text).toContain("AGENTS.md");
+    expect(text).toContain("# Entry body");
+    expect(text).toContain("Reviewed base: new file");
+    expect(text).toContain("docs/TOOLS.md");
+    expect(text).toContain("Tools body");
+    expect(text).toContain("Reviewed base: not recorded (pinned at approval)");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps instruction files, notes, and the raw fallback inside the replay mask", () => {
+    const root = createRoot(container);
+    const selector = "." + ANALYTICS_MASK_CLASS.split(" ").join(".");
+    const cases = [
+      {
+        payload: { note: "Private note", bundle: { files: [{ path: "private.md", content: "Private instructions" }] } },
+        expected: ["Private note", "private.md", "Private instructions"],
+      },
+      { payload: { fallbackField: "Private fallback" }, expected: ["Private fallback"] },
+    ];
+    try {
+      for (const { payload, expected } of cases) {
+        act(() => {
+          root.render(
+            <ThemeProvider>
+              <ApprovalPayloadRenderer type="instruction_generation" payload={payload} />
+            </ThemeProvider>,
+          );
+        });
+        const maskedText = Array.from(container.querySelectorAll(selector), (element) => element.textContent).join(" ");
+        for (const value of expected) expect(maskedText).toContain(value);
+      }
+    } finally {
+      act(() => root.unmount());
     }
   });
 

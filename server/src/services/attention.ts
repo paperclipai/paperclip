@@ -1782,6 +1782,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           if (linkedIssueId && !readableApprovalIssues.has(linkedIssueId)) continue;
           const dedupKey = `approval:${approval.id}`;
           const title = approvalTitle(approval.type, approval.payload);
+          // Approving an instruction bundle queues a board-authenticated write of
+          // every file in it. Cards show only title and summary, so the decision
+          // happens on the approval page, which renders the whole bundle.
+          const reviewOnPage = approval.type === "instruction_generation";
           add(createItem({
             companyId,
             sourceKind: "approval",
@@ -1801,13 +1805,17 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               },
             },
             whyNow: "Approval is pending a board decision.",
-            decisionVerbs: decisionVerbs(
-              { id: "approve", label: "Approve", description: "Approve the request." },
-              { id: "reject", label: "Reject", description: "Reject the request." },
-              { id: "request_revision", label: "Request revision", description: "Send the request back for changes." },
-            ),
-            // Every approval, board approvals included, is answered on the card (PAP-775).
-            inlineResolvable: true,
+            decisionVerbs: reviewOnPage
+              ? decisionVerbs(
+                { id: "review_bundle", label: "Review bundle", description: "Read every file in the bundle on the approval page before deciding." },
+              )
+              : decisionVerbs(
+                { id: "approve", label: "Approve", description: "Approve the request." },
+                { id: "reject", label: "Reject", description: "Reject the request." },
+                { id: "request_revision", label: "Request revision", description: "Send the request back for changes." },
+              ),
+            // Every other approval, board approvals included, is answered on the card (PAP-775).
+            inlineResolvable: !reviewOnPage,
             entryRule: "approvals.status = 'pending'",
             exitRule: "Approval leaves pending status.",
             dedupKey,
