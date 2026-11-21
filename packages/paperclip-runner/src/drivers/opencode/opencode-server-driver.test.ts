@@ -999,13 +999,35 @@ describe("OpenCodeServerDriver", () => {
       const configPath = join(root, "routing", "config", "opencode", "opencode.json");
       expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
         model: "paperclip/team/model-alias", small_model: "paperclip/team/model-alias", plugin: [],
-        provider: { paperclip: { npm: "@ai-sdk/openai-compatible", options: { baseURL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/), apiKey: expect.any(String) }, models: { "team/model-alias": { name: "team/model-alias" } } } },
+        provider: { paperclip: { npm: "@ai-sdk/openai-compatible", options: { baseURL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/), apiKey: expect.any(String) }, models: { "team/model-alias": { name: "team/model-alias", limit: { context: 96_000, output: 16_000 } } } } },
       });
       expect((await stat(configPath)).mode & 0o777).toBe(0o600);
       const shell = await promisify(execFile)("sh", ["-c", 'cat "$1"', "sh", configPath]);
       expect(shell.stdout).not.toContain("selected-gateway-key");
       const environment = JSON.parse(await readFile(join(root, "routing", "data", "fake-environment.json"), "utf8"));
       expect(environment.keys).not.toContain("PAPERCLIP_AI_PROVIDER_KEY");
+    } finally {
+      await session.close({ reason: "test" });
+    }
+  });
+
+  it("uses supplied model limits for a custom connection", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-model-limit-"));
+    roots.push(root);
+    const driver = new OpenCodeServerDriver({
+      model: "paperclip/team/model-alias",
+      modelLimit: { context: 32_000, output: 4_096 },
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example/v1", PAPERCLIP_AI_PROVIDER_KEY: "selected-gateway-key" },
+    });
+    const session = await driver.openSession({ runId: "model-limit", normalizedSessionId: "model-limit", workingDirectory: root });
+    try {
+      const configPath = join(root, "model-limit", "config", "opencode", "opencode.json");
+      expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+        provider: { paperclip: { models: { "team/model-alias": { limit: { context: 32_000, output: 4_096 } } } } },
+      });
     } finally {
       await session.close({ reason: "test" });
     }
@@ -1165,6 +1187,7 @@ describe("OpenCodeServerDriver", () => {
       expect(config.small_model).toBe(`openrouter/${model}`);
       expect(Object.keys(config.provider)).toEqual(["openrouter"]);
       expect(Object.keys(config.provider.openrouter.models)).toEqual([model]);
+      expect(config.provider.openrouter.models[model]).not.toHaveProperty("limit");
       const { baseURL, apiKey } = config.provider.openrouter.options;
       expect(configText).not.toContain(key);
       const environmentText = await readFile(join(root, "custody", "data", "fake-environment.json"), "utf8");
