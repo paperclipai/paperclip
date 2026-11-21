@@ -1,0 +1,47 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -23,6 +23,7 @@
+  * for a particular string, we need to force that string into the right locale.
+  * @see https://github.com/leinelissen/embedded-postgres/issues/15
+  */
++const LC_MESSAGES_LOCALE = 'C';
+ function getBestLocale() {
+     // `locale -a` is not available on Windows.
+     if (platform() === 'win32') {
+@@ -106,7 +107,7 @@
+     initialise() {
+         return __awaiter(this, void 0, void 0, function* () {
+             const { postgres, initdb } = yield bin;
+-            const locale = getBestLocale();
++            const locale = LC_MESSAGES_LOCALE;
+             // GUARD: Check that a postgres user is available 
+             yield this.checkForRootUser();
+             // Optionally retrieve the uid and gid
+@@ -156,7 +157,7 @@
+                         `--pwfile=${passwordFile}`,
+                         `--lc-messages=${locale}`,
+                         ...this.options.initdbFlags,
+-                    ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, process.env), { LC_MESSAGES: locale }) }));
++                    ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: locale }) }));
+                     // Connect to stderr, as that is where the messages get sent
+                     let stderrOutput = '';
+                     (_a = childProcess.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
+@@ -192,7 +193,7 @@
+     start() {
+         return __awaiter(this, void 0, void 0, function* () {
+             const { postgres } = yield bin;
+-            const locale = getBestLocale();
++            const locale = LC_MESSAGES_LOCALE;
+             // Optionally retrieve the uid and gid
+             const permissionIds = yield this.getUidAndGid()
+                 .catch(() => {
+@@ -209,7 +210,7 @@
+                     '-p',
+                     this.options.port.toString(),
+                     ...this.options.postgresFlags,
+-                ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, process.env), { LC_MESSAGES: locale }) }));
++                ], Object.assign(Object.assign({}, permissionIds), { env: Object.assign(Object.assign({}, globalThis.process.env), { LC_MESSAGES: locale }) }));
+                 // Connect to stderr, as that is where the messages get sent
+                 (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
+                     // Parse the data as a string and log it
