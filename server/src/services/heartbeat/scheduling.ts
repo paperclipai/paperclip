@@ -595,12 +595,14 @@ export function createHeartbeatScheduling(
       reason: string; blockerCause?: string; httpStatus?: number },
   ) {
     const publications: ActivityPublication[] = [];
+    const releasedWakeRequestedAt =
+      input.activitySource === "scheduled" ? claimed.monitorWakeRequestedAt : null;
     try {
       await db.transaction(async (tx) => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyStatusCardIssueChange(tx, claimed.companyId);
         const released = await tx.update(issues)
-          .set({ monitorWakeRequestedAt: null, updatedAt: input.now })
+          .set({ monitorWakeRequestedAt: releasedWakeRequestedAt })
           .where(issueMonitorClaimCondition(claimed)).returning({ id: issues.id });
         if (released.length === 0) return;
         // The issue lock serializes diagnostics from competing scheduler instances.
@@ -633,7 +635,7 @@ export function createHeartbeatScheduling(
       await db.transaction(async tx => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyStatusCardIssueChange(tx, claimed.companyId);
-        await tx.update(issues).set({ monitorWakeRequestedAt: null, updatedAt: input.now })
+        await tx.update(issues).set({ monitorWakeRequestedAt: releasedWakeRequestedAt })
           .where(issueMonitorClaimCondition(claimed));
       });
       logger.warn({ err, issueId: claimed.id }, "issue monitor diagnostic could not be recorded");
@@ -989,7 +991,6 @@ export function createHeartbeatScheduling(
         .update(issues)
         .set({
           monitorWakeRequestedAt: now,
-          updatedAt: now,
         })
         .where(
           and(
@@ -1063,7 +1064,6 @@ export function createHeartbeatScheduling(
           .update(issues)
           .set({
             monitorWakeRequestedAt: now,
-            updatedAt: now,
           })
           .where(
             and(
