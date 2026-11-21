@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { QUEUE_HANDOFF_TOLERANCE_MS, queueWaitFairnessFrom, type AgentSlots } from "./agent-slots.js";
 import { crossingFaults, gradeR1, gradeR2, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
+import { runWakesFrom } from "./wave-grade-inputs.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
 import { BENCH_EXPECTED, parseBenchRecord, r1TestChecksSlug, stallWakeChecks, workloadDefinitions } from "./workloads.js";
 
@@ -355,7 +356,8 @@ describe("R1 follow-up queue wait credit", () => {
       sample(startedAt + 5_000, "in_progress", [r1, r2("running", startedAt, null), ...others]),
       sample(tookMs, "done", [r1, r2("succeeded", startedAt, tookMs - 1_000), ...others]),
     ], { restAt: T0 + tookMs, faultIds: [], plan: { ...record([]).plan, workload: "SM" },
-      stagingMix: { followUp: { at: T0 + 200_000, commentId: "c1", duringRun: true, inOverlap: false, error: null } }, ...extra });
+      stagingMix: { followUp: { at: T0 + 200_000, commentId: "c1", duringRun: true, inOverlap: false, error: null } },
+      runWakes: { r1: { wakeReason: "issue_assigned", continuesRunIds: [] }, r2: { wakeReason: "issue_commented", continuesRunIds: [] } }, ...extra });
   };
   const t007 = () => followUpTask(2_310_000);
 
@@ -412,6 +414,34 @@ describe("R1 follow-up queue wait credit", () => {
     const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, {}, [undated]), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
     expect(graded).toEqual({ verdict: "fail",
       detail: "done_too_late 2310s > 2010s (queue wait not credited: no createdAt for rx, so follow-up runs cannot be ordered)" });
+  });
+
+  it("does not credit a recovery run that carries the comment after a success", () => {
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    for (const r2 of [{ wakeReason: "issue_continuation_needed", continuesRunIds: [] }, { wakeReason: "issue_commented", continuesRunIds: ["r1"] }]) {
+      const recovery = followUpTask(2_310_000, 0, {}, {}, { runWakes: { r2 } });
+      expect(gradeR1(recovery, BUDGET, [], fairness)).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+    }
+  });
+
+  it("reads each run's wake reason and continued runs from the wake evidence", () => {
+    const run = (runId: string, wakeupRequestId: string | null, contextSnapshot: unknown) =>
+      ({ runId, createdAt: 1, invocationSource: "automation", triggerDetail: "system", wakeupRequestId, contextSnapshot });
+    expect(runWakesFrom({
+      runs: [run("r2", "w2", { wakeReason: "issue_commented" }), run("r3", "w3", { executionContinuation: { interruptedRunId: "r2" } })],
+      wakes: [{ id: "w2", reason: "issue_execution_promoted", source: "automation", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "u" },
+        { id: "w3", reason: "issue_continuation_needed", source: "automation", triggerDetail: "system", requestedByActorType: null, requestedByActorId: null }],
+    })).toEqual({ r2: { wakeReason: "issue_commented", continuesRunIds: [] }, r3: { wakeReason: "issue_continuation_needed", continuesRunIds: ["r2"] } });
+  });
+
+  it("refuses follow-up credit without wake evidence", () => {
+    const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, { runWakes: undefined }), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
+    expect(graded).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no wake evidence for follow-up run r2)" });
+  });
+
+  it("credits only the part of a wait inside the task's own lifetime", () => {
+    const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, { restAt: T0 + 2_100_000 }), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
+    expect(graded).toEqual({ verdict: "pass", detail: "done after 2100s (allowed 3444s incl. 1434s fair queue wait)" });
   });
 
   it("does not credit outage time inside the follow-up's wait", () => {
