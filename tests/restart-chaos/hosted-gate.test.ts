@@ -1,10 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { hostedGate, hostedR1, releaseOutages } from "./hosted-gate.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { hostedGate, hostedR1, releaseOutages, subtaskRecord } from "./hosted-gate.js";
+import { gradeHosted } from "./hosted-grade.js";
+import { continuity } from "./hosted-release.js";
 import { runRow, type HostedRunRow } from "./hosted-readers.js";
 import type { DetectedRelease } from "./hosted-release.js";
 import type { HostedTaskRecord } from "./hosted-workload.js";
 import type { SwapMetrics } from "./release-swap-grade.js";
-import { roundsFor, stagingMixBudgetMs } from "./staging-mix.js";
+import { roundsFor, stagingMixBudgetMs, SUBTASK_ROUNDS } from "./staging-mix.js";
+
+const dirs: string[] = [];
+afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 
 const T0 = Date.parse("2026-11-21T10:00:00.000Z");
 const MIN = 60_000;
@@ -83,7 +91,7 @@ describe("hosted R1", () => {
 describe("gate D verdict", () => {
   const metric = (index: number, survivors: number): SwapMetrics => ({ index, failedRuns: [], lostWhileOldAlive: [],
     survivors: Array.from({ length: survivors }, (_, n) => ({ runId: `r${n}`, nextEventAfterMs: 1_000 })), nextEventP50Ms: 1_000, nextEventMaxMs: 1_000, survivorsWithoutEvent: 0 });
-  const clean = { handsOffPass: true, r1: [{ identifier: "GIT-1", result: { verdict: "pass" as const, detail: "done" } }], bannersShown: 0,
+  const clean = { handsOffPass: true, wantedReleases: 1, createErrors: 0, r1: [{ identifier: "GIT-1", result: { verdict: "pass" as const, detail: "done" } }], bannersShown: 0,
     health: { requests: 100, failures: 0, slow: 0, longestGapMs: 2_000, longestGap: null },
     duplicates: { overlappingRuns: [], duplicateComments: [], duplicateChildren: [] }, releases: [release()], metrics: [metric(1, 3)] };
 
@@ -102,9 +110,60 @@ describe("gate D verdict", () => {
     ["no release", { releases: [], metrics: [] }, "releases under load"],
     ["an R1 failure", { r1: [{ identifier: "GIT-2", result: { verdict: "fail" as const, detail: "done_too_late 9s > 1s" } }] }, "R1"],
     ["a task that was not hands-off", { handsOffPass: false }, "hands-off"],
+    ["a task that could not be created", { createErrors: 1 }, "tasks created"],
   ])("fails on %s", (_name, change, check) => {
     const gate = hostedGate({ ...clean, ...change });
     expect(gate.pass).toBe(false);
     expect(gate.lines.find(line => line.includes(`FAIL ${check}`))).toBeDefined();
+  });
+
+  it("does not require a release for a fixed batch (--hosted-releases 0)", () => {
+    const gate = hostedGate({ ...clean, wantedReleases: 0, releases: [], metrics: [] });
+    expect(gate.pass).toBe(true);
+    expect(gate.lines.some(line => line.includes("releases under load"))).toBe(false);
+  });
+});
+
+describe("hosted grade with the run's task records", () => {
+  const issue = (id: string, extra: Record<string, unknown> = {}) => ({ id, identifier: id.toUpperCase(), title: id, status: "done", assigneeAgentId: "a1",
+    createdAt: at(0), completedAt: at(10), ...extra });
+  const apiFor = (issues: Json[], runs: Json[]) => ({
+    get: async <T>(route: string) => (route.includes("heartbeat-runs") ? runs : route.includes("/issues?") ? issues
+      : route.startsWith("/api/issues/") && !route.slice("/api/issues/".length).includes("/") ? issues.find(entry => route.endsWith(`/${entry.id}`)) ?? { status: "unreadable" }
+        : route.endsWith("/agents") ? agents : []) as T,
+    post: async <T>() => ({}) as T,
+  });
+  type Json = Record<string, any>;
+  const grade = async (issues: Json[], runs: Json[], tasks: HostedTaskRecord[], wantedReleases: number) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "hosted-gate-"));
+    dirs.push(dir);
+    return gradeHosted({ api: apiFor(issues, runs), companyId: "c1", agentIds: ["a1"], releases: [], health: () => continuity([]), apiContinuity: () => continuity([]),
+      stopObserver: async () => {}, observedClicks: () => new Map(), lastReleaseAt: Date.now() - 1_000, settleMs: 5, drainMs: 5, dir, cancelled: () => false,
+      record: () => {}, pollMs: 5, tasks: () => tasks, wantedReleases });
+  };
+  const runOf = (id: string, issueId: string, created: number, finished: number) => ({ id, agentId: "a1", issueId, status: "succeeded", invocationSource: "assignment",
+    createdAt: at(created), startedAt: at(created), finishedAt: at(finished) });
+
+  it("passes a healthy fixed batch with no release", async () => {
+    const graded = await grade([issue("i1")], [runOf("r1", "i1", 0, 10)], [record()], 0);
+    expect(graded.pass).toBe(true);
+    expect(graded.markdown).toContain("Gate D: PASS");
+  });
+
+  it("grades an agent-created subtask on its own two-round budget", async () => {
+    const budget = stagingMixBudgetMs({ ...task, rounds: SUBTASK_ROUNDS }) / MIN;
+    const late = budget + 5;
+    const child = issue("c1", { parentId: "i1", createdAt: at(1), completedAt: at(1 + late) });
+    const graded = await grade([issue("i1", { completedAt: at(late + 2) }), child], [runOf("r1", "i1", 0, 3), runOf("r2", "c1", 1, 1 + late), runOf("r3", "i1", late + 1, late + 2)],
+      [record({ plan: { ...record().plan, task: { ...task, subtasks: 2 } } })], 0);
+    expect(graded.pass).toBe(false);
+    expect(graded.markdown).toMatch(/FAIL R1: 1 failed \(C1: done_too_late/);
+  });
+
+  it("builds a subtask record from its issue view", () => {
+    const child = subtaskRecord({ id: "c1", identifier: "GIT-9", status: "done", createdAt: at(3) }, []);
+    expect(child).toMatchObject({ issueId: "c1", identifier: "GIT-9", createdAt: T0 + 3 * MIN, createError: null });
+    expect(child.plan.task.rounds).toBe(SUBTASK_ROUNDS);
+    expect(subtaskRecord({ id: "c2", status: "done" }, []).createError).toBe("subtask has no createdAt");
   });
 });

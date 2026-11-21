@@ -3,8 +3,8 @@ import { gradeR1 } from "./grader.js";
 import type { ContinuityReport, DetectedRelease } from "./hosted-release.js";
 import type { HostedRunRow } from "./hosted-readers.js";
 import type { HostedTaskRecord } from "./hosted-workload.js";
-import type { SwapMetrics } from "./release-swap-grade.js";
-import { stagingMixBudgetMs } from "./staging-mix.js";
+import type { RetryClick, SwapMetrics } from "./release-swap-grade.js";
+import { stagingMixBudgetMs, SUBTASK_ROUNDS } from "./staging-mix.js";
 import type { FaultReceipt, RuleResult, RunSample, TaskRecord } from "./types.js";
 
 type Json = Record<string, any>;
@@ -52,6 +52,15 @@ export function hostedR1(input: { record: HostedTaskRecord; view: Json | undefin
   return gradeR1(task, stagingMixBudgetMs(record.plan.task), input.outages, queueWaitFairnessFrom(slots));
 }
 
+/** An agent-created subtask graded on its own: created when the issue was, with the budget of its two rounds. */
+export function subtaskRecord(view: Json, retryClicks: readonly RetryClick[]): HostedTaskRecord {
+  const created = Date.parse(String(view.createdAt ?? ""));
+  return { plan: { index: -1, adapter: "opencode", nonce: String(view.id), task: { turnMinutes: 0, rounds: SUBTASK_ROUNDS, subtasks: 0, followUpAfterMs: null,
+    arriveAtMs: 0, holdMs: 0 } }, issueId: String(view.id), identifier: view.identifier ? String(view.identifier) : null,
+    createdAt: Number.isFinite(created) ? created : null, createError: Number.isFinite(created) ? null : "subtask has no createdAt",
+    status: String(view.status), lastLiveAt: null, followUp: null, retryClicks: [...retryClicks], retriedRuns: [], doneAt: null };
+}
+
 export interface HostedGate {
   pass: boolean;
   r1Failed: Array<{ identifier: string | null; detail: string }>;
@@ -65,9 +74,10 @@ export interface HostedGate {
 
 /**
  * Gate D: every task hands-off and inside R1, no Retry banner, no failed health probe, no duplicated work, and every
- * release a swap two builds served (never stop-then-start) with at least one live run carried across it.
+ * release a swap two builds served (never stop-then-start) with at least one live run carried across it. A fixed batch
+ * (`--hosted-releases 0`) waits for no release, so it is not required to see one.
  */
-export function hostedGate(input: { handsOffPass: boolean; r1: ReadonlyArray<{ identifier: string | null; result: RuleResult }>; bannersShown: number;
+export function hostedGate(input: { handsOffPass: boolean; wantedReleases: number; createErrors: number; r1: ReadonlyArray<{ identifier: string | null; result: RuleResult }>; bannersShown: number;
   health: ContinuityReport; duplicates: { overlappingRuns: readonly unknown[]; duplicateComments: readonly unknown[]; duplicateChildren: readonly unknown[] };
   releases: readonly DetectedRelease[]; metrics: readonly SwapMetrics[] }): HostedGate {
   const r1Failed = input.r1.filter(entry => entry.result.verdict === "fail").map(entry => ({ identifier: entry.identifier, detail: entry.result.detail }));
@@ -78,12 +88,14 @@ export function hostedGate(input: { handsOffPass: boolean; r1: ReadonlyArray<{ i
     ["hands-off", input.handsOffPass, input.handsOffPass ? "every started task done without a person" : "a task did not finish hands-off"],
     ["R1", r1Failed.length === 0, r1Failed.length ? `${r1Failed.length} failed (${r1Failed.slice(0, 3).map(entry => `${entry.identifier ?? "?"}: ${entry.detail}`).join("; ")})`
       : `${input.r1.filter(entry => entry.result.verdict === "pass").length} passed`],
+    ["tasks created", input.createErrors === 0, `${input.createErrors} task(s) could not be created`],
     ["Retry banners", input.bannersShown === 0, `${input.bannersShown} shown`],
     ["health probes", input.health.failures === 0, `${input.health.failures} of ${input.health.requests} failed`],
     ["duplicates", duplicates === 0, `${duplicates} (overlapping runs, duplicated agent comments, duplicated subtasks)`],
     ["swap shape", stopThenStart.length === 0, stopThenStart.length ? `stop-then-start at release ${stopThenStart.join(", ")}` : "no stop-then-start release"],
-    ["releases under load", input.releases.length > 0 && unloaded.length === 0,
-      input.releases.length === 0 ? "no release detected" : unloaded.length ? `no live run across release ${unloaded.join(", ")}` : `${input.releases.length} release(s), each with a live run`],
+    ...(input.wantedReleases > 0 ? [["releases under load", input.releases.length > 0 && unloaded.length === 0,
+      input.releases.length === 0 ? "no release detected" : unloaded.length ? `no live run across release ${unloaded.join(", ")}`
+        : `${input.releases.length} release(s), each with a live run`]] as Array<[string, boolean, string]> : []),
   ];
   const pass = checks.every(([, ok]) => ok);
   return { pass, r1Failed, bannersShown: input.bannersShown, healthFailures: input.health.failures, duplicates, stopThenStart, unloaded,
