@@ -132,6 +132,23 @@ function checkModel(
   };
 }
 
+function isLoopbackBaseUrl(baseUrl: string): boolean {
+  if (!baseUrl) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+  const hostname = parsed.hostname;
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]"
+  );
+}
+
 async function checkApiKeys(
   config: Record<string, unknown>,
   detectedConfig: Awaited<ReturnType<typeof detectModel>> | null,
@@ -231,6 +248,15 @@ async function checkApiKeys(
       message: `Hermes config includes an API key for provider "${providerLabel}" via ~/.hermes/config.yaml`,
       hint: "Skipping the built-in API-key warning because Hermes can use model.api_key from the local Hermes config.",
       code: "hermes_api_key_in_config",
+    };
+  }
+
+  if (modelMatchesRequested && detectedConfig?.baseUrl && isLoopbackBaseUrl(detectedConfig.baseUrl)) {
+    return {
+      level: "info",
+      message: `Hermes config points the requested model at a local inference endpoint (${detectedConfig.baseUrl})`,
+      hint: "Skipping the missing API-key warning for a configured loopback inference endpoint.",
+      code: "hermes_local_endpoint_no_api_key",
     };
   }
 
