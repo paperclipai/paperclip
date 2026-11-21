@@ -274,14 +274,14 @@ describeEmbeddedPostgres("automation conversations and standing checks", () => {
     expect(started.body.details?.code ?? started.body.code).toBe("routine_from_task_private");
     expect(await db.select().from(issues).where(eq(issues.originId, privateId))).toHaveLength(0);
     const [open] = await db.select().from(issues).where(eq(issues.id, (await start(seeded, seeded.tasks.weekly.id, { agentId: seeded.agents.analyst.id })).body.conversation.issueId));
-    expect(open).toMatchObject({ visibility: "open" });
+    expect(open).toMatchObject({ visibility: "private", responsibleUserId: OWNER });
   });
 
   it("lets only the conversation's agent propose, validates, keeps one pending, and creates nothing", async () => {
     const seeded = await seed();
     const started = await start(seeded, seeded.tasks.weekly.id, { agentId: seeded.agents.analyst.id });
     const issueId = started.body.conversation.issueId as string;
-    expect((await propose(seeded, seeded.agents.watcher.id, issueId, SCHEDULE)).status).toBe(403);
+    expect((await propose(seeded, seeded.agents.watcher.id, issueId, SCHEDULE)).status).toBe(404);
     expect((await request(seeded.app).post(`/api/issues/${issueId}/automation-proposals`).send(SCHEDULE)).status).toBe(403);
     expect((await propose(seeded, seeded.agents.analyst.id, seeded.tasks.weekly.id, SCHEDULE)).status).toBe(422);
     expect((await propose(seeded, seeded.agents.analyst.id, issueId, { ...SCHEDULE, trigger: { kind: "schedule", cadence: { frequency: "weekly", time: "16:00" } } })).status).toBe(400);
