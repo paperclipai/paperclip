@@ -611,10 +611,19 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const heartbeat = heartbeatService(db);
     const triggeredAt = new Date("2026-04-11T12:00:00.000Z");
 
+    await expect(heartbeat.triggerIssueMonitor(issueId, {
+      now: triggeredAt,
+      actorType: "user",
+      actorId: "local-board",
+    })).rejects.toThrow("scheduled for a future check");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!)
+      .toMatchObject({ monitorNextCheckAt: nextCheckAt, monitorAttemptCount: 0 });
+
     const result = await heartbeat.triggerIssueMonitor(issueId, {
       now: triggeredAt,
       actorType: "user",
       actorId: "local-board",
+      consumeFutureSchedule: true,
     });
 
     expect(result.outcome).toBe("triggered");
