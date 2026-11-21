@@ -562,6 +562,7 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         includedIssueIds: [],
         stopFingerprint: "task_watchdog_stop:unavailable",
         stoppedLeaves: [],
+        stoppedParents: [],
         stopSnapshot: {
           version: 3,
           fingerprint: "task_watchdog_stop:unavailable",

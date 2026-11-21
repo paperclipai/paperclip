@@ -189,6 +189,7 @@ export type TaskWatchdogClassifierResult =
     includedIssueIds: string[];
     stopFingerprint: string;
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
+    stoppedParents: TaskWatchdogStoppedLeaf[];
     stopSnapshot: TaskWatchdogStopSnapshot;
     pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
   }
@@ -198,6 +199,7 @@ export type TaskWatchdogClassifierResult =
     includedIssueIds: string[];
     stopFingerprint: string;
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
+    stoppedParents: TaskWatchdogStoppedLeaf[];
     stopSnapshot: TaskWatchdogStopSnapshot;
     pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
   };
@@ -538,9 +540,10 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     .filter((issue) => !hasIncludedChildren(issue))
     .map(projectStoppedIssue);
   const materialLeaves = leaves.map(materialLeaf);
-  const materialParents = nonTerminalIssues
+  const parents = nonTerminalIssues
     .filter(hasIncludedChildren)
-    .map((issue) => materialLeaf(projectStoppedIssue(issue)));
+    .map(projectStoppedIssue);
+  const materialParents = parents.map(materialLeaf);
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
     watchedIssueId: input.watchdog.issueId,
@@ -566,6 +569,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       includedIssueIds: includedIds,
       stopFingerprint,
       stoppedLeaves: leaves,
+      stoppedParents: parents,
       stopSnapshot: currentStopSnapshot,
       pendingInteractionsByIssueId,
     };
@@ -577,6 +581,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     includedIssueIds: includedIds,
     stopFingerprint,
     stoppedLeaves: leaves,
+    stoppedParents: parents,
     stopSnapshot: currentStopSnapshot,
     pendingInteractionsByIssueId,
   };
@@ -660,11 +665,12 @@ function buildStoppedFingerprintComment(input: {
   sourceIssue: Pick<IssueRow, "identifier" | "id">;
   stopFingerprint: string;
   stoppedLeaves: TaskWatchdogStoppedLeaf[];
+  stoppedParents: TaskWatchdogStoppedLeaf[];
   pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
   resumed: boolean;
 }) {
   const shortId = (id: string) => id.length > 8 ? `${id.slice(0, 8)}…` : id;
-  const leafLines = input.stoppedLeaves.slice(0, 12).map((leaf) => {
+  const issueLine = (leaf: TaskWatchdogStoppedLeaf) => {
     const interactionKinds = new Map(
       (input.pendingInteractionsByIssueId[leaf.issueId] ?? []).map((wait) => [wait.id, wait.kind]),
     );
@@ -673,9 +679,14 @@ function buildStoppedFingerprintComment(input: {
       ...leaf.pendingApprovalIds.map((id) => `approval ${shortId(id)}`),
     ];
     return `- ${leaf.identifier ?? leaf.issueId}: ${leaf.status}${waits.length > 0 ? ` (pending ${waits.join(", ")})` : ""}`;
-  });
+  };
+  const leafLines = input.stoppedLeaves.slice(0, 12).map(issueLine);
   const more = input.stoppedLeaves.length > leafLines.length
     ? `\n- ...and ${input.stoppedLeaves.length - leafLines.length} more stopped leaves`
+    : "";
+  const parentLines = input.stoppedParents.slice(0, 12).map(issueLine);
+  const moreParents = input.stoppedParents.length > parentLines.length
+    ? `\n- ...and ${input.stoppedParents.length - parentLines.length} more stopped parents`
     : "";
   return [
     input.resumed ? "Task watchdog resumed for stopped subtree." : "Task watchdog started for stopped subtree.",
@@ -686,6 +697,7 @@ function buildStoppedFingerprintComment(input: {
     "Stopped leaves:",
     ...(leafLines.length > 0 ? leafLines : ["- No leaf issues found."]),
     more,
+    ...(parentLines.length > 0 ? ["", "Stopped parents:", ...parentLines, moreParents] : []),
   ].filter((line) => line !== "").join("\n");
 }
 
@@ -738,12 +750,21 @@ function watchdogWakeContext(input: {
       // Same contract: the mandate's "Terminal / stopped leaves to verify"
       // section reads `terminalLeafSummaries` here, keyed on `id`, not the
       // top-level `stoppedLeaves` array keyed on `issueId`.
-      terminalLeafSummaries: input.classification.stoppedLeaves.map((leaf) => ({
-        id: leaf.issueId,
-        identifier: leaf.identifier,
-        title: leaf.title,
-        status: leaf.status,
-      })),
+      terminalLeafSummaries: [
+        ...input.classification.stoppedParents.map((parent) => ({
+          id: parent.issueId,
+          identifier: parent.identifier,
+          title: parent.title,
+          status: parent.status,
+          role: "parent",
+        })),
+        ...input.classification.stoppedLeaves.map((leaf) => ({
+          id: leaf.issueId,
+          identifier: leaf.identifier,
+          title: leaf.title,
+          status: leaf.status,
+        })),
+      ],
       pendingInteractions: input.classification.pendingInteractionsByIssueId,
       pendingApprovals: Object.fromEntries(Object.entries(input.classification.stopSnapshot.waitsByIssueId)
         .filter(([, waits]) => waits.pendingApprovalIds.length > 0)
@@ -780,6 +801,7 @@ function watchdogWakeContext(input: {
     watchedIssueIdentifier: input.sourceIssue.identifier,
     stopFingerprint: input.classification.stopFingerprint,
     stoppedLeaves: input.classification.stoppedLeaves,
+    stoppedParents: input.classification.stoppedParents,
     customInstructions: input.watchdog.instructions,
     resumeIntent: true,
     followUpRequested: true,
@@ -1447,6 +1469,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           sourceIssue: input.sourceIssue,
           stopFingerprint: input.classification.stopFingerprint,
           stoppedLeaves: input.classification.stoppedLeaves,
+          stoppedParents: input.classification.stoppedParents,
           pendingInteractionsByIssueId: input.classification.pendingInteractionsByIssueId,
           resumed: true,
         }),
@@ -1498,6 +1521,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         sourceIssue: input.sourceIssue,
         stopFingerprint: input.classification.stopFingerprint,
         stoppedLeaves: input.classification.stoppedLeaves,
+        stoppedParents: input.classification.stoppedParents,
         pendingInteractionsByIssueId: input.classification.pendingInteractionsByIssueId,
         resumed: false,
       }),
@@ -1624,6 +1648,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         stopFingerprint: classification.stopFingerprint,
         stopSnapshot: classification.stopSnapshot,
         stoppedLeaves: classification.stoppedLeaves,
+        stoppedParents: classification.stoppedParents,
       },
     });
 

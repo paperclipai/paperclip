@@ -473,6 +473,11 @@ describe("task watchdog stop state of non-terminal parents (upstream #15778)", (
     if (after.state !== "stopped") return;
     expect(after.stopSnapshot.materialLeaves).toEqual(reviewed.stopSnapshot.materialLeaves);
     expect(after.stopFingerprint).not.toBe(reviewed.stopFingerprint);
+    expect(after.stoppedLeaves.map((leaf) => leaf.issueId)).toEqual([leafId]);
+    expect(after.stoppedParents).toEqual([
+      expect.objectContaining({ issueId: intermediateId, identifier: "PAP-2", status: "in_progress" }),
+      expect.objectContaining({ issueId: sourceId, status: "todo" }),
+    ]);
   });
 
   it.each([
