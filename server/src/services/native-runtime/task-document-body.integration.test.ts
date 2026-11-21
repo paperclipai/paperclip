@@ -62,6 +62,28 @@ it.each(["write_document", "write_task_document", "rest"] as const)(
   }, 30_000,
 );
 
+it("writes a large document revision on another task without changing its Markdown", async () => {
+  const fixture = await server.fixture({ disableWakeOnDemand: true });
+  const key = "large-design";
+  const taskId = fixture.blockerId;
+  const initial = await fixture.authority.execute({ tool: "write_task_document", callId: randomUUID(), arguments: {
+    taskId, key, title: "Technical design", body: "Previous version", baseRevisionId: null,
+  } });
+  expect(initial).toMatchObject({ ok: true, status: 201 });
+
+  const service = documentService(server.db);
+  const previous = await service.getIssueDocumentByKey(taskId, key);
+  const body = "# Technical design\n\n" + "A testable requirement with an example.  \n".repeat(9_100);
+  expect(Buffer.byteLength(body)).toBeGreaterThan(361_000);
+  const call = { tool: "write_task_document", callId: randomUUID(), arguments: {
+    taskId, key, title: "Technical design", body, baseRevisionId: previous!.latestRevisionId,
+  } };
+  await expect(fixture.authority.execute(call)).resolves.toMatchObject({ ok: true, status: 200 });
+  expect(await service.getIssueDocumentByKey(taskId, key)).toMatchObject({
+    body, latestRevisionNumber: 2,
+  });
+}, 30_000);
+
 it("retains required body validation for write_document", async () => {
   const fixture = await server.fixture({ disableWakeOnDemand: true });
   for (const body of [undefined, null, 42, "", " \n\t"]) {
