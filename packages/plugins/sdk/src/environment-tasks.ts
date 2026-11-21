@@ -308,7 +308,7 @@ export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOpera
   const rejectedSubmit = operation.kind === "submit" && result.kind === "admission_rejected";
   if (result.taskId !== taskId || (result.kind !== expected && !rejectedSubmit)) throw new Error("Invalid plugin-provided Runner execution response");
   if (operation.kind === "resume" && result.kind === "resume" && (operation.runner
-    ? result.outcome === "resumed" && (!result.runner || !result.archivedState) : result.archivedState !== undefined)) {
+    ? result.outcome === "resumed" && !result.runner : result.archivedState !== undefined)) {
     throw new Error("Invalid plugin-provided Runner execution response");
   }
   return result;
