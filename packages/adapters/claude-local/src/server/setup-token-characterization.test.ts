@@ -54,7 +54,7 @@ try:
                 break
             acc += data
             os.write(1, data)
-            if b"Paste code here if prompted" in acc:
+            if b"prompted" in acc:
                 break
 finally:
     try:
