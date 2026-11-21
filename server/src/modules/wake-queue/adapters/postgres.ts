@@ -948,7 +948,7 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
   }
   if (!existing.length) {
     await notifyQueuedRunDispatch(tx, { companyId: issue.companyId });
-    await tx
+    const [settledCoordinator] = await tx
       .update(nativeRunFinalizations)
       .set({
         phase: "terminal_failure",
@@ -965,7 +965,16 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
           eq(nativeRunFinalizations.runId, run.id),
           isNull(nativeRunFinalizations.resultId),
         ),
-      );
+      )
+      .returning({ runId: nativeRunFinalizations.runId });
+    if (settledCoordinator) {
+      // Every other path that moves a coordinator to a terminal phase mirrors
+      // it onto the run row; a claim settled here must not read as observed.
+      await tx
+        .update(heartbeatRuns)
+        .set({ nativePhase: "terminal_failure", nativePhaseUpdatedAt: now, updatedAt: now })
+        .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, run.id)));
+    }
     await issueRecoveryActionService(tx).upsertSourceScoped({
       companyId: issue.companyId,
       sourceIssueId: issue.id,
