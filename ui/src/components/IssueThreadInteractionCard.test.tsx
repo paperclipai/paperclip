@@ -12,6 +12,7 @@ import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
   pendingAskUserQuestionsInteraction,
+  answeredAskUserQuestionsInteraction,
   pendingAskUserQuestionsWithFreeTextOption,
   commentExpiredAskUserQuestionsInteraction,
   commentExpiredRequestConfirmationInteraction,
@@ -180,6 +181,107 @@ describe("IssueThreadInteractionCard", () => {
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
+
+  const markdownPrompt = "Sign in to **Example Mail** first.\n\nLink: [Open the sign-in page](https://example.com/sign-in)";
+  const markdownHelpText = "See the [setup guide](https://example.com/guide) for **details**.";
+
+  function expectRenderedMarkdown(host: HTMLDivElement) {
+    expect(host.textContent).not.toContain("**");
+    expect(host.textContent).not.toContain("](https://");
+    expect(host.querySelector("strong")?.textContent).toBe("Example Mail");
+    const signIn = Array.from(host.querySelectorAll("a")).find((link) => link.textContent === "Open the sign-in page");
+    expect(signIn?.getAttribute("href")).toBe("https://example.com/sign-in");
+    const guide = Array.from(host.querySelectorAll("a")).find((link) => link.textContent === "setup guide");
+    expect(guide?.getAttribute("href")).toBe("https://example.com/guide");
+  }
+
+  it.each(["default", "coordinator-decision"] as const)("renders markdown in a pending question prompt and help text (%s)", (presentationVariant) => {
+    const host = renderCard({
+      presentationVariant,
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        payload: {
+          ...pendingAskUserQuestionsInteraction.payload,
+          questions: [{
+            id: "sign-in",
+            prompt: markdownPrompt,
+            helpText: markdownHelpText,
+            required: true,
+            selectionMode: "single" as const,
+            options: [{ id: "done", label: "I signed in" }],
+          }],
+        },
+      },
+    });
+    expectRenderedMarkdown(host);
+  });
+
+  it.each(["default", "coordinator-decision"] as const)("renders markdown in a pending question card's note (%s)", (presentationVariant) => {
+    const host = renderCard({
+      presentationVariant,
+      interaction: { ...pendingAskUserQuestionsInteraction, summary: "Read the [setup guide](https://example.com/guide) **before** you answer." },
+    });
+    expect(host.textContent).not.toContain("**");
+    expect(host.querySelector("strong")?.textContent).toBe("before");
+    expect(host.querySelector('a[href="https://example.com/guide"]')?.textContent).toBe("setup guide");
+    expect(host.querySelector("p div")).toBeNull();
+  });
+
+  it("keeps help text and notes at their small, muted size", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        summary: "A **note** for the reader.",
+        payload: {
+          ...pendingAskUserQuestionsInteraction.payload,
+          questions: [{ ...pendingAskUserQuestionsInteraction.payload.questions[0]!, helpText: markdownHelpText }],
+        },
+      },
+    });
+    for (const text of ["details", "note"]) {
+      const markdown = Array.from(host.querySelectorAll("strong")).find((node) => node.textContent === text)?.closest(".paperclip-markdown");
+      expect(markdown?.classList.contains("paperclip-markdown-inherit")).toBe(true);
+      expect(markdown?.classList.contains("paperclip-markdown-on-accent")).toBe(true);
+    }
+  });
+
+  it("renders markdown in a pending canonical question set prompt and help text", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        payload: {
+          ...pendingAskUserQuestionsInteraction.payload,
+          questions: [{ id: "sign-in", prompt: markdownPrompt, required: true, selectionMode: "single" as const, options: [{ id: "done", label: "I signed in" }] }],
+          questionSet: {
+            schema: "paperclip.question_set.v1" as const,
+            questions: [{
+              id: "sign-in",
+              prompt: markdownPrompt,
+              helpText: markdownHelpText,
+              required: true,
+              answerMode: "single_select" as const,
+              options: [{ id: "done", label: "I signed in" }],
+            }],
+          },
+        },
+      },
+    });
+    expectRenderedMarkdown(host);
+  });
+
+  it("renders markdown in an answered question prompt", () => {
+    const host = renderCard({
+      interaction: {
+        ...answeredAskUserQuestionsInteraction,
+        payload: {
+          ...answeredAskUserQuestionsInteraction.payload,
+          questions: answeredAskUserQuestionsInteraction.payload.questions.map((question, index) =>
+            index === 0 ? { ...question, prompt: `${markdownPrompt}\n\n${markdownHelpText}` } : question),
+        },
+      },
+    });
+    expectRenderedMarkdown(host);
+  });
 
   it("presents canonical drafts and submits only explicitly edited exact text", async () => {
     const submit = vi.fn();

@@ -14,6 +14,7 @@ import type { MentionOption } from "@/components/MarkdownEditor";
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
 import { NeedsYouPanel } from "@/components/coordinator/NeedsYouCardKit";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { SecondaryMarkdownText } from "@/components/PromptText";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -223,9 +224,9 @@ export function QuestionResponseSummary({
                   {question.header}
                 </span>
               ) : null}
-              <span className="block text-sm text-foreground">
-                {question.prompt}
-              </span>
+              <div className="text-sm text-foreground">
+                <MarkdownBody mediaMode="reference" linkIssueReferences={false}>{question.prompt}</MarkdownBody>
+              </div>
             </dt>
             <dd className="mt-0.5 text-foreground">
               {values.length > 0 ? values.join(", ") : "No answer"}
@@ -569,9 +570,9 @@ function QuestionFormForRequest({
           {decision ? <span aria-hidden className="text-muted-foreground"> · {question.required ? "Required" : "Optional"}</span> : null}
         </div>
         {question.helpText ? (
-          <p className="mt-1 text-xs leading-4 text-muted-foreground">
-            {question.helpText}
-          </p>
+          <div className="mt-1 text-xs leading-4 text-muted-foreground">
+            <SecondaryMarkdownText linkIssueReferences={false}>{question.helpText}</SecondaryMarkdownText>
+          </div>
         ) : null}
       </div>
       {question.answerMode === "text" ? (
