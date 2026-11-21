@@ -12,8 +12,7 @@ export function createGrokSessionOpenGuard(options: { rules: string; model: stri
     if (message.method === "session/new") {
       message.params = { ...record(message.params), _meta: { rules: options.rules, modelId: options.model } };
     } else if (message.method === "session/load" || message.method === "session/resume") {
-      const params = record(message.params);
-      message.params = { ...params, _meta: { ...record(params._meta), modelId: options.model } };
+      message.params = { ...record(message.params), _meta: { modelId: options.model } };
     }
   };
 }

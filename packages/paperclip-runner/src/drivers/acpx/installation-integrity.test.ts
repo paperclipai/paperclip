@@ -41,6 +41,7 @@ import {
   type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
+import { GROK_REQUIREMENTS_ENV, grokRequirements } from "./runtime-sandbox.js";
 
 async function withLinuxX64TestPlatform<T>(run: () => Promise<T>): Promise<T> {
   const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
@@ -2341,28 +2342,41 @@ describe("Grok launcher subscription refresh", () => {
     expiry?: number; rawExpiry?: unknown; apiKey?: string; executable?: string;
     refresh?: { status: number | null; signal?: string | null; error?: Error };
     mode?: number; fileError?: string; growingFile?: boolean;
+    requirements?: string; grokHome?: string; writeError?: boolean;
   } = {}) {
     const script = await readFile(new URL("../../providers/grok/launcher.cjs", import.meta.url), "utf8");
+    const written: string[] = [];
     const payload = Buffer.from(JSON.stringify({ account: {
       key: "PRIVATE-CREDENTIAL-SENTINEL", refresh_token: "PRIVATE-REFRESH-SENTINEL",
       expires_at: "rawExpiry" in input ? input.rawExpiry : new Date(input.expiry ?? Date.now() - 60_000).toISOString(),
     } }));
     const fs = {
       constants,
-      openSync: vi.fn(() => { if (input.fileError) throw Object.assign(new Error("PRIVATE-CREDENTIAL-SENTINEL"), { code: input.fileError }); return 42; }),
+      openSync: vi.fn((path: string) => {
+        if (path.endsWith(".tmp-4242")) { if (input.writeError) throw Object.assign(new Error("denied"), { code: "EACCES" }); return 43; }
+        if (input.fileError) throw Object.assign(new Error("PRIVATE-CREDENTIAL-SENTINEL"), { code: input.fileError }); return 42;
+      }),
       fstatSync: vi.fn(() => ({ isFile: () => true, uid: 1000, mode: input.mode ?? 0o600, size: payload.length })),
       readSync: vi.fn((_fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
         if (input.growingFile) { buffer.fill(65, offset, offset + length); return length; }
         return payload.copy(buffer, offset, position, position + length);
       }),
       closeSync: vi.fn(),
+      writeSync: vi.fn((_fd: number, buffer: Buffer, offset: number, length: number) => { written.push(buffer.subarray(offset, offset + length).toString("utf8")); return length; }),
+      fsyncSync: vi.fn(),
+      renameSync: vi.fn(),
+      unlinkSync: vi.fn(() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); }),
     };
     const spawnSync = vi.fn((_file: string, _args: string[], _options: { env: Record<string, string>; stdio: Array<string | number>; timeout: number; killSignal: string }) => input.refresh ?? { status: 0, signal: null });
     const execve = vi.fn();
     const executable = input.executable ?? "/private/verified/grok";
-    return { fs, spawnSync, execve, executable, run: () => runInNewContext(script, {
+    return { fs, spawnSync, execve, executable, written, run: () => runInNewContext(script, {
       Buffer, Date,
-      process: { env: { PAPERCLIP_GROK_VERIFIED_EXECUTABLE: executable, GROK_HOME: "/isolated/grok", ...(input.apiKey ? { XAI_API_KEY: input.apiKey } : {}) }, getuid: () => 1000, execve },
+      process: { env: {
+        PAPERCLIP_GROK_VERIFIED_EXECUTABLE: executable, GROK_HOME: input.grokHome ?? "/isolated/grok",
+        ...(input.apiKey ? { XAI_API_KEY: input.apiKey } : {}),
+        ...(input.requirements === undefined ? {} : { [GROK_REQUIREMENTS_ENV]: input.requirements }),
+      }, pid: 4242, getuid: () => 1000, execve },
       require: (name: string) => name === "node:path" ? { isAbsolute, join } : name === "node:fs" ? fs : name === "node:child_process" ? { spawnSync } : undefined,
     }) };
   }
@@ -2411,5 +2425,36 @@ describe("Grok launcher subscription refresh", () => {
   it.each([{ mode: 0o644 }, { fileError: "ELOOP" }, { growingFile: true }])("rejects unsafe or growing credential files: %j", async input => {
     const test = await fixture(input); expect(test.run).toThrow("Grok subscription credential is invalid");
     expect(test.spawnSync).not.toHaveBeenCalled(); expect(test.execve).not.toHaveBeenCalled();
+  });
+  it("rewrites the permission lock after the refresh consumes it and immediately before native startup", async () => {
+    const lock = grokRequirements(true);
+    const test = await fixture({ requirements: lock }); test.run();
+    expect(test.spawnSync.mock.calls[0]![2].env).toEqual({ GROK_HOME: "/isolated/grok" });
+    expect(test.fs.openSync).toHaveBeenCalledWith("/isolated/grok/requirements.toml.tmp-4242",
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    expect(test.written.join("")).toBe(lock);
+    expect(test.fs.renameSync).toHaveBeenCalledExactlyOnceWith("/isolated/grok/requirements.toml.tmp-4242", "/isolated/grok/requirements.toml");
+    expect(test.execve).toHaveBeenCalledExactlyOnceWith(test.executable, [test.executable, "agent", "--no-leader", "stdio"], { GROK_HOME: "/isolated/grok" });
+    const [refresh, sync, rename, start] = [test.spawnSync, test.fs.fsyncSync, test.fs.renameSync, test.execve].map(mock => mock.mock.invocationCallOrder[0]!);
+    expect(refresh).toBeLessThan(sync!); expect(sync).toBeLessThan(rename!); expect(rename).toBeLessThan(start!);
+  });
+  it("rewrites the permission lock on every launch, without a refresh", async () => {
+    const test = await fixture({ requirements: grokRequirements(false), expiry: Date.now() + 600_000 }); test.run();
+    expect(test.spawnSync).not.toHaveBeenCalled();
+    expect(test.written.join("")).toBe("[ui]\ndisable_bypass_permissions_mode = true\n");
+    expect(test.fs.renameSync.mock.invocationCallOrder[0]).toBeLessThan(test.execve.mock.invocationCallOrder[0]!);
+  });
+  it("writes no lock when the launch does not own the Grok home", async () => {
+    const test = await fixture(); test.run();
+    expect(test.fs.writeSync).not.toHaveBeenCalled(); expect(test.fs.renameSync).not.toHaveBeenCalled(); expect(test.execve).toHaveBeenCalledOnce();
+  });
+  it.each([{ requirements: "" }, { requirements: "x".repeat(64 * 1024 + 1) }, { requirements: grokRequirements(false), grokHome: "relative/grok" }])("rejects an invalid permission lock before any native process: %#", async input => {
+    const test = await fixture(input); expect(test.run).toThrow("Grok permission requirements are invalid");
+    expect(test.spawnSync).not.toHaveBeenCalled(); expect(test.execve).not.toHaveBeenCalled();
+  });
+  it("does not start Grok when the permission lock cannot be written", async () => {
+    const test = await fixture({ requirements: grokRequirements(false), writeError: true });
+    expect(test.run).toThrow("Grok permission requirements could not be written");
+    expect(test.fs.renameSync).not.toHaveBeenCalled(); expect(test.execve).not.toHaveBeenCalled();
   });
 });

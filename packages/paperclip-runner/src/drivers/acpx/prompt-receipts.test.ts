@@ -61,15 +61,15 @@ describe("prompt response receipts", () => {
 });
 
 describe("Grok session open", () => {
-  it("binds the model on every open and the rules on session/new, without needing an effort", () => {
+  it("binds only the model on every open and the rules on session/new, without needing an effort", () => {
     const guard = createGrokSessionOpenGuard({ rules: "Follow the task.", model: "grok-4.7" });
     const create = { method: "session/new", params: { cwd: "/w", _meta: { claudeCode: { options: {} }, systemPrompt: { append: "x" } } } };
     guard("outbound", create);
     expect(create.params).toEqual({ cwd: "/w", _meta: { rules: "Follow the task.", modelId: "grok-4.7" } });
     for (const method of ["session/load", "session/resume"]) {
-      const reopen = { method, params: { sessionId: "s", _meta: { kept: true } } };
+      const reopen = { method, params: { sessionId: "s", _meta: { claudeCode: { options: {} }, yoloMode: true } } };
       guard("outbound", reopen);
-      expect(reopen.params._meta).toEqual({ kept: true, modelId: "grok-4.7" });
+      expect(reopen.params).toEqual({ sessionId: "s", _meta: { modelId: "grok-4.7" } });
     }
     const prompt = { method: "session/prompt", params: { sessionId: "s" } };
     guard("outbound", prompt);
