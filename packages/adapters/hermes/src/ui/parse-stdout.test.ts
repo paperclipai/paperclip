@@ -79,3 +79,69 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
     expect(result).toHaveLength(0);
   });
 });
+
+describe("stream-json output", () => {
+  // The adapter runs with --output-format stream-json, so stdout is one JSON
+  // event per line. These events must become the same transcript entries the
+  // quiet-mode patterns produce; raw JSON must never reach the UI.
+
+  it("turns an assistant text event into an assistant entry", () => {
+    const line = JSON.stringify({ type: "assistant", subtype: "text", text: "Die Antwort." });
+    expect(parseHermesStdoutLine(line, TS)).toEqual([{ kind: "assistant", ts: TS, text: "Die Antwort." }]);
+  });
+
+  it("turns tool_use and tool_result events into a matching pair", () => {
+    const use = parseHermesStdoutLine(
+      JSON.stringify({ type: "tool_use", tool_use_id: "tu_01", name: "terminal", input: { command: "ls" } }),
+      TS,
+    );
+    expect(use).toEqual([
+      { kind: "tool_call", ts: TS, name: "terminal", toolUseId: "tu_01", input: { command: "ls" } },
+    ]);
+    const result = parseHermesStdoutLine(
+      JSON.stringify({ type: "tool_result", tool_use_id: "tu_01", content: "file.txt", is_error: false }),
+      TS,
+    );
+    expect(result).toEqual([
+      { kind: "tool_result", ts: TS, toolUseId: "tu_01", content: "file.txt", isError: false },
+    ]);
+  });
+
+  it("marks erroring tool results", () => {
+    const result = parseHermesStdoutLine(
+      JSON.stringify({ type: "tool_result", tool_use_id: "tu_02", content: "exit 1", is_error: true }),
+      TS,
+    );
+    expect(result[0]).toMatchObject({ kind: "tool_result", isError: true });
+  });
+
+  it("drops init, thinking and result events instead of showing them raw", () => {
+    expect(parseHermesStdoutLine(JSON.stringify({ type: "system", subtype: "init", session_id: "x" }), TS)).toEqual([]);
+    expect(
+      parseHermesStdoutLine(JSON.stringify({ type: "assistant", subtype: "thinking", thinking_delta: "{}" }), TS),
+    ).toEqual([]);
+    expect(
+      parseHermesStdoutLine(JSON.stringify({ type: "result", text: "done", tokens: { input: 1 } }), TS),
+    ).toEqual([]);
+  });
+
+  it("keeps assistant answers that are themselves JSON visible", () => {
+    // A text-mode answer like {"status":"done"} is content, not an event:
+    // it must reach the assistant fallback instead of being dropped.
+    const line = '{"status":"done"}';
+    expect(parseHermesStdoutLine(line, TS)).toEqual([{ kind: "assistant", ts: TS, text: line }]);
+  });
+
+  it("keeps unknown event types visible instead of dropping them", () => {
+    const line = JSON.stringify({ type: "mystery", payload: 1 });
+    expect(parseHermesStdoutLine(line, TS)).toEqual([{ kind: "assistant", ts: TS, text: line }]);
+  });
+
+  it("falls back to quiet-mode parsing for lines that are not JSON", () => {
+    // Older Hermes builds (and the adapter's own [hermes] log lines) are not
+    // JSON and must keep parsing as before.
+    expect(parseHermesStdoutLine("[hermes] Session: abc", TS)).toEqual([
+      { kind: "system", ts: TS, text: "[hermes] Session: abc" },
+    ]);
+  });
+});
