@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { companies, companySkillRepositorySnapshots as snapshots, createDb, skillPackageDeletions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -188,5 +188,84 @@ describe.skipIf(!support.supported)("skill package upload recovery", () => {
     await expect(skillPackageStore(db, storage).prepare(companyId, files)).rejects.toThrow("Old owner disconnected");
     const [saved] = await db.select().from(snapshots).where(eq(snapshots.companyId, companyId));
     expect(saved!.upload).toEqual(replacement);
+  });
+
+  it.each([false, true])("bounds failed-upload cleanup behind a busy pool and rejects late writes: cancellation=%s", async cancelled => {
+    const companyId = await company();
+    const failure = new Error(cancelled ? "Upload cancelled" : "Upload failed");
+    const cancellation = new AbortController();
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const occupied = new Promise<void>(resolve => { entered = resolve; });
+    let holding: Promise<void> | undefined;
+    vi.spyOn(storage, "putFile").mockImplementationOnce(async () => {
+      holding = db.transaction(async tx => {
+        await tx.execute(sql`select 1`);
+        entered();
+        await blocked;
+      });
+      await occupied;
+      if (cancelled) cancellation.abort(failure);
+      throw failure;
+    });
+    const preparing = skillPackageStore(db, storage).prepare(companyId, files, false, cancellation.signal).catch(error => error);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pending: typeof snapshots.$inferSelect | undefined;
+    try {
+      await occupied;
+      [pending] = await otherDb.select().from(snapshots).where(eq(snapshots.companyId, companyId));
+      const result = await Promise.race([preparing, new Promise<Error>(resolve => {
+        timer = setTimeout(() => resolve(new Error("Cleanup held the caller behind the pool")), 3_000);
+      })]);
+      expect(result).toBe(failure);
+    } finally {
+      clearTimeout(timer);
+      release();
+      await holding;
+      await preparing;
+    }
+    await db.execute(sql`select 1`);
+    const [saved] = await db.select().from(snapshots).where(eq(snapshots.companyId, companyId));
+    expect(saved!.upload).toEqual(pending!.upload);
+  });
+
+  it("cancels blocked cleanup SQL so the pool remains usable while the row is locked", async () => {
+    const companyId = await company();
+    const failure = new Error("Upload failed before locked cleanup");
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let holding: Promise<void> | undefined;
+    let pending: typeof snapshots.$inferSelect | undefined;
+    vi.spyOn(storage, "putFile").mockImplementationOnce(async () => {
+      let entered!: () => void;
+      const locked = new Promise<void>(resolve => { entered = resolve; });
+      holding = otherDb.transaction(async tx => {
+        [pending] = await tx.select().from(snapshots).where(eq(snapshots.companyId, companyId)).for("update");
+        entered();
+        await blocked;
+      });
+      await locked;
+      throw failure;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const preparing = skillPackageStore(db, storage).prepare(companyId, files).catch(error => error);
+    try {
+      const checked = (async () => {
+        expect(await preparing).toBe(failure);
+        await db.execute(sql`select 1`);
+        const [saved] = await db.select().from(snapshots).where(eq(snapshots.companyId, companyId));
+        expect(saved!.upload).toEqual(pending!.upload);
+        return true;
+      })();
+      expect(await Promise.race([checked, new Promise<boolean>(resolve => {
+        timer = setTimeout(() => resolve(false), 3_000);
+      })])).toBe(true);
+    } finally {
+      clearTimeout(timer);
+      release();
+      await holding;
+      await preparing;
+    }
   });
 });

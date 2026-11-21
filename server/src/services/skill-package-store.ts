@@ -447,6 +447,24 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
       return result;
     });
   }
+  async function expireFailedUpload(companyId: string, id: string, token: string) {
+    const deadline = performance.now() + 1_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        db.transaction(async tx => {
+          if (performance.now() >= deadline) return;
+          const remainingMs = Math.max(1, Math.floor(deadline - performance.now()));
+          await tx.execute(sql`select set_config('statement_timeout', ${`${remainingMs}ms`}, true)`);
+          if (performance.now() >= deadline) return;
+          await tx.update(snapshots).set({ upload: sql`jsonb_set(${snapshots.upload}, '{expiresAt}', to_jsonb(now()))` })
+            .where(and(scope(companyId, id), sql`${snapshots.storage} is null`, sql`${snapshots.upload}->>'token' = ${token}`));
+        }),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, 1_000); }),
+      ]);
+    } catch {
+    } finally { clearTimeout(timer); }
+  }
   async function prepare(companyId: string, files: CompanySkillVersionFileInventoryEntry[], migrateLegacy = false, cancellation?: AbortSignal, restore?: SkillPackageRestoreRecipe): Promise<string> {
     cancellation?.throwIfAborted();
     const manifest = skillPackageManifest(files);
@@ -526,9 +544,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           await fs.rm(staging, { recursive: true, force: true });
         }
       }, signal).catch(async error => {
-        await db.update(snapshots).set({ upload: sql`jsonb_set(${snapshots.upload}, '{expiresAt}', to_jsonb(now()))` })
-          .where(and(scope(companyId, existing.id), sql`${snapshots.storage} is null`,
-            sql`${snapshots.upload}->>'token' = ${token}`)).catch(() => {});
+        await expireFailedUpload(companyId, existing.id, token);
         throw error;
       });
     });

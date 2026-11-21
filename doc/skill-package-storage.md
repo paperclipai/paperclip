@@ -190,7 +190,9 @@ unchanged warm preparation path.
 
 Uploads use unique attempt keys. An incomplete attempt has a durable claim with a
 ten-minute crash expiry. When an attempt fails or is cancelled, it expires only its
-own unpublished claim so a retry can use fresh keys immediately. If the database is
+own unpublished claim so a retry can use fresh keys immediately. This cleanup has
+a one-second client deadline and a transaction-local statement timeout. Cleanup
+queued behind a busy pool skips its write after that deadline. If the database is
 unavailable, the original crash expiry remains. Concurrent preparation on another
 connection or replica waits for the receipt or an expired claim within its existing
 three-minute request deadline. These reads stop when the request settles or is cancelled;
