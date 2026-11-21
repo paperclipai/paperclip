@@ -83,6 +83,19 @@ export type ProfileConnection = Pick<typeof toolConnections.$inferSelect, "id" |
 export type ProfileEntryMatch = Pick<typeof toolProfileEntries.$inferSelect,
   "selectorType" | "applicationId" | "connectionId" | "catalogEntryId" | "toolName" | "riskLevel">;
 
+export const profileSummaryEntryColumns = {
+  profileId: toolProfileEntries.profileId,
+  selectorType: toolProfileEntries.selectorType,
+  effect: toolProfileEntries.effect,
+  applicationId: toolProfileEntries.applicationId,
+  connectionId: toolProfileEntries.connectionId,
+  catalogEntryId: toolProfileEntries.catalogEntryId,
+  toolName: toolProfileEntries.toolName,
+  riskLevel: toolProfileEntries.riskLevel,
+};
+
+type ProfileSummaryEntry = ProfileEntryMatch & Pick<typeof toolProfileEntries.$inferSelect, "effect">;
+
 export type ProfileCatalogMatch = Pick<typeof toolCatalogEntries.$inferSelect,
   "id" | "applicationId" | "connectionId" | "toolName" | "riskLevel">;
 
@@ -122,9 +135,9 @@ export function profileCatalogMatcher(entries: ProfileEntryMatch[]) {
 }
 
 export function summarizeProfile(input: {
-  profile: typeof toolProfiles.$inferSelect;
-  entries: Array<typeof toolProfileEntries.$inferSelect>;
-  bindings: Array<typeof toolProfileBindings.$inferSelect>;
+  profile: Pick<typeof toolProfiles.$inferSelect, "companyId" | "defaultAction">;
+  entries: ProfileSummaryEntry[];
+  bindings: Pick<typeof toolProfileBindings.$inferSelect, "targetType" | "targetId">[];
   catalog: ProfileCatalogEntry[];
   agentIds: string[];
 }): ToolProfileSummary {
@@ -204,8 +217,8 @@ export function profileCoversCatalogScope(input: {
 }
 
 export function pendingNewToolsForProfile(input: {
-  profile: typeof toolProfiles.$inferSelect;
-  entries: Array<typeof toolProfileEntries.$inferSelect>;
+  profile: Pick<typeof toolProfiles.$inferSelect, "status" | "defaultAction" | "newToolsReviewedAt" | "createdAt">;
+  entries: ProfileSummaryEntry[];
   catalog: ProfileCatalogEntry[];
   applicationsById?: Map<string, ProfileApplication>;
   connectionsById?: Map<string, ProfileConnection>;
