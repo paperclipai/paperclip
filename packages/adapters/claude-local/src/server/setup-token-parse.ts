@@ -442,6 +442,7 @@ export const SETUP_TOKEN_PREFIX = "sk-ant-oat01-";
 // The line that introduces the token. The success screen prints this exact line
 // right before the token block. The token parser binds the token to this anchor.
 export const SETUP_TOKEN_BEFORE_ANCHOR = "Your OAuth token (valid for 1 year):";
+export const SETUP_TOKEN_BEFORE_ANCHOR_RE = /^Your OAuth token \(valid for [^():]{1,40}\):$/;
 
 // The line that follows the token. The success screen prints this exact line
 // right after the token block. The token parser binds the token to this anchor.
@@ -465,10 +466,11 @@ const FULL_TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{20,}$/;
  * null when no line matches. Returns null when more than one line matches, so a
  * duplicate success block fails closed.
  */
-function singleAnchorIndex(lines: string[], anchor: string): number | null {
+function singleAnchorIndex(lines: string[], anchor: string | RegExp): number | null {
   let found: number | null = null;
   for (let i = 0; i < lines.length; i += 1) {
-    if (lines[i].trim() !== anchor) continue;
+    const line = lines[i].trim();
+    if (typeof anchor === "string" ? line !== anchor : !anchor.test(line)) continue;
     if (found !== null) return null;
     found = i;
   }
@@ -507,7 +509,7 @@ export function parseSetupTokenCredential(text: string): string | null {
   const normalized = clean.replace(/\r\n|\r/g, "\n");
   const lines = normalized.split("\n");
 
-  const beforeIndex = singleAnchorIndex(lines, SETUP_TOKEN_BEFORE_ANCHOR);
+  const beforeIndex = singleAnchorIndex(lines, SETUP_TOKEN_BEFORE_ANCHOR_RE);
   const afterIndex = singleAnchorIndex(lines, SETUP_TOKEN_AFTER_ANCHOR);
   if (beforeIndex === null || afterIndex === null) return null;
   if (afterIndex <= beforeIndex) return null;
