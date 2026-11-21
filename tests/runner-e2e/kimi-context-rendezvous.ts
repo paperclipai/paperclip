@@ -45,7 +45,10 @@ function sameStream(event: Row, pending: KimiContextPending) {
 }
 function declaredReadOnlyContext() {
   requireProof(getTaskContextAction.canonical.operationId === "get_task_context" && getTaskContextAction.canonical.sideEffectClass === "read"
-    && canonicalJson(getTaskContextAction.live.descriptor.inputSchema) === canonicalJson({ type: "object", properties: {}, required: [], additionalProperties: false }));
+    && optionalOnlyObjectSchema(rec(getTaskContextAction.live.descriptor.inputSchema)));
+}
+function optionalOnlyObjectSchema(schema: Row): boolean {
+  return schema.type === "object" && schema.additionalProperties === false && Array.isArray(schema.required) && schema.required.length === 0;
 }
 export function kimiContextRendezvousPrompt(): string {
   return "Call the already configured Paperclip get_task_context tool exactly once with {}. Wait for the operator's one Allow once decision. Its returned activeTask.description will contain the complete task continuation. Perform no native read, shell, write, search, discovery, semantic mutation, or completion before receiving that context. After reading the returned description, perform only that supplied native action.";

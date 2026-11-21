@@ -50,7 +50,7 @@ export const getTaskContextAction = {
       "operationId": "get_task_context",
       "version": 1,
       "title": "Get active task context",
-      "description": "Read the active task and actor, including the exact approved Markdown revision when this issue has an accepted plan.",
+      "description": "Read the active task and exact approved plan revision. Use view=full for omitted details as bounded JSON text pages. Concatenate pages only while contextDigest matches.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -61,7 +61,11 @@ export const getTaskContextAction = {
       ],
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "view": { "type": "string", "enum": ["full"] },
+          "offset": { "type": "integer", "minimum": 0 },
+          "contextDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        },
         "required": [],
         "additionalProperties": false
       },

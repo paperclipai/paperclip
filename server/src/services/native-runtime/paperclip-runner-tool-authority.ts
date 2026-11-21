@@ -1,6 +1,7 @@
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
 import { authorizationDeniedDetails } from "../authorization.js";
 import { budgetServiceInTransaction } from "../budgets.js";
+import { fitNativeTaskContext, nativeChildTaskContext, nativeTaskContextPage } from "./native-task-context.js";
 import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
 import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
@@ -1008,11 +1009,14 @@ export class PaperclipRunnerToolAuthority {
         return apiToolResult(await this.#withWorkspacePageHref(await this.#callApi(call.callId, call.arguments)));
       }
       case "get_task_context": {
-        if (this.#apiScope(context).kind === "skill_test") return {
+        if (this.#apiScope(context).kind === "skill_test") {
+          const taskContext = {
           company: { id: this.binding.companyId }, actor: redactedActor(context.actor),
           activeTask: redactedTask(context.issue), childTasks: [], childReviewOutcomes: [],
           run: { id: context.run.id, status: context.run.status, invocationSource: context.run.invocationSource },
-        };
+          };
+          return input.view === "full" ? nativeTaskContextPage(taskContext, input) : fitNativeTaskContext(taskContext);
+        }
         const monitorCheckAt = !this.binding.nativeReview && context.issue.workMode === "standard" &&
           context.issue.executionRunId === this.binding.runId
           ? eligibleIssueMonitorWait(context.issue, this.binding.agentId) : null;
@@ -1031,7 +1035,8 @@ export class PaperclipRunnerToolAuthority {
         await recordChildTaskRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
           runId: this.binding.runId, parentIssueId: this.binding.issueId, children: visibleChildTasks.slice(0, 100) }).catch(error =>
           logger.warn({ err: error, runId: this.binding.runId }, "could not record the child tasks a run read"));
-        return {
+        const children = nativeChildTaskContext(visibleChildTasks.map(redactedTask));
+        const taskContext = {
           company: { id: this.binding.companyId },
           actor: redactedActor(context.actor),
           taskQuestionContext: await readTaskQuestionContext(this.db, {
@@ -1047,9 +1052,9 @@ export class PaperclipRunnerToolAuthority {
                 runId: this.binding.runId, workspaceId: context.issue.executionWorkspaceId })
               ?? await readPublishedGitHubReviewCompletionContinuation({ db: this.db, binding: this.binding })
             : null,
-          childTasks: visibleChildTasks.slice(0, 100).map(redactedTask),
-          childTasksTruncated: childTasks.length > 100,
-          delegationGuidance: "Reuse existing child tasks for delegated work. Inspect a completed child's comments and documents before creating another task for the same deliverable. Use search_tasks if the child task list is truncated.",
+          childTasks: input.view === "full" ? visibleChildTasks.slice(0, 100).map(redactedTask) : children.tasks,
+          childTasksTruncated: (input.view !== "full" && children.truncated) || childTasks.length > 100,
+          delegationGuidance: "Reuse existing child tasks for delegated work. Inspect a completed child's comments and documents before creating another task for the same deliverable. Child titles and descriptions can be excerpts, marked with titleTruncated or descriptionTruncated. Use get_task_context with view=full to read the complete authorized context in pages, including child requirements and exact approved plan revisions. The child list contains at most 100 tasks; do not infer that omitted tasks do not exist.",
           run: {
             id: this.binding.runId,
             status: context.run.status,
@@ -1066,6 +1071,7 @@ export class PaperclipRunnerToolAuthority {
             }))?.interaction,
           } : {}),
         };
+        return input.view === "full" ? nativeTaskContextPage(taskContext, input) : fitNativeTaskContext(taskContext);
       }
       case "get_task_history": {
         const readerSourceTrust = await resolveActorSourceTrustForIssue({ db: this.db, issue: context.issue,
