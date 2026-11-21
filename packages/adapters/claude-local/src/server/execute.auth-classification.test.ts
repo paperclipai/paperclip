@@ -379,7 +379,6 @@ function detectorInput(c: Case) {
     parsed: parsedFor(c.stdout),
     stdout: c.stdout,
     stderr: c.stderr ?? "",
-    ...(c.cleanup ? { terminalResultCleanup: CLEANUP } : {}),
   };
 }
 
@@ -387,17 +386,17 @@ describe("claude_local auth classification detectors", () => {
   for (const c of cases) {
     if (c.auth !== undefined) {
       it(`${c.id} detectClaudeLoginRequired: ${c.title}`, () => {
-        expect(detectClaudeLoginRequired(detectorInput(c) as never).requiresLogin).toBe(c.auth);
+        expect(detectClaudeLoginRequired(detectorInput(c)).requiresLogin).toBe(c.auth);
       });
     }
     if (c.transient !== undefined) {
       it(`${c.id} isClaudeTransientUpstreamError: ${c.title}`, () => {
-        expect(isClaudeTransientUpstreamError(detectorInput(c) as never)).toBe(c.transient);
+        expect(isClaudeTransientUpstreamError(detectorInput(c))).toBe(c.transient);
       });
     }
     if (c.quota !== undefined) {
       it(`${c.id} isClaudeProviderQuotaError: ${c.title}`, () => {
-        expect(isClaudeProviderQuotaError(detectorInput(c) as never)).toBe(c.quota);
+        expect(isClaudeProviderQuotaError(detectorInput(c))).toBe(c.quota);
       });
     }
   }
