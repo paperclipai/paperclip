@@ -154,3 +154,11 @@ test("Hermes rejects a live symlink owned by another operational skill", async (
     await fs.rm(home, { recursive: true, force: true });
   }
 });
+
+test("Hermes local session codec keeps the session's launch reasoning level", () => {
+  const codec = createHermesLocalServerAdapter().sessionCodec!;
+  expect(codec.deserialize({ sessionId: "s1", reasoning: "high" })).toEqual({ sessionId: "s1", reasoning: "high" });
+  expect(codec.deserialize({ session_id: "s1" })).toEqual({ sessionId: "s1" });
+  expect(codec.serialize({ sessionId: "s1", reasoning: "low" })).toEqual({ sessionId: "s1", reasoning: "low" });
+  expect(codec.serialize({ sessionId: "s1", reasoning: " " })).toEqual({ sessionId: "s1" });
+});

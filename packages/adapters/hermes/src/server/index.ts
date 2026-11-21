@@ -22,7 +22,9 @@ function readNonEmptyString(value: unknown): string | null {
  * Session codec for structured validation and migration of session parameters.
  *
  * Hermes Agent uses a single `sessionId` for cross-heartbeat session continuity
- * via the `--resume` CLI flag. The codec validates and normalizes this field.
+ * via the `--resume` CLI flag. The codec validates and normalizes this field,
+ * plus the optional `reasoning` level the session was launched with (Hermes
+ * refuses to resume a session with a different `--reasoning`).
  */
 export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
@@ -32,7 +34,8 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(record.sessionId) ??
       readNonEmptyString(record.session_id);
     if (!sessionId) return null;
-    return { sessionId };
+    const reasoning = readNonEmptyString(record.reasoning);
+    return reasoning ? { sessionId, reasoning } : { sessionId };
   },
   serialize(params: Record<string, unknown> | null) {
     if (!params) return null;
@@ -40,7 +43,8 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(params.sessionId) ??
       readNonEmptyString(params.session_id);
     if (!sessionId) return null;
-    return { sessionId };
+    const reasoning = readNonEmptyString(params.reasoning);
+    return reasoning ? { sessionId, reasoning } : { sessionId };
   },
   getDisplayId(params: Record<string, unknown> | null) {
     if (!params) return null;

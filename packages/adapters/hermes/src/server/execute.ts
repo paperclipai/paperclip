@@ -38,6 +38,7 @@ import {
   selectPaperclipPromptSections,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
+  hydrateFreshSessionHandoff,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -46,6 +47,7 @@ import {
   DEFAULT_GRACE_SEC,
   DEFAULT_MODEL,
   VALID_PROVIDERS,
+  VALID_REASONING_EFFORTS,
 } from "../shared/constants.js";
 
 import {
@@ -71,6 +73,23 @@ function cfgStringArray(v: unknown): string[] | undefined {
   return Array.isArray(v) && v.every((i) => typeof i === "string")
     ? (v as string[])
     : undefined;
+}
+function splitLegacyReasoningEffort(extraArgs: string[] | undefined): { args: string[] | undefined; effort: string | undefined } {
+  if (!extraArgs) return { args: undefined, effort: undefined };
+  const args: string[] = [];
+  let effort: string | undefined;
+  for (let i = 0; i < extraArgs.length; i++) {
+    const arg = extraArgs[i];
+    if (arg === "--reasoning-effort") {
+      effort = extraArgs[i + 1];
+      i++;
+    } else if (arg.startsWith("--reasoning-effort=")) {
+      effort = arg.slice("--reasoning-effort=".length);
+    } else {
+      args.push(arg);
+    }
+  }
+  return { args, effort };
 }
 function cfgEnvString(v: unknown): string | undefined {
   if (typeof v === "string" && v.length > 0) return v;
@@ -354,13 +373,15 @@ export async function execute(
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
-  const extraArgs = cfgStringArray(config.extraArgs);
+  const { args: extraArgs, effort: legacyEffort } = splitLegacyReasoningEffort(cfgStringArray(config.extraArgs));
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
-  const prevSessionId = cfgString(
-    (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
-  );
+  const prevSessionParams = ctx.runtime?.sessionParams as Record<string, unknown> | null | undefined;
+  const prevSessionId = cfgString(prevSessionParams?.sessionId);
+  // The --reasoning level the saved session was launched with. Sessions saved
+  // before this field existed were launched without --reasoning.
+  const prevSessionReasoning = cfgString(prevSessionParams?.reasoning);
 
   // The server adds this runtime inventory at the run boundary. Requiring the
   // marker avoids touching a developer's real Hermes home in direct unit or
@@ -449,7 +470,31 @@ export async function execute(
     }
   }
 
-  const sessionId = persistSession ? prevSessionId : undefined;
+  // Hermes keeps the --reasoning level a session was launched with and refuses
+  // `--resume` with a different one ("--reasoning differs from this session's
+  // launch"). Resolve the level first so a mismatched session is not resumed.
+  const effort = (cfgString(config.effort) ?? legacyEffort)?.trim().toLowerCase();
+  const explicitReasoningArg = extraArgs?.some((arg) => arg === "--reasoning" || arg.startsWith("--reasoning="));
+  let launchReasoning: string | undefined;
+  if (effort && !explicitReasoningArg) {
+    if ((VALID_REASONING_EFFORTS as readonly string[]).includes(effort)) {
+      launchReasoning = effort;
+    } else {
+      await ctx.onLog("stderr", `[hermes] Ignoring unsupported thinking effort "${effort}".\n`);
+    }
+  }
+
+  let sessionId = persistSession ? prevSessionId : undefined;
+  if (sessionId && launchReasoning && launchReasoning !== prevSessionReasoning) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Starting a new session: thinking effort "${launchReasoning}" differs from the saved session's launch setting (${prevSessionReasoning ?? "none"}), and Hermes cannot resume a session with a different --reasoning.\n`,
+    );
+    sessionId = undefined;
+  }
+  // The server loads the fresh-session handoff only when it has no saved
+  // session. Load it here when this run starts a new Hermes session anyway.
+  await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(sessionId) });
   const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
@@ -475,6 +520,8 @@ export async function execute(
   if (maxTurns && maxTurns > 0) {
     args.push("--max-turns", String(maxTurns));
   }
+
+  if (launchReasoning) args.push("--reasoning", launchReasoning);
 
   if (worktreeMode) args.push("-w");
   if (checkpoints) args.push("--checkpoints");
@@ -640,7 +687,12 @@ export async function execute(
 
   // Store session ID for next run
   if (persistSession && parsed.sessionId) {
-    executionResult.sessionParams = { sessionId: parsed.sessionId };
+    // A resumed session keeps its launch level; a new one gets this run's level.
+    const sessionReasoning = sessionId ? prevSessionReasoning : launchReasoning;
+    executionResult.sessionParams = {
+      sessionId: parsed.sessionId,
+      ...(sessionReasoning ? { reasoning: sessionReasoning } : {}),
+    };
     executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
   }
 
