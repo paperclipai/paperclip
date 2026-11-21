@@ -122,6 +122,11 @@ export function useLiveRunTranscripts({
     [runs],
   );
   const normalizedRuns = useMemo(() => runs.map((run) => ({ ...run })), [runsKey]);
+  // Ref mirror of the runs list so appendChunks (called from live-event
+  // handlers that may close over an older render) resolves the run's
+  // adapter fresh at merge time.
+  const runsByIdRef = useRef(new Map<string, RunTranscriptSource>());
+  runsByIdRef.current = new Map(normalizedRuns.map((run) => [run.id, run]));
   const [chunksByRun, setChunksByRun] = useState<Map<string, RunLogChunk[]>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(new Set());
   const [errorsByRun, setErrorsByRun] = useState<ReadonlyMap<string, Error>>(new Map());
@@ -239,6 +244,15 @@ export function useLiveRunTranscripts({
           trimmedSeqFloorByRun: trimmedSeqFloorByRunRef.current,
         },
         retentionBudget,
+        {
+          // The run's adapter classifies its own streaming deltas so they
+          // are exempt from dedup; shared code only knows the generic
+          // provider-agnostic text record.
+          isStreamingTextDelta: (() => {
+            const run = runsByIdRef.current.get(runId);
+            return run ? getUIAdapter(run.adapterType).isStreamingTextDelta : undefined;
+          })(),
+        },
       );
       if (!changed) return prev;
       const next = new Map(prev);

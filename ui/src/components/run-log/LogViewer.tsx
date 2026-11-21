@@ -87,7 +87,12 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   function appendLogLines(incoming: RunLogChunk[]) {
     setLogLines((previous) => mergeRunLogChunks(run.id, previous, incoming.map((line) => ({
       ...line, dedupeKey: `log:${run.id}:${line.ts}:${line.stream}:${line.chunk}`,
-    })), logMergeRefs.current, isLive ? MAX_LIVE_LOG_LINES : Number.POSITIVE_INFINITY).chunks);
+    })), logMergeRefs.current, isLive ? MAX_LIVE_LOG_LINES : Number.POSITIVE_INFINITY, {
+      // The run's adapter classifies its own streaming deltas so they are
+      // exempt from dedup; shared code only knows the generic
+      // provider-agnostic text record.
+      isStreamingTextDelta: getUIAdapter(adapterType).isStreamingTextDelta,
+    }).chunks);
   }
 
   function appendLogContent(content: string, finalize = false) {

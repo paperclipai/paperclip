@@ -64,6 +64,14 @@ export interface AdapterConfigFieldsProps {
 export interface UIAdapterModule extends TranscriptParserSource {
   type: string;
   label: string;
+  /**
+   * Optional provider-specific streaming-text-delta classifier for raw log
+   * chunks. Shared log merging uses it (when present) to exempt the
+   * adapter's deltas from dedup; without it only the provider-agnostic
+   * text record is exempt. Provider wire formats stay with the owning
+   * adapter — shared code never parses them.
+   */
+  isStreamingTextDelta?: (chunk: string) => boolean;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues, context?: {
     candidateHarnesses?: readonly { agent: "antigravity"; model: string }[];

@@ -903,6 +903,7 @@ describe("AppDefinition catalog", () => {
   });
   it("withholds unverified and reserved providers from the app store without deleting their definitions", () => {
     expect([...APP_STORE_HIDDEN_SLUGS].sort()).toEqual([
+      "antigravity",
       "beehiiv",
       "brex",
       "candid",

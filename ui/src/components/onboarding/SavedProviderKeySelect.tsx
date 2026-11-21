@@ -16,8 +16,15 @@ export function useSavedProviderKeys(
   companyId: string | null,
   envKey: string,
   enabled = true,
+  // The provider whose managed accounts to list. It usually follows from
+  // the environment key, but not always: agy_local reads its key from
+  // GEMINI_API_KEY while its saved accounts are provider "antigravity",
+  // and pi_local reads its key from ANTHROPIC_API_KEY while its saved
+  // accounts are provider "openrouter". Callers pass the provider
+  // separately so the right accounts are found.
+  providerOverride?: AiProvider,
 ) {
-  const provider = ({ ANTHROPIC_API_KEY: "anthropic", OPENAI_API_KEY: "openai", OPENROUTER_API_KEY: "openrouter", XAI_API_KEY: "xai", GEMINI_API_KEY: "google" } as Record<string, AiProvider>)[envKey];
+  const provider = providerOverride ?? ({ ANTHROPIC_API_KEY: "anthropic", OPENAI_API_KEY: "openai", OPENROUTER_API_KEY: "openrouter", XAI_API_KEY: "xai", GEMINI_API_KEY: "google" } as Record<string, AiProvider>)[envKey];
   const managed = useQuery({
     queryKey: ["ai-connections", companyId],
     queryFn: () => aiConnectionsApi.list(companyId!),

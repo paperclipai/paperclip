@@ -46,6 +46,12 @@ const REGISTRY: Record<string, AdapterDefaults> = {
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["pi", "--version"],
   },
+  agy_local: {
+    runtimeImage: "ghcr.io/paperclipai/agent-runtime-agy:v1",
+    envKeys: ["GEMINI_API_KEY", "AGY_API_KEY", "ANTIGRAVITY_API_KEY"],
+    allowFqdns: ["generativelanguage.googleapis.com", "antigravity.google"],
+    probeCommand: ["agy", "--version"],
+  },
 };
 
 export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set(Object.keys(REGISTRY));

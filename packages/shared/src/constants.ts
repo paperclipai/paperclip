@@ -47,6 +47,7 @@ export const AGENT_ADAPTER_TYPES = [
   "kimi_local",
   "opencode_local",
   "pi_local",
+  "agy_local",
   "cursor",
   "openclaw_gateway",
 ] as const;

@@ -43,6 +43,13 @@ it.skipIf(pendingDependabotLock).each(['valid', 'unknown-lock', 'changed-patch',
         const ui = JSON.parse(await readFile(path.resolve(here, '../../ui/package.json'), 'utf8'));
         for (const [name, specifier] of Object.entries(ui.dependencies)) {
           const entry = reviewed.importers.ui.dependencies[name];
+          // A workspace dependency the reviewed lock does not record yet can
+          // only be recorded by the lockfile refresh workflow: a pull request
+          // may not change lock content (see
+          // .github/scripts/lockfile-trust.mjs), so the reviewed lock cannot
+          // fault a PR for adding one. The refresh bot records it after
+          // merge. Registry dependencies are still checked strictly below.
+          if (!entry && String(specifier).startsWith('workspace:')) continue;
           expect(entry.specifier).toBe(specifier);
           if (entry.version.startsWith('link:')) continue;
           expect(reviewed.packages, name).toHaveProperty(`${name}@${entry.version.split('(')[0]}`);

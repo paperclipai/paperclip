@@ -25,11 +25,14 @@ import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import { decideAgyAuthMerge } from "@paperclipai/adapter-agy-local/server";
 import { NativeEnvironmentProbeCleanupError, sanitizeAntigravityCredential } from "../vendor/paperclip-runner/index.js";
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { resolveAgyConversationDir } from "./antigravity-conversation-state.js";
+import { preserveAgyConversationState, restoreAgyConversationState } from "@paperclipai/adapter-agy-local/server";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -66,9 +69,14 @@ export const AI_AUTH_ENV_KEYS = [
   "OPENROUTER_API_KEY",
   "XAI_API_KEY",
   "GROK_API_KEY",
+  "GEMINI_API_KEY",
+  "AGY_API_KEY",
+  "ANTIGRAVITY_API_KEY",
   "CODEX_HOME",
   "GROK_HOME",
   "CLAUDE_CONFIG_DIR",
+  "ANTIGRAVITY_CLI_HOME",
+  "GEMINI_CLI_HOME",
   "OPENCODE_AUTH_JSON",
   "OPENCODE_CONFIG_CONTENT",
   "OPENCODE_CONFIG",
@@ -324,13 +332,27 @@ export async function prepareManagedAiRuntime(
       ...managedAiHomeEnvironment(home),
       ...(input.binding.provider === "github" ? { GH_TOKEN: "", GITHUB_TOKEN: "" } : {}),
     };
+    const agyCliHome = path.join(home, ".gemini", "antigravity-cli");
+    if (input.binding.provider === "antigravity") {
+      await mkdir(agyCliHome, { recursive: true, mode: 0o700 });
+      // The CLI home is fresh per run; restore this account's conversation
+      // state so a saved conversation id can actually resume instead of
+      // falling back to a fresh session.
+      await restoreAgyConversationState(
+        agyCliHome,
+        resolveAgyConversationDir(input.companyId, selection.grant.id, input.agentId),
+      );
+    }
     const capability =
       AI_CONNECTION_CAPABILITIES[input.binding.provider].methods[
         selection.attribution.method
       ]!;
-    const authFile = antigravitySubscription
-      ? path.join(providerHome, "antigravity-acp", "acp_token.json")
-      : path.join(providerHome, "auth.json");
+    const authFile =
+      input.binding.provider === "antigravity"
+        ? path.join(agyCliHome, "antigravity-oauth-token")
+        : antigravitySubscription
+          ? path.join(providerHome, "antigravity-acp", "acp_token.json")
+          : path.join(providerHome, "auth.json");
     if (harness === "codex_local")
       await writeFile(
         path.join(providerHome, "config.toml"),
@@ -339,6 +361,16 @@ export async function prepareManagedAiRuntime(
       );
     if (!routing && subscriptionFile && !antigravitySubscription) await writeFile(authFile, value, { mode: 0o600 });
     else if (!routing && !subscriptionFile) env[capability.envKey] = value;
+    if (
+      input.binding.provider === "antigravity" &&
+      selection.attribution.method === "api_key"
+    ) {
+      await writeFile(
+        path.join(agyCliHome, "settings.json"),
+        JSON.stringify({ modelProvider: "gemini" }, null, 2),
+        { mode: 0o600 },
+      );
+    }
     if (
       !routing && input.binding.provider === "openai" && harness === "codex_local" &&
       selection.attribution.method === "api_key"
@@ -411,6 +443,15 @@ export async function prepareManagedAiRuntime(
     let removalOnly = false;
     let deferredWriteback: { cause: unknown } | undefined;
     const removeHome = async () => {
+      if (home && input.binding.provider === "antigravity") {
+        // Preserve conversation state before the temporary home is deleted;
+        // only the conversation state moves, never the credential in this
+        // same CLI home.
+        await preserveAgyConversationState(
+          agyCliHome,
+          resolveAgyConversationDir(input.companyId, selection.grant.id, input.agentId),
+        );
+      }
       if (home) await rm(home, { recursive: true, force: true });
       homeRemoved = true;
       releaseCredentialHome?.();
@@ -529,9 +570,11 @@ export async function prepareManagedAiRuntime(
                     ? await decideCodexAuthMerge(authFile, destination, {
                         errorLabel: "AI account refresh",
                       })
-                    : await decideGrokAuthMerge(authFile, destination, {
-                        errorLabel: "AI account refresh",
-                      });
+                    : input.binding.provider === "xai"
+                      ? await decideGrokAuthMerge(authFile, destination, {
+                          errorLabel: "AI account refresh",
+                        })
+                      : await decideAgyAuthMerge(authFile, destination);
                 if (decision !== 10) return;
                 await secretService(tx).rotate(
                   ref.secretId,

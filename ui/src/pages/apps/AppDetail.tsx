@@ -362,7 +362,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   const authorization = useAuthorizationWindow();
   const workspaceGate = useGoogleWorkspaceServiceGate();
   const startOAuth = useMutation({
-    mutationFn: (input?: { asAgentId?: string; workspaceServices?: GoogleWorkspaceServiceSelection }) => toolsApi.startOAuth(connectionId, input),
+    mutationFn: (input?: { asAgentId?: string; workspaceServices?: GoogleWorkspaceServiceSelection } | void) => toolsApi.startOAuth(connectionId, input ?? undefined),
     onSuccess: async (start) => {
       try {
         await authorization.open(start);

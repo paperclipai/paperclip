@@ -69,6 +69,12 @@ export const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
   ],
+  agy_local: [
+    { value: "", label: "Default" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ],
 } as const;
 
 export function asRecord(value: unknown): Record<string, unknown> {
@@ -89,6 +95,7 @@ export function thinkingEffortOptionsFor(
 ) {
   if (adapterType === "codex_local") return codexReasoningEffortOptions(model);
   if (adapterType === "opencode_local") return ISSUE_THINKING_EFFORT_OPTIONS.opencode_local;
+  if (adapterType === "agy_local") return ISSUE_THINKING_EFFORT_OPTIONS.agy_local;
   return ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
 }
 
