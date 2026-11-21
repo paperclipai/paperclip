@@ -417,6 +417,27 @@ pnpm install
 pnpm dev
 ```
 
+### Install our customised Windows build
+
+For the FreeLLMAPI-enabled fork, open PowerShell and run the following from the folder where you want the project installed:
+
+```powershell
+irm https://raw.githubusercontent.com/lkrkavin/paperclip/feat/native-freellmapi-provider/install.ps1 -OutFile install-paperclip.ps1
+.\install-paperclip.ps1
+```
+
+The script checks Git, Node.js 24.11+, and pnpm 9.15.4; clones or updates our fork; reuses the local pnpm cache; and skips dependency installation when the dependency manifests have not changed. It then starts the development server. Review the script before running it.
+
+Useful options:
+
+```powershell
+.\install-paperclip.ps1 -NoStart       # install without starting the server
+.\install-paperclip.ps1 -ForceInstall  # force a fresh dependency check/install
+.\install-paperclip.ps1 -SkipUpdate    # use the existing checkout without pulling
+```
+
+By default, the checkout is placed in `$HOME\paperclip`. Start it later with `cd $HOME\paperclip; pnpm dev`.
+
 This starts the UI and API at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
 
 > **Requirements:** Node.js 24.11+, pnpm 9.15+

@@ -43,6 +43,12 @@ const providers = [
   { id: "google", name: "Google", description: "Antigravity sign-in or Gemini API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
   {
+    id: "freellmapi",
+    name: "FreeLLMAPI",
+    description: "FreeLLMAPI local API gateway",
+    advanced: true,
+  },
+  {
     id: "openrouter",
     name: "OpenRouter",
     description: "Models through one API key",
@@ -117,7 +123,7 @@ export function AiProviderSetup({
   const [auth, setAuth] = useState<AiProviderRouting["auth"]>(
     reconnect?.routing?.auth ?? "bearer",
   );
-  const [baseUrl, setBaseUrl] = useState(reconnect?.routing?.baseUrl ?? "");
+  const [baseUrl, setBaseUrl] = useState(reconnect?.routing?.baseUrl ?? (initialProvider === "freellmapi" ? "http://127.0.0.1:31415/v1" : ""));
   const [region, setRegion] = useState(
     reconnect?.routing?.region ?? "us-east-1",
   );
@@ -140,11 +146,13 @@ export function AiProviderSetup({
   });
   const agentsView = useQueryView(agents);
   const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? (provider === "github" ? "GitHub Copilot" : "provider");
-  const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "gateway", "local"].includes(provider ?? "");
+  const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "gateway", "local", "freellmapi"].includes(provider ?? "");
   const nativeProvider: AiProvider =
     provider === "bedrock"
       ? "anthropic"
-      : provider === "gateway" || provider === "local"
+      : provider === "freellmapi"
+        ? "openai"
+        : provider === "gateway" || provider === "local"
         ? protocol === "messages"
           ? "anthropic"
           : "openai"
@@ -152,7 +160,9 @@ export function AiProviderSetup({
   const name =
     reconnect?.name ??
     `${ownership === "personal" ? "My" : "Company"} ${
-      provider === "gateway" && baseUrl
+      provider === "freellmapi"
+        ? label
+        : provider === "gateway" && baseUrl
         ? (() => {
             try {
               return new URL(baseUrl).hostname;
@@ -181,12 +191,12 @@ export function AiProviderSetup({
       const routing =
         reconnect?.routing ??
         aiProviderRoutingSchema.parse({
-          kind: provider,
-          protocol: provider === "bedrock" ? "bedrock" : protocol,
+          kind: provider === "freellmapi" ? "gateway" : provider,
+          protocol: provider === "bedrock" ? "bedrock" : provider === "freellmapi" ? "chat" : protocol,
           auth: provider === "openrouter" ? "bearer" : auth,
           ...(provider === "bedrock"
             ? { region }
-            : provider === "gateway" || provider === "local"
+            : provider === "gateway" || provider === "local" || provider === "freellmapi"
               ? { baseUrl }
               : {}),
           models: models
@@ -236,6 +246,11 @@ export function AiProviderSetup({
         }))}
       onSelect={(id) => {
         setProvider(id as ProviderChoice);
+        if (id === "freellmapi") {
+          setBaseUrl("http://127.0.0.1:31415/v1");
+          setProtocol("chat");
+          setAuth("bearer");
+        }
         setStep("connect");
         setApiKey("");
         setAuth("bearer");
@@ -331,14 +346,16 @@ export function AiProviderSetup({
             save.mutate();
           }}
         >
-          {(provider === "gateway" || provider === "local") && (
+          {(provider === "gateway" || provider === "local" || provider === "freellmapi") && (
             <>
               <label className="block space-y-2 text-xs text-muted-foreground">
                 Provider URL
                 <Input
                   aria-label="Provider URL"
                   placeholder={
-                    provider === "local"
+                    provider === "freellmapi"
+                      ? "http://127.0.0.1:31415/v1"
+                      : provider === "local"
                       ? "http://localhost:11434/v1"
                       : "https://gateway.example.com/v1"
                   }
@@ -347,7 +364,7 @@ export function AiProviderSetup({
                   disabled={Boolean(reconnect)}
                 />
               </label>
-              <label className="block space-y-2 text-xs text-muted-foreground">
+              {provider !== "freellmapi" && <label className="block space-y-2 text-xs text-muted-foreground">
                 API format
                 <Select
                   value={protocol}
@@ -373,7 +390,7 @@ export function AiProviderSetup({
                     </SelectItem>
                   </SelectContent>
                 </Select>
-              </label>
+              </label>}
             </>
           )}
           {provider === "bedrock" && (
