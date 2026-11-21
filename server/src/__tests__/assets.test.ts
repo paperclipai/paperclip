@@ -421,6 +421,15 @@ describe("GET /api/assets/:assetId/content", () => {
     getAssetByIdMock.mockReset();
   });
 
+  it("returns 404 when the asset id does not resolve to an asset", async () => {
+    const storage = createStorageService("text/plain");
+    getAssetByIdMock.mockResolvedValue(null);
+    const res = await requestApp(await createApp(storage), baseUrl => request(baseUrl).get("/api/assets/x/content"));
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Asset not found");
+    expect(storage.getObject).not.toHaveBeenCalled();
+  });
+
   it("reads only the requested storage range for a large asset", async () => {
     const storage = createStorageService("text/plain");
     getAssetByIdMock.mockResolvedValue({ ...createAsset(), contentType: "text/plain", byteSize: 10 * 1024 * 1024 });
