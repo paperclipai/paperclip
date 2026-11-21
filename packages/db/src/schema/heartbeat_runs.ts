@@ -290,6 +290,12 @@ export const heartbeatRuns = pgTable(
     companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
       .concurrently(),
+    // latestRecoveryActionRun looks up the newest run for a recovery action.
+    // Without this index it walks every company run and detoasts each snapshot.
+    companyCtxRecoveryActionCreatedIdx: index("heartbeat_runs_company_ctx_recovery_action_created_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} ->> 'recoveryActionId')`, table.createdAt.desc())
+      .where(sql`${table.contextSnapshot} ? 'recoveryActionId'`)
+      .concurrently(),
     // Match creation provenance precedence, including empty legacy IDs.
     companyOriginIssueIdx: index("heartbeat_runs_company_origin_issue_idx")
       .on(table.companyId, sql`coalesce(
