@@ -361,6 +361,25 @@ describe("parseClaudeCliUsageText", () => {
     ]);
   });
 
+  it("parses a usage panel without a Current session row", () => {
+    const raw = `
+      Settings  Status   Config   Usage   Stats
+      Current week (all models)
+      ██████████████ 28% used
+      Resets Nov 26, 10am (Europe/Budapest)
+    `;
+
+    expect(parseClaudeCliUsageText(raw)).toEqual([
+      {
+        label: "Current week (all models)",
+        usedPercent: 28,
+        resetsAt: null,
+        valueLabel: null,
+        detail: "Resets Nov 26, 10am (Europe/Budapest)",
+      },
+    ]);
+  });
+
   it("throws a useful error when the Claude CLI panel reports a usage load failure", () => {
     expect(() => parseClaudeCliUsageText("Failed to load usage data")).toThrow(
       "Claude CLI could not load usage data. Open the CLI and retry `/usage`.",

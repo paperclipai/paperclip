@@ -67,7 +67,7 @@ function trimToLatestUsagePanel(text: string): string | null {
   let tail = text.slice(settingsIndex);
   const tailLower = tail.toLowerCase();
   if (!tailLower.includes("usage")) return null;
-  if (!tailLower.includes("current session") && !tailLower.includes("loading usage")) return null;
+  if (!tailLower.includes("current session") && !tailLower.includes("current week") && !tailLower.includes("loading usage")) return null;
   const stopMarkers = [
     "status dialog dismissed",
     "checking for updates",
@@ -358,8 +358,8 @@ function usageOutputLooksComplete(text: string): boolean {
   ) {
     return true;
   }
-  return normalized.includes("currentsession")
-    && (normalized.includes("currentweek") || normalized.includes("extrausage"))
+  return (normalized.includes("currentweek")
+    || (normalized.includes("currentsession") && normalized.includes("extrausage")))
     && /[0-9]{1,3}(?:\.[0-9]+)?%/i.test(text);
 }
 
@@ -481,7 +481,7 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
     };
   });
 
-  if (!windows.some((window) => normalizeForLabelSearch(window.label) === "currentsession")) {
+  if (!windows.some((window) => window.usedPercent != null)) {
     throw new Error("Could not parse Claude CLI usage output.");
   }
   return windows;
