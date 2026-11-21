@@ -16586,7 +16586,7 @@ export function issueRoutes(
       });
 
       // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-      void (async () => {
+      const requestWakesSettled = (async () => {
         type WakeupRequest = NonNullable<
           Parameters<typeof heartbeat.wakeup>[1]
         >;
@@ -16972,8 +16972,9 @@ export function issueRoutes(
           }
         }
 
+        const pendingWakeups: Array<Promise<unknown>> = [];
         for (const { agentId, wakeup } of wakeups.values()) {
-          heartbeat
+          pendingWakeups.push(heartbeat
             .wakeup(agentId, wakeup)
             .then((wakeRun) => {
               if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
@@ -17014,10 +17015,17 @@ export function issueRoutes(
                 { err, issueId: issue.id, agentId },
                 "failed to wake agent on issue update",
               ),
-            );
+            ));
         }
-      })();
+        await Promise.allSettled(pendingWakeups);
+      })().catch((err) =>
+        logger.warn(
+          { err, issueId: issue.id },
+          "request wake dispatch failed before task watchdog evaluation",
+        ),
+      );
 
+      await requestWakesSettled;
       await queueTaskWatchdogEvaluation(issue, actor.runId);
       const changes = issueResponse.changes ?? {};
       if (prefersMinimalIssueUpdateResponse(req)) {
@@ -20061,7 +20069,7 @@ export function issueRoutes(
       });
 
       // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-      void (async () => {
+      const requestWakesSettled = (async () => {
         type WakeupRequest = NonNullable<
           Parameters<typeof heartbeat.wakeup>[1]
         >;
@@ -20322,8 +20330,9 @@ export function issueRoutes(
           }
         }
 
+        const pendingWakeups: Array<Promise<unknown>> = [];
         for (const { agentId, wakeup } of wakeups.values()) {
-          heartbeat
+          pendingWakeups.push(heartbeat
             .wakeup(agentId, wakeup)
             .then((wakeRun) => {
               if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
@@ -20364,11 +20373,17 @@ export function issueRoutes(
                 { err, issueId: currentIssue.id, agentId },
                 "failed to wake agent on issue comment",
               ),
-            );
+            ));
         }
-      })();
+        await Promise.allSettled(pendingWakeups);
+      })().catch((err) =>
+        logger.warn(
+          { err, issueId: currentIssue.id },
+          "request wake dispatch failed before task watchdog evaluation",
+        ),
+      );
 
-
+      await requestWakesSettled;
       await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
       res.status(201).json(comment);
     },
