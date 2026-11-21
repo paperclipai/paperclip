@@ -89,6 +89,7 @@ function sessionLimitCategory(failure: AcpxTerminalSessionFailure | undefined): 
  * account) as an AIR `request` failure with this fixed title. The user must
  * choose another model, so it is an unavailable model, not a generic request.
  */
+const CREDIT_EXHAUSTED = /\bout of (?:extra )?credits\b|credit balance exhausted/i;
 const CLAUDE_SELECTED_MODEL_REJECTED =
   /^There's an issue with the selected model \([^()\n]{1,200}\)\. It may not exist or you may not have access to it\./;
 function sessionModelCategory(agent: string, failure: AcpxTerminalSessionFailure | undefined): ProviderFailure["category"] | undefined {
@@ -121,7 +122,8 @@ export function acpxProviderFailure(error: unknown, agent: string, phase: Provid
   const category = (typeof code === "string" ? CATEGORIES.get(code) : undefined)
     ?? (acp?.code === ACP_AUTH_REQUIRED ? "authentication" : undefined)
     ?? sessionLimitCategory(sessionFailure)
-    ?? sessionModelCategory(agent, sessionFailure);
+    ?? sessionModelCategory(agent, sessionFailure)
+    ?? (CREDIT_EXHAUSTED.test(message) ? "quota_exhausted" : undefined);
   return createProviderFailure({ provider: agent === "claude" ? "anthropic" : agent === "codex" ? "openai" : agent,
     phase, message, httpStatus: status, providerCode: code, requestId: data.request_id, category, environment });
 }
