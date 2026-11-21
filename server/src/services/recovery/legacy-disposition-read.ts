@@ -1,5 +1,5 @@
-import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { and, eq, getTableColumns, sql } from "drizzle-orm";
+import { activityLog, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, getTableColumns, gt, sql } from "drizzle-orm";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 
 export async function readLegacyDispositionSource(
@@ -21,4 +21,20 @@ export async function readLegacyDispositionSource(
   const [run] = await db.select({ ...getTableColumns(heartbeatRuns), resultJson: recoveryRunResultColumn })
     .from(heartbeatRuns).where(where).limit(1);
   return { kind: "full" as const, run };
+}
+
+export async function wasIssueReopenedAfterLegacyRun(
+  db: Db,
+  input: { companyId: string; issueId: string; finishedAt: Date | null },
+): Promise<boolean> {
+  if (!input.finishedAt) return false;
+  const [reopen] = await db.select({ id: activityLog.id }).from(activityLog).where(and(
+    eq(activityLog.companyId, input.companyId),
+    eq(activityLog.entityType, "issue"),
+    eq(activityLog.entityId, input.issueId),
+    eq(activityLog.action, "issue.updated"),
+    gt(activityLog.createdAt, input.finishedAt),
+    sql`(${activityLog.details}->>'reopenedFrom' = 'done' or ${activityLog.details}->'changes'->'status'->>'from' = 'done')`,
+  )).limit(1);
+  return Boolean(reopen);
 }
