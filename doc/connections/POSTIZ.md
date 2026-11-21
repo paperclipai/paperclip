@@ -111,7 +111,10 @@ Client ID Metadata Document, a refresh grant, or a revocation endpoint.
 
 Paperclip requests `mcp:read` and `mcp:write`, the two scopes that grant MCP
 access. The identity scopes are not requested: the organization comes from the
-Postiz session, not from a scope. This is recorded as an explicit review in
+Postiz session, not from a scope. Postiz can add `openid` and `email` to the
+granted scope of a client whose HTTPS callback is on a verified host. Paperclip
+records them as unrequested scopes and does not use them. This case was not
+exercised. This is recorded as an explicit review in
 [`tool-method-permission-reviews.json`](./tool-method-permission-reviews.json).
 
 ## Token behavior
@@ -131,15 +134,24 @@ Redirect constraints: `https-or-loopback-http`.
 Postiz is stricter than that value in two ways:
 
 - HTTPS: Postiz accepts an HTTPS callback only when its host is on the Postiz
-  verified-domain list. Paperclip Cloud hosts (`*.paperclip.app`) must be on
-  that list. A self-hosted Paperclip that uses its own HTTPS domain is not on
-  the list: registration fails with `invalid_redirect_uri`, and Paperclip
-  reports `oauth_dynamic_client_registration_failed`. Use the API-key method
-  on such an instance. The capability description on the connect screen says
-  this before sign-in.
+  verified-domain list. Paperclip Cloud hosts (`*.paperclip.app`) are on that
+  list. A self-hosted Paperclip that uses its own HTTPS domain is not on the
+  list: registration fails with `invalid_redirect_uri`, and Paperclip reports
+  `oauth_dynamic_client_registration_failed`. Use the API-key method on such
+  an instance. The capability description on the connect screen says this
+  before sign-in.
 - Loopback: Postiz accepts `localhost`, `127.0.0.1` and `[::1]` only. The
   Paperclip pre-check also passes `*.localhost` and the rest of `127.0.0.0/8`.
   Postiz rejects those hosts at registration.
+
+Registration probes against `https://api.postiz.com/oauth/register` on
+2026-11-22:
+
+| Probed `redirect_uris` value | Result |
+| --- | --- |
+| `http://localhost:3100/api/tools/oauth/callback` | Accepted, and used for the live sign-in |
+| `https://acme.paperclip.app/api/tools/oauth/callback` | Accepted, HTTP 201 |
+| `https://paperclip.example.com/api/tools/oauth/callback` | HTTP 400 `invalid_redirect_uri`: the host is not a verified domain |
 
 ## Administrator setup
 
@@ -320,6 +332,8 @@ Limits of this evidence:
 
 - No post was scheduled, published or deleted, and no media was generated.
   Execution of the destructive tools is unqualified.
-- An HTTPS callback was not exercised. See [Redirect constraints](#redirect-constraints).
+- Registration with a Paperclip Cloud HTTPS callback was probed and accepted.
+  Sign-in, the token exchange and calls from an HTTPS instance were not
+  exercised. See [Redirect constraints](#redirect-constraints).
 - The API-key method still needs connect, discovery, a read and removal with a
   valid organization key.

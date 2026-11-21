@@ -1822,7 +1822,7 @@
       ],
       "reviewedAt": "2026-11-22",
       "liveProof": "2026-11-22, local instance with a loopback callback and a real Postiz organization. Dynamic client registration and browser sign-in connected; the grant holds mcp:read and mcp:write. Discovery returned 26 actions: 11 read, 8 write, 7 destructive. The board Test call for groupList returned in 1.1s and integrationConnectTool created a one-hour connect link; result values omitted. Catalog refresh retained all 26 action versions. An agent from another company got HTTP 403. After removal the call returned tool_not_found. No token appeared in API responses or server logs.",
-      "evidenceLimit": "Board Test calls only; no agent run. No post was scheduled, published or deleted, and no media was generated. Postiz issues no refresh token, so refresh was not exercised. Reconnect after removal and revocation in Postiz were not run. An HTTPS callback was not exercised."
+      "evidenceLimit": "Board Test calls only; no agent run. No post was scheduled, published or deleted, and no media was generated. Postiz issues no refresh token, so refresh was not exercised. Reconnect after removal and revocation in Postiz were not run. Registration with a Paperclip Cloud HTTPS callback returned HTTP 201; sign-in and calls from an HTTPS instance were not exercised."
     },
     {
       "app": "postiz",
