@@ -22,7 +22,7 @@ import { recordNativeLocalProcessStopInTransaction } from "../services/native-lo
 import { notifyInstructionCopyStopEvidence } from "../services/instruction-collection-notifications.js";
 import { environmentService } from "../services/environments.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
-import { idleWorkSnapshot } from "../services/task-admission.js";
+import { idleWorkSnapshot, subscribeIdleWorkSettled } from "../services/task-admission.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_INSTRUCTION_COPY_TEST_DATABASE_URL");
 const AGENT_FILES = "paperclip.agent-files.v1";
@@ -106,6 +106,14 @@ describe("instruction working copies that cannot make progress", () => {
     let last = -1;
     for (let quiet = 0, turns = 0; quiet < 40 && turns < 20_000; turns++) {
       await new Promise(resolve => setImmediate(resolve));
+      if (idleWorkSnapshot().active > 0) {
+        await new Promise<void>(resolve => {
+          const unsubscribe = subscribeIdleWorkSettled(() => {
+            unsubscribe();
+            resolve();
+          });
+        });
+      }
       const current = meter.read().statements;
       quiet = current === last && idleWorkSnapshot().active === 0 ? quiet + 1 : 0;
       last = current;
