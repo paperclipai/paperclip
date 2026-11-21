@@ -124,7 +124,9 @@ test('the registry exposes only known tarballs, redirects other packages to npm 
     assert.equal(await (await fetch(metadata.versions['1.0.0'].dist.tarball)).text(), 'packed bytes');
     const external = await fetch(`${registry.url}/@other%2fpkg`, { redirect: 'manual' });
     assert.equal(external.status, 302);
-    assert.equal(external.headers.get('location'), 'https://registry.npmjs.org/%40other%2Fpkg');
+    assert.equal(external.headers.get('location'), 'https://registry.npmjs.org/@other%2fpkg');
+    const unscoped = await fetch(`${registry.url}/other-pkg`, { redirect: 'manual' });
+    assert.equal(unscoped.headers.get('location'), 'https://registry.npmjs.org/other-pkg');
     assert.equal((await fetch(`${registry.url}/-/900.tgz`)).status, 404);
     assert.equal((await fetch(`${registry.url}/some%2foutside%2ffile`)).status, 404);
     assert.equal((await fetch(`${registry.url}/@ci%2fpkg`, { method: 'POST' })).status, 405);

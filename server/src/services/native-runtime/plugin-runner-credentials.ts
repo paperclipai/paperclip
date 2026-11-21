@@ -1,7 +1,10 @@
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
-import { environmentTaskCredentialSchema, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import {
+  ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS, environmentTaskCredentialSchema,
+  type PluginEnvironmentTaskCredential, type PluginEnvironmentTaskCredentialProvider,
+} from "@paperclipai/plugin-sdk";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 
 interface PreparedPluginRunnerCredentials {
@@ -47,6 +50,19 @@ export async function preparePluginRunnerCredentials(input: {
     const environment = Object.fromEntries(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
       .flatMap(key => input.environment[key] ? [[key, input.environment[key]]] : []));
     return { ...github, accountIdentity, credential: environmentTaskCredentialSchema.parse({ type: "claude-env", environment }) };
+  }
+  if (input.provider === "grok" || input.provider === "copilot" || input.provider === "opencode") {
+    const provider: PluginEnvironmentTaskCredentialProvider = input.provider;
+    if (provider === "grok") {
+      if (input.environment.XAI_BASE_URL) throw new Error("Plugin Runner does not support the selected provider routing");
+      if (!input.environment.XAI_API_KEY) throw new Error("Plugin Runner supports Grok only with an xAI API key. Grok subscription login is not supported.");
+    }
+    const names = new Set(ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS[provider].flat());
+    const environment = Object.fromEntries([...names]
+      .flatMap(key => input.environment[key] ? [[key, input.environment[key]]] : []));
+    const credential = environmentTaskCredentialSchema.safeParse({ type: "provider-env", provider, environment });
+    if (!credential.success) throw new Error("Plugin Runner selected credential unavailable");
+    return { ...github, accountIdentity, credential: credential.data };
   }
   throw new Error("Plugin Runner does not support the selected credential provider");
 }

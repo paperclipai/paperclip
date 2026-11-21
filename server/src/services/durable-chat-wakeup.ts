@@ -1,7 +1,10 @@
+import { slackDeliveryMeetsMentionRequirement } from "./chat-channels/slack/wake-authority.js";
 import { createHash } from "node:crypto";
-import { agentWakeupRequests, chatActions, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
-import { and, eq, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
+import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
+import { and, eq, exists, inArray, isNull, or, sql, type SQLWrapper } from "drizzle-orm";
 import { HttpError } from "../errors.js";
+import { safeChatWakeAuthorityReason } from "./chat-channels/inbound/wakeup-authorization-error.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 
 export interface CommittedChatResponseAuthorizationInput {
   companyId: string;
@@ -232,16 +235,111 @@ export interface DeferredChatWakeScope {
   agentId: string;
   issueId: string;
   requestId: string;
+  recoverySweep?: boolean;
 }
-const deferredChatWakeOwners = new WeakMap<Db, (input: DeferredChatWakeScope) => Promise<void>>();
+
+export type DeferredChatWakeDecline = { settle: string } | { retry: string };
+
+export const CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS = 60 * 60_000;
+export const SILENT_CHAT_WAKE_SETTLEMENT_AFTER_MS = 24 * 60 * 60_000;
+export const DEFERRED_CHAT_WAKE_RETRY_KEY = "chatResume";
+export const SILENT_CHAT_WAKE_SETTLEMENT_KEY = "silentSettlement";
+export const DEFERRED_CHAT_WAKE_RETRY_DELAYS_MS = [60_000, 10 * 60_000, 60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_000];
+const SETTLED_AUTHORITY_REASONS = new Set<string>(["source_shape", "delivery_binding", "conversation_binding",
+  "destination_binding", "source_comment"]);
+const DECLINED_CHAT_INPUT_NOTICE =
+  "Input saved. Its work request was skipped, cancelled, or failed; no automatic replay was performed.";
+
+export function deferredChatWakeNextAttemptAt(payload: Record<string, unknown> | null | undefined): number | null {
+  const retry = payload?.[DEFERRED_CHAT_WAKE_RETRY_KEY];
+  if (!retry || typeof retry !== "object" || Array.isArray(retry)) return null;
+  const at = Date.parse(String((retry as Record<string, unknown>).nextAttemptAt));
+  return Number.isFinite(at) ? at : null;
+}
+
+export function deferredChatWakeDeclineForError(error: unknown): DeferredChatWakeDecline {
+  const authority = safeChatWakeAuthorityReason(error);
+  if (authority) return SETTLED_AUTHORITY_REASONS.has(authority)
+    ? { settle: `authority_${authority}` } : { retry: `authority_${authority}` };
+  if (error instanceof HttpError) {
+    const details = error.details && typeof error.details === "object" ? error.details as Record<string, unknown> : {};
+    return { retry: typeof details.code === "string" ? details.code : `http_${error.status}` };
+  }
+  return { retry: error instanceof Error && /^chat_[a-z_]+$/.test(error.message) ? error.message : "resume_failed" };
+}
+
+export async function recordDeferredChatWakeDecline(db: Db,
+  scope: { companyId: string; issueId: string; requestId: string }, decline: DeferredChatWakeDecline) {
+  return db.transaction(async tx => {
+    const [receipt] = await tx.select({ payload: agentWakeupRequests.payload, createdAt: agentWakeupRequests.createdAt })
+      .from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.id, scope.requestId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId))).for("update");
+    if (!receipt) return null;
+    const previous = receipt.payload?.[DEFERRED_CHAT_WAKE_RETRY_KEY];
+    const attempts = (previous && typeof previous === "object" && !Array.isArray(previous)
+      ? Number((previous as Record<string, unknown>).attempts) || 0 : 0) + 1;
+    const now = new Date();
+    if ("retry" in decline && attempts <= DEFERRED_CHAT_WAKE_RETRY_DELAYS_MS.length) {
+      const nextAttemptAt = now.getTime() + DEFERRED_CHAT_WAKE_RETRY_DELAYS_MS[attempts - 1]!;
+      await tx.update(agentWakeupRequests).set({ error: decline.retry, updatedAt: now,
+        payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ [DEFERRED_CHAT_WAKE_RETRY_KEY]: {
+          attempts, reason: decline.retry, nextAttemptAt: new Date(nextAttemptAt).toISOString() } })}::jsonb`,
+      }).where(eq(agentWakeupRequests.id, scope.requestId));
+      return { outcome: "retry" as const, reason: decline.retry, attempts, nextAttemptAt };
+    }
+    const reason = "settle" in decline ? decline.settle : `retry_exhausted:${decline.retry}`;
+    const silent = receipt.createdAt.getTime() < now.getTime() - SILENT_CHAT_WAKE_SETTLEMENT_AFTER_MS;
+    await tx.update(agentWakeupRequests).set({ status: "skipped", error: reason, finishedAt: now, updatedAt: now,
+      payload: silent
+        ? sql`(${agentWakeupRequests.payload} - ${DEFERRED_CHAT_WAKE_RETRY_KEY}::text) || ${JSON.stringify({ [SILENT_CHAT_WAKE_SETTLEMENT_KEY]: true })}::jsonb`
+        : sql`${agentWakeupRequests.payload} - ${DEFERRED_CHAT_WAKE_RETRY_KEY}::text`,
+    }).where(eq(agentWakeupRequests.id, scope.requestId));
+    if (silent) return { outcome: "settled" as const, reason, attempts, silent };
+    await notifyChatInboundWakeNotices(tx, { companyId: scope.companyId, issueId: scope.issueId });
+    await tx.update(chatDeliveries).set({ redactedError: DECLINED_CHAT_INPUT_NOTICE, updatedAt: now }).where(and(
+      eq(chatDeliveries.companyId, scope.companyId), eq(chatDeliveries.state, "processed"),
+      sql`${chatDeliveries.id} = (select ${chatActions.deliveryId} from ${chatActions}
+        where ${chatActions.companyId} = ${scope.companyId} and ${chatActions.id} = ${scope.requestId}
+          and ${chatActions.kind} = 'inbound_wakeup')`));
+    return { outcome: "settled" as const, reason, attempts, silent };
+  });
+}
+
+export async function clearDeferredChatWakeRetry(db: Db, scope: { companyId: string; requestId: string }) {
+  await db.update(agentWakeupRequests).set({ error: null,
+    payload: sql`${agentWakeupRequests.payload} - ${DEFERRED_CHAT_WAKE_RETRY_KEY}::text`,
+  }).where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.id, scope.requestId),
+    sql`${agentWakeupRequests.payload} ? ${DEFERRED_CHAT_WAKE_RETRY_KEY}::text`));
+}
+
+/** Identify saved input by its canonical receipt, never by a caller's source
+ * label. This is selection only; the inbound owner rechecks live authority. */
+export function deferredChatInputPredicate(db: Db) {
+  return exists(db.select({ id: chatActions.id }).from(chatActions)
+    .innerJoin(chatConversations, and(eq(chatConversations.companyId, chatActions.companyId),
+      eq(chatConversations.id, chatActions.conversationId)))
+    .innerJoin(chatEndpoints, and(eq(chatEndpoints.companyId, chatActions.companyId),
+      eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.id, chatConversations.endpointId)))
+    .where(and(eq(chatActions.companyId, agentWakeupRequests.companyId), eq(chatActions.id, agentWakeupRequests.id),
+      eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+      eq(chatEndpoints.assignedAgentId, agentWakeupRequests.agentId), eq(chatEndpoints.externalExecutionPolicy, "restricted"),
+      sql`${chatConversations.issueId}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+      sql`${chatActions.payload}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
+      sql`${chatActions.payload}->>'agentId' = ${agentWakeupRequests.agentId}::text`)));
+}
+type DeferredChatWakeOwner = (input: DeferredChatWakeScope) => Promise<DeferredChatWakeDecline | void>;
+const deferredChatWakeOwners = new WeakMap<Db, DeferredChatWakeOwner>();
 
 /** The live inbound owner reauthorizes the original source. Cleanup owns no chat authority. */
-export function registerDeferredChatWakeOwner(db: Db, owner: (input: DeferredChatWakeScope) => Promise<void>) {
+export function registerDeferredChatWakeOwner(db: Db, owner: DeferredChatWakeOwner) {
   deferredChatWakeOwners.set(db, owner);
   return () => { if (deferredChatWakeOwners.get(db) === owner) deferredChatWakeOwners.delete(db); };
 }
-export async function resumeDeferredChatWake(db: Db, input: DeferredChatWakeScope) {
-  await deferredChatWakeOwners.get(db)?.(input);
+export async function resumeDeferredChatWake(db: Db, input: DeferredChatWakeScope): Promise<DeferredChatWakeDecline | undefined> {
+  const owner = deferredChatWakeOwners.get(db);
+  if (!owner) return undefined;
+  return (await owner(input)) ?? undefined;
 }
 
 /** Internal authority: this object cannot be supplied through a JSON API. */
@@ -394,7 +492,5 @@ export async function slackMentionAllowsRunStart(
       ),
     ));
   return inputs.every(({ event }) =>
-    (event.conversation as { isDirectMessage?: boolean } | undefined)?.isDirectMessage === true ||
-    event.trigger === "mention" ||
-    (event.message as { mentionedBot?: boolean } | undefined)?.mentionedBot === true);
+    slackDeliveryMeetsMentionRequirement({ requireAtMention: true }, event));
 }

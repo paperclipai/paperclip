@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 function setup(canRun = () => true) {
   vi.useFakeTimers();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   const onError = vi.fn();
   coordinator = createDeliveryWorkCoordinator({ owner, canRun, canReconcile: () => true, onError });
   const worker = registerRunEvidenceMigrationWork(owner as unknown as Db, coordinator, canRun);
@@ -124,6 +124,28 @@ it("keeps blocked history visible and retries it without stranding later pages",
   );
   expect(state.probe!()).toBe("none");
   expect(coordinator!.nextWakeAt()).toBeNull();
+});
+it("archives a settled native log whose canonical coverage is unproven and reports what stays blocked", async () => {
+  state.migrate
+    .mockResolvedValueOnce({
+      items: [
+        { kind: "log", id: "settled", state: "blocked", reason: "native_log_source_coverage_unproven" },
+        { kind: "log", id: "unsettled", state: "blocked", reason: "native_log_source_coverage_unproven" },
+        { kind: "trace", id: "trace", state: "blocked", reason: "Trace file /data/secret is missing" },
+      ],
+    })
+    .mockResolvedValueOnce({ items: [{ kind: "log", id: "settled", state: "migrated", historicalArchive: true }] })
+    .mockResolvedValueOnce({ items: [{ kind: "log", id: "unsettled", state: "blocked", reason: "native_log_archive_source_unsettled" }] })
+    .mockResolvedValue({ items: [] });
+  const { worker } = setup();
+  await worker!.ready;
+  expect(state.migrate).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({
+    apply: true, runId: "settled", kinds: ["log"], limit: 1, preserveSettledNativeFiles: true }));
+  expect(state.migrate).toHaveBeenNthCalledWith(3, expect.anything(), expect.objectContaining({
+    runId: "unsettled", preserveSettledNativeFiles: true }));
+  expect(state.warn).toHaveBeenCalledWith(expect.objectContaining({ id: "unsettled", reason: "native_log_archive_source_unsettled" }), expect.any(String));
+  expect(state.warn).not.toHaveBeenCalledWith(expect.objectContaining({ id: "settled" }), expect.any(String));
+  expect(state.probe!()).toBe("present");
 });
 it("retains startup work during drain and retries a failed sweep before becoming quiet", async () => {
   let admitted = false;

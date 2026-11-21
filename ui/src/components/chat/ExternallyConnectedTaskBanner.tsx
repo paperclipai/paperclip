@@ -27,6 +27,8 @@ import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
 import { useAutoResend } from "@/hooks/useDurableSubmit";
 import { useDraftOwner, useDraftOwnerReader } from "@/hooks/useDraftOwner";
 import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
+import { retryTransientOnly } from "@/lib/query-client";
+import { useQueryView } from "@/components/QueryView";
 import {
   boardSendDraftKey,
   clearBoardSendDraft,
@@ -39,6 +41,7 @@ import {
 } from "./board-send-draft";
 
 import { LegacyBoardSendNotice } from "./LegacyBoardSendNotice";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
@@ -301,8 +304,12 @@ function ConnectedTaskComposer({
     staleTime: 0,
     refetchInterval: 2_000,
     refetchIntervalInBackground: false,
-    retry: false,
+    retry: retryTransientOnly(0),
   });
+  // Read publication status through the shared view: the receipt render uses
+  // the cached batch during transient refetch failures,and a no-data failure
+  // drops into readable copy.
+  const publicationStatusView = useQueryView(publicationStatus);
   useEffect(() => {
     const batch = publicationStatus.data;
     if (
@@ -462,7 +469,7 @@ function ConnectedTaskComposer({
     } catch (error) {
       if (mounted.current) {
         setUploadError(
-          `${error instanceof Error ? error.message : "Upload could not be confirmed."} No channel message was sent. Check task files before retrying the upload.`,
+          `${describeError(error).body} No channel message was sent. Check task files before retrying the upload.`,
         );
       }
     } finally {
@@ -518,7 +525,7 @@ function ConnectedTaskComposer({
   const currentPublication = publicationStatus.data?.publication ?? publication;
   const batch = publicationStatus.data;
   const dismissible =
-    !publicationStatus.isError &&
+    Boolean(publicationStatus.data) &&
     !publicationStatus.isFetching &&
     canDismissBoardSendBatch(batch);
   const mixedTerminal =
@@ -552,7 +559,7 @@ function ConnectedTaskComposer({
             <p className="font-medium">
               Connected to {providerNames[binding.provider]}
             </p>
-            <p className="truncate text-xs text-muted-foreground">
+            <p className={cn("truncate text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
               {binding.externalLabel} · {binding.provider === "slack"
                 ? "Messages you send here and agent replies are also posted to Slack."
                 : "Agent assignment is fixed for this external task."}
@@ -853,7 +860,7 @@ function ConnectedTaskComposer({
                     ))}
                 </ul>
               )}
-              {publicationStatus.isError && (
+              {publicationStatusView.kind === "error" && (
                 <p role="alert" className="text-muted-foreground">
                   Delivery status could not be refreshed. Your draft is kept;
                   Paperclip will check again without sending another update.

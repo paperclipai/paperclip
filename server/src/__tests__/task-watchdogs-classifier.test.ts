@@ -104,7 +104,7 @@ describe("task watchdog subtree classifier", () => {
     const ticked = classify({
       issues: [issue({
         status: "blocked",
-        updatedAt: "2026-06-18T20:00:00.000Z",
+        updatedAt: new Date("2026-06-18T20:00:00.000Z"),
         latestCommentAt: "2026-06-18T20:01:00.000Z",
         latestDocumentAt: "2026-06-18T20:02:00.000Z",
         latestWorkProductAt: "2026-06-18T20:03:00.000Z",

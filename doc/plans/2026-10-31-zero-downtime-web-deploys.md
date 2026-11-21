@@ -1,10 +1,201 @@
 # Zero-downtime web deployments
 
-Date: 2026-10-31. Status (2026-11-01 15:39 UTC): existing-volume staging enrollment
-and manual sleep/wake preserve saved files and read/save behavior. The full local
-active-agent journey now passes on `cc23019691`; hosted browser continuity and
-the ten-deploy staging campaign remain unqualified. Natural database autosuspension
-passes after abandoned test-resource cleanup. No production canary yet.
+Current state (2026-11-02 18:31 UTC): cleanup recovery PR
+[#18633](https://github.com/paperclipai/paperclip/pull/18633) merged as
+`60a99307b3bb1062078d35af6677e3f377d8bab8`. Its final head passed all PR CI,
+full local typecheck and build, and seven focused cleanup regressions. Greptile
+reviewed that head at 5/5; both review threads are resolved. The duplicate full
+local test run was stopped after six chat shards passed, while general suites
+were still running. Its incomplete local result is preserved separately from
+successful full PR CI.
+
+Canonical Linux release verification failed on the unchanged two-second busy-row
+startup test on several consecutive revisions, including the cleanup merge.
+The held-row diagnostic completed in 420 ms on macOS without a database lock
+wait. Inspection found that `currentNativeControllerIdentity` always called the
+server-info snapshot, which synchronously probes Git three times even when the
+OS process birth time is available. Controlled one-second delays in real Git
+commands reproduced the exact startup assertion failure with real PostgreSQL.
+The follow-up separates the constant fallback process birth time from diagnostic
+Git metadata. New regressions cover both available and unavailable OS birth time.
+The two-second startup limit and release gates remain unchanged. Linux release
+verification must pass before the new source can enter hosted qualification.
+
+The follow-up is [#18649](https://github.com/paperclipai/paperclip/pull/18649).
+Its first head received two 5/5 reviews and passed every CI test shard except
+an existing voice-retention precision test. That test advances its fake clock
+automatically while asserting behavior across a one-millisecond boundary. A
+controlled 60 ms database-entry delay reproduced the exact failure. Holding the
+clock fixed makes the same assertion pass with that delay; the final correction
+only disables automatic clock advancement in that one precision test. The
+original CI failure and both controlled results are retained. No production
+voice code or assertion was weakened.
+
+The earlier ten-roll result remains evidence for its recorded images. Neither
+the cleanup fix nor the controller-identity follow-up has reached the staging
+fixture. Final acceptance still requires a qualified compatible image pair,
+fresh staging replacements, natural idle and browser sleep/wake, followed by the
+isolated production canary. Cloud source is `b44304603d`; its private packages
+require comparison against the new Core SDK and shared archive. Earlier candidate
+Core `42c64d4ec4` differs in SDK; `b9e94b85a6` differs in shared types. Neither is
+a valid rollback pair for the cleanup merge. No release gate was bypassed.
+
+The production browser was signed in as Dotta B on the ordinary new-organization
+form. No organization was submitted and no production config changed. The only
+hosted target changed so far is the pinned staging qualification fixture.
+Disposable local PostgreSQL and Moto S3 fixtures passed an independent object
+read/write preflight. Docker subsequently stopped; local container qualification
+requires restoring that dependency. Hosted acceptance uses real object storage.
+
+Earlier retained evidence and failure history follows.
+
+Date: 2026-10-31. Status (2026-11-02 17:23 UTC): Core #18554 is merged as
+`1a6017d6460267ad89d7e1784e2b521c28d8e9ac`. The ten-roll and native-agent
+proof used Cloud `461c4aea28`. Separately reviewed Cloud #1091/#1092 subsequently
+reached staging as `89dd0cfec2`; their changes concern workspace cleanup and
+Agent Computer resource fencing. Railway, fleet and deployment workflow paths
+are unchanged. Production remains on its original controller revision; the
+next manual controller deployment must use current reviewed master.
+Both immutable Cloud distributions built from that fixed source passed packaged
+Linux rehearsals through the Railway wrapper: 260 reads, 53 saves, zero failures,
+legacy-volume migration, an unready replacement, and removal of both predecessor
+homes. Each fixture cleaned its containers. These rehearsals do not exercise an
+active agent or an actual browser. The two distributions have distinct image
+digests but identical application source; their compatible rollback qualifies
+artifact replacement, not compatibility between different source revisions.
+
+The final Core PR has two 5/5 reviews and all required checks passed. One legacy
+browser CI shard failed because its deferred-wake fixture observed no queued wake;
+the unchanged case passed locally on isolated PostgreSQL and its single CI retry
+passed. The original failure remains in the PR evidence. The full local live-agent
+journey passed on `cc23019691` before the final non-suspended dispatch refinement;
+that refinement passed its three focused Linux regressions, server typecheck,
+build and final CI. Do not describe the earlier live run as a rerun of the merge.
+
+The fixed canonical package baseline passed on the pinned migrated staging fixture
+using the allowed one-time maintenance path. An actual Chromium tab running the
+older UI reconnected, retained an unsaved title edit, and saved it through the new
+server; an independent API read confirmed the title. That old tab opened the
+Agents page, and all four previously captured asset hashes still match after the
+old deployment was removed. Baseline maintenance interruptions are preserved and
+are not counted as zero-downtime qualification.
+
+The first ten-roll attempt was cancelled at step one, before Railway replacement.
+The controller's pre-existing hot-upgrade allowlist named an older test stack,
+so it drained rather than negotiated preservation of the new fixture's active run.
+Continuous read/save and browser probes remained healthy, but this is NOT active
+execution continuity evidence. The original command completed normally once; its
+downloaded output bytes and native terminal were independently verified. The
+owned fixture has been added to the existing allowlist without changing fleet
+defaults. The normal staging controller workflow is applying that correction.
+The rollout harness now checks both canary policy and positive tenant readiness
+before submitting a campaign. The cancelled attempt remains failed evidence,
+with no automatic campaign retry.
+The configuration deployment then failed before Railway submission when Sentry
+release registration failed or timed out. Its source checks passed; the original
+logs are retained. One unchanged whole-workflow retry preserves attempt-bound
+preflight requirements. That retry failed at the same pre-Railway Sentry request.
+A read-only Sentry lookup confirms the release exists (HTTP 200). The canary-only
+configuration was then applied by redeploying the existing successful controller
+deployment: the source and replacement image digests are identical, and health
+attests unchanged Cloud `461c4aea28`. Both failed workflow attempts are retained;
+no Sentry gate was disabled and no new application release was built in this
+configuration recovery. The new active-command attempt and gated sequence are
+starting with the corrected controller. The first preflight stopped before task
+admission on a missing optional plan's 404. `useIssuePlanDocument` explicitly
+maps that response to null; an independent read confirmed no plan on the owned
+completed task. The raw response remains recorded and the browser gate permits
+only that verified path. The configuration redeploy's actual browser reconnect
+was 1.22 seconds, with no probe read/save failure.
+
+All ten Railway replacements are independently qualified. Final continuous proof
+passed 12,521 reads and 1,566 saves, with every acknowledged save present exactly
+once and all 34 file hashes matching. There were zero HTTP failures. Actual
+browser reconnects across the ten deployments ranged from 1.16 to 1.29 seconds.
+The old UI assets and original agent artifact remain readable after deployment
+ten and provider cleanup. Both traffic observers have stopped cleanly. The first
+replaced the webserver while the original eight-minute remote command was
+running. Its one execution ID started before replacement and completed afterward
+with exit zero. The second replaced the server after completion; a later follow-up
+retained the same native/provider session and runner, with accepted native
+terminals and finalized accounting for both runs. The 91-byte artifact was
+downloaded and independently checked for exactly one start and completion.
+Actual browser reconnects were 1.28, 1.16 and 1.25 seconds; continuous reads and
+saves have no failures so far. Previously unopened Projects and Skills pages rendered in the
+retained old tab. A title draft survived the third cutover and was saved through
+the UI, then independently read back from the replacement.
+
+The harness stopped after deployment three on another owned task's expected
+missing optional-plan 404. The UI explicitly treats this as null. Both exact task
+paths were independently checked, and the provider deployment, package eligibility,
+serving identity, removal of the predecessor, browser timing and continuous probe
+were revalidated. The failed original receipt remains unchanged alongside an
+explicit classification review. The remaining seven replacements continue without
+redeploying or retrying deployment three. An announcement also obscured one
+sidebar click; its ordinary Dismiss control resolved that retained interaction
+timeout. A separate large run-log diagnostic timed out; a narrower public-events
+read succeeded and proves the original command's single execution identity.
+A later bounded 64-KiB log read succeeded from shared storage after both the
+originating webserver and remote sandbox were removed.
+
+The native recovery event records SIGTERM without a retry run, then adoption of
+the same runner at controller generation 2. Each of the two runs has exactly one
+accepted result and terminal event. The independent accounting inspector has no
+findings or pending work; the task totals 52.941 cents across two runs. Including
+the earlier no-replacement attempt, staging has three estimated cost events totaling
+113.84284 cents. The temporary agent is paused, its secret removed and the prior
+company budget restored; all three provider resources are independently confirmed absent. The first delete
+was refused while the sandbox stopped; that failure remains alongside the
+successful cleanup after a fresh stopped-state observation. Both owned local
+PostgreSQL/object-storage containers are removed; test evidence is retained.
+
+Deployment nine also completed, but the local test reader observed the browser
+snapshot while its writer had truncated the file. The campaign response was
+already parsed and successful; the only non-atomic JSON read in that failing
+checkpoint is the local browser report. A concurrent-write regression reproduced
+the problem. The reader now retries only local JSON syntax errors for at most
+100 ms; persistent corruption still fails, and HTTP/acceptance failures are never
+retried. Deployment nine was independently revalidated without redeployment.
+Both raw failed sequence receipts and their explicit classification reviews remain;
+the ten provider deployments themselves have not been retried. The final staging
+driver stopped at the harness failure and is being resumed from the retained
+sequence. The normal UI's 256,000-byte run-log read also passes after replacement.
+
+The first repair check stopped before mutation because an unrelated staging
+campaign was active. That campaign has finished, and the pinned canary remains
+active and unlocked on the qualified final image. Both one-target configuration repair campaigns passed: backup policy was
+restored, the temporary marker removed, and durable files/shared assets remained
+enabled on the same volume-free image. The current-image eight-minute natural-idle check failed with all browser pages and
+traffic probes closed. Bounded SQL diagnosis found three completed native runs
+still in agent-file collection recovery. Normal archive of both completed test
+workspaces independently passed close-readiness and preserved saved workspace
+files. It produced provider-confirmed destruction receipts for the latest leases.
+Two copies then completed no-save cleanup, but retained stale retry deadlines;
+the earlier run of a reused sandbox still lacks direct termination evidence even
+though its validated successor allocation is destroyed. These are source recovery
+gaps, not an idle-proof pass. No historical rows were manually rewritten. The
+failed idle and cancelled browser lifecycle receipts remain unchanged. Fix
+ownership belongs to remote termination proof resolution and agent-directory
+cleanup scheduling; no polling cadence or sleep-safety check should be relaxed.
+
+The isolated source branch is now based on current master `97c4dc969e`. The
+recovery fix resolves the destroyed allocation through the existing validated
+handoff-chain contract at read time; it does not stamp historical leases or infer
+stop from task status. Agent-file cleanup also reconciles stale retry deadlines
+with a receipt comparison. Both owning service suites passed 169 tests, and the
+server typecheck passed. The first new deadline test caught a public guard that
+skipped settlement; that failed attempt is retained and the corrected five-case
+selection passed. The final seven-case selection passed, including a concurrent receipt change and
+cross-company rejection. Repository-wide checks and PR review are pending.
+This source has not been deployed and is not covered by the prior ten-roll proof.
+
+Next: review and ship the cleanup fix, complete current-image idle/sleep/wake, then the
+isolated production forward/rollback canary. No production deployment has occurred.
+Dotta completed the authorized GitHub sign-in; the production browser is back on
+the ordinary organization list. The production canary still waits for staging. Its new organization form is
+prepared but unsubmitted. Production remains on its original controller revision,
+with no campaigns, the single-volume default and continuous deployment disabled. Earlier
+staging sleep/wake and natural database-idle proofs remain valid for their image.
 
 Core #18543 merged as `7751fc3107` after 55 successful CI checks, Greptile 5/5
 and no unresolved threads. It supplies runtime admission, immutable-cache
@@ -202,7 +393,7 @@ Measure one-time setup separately from repeated attempts. Keep failed evidence.
 | Item | State | Next action |
 | --- | --- | --- |
 | Prior prerequisites | #18403 and all five storage workstreams merged | Retain the ephemeral filesystem contract |
-| Core implementation | #18518, #18526, #18529, #18530, #18531, #18533, #18543 and #18552 merged; #18554 reviewed at 5/5 with CI pending; local packaged migration, browser overlap, cold restoration and durable command proofs recorded below | Publish and qualify the exact fixed release after CI/review merge |
+| Core implementation | #18518, #18526, #18529, #18530, #18531, #18533, #18543 and #18552 merged; #18554 merged with all required checks and 5/5 reviews; both exact fixed images passed packaged migration and deletion; active hosted output verified | Finish hosted continuation and accounting reconciliation |
 | Cloud implementation | #1096, #1098, #1099, #1100, #1101 and #1102 merged; #1102 serving on staging | Verify repeated Railway overlap behavior after Core recovery qualification |
 | Staging | Original enrollment complete; migrated data and signing key preserved; volume detached and retained | Sleep/wake and natural database idle pass; verify repair and ten app-only replacements with browser continuity |
 | Production | No canary mutation performed | Proceed only after the staging and active-agent acceptance gates pass |

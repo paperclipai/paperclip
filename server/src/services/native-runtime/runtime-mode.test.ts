@@ -2,11 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { BUILTIN_ADAPTER_TYPES } from "../../adapters/builtin-adapter-types.js";
 import {
-  NativeRunnerSelectionError,
   NativeRuntimeEligibilityError,
   isRunnerIngressAuthorized,
   resolveHeartbeatNativeRuntimeMode,
-  resolveHeartbeatRuntimeMode,
   resolveNativeRuntimeMode,
 } from "./runtime-mode.js";
 
@@ -21,6 +19,13 @@ const eligible = {
 } as const;
 
 describe("resolveNativeRuntimeMode", () => {
+  it("requires experimental opt-in and a local controller for Cursor Cloud while retaining its backend on recovery", () => {
+    const adapterConfig = { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/acme/repo" };
+    expect(resolveNativeRuntimeMode({ ...eligible, adapterConfig })).toMatchObject({ kind: "native", profile: { backend: "cursor_cloud_api" } });
+    expect(() => resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig })).toThrow(expect.objectContaining({ code: "paperclip_runner_rollout_disabled" }));
+    expect(() => resolveNativeRuntimeMode({ ...eligible, adapterConfig, target: { kind: "remote" } })).toThrow(expect.objectContaining({ code: "paperclip_runner_cursor_cloud_local_controller_required" }));
+    expect(resolveHeartbeatNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig, persisted: { runtimeMode: "native", runtimeModeReason: "eligible_opt_in", runtimeModeResolvedAt: new Date(), driverKind: "cursor_cloud_api" } })).toMatchObject({ kind: "native", profile: { backend: "cursor_cloud_api" } });
+  });
   it("keeps every direct built-in adapter outside native arbitration", () => {
     for (const adapterType of BUILTIN_ADAPTER_TYPES) {
       if (adapterType === "paperclip_runner") continue;
@@ -485,58 +490,26 @@ describe("resolveNativeRuntimeMode", () => {
   });
 });
 
-const compatibilityInput = {
-  persisted: { runtimeMode: "legacy", runtimeModeResolvedAt: null },
-  enabled: true,
-  adapterConfig: { provider: "codex" },
-  agentStatus: "running",
-  issue: { workMode: "standard" },
-  executionTarget: { kind: "local" },
-} as const;
-
-describe("resolveHeartbeatRuntimeMode compatibility", () => {
+describe("resolveHeartbeatNativeRuntimeMode", () => {
   it("keeps every direct built-in adapter on the legacy path", () => {
     for (const adapterType of BUILTIN_ADAPTER_TYPES) {
       if (adapterType === "paperclip_runner") continue;
-      expect(resolveHeartbeatRuntimeMode({
-        ...compatibilityInput,
-        adapterType,
-      })).toEqual({
-        kind: "legacy",
-        resolverVersion: "paperclip-runner-v1",
-        reason: "direct_adapter",
-      });
+      expect(resolveHeartbeatNativeRuntimeMode({
+        ...eligible,
+        persisted: { runtimeMode: null, runtimeModeReason: null, runtimeModeResolvedAt: null },
+        agent: { ...eligible.agent, adapterType },
+      })).toMatchObject({ kind: "legacy", reason: "direct_adapter" });
     }
   });
 
-  it("preserves the original public result and error contracts", () => {
-    expect(resolveHeartbeatRuntimeMode({
-      ...compatibilityInput,
-      adapterType: "paperclip_runner",
-    })).toEqual({
-      kind: "native",
-      resolverVersion: "paperclip-runner-v1",
-      reason: "explicit_paperclip_runner",
-      provider: "codex",
-    });
-    expect(resolveHeartbeatRuntimeMode({
-      ...compatibilityInput,
+  it("recovers a persisted Codex run with no recorded driver kind", () => {
+    expect(resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
       enabled: false,
-      adapterType: "paperclip_runner",
-      persisted: { runtimeMode: "native", runtimeModeResolvedAt: new Date() },
-    })).toEqual({
-      kind: "native",
-      resolverVersion: "paperclip-runner-v1",
-      reason: "persisted_native_selection",
-      provider: "codex",
-    });
-    expect(() => resolveHeartbeatRuntimeMode({
-      ...compatibilityInput,
-      enabled: false,
-      adapterType: "paperclip_runner",
-      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "openrouter/anthropic/claude-sonnet-4.6" },
-    })).toThrow(NativeRunnerSelectionError);
+      persisted: { runtimeMode: "native", runtimeModeReason: null, runtimeModeResolvedAt: new Date() },
+    })).toMatchObject({ kind: "native", profile: { backend: "codex_app_server" } });
   });
+
   it("admits native Claude without enabling other ACPX providers", () => {
     expect(resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig: { provider: "acpx", acpxAgent: "claude" } })).toMatchObject({ kind: "native", profile: { backend: "acpx_runtime" } });
     expect(() => resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig: { provider: "acpx", acpxAgent: "grok" } })).toThrow(expect.objectContaining({ code: "paperclip_runner_rollout_disabled" }));

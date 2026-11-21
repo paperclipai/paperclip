@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
+import { trackRunIntake } from "../run-intake-stall-watch.js";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
@@ -204,6 +205,16 @@ export class NativeRunCoordinatorStore {
   }
 
   async appendEvent(value: PrpEvent): Promise<{
+    readonly disposition: "committed" | "duplicate";
+    readonly cursor: number;
+    readonly highestContiguousSourceSeq: number;
+  }> {
+    const eventType = (value as { eventType?: unknown }).eventType;
+    return trackRunIntake(this.#binding.runId, "received", typeof eventType === "string" ? eventType : "unknown",
+      () => this.#appendEvent(value));
+  }
+
+  async #appendEvent(value: PrpEvent): Promise<{
     readonly disposition: "committed" | "duplicate";
     readonly cursor: number;
     readonly highestContiguousSourceSeq: number;

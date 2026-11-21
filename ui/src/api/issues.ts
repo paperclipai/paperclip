@@ -1,14 +1,19 @@
-import type { SetIssueTitle } from "@paperclipai/shared";
-import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import type { IssueInboxArchiveFilter, SetIssueTitle } from "@paperclipai/shared";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS, type IssueChatBootstrap } from "@paperclipai/shared";
+import type { RunForIssue } from "./activity";
+import type { ActiveRunForIssue, LiveRunForIssue } from "./heartbeats";
 import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
+import type { IssueContextUsage } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
   Approval,
   CompactIssue,
+  InboxMineSnapshot,
   CreateIssueTreeHold,
   DocumentRevision,
+  ExactDocumentRevision,
   FeedbackTargetType,
   FeedbackTrace,
   FeedbackVote,
@@ -194,6 +199,7 @@ export type IssueListFilters = {
   projection?: "index" | "rows";
   attention?: "blocked";
   status?: string;
+  displayStatus?: string;
   projectId?: string;
   parentId?: string;
   assigneeAgentId?: string;
@@ -201,7 +207,10 @@ export type IssueListFilters = {
   assigneeUserId?: string;
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
+  inboxArchive?: IssueInboxArchiveFilter;
   unreadForUserId?: string;
+  /** Add the current board user's read state without filtering task membership. */
+  includeReadState?: boolean;
   labelId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
@@ -220,7 +229,7 @@ export type IssueListFilters = {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated" | "id";
+  sortField?: "updated" | "created" | "id";
   afterId?: string;
   sortDir?: "asc" | "desc";
 };
@@ -229,6 +238,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
   const params = new URLSearchParams();
   if (filters?.attention) params.set("attention", filters.attention);
   if (filters?.status) params.set("status", filters.status);
+  if (filters?.displayStatus) params.set("displayStatus", filters.displayStatus);
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
   if (filters?.parentIds) params.set("parentIds", filters.parentIds.join(","));
@@ -241,10 +251,12 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("assigneeUserId", filters.assigneeUserId);
   if (filters?.touchedByUserId)
     params.set("touchedByUserId", filters.touchedByUserId);
+  if (filters?.inboxArchive) params.set("inboxArchive", filters.inboxArchive);
   if (filters?.inboxArchivedByUserId)
     params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
   if (filters?.unreadForUserId)
     params.set("unreadForUserId", filters.unreadForUserId);
+  if (filters?.includeReadState) params.set("includeReadState", "true");
   if (filters?.labelId) params.set("labelId", filters.labelId);
   if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
   if (filters?.executionWorkspaceId)
@@ -279,16 +291,35 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
-  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
+  inboxMine: (companyId: string, options?: RequestOptions) => {
+    const path = `/companies/${companyId}/inbox/mine`;
+    detachInflightGet(path);
+    return api.get<InboxMineSnapshot>(path, { ...options, cache: "no-store" });
+  },
+  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions & { navigation?: boolean }): Promise<IssueSummary[]> => {
     if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
     const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();
     if (ids.length === 0) return [];
     const params = new URLSearchParams({ ids: ids.join(",") });
+    if (options?.navigation) params.set("navigation", "true");
     const path = `/companies/${companyId}/issues/summaries?${params}`;
     // React Query deduplicates within an account; URL-only HTTP coalescing must
     // never join a request sent with the previous account's cookie.
     detachInflightGet(path);
     return api.get<IssueSummary[]>(path, { ...options, cache: "no-store" });
+  },
+  /**
+   * The task chat's first-frame reads for up to ten tasks in one request. Each
+   * item's fields have the shape of the matching single-task endpoint;
+   * missing and unreadable tasks are omitted.
+   */
+  chatBootstrap: (companyId: string, issueRefs: readonly string[], options?: RequestOptions) => {
+    const refs = [...new Set(issueRefs.map((ref) => ref.trim()).filter(Boolean))];
+    if (refs.length === 0 || refs.length > ISSUE_CHAT_BOOTSTRAP_MAX_IDS) throw new Error("Chat bootstrap needs one to ten task references");
+    const path = `/companies/${companyId}/issues/chat-bootstrap?${new URLSearchParams({ ids: refs.join(",") })}`;
+    // Never join a request sent with the previous account's cookie.
+    detachInflightGet(path);
+    return api.get<IssueChatBootstrap<RunForIssue, LiveRunForIssue, ActiveRunForIssue>>(path, { ...options, cache: "no-store" });
   },
   /** Fetch every page for bounded task-detail relations, not just the default first page. */
   listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
@@ -362,6 +393,9 @@ export const issuesApi = {
     options
       ? api.get<Issue>(`/issues/${id}`, options)
       : api.get<Issue>(`/issues/${id}`),
+  getContextUsage: (id: string) => api.get<IssueContextUsage | null>(`/issues/${id}/context-usage`),
+  compactContext: (id: string) =>
+    api.post<{ requestId: string; runId: string }>(`/issues/${id}/context/compact`, {}),
   getRunnerGoal: (id: string, agentId?: string | null) => {
     const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : "";
     return api.get<RunnerGoalProjection>(`/issues/${id}/runner-goal${query}`);
@@ -407,12 +441,22 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  confirmRunStopped: (id: string, data: { runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; alreadyStopped: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(
+      `/issues/${id}/recovery-actions/confirm-run-stopped`, data),
+  confirmControllerStopped: (id: string, data: { actionId: string; runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; status: "queued" }>(`/issues/${id}/recovery-actions/confirm-controller-stopped`, data),
+  confirmOwnerGone: (id: string, data: { actionId: string; recordId: string; stopEvidence: string; recordVersion?: string }) =>
+    api.post<{ recordId: string; status: "queued" | "released" }>(`/issues/${id}/recovery-actions/confirm-owner-gone`, data),
   resumeWorkspaceFinalization: (id: string, data: { actionId: string; runId: string; ownerToken: string; controllerAndCopybackStopped: true; stopEvidence: string }) =>
-    api.post<{ runId: string; resultId: string; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
+    api.post<{ runId: string; resultId: string | null; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
-  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
-    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
+  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null; retryAction?: "move_forward" }) =>
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; alreadyMovedOn?: boolean;
+      refused?: { reason: string; message: string };
+      scheduledRetry?: { outcome: "promoted" | "already_promoted" | "gate_suppressed" | "waiting" | "no_scheduled_retry"; message: string };
+      presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
   recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
     api.post<{ actionId: string; status: string }>(`/issues/${id}/recovery-actions/recover-workspace`, data),
   reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];
@@ -572,7 +616,7 @@ export const issuesApi = {
       data,
     ),
   listInteractions: (id: string) =>
-    api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+    api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`, { fresh: true, cache: "no-store" }),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(
       `/issues/${id}/accepted-plan-decompositions`,
@@ -733,7 +777,7 @@ export const issuesApi = {
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions`,
     ),
   getDocumentRevision: (id: string, key: string, revisionId: string) =>
-    api.get<DocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
+    api.get<ExactDocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
     api.post<IssueDocument>(
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,

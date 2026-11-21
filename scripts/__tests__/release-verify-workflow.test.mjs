@@ -61,6 +61,39 @@ test("Docker Hub mirrors apply to both image builders without widening publicati
     "the registry-only manifest merge does not need a Docker Hub mirror");
 });
 
+test("source proof gates publication without occupying a publication runner", () => {
+  const workflow = readWorkflow("docker.yml");
+  const observer = workflow.split("  source_verification:\n")[1].split("  reuse_canary_image:")[0];
+  const gate = workflow.split("  publication_verification:\n")[1].split("  merge-and-push:")[0];
+  const publisher = workflow.split("  merge-and-push:\n")[1].split("  promote_canary_channel:")[0];
+  assert.match(observer, /verified: \$\{\{ steps.watch.outputs.verified \}\}/);
+  assert.match(gate, /run: node scripts\/watch-release-source.mjs --require-proof/);
+  assert.match(gate, /actions: write # restart only exact-source producers deferred before admission/);
+  assert.match(gate, /needs: \[build-and-push, source_verification\]/);
+  assert.match(publisher, /needs: \[build-and-push, source_verification, publication_verification\]/);
+  assert.doesNotMatch(publisher, /--require-proof|actions: write/);
+  assert.ok(publisher.indexOf("run: node scripts/watch-release-source.mjs --check-proof") < publisher.indexOf("- name: Create manifest list and push"));
+  assert.match(publisher, /actions: read/);
+  assert.match(publisher, /timeout-minutes: 20/);
+  const expression = publisher.match(/^    if: \$\{\{ (.+) \}\}$/m)[1].replaceAll("needs.build-and-push", "needs.build");
+  for (const [ref, observed, fallback, expected, repository = "paperclipai/paperclip", repository_id = "1170821064"] of [
+    ["refs/heads/master", "true", "skipped", true],
+    ["refs/heads/master", "false", "skipped", false],
+    ["refs/heads/master", undefined, "skipped", false],
+    ["refs/heads/master", "false", "success", true],
+    ["refs/heads/master", "false", "failure", false],
+    ["refs/tags/v1", undefined, "skipped", true],
+    ["refs/heads/master", undefined, "skipped", true, "fork/paperclip", "123"],
+    ["refs/heads/master", undefined, "skipped", true, "paperclipai/paperclip", "123"],
+  ]) {
+    const canonical = repository === "paperclipai/paperclip" && repository_id === "1170821064" && ref === "refs/heads/master";
+    assert.equal(runInNewContext(expression, { cancelled: () => false, github: { ref, repository, repository_id }, needs: {
+      build: { result: "success" }, source_verification: { result: canonical ? "success" : "skipped", outputs: { verified: observed } },
+      publication_verification: { result: fallback },
+    } }), expected);
+  }
+});
+
 test("chaos verification isolates callers that verify the same source commit", () => {
   const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
   const group = chaosWorkflow.match(/^  group: (.+)$/m)?.[1];
@@ -82,14 +115,16 @@ test("chaos verification isolates callers that verify the same source commit", (
   assert.match(chaosWorkflow, /cancel-in-progress: true/);
 });
 
-test("canary reuses exact-source proof while stable keeps full verification", () => {
+test("canary can admit deferred exact-source checks while stable keeps full verification", () => {
   const releaseWorkflow = readWorkflow("release.yml");
   const canary = releaseWorkflow.match(/  verify_canary:\n[\s\S]*?(?=\n  [a-z_]+:)/)[0];
-  assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
-  assert.match(canary, /actions: read/);
+  assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.repository_id == '1170821064' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
+  assert.match(canary, /actions: write # restart only an exact-source push deferred before admission/);
   assert.match(canary, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
+  // Two runner-loss retries of a deferred full readiness run fit inside the job.
+  assert.match(canary, /timeout-minutes: 100\n/);
   assert.doesNotMatch(canary, /release-verify\.yml|continue-on-error|always\(\)/);
   assert.match(releaseWorkflow, /publish_canary:\n\s+if: .*github\.event_name == 'push'.*\n\s+needs: \[verify_canary, release_runner_source, release_runner_binaries\]/);
   // The stable lane is gated on the stable channel since the nightly lane
@@ -299,76 +334,63 @@ test("post-publish beta smoke survives the skipped candidate-verification ancest
   );
 });
 
-test("published canaries are gated by the exact-version onboarding browser smoke", () => {
-  const releaseWorkflow = readWorkflow("release.yml");
+function canaryJobs() {
+  const release = readWorkflow("release.yml");
+  const finalize = readWorkflow("canary-finalize.yml");
+  return {
+    release,
+    finalize,
+    publish: release.split("  publish_canary:\n")[1].split("  # ----- Nightly lane")[0],
+    confirm: finalize.split("  confirm_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0],
+    smoke: finalize.split("  smoke_canary_onboarding:\n")[1],
+  };
+}
 
-  assert.match(
-    releaseWorkflow,
-    /publish_canary:[\s\S]*?outputs:\n\s+canary_version: \$\{\{ steps\.canary_tag\.outputs\.version \}\}/,
-  );
-  assert.match(
-    releaseWorkflow,
-    /smoke_canary_onboarding:\n\s+needs: publish_canary\n\s+if: \$\{\{ !cancelled\(\) && needs\.publish_canary\.result == 'success' \}\}/,
-  );
-  const smoke = releaseWorkflow.split("  smoke_canary_onboarding:\n")[1].split(/\n  [a-z_]+:\n/)[0];
-  const condition = smoke.match(/^    if: \$\{\{ (.+) \}\}$/m)?.[1];
-  assert.match(condition, /^!cancelled\(\) && needs\.publish_canary\.result == 'success'$/);
-  for (const [result, cancelled, expected] of [
-    ["success", false, true], ["failure", false, false],
-    ["cancelled", false, false], ["skipped", false, false], ["success", true, false],
-  ]) {
-    const needs = { publish_canary: { result }, release_runner_source: { result: "success" },
-      select_nightly: { result: "skipped" }, select_beta: { result: "skipped" }, preflight_stable: { result: "skipped" } };
-    assert.equal(runInNewContext(condition, { cancelled: () => cancelled, needs }), expected,
-      `Canary smoke: publisher=${result}, cancelled=${cancelled}`);
-  }
-  assert.match(
-    releaseWorkflow,
-    /PAPERCLIPAI_VERSION: \$\{\{ needs\.publish_canary\.outputs\.canary_version \}\}/,
-  );
-  assert.match(releaseWorkflow, /test:canary-onboarding-smoke/);
-  assert.match(
-    releaseWorkflow,
-    /smoke_canary_onboarding:[\s\S]*?uses: actions\/checkout@[0-9a-f]{40} # v7[\s\S]*?uses: pnpm\/action-setup@[0-9a-f]{40} # v6[\s\S]*?uses: actions\/setup-node@[0-9a-f]{40} # v7/,
-  );
-  assert.match(
-    releaseWorkflow,
-    /smoke_canary_onboarding:[\s\S]*?Install test dependencies\n\s+run: pnpm install --frozen-lockfile/,
-  );
-  assert.doesNotMatch(
-    releaseWorkflow.match(
-      /smoke_canary_onboarding:[\s\S]*?(?=\n  # ----- Nightly lane)/,
-    )?.[0] ?? "",
-    /cache: pnpm/,
-  );
-  assert.match(
-    releaseWorkflow,
-    /name: Smoke exact published canary through onboarding\n\s+env:\n\s+PAPERCLIP_CANARY_SMOKE_SERVER_LOG: \$\{\{ runner\.temp \}\}\/canary-onboarding-server\.log/,
-  );
-  assert.match(
-    releaseWorkflow,
-    /smoke_canary_onboarding:[\s\S]*?uses: actions\/upload-artifact@[0-9a-f]{40} # v7/,
-  );
-  assert.match(releaseWorkflow, /canary-onboarding-server\.log/);
-  assert.match(releaseWorkflow, /tests\/canary-onboarding\/playwright-report/);
+test("published canaries are confirmed, tagged and onboarding-smoked outside the release lock", () => {
+  const { release, finalize, publish, confirm, smoke } = canaryJobs();
+  assert.doesNotMatch(release, /smoke_canary_onboarding:|confirm-canary-publication/);
+  assert.match(publish, /outputs:\n\s+canary_version: \$\{\{ steps\.canary_tag\.outputs\.version \}\}/);
+  assert.match(publish, /run: \.\/scripts\/release\.sh canary --skip-verify --defer-registry-confirmation/);
+  assert.match(publish, /gh workflow run canary-finalize\.yml --ref master --repo "\$GITHUB_REPOSITORY" \\\n\s+-f version="\$version" -f source_sha="\$SOURCE_SHA" -f release_run_id="\$GITHUB_RUN_ID"/);
+  assert.match(publish, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
+  assert.match(publish, /permissions:\n\s+contents: read\n\s+id-token: write/);
+  assert.match(finalize, /^on:\n  workflow_dispatch:\n/m);
+  assert.match(finalize, /^permissions: \{\}$/m);
+  assert.match(confirm, /if: github\.repository == 'paperclipai\/paperclip' && github\.repository_id == '1170821064' && github\.ref == 'refs\/heads\/master'/);
+  assert.match(confirm, /permissions:\n\s+contents: write\n\s+actions: write/);
+  assert.match(confirm, /run: \.\/scripts\/confirm-canary-publication\.sh "\$VERSION" "\$SOURCE_SHA"/);
+  assert.match(confirm, /ref: \$\{\{ steps\.inputs\.outputs\.source_sha \}\}\n\s+fetch-depth: 0/, "the master-position check needs full history");
+  assert.match(confirm, /gh workflow run docker\.yml --ref "refs\/tags\/canary\/v\$VERSION"/);
+  const [validation, afterValidation] = confirm.split("      - uses: actions/checkout@");
+  assert.match(validation, /name: Validate inputs/);
+  assert.equal((validation.match(/\$\{\{ inputs\./g) ?? []).length, 3);
+  assert.doesNotMatch(afterValidation, /\$\{\{ inputs\./, "later steps read only the validated step outputs");
+  assert.doesNotMatch(smoke, /\$\{\{ inputs\./);
+  assert.match(smoke, /^    needs: confirm_canary$/m);
+  assert.doesNotMatch(smoke, /^    if: /m);
+  assert.match(smoke, /PAPERCLIPAI_VERSION: \$\{\{ needs\.confirm_canary\.outputs\.version \}\}/);
+  assert.match(smoke, /uses: actions\/checkout@[0-9a-f]{40} # v7[\s\S]*?uses: pnpm\/action-setup@[0-9a-f]{40} # v6[\s\S]*?uses: actions\/setup-node@[0-9a-f]{40} # v7/);
+  assert.match(smoke, /Install test dependencies\n\s+run: pnpm install --frozen-lockfile/);
+  assert.doesNotMatch(smoke, /cache: pnpm/);
+  assert.match(smoke, /run: pnpm run test:canary-onboarding-smoke/);
+  assert.match(smoke, /name: Smoke exact published canary through onboarding\n\s+env:\n\s+PAPERCLIP_CANARY_SMOKE_SERVER_LOG: \$\{\{ runner\.temp \}\}\/canary-onboarding-server\.log/);
+  assert.match(smoke, /uses: actions\/upload-artifact@[0-9a-f]{40} # v7/);
+  assert.match(smoke, /tests\/canary-onboarding\/playwright-report/);
+  assert.match(finalize, /NPM_PUBLISH_VERIFY_ATTEMPTS: "180"\n  NPM_PUBLISH_VERIFY_DELAY_SECONDS: "10"/);
 });
 
 test("canary smoke consumes its publisher's source-bound lockfile before frozen installation", () => {
-  const workflow = readWorkflow("release.yml");
-  const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
-  const smoke = workflow.split("  smoke_canary_onboarding:\n")[1].split("  # ----- Nightly lane")[0];
-  for (const job of [publish, smoke]) {
-    assert.match(job, /name: Checkout repository\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/);
-    assert.match(job, /name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
-    assert.match(job, /version: 9\.15\.4/);
-  }
+  const { publish, smoke } = canaryJobs();
+  assert.match(publish, /name: Checkout repository\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/);
+  assert.match(smoke, /name: Checkout repository\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+ref: \$\{\{ needs\.confirm_canary\.outputs\.source_sha \}\}/);
+  for (const job of [publish, smoke]) assert.match(job, /version: 9\.15\.4/);
   assert.match(publish, /name: Save canary smoke lockfile\n\s+uses: actions\/upload-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}\n\s+path: pnpm-lock\.yaml\n\s+if-no-files-found: error\n\s+overwrite: true\n\s+retention-days: 14/);
   assert.ok(publish.indexOf("name: Install dependencies") < publish.indexOf("name: Save canary smoke lockfile"));
   assert.ok(publish.indexOf("name: Save canary smoke lockfile") < publish.indexOf("name: Restore tracked install-time changes"));
   assert.ok(publish.indexOf("name: Restore tracked install-time changes") < publish.indexOf("name: Publish canary"));
-  assert.match(smoke, /name: Restore canary smoke lockfile\n\s+uses: actions\/download-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ github\.sha \}\}/);
+  assert.match(smoke, /name: Restore canary smoke lockfile\n\s+uses: actions\/download-artifact@[0-9a-f]{40} # v4\n\s+with:\n\s+name: canary-smoke-lockfile-\$\{\{ needs\.confirm_canary\.outputs\.source_sha \}\}\n\s+run-id: \$\{\{ needs\.confirm_canary\.outputs\.release_run_id \}\}\n\s+github-token: \$\{\{ github\.token \}\}/);
   assert.ok(smoke.indexOf("name: Restore canary smoke lockfile") < smoke.indexOf("name: Install test dependencies"));
-  assert.doesNotMatch(smoke, /run-id:|github-token:|repository:|continue-on-error|--no-frozen-lockfile/);
+  assert.doesNotMatch(smoke, /repository:|continue-on-error|--no-frozen-lockfile/);
 });
 
 for (const drift of ["patch", "manifest"]) {
@@ -394,9 +416,7 @@ for (const drift of ["patch", "manifest"]) {
       "--- a/index.js", "+++ b/index.js", "@@ -1 +1 @@",
       '-module.exports = "original";', `+module.exports = "${value}";`, "",
     ].join("\n"));
-    const workflow = readWorkflow("release.yml");
-    const publish = workflow.split("  publish_canary:\n")[1].split("  smoke_canary_onboarding:\n")[0];
-    const smoke = workflow.split("  smoke_canary_onboarding:\n")[1].split("  # ----- Nightly lane")[0];
+    const { publish, smoke } = canaryJobs();
     const installArgs = (name) => {
       const job = name === "Install dependencies" ? publish : smoke;
       const command = job.match(new RegExp(`name: ${name}\\n\\s+run: (pnpm install[^\\n]+)`))?.[1];
@@ -571,6 +591,18 @@ test("release verification builds native test binaries in a required Rust-cached
   assert.doesNotMatch(cloud, /continue-on-error|always\(\)/);
 });
 
+test("chaos verification prepares native Runner binaries before fault suites", () => {
+  const workflow = readWorkflow("runner-chaos-evals.yml");
+  const steps = workflow.split(/\n(?=      - )/);
+  const install = steps.find(step => /run:\s*pnpm install\b/.test(step));
+  const prepare = steps.find(step => /run:\s*pnpm --filter @paperclipai\/paperclip-runner build:rust\b/.test(step));
+  const faults = steps.find(step => /src\/native-session-runtime\.test\.ts/.test(step));
+  assert.ok(install && prepare && faults, "the real Runner fault suite needs its native build prerequisite");
+  assert.ok(steps.indexOf(install) < steps.indexOf(prepare));
+  assert.ok(steps.indexOf(prepare) < steps.indexOf(faults));
+  assert.doesNotMatch(prepare, /^\s+(?:if|continue-on-error):/m);
+});
+
 test("Runner eval workflows pin actions and gate paid live execution", () => {
   const actionPinWorkflows = [
     readWorkflow("release-verify.yml"),
@@ -579,8 +611,8 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     readWorkflow("runner-full-stack-e2e.yml"),
     readWorkflow("e2e.yml"),
     readWorkflow("runner-protocol-live-evals.yml"),
-    readWorkflow("chat-feature-testops.yml"),
-    readWorkflow("chat-completion-testops.yml"),
+    readWorkflow("chat-catalog-testops.yml"),
+    readWorkflow("chat-catalog-testops-case.yml"),
   ];
 
   for (const workflow of actionPinWorkflows) {
@@ -620,8 +652,10 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     "runner-full-stack-e2e.yml",
     "runner-live-evals.yml",
     "runner-protocol-live-evals.yml",
-    "chat-feature-testops.yml",
-    "chat-completion-testops.yml",
+    "chat-catalog-testops.yml",
+    "chat-catalog-testops-case.yml",
+    // On-demand crash-point suite (durable ownership plan, Phase 5).
+    "crash-points.yml",
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =
@@ -640,6 +674,79 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
   for (const name of paidWorkflowNames) {
     const workflow = readWorkflow(name);
     const triggerHeader = workflow.slice(0, workflow.indexOf("\njobs:\n"));
+    if (name === "chat-catalog-testops.yml") {
+      assert.match(triggerHeader, /^  workflow_dispatch:/m);
+      assert.doesNotMatch(triggerHeader, /^  (?:push|pull_request|workflow_call|workflow_run):/m);
+      const callerBlocks = ["chat", "chat_external"].map(id => workflow.split(`  ${id}:\n`)[1].split(/\n  [a-z_]+:\n/)[0]);
+      assert.doesNotMatch(callerBlocks.reduce((rest, block) => rest.replace(block, ""), workflow), providerSecretReference);
+      assert.match(workflow, /group: chat-catalog-testops-streaming-v1/);
+      for (const id of ["chat", "chat_external"]) {
+        const block = workflow.split(`  ${id}:\n`)[1].split(/\n  [a-z_]+:\n/)[0];
+        const assertCaller = block => {
+        assert.match(block, /if: needs\.authorize\.outputs\.operation == 'evaluate'/);
+        assert.ok(block.includes(`needs.select.outputs.${id === "chat" ? "native" : "external"}_count != '0'`));
+        assert.match(block, /needs: \[authorize, select, build\]/);
+        assert.match(block, /uses: \.\/\.github\/workflows\/chat-catalog-testops-case\.yml/);
+        assert.match(block, /protocol: streaming-v1/);
+        const mapping = block.split("\n    secrets:\n");
+        assert.equal(mapping.length, 2);
+        assert.deepEqual(mapping[1].trim().split("\n").map(line => line.trim()), [
+          "OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}",
+          "ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}",
+          "ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}",
+        ]);
+        assert.doesNotMatch(block, /secrets: inherit/);
+        assert.match(block, /fail-fast: false/);
+        };
+        assertCaller(block);
+        const lane = id === "chat" ? "native" : "external";
+        for (const mutant of [block.replace("needs.authorize.outputs.operation == 'evaluate' && ", ""),
+          block.replace(`needs.select.outputs.${lane}_count != '0'`, 'true'),
+          block.replace('${{ secrets.OPENROUTER_API_KEY }}', "''"),
+          block + '\n      EXTRA: ${{ secrets.EXTRA }}',
+          block.replace(/\n    secrets:[\s\S]*/, '\n    secrets: inherit')]) assert.throws(() => assertCaller(mutant));
+      }
+      const final = workflow.split("  verify:\n")[1];
+      assert.match(final, /chat-completion-testops-cli\.mjs verify-stream/);
+      assert.doesNotMatch(final, /allurectl|cli\.mjs upload(?: |$)/);
+      continue;
+    }
+    if (name === "chat-catalog-testops-case.yml") {
+      assert.match(triggerHeader, /^  workflow_call:/m);
+      assert.doesNotMatch(triggerHeader, /^  (?:push|pull_request|workflow_dispatch|workflow_run):/m);
+      const chat = workflow.split("  chat:\n")[1].split("\n  report:\n")[0];
+      const report = workflow.split("  report:\n")[1].split("\n  upload:\n")[0];
+      const upload = workflow.split("  upload:\n")[1];
+      const boundary = value => {
+        assert.match(value, /environment: runner-e2e-private-paid/);
+        assert.match(value, /CHAT_TESTOPS_PROTOCOL: \$\{\{ inputs\.protocol \}\}/);
+        assert.match(value, /test "\$CHAT_TESTOPS_PROTOCOL" = streaming-v1/);
+        assert.match(value, /chat-completion-testops-cli\.mjs guard/);
+        assert.match(value, /chat-completion-testops-cli\.mjs verify-selection/);
+        assert.match(value, /--max-parallel 1 --max-automatic-retries 0/);
+        assert.match(value, /PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1/);
+        assert.doesNotMatch(value, /ALLURE_TOKEN/);
+        assert.equal([...value.matchAll(providerSecretReference)].length, 2);
+        assert.ok(value.indexOf("chat-completion-testops-cli.mjs verify-selection") < value.search(providerSecretReference));
+      };
+      boundary(chat);
+      for (const mutant of [chat.replace("environment: runner-e2e-private-paid", "environment: unprotected"),
+        chat.replace("cli.mjs verify-selection", "cli.mjs unverified-selection"), chat + "\n ALLURE_TOKEN: leaked"]) {
+        assert.throws(() => boundary(mutant));
+      }
+      assert.match(report, /needs: chat/); assert.match(report, /always\(\) && !cancelled\(\)/);
+      assert.match(report, /environment: runner-e2e-private-history/);
+      assert.doesNotMatch(report, /secrets\./);
+      assert.match(report, /manual-private-transfer\.ts download-cell/);
+      assert.match(report, /cli\.mjs prepare-case-upload/);
+      assert.match(upload, /needs: report/); assert.match(upload, /always\(\) && !cancelled\(\)/);
+      assert.match(upload, /environment: runner-e2e-testops-reporting/);
+      assert.doesNotMatch(upload, /configure-aws-credentials|manual-private-transfer|secrets\.(?:OPENROUTER|ANTHROPIC)/);
+      assert.match(upload, /ALLURE_TOKEN: \$\{\{ secrets\.ALLURE_TOKEN \}\}/);
+      assert.match(upload, /cli\.mjs upload-case/);
+      assert.doesNotMatch(upload, /allurectl/);
+      continue;
+    }
     assert.doesNotMatch(
       triggerHeader,
       /^\s{2}(?:pull_request|pull_request_target|push|workflow_call|workflow_run):/m,
@@ -654,68 +761,6 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
       (block) => [...block.matchAll(providerSecretReference)].length > 0,
     );
     assert.ok(providerJobs.length > 0, `${name} needs a provider-secret job`);
-    if (name === "chat-completion-testops.yml") {
-      assert.equal(providerJobs.length, 1);
-      const assertBoundary = (block) => {
-        assert.match(block, /^  chat:\n/);
-        assert.match(block, /\n    needs: \[authorize, select, build\]\n/);
-        assert.match(block, /\n    if: needs\.authorize\.outputs\.operation == 'evaluate'\n/);
-        assert.match(block, /\n    environment: runner-e2e-private-paid\n/);
-        assert.match(block, /\n      - \*checkout\n      - \*node\n      - \*guard\n/);
-        assert.match(block, /chat-completion-testops-cli\.mjs verify-selection/);
-        assert.match(block, /OPENROUTER_API_KEY: \$\{\{ secrets\.OPENROUTER_API_KEY \}\}/);
-        assert.match(block, /--id "\$\{\{ matrix\.executionId \}\}" --max-parallel 1 --max-automatic-retries 0/);
-        assert.match(block, /PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1/);
-        assert.match(block, /max-parallel: 1/);
-        assert.doesNotMatch(block, /ALLURE_TOKEN/);
-        assert.equal([...block.matchAll(providerSecretReference)].length, 1);
-        assert.ok(block.indexOf("      - *guard") < block.search(providerSecretReference));
-        assert.ok(block.indexOf("chat-completion-testops-cli.mjs verify-selection") < block.search(providerSecretReference));
-      };
-      const block = providerJobs[0]; assertBoundary(block);
-      assert.equal([...workflow.matchAll(providerSecretReference)].length, 1);
-      for (const mutant of [
-        block.replace("needs: [authorize, select, build]", "needs: [authorize, build]"),
-        block.replace("environment: runner-e2e-private-paid", "environment: unprotected"),
-        block.replace("      - *guard\n", ""),
-        block.replace("chat-completion-testops-cli.mjs verify-selection", "chat-completion-testops-cli.mjs unverified-selection"),
-        block.replace('--id "${{ matrix.executionId }}"', "--all"),
-        block.replace("PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1", "PAPERCLIP_CHAT_COMPLETION_TESTOPS: unknown"),
-      ]) assert.throws(() => assertBoundary(mutant));
-      continue;
-    }
-    if (name === "chat-feature-testops.yml") {
-      assert.equal(providerJobs.length, 1);
-      const assertBoundary = (block) => {
-        assert.match(block, /^  chat:\n/);
-        assert.match(block, /\n    needs: \[authorize, select, build\]\n/);
-        assert.match(block, /\n    if: needs\.authorize\.outputs\.operation == 'evaluate'\n/);
-        assert.match(block, /\n    environment: runner-e2e-private-paid\n/);
-        assert.match(block, /\n      - \*checkout\n      - \*node\n      - \*guard\n/);
-        assert.match(block, /testops-chat-reporter\.mjs verify-selection chat-testops-selection\/testops-selection\.json/);
-        assert.match(block, /OPENROUTER_API_KEY: \$\{\{ secrets\.OPENROUTER_API_KEY \}\}/);
-        assert.match(block, /--id chat-features\.runner-opencode-deepseek-1017\.local\.create-backlog --max-parallel 1 --max-automatic-retries 0/);
-        assert.doesNotMatch(block, /ALLURE_TOKEN/);
-        assert.equal([...block.matchAll(providerSecretReference)].length, 1);
-        assert.ok(block.indexOf("      - *guard") < block.search(providerSecretReference));
-        assert.ok(block.indexOf("testops-chat-reporter.mjs verify-selection") < block.search(providerSecretReference));
-      };
-      const block = providerJobs[0];
-      assertBoundary(block);
-      assert.equal([...workflow.matchAll(providerSecretReference)].length, 1);
-      assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
-      assert.match(workflow, /run: node tests\/runner-e2e\/testops-chat-dispatch\.ts/);
-      assert.match(workflow, /TESTOPS_ALLOWED_ACTOR_IDS: \$\{\{ vars\.RUNNER_E2E_ALLOWED_ACTOR_IDS \}\}/);
-      for (const mutant of [
-        block.replace("needs: [authorize, select, build]", "needs: [authorize, build]"),
-        block.replace("environment: runner-e2e-private-paid", "environment: unprotected"),
-        block.replace("      - *guard\n", ""),
-        block.replace("testops-chat-reporter.mjs verify-selection", "testops-chat-reporter.mjs unverified-selection"),
-        block.replace("OPENROUTER_API_KEY:", "ALLURE_TOKEN:"),
-        block.replace("--id chat-features.runner-opencode-deepseek-1017.local.create-backlog", "--id chat-features.runner-opencode.local.create-backlog"),
-      ]) assert.throws(() => assertBoundary(mutant));
-      continue;
-    }
     for (const block of providerJobs) {
       if (name === "runner-protocol-live-evals.yml") {
         assert.ok(block.includes("name: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && 'runner-e2e-private-paid' || 'runner-e2e-paid' }}"));
@@ -834,7 +879,7 @@ test("direct protocol concurrency override only lowers the configured ceiling", 
   const script = workflow.slice(start, end) + '\nprintf "%s" "$MAX_PARALLEL"\n';
   for (const [requested, expected] of [["", "8"], ["2", "2"], ["8", "8"], ["1", null], ["9", null], ["0", null], ["-1", null], ["2.5", null], ["garbage", null], ["9999999999999999999999", null]]) {
     const result = spawnSync("bash", ["-eu", "-c", script], {
-      env: { ...process.env, MAX_PARALLEL: "8", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
+      env: { ...process.env, MAX_PARALLEL: "8", MAX_PARALLEL_LIMIT: "57", REQUESTED_MAX_PARALLEL: requested }, encoding: "utf8",
     });
     assert.equal(result.status, expected === null ? 1 : 0, requested);
     if (expected !== null) assert.equal(result.stdout, expected);
@@ -865,13 +910,27 @@ test("release daemon production uses exact-source native hosts and no publisher 
   assert.match(runner.scripts['build:binary'], /cargo build --release --manifest-path runner\/Cargo.toml --locked/);
   assert.match(runner.scripts['build:binary'], /&& node scripts\/stage-runner-binary.mjs$/);
   assert.match(producer, /stage-release-runner-binaries.mjs record/);
-  for (const job of ["runner_chaos_evals", "typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"]) {
+  for (const job of ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"]) {
     assert.ok(workflow.includes(`${job}:\n    if: \${{ !inputs.runner_binaries_only }}`));
   }
+  // Binary-only calls still skip the chaos evals; Cloud readiness also turns
+  // them off here and runs them as its own non-gating job (2026-11-12).
+  assert.ok(workflow.includes("runner_chaos_evals:\n    if: ${{ !inputs.runner_binaries_only && inputs.runner_chaos_evals }}"));
   const release = readWorkflow("release.yml");
   const source = release.split("  release_runner_source:\n")[1].split(/\n  [a-z_]+:\n/)[0];
   const binaries = release.split("  release_runner_binaries:\n")[1].split(/\n  [a-z_]+:\n/)[0];
-  assert.match(source, /needs: \[verify_canary, select_nightly, select_beta, preflight_stable\]/);
+  assert.match(source, /needs: \[select_nightly, select_beta, preflight_stable\]/);
+  const sourceCondition = source.match(/^    if: >-\n((?: {6}.+\n)+)/m)?.[1].replace(/\s+/g, " ").trim();
+  assert.ok(sourceCondition, "release_runner_source needs a condition");
+  const pushGithub = { event_name: "push", repository: "paperclipai/paperclip", repository_id: "1170821064", ref: "refs/heads/master" };
+  const skippedLanes = { select_nightly: { result: "skipped" }, select_beta: { result: "skipped" }, preflight_stable: { result: "skipped" } };
+  const selectsSource = (github) => runInNewContext(sourceCondition, { cancelled: () => false, github, needs: skippedLanes });
+  assert.equal(selectsSource(pushGithub), true, "a canary builds its daemons without waiting for the source proof");
+  for (const change of [{ repository: "someone/paperclip" }, { repository_id: "1" }, { ref: "refs/heads/feature" }, { event_name: "schedule" }]) {
+    assert.equal(selectsSource({ ...pushGithub, ...change }), false, JSON.stringify(change));
+  }
+  const publishCanary = release.split("  publish_canary:\n")[1].split(/\n  [a-z_]+:\n/)[0];
+  assert.match(publishCanary, /needs\.verify_canary\.result == 'success'/, "publication still waits for the source proof");
   assert.match(source, /!cancelled\(\)/);
   assert.match(binaries, /needs: release_runner_source/);
   assert.match(binaries, /ref: \$\{\{ needs\.release_runner_source\.outputs\.sha \}\}/);
@@ -879,7 +938,7 @@ test("release daemon production uses exact-source native hosts and no publisher 
   const condition = binaries.match(/^    if: (.+)$/m)?.[1].replace(/^\$\{\{\s*|\s*\}\}$/g, "");
   assert.match(condition, /^!cancelled\(\) && needs\.release_runner_source\.result == 'success' && needs\.release_runner_source\.outputs\.required == 'true'$/,
     "Native compilation must bypass deliberately skipped channel ancestors and require successful exact-source selection");
-  const laneJobs = ["verify_canary", "select_nightly", "select_beta", "preflight_stable"];
+  const laneJobs = ["select_nightly", "select_beta", "preflight_stable"];
   for (const activeLane of laneJobs) {
     for (const [result, required, cancelled, expected] of [
       ["success", "true", false, true], ["failure", "true", false, false],
@@ -889,7 +948,7 @@ test("release daemon production uses exact-source native hosts and no publisher 
     ]) {
       const needs = Object.fromEntries(laneJobs.map(job => [job, { result: job === activeLane ? "success" : "skipped" }]));
       needs.release_runner_source = { result, outputs: { required } };
-      assert.equal(Object.values(needs).filter(job => job.result === "skipped").length, result === "skipped" ? 4 : 3);
+      assert.equal(Object.values(needs).filter(job => job.result === "skipped").length, result === "skipped" ? 3 : 2);
       assert.equal(runInNewContext(condition, { cancelled: () => cancelled, needs }), expected,
         `${activeLane}: source=${result}, required=${required}, cancelled=${cancelled}`);
     }
@@ -922,7 +981,10 @@ test('native dependency caches are target-bound and unmerged master callers cann
   const cache = producer.split('      - name: Cache native Rust dependencies\n')[1].split('\n      - ')[0];
   assert.match(cache, /Swatinem\/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6/);
   assert.match(cache, /workspaces: \$\{\{ steps.native_rust_workspace.outputs.path \}\} -> target/);
-  assert.match(cache, /shared-key: release-native-v2-\$\{\{ matrix.host \}\}-\$\{\{ matrix.target \}\}-\$\{\{ hashFiles\('packages\/paperclip-runner\/protocol\/\*\*', 'packages\/paperclip-runner\/src\/\*\*', 'packages\/paperclip-runner\/\*.json'\) \}\}/);
+  const key = cache.match(/^\s*shared-key: (.+)$/m)?.[1];
+  assert.ok(key?.startsWith("release-native-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', "));
+  assert.ok(key?.endsWith("-${{ matrix.host }}-${{ matrix.target }}"));
+  assert.doesNotMatch(key, /protocol\/\*\*|src\/\*\*/, "only dependency crates are cached, so runner source must not invalidate them");
   for (const option of ['cache-workspace-crates', 'cache-bin', 'cache-on-failure']) {
     assert.match(cache, new RegExp(option + ': false'));
   }

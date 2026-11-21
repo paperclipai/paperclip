@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
 
 /** Every authentication host uses the same local credential check and login lifecycle. */
 export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean) {
@@ -48,17 +49,17 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     }
     const request = isolated ? current.current!.request : Promise.resolve(null);
     async function check() {
-      if (checking || cancelled) return;
+      if (checking || cancelled || (isolated && current.current?.request !== request)) return;
       checking = true;
       clearTimeout(timer);
       try {
         const result = await request;
-        if (cancelled) return;
+        if (cancelled || (isolated && current.current?.request !== request)) return;
         setAttempt(result);
         const next = await aiConnectionsApi.checkLocalLogin(companyId!, {
           ...latestIntent.current, ...(result ? { localSessionId: result.sessionId } : {}),
         });
-        if (cancelled) return;
+        if (cancelled || (isolated && current.current?.request !== request)) return;
         setStatus(next.status);
         setAuthorizationUrl(next.authorizationUrl ?? null);
         setCode(next.code ?? null);
@@ -68,7 +69,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
         // browser visit; sign-in never requires repeated Connect clicks.
         if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
       } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not check local sign-in.");
+        if (!cancelled && (!isolated || current.current?.request === request)) setError(describeError(cause).body);
       } finally { checking = false; }
     }
     const onFocus = () => { if (!document.hidden) void check(); };
@@ -93,6 +94,14 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     status,
     preparing: active && !status && !error,
     error,
+    cancel: () => {
+      cancelCurrent();
+      setAttempt(null);
+      setStatus(null);
+      setAuthorizationUrl(null);
+      setCode(null);
+      setError(null);
+    },
     retry: () => { restartRequested.current = true; cancelCurrent(); setGeneration((value) => value + 1); },
     submitCode: async (browserCode: string) => {
       if (!companyId || !attempt) throw new Error("Start sign-in before submitting a code.");

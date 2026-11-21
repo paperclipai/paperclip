@@ -1,10 +1,15 @@
 import type { TaskChatItem, TaskChatMarkerItem, TaskChatMessageItem } from "./task-chat-model";
 
+const RECOVERY_STATEMENT = /^Paperclip tried to (?:start|continue) this task again, but it still could not (?:start|continue)\b/i;
+const LEGACY_RECOVERY_STATEMENT = /^Paperclip (?:automatically )?retried (?:dispatch|continuation|this issue's run)\b[^\r\n]*\bit still has no live execution path\b/i;
+const RECOVERY_TITLES = new Set(["task could not continue", "no live execution path"]);
+
 export function isNoLiveExecutionPathNotice(item: TaskChatMessageItem): boolean {
   if (item.author !== "system") return false;
-  const recoveryStatement = /^Paperclip (?:automatically )?retried (?:dispatch|continuation|this issue's run)\b[^\r\n]*\bit still has no live execution path\b/i.test(item.text.trim());
+  const text = item.text.trim();
+  const recoveryStatement = RECOVERY_STATEMENT.test(text) || LEGACY_RECOVERY_STATEMENT.test(text);
   if (item.presentation) {
-    if (item.presentation.title?.trim().toLowerCase() === "no live execution path") return true;
+    if (RECOVERY_TITLES.has(item.presentation.title?.trim().toLowerCase() ?? "")) return true;
     // The stranded-recovery producer can replace the family title with
     // "Automatic recovery blocked" or a classified source-run failure.
     // Require both its recovery statement and saved action metadata so an
@@ -54,8 +59,7 @@ export function compactAdjacentErrors(items: readonly TaskChatItem[]): {
     const latest = items[end - 1];
     if (mixed && errorKind(latest) === "recovery") {
       const marker = items.slice(start, end).reverse().find(
-        (item): item is TaskChatMarkerItem => item.kind === "marker"
-          && (item.label === "Run failed" || item.label === "Usage limit reached"),
+        (item): item is TaskChatMarkerItem => item.kind === "marker" && isRetryableFailureMarker(item),
       );
       // Preserve the retry target separately from the surviving error's text.
       // The renderer still applies the parent's permission and pending state.
@@ -65,4 +69,10 @@ export function compactAdjacentErrors(items: readonly TaskChatItem[]): {
     start = end;
   }
   return { items: result, retryMarkers };
+}
+
+const RETRYABLE_FAILURE_LABELS = new Set(["Run failed", "Usage limit reached", "Model unavailable"]);
+
+export function isRetryableFailureMarker(marker: Pick<TaskChatMarkerItem, "variant" | "label">) {
+  return marker.variant === "interrupted" && RETRYABLE_FAILURE_LABELS.has(marker.label);
 }

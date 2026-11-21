@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueWorkProducts, issueThreadInteractions,
+import { agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issues, issueWorkProducts, issueThreadInteractions,
   nativeRunFinalizations, nativeRunResults, statusDecisions, workAssessments, workspaceOperations } from "@paperclipai/db";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -32,6 +32,10 @@ import { commitNativeStatusDecision } from "../services/native-runtime/status-de
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
+import * as githubFetch from "../services/github-fetch.js";
+import * as secrets from "../services/secrets.js";
 
 describe("native reassessment worker lifecycle", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
@@ -169,6 +173,35 @@ describe("native reassessment worker lifecycle", () => {
     await quiet();
   });
 
+  it("completes a succeeded managed-identity run after its automatic PR review is withdrawn", async () => {
+    const seeded = await seedReview();
+    const binding = { companyId, agentId, issueId: seeded.issueId, runId: seeded.runId };
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "A",
+      status: "active", membershipRole: "member" }).onConflictDoNothing();
+    await initializeRunIdentity(db, { ...binding, responsibleUserId: "A", cause: "instruction" });
+    const grant = await githubCredentialsFixture(() => db).grant(binding, "A");
+    const vault = secrets.secretService(db);
+    vi.spyOn(secrets, "secretService").mockReturnValue({ ...vault,
+      resolveUserSecretValue: vi.fn(async () => ({ value: "test-reassessment-token", manifestEntry: {
+        configPath: "oauth.access_token", envKey: null, secretId: grant.secretId, secretKey: "test-github",
+        version: 1, provider: "local_encrypted" as const, outcome: "success" as const,
+      } })),
+    });
+    const fetcher = vi.spyOn(githubFetch, "ghFetch").mockImplementation(async (_url, init) =>
+      new Headers(init?.headers).get("authorization") === "Bearer test-reassessment-token"
+        ? Response.json({ state: "closed", merged: true }) : new Response(null, { status: 404 }));
+    await db.insert(issueWorkProducts).values({ companyId, issueId: seeded.issueId, type: "pull_request",
+      provider: "github", title: "Merged implementation", status: "merged",
+      url: "https://github.com/example/private-repo/pull/42" });
+    await dismissAutomaticCompletionReviews(db, seeded.issueId);
+    await start();
+    await flush();
+    expect(await status(seeded.issueId)).toBe("done");
+    expect(fetcher).toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe("succeeded");
+    await quiet();
+  });
+
   it.each(["force release", "release", "terminal execution", "terminal checkout", "queue release"] as const)(
     "wakes dormant reassessment from real %s", async action => {
       const seeded = await seedReview();
@@ -238,7 +271,7 @@ describe("native reassessment worker lifecycle", () => {
       backlog.push(seeded);
     }
     const work = nativeStatusReassessmentWork(db), scope = { companyId };
-    const expected = new Set(backlog.map(row => row.runId));
+    const expected = new Set<string>(backlog.map(row => row.runId));
     const discovered = await work.load(scope);
     expect(discovered.filter(row => expected.has(row.id))).toHaveLength(103);
     const debug = db.$client.options.debug;

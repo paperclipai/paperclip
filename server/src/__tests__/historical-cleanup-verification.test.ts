@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, environmentCustomImageSetupSessions, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
 import { historicalCleanupVerificationService } from "../services/historical-cleanup-verification.js";
-import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../services/environment-runtime.js";
 import { withoutCleanupVerification } from "../services/cleanup-verification-proof.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
@@ -80,6 +80,7 @@ if (!support.supported) console.warn(`Skipping historical cleanup database tests
       PAPERCLIP_PRIMARY_HOST: "fixture.paperclip.test", PAPERCLIP_AUTH_SECRET: "fixture-secret" })) vi.stubEnv(key, value);
     const fetchImpl = vi.fn(); vi.stubGlobal("fetch", fetchImpl);
     const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
+      resolveCapabilities: async () => classifyEnvironmentCapabilities({}),
       acquireRunLease: async () => { throw new Error("unexpected acquire"); }, releaseRunLease: async () => null,
       inspectLeaseResource: async ({ lease }) => ({ providerLeaseId: lease.providerLeaseId!, state: providerState }),
     }] });

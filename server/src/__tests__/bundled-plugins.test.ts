@@ -2,6 +2,8 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { pluginManifestValidator } from "../services/plugin-manifest-validator.js";
+import kubernetes from "../../../packages/plugins/sandbox-providers/kubernetes/src/manifest.js";
 import {
   BUNDLED_PLUGIN_CATALOG,
   DEFAULT_BUNDLED_CATALOG_ROOT,
@@ -272,7 +274,7 @@ function makeDeps(overrides?: {
   const installedRows = new Map(
     Object.entries(rows).map(([key, row]) => [key, normalize(row)] as const),
   );
-  const installPlugin = vi.fn(async ({ localPath }: { localPath: string }) => {
+  const installPlugin = vi.fn(async ({ localPath }: { localPath: string }): Promise<{ manifest: { id: string } | null }> => {
     if (overrides?.installError) throw overrides.installError;
     const entry = BUNDLED_PLUGIN_CATALOG.find((candidate) =>
       localPath.endsWith(candidate.relativePath),
@@ -413,6 +415,59 @@ describe("ensureBundledPlugins", () => {
       "row-daytona",
       expect.objectContaining({ version: "0.1.2" }),
     );
+  });
+
+  it.each(["plugin", "driver", "setting"] as const)("refreshes only a %s description for an existing Core bundle at the same version", async (field) => {
+    const previous = { ...makeManifest(DAYTONA.pluginKey, "0.1.0"), description: "Old plugin description",
+      environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider" as const, displayName: "Daytona", description: "Old driver description",
+        configSchema: { type: "object", properties: { autoStopInterval: { type: "number", description: "Old setting description" } } } }] };
+    const manifest = structuredClone(previous);
+    if (field === "plugin") manifest.description = "New plugin description";
+    if (field === "driver") manifest.environmentDrivers[0]!.description = "New driver description";
+    if (field === "setting") manifest.environmentDrivers[0]!.configSchema.properties.autoStopInterval.description = "New setting description";
+    const { deps, loadManifest, update, installPlugin } = makeDeps({ rows: { [DAYTONA.pluginKey]: {
+      id: "row-daytona", pluginKey: DAYTONA.pluginKey, status: "ready", version: "0.1.0", manifestJson: previous,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-daytona", { version: "0.1.0", manifest });
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a parsed Core bundle against a JSON-persisted registration without repeated writes", async () => {
+    const manifest = pluginManifestValidator().parseOrThrow(kubernetes);
+    const stored = JSON.parse(JSON.stringify(manifest)); stored.description = "Previous help text";
+    const { deps, loadManifest, update } = makeDeps({ rows: { [K8S.pluginKey]: {
+      id: "row-kubernetes", pluginKey: K8S.pluginKey, status: "ready", version: manifest.version, manifestJson: stored,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([K8S], deps, { reinstallUninstalled: false });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-kubernetes", { version: manifest.version, manifest });
+    const unchanged = makeDeps({ rows: { [K8S.pluginKey]: {
+      id: "row-kubernetes", pluginKey: K8S.pluginKey, status: "ready", version: manifest.version, manifestJson: JSON.parse(JSON.stringify(manifest)),
+    } } });
+    unchanged.loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([K8S], unchanged.deps, { reinstallUninstalled: false });
+    expect(unchanged.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["capability", "entrypoint", "schema", "default", "pending-approval", "uninstalled"] as const)("does not treat a %s change as description-only", async (change) => {
+    const previous = { ...makeManifest(DAYTONA.pluginKey, "0.1.0"), description: "Old description",
+      entrypoints: { worker: "dist/worker.js" },
+      environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider" as const, displayName: "Daytona",
+        configSchema: { type: "object", properties: { config: { type: "object", default: { description: "old runtime value" } } } } }] };
+    const manifest = structuredClone(previous); manifest.description = "New description";
+    if (change === "capability") manifest.capabilities = ["issues.read"];
+    if (change === "entrypoint") manifest.entrypoints.worker = "dist/other.js";
+    if (change === "schema") manifest.environmentDrivers[0]!.configSchema.properties.config.type = "string";
+    if (change === "default") manifest.environmentDrivers[0]!.configSchema.properties.config.default.description = "new runtime value";
+    const { deps, loadManifest, update } = makeDeps({ rows: { [DAYTONA.pluginKey]: {
+      id: "row-daytona", pluginKey: DAYTONA.pluginKey, status: change === "pending-approval" ? "upgrade_pending" : change === "uninstalled" ? "uninstalled" : "ready",
+      version: "0.1.0", manifestJson: previous,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("does not reconcile when the persisted version already matches the bundle", async () => {

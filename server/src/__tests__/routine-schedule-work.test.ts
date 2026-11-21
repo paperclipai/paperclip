@@ -47,6 +47,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   const create = (owner = db, catchUpPolicy: "skip_missed" | "enqueue_missed_with_cap" = "skip_missed") => service(owner).create(companyId, {
     title: "Scheduled routine", assigneeAgentId: agentId, priority: "medium", status: "active",
     concurrencyPolicy: "coalesce_if_active", catchUpPolicy,
+    variables: [],
   }, {});
   async function start(options: {
     next?: () => Promise<number | null>;
@@ -80,7 +81,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("retains overdue catch-up work after the first capped pass", async () => {
     const routine = await create(db, "enqueue_missed_with_cap");
-    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" }, {});
+    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 * * * *", timezone: "UTC" }, {});
     await db.update(routineTriggers).set({ nextRunAt: new Date("2026-07-15T10:00:00Z") }).where(eq(routineTriggers.id, trigger.id));
     await start(); await settled();
     expect(await db.select().from(routineRuns)).toHaveLength(25);
@@ -94,7 +95,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("disarms on company pause and rearms from the committed reactivation", async () => {
     const routine = await create();
-    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     await start(); await settled();
     expect(coordinator!.nextWakeAt()).toBe(trigger.nextRunAt!.getTime());
     await companyService(db).update(companyId, { status: "paused" });
@@ -110,10 +111,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await start(); await quiet();
     const routine = await create();
     await quiet();
-    const created = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const created = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(created.trigger.nextRunAt!.getTime()));
     const updated = await service().updateTrigger(created.trigger.id, { cronExpression: "0 * * * *" }, {});
-    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(updated.trigger.nextRunAt!.getTime()));
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(updated!.trigger.nextRunAt!.getTime()));
     await service().updateTrigger(created.trigger.id, { enabled: false }, {});
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull());
     await quiet();
@@ -127,7 +128,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("restores a deleted schedule from its revision through the ordinary producer", async () => {
     const routine = await create();
-    const created = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const created = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     await start();
     await service().deleteTrigger(created.trigger.id, {});
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull());
@@ -145,7 +146,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const written = new Promise<void>(resolve => { entered = resolve; });
     let expected: number | null = null;
     const writing = db.transaction(async tx => {
-      const created = await service(tx as unknown as Db).createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+      const created = await service(tx as unknown as Db).createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
       expected = created.trigger.nextRunAt!.getTime(); entered(); await held;
     });
     try {
@@ -155,7 +156,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     } finally { release(); await writing; }
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(expected));
     await expect(db.transaction(async tx => {
-      await service(tx as unknown as Db).createTrigger(routine.id, { kind: "schedule", cronExpression: "* * * * *", timezone: "UTC" }, {});
+      await service(tx as unknown as Db).createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "* * * * *", timezone: "UTC" }, {});
       throw new Error("rollback fixture");
     })).rejects.toThrow("rollback fixture");
     await settled();
@@ -168,7 +169,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const routine = await create();
     await start(); await quiet();
     draining = true;
-    const created = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const created = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     await vi.advanceTimersByTimeAsync(1_000);
     await quiet(60_000, false);
     draining = false;
@@ -179,7 +180,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("reconstructs an overdue schedule on restart and keeps completed history passive", async () => {
     const routine = await create();
-    await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "* * * * *", timezone: "UTC" }, {});
+    await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "* * * * *", timezone: "UTC" }, {});
     await start(); await settled();
     await coordinator!.stop(); coordinator = undefined;
     vi.setSystemTime(new Date("2026-07-16T12:35:30Z"));
@@ -194,7 +195,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("retries a failed deadline read after drain and becomes quiet after successful reconstruction", async () => {
     const routine = await create();
-    const created = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const created = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     const next = vi.fn().mockRejectedValueOnce(new Error("deadline unavailable"))
       .mockImplementation(() => service().nextScheduledTriggerAt());
     await start({ next });
@@ -211,7 +212,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("reconciles a schedule changed while the previous deadline read was in flight", async () => {
     const routine = await create();
-    const created = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const created = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     let release!: () => void, entered!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     const read = new Promise<void>(resolve => { entered = resolve; });
@@ -223,7 +224,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     try {
       await read;
       const updated = await service().updateTrigger(created.trigger.id, { cronExpression: "0 * * * *" }, {});
-      expected = updated.trigger.nextRunAt!.getTime();
+      expected = updated!.trigger.nextRunAt!.getTime();
     } finally { release(); await starting; }
     await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(expected));
     await quiet();
@@ -231,8 +232,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("stops between claimed trigger batches and leaves unclaimed work for restart", async () => {
     const routine = await create();
-    await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" }, {});
-    await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" }, {});
+    await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 * * * *", timezone: "UTC" }, {});
+    await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 * * * *", timezone: "UTC" }, {});
     await db.update(routineTriggers).set({ nextRunAt: new Date("2026-07-16T12:00:00Z") });
     let candidates = 0;
     await start({ run: () => service().tickScheduledTriggers(new Date(), () => ++candidates === 1) });
@@ -249,7 +250,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("refreshes a saved deadline advanced by a manual run naming the trigger", async () => {
     const routine = await create();
-    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     await db.update(routineTriggers).set({ nextRunAt: new Date("2026-08-01T00:00:00Z") }).where(eq(routineTriggers.id, trigger.id));
     await start(); await settled();
     expect(coordinator!.nextWakeAt()).toBe(Date.parse("2026-08-01T00:00:00Z"));
@@ -260,7 +261,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it.each(["archive", "remove"] as const)("disarms a company schedule after %s", async operation => {
     const routine = await create();
-    await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     await start(); await settled();
     expect(coordinator!.nextWakeAt()).not.toBeNull();
     if (operation === "remove") {
@@ -275,7 +276,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("starts during drain without querying and reconstructs schedules when admission resumes", async () => {
     const routine = await create();
-    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     draining = true;
     const select = vi.spyOn(db, "select");
     try { await start(); expect(select).not.toHaveBeenCalled(); } finally { select.mockRestore(); }
@@ -288,7 +289,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("does not consume overdue triggers in a paused company", async () => {
     const routine = await create();
-    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 * * * *", timezone: "UTC" }, {});
+    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 * * * *", timezone: "UTC" }, {});
     const due = new Date("2026-07-16T12:00:00Z");
     await db.update(routineTriggers).set({ nextRunAt: due }).where(eq(routineTriggers.id, trigger.id));
     await companyService(db).update(companyId, { status: "paused" });
@@ -301,7 +302,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it.each(["pause", "resume"] as const)("refreshes schedules when budget enforcement changes company state: %s", async operation => {
     const routine = await create();
-    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const { trigger } = await service().createTrigger(routine.id, { kind: "schedule", enabled: true, cronExpression: "0 0 * * *", timezone: "UTC" }, {});
     await db.insert(costEvents).values({ companyId, agentId, provider: "openai", biller: "openai",
       billingType: "metered_api", model: "fixture", costCents: 125, occurredAt: new Date() });
     const budgets = budgetService(db);
