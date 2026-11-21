@@ -8,6 +8,7 @@ import {
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeRefusalResult,
+  isClaudeSuccessResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
@@ -579,5 +580,31 @@ describe("interrupted Claude accounting", () => {
     expect(parsed.usage).toEqual({ inputTokens: 35, cachedInputTokens: 40, outputTokens: 9 });
     expect(parsed.usageBasis).toBe("per_run");
     expect(parsed.costUsd).toBeNull();
+  });
+});
+
+describe("isClaudeSuccessResult", () => {
+  it.each([
+    ["a success subtype", { type: "result", subtype: "success", is_error: false }],
+    ["a success subtype with surrounding space and capitals", { type: "result", subtype: " Success " }],
+    ["no subtype", { type: "result" }],
+    ["a non-string subtype", { type: "result", subtype: 1 }],
+  ])("treats %s as a successful result", (_label, parsed) => {
+    expect(isClaudeSuccessResult(parsed)).toBe(true);
+  });
+
+  it.each([
+    ["error_max_turns without is_error", { type: "result", subtype: "error_max_turns", is_error: false }],
+    ["error_during_execution without is_error", { type: "result", subtype: "error_during_execution", is_error: false }],
+    ["an empty subtype", { type: "result", subtype: "  " }],
+    ["is_error true with a success subtype", { type: "result", subtype: "success", is_error: true }],
+    ["is_error true without a subtype", { type: "result", is_error: true }],
+  ])("does not treat %s as a successful result", (_label, parsed) => {
+    expect(isClaudeSuccessResult(parsed)).toBe(false);
+  });
+
+  it("does not treat a missing result as successful", () => {
+    expect(isClaudeSuccessResult(null)).toBe(false);
+    expect(isClaudeSuccessResult(undefined)).toBe(false);
   });
 });

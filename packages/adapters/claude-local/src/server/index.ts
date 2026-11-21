@@ -17,6 +17,7 @@ export {
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,
+  isClaudeSuccessResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
 export {

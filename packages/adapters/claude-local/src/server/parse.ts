@@ -304,6 +304,13 @@ export function isClaudeModelNotFoundError(input: {
   return messages.some((message) => CLAUDE_MODEL_NOT_FOUND_RE.test(message));
 }
 
+export function isClaudeSuccessResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  if (parsed.is_error === true) return false;
+  const subtype = parsed.subtype;
+  return typeof subtype !== "string" || subtype.trim().toLowerCase() === "success";
+}
+
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {
   if (!parsed) return false;
 
