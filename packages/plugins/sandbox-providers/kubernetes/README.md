@@ -140,6 +140,8 @@ Every agent pod is:
 
 Plus per-namespace `pod-security.kubernetes.io/enforce: restricted` and a deny-all NetworkPolicy baseline with explicit egress allow-list (DNS, paperclip-server, configured FQDNs/CIDRs).
 
+The lease starts with `/workspace` as the native file-sync confinement root. Adapter environment tests can upload managed config before the server realizes a workspace. When resuming a lease, the provider keeps a previously recorded `remoteCwd` so a custom realized workspace is not replaced with the default.
+
 The per-run Secret carrying the bootstrap token and adapter API keys has `ownerReferences` pointing at the owning Job, so a single `kubectl delete job …` cascades cleanly to the Pod and Secret.
 
 ## Optional Kata-FC microVM isolation
