@@ -28,6 +28,7 @@ async function search(value: string) {
 const options = () => [...document.querySelectorAll<HTMLElement>("[role=option]")];
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   container = document.createElement("div");
@@ -36,9 +37,15 @@ beforeEach(() => {
   props = { agents, open: true, onOpenChange: vi.fn(), onSelect: vi.fn() };
 });
 afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
+  try {
+    await act(async () => root.unmount());
+    await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    container.remove();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
 });
 
 describe("AgentChatPicker", () => {
