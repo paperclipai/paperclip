@@ -305,6 +305,19 @@ run list when that list is full, so no task's early runs are lost. A queued or r
 minutes is not a live owner, the same window the drain uses. The drain also waits for the 90 s quiet period
 (`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading.
 
+**Gate D verdict** (`hosted-gate.ts`). A run exits 0 only when every check in the `Gate D` block of `SUMMARY.md` holds:
+every started task completed hands-off; every task the harness launched was created; every started task passes the local waves'
+R1 (`gradeR1` from `grader.ts`); no Retry banner was shown; no health probe failed; no overlapping runs, duplicated
+agent comments or duplicated subtasks; no release was stop-then-start; and at least one release was detected, each
+with a live run carried across it. A fixed batch (`--hosted-releases 0`) skips the release check. R1 uses the
+staging-mix budget (`stagingMixBudgetMs`); a subtask the agent created under a launched task is graded from its own creation time with the
+budget of its two rounds. It adds outage time only for a release whose health probes failed
+before the new build answered. It credits the first run's queue wait when the agent's slots prove it fair
+(`queueWaitFairnessFrom`, from the run list and each agent's `runtimeConfig.heartbeat.maxConcurrentRuns`). The API
+has no wake evidence, so a follow-up run's queue wait is never credited. Per-release hand-off and reach are API
+proxies: runs alive at the old build's last answer, and how many of them wrote an event after it. The server log's
+`handed live native runs` and `reattach phase ended` lines are not readable through the tenant API.
+
 These fields are unavailable over the API and are reported as unavailable, not guessed:
 
 | Field | Why |

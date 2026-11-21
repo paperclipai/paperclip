@@ -1,3 +1,4 @@
+import { agentMayReportFor, dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -51,10 +52,11 @@ export function responsibilityStatusReportRoutes(db: Db, opts: { heartbeat?: Iss
     }
   }
 
-  async function loadForRead(req: Request, res: Response) {
+  async function loadForRead(req: Request, res: Response, reporting = false) {
     const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return null;
     await assertCompanyRead(req, row.companyId);
+    if (!(reporting && agentMayReportFor(req, row.ownerUserId))) await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     return row;
   }
 
@@ -79,12 +81,7 @@ export function responsibilityStatusReportRoutes(db: Db, opts: { heartbeat?: Iss
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = ownerQuerySchema.parse(req.query);
-    const ownerUserId = query.ownerUserId ?? (req.actor.type === "board" ? req.actor.userId : undefined);
-    if (!ownerUserId) {
-      throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: name the person whose responsibilities to read"
-        : "ownerUserId is required");
-    }
+    const ownerUserId = await dashboardOwner(db, req, companyId, query.ownerUserId);
     res.json(await svc.overview(companyId, ownerUserId));
   });
 
@@ -97,7 +94,7 @@ export function responsibilityStatusReportRoutes(db: Db, opts: { heartbeat?: Iss
 
   router.post("/responsibilities/:id/status-report", validate(writeResponsibilityStatusReportSchema), async (req, res) => {
     await svc.assertEnabled();
-    const row = await loadForRead(req, res);
+    const row = await loadForRead(req, res, true);
     if (!row) return;
     let author: StatusReportAuthor;
     if (req.actor.type === "agent") {
@@ -130,7 +127,7 @@ export function responsibilityStatusReportRoutes(db: Db, opts: { heartbeat?: Iss
       if (!row) return;
       assertBoard(req);
       if (!boardCanManageResponsibilityOwner(req, row.companyId, row.ownerUserId)) {
-        throw forbidden("Only the person who owns this responsibility, or a company admin, can ask for an update");
+        throw forbidden("Only the person who owns this responsibility can ask for an update");
       }
       const reporter = await svc.reporterOf(row);
       if (reporter) {

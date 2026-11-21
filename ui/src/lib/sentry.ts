@@ -43,6 +43,9 @@
 // starts monitoring, `fetch-rejection-origin.ts` wraps `fetch` itself and
 // tags an unhandled rejection with an enum for who started the request. It
 // sends no URL, path, or stack text.
+//
+// Plugin UI modules run from random `blob:` URLs. `plugin-module-origins.ts`
+// maps such a frame back to its plugin key and tags the event with it.
 
 import {
   buildBrowserErrorContext,
@@ -60,6 +63,7 @@ import {
   startFetchRejectionDiagnostics,
 } from "./fetch-rejection-origin";
 import { isIntentionalAbortReason } from "./intentional-abort";
+import { readPluginModuleOrigin } from "./plugin-module-origins";
 
 let queue: Promise<void> = Promise.resolve();
 
@@ -263,6 +267,10 @@ export function buildBrowserSentryInitOptions(
           ...event.tags,
           browser_build_mode: import.meta.env.DEV ? "development" : "production",
         };
+        // A plugin UI module runs from a random `blob:` URL. Name the plugin
+        // whose module holds the innermost such frame, never the URL.
+        const pluginModule = readPluginModuleOrigin(event.exception?.values);
+        if (pluginModule) event.tags.browser_plugin_module = pluginModule;
         if (isUnhandledRejection) {
           // The SDK supplies the rejected value directly. Classify without
           // reading object properties, coercing strings, or copying its value.

@@ -1,5 +1,5 @@
 {
-  "id": "97fd2678-01db-4c0c-a059-62f74c007180",
+  "id": "51525362-c4bc-44be-b4a7-95cb4aae7748",
   "prevId": "a80ac568-accd-4c40-b63a-82b870052e0a",
   "version": "7",
   "dialect": "postgresql",
@@ -43494,13 +43494,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "conversation_default": {
-          "name": "conversation_default",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "conversation_state": {
           "name": "conversation_state",
           "type": "text",
@@ -43930,7 +43923,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"issues\".\"conversation_default\" = true",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -52769,6 +52761,23 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "responsibilities_owned_area_fk": {
+          "name": "responsibilities_owned_area_fk",
+          "tableFrom": "responsibilities",
+          "tableTo": "responsibility_areas",
+          "columnsFrom": [
+            "company_id",
+            "owner_user_id",
+            "area_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "owner_user_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -52810,6 +52819,12 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "title": {
           "name": "title",
@@ -52887,11 +52902,44 @@
           "method": "btree",
           "with": {}
         },
-        "responsibility_areas_company_title_uq": {
-          "name": "responsibility_areas_company_title_uq",
+        "responsibility_areas_identity_uq": {
+          "name": "responsibility_areas_identity_uq",
           "columns": [
             {
               "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "responsibility_areas_owner_title_uq": {
+          "name": "responsibility_areas_owner_title_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

@@ -4,6 +4,7 @@ import type { ResponsibilitySummary as Narrative } from "@paperclipai/shared";
 import { responsibilitiesApi } from "@/api/responsibilities";
 import { queryKeys } from "@/lib/queryKeys";
 import { summaryAttribution, summaryRefetchDelay } from "@/lib/responsibility-summary";
+import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
 import { cn } from "@/lib/utils";
 
 /**
@@ -28,10 +29,11 @@ function useNarrative(queryKey: readonly unknown[], queryFn: () => Promise<Narra
 
 /** The Dashboard's paragraph of where everything stands. */
 export function useDashboardNarrative(companyId: string | null | undefined) {
+  const { userId } = useResolvedViewerId();
   return useNarrative(
-    queryKeys.responsibilities.summary(companyId ?? "__none__"),
+    queryKeys.responsibilities.summary(companyId ?? "__none__", userId),
     () => responsibilitiesApi.companySummary(companyId!),
-    !!companyId,
+    !!companyId && !!userId,
   );
 }
 

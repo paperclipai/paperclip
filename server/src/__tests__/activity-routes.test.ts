@@ -212,6 +212,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockAgentActionAuditService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       actorScope: "all",
       limit: 50,
       caseReadCondition,
@@ -261,6 +262,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockAgentActionAuditService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       actorScope: "all",
       actorType: "system",
       limit: 50,
@@ -284,6 +286,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockActivityService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       agentId: undefined,
       entityType: undefined,
       entityId: undefined,
@@ -304,6 +307,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockActivityService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       agentId: undefined,
       entityType: "issue",
       entityId: undefined,
