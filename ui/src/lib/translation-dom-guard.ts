@@ -17,21 +17,38 @@ function isTranslationWrapper(node: Node | null | undefined): node is Element {
   return !!node && node.nodeType === Node.ELEMENT_NODE && (node as Element).localName === "font";
 }
 
-function replacementCandidate(record: MutationRecord): Element | null {
-  if (record.addedNodes.length === 1 && isTranslationWrapper(record.addedNodes[0])) return record.addedNodes[0];
-  if (record.addedNodes.length > 0) return null;
-  if (isTranslationWrapper(record.nextSibling)) return record.nextSibling;
-  if (isTranslationWrapper(record.previousSibling)) return record.previousSibling;
-  return null;
+interface ReplacementTracker {
+  inserted: WeakMap<Node, Element>;
+  replacements: WeakMap<Node, Element>;
 }
 
-function recordReplacements(records: MutationRecord[], replacements: WeakMap<Node, Element>) {
+function isTextNode(node: Node | null | undefined): node is Text {
+  return !!node && node.nodeType === Node.TEXT_NODE;
+}
+
+function recordReplacements(records: MutationRecord[], tracker: ReplacementTracker) {
   for (const record of records) {
-    if (record.type !== "childList" || record.removedNodes.length !== 1) continue;
+    if (record.type !== "childList") continue;
+    const added = record.addedNodes.length === 1 ? record.addedNodes[0] : null;
+    const wrapper = isTranslationWrapper(added) ? added : null;
+    if (record.removedNodes.length === 0) {
+      if (!wrapper) continue;
+      if (isTextNode(record.previousSibling)) tracker.inserted.set(record.previousSibling, wrapper);
+      if (isTextNode(record.nextSibling)) tracker.inserted.set(record.nextSibling, wrapper);
+      continue;
+    }
+    if (record.removedNodes.length !== 1) continue;
     const removed = record.removedNodes[0];
-    if (removed.nodeType !== Node.TEXT_NODE || replacements.has(removed)) continue;
-    const replacement = replacementCandidate(record);
-    if (replacement) replacements.set(removed, replacement);
+    if (!isTextNode(removed)) continue;
+    if (wrapper) {
+      tracker.replacements.set(removed, wrapper);
+      continue;
+    }
+    if (record.addedNodes.length > 0) continue;
+    const insertedWrapper = tracker.inserted.get(removed);
+    if (insertedWrapper && (record.previousSibling === insertedWrapper || record.nextSibling === insertedWrapper)) {
+      tracker.replacements.set(removed, insertedWrapper);
+    }
   }
 }
 
@@ -41,16 +58,16 @@ export function startTranslationDomGuard(): () => void {
   const native: GuardedMethods = { removeChild: proto.removeChild, insertBefore: proto.insertBefore };
   installed = native;
 
-  const replacements = new WeakMap<Node, Element>();
+  const tracker: ReplacementTracker = { inserted: new WeakMap(), replacements: new WeakMap() };
   let observer: MutationObserver | undefined;
   if (typeof MutationObserver === "function" && typeof document !== "undefined" && document.documentElement) {
-    observer = new MutationObserver((records) => recordReplacements(records, replacements));
+    observer = new MutationObserver((records) => recordReplacements(records, tracker));
     observer.observe(document.documentElement, { childList: true, subtree: true });
   }
 
   const replacementInside = (parent: Node, node: Node): Element | null => {
-    if (observer) recordReplacements(observer.takeRecords(), replacements);
-    const replacement = replacements.get(node);
+    if (observer) recordReplacements(observer.takeRecords(), tracker);
+    const replacement = tracker.replacements.get(node);
     return replacement && replacement.parentNode === parent ? replacement : null;
   };
 

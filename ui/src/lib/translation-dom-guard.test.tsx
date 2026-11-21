@@ -47,6 +47,14 @@ function Status({ done }: { done: boolean }) {
   return <p>{done ? null : "Running"}<b>end</b></p>;
 }
 
+function Pair({ showLeft }: { showLeft: boolean }) {
+  return <p>{showLeft ? "Left" : null}{"Right"}</p>;
+}
+
+function textNodes(element: Element): Text[] {
+  return Array.from(element.childNodes).filter((node): node is Text => node.nodeType === Node.TEXT_NODE);
+}
+
 function Toggle({ show }: { show: boolean }) {
   return <p>{show ? <i>new</i> : null}{"Running"}</p>;
 }
@@ -94,6 +102,30 @@ describe("startTranslationDomGuard", () => {
     act(() => root.render(<Status done />));
     expect(font.isConnected).toBe(false);
     expect(container.textContent).toBe("end");
+  });
+
+  it("keeps a neighbor's translation when adjacent text nodes are translated right to left", () => {
+    stop = startTranslationDomGuard();
+    act(() => root.render(<Pair showLeft />));
+    const [left, right] = textNodes(container.querySelector("p")!);
+    const rightFont = translateTextNodeInTwoSteps(right, "Derecha");
+    const leftFont = translateTextNodeInTwoSteps(left, "Izquierda");
+    act(() => root.render(<Pair showLeft={false} />));
+    expect(leftFont.isConnected).toBe(false);
+    expect(rightFont.isConnected).toBe(true);
+    expect(container.textContent).toBe("Derecha");
+  });
+
+  it("keeps a neighbor's translation when adjacent text nodes are translated left to right", () => {
+    stop = startTranslationDomGuard();
+    act(() => root.render(<Pair showLeft />));
+    const [left, right] = textNodes(container.querySelector("p")!);
+    const leftFont = translateTextNodeInTwoSteps(left, "Izquierda");
+    const rightFont = translateTextNodeInTwoSteps(right, "Derecha");
+    act(() => root.render(<Pair showLeft={false} />));
+    expect(leftFont.isConnected).toBe(false);
+    expect(rightFont.isConnected).toBe(true);
+    expect(container.textContent).toBe("Derecha");
   });
 
   it("removes a text node that translation moved into its wrapper", () => {
