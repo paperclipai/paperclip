@@ -74,17 +74,15 @@ const pendingExecution = { status: "pending", currentStageId: null, currentStage
     const f = await fixture(), other = await fixture();
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
     const [current] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
-    const payload = { version: 1, requestingAgentId: f.agentId, serviceSlug: "github" };
+    const payload = { version: 1 as const, requestingAgentId: f.agentId, requestingAgentName: "Agent", serviceSlug: "github", serviceName: "GitHub", phase: "requested" as const };
     const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issue.id,
       kind: "connection_intent", status: "accepted", resolvedAt: new Date(), payload }).returning();
     const [otherCard] = await db.insert(issueThreadInteractions).values({ companyId: other.companyId, issueId: other.issue.id,
       kind: "connection_intent", status: "accepted", resolvedAt: new Date(), payload }).returning();
-    // Another issue's undelivered continuation must not hold this issue.
     await db.insert(connectionIntentDeliveries).values({ interactionId: otherCard.id, companyId: other.companyId });
     expect(await readDispositionRepairDurableWaitingState(db, { issue: current }))
       .toEqual({ hasDurableWaitingPath: false, durablePathReason: null });
 
-    // The card is accepted and its continuation wake is not yet queued.
     await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId });
     const waiting = { hasDurableWaitingPath: true, durablePathReason: "connection_delivery" };
     expect(await readDispositionRepairDurableWaitingState(db, { issue: current })).toEqual(waiting);
@@ -99,18 +97,16 @@ const pendingExecution = { status: "pending", currentStageId: null, currentStage
   it("does not hold recovery on a connection-intent delivery the worker cannot settle", async () => {
     const f = await fixture();
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
-    const payload = { version: 1, requestingAgentId: f.agentId, serviceSlug: "github" };
+    const payload = { version: 1 as const, requestingAgentId: f.agentId, requestingAgentName: "Agent", serviceSlug: "github", serviceName: "GitHub", phase: "requested" as const };
     const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issue.id,
       kind: "connection_intent", status: "accepted", resolvedAt: new Date(), payload }).returning();
     const notWaiting = { hasDurableWaitingPath: false, durablePathReason: null };
-    // A stale undelivered row is retried without end; it is not a wait.
     await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId,
       createdAt: new Date(Date.now() - 6 * 60_000) });
     let [current] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
     expect(await readDispositionRepairDurableWaitingState(db, { issue: current })).toEqual(notWaiting);
     expect(await collectDispositionRepairSourceState(db, { issue: current })).toMatchObject(notWaiting);
 
-    // A fresh row on a todo issue is never delivered by the worker; it is not a wait.
     await db.update(connectionIntentDeliveries).set({ createdAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, card.id));
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issue.id));
     [current] = await db.select().from(issues).where(eq(issues.id, f.issue.id));

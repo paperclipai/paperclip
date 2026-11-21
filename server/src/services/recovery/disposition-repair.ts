@@ -94,9 +94,6 @@ type DurableWaitingFacts = {
   hasPendingConnectionDelivery: boolean;
 };
 
-// The delivery worker only continues issues in these statuses, and retries an
-// unsettled row without end. A row is a wait only while the worker can still
-// settle it soon; after the bound, recovery owns the issue again.
 const CONNECTION_DELIVERY_ISSUE_STATUSES = new Set(["in_progress", "in_review"]);
 const connectionDeliveryIsFresh = sql`${connectionIntentDeliveries.createdAt} > now() - interval '5 minutes'`;
 
@@ -266,8 +263,6 @@ export async function collectDispositionRepairSourceState(
               : sql`true`,
           ),
         ),
-      // A resolved connection intent hands its continuation to the delivery
-      // worker. Until that wake exists, a fresh undelivered row is the next step.
       db
         .select({ interactionId: connectionIntentDeliveries.interactionId })
         .from(connectionIntentDeliveries)

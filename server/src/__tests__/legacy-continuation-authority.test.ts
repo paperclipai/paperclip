@@ -148,8 +148,7 @@ describe("legacy continuation persisted authority", () => {
     const f = await fixture();
     const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
       kind: "connection_intent", status: "accepted", resolvedAt: new Date(),
-      payload: { version: 1, requestingAgentId: f.agentId, serviceSlug: "github" } }).returning();
-    // The card is committed and the delivery worker has not yet queued its wake.
+      payload: { version: 1, requestingAgentId: f.agentId, requestingAgentName: "Agent", serviceSlug: "github", serviceName: "GitHub", phase: "requested" } }).returning();
     await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId });
     expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).not.toBe("queued");
     expect(await f.runs()).toHaveLength(1);
@@ -162,7 +161,7 @@ describe("legacy continuation persisted authority", () => {
     const f = await fixture();
     const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
       kind: "connection_intent", status: "accepted", resolvedAt: new Date(),
-      payload: { version: 1, requestingAgentId: f.agentId, serviceSlug: "github" } }).returning();
+      payload: { version: 1, requestingAgentId: f.agentId, requestingAgentName: "Agent", serviceSlug: "github", serviceName: "GitHub", phase: "requested" } }).returning();
     await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId,
       createdAt: new Date(Date.now() - 6 * 60_000) });
     expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("queued");
