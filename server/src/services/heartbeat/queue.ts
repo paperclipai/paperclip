@@ -138,6 +138,12 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import { publishLiveEvent } from "../live-events.js";
+import {
+  detectRunLoops,
+  LOOP_DETECTOR_MAX_WINDOW_RUNS,
+  LOOP_DETECTOR_STATEMENT_TIMEOUT_MS,
+  LOOP_DETECTOR_WINDOW_SEC,
+} from "../run-loop-detector.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
 import {
   DEFERRED_WAKE_CONTEXT_KEY,
@@ -247,6 +253,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   wakeQueue: Pick<ReturnType<typeof createWakeQueue>, "preflightIssueWake" | "admitIssueWake">;
   activeRunExecutions: Set<string>;
   activeRunExecutionPromises: Set<Promise<void>>;
+  activeRunLoopSignalPromises: Set<Promise<void>>;
   activeWakeupPromises: Set<Promise<unknown>>;
   liveRunExecutions: { has(id: string): boolean };
   isHeartbeatRunTerminalStatus: (status: string | null | undefined) => boolean;
@@ -489,6 +496,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     executeRun,
     canStartNewExternalBotWork,
     activeRunExecutionPromises,
+    activeRunLoopSignalPromises,
     activeWakeupPromises,
     instanceSettings,
     getRun,
@@ -2459,6 +2467,139 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  // Cooldown map: at most one run_loop_suspected event per
+  // (agentId, scopeKind, issueId, wakeReason) per detection window. Without
+  // this, the detector re-emits on every dispatch tick once the threshold is
+  // crossed. scopeKind is part of the key so a company-scoped group and an
+  // issue-scoped group that both carry a null issueId never share a cooldown.
+  const lastRunLoopSignalEmittedAtMs = new Map<string, number>();
+
+  // Agents with a detector read currently in flight. Dispatch runs the detector
+  // per agent on every eligible pass, so without this guard a single slow
+  // history read would spawn another read on the next tick, and another after
+  // that — each borrowing a shared-pool connection — while the first is still
+  // running. Gating on this set keeps at most one outstanding detector read per
+  // agent; combined with the per-read statement_timeout it bounds how much pool
+  // pressure the (best-effort, off-path) detector can ever apply.
+  const runLoopSignalInFlightAgentIds = new Set<string>();
+
+  function runLoopSignalKey(
+    agentId: string,
+    scopeKind: "company" | "issue",
+    issueId: string | null,
+    wakeReason: string | null,
+  ): string {
+    return `${agentId}|${scopeKind}|${issueId ?? ""}|${wakeReason ?? ""}`;
+  }
+
+  async function maybeEmitRunLoopSignal(agent: typeof agents.$inferSelect) {
+    try {
+      const windowStart = new Date(Date.now() - LOOP_DETECTOR_WINDOW_SEC * 1000);
+      // Scope by companyId first so the predicate aligns with an existing index.
+      // heartbeat_runs has no (agentId, createdAt) index; agentId appears only in
+      // heartbeat_runs_company_agent_started_idx (companyId, agentId, startedAt),
+      // whose leading column is companyId. Leading with companyId lets the planner
+      // serve the `createdAt desc` scan from heartbeat_runs_company_created_at_desc_idx
+      // (companyId, createdAt desc), bounding the scan to the rolling window instead
+      // of forcing a wider scan + sort. heartbeat_runs is company-scoped, so this
+      // narrows nothing semantically (agent ids are unique). See the PR verification
+      // section for query-cost evidence and the dispatch-latency bound.
+      //
+      // The window predicate (not the row limit) is what bounds the result: every
+      // run in the window is counted, so unrelated newer runs can no longer push a
+      // qualifying loop's own runs past a recency-ordered cutoff. LOOP_DETECTOR_MAX_
+      // WINDOW_RUNS is only a pathological-volume ceiling and never realistically
+      // binds. scopeKind/issueId are the SAVED read boundary the detector groups by
+      // — read them here instead of contextSnapshot.issueId, which coalescing mutates.
+      //
+      // Project wakeReason out of the snapshot in SQL rather than selecting the
+      // whole context_snapshot JSONB: the detector only ever reads wakeReason, and
+      // LOOP_DETECTOR_MAX_WINDOW_RUNS allows thousands of rows, so pulling the full
+      // snapshot for each would move far more bytes than this read needs.
+      //
+      // Run inside a transaction with a local statement_timeout so a pathological
+      // plan cannot pin a shared-pool connection indefinitely. On timeout the read
+      // throws and the catch below treats it as "no detection this pass" — the read
+      // is best-effort and never worth starving real dispatch for.
+      const recentRuns = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT set_config('statement_timeout', ${`${LOOP_DETECTOR_STATEMENT_TIMEOUT_MS}`}, true)`,
+        );
+        return tx
+          .select({
+            id: heartbeatRuns.id,
+            scopeKind: heartbeatRuns.scopeKind,
+            issueId: heartbeatRuns.issueId,
+            wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`,
+            createdAt: heartbeatRuns.createdAt,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, agent.companyId),
+              eq(heartbeatRuns.agentId, agent.id),
+              gt(heartbeatRuns.createdAt, windowStart),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(LOOP_DETECTOR_MAX_WINDOW_RUNS);
+      });
+
+      // detectRunLoops is a synchronous pure function; awaiting its result is a
+      // no-op in production but lets tests swap in an async seam to prove this
+      // detector no longer blocks the shared dispatch path.
+      const signals = await detectRunLoops({
+        agentId: agent.id,
+        recentRuns,
+        now: new Date(),
+      });
+      if (signals.length === 0) return;
+
+      const nowMs = Date.now();
+      // Opportunistic pruning to keep the cooldown map bounded under long
+      // uptimes — drop entries older than 2x the window. All signals share the
+      // same windowSec, so the worst (first) is representative.
+      const pruneOlderThan = nowMs - 2 * signals[0].windowSec * 1000;
+      for (const [k, t] of lastRunLoopSignalEmittedAtMs) {
+        if (t < pruneOlderThan) lastRunLoopSignalEmittedAtMs.delete(k);
+      }
+
+      // Emit every qualifying loop that is not on cooldown. Applying cooldown
+      // per group (rather than bailing out on the single worst group) means a
+      // second issue's active loop is still reported when the largest group is
+      // in its cooldown window.
+      for (const signal of signals) {
+        const key = runLoopSignalKey(signal.agentId, signal.scopeKind, signal.issueId, signal.wakeReason);
+        const lastEmittedAt = lastRunLoopSignalEmittedAtMs.get(key);
+        if (lastEmittedAt !== undefined && nowMs - lastEmittedAt < signal.windowSec * 1000) {
+          continue;
+        }
+        lastRunLoopSignalEmittedAtMs.set(key, nowMs);
+
+        logger.warn(
+          {
+            agentId: signal.agentId,
+            scopeKind: signal.scopeKind,
+            issueId: signal.issueId,
+            wakeReason: signal.wakeReason,
+            count: signal.count,
+            threshold: signal.threshold,
+            windowSec: signal.windowSec,
+            recentRunIds: signal.recentRunIds,
+          },
+          "agent run loop suspected",
+        );
+        publishLiveEvent({
+          companyId: agent.companyId,
+          type: "heartbeat.run_loop_suspected",
+          payload: signal as unknown as Record<string, unknown>,
+        });
+      }
+    } catch (err) {
+      logger.error({ err, agentId: agent.id }, "run-loop detector failed");
+    }
+  }
+
   async function attachQueuedSetupRequest(agent: typeof agents.$inferSelect) {
     if (isAgentAwaitingSetup(agent)) await connectionIntentService(db)
       .requestForQueuedAgentSetup(agent.companyId, agent.id)
@@ -2638,6 +2779,30 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
       const dispatcher = await queuedRunDispatcherForAgent(agent, queuedRuns, dependencyReadiness, issueById);
+
+      // Fire-and-forget: the run-loop detector runs an optional, unbounded
+      // history read, and awaiting it on the shared dispatch path would let one
+      // agent's slow read stall every later agent in the same resume pass
+      // (resumeQueuedRunsAfterDrain and resumeFreshQueuedRunsAtStartup await
+      // startNextQueuedRunForAgent per agent in order). maybeEmitRunLoopSignal
+      // catches its own errors, so this promise never rejects. Track it so
+      // drainActiveRunExecutions (graceful shutdown, tests tearing down a shared
+      // database) still waits for the read/publish to finish instead of racing it.
+      //
+      // Skip when this agent already has a detector read in flight: dispatch can
+      // fire many passes for one agent in quick succession, and detection is only
+      // useful once per read — launching another while the first is still running
+      // just piles shared-pool reads on top of each other for no extra signal.
+      if (!runLoopSignalInFlightAgentIds.has(agent.id)) {
+        runLoopSignalInFlightAgentIds.add(agent.id);
+        const runLoopSignal = maybeEmitRunLoopSignal(agent).finally(() => {
+          runLoopSignalInFlightAgentIds.delete(agent.id);
+        });
+        activeRunLoopSignalPromises.add(runLoopSignal);
+        void runLoopSignal.finally(() => {
+          activeRunLoopSignalPromises.delete(runLoopSignal);
+        });
+      }
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       const slots = { full: false };

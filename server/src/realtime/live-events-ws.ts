@@ -374,6 +374,22 @@ export function setupLiveEventsWebSocketServer(
           ? { ...event, payload: { ...event.payload, ...await recentSubtaskParents(db, context!.actor, event.companyId, payload, reads, navigationTask) } }
           : event;
       }
+      // Run-loop signals carry run ids plus the looping issue/wakeReason, no
+      // transcript content. Company membership is verified above, and an
+      // issue-scoped loop additionally required issue read via readBindings, so
+      // an allowed viewer should receive it. Without this branch the event
+      // falls through to the default `return null` and never reaches
+      // authenticated clients ("heartbeat.run_loop_suspected" is not matched by
+      // the "heartbeat.run." prefix above).
+      //
+      // Fail closed (defense in depth with the detector): an issue-scoped signal
+      // must carry its issueId — that is the only binding readBindings gates on
+      // for this event. An issue-scoped signal with issueId null has no read
+      // boundary (empty readBindings => []`.every(Boolean)` is vacuously true),
+      // so never broadcast it company-wide.
+      if (event.type === "heartbeat.run_loop_suspected") {
+        return payload.scopeKind === "issue" && !issueId ? null : event;
+      }
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;
       if (event.type === "activity.logged") return { ...event, payload: {
         action: payload.action, entityType: payload.entityType, entityId: payload.entityId,
