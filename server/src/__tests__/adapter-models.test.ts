@@ -67,6 +67,7 @@ describe("adapter model listing", () => {
     // Newest release of the most capable family leads the list (#14877).
     expect(models[0]?.id).toBe("claude-fable-5-2");
     expect(models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
+    expect(models).toContainEqual({ id: "claude-fable-5-2", label: "Claude Fable 5.2" });
     expect(models.some((model) => model.id === "claude-opus-4-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5-2")).toBe(true);
