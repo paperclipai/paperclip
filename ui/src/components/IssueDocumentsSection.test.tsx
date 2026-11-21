@@ -1539,6 +1539,45 @@ describe("IssueDocumentsSection", () => {
     queryClient.clear();
   });
 
+  it("keeps the fetched conflict revision until the document list has a newer revision", async () => {
+    const { ApiError } = await import("../api/client");
+    const issue = createIssue();
+    const doc = createIssueDocument({ key: "report", title: "Report", body: "Cached report" });
+    const remote = { ...doc, body: "Agent update", latestRevisionId: "revision-5", latestRevisionNumber: 5 };
+    mockIssuesApi.listDocuments.mockResolvedValue([doc]);
+    mockIssuesApi.getDocument.mockResolvedValue(remote);
+    mockIssuesApi.upsertDocument.mockRejectedValue(new ApiError("Document changed", 409, null));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    const button = (label: string) => Array.from(container.querySelectorAll("button")).find(item => item.textContent?.trim() === label);
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} generalDocumentsOnly />
+        </QueryClientProvider>,
+      ));
+      await flush();
+      await flush();
+      await act(async () => button("Edit document")!.click());
+      await act(async () => markdownEditorMockState.changeBody!("Local edit"));
+      await vi.waitFor(async () => {
+        await flush();
+        expect(button("Reload remote")).toBeDefined();
+      }, { timeout: 3000 });
+      expect(container.textContent).toContain("Remote revision 5");
+      expect(container.textContent).toContain("Agent update");
+      const latest = { ...remote, body: "Second agent update", latestRevisionId: "revision-6", latestRevisionNumber: 6 };
+      await act(async () => { client.setQueryData(queryKeys.issues.documents(issue.id), [latest]); });
+      await flush();
+      expect(container.textContent).toContain("Remote revision 6");
+      await act(async () => button("Reload remote")!.click());
+      expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe(latest.body);
+    } finally {
+      await act(async () => root.unmount());
+      client.clear();
+    }
+  });
+
   it("treats a 409 on a new document whose saved copy is ours as created", async () => {
     const { ApiError } = await import("../api/client");
     const issue = createIssue();
