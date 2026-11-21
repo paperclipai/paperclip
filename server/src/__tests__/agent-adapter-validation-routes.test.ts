@@ -347,6 +347,93 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
   });
 
+  describe("duplicate configuration", () => {
+    const sourceId = "11111111-1111-4111-8111-111111111111";
+    const masked = { type: "plain", value: "***REDACTED***" };
+
+    beforeEach(async () => {
+      mockAgentService.getById.mockResolvedValue({
+        ...(await mockAgentService.getById()),
+        adapterType: "process",
+        adapterConfig: { command: "node", env: {
+          TZ: { type: "plain", value: "Asia/Seoul" },
+          GOOGLE_WORKSPACE_CLI_CONFIG_DIR: { type: "plain", value: "/workspace/google-config" },
+          API_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
+        } },
+      });
+      // Model the real persistence guard rather than letting a mock silently
+      // accept the display-only values which caused the production 422.
+      mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_company, config) => {
+        if (JSON.stringify(config).includes("***REDACTED***")) {
+          const { unprocessable } = await import("../errors.js");
+          throw unprocessable("Refusing to persist redacted placeholder for key: TZ");
+        }
+        return config;
+      });
+    });
+
+    afterEach(() => {
+      mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_company, config) => config);
+    });
+
+    const payload = () => ({
+      name: "Source Copy", adapterType: "process", duplicateFromAgentId: sourceId,
+      adapterConfig: { command: "node", env: {
+        TZ: masked,
+        GOOGLE_WORKSPACE_CLI_CONFIG_DIR: masked,
+        API_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
+      } },
+    });
+
+    for (const route of ["agents", "agent-hires"]) {
+      it(`restores masked values before ${route} persistence and keeps responses redacted`, async () => {
+        const app = await createApp();
+        const response = await requestApp(app, base => request(base).post(`/api/companies/company-1/${route}`).send(payload()));
+        expect(response.status, JSON.stringify(response.body)).toBe(201);
+        expect(mockAgentService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+          adapterConfig: expect.objectContaining({ env: {
+            TZ: { type: "plain", value: "Asia/Seoul" },
+            GOOGLE_WORKSPACE_CLI_CONFIG_DIR: { type: "plain", value: "/workspace/google-config" },
+            API_TOKEN: payload().adapterConfig.env.API_TOKEN,
+          } }),
+        }), expect.anything());
+        expect(mockAgentService.create.mock.calls[0][1]).not.toHaveProperty("duplicateFromAgentId");
+        const created = route === "agents" ? response.body : response.body.agent;
+        expect(created.adapterConfig.env.TZ).toEqual(masked);
+        expect(JSON.stringify(response.body)).not.toContain("Asia/Seoul");
+      }, 60000);
+
+      it(`rejects another company's source before ${route} persistence`, async () => {
+        mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), companyId: "company-2" });
+        const app = await createApp();
+        const response = await requestApp(app, base => request(base).post(`/api/companies/company-1/${route}`).send(payload()));
+        expect(response.status).toBe(404);
+        expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+        expect(mockAgentService.create).not.toHaveBeenCalled();
+      });
+
+      it(`requires source configuration permission before ${route} persistence`, async () => {
+        mockAccessService.decide.mockImplementation(async ({ action }) => ({
+          allowed: action !== "agent_config:update", reason: "test", explanation: "No source configuration permission",
+        }));
+        const app = await createApp();
+        const response = await requestApp(app, base => request(base).post(`/api/companies/company-1/${route}`).send(payload()));
+        expect(response.status).toBe(403);
+        expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+        expect(mockAgentService.create).not.toHaveBeenCalled();
+      });
+
+      it(`rejects a moved placeholder before ${route} persistence`, async () => {
+        const app = await createApp();
+        const input = payload();
+        Object.assign(input.adapterConfig.env, { UNRELATED_VALUE: masked });
+        const response = await requestApp(app, base => request(base).post(`/api/companies/company-1/${route}`).send(input));
+        expect(response.status).toBe(422);
+        expect(mockAgentService.create).not.toHaveBeenCalled();
+      });
+    }
+  });
+
   it("round-trips the protected YAML projection and forwards its revision to the write lock", async () => {
     const existing = {
       ...(await mockAgentService.getById()),
