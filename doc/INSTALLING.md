@@ -86,6 +86,10 @@ unsupported running Node before installing or activating a payload; read-only
 update checks and rollback remain available for recovery. Global npm installs and
 source checkout services must configure their own executable and child-process `PATH`.
 
+On Windows, managed installs and updates locate `npm-cli.js` beside the Node
+executable or along `PATH` (via `npm.cmd`) and execute it directly with Node.js,
+ensuring commands succeed where `npm` is a shell wrapper rather than a standalone binary.
+
 For custom service wrappers, use an absolute, supported Node executable and put
 that executable's directory first on `PATH`. Keep required existing PATH entries.
 On Linux, verify the running executable with `/proc/<server-pid>/exe`; an
