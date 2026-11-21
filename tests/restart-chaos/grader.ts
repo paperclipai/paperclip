@@ -81,19 +81,19 @@ const COMMENT_WAKE_REASONS = new Set(["issue_commented", "issue_comment_mentione
 function runSelection(record: TaskRecord, requireWakeEvidence: boolean): { credited: CreditedRun[]; refusals: string[] } {
   const latest = new Map<string, TaskRun>();
   for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
-  const runs = [...latest.values()].filter(run => Number.isFinite(ms(run.createdAt))).sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
-  const credited: CreditedRun[] = runs[0] && !runs[0].retryOfRunId ? [{ run: runs[0], kind: "first run" }] : [];
-  const comments = boardComments(record);
-  const carried = [...latest.values()].some(run => (run.wakeCommentIds ?? []).some(id => comments.has(id)));
   const undated = [...latest.values()].filter(run => !Number.isFinite(ms(run.createdAt))).map(run => run.id);
-  if (carried && undated.length) return { credited, refusals: [`no createdAt for ${undated.join(",")}, so follow-up runs cannot be ordered`] };
+  if (undated.length) return { credited: [], refusals: [`no createdAt for ${undated.join(",")}, so runs cannot be ordered`] };
+  const runs = [...latest.values()].sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
+  const credited: CreditedRun[] = runs[0] && !runs[0].retryOfRunId ? [{ run: runs[0], kind: "first run" }] : [];
   const refusals: string[] = [];
-  for (const [commentId, postedAt] of comments) {
-    const index = runs.findIndex(run => (run.wakeCommentIds ?? []).includes(commentId));
-    const run = runs[index];
-    const previous = runs[index - 1];
-    if (run && postedAt === null) { refusals.push(`no posted time for follow-up comment ${commentId}`); continue; }
-    if (!run || !previous || postedAt === null || ms(run.createdAt) < postedAt || run.retryOfRunId || previous.status !== "succeeded" || !(ms(previous.finishedAt) <= ms(run.createdAt))) continue;
+  const unexecuted = (run: TaskRun) => run.status === "cancelled" && (!run.startedAt || PRE_DISPATCH_CANCELLATIONS.has(run.errorCode ?? ""));
+  for (const [commentId, sentAt] of boardComments(record)) {
+    const carriers = runs.filter(run => (run.wakeCommentIds ?? []).includes(commentId));
+    if (!carriers.length) continue;
+    if (sentAt === null) { refusals.push(`no send time for follow-up comment ${commentId}`); continue; }
+    const run = carriers.find(candidate => ms(candidate.createdAt) >= sentAt && !unexecuted(candidate));
+    const previous = run && runs.filter(other => ms(other.createdAt) < ms(run.createdAt) && !unexecuted(other)).at(-1);
+    if (!run || !previous || run.retryOfRunId || previous.status !== "succeeded" || !(ms(previous.finishedAt) <= ms(run.createdAt))) continue;
     if (credited.some(entry => entry.run.id === run.id)) continue;
     const wake = record.runWakes?.[run.id];
     if (requireWakeEvidence && !wake) { refusals.push(`no wake evidence for follow-up run ${run.id}`); continue; }

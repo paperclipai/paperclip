@@ -413,7 +413,7 @@ describe("R1 follow-up queue wait credit", () => {
     const undated = run("rx", "failed", 100_000, 600_000, { createdAt: null, errorCode: "process_lost" });
     const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, {}, [undated]), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
     expect(graded).toEqual({ verdict: "fail",
-      detail: "done_too_late 2310s > 2010s (queue wait not credited: no createdAt for rx, so follow-up runs cannot be ordered)" });
+      detail: "done_too_late 2310s > 2010s (queue wait not credited: no createdAt for rx, so runs cannot be ordered)" });
   });
 
   it("does not credit a recovery run that carries the comment after a success", () => {
@@ -441,7 +441,7 @@ describe("R1 follow-up queue wait credit", () => {
       { stagingMix: { followUp: { at: at as number, commentId: "c1", duringRun: true, inOverlap: false, error: null } } });
     expect(gradeR1(early(T0 + queuedAt + 200_000), BUDGET, [], fairness)).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
     expect(gradeR1(early(undefined), BUDGET, [], fairness))
-      .toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no posted time for follow-up comment c1)" });
+      .toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no send time for follow-up comment c1)" });
   });
 
   it("credits a run created after the comment request was sent but before it returned", () => {
@@ -449,6 +449,25 @@ describe("R1 follow-up queue wait credit", () => {
     const followUp = { at: T0 + queuedAt - 1_000, sentAt: T0 + queuedAt - 500, postedAt: T0 + queuedAt + 400, commentId: "c1", error: null };
     expect(gradeR1(followUpTask(2_310_000, 0, {}, {}, { stagingMix: {}, followUp }), BUDGET, [], queueWaitFairnessFrom(slots(agent()))))
       .toEqual({ verdict: "pass", detail: "done after 2310s (allowed 3568s incl. 1558s fair queue wait)" });
+  });
+
+  it("credits nothing when the earliest run has no createdAt", () => {
+    const undated = run("r0", "failed", -10_000, 40, { createdAt: null, errorCode: "process_lost" });
+    const graded = gradeR1(followUpTask(2_610_000, 300_000, {}, {}, {}, [undated]), BUDGET, [], queueWaitFairnessFrom(slots(agent(300_000))));
+    expect(graded).toEqual({ verdict: "fail", detail: "done_too_late 2610s > 2010s (queue wait not credited: no createdAt for r0, so runs cannot be ordered)" });
+  });
+
+  it("credits the first executed carrier, never a run cancelled before it executed", () => {
+    const { queuedAt } = shape();
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    const cancelled = (errorCode: string, started: boolean) => run("rc", "cancelled", queuedAt - 20, queuedAt - 10,
+      { wakeCommentIds: ["c1"], errorCode, startedAt: started ? iso(queuedAt - 15) : null });
+    const followUp = { at: T0 + queuedAt - 1_000, sentAt: T0 + queuedAt - 500, commentId: "c1", error: null };
+    const runWakes = { r2: { wakeReason: "issue_commented", continuesRunIds: [] }, rc: { wakeReason: "issue_commented", continuesRunIds: [] } };
+    for (const [errorCode, started] of [["continuation_task_ownership_changed", true], ["cancelled", false]] as const) {
+      const task = followUpTask(2_310_000, 0, {}, {}, { stagingMix: {}, followUp, runWakes }, [cancelled(errorCode, started)]);
+      expect(gradeR1(task, BUDGET, [], fairness)).toEqual({ verdict: "pass", detail: "done after 2310s (allowed 3568s incl. 1558s fair queue wait)" });
+    }
   });
 
   it("refuses follow-up credit without wake evidence", () => {
