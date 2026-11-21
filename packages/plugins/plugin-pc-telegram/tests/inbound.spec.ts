@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { CONNECTION_WINDOW_BYTES, DIALOG_ORIGIN_KIND, INBOUND_QUOTA_DAY_MS, MAX_INBOUND_MEDIA_BYTES } from "../src/constants.js";
+import { CONNECTION_LIFETIME_MESSAGES, CONNECTION_WINDOW_BYTES, CONNECTION_WINDOW_MESSAGES, DIALOG_ORIGIN_KIND, INBOUND_QUOTA_DAY_MS, MAX_INBOUND_MEDIA_BYTES } from "../src/constants.js";
 import {
   commitInboundUsage,
   inboundQuotaKeyCount,
@@ -340,6 +340,36 @@ describe("inbound issue mapping", () => {
       throw new Error("state down");
     };
     expect(await ingestInboundMessage(harness.ctx, connection, inboundMessage())).toBeNull();
+  });
+
+  it("keeps an account lifetime cap after that account is idle for a day", async () => {
+    const harness = createTestHarness({ manifest });
+    const second = { ...connection, telegramUserId: "1002" };
+    let now = Date.UTC(2026, 0, 1);
+    const days = CONNECTION_LIFETIME_MESSAGES / CONNECTION_WINDOW_MESSAGES;
+    for (let day = 0; day < days; day += 1) {
+      expect(await commitInboundUsage(harness.ctx, connection, {
+        messages: CONNECTION_WINDOW_MESSAGES,
+        attachments: 0,
+        bytes: 0,
+      }, now)).toBe(true);
+      now += INBOUND_QUOTA_DAY_MS + 3_600_000;
+    }
+    expect(await commitInboundUsage(harness.ctx, connection, {
+      messages: 1,
+      attachments: 0,
+      bytes: 0,
+    }, now)).toBe(false);
+    expect(await commitInboundUsage(harness.ctx, second, {
+      messages: 1,
+      attachments: 0,
+      bytes: 0,
+    }, now)).toBe(true);
+    expect(await commitInboundUsage(harness.ctx, connection, {
+      messages: 1,
+      attachments: 0,
+      bytes: 0,
+    }, now)).toBe(false);
   });
 
   it("drops expired inbound quota keys", () => {

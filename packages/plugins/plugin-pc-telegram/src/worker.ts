@@ -40,7 +40,7 @@ import {
   takeInboundMessageSlot,
   takePeerMediaSlot,
 } from "./inbound.js";
-import { idleLoginStatus, reduceLogin } from "./login.js";
+import { idleLoginStatus, publicLoginStatus, reduceLogin } from "./login.js";
 import { redactValue } from "./redaction.js";
 import { authorizeSendText } from "./send.js";
 import {
@@ -139,6 +139,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
   const accountGates = new Map<string, Promise<void>>();
   const reconnectJobs = new Set<Promise<void>>();
   const loginJobs = new Set<Promise<void>>();
+  const inboundJobs = new Set<Promise<void>>();
   let pluginContext: PluginContext | null = null;
   let shuttingDown = false;
 
@@ -224,7 +225,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     if (!ctx) return;
     const channel = `${LOGIN_STREAM_CHANNEL}:${companyId}`;
     ctx.streams.open(channel, companyId);
-    ctx.streams.emit(channel, { companyId, status });
+    ctx.streams.emit(channel, { companyId, status: publicLoginStatus(status) });
+    if ("loginId" in status && status.loginId) {
+      const privateChannel = `${channel}:${status.loginId}`;
+      ctx.streams.open(privateChannel, companyId);
+      ctx.streams.emit(privateChannel, { companyId, status });
+    }
   }
 
   function pendingLoginExpired(pending: PendingLogin, now = Date.now()): boolean {
@@ -290,11 +296,16 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
 
   async function handleInbound(message: Parameters<typeof ingestInboundMessage>[2]) {
     const ctx = pluginContext;
-    if (!ctx || !message.companyId) return;
+    if (!ctx || !message.companyId || shuttingDown) return;
     // The update loop still carries the invocation that connected the account.
     // That invocation is released when connect returns, so each message opens
     // its own company scope instead of reusing the expired one.
-    await ctx.runInCompanyBackground(message.companyId, () => acceptInbound(ctx, message));
+    const job = ctx.runInCompanyBackground(message.companyId, () => acceptInbound(ctx, message));
+    inboundJobs.add(job);
+    void job.finally(() => {
+      inboundJobs.delete(job);
+    });
+    await job;
   }
 
   async function acceptInbound(ctx: PluginContext, message: Parameters<typeof ingestInboundMessage>[2]) {
@@ -520,11 +531,12 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           if (pending && pending.companyId === companyId) return pending.status;
           const settled = loginResults.get(loginId);
           if (settled && settled.companyId === companyId) return settled.status;
+          return idleLoginStatus();
         }
         const pending = [...pendingLogins.values()].find((entry) => entry.companyId === companyId);
-        if (pending) return pending.status;
+        if (pending) return publicLoginStatus(pending.status);
         const settled = [...loginResults.values()].reverse().find((entry) => entry.companyId === companyId);
-        return settled?.status ?? idleLoginStatus();
+        return publicLoginStatus(settled?.status ?? idleLoginStatus());
       });
 
       ctx.actions.register(ACTION_START_LOGIN, async (params, actionCtx) => {
@@ -842,12 +854,13 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       for (const pending of [...pendingLogins.values()]) {
         if (pendingLoginExpired(pending)) expirePendingLogin(pending);
       }
-      if (reconnectJobs.size > 0 || loginJobs.size > 0 || liveByAccount.size > 0 || pendingLogins.size > 0) return "present";
+      if (reconnectJobs.size > 0 || loginJobs.size > 0 || inboundJobs.size > 0 || liveByAccount.size > 0 || pendingLogins.size > 0) return "present";
       return "none";
     },
 
     async onShutdown() {
       shuttingDown = true;
+      await Promise.all([...inboundJobs].map((job) => job.catch(() => undefined)));
       await Promise.all([...reconnectJobs].map((job) => job.catch(() => undefined)));
       for (const pending of pendingLogins.values()) {
         pending.cancelled = true;

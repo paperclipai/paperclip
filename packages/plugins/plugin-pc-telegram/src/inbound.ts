@@ -351,18 +351,16 @@ function applyUsage(bucket: UsageBucket, usage: InboundUsage, now: number): void
 
 function pruneConnections(ledger: QuotaLedger, keepId: string, now: number): void {
   for (const [id, bucket] of Object.entries(ledger.connections)) {
-    if (id !== keepId && now - bucket.touchedAt >= INBOUND_QUOTA_DAY_MS) {
-      delete ledger.connections[id];
-    }
+    if (id !== keepId) rolling(bucket, now);
   }
-  const ids = Object.entries(ledger.connections)
+  // A day of silence used to delete the account bucket and zero its lifetime
+  // cap. Keep the totals. Past the connection cap, shed hourly slices only.
+  const overflow = Object.keys(ledger.connections).length - MAX_LEDGER_CONNECTIONS;
+  if (overflow <= 0) return;
+  const oldest = Object.entries(ledger.connections)
     .filter(([id]) => id !== keepId)
     .sort((left, right) => left[1].touchedAt - right[1].touchedAt);
-  while (Object.keys(ledger.connections).length > MAX_LEDGER_CONNECTIONS && ids.length > 0) {
-    const next = ids.shift();
-    if (!next) break;
-    delete ledger.connections[next[0]];
-  }
+  for (const [, bucket] of oldest.slice(0, overflow)) bucket.slices = [];
 }
 
 function withQuotaLock<T>(key: string, fn: () => Promise<T>): Promise<T> {

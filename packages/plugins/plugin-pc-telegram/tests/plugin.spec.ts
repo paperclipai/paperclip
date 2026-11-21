@@ -862,4 +862,92 @@ describe("pc-telegram plugin", () => {
       restoreDom();
     }
   });
+
+  it("keeps the login QR off the company stream and an unscoped read", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const emitted: Array<{ channel: string; event: unknown }> = [];
+    harness.ctx.streams.emit = (channel, event) => {
+      emitted.push({ channel, event });
+    };
+    const started = await harness.performAction<{ loginId: string }>("start-login", { companyId: COMPANY_ID }, boardUser);
+    await waitFor(() => emitted.some((row) => JSON.stringify(row.event).includes("data:image/svg+xml")));
+    telegram.requirePassword("secret-hint");
+    const companyChannel = `telegram-login:${COMPANY_ID}`;
+    const companyEvents = emitted.filter((row) => row.channel === companyChannel);
+    const privateEvents = emitted.filter((row) => row.channel === `${companyChannel}:${started.loginId}`);
+    expect(companyEvents.length).toBeGreaterThan(0);
+    expect(JSON.stringify(companyEvents)).not.toContain("imageDataUrl");
+    expect(JSON.stringify(companyEvents)).not.toContain("secret-hint");
+    expect(JSON.stringify(privateEvents)).toContain("data:image/svg+xml");
+    expect(JSON.stringify(privateEvents)).toContain("secret-hint");
+    expect(await harness.getData("login-status", { companyId: COMPANY_ID })).toEqual({ state: "idle" });
+    expect(await harness.getData("login-status", {
+      companyId: COMPANY_ID,
+      loginId: "00000000-0000-4000-8000-000000000000",
+    })).toEqual({ state: "idle" });
+    await expect(harness.getData("login-status", {
+      companyId: COMPANY_ID,
+      loginId: started.loginId,
+    })).resolves.toMatchObject({ state: "password_required", hint: "secret-hint" });
+  });
+
+  it("finishes an inbound message before shutdown and then stops accepting", async () => {
+    const telegram = createMockTelegram();
+    const plugin = createTelegramUserClientPlugin({
+      createClient: telegram.factory,
+      resolveAppCredentials: async () => ({ apiId: 1, apiHash: MOCK_API_HASH }),
+    });
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction("start-login", { companyId: COMPANY_ID }, boardUser);
+    telegram.completeLogin();
+    await waitFor(() => telegram.connectFromSessionCalls.length === 1);
+    await harness.performAction("update-connection", {
+      companyId: COMPANY_ID,
+      telegramUserId: "1001",
+      acceptUnlistedSenders: true,
+    }, boardUser);
+    let releaseDownload: () => void = () => undefined;
+    let entered = false;
+    const delivery = telegram.deliver(inboundMessage({
+      loadAttachments: async () => {
+        entered = true;
+        await new Promise<void>((resolve) => {
+          releaseDownload = resolve;
+        });
+        return [];
+      },
+    }));
+    await waitFor(() => entered);
+    expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("present");
+    let shutdownDone = false;
+    const shutdown = plugin.definition.onShutdown?.().then(() => {
+      shutdownDone = true;
+    });
+    for (let step = 0; step < 20; step += 1) await Promise.resolve();
+    expect(shutdownDone).toBe(false);
+    releaseDownload();
+    await shutdown;
+    await delivery;
+    const during = await harness.ctx.issues.list({
+      companyId: COMPANY_ID,
+      originKind: DIALOG_ORIGIN_KIND,
+      originId: "1001:2002",
+    });
+    expect(during).toHaveLength(1);
+    await telegram.deliver(inboundMessage({ messageId: "2", text: "after shutdown" }));
+    const after = await harness.ctx.issues.list({
+      companyId: COMPANY_ID,
+      originKind: DIALOG_ORIGIN_KIND,
+      originId: "1001:2002",
+    });
+    expect(after).toHaveLength(1);
+    expect(await plugin.definition.onIdleDrain?.(new AbortController().signal)).toBe("none");
+  });
 });

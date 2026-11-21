@@ -130,7 +130,11 @@ function TelegramCompanyConnect({ context }: PluginCompanySettingsPageProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<LoginStatus | null>(null);
-  const loginChannel = companyId ? `telegram-login:${companyId}` : "telegram-login:none";
+  const loginChannel = !companyId
+    ? "telegram-login:none"
+    : loginId
+      ? `telegram-login:${companyId}:${loginId}`
+      : `telegram-login:${companyId}`;
   const loginStream = usePluginStream<{ status?: LoginStatus }>(loginChannel, companyId ? { companyId } : undefined);
 
   const status = streamStatus ?? login.data ?? { state: "idle" as const };
@@ -145,8 +149,10 @@ function TelegramCompanyConnect({ context }: PluginCompanySettingsPageProps) {
   useEffect(() => {
     const next = loginStream.lastEvent?.status;
     if (!next) return;
+    const secret = next.state === "qr_pending" || next.state === "password_required";
+    if (secret && !loginId) return;
     if (loginId && "loginId" in next && next.loginId !== loginId) return;
-    setStreamStatus(next);
+    if (next.state !== "idle") setStreamStatus(next);
     login.refresh();
     overview.refresh();
   }, [loginStream.lastEvent, loginId]);
