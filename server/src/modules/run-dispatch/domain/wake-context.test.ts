@@ -3,6 +3,7 @@ import {
   allowsIssueInteractionWake,
   deriveCommentId,
   extractWakeCommentIds,
+  isInteractionAddresseeWake,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
   WORKSPACE_BUSY_RETRY_REASON,
@@ -81,6 +82,29 @@ describe("wake context", () => {
       wakeCommentId: "comment-1",
     }, allowed)).toBe(false);
     expect(allowsIssueInteractionWake({ wakeReason: "issue_commented" }, allowed)).toBe(false);
+  });
+
+  it("identifies interaction addressee wakes by reason and interactionId", () => {
+    expect(isInteractionAddresseeWake({
+      wakeReason: "interaction_pending",
+      interactionId: "interaction-1",
+    })).toBe(true);
+    // wrong reason
+    expect(isInteractionAddresseeWake({
+      wakeReason: "issue_commented",
+      interactionId: "interaction-1",
+    })).toBe(false);
+    // missing interactionId
+    expect(isInteractionAddresseeWake({
+      wakeReason: "interaction_pending",
+    })).toBe(false);
+    // empty interactionId
+    expect(isInteractionAddresseeWake({
+      wakeReason: "interaction_pending",
+      interactionId: "  ",
+    })).toBe(false);
+    expect(isInteractionAddresseeWake(null)).toBe(false);
+    expect(isInteractionAddresseeWake(undefined)).toBe(false);
   });
 
   it.each(["accepted", "answered", "cancelled", "rejected"])(
