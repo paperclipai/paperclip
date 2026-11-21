@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
+import { isRepositoryUrl, isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
 import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
@@ -201,12 +201,8 @@ function validateWorkspaceForm(form: WorkspaceFormState) {
     return "Local workspace path must be absolute.";
   }
 
-  if (repoUrl) {
-    try {
-      new URL(repoUrl);
-    } catch {
-      return "Repo URL must be a valid URL.";
-    }
+  if (repoUrl && !isRepositoryUrl(repoUrl)) {
+    return "Repo URL must be a URL or a Git remote such as git@host:owner/repo.git.";
   }
 
   const runtimeConfig = parseRuntimeConfigJson(form.runtimeConfig);
