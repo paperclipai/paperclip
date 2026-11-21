@@ -30,6 +30,13 @@ export interface BuildSandboxCrManifestInput {
   };
   runtimeClassName?: string;
   imagePullSecrets?: string[];
+  /**
+   * The full `group/version` the cluster serves for the Sandbox kind, e.g.
+   * `agents.x-k8s.io/v1beta1`. The caller resolves it with
+   * `resolveSandboxApiVersion`; the manifest body is identical across the
+   * supported versions, so only this string changes.
+   */
+  apiVersion: string;
 }
 
 export function buildSandboxCrManifest(
@@ -40,7 +47,7 @@ export function buildSandboxCrManifest(
     "paperclip.io/role": "agent",
   };
   return {
-    apiVersion: "agents.x-k8s.io/v1alpha1",
+    apiVersion: input.apiVersion,
     kind: "Sandbox",
     metadata: {
       name: input.sandboxName,
