@@ -109,6 +109,8 @@ tools, persistent memory, session persistence, skills, and MCP support.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | hermesCommand | string | hermes | Path to hermes CLI binary |
+| quiet | boolean | true | Use Hermes quiet machine mode |
+| emitResultRecord | boolean | false | Request the structured completion record used for fail-closed teardown normalization; requires a compatible Hermes CLI and quiet mode |
 | verbose | boolean | false | Enable verbose output |
 | extraArgs | string[] | [] | Additional CLI arguments |
 | env | object | {} | Extra environment variables |

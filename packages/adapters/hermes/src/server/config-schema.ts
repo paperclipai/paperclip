@@ -85,6 +85,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Pass Hermes --quiet for cleaner Paperclip run transcripts.",
       },
       {
+        key: "emitResultRecord",
+        label: "Structured Hermes result record",
+        type: "toggle",
+        default: false,
+        hint: "Pass Hermes --emit-result-record with quiet mode. Enable only after upgrading Hermes to a compatible version.",
+      },
+      {
         key: "verbose",
         label: "Verbose output",
         type: "toggle",
