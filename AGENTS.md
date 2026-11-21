@@ -99,6 +99,13 @@ preflight", "Start Dev", "Quick Health Checks", and "Database in Dev" in
 4. **Keep behavior with its owning module.**
    Provider protocols, payload parsing, and feature-specific sequencing belong to the module that owns them. Shared code uses narrow, normalized contracts. Explain any substantive change outside the owning module. See [`rules/module-boundaries.mdc`](rules/module-boundaries.mdc).
 
+5. **Keep deployment policy out of Core.**
+   Do not hardcode Cloud allowlists, provider choices, or deployment-specific
+   defaults here. Core provides generic, documented configuration mechanisms;
+   the deployment repository supplies and owns its policy. Changing a Cloud
+   policy must not require a Core code change. See
+   [harness availability](doc/harness-availability.md) for an example contract.
+
 ## 6. Database Changes
 
 Follow "Schema change workflow" in `doc/DATABASE.md`: edit the schema, run

@@ -406,7 +406,14 @@ part of U3 is checked only in waves run with this harness.
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
   A task that never rested within its deadline fails R1 as `no_rest_within_budget`,
-  whatever its last status.
+  whatever its last status. R1 also allows the first run's initial queue wait
+  (minus outage time inside it) when `wake-evidence/agent-slots.json` proves it
+  fair: no newer fresh assignment run of that agent started during the wait
+  (newer follow-ups and retries rank higher by design), and the agent had no
+  idle slot for more than 2 s outside a server outage. A provably unfair wait
+  fails as `unfair_queue_wait`; one that cannot be proven is not credited, and
+  the R1 detail says why.
+  Waits of later runs (recovery, restarts, retries) are never credited.
 - Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
   smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
   over its p95 budget, and every restart recovery whose Paperclip share exceeds
