@@ -1,4 +1,13 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { PaperclipMcpConfig } from "./config.js";
+
+/**
+ * Per-call heartbeat run id. Long-lived MCP hosts (for example an OpenClaw
+ * gateway serving many Paperclip runs) cannot know the run id at process
+ * start, so tools may pass it explicitly; it takes precedence over
+ * PAPERCLIP_RUN_ID for the duration of that one tool call.
+ */
+export const runIdContext = new AsyncLocalStorage<string | undefined>();
 
 export class PaperclipApiError extends Error {
   readonly status: number;
@@ -88,8 +97,9 @@ export class PaperclipApiClient {
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
-    if ((options.includeRunId ?? isWriteMethod(method)) && this.config.runId) {
-      headers["X-Paperclip-Run-Id"] = this.config.runId;
+    const runId = runIdContext.getStore() ?? this.config.runId;
+    if ((options.includeRunId ?? isWriteMethod(method)) && runId) {
+      headers["X-Paperclip-Run-Id"] = runId;
     }
 
     const response = await fetch(url, {
