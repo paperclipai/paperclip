@@ -12,6 +12,19 @@ subsystem behaves belong in that subsystem's doc; see
 - Node.js 24.11+
 - pnpm 9+
 
+### Native development in WSL
+
+Use a Linux checkout and Linux tools for the server and agents. Paperclip
+Runner requires glibc 2.39 or newer on Linux; check `getconf GNU_LIBC_VERSION`
+before preparing an instance. Ubuntu 22.04's glibc does not meet this requirement.
+
+For a checkout configured with `.paperclip/wsl.local.json`, follow
+[`skills/paperclip-wsl/SKILL.md`](../skills/paperclip-wsl/SKILL.md). The shared
+helper checks the selected distribution, checkout, user, instance and native
+toolchain. A Windows assistant can invoke it to run commands in that checkout.
+Keep the local profile untracked and check free space on the Windows volume
+that contains the distribution's virtual disk.
+
 ## Start Dev
 
 From repo root:
