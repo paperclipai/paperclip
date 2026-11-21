@@ -827,6 +827,7 @@ export interface IssueExecutionMonitorState {
   timeoutAt?: string | null;
   maxAttempts?: number | null;
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
+  deferredCount?: number;
   clearedAt: string | null;
   clearReason: IssueExecutionMonitorClearReason | null;
 }

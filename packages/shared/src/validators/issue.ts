@@ -542,6 +542,7 @@ export const issueExecutionMonitorStateSchema = z.object({
     .nullable()
     .optional()
     .default(null),
+  deferredCount: z.number().int().nonnegative().optional(),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
 });

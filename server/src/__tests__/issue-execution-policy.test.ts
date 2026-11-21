@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, buildIssueMonitorDeferredPatch, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { buildExecutionPolicy } from "../../../ui/src/lib/issue-execution-policy.ts";
 
@@ -2023,6 +2023,81 @@ describe("issue execution policy transitions", () => {
           },
           policy,
           previousPolicy: null,
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          monitorExplicitlyUpdated: true,
+        }),
+      ).toThrow("Monitor bounds are already exhausted");
+    });
+
+    it("keeps a held monitor fire pending through an unrelated task edit after it reaches maxAttempts", () => {
+      const scheduledPolicy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2099-04-11T12:30:00.000Z",
+          maxAttempts: 1,
+          recoveryPolicy: "escalate_to_board",
+          scheduledBy: "assignee",
+        },
+      })!;
+      const scheduledIssue = {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: scheduledPolicy as unknown as Record<string, unknown>,
+        executionState: null,
+        monitorAttemptCount: 0,
+        monitorNextCheckAt: new Date("2099-04-11T12:30:00.000Z"),
+        monitorLastTriggeredAt: null,
+        monitorNotes: null,
+        monitorScheduledBy: "assignee",
+      };
+      const retryAt = new Date("2099-04-11T12:31:00.000Z");
+      const deferred = buildIssueMonitorDeferredPatch({
+        issue: scheduledIssue,
+        policy: scheduledPolicy,
+        nextCheckAt: retryAt,
+        deferredCount: 1,
+      });
+      const heldPolicy = normalizeIssueExecutionPolicy({
+        ...scheduledPolicy,
+        monitor: { ...scheduledPolicy.monitor!, nextCheckAt: retryAt.toISOString() },
+      })!;
+      const heldIssue = {
+        ...scheduledIssue,
+        executionPolicy: heldPolicy as unknown as Record<string, unknown>,
+        executionState: deferred.executionState,
+        monitorAttemptCount: deferred.monitorAttemptCount,
+        monitorNextCheckAt: deferred.monitorNextCheckAt,
+      };
+      expect(deferred.monitorAttemptCount).toBe(1);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: heldIssue,
+        policy: heldPolicy,
+        previousPolicy: heldPolicy,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        monitorExplicitlyUpdated: false,
+      });
+
+      expect(result.patch.executionPolicy).toBeUndefined();
+      expect(result.patch.monitorNextCheckAt).toEqual(retryAt);
+      const monitorState = result.patch.executionState === undefined
+        ? parseIssueExecutionState(heldIssue.executionState)?.monitor
+        : parseIssueExecutionState(result.patch.executionState)?.monitor;
+      expect(monitorState).toMatchObject({
+        status: "scheduled",
+        nextCheckAt: retryAt.toISOString(),
+        attemptCount: 1,
+        deferredCount: 1,
+      });
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: heldIssue,
+          policy: heldPolicy,
+          previousPolicy: heldPolicy,
           requestedAssigneePatch: {},
           actor: { agentId: coderAgentId },
           monitorExplicitlyUpdated: true,

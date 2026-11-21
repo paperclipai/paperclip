@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as realDelay } from "node:timers/promises";
 import type { Db } from "@paperclipai/db";
 import {
-  activityLog, applyPendingMigrations, reconcileDatabaseWork, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
+  activityLog, agentWakeupRequests, applyPendingMigrations, reconcileDatabaseWork, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
   completionContracts, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -189,14 +189,18 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: replacement, monitorAttemptCount: 0 });
   });
 
-  it("retains a deferred monitor and releases its claim for a later tick", async () => {
+  it("retains a deferred monitor, counts the attempt and backs it off to a later tick", async () => {
     const f = await fixture();
     f.deps.enqueueWakeup.mockResolvedValueOnce(null);
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
-    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    const backedOff = new Date(now.getTime() + 60_000);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: backedOff, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(await f.scheduler.tickTimers(backedOff)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 2 });
     const calls = f.deps.enqueueWakeup.mock.calls;
-    expect(calls[0]![1]!.idempotencyKey).toBe(calls[1]![1]!.idempotencyKey);
+    expect(calls[0]![1]!.idempotencyKey).toBe(`issue-monitor:${f.issue.id}:${dueAt.toISOString()}`);
+    expect(calls[1]![1]!.idempotencyKey).toBe(`issue-monitor:${f.issue.id}:${backedOff.toISOString()}`);
     expect(calls[0]![1]!.issueStateGuard).toMatchObject({
       assigneeAgentId: f.agent.id, statuses: ["in_progress"], monitorNextCheckAt: dueAt.toISOString(), monitorWakeRequestedAt: now.toISOString(),
     });
@@ -240,32 +244,68 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     const f = await fixture();
     f.deps.enqueueWakeup.mockRejectedValueOnce(new Error("Temporary admission failure"));
     await f.scheduler.tickTimers(now);
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null });
-    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    const backedOff = new Date(now.getTime() + 60_000);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: backedOff, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
+    expect(await f.scheduler.tickTimers(backedOff)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
   });
 
-  it("records bounded dispatch failure diagnostics while retaining the schedule", async () => {
+  it("keeps the schedule when a dispatch throws after its wake was saved", async () => {
+    const f = await fixture();
+    f.deps.enqueueWakeup.mockImplementationOnce(async (agentId, opts) => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.issue.companyId, agentId, source: "automation",
+        reason: opts?.reason ?? null, idempotencyKey: opts?.idempotencyKey ?? null, payload: { issueId: f.issue.id } });
+      throw new Error("Start after save failed");
+    });
+    await f.scheduler.tickTimers(now);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    const calls = f.deps.enqueueWakeup.mock.calls;
+    expect(calls[1]![1]!.idempotencyKey).toBe(calls[0]![1]!.idempotencyKey);
+  });
+
+  it("keeps the schedule when an owner recovery throws after its wake was saved", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ monitorAttemptCount: 1, executionPolicy: { mode: "normal", commentRequired: true, stages: [],
+      monitor: { nextCheckAt: dueAt.toISOString(), maxAttempts: 1 } } }).where(eq(issues.id, f.issue.id));
+    f.deps.enqueueWakeup.mockImplementationOnce(async (agentId, opts) => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.issue.companyId, agentId, source: "automation",
+        reason: opts?.reason ?? null, idempotencyKey: opts?.idempotencyKey ?? null, payload: { issueId: f.issue.id } });
+      throw new Error("Start after save failed");
+    });
+    await f.scheduler.tickTimers(now);
+    expect(f.deps.enqueueWakeup.mock.calls[0]![1]!.idempotencyKey)
+      .toBe(`issue-monitor-recovery:${f.issue.id}:${dueAt.toISOString()}`);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
+  });
+
+  it("records bounded dispatch failure diagnostics while backing off the schedule", async () => {
     const f = await fixture();
     f.deps.enqueueWakeup.mockRejectedValue(new Error("PRIVATE_PROVIDER_FAILURE"));
     await f.scheduler.tickTimers(now);
     await f.scheduler.tickTimers(new Date(now.getTime() + 30_000));
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+    const backedOff = new Date(now.getTime() + 60_000);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: backedOff, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(1);
     const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
     expect(events.filter(event => event.action === "issue.monitor_dispatch_failed")).toHaveLength(1);
-    expect(events[0]?.details).toMatchObject({ reason: "monitor_dispatch_failed", nextCheckAt: dueAt.toISOString(), attemptCount: 0 });
+    expect(events[0]?.details).toMatchObject({ reason: "monitor_dispatch_failed", nextCheckAt: dueAt.toISOString(),
+      rescheduledNextCheckAt: backedOff.toISOString(), deferredCount: 1, attemptCount: 1 });
     expect(JSON.stringify(events)).not.toContain("PRIVATE_PROVIDER_FAILURE");
+    await f.scheduler.tickTimers(backedOff);
+    expect(await readIssue(f.issue.id)).toMatchObject({
+      monitorNextCheckAt: new Date(backedOff.getTime() + 120_000), monitorAttemptCount: 2 });
   });
 
-  it("repeats a persistent diagnostic after its bounded quiet window", async () => {
+  it("records one diagnostic per backed-off fire of a persistent deferral", async () => {
     const f = await fixture();
     f.deps.enqueueWakeup.mockResolvedValue(null);
     await f.scheduler.tickTimers(now);
     await f.scheduler.tickTimers(new Date(now.getTime() + 30_000));
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(1);
-    await db.update(activityLog).set({ createdAt: new Date(Date.now() - 6 * 60_000) }).where(eq(activityLog.entityId, f.issue.id));
     await f.scheduler.tickTimers(new Date(now.getTime() + 60_000));
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(2);
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorAttemptCount: 0 });
+    expect(await readIssue(f.issue.id)).toMatchObject({
+      monitorNextCheckAt: new Date(now.getTime() + 180_000), monitorAttemptCount: 2 });
   });
 
   it("does not copy an unrecognized blocker cause into monitor activity", async () => {
@@ -289,8 +329,9 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     try {
       f.deps.enqueueWakeup.mockResolvedValueOnce(null);
       expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
-      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
-      expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+      const backedOff = new Date(now.getTime() + 60_000);
+      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: backedOff, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
+      expect(await f.scheduler.tickTimers(backedOff)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
     } finally {
       await db.execute(sql`drop trigger fail_monitor_diagnostic_test on activity_log`);
       await db.execute(sql`drop function fail_monitor_diagnostic_test()`);
@@ -760,6 +801,9 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await advance(5000);
       expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
       expect(coordinator!.nextWakeAt()).not.toBeNull();
+      await advance(30_000);
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      expect((await readIssue(f.issue.id)).monitorAttemptCount).toBe(1);
       await advance(30_000);
       await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
       expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(2);
