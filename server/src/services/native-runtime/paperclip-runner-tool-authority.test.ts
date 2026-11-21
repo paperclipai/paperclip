@@ -1,3 +1,4 @@
+import { issueApprovalService } from "../issue-approvals.js";
 import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1031,6 +1032,14 @@ describe("PaperclipRunnerToolAuthority", () => {
         requestedConfigurationSnapshot: { adapterConfig: { env: { TZ: { value: "***REDACTED***" } } } },
       });
     }
+    await db.insert(issueApprovals).values({ companyId, issueId, approvalId, linkedByAgentId: agentId });
+    const linked = await issueApprovalService(db).listApprovalsForIssue(issueId);
+    const linkedApproval = linked.find(row => row.id === approvalId);
+    expect(linkedApproval).toBeDefined();
+    expect(JSON.stringify(linkedApproval)).not.toContain("Asia/Seoul");
+    expect(linkedApproval?.payload).toMatchObject({ adapterConfig: { env: { TZ: { value: "***REDACTED***" } } },
+      requestedConfigurationSnapshot: { adapterConfig: { env: { TZ: { value: "***REDACTED***" } } } },
+    });
     const [stored] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
     expect(stored.payload).toMatchObject({ adapterConfig: config, requestedConfigurationSnapshot: { adapterConfig: config } });
   }, 60000);
