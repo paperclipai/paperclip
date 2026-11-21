@@ -1592,6 +1592,52 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(row?.projectWorkspaceId).toBe(featureWorkspaceId);
   });
 
+  it("honors an explicit parentTaskId null as a top-level task from an ordinary task", async () => {
+    const rootId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Explicit null project" });
+    await db.insert(projectWorkspaces).values([
+      { companyId, projectId, name: "Default checkout", isPrimary: true },
+      { id: workspaceId, companyId, projectId, name: "Feature checkout" },
+    ]);
+    await db.insert(issues).values({ id: rootId, companyId, title: "Explicit null root", status: "todo", workMode: "standard" });
+    const currentId = randomUUID();
+    const currentRunId = randomUUID();
+    await db.insert(issues).values({
+      id: currentId, companyId, parentId: rootId, title: "Explicit null current", status: "in_progress", workMode: "standard",
+      assigneeAgentId: agentId, projectId, projectWorkspaceId: workspaceId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: currentRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: currentId,
+      invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: currentId },
+    });
+    await db.update(issues).set({ executionRunId: currentRunId }).where(eq(issues.id, currentId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: currentId, runId: currentRunId, workMode: "standard" });
+    const create = async (key: string, args: Record<string, unknown>) => await authority.execute({
+      tool: "create_task", callId: key, arguments: { idempotencyKey: key, status: "backlog", ...args },
+    }) as { task: { id: string; parentId: string | null } };
+
+    // Omitted: unchanged, placed beside the current child under the root.
+    const omitted = await create("null-omitted", { title: "Omitted parent" });
+    expect(omitted.task.parentId).toBe(rootId);
+    // Explicit null: top-level, still attributed to the creating task and its workspace.
+    const topLevel = await create("null-explicit", { title: "Top-level follow-up", parentTaskId: null });
+    expect(topLevel.task.parentId).toBeNull();
+    const [row] = await db.select({ parentId: issues.parentId, originIssueId: issues.originIssueId, projectWorkspaceId: issues.projectWorkspaceId })
+      .from(issues).where(eq(issues.id, topLevel.task.id));
+    expect(row).toMatchObject({ parentId: null, originIssueId: currentId, projectWorkspaceId: workspaceId });
+    // A string id is unchanged: that parent (the root is top-level, so it is used as-is).
+    const named = await create("null-string-id", { title: "Named parent", parentTaskId: rootId });
+    expect(named.task.parentId).toBe(rootId);
+    // The placeholder strings keep the default rather than meaning top-level.
+    const stringNull = await create("null-string", { title: "Stringified null", parentTaskId: "null" });
+    expect(stringNull.task.parentId).toBe(rootId);
+    // Retrying the same explicit-null call is a duplicate, not a re-parent.
+    const retry = await create("null-explicit", { title: "Top-level follow-up", parentTaskId: null });
+    expect(retry.task.id).toBe(topLevel.task.id);
+  });
+
   it("lets a conversation create a top-level task and subtasks with parentTaskId", async () => {
     const conversationId = randomUUID();
     const conversationRunId = randomUUID();

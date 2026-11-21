@@ -187,6 +187,27 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     expect(child).toMatchObject({ status: "backlog", parentId: parent.id });
   });
 
+  it.each(["native", "mcp"])("creates a top-level task for an explicit parentTaskId null through %s from an ordinary task", async (transport) => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    const create = async (args: Record<string, unknown>) => {
+      const result = transport === "native" ? await call(f, "create_task", args) as any : await callProjectTool({
+        name: "create_task", arguments: args, apiUrl: server.apiUrl,
+        token: createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!,
+        companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: false,
+      });
+      const [task] = await server.db.select().from(issues).where(eq(issues.id, transport === "native" ? result.task.id : result.id));
+      return task;
+    };
+    const base = () => ({ projectId: f.projectId, idempotencyKey: randomUUID(), status: "backlog" });
+    // Omitted keeps the current task as the parent.
+    expect(await create({ ...base(), title: `Omitted ${randomUUID()}` })).toMatchObject({ parentId: f.issueId });
+    // An explicit null is top-level.
+    expect(await create({ ...base(), title: `Explicit null ${randomUUID()}`, parentTaskId: null })).toMatchObject({ parentId: null });
+    // A named parent is unchanged.
+    const parent = await create({ ...base(), title: `Named parent ${randomUUID()}`, parentTaskId: null });
+    expect(await create({ ...base(), title: `Named child ${randomUUID()}`, parentTaskId: parent.id })).toMatchObject({ parentId: parent.id });
+  });
+
   it("persists required output review supplied through MCP creation", async () => {
     const f = await server.fixture({ conversation: true });
     const requirement = { version: 1, deliverables: [{ key: "copy", label: "Launch copy" }] };

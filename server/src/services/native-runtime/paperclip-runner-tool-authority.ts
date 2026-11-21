@@ -2151,9 +2151,14 @@ export class PaperclipRunnerToolAuthority {
       // Default parent: the current task, or none from a conversation. An
       // explicit parentTaskId names another task the run may read and change
       // (for example a top-level task this conversation just created).
-      let parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
+      // An explicit JSON `null` is an intentional top-level task, as an explicit
+      // `parentId: null` is on the issues route. Only a real null counts: an
+      // omitted key keeps the default, and the placeholder strings "null" and
+      // "undefined" (some providers stringify absent values) stay "no request".
+      const explicitTopLevel = input.parentTaskId === null;
+      let parentIssueId = explicitTopLevel || context.issue.conversationAgentId ? null : context.issue.id;
       let parentProjectId = parentIssueId ? context.issue.projectId : null;
-      const requestedParentId = nullableProviderId(input.parentTaskId);
+      const requestedParentId = explicitTopLevel ? null : nullableProviderId(input.parentTaskId);
       const watchdogScope = await resolveTaskWatchdogMutationScope(tx, {
         type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
       });
@@ -2182,7 +2187,10 @@ export class PaperclipRunnerToolAuthority {
       let placedParentId = parentIssueId;
       // Set when the structural parent is dropped; the follow-up still works in
       // the requester's workspace.
-      let workspaceSourceIssueId: string | null = null;
+      // An explicit top-level task from an ordinary task inherits the run's
+      // workspace, as the issues route does for an explicit `parentId: null`.
+      let workspaceSourceIssueId: string | null =
+        explicitTopLevel && !context.issue.conversationAgentId ? context.issue.id : null;
       if (parentIssueId) {
         placedParentId = (await resolveNewTaskParent(tx, this.binding.companyId, parentIssueId, parentDepthPolicy)).effectiveParentId;
         if (placedParentId && placedParentId !== parentIssueId) {
