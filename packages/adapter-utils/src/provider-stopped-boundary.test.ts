@@ -59,8 +59,14 @@ describe("final invocation instruction collection fence", () => {
     await createProviderStoppedBoundary(collect).collectBeforeRestore();
     expect(collect).not.toHaveBeenCalled();
   });
-  it("does not infer SSH provider termination from transport exit 255", async () => {
-    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({ ...result, exitCode: 255 });
+  it.each([0, 255])("does not infer SSH provider termination from transport exit %s", async exitCode => {
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({ ...result, exitCode });
+    const stopped = vi.fn();
+    await runAdapterExecutionTargetProcess("run", { kind: "remote", transport: "ssh", spec: { host: "fixture" }, remoteCwd: "/workspace" } as any, "provider", [], options(stopped));
+    expect(stopped).not.toHaveBeenCalled();
+  });
+  it("withholds the SSH stop callback when only the remote account reported cleanup", async () => {
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({ ...result, remoteProcessStopped: true });
     const stopped = vi.fn();
     await runAdapterExecutionTargetProcess("run", { kind: "remote", transport: "ssh", spec: { host: "fixture" }, remoteCwd: "/workspace" } as any, "provider", [], options(stopped));
     expect(stopped).not.toHaveBeenCalled();

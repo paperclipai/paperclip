@@ -992,8 +992,7 @@ export async function runAdapterExecutionTargetProcess(
   });
   // Closing an SSH client on timeout/disconnect does not prove the remote
   // provider exited. SSH status 255 is transport failure, never a stop receipt.
-  if (!target || target.kind === "local" ||
-      (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255)) {
+  if (!target || target.kind === "local") {
     options.onProcessStopped?.();
   }
   return result;
