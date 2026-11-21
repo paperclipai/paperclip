@@ -50,13 +50,11 @@ export function readBrowserErrorState() {
   return browserState;
 }
 
-/** Chrome and Google Translate put one of these classes on `<html>` while a page is translated. */
 function readPageTranslationMarker(): boolean {
   const classes = document.documentElement.classList;
   return classes.contains("translated-ltr") || classes.contains("translated-rtl");
 }
 
-/** True while browser page translation is active. Never throws. */
 export function hasPageTranslationMarker(): boolean {
   try {
     return typeof document !== "undefined" && readPageTranslationMarker();

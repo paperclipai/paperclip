@@ -46,8 +46,6 @@ startPerfMeasureReaper();
 
 startChunkLoadRecovery();
 
-// Browser page translation rewrites React-owned text nodes. Install before the
-// first render so a later commit does not crash the route on NotFoundError.
 startTranslationDomGuard();
 
 // The global mutation error toast is raised from the MutationCache, outside

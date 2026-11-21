@@ -5,14 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTranslationDomGuard } from "./translation-dom-guard";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-/**
- * Do what Chrome page translation does to a React text node: mark the page as
- * translated, then replace the text node with a `<font>` wrapper that holds
- * the translated text. React still owns the original, now detached, node.
- */
 function translateTextNode(textNode: Text, translated: string) {
   document.documentElement.classList.add("translated-ltr");
   const font = document.createElement("font");
@@ -21,7 +15,15 @@ function translateTextNode(textNode: Text, translated: string) {
   return font;
 }
 
-/** Chrome can also move the original node into its wrapper. */
+function translateTextNodeInTwoSteps(textNode: Text, translated: string) {
+  document.documentElement.classList.add("translated-ltr");
+  const font = document.createElement("font");
+  font.appendChild(document.createTextNode(translated));
+  textNode.parentNode!.insertBefore(font, textNode);
+  textNode.parentNode!.removeChild(textNode);
+  return font;
+}
+
 function wrapTextNode(textNode: Text) {
   document.documentElement.classList.add("translated-ltr");
   const font = document.createElement("font");
@@ -30,7 +32,6 @@ function wrapTextNode(textNode: Text) {
   return font;
 }
 
-/** jsdom and browsers word NotFoundError differently; the name is the contract. */
 function expectNotFound(action: () => unknown) {
   expect(action).toThrow(expect.objectContaining({ name: "NotFoundError" }));
 }
@@ -75,12 +76,24 @@ describe("startTranslationDomGuard", () => {
     expect(() => act(() => root.render(<Status done />))).toThrow(/not a child of this node/);
   });
 
-  it("lets React remove a text node that translation already detached", () => {
+  it("removes the translated replacement when React removes a detached text node", () => {
     stop = startTranslationDomGuard();
     act(() => root.render(<Status done={false} />));
-    translateTextNode(firstTextNode(container.querySelector("p")!), "En curso");
+    const font = translateTextNode(firstTextNode(container.querySelector("p")!), "En curso");
     expect(() => act(() => root.render(<Status done />))).not.toThrow();
-    expect(container.querySelector("b")?.textContent).toBe("end");
+    expect(font.isConnected).toBe(false);
+    expect(container.textContent).toBe("end");
+    act(() => root.render(<Status done={false} />));
+    expect(container.textContent).toBe("Runningend");
+  });
+
+  it("removes a replacement that translation inserted and detached in separate steps", () => {
+    stop = startTranslationDomGuard();
+    act(() => root.render(<Status done={false} />));
+    const font = translateTextNodeInTwoSteps(firstTextNode(container.querySelector("p")!), "En curso");
+    act(() => root.render(<Status done />));
+    expect(font.isConnected).toBe(false);
+    expect(container.textContent).toBe("end");
   });
 
   it("removes a text node that translation moved into its wrapper", () => {
@@ -102,13 +115,25 @@ describe("startTranslationDomGuard", () => {
     expect(paragraph.lastChild).toBe(font);
   });
 
-  it("appends when translation detached the reference node", () => {
+  it("inserts before the translated replacement of a detached reference node", () => {
     stop = startTranslationDomGuard();
     act(() => root.render(<Toggle show={false} />));
     const paragraph = container.querySelector("p")!;
-    translateTextNode(firstTextNode(paragraph), "En curso");
+    const font = translateTextNode(firstTextNode(paragraph), "En curso");
     expect(() => act(() => root.render(<Toggle show />))).not.toThrow();
-    expect(paragraph.querySelector("i")?.textContent).toBe("new");
+    expect(paragraph.firstChild).toBe(container.querySelector("i"));
+    expect(paragraph.lastChild).toBe(font);
+  });
+
+  it("appends when a detached reference node has no translated replacement", () => {
+    stop = startTranslationDomGuard();
+    document.documentElement.classList.add("translated-ltr");
+    const parent = document.createElement("div");
+    parent.appendChild(document.createElement("span"));
+    const detached = document.createTextNode("gone");
+    const added = document.createElement("i");
+    expect(parent.insertBefore(added, detached)).toBe(added);
+    expect(parent.lastChild).toBe(added);
   });
 
   it("keeps the native errors when the page is not translated", () => {
