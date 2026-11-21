@@ -331,6 +331,79 @@ describe("Coordinator pinned pages", () => {
     expect(pinnedPage("/projects")).toBeNull();
   });
 
+  const pinStorageKey = "paperclip.coordinator.pinned-nav.v1:reviewer";
+  const allPages = ["/search", "/dashboard", "/projects", "/routines", "/artifacts", "/agents/all", "/skills", "/apps", "/activity", "/settings"];
+  const morePopover = () => document.querySelector('[data-slot="popover-content"]');
+  const moreButton = () => navigation().querySelector('button[aria-label="More workspace pages"]');
+  const moreRows = () => Array.from(morePopover()!.children).map(row =>
+    `${row.querySelector('[role="separator"]') ? "| " : ""}${row.querySelector("a")!.getAttribute("href")}`);
+
+  it("leaves pinned pages out of More", async () => {
+    localStorage.setItem(pinStorageKey, JSON.stringify(["/projects", "/routines"]));
+    await renderSidebar();
+    await click("More workspace pages");
+    expect(morePopover()!.querySelector('a[href="/projects"]')).toBeNull();
+    expect(morePopover()!.querySelector('a[href="/routines"]')).toBeNull();
+    expect(morePopover()!.querySelector('a[href="/artifacts"]')).not.toBeNull();
+    expect(morePopover()!.querySelector('button[aria-label^="Unpin"]')).toBeNull();
+  });
+
+  it("hides More when every page is pinned and shows it again after an unpin", async () => {
+    localStorage.setItem(pinStorageKey, JSON.stringify(allPages));
+    await renderSidebar();
+    expect(moreButton()).toBeNull();
+    await click("Unpin Projects");
+    expect(moreButton()).not.toBeNull();
+    await click("More workspace pages");
+    expect(moreRows()).toEqual(["/projects"]);
+  });
+
+  it("closes More and focuses the new pin when the last page is pinned from More", async () => {
+    localStorage.setItem(pinStorageKey, JSON.stringify(allPages.filter(page => page !== "/settings")));
+    await renderSidebar();
+    await click("More workspace pages");
+    await click("Pin Settings");
+    expect(moreButton()).toBeNull();
+    expect(morePopover()).toBeNull();
+    expect(document.activeElement).toBe(pinnedPage("/settings"));
+  });
+
+  it.each([
+    ["Projects", "/routines"],
+    ["Settings", "/activity"],
+  ])("keeps focus in More on the next page after pinning %s from the keyboard", async (label, next) => {
+    await renderSidebar();
+    await click("More workspace pages");
+    const pin = morePopover()!.querySelector<HTMLButtonElement>(`button[aria-label="Pin ${label}"]`)!;
+    pin.focus();
+    expect(document.activeElement).toBe(pin);
+    await act(async () => pin.click());
+    await flush();
+    expect(morePopover()).not.toBeNull();
+    expect(document.activeElement).toBe(morePopover()!.querySelector(`a[href="${next}"]`));
+  });
+
+  it("starts each group of pages in More after a divider, whichever pages are pinned", async () => {
+    await renderSidebar();
+    await click("More workspace pages");
+    expect(moreRows()).toEqual(["/search", "/dashboard", "/projects", "/routines", "/artifacts", "/agents/all",
+      "| /skills", "/apps", "/activity", "/settings"]);
+    await act(async () => {
+      localStorage.setItem(pinStorageKey, JSON.stringify(["/search", "/skills"]));
+      window.dispatchEvent(new StorageEvent("storage", { key: pinStorageKey }));
+    });
+    expect(moreRows()).toEqual(["/dashboard", "/projects", "/routines", "/artifacts", "/agents/all",
+      "| /apps", "/activity", "/settings"]);
+  });
+
+  it("keeps Cases in its own group after a divider", async () => {
+    fixture.enableCases = true;
+    localStorage.setItem(pinStorageKey, JSON.stringify(["/settings"]));
+    await renderSidebar();
+    await click("More workspace pages");
+    expect(moreRows().slice(-2)).toEqual(["/activity", "| /cases"]);
+  });
+
   it("keeps pins personal and only renders known destinations", async () => {
     localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["/routines", "/projects", "/unknown", "https://example.com"]));
     await renderSidebar();

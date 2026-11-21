@@ -756,6 +756,8 @@ as hierarchy context, without counting them as unread matches.
 Its sidebar groups Chat, Tasks and Needs you with space after New task and
 before More, and keeps global search beside the organization menu (below it
 in the collapsed rail).
+More lists only pages that are not pinned, and the sidebar hides More when
+every page is pinned. Dividers in More separate page groups.
 Recents appears only when it contains entries, without an empty state.
 Task entries require the viewer's own participation under the Mine inbox rule,
 regardless of inbox archive state. Automated provenance, account ownership and
