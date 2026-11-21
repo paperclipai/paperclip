@@ -1346,6 +1346,20 @@ suite("fresh-continuation fallback", () => {
     expect((await holdRow(f.actionId!)).status).toBe("active");
   }, 60_000);
 
+  it("continues a failed legacy run whose no-replay settlement blocked the task while it was in review", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "adapter_failed", error: "Adapter failed" });
+    await db.update(issues).set({ status: "in_review", blockedTransitionAt: null }).where(eq(issues.id, f.issueId));
+    await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} - 'nativeFailureBlock'` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    await settleUnrecoverableExecutions(db);
+    expect(await issue(f.issueId)).toMatchObject({ status: "blocked" });
+    expect((await holdRow(f.actionId!)).evidence).toMatchObject({ automaticRecovery: { replay: "blocked" } });
+
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "continuation_wake" }))
+      .toMatchObject({ kind: "continued" });
+    expect(await issue(f.issueId)).toMatchObject({ status: "todo" });
+  }, 60_000);
+
   it("leaves an old hold for a person's Retry, and that Retry runs isolated (refused run)", async () => {
     const f = await heldByOlderRun({ endedAgoMs: 3 * 86_400_000 });
     await refusedAtDispatch(f, { createdAt: new Date(Date.now() - 30 * 3_600_000) });

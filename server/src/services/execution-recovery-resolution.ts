@@ -917,7 +917,7 @@ export async function settleUnrecoverableExecutions(
           if (task.status !== "blocked" && run.runtimeMode === "native") {
             nativeFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion };
           }
-          if (task.status !== "blocked" && run.runtimeMode === "legacy" && run.status === "cancelled") {
+          if (task.status !== "blocked" && run.runtimeMode === "legacy") {
             legacyCancellationBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
           }
           if (task.status !== "blocked" && isInterruptedNativePreparationCandidate(run)) {
