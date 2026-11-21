@@ -13,6 +13,7 @@ import {
 } from "../components/agent-config-primitives";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { ChevronDown } from "lucide-react";
+import { SchemaSecretField, isSchemaSecretField } from "./schema-secret-field";
 
 // ── Select field (extracted to keep hooks at component top level) ──────
 function SelectField({
@@ -415,6 +416,16 @@ export function SchemaConfigFields({
         .filter((field) => !(field.type === "select" && /permissionMode/i.test(field.key) && (field.options?.length ?? 0) <= 1))
         .filter((field) => fieldMatchesVisibleWhen(field, readValue, schema))
         .map((field) => {
+          if (isSchemaSecretField(field)) {
+            return (
+              <SchemaSecretField
+                key={field.key}
+                field={field}
+                value={readValue(field)}
+                onChange={(v) => writeValue(field, v)}
+              />
+            );
+          }
           switch (field.type) {
             case "select": {
               const currentVal = String(readValue(field) ?? "");
