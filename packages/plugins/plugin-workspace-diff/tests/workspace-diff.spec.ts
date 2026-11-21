@@ -197,4 +197,202 @@ describe("plugin workspace diff service", () => {
     await expect(svc.getDiff(createWorkspace(repoRoot), workingTreeQuery({ view: "head", baseRef: "missing-ref" })))
       .rejects.toMatchObject({ status: 422, details: { code: "base_ref_invalid" } });
   }, 20_000);
+
+  it("preserves rename diffs and line counts for staged and head renames", async () => {
+    const repoRoot = await createTempRepo();
+    const initialContent = "one\ntwo\nthree\nfour\n";
+    await fs.writeFile(path.join(repoRoot, "original.txt"), initialContent, "utf8");
+    await runGit(repoRoot, ["add", "original.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Add original file"]);
+    await runGit(repoRoot, ["checkout", "-b", "feature"]);
+
+    await runGit(repoRoot, ["mv", "original.txt", "moved.txt"]);
+    const pureRenameDiff = await workspaceDiffService().getDiff(createWorkspace(repoRoot), workingTreeQuery());
+    const pureRenamed = pureRenameDiff.files.find((file) => file.path === "moved.txt");
+
+    expect(pureRenamed).toMatchObject({
+      path: "moved.txt",
+      oldPath: "original.txt",
+      status: "renamed",
+      staged: true,
+      unstaged: false,
+      additions: 0,
+      deletions: 0,
+    });
+    expect(pureRenamed?.patches[0]?.patch).toContain("rename from original.txt");
+    expect(pureRenamed?.patches[0]?.patch).toContain("rename to moved.txt");
+    expect(pureRenamed?.patches[0]?.patch).not.toContain("new file mode");
+
+    await fs.writeFile(path.join(repoRoot, "moved.txt"), `${initialContent}five\n`, "utf8");
+    await runGit(repoRoot, ["add", "moved.txt"]);
+    await fs.writeFile(path.join(repoRoot, "moved.txt"), `${initialContent}five\nsix\n`, "utf8");
+
+    const editedRenameDiff = await workspaceDiffService().getDiff(createWorkspace(repoRoot), workingTreeQuery());
+    const editedRenamed = editedRenameDiff.files.find((file) => file.path === "moved.txt");
+    const stagedPatch = editedRenamed?.patches.find((patch) => patch.kind === "staged");
+    const unstagedPatch = editedRenamed?.patches.find((patch) => patch.kind === "unstaged");
+
+    expect(editedRenamed).toMatchObject({
+      path: "moved.txt",
+      oldPath: "original.txt",
+      status: "renamed",
+      staged: true,
+      unstaged: true,
+      additions: 2,
+      deletions: 0,
+    });
+    expect(stagedPatch).toMatchObject({ additions: 1, deletions: 0 });
+    expect(stagedPatch?.patch).toContain("rename from original.txt");
+    expect(stagedPatch?.patch).toContain("rename to moved.txt");
+    expect(stagedPatch?.patch).toContain("+five");
+    expect(stagedPatch?.patch).not.toContain("new file mode");
+    expect(unstagedPatch).toMatchObject({ additions: 1, deletions: 0 });
+    expect(unstagedPatch?.patch).toContain("+six");
+    expect(unstagedPatch?.patch).not.toContain("rename from");
+
+    await runGit(repoRoot, ["add", "moved.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Rename and edit original file"]);
+
+    const headRenameDiff = await workspaceDiffService().getDiff(
+      createWorkspace(repoRoot, { baseRef: "main" }),
+      workingTreeQuery({ view: "head", includeUntracked: false }),
+    );
+    const headRenamed = headRenameDiff.files.find((file) => file.path === "moved.txt");
+
+    expect(headRenamed).toMatchObject({
+      path: "moved.txt",
+      oldPath: "original.txt",
+      status: "renamed",
+      additions: 2,
+      deletions: 0,
+    });
+    expect(headRenamed?.patches[0]?.patch).toContain("rename from original.txt");
+    expect(headRenamed?.patches[0]?.patch).toContain("rename to moved.txt");
+    expect(headRenamed?.patches[0]?.patch).not.toContain("new file mode");
+  }, 20_000);
+
+  it("scopes working-tree and head diffs to subdirectory workspaces with workspace-relative paths", async () => {
+    const repoRoot = await createTempRepo();
+    const appDir = path.join(repoRoot, "packages", "app");
+    const otherDir = path.join(repoRoot, "packages", "other");
+    await fs.mkdir(appDir, { recursive: true });
+    await fs.mkdir(otherDir, { recursive: true });
+    await fs.writeFile(path.join(appDir, "tracked.txt"), "alpha\n", "utf8");
+    await fs.writeFile(path.join(appDir, "rename-me.txt"), "one\ntwo\nthree\n", "utf8");
+    await fs.writeFile(path.join(appDir, "delete-me.txt"), "remove me\n", "utf8");
+    await fs.writeFile(path.join(otherDir, "outside.txt"), "sibling\n", "utf8");
+    await runGit(repoRoot, ["add", "."]);
+    await runGit(repoRoot, ["commit", "-m", "Add monorepo subdirectories"]);
+    await runGit(repoRoot, ["checkout", "-b", "feature"]);
+
+    await fs.writeFile(path.join(appDir, "tracked.txt"), "alpha\nstaged inside app\n", "utf8");
+    await runGit(repoRoot, ["add", "packages/app/tracked.txt"]);
+    await runGit(repoRoot, ["mv", "packages/app/rename-me.txt", "packages/app/renamed.txt"]);
+    await fs.rm(path.join(appDir, "delete-me.txt"));
+    await fs.writeFile(path.join(appDir, "untracked.txt"), "hello\n", "utf8");
+    await fs.writeFile(path.join(otherDir, "outside.txt"), "sibling\noutside change\n", "utf8");
+    await fs.writeFile(path.join(otherDir, "outside-untracked.txt"), "ignored\n", "utf8");
+
+    const diff = await workspaceDiffService().getDiff(createWorkspace(appDir), workingTreeQuery());
+    const byPath = new Map(diff.files.map((file) => [file.path, file]));
+
+    expect(diff.files.map((file) => file.path)).toEqual([
+      "delete-me.txt",
+      "renamed.txt",
+      "tracked.txt",
+      "untracked.txt",
+    ]);
+    expect(byPath.get("tracked.txt")).toMatchObject({
+      staged: true,
+      unstaged: false,
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+      sizeBytes: Buffer.byteLength("alpha\nstaged inside app\n", "utf8"),
+    });
+    expect(byPath.get("tracked.txt")?.patches[0]?.patch).toContain("+staged inside app");
+    expect(byPath.get("renamed.txt")).toMatchObject({
+      staged: true,
+      status: "renamed",
+      oldPath: "rename-me.txt",
+      additions: 0,
+      deletions: 0,
+    });
+    expect(byPath.get("renamed.txt")?.patches[0]?.patch).toContain("rename from rename-me.txt");
+    expect(byPath.get("renamed.txt")?.patches[0]?.patch).toContain("rename to renamed.txt");
+    expect(byPath.get("delete-me.txt")).toMatchObject({
+      unstaged: true,
+      status: "deleted",
+      deletions: 1,
+    });
+    expect(byPath.get("delete-me.txt")?.patches[0]?.patch).toContain("-remove me");
+    expect(byPath.get("untracked.txt")).toMatchObject({
+      untracked: true,
+      status: "untracked",
+      additions: 1,
+      sizeBytes: Buffer.byteLength("hello\n", "utf8"),
+    });
+    expect(byPath.get("untracked.txt")?.patches[0]?.patch).toContain("+hello");
+
+    const filteredDiff = await workspaceDiffService().getDiff(
+      createWorkspace(appDir),
+      workingTreeQuery({ paths: ["tracked.txt"] }),
+    );
+    expect(filteredDiff.files.map((file) => file.path)).toEqual(["tracked.txt"]);
+    expect(filteredDiff.files[0]?.patches[0]?.patch).toContain("+staged inside app");
+
+    await runGit(repoRoot, ["add", "-A"]);
+    await runGit(repoRoot, ["commit", "-m", "Subdirectory feature changes"]);
+
+    const headDiff = await workspaceDiffService().getDiff(
+      createWorkspace(appDir, { baseRef: "main" }),
+      workingTreeQuery({ view: "head", includeUntracked: false }),
+    );
+    const headByPath = new Map(headDiff.files.map((file) => [file.path, file]));
+    expect(headDiff.files.map((file) => file.path)).toEqual([
+      "delete-me.txt",
+      "renamed.txt",
+      "tracked.txt",
+      "untracked.txt",
+    ]);
+    expect(headByPath.get("tracked.txt")).toMatchObject({ additions: 1, deletions: 0 });
+    expect(headByPath.get("tracked.txt")?.patches[0]?.patch).toContain("+staged inside app");
+    expect(headByPath.get("renamed.txt")).toMatchObject({
+      status: "renamed",
+      oldPath: "rename-me.txt",
+      additions: 0,
+      deletions: 0,
+    });
+    expect(headByPath.get("renamed.txt")?.patches[0]?.patch).toContain("rename from rename-me.txt");
+  }, 20_000);
+
+  it("blocks untracked symlinks inside a subdirectory workspace that point outside the workspace", async () => {
+    const repoRoot = await createTempRepo();
+    const appDir = path.join(repoRoot, "packages", "app");
+    const otherDir = path.join(repoRoot, "packages", "other");
+    await fs.mkdir(appDir, { recursive: true });
+    await fs.mkdir(otherDir, { recursive: true });
+    const siblingSecret = "sibling secret content\n";
+    const siblingPath = path.join(otherDir, "secret.txt");
+    await fs.writeFile(siblingPath, siblingSecret, "utf8");
+    await runGit(repoRoot, ["add", "."]);
+    await runGit(repoRoot, ["commit", "-m", "Add sibling file"]);
+    await fs.symlink(siblingPath, path.join(appDir, "escape.txt"));
+
+    const diff = await workspaceDiffService().getDiff(createWorkspace(appDir), workingTreeQuery());
+    const escapeFile = diff.files.find((file) => file.path === "escape.txt");
+
+    expect(escapeFile).toMatchObject({
+      untracked: true,
+      status: "untracked",
+      additions: 0,
+      sizeBytes: null,
+    });
+    expect(escapeFile?.patches[0]).toMatchObject({
+      kind: "untracked",
+      patch: null,
+      warnings: [expect.objectContaining({ code: "symlink_target_outside_workspace" })],
+    });
+    expect(JSON.stringify(diff)).not.toContain(siblingSecret.trim());
+  }, 20_000);
 });
