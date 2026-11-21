@@ -19,6 +19,12 @@ Does:
 2. Runs `paperclipai doctor` with repair enabled
 3. Starts the server when checks pass
 
+In authenticated mode, `run` keeps a valid pending bootstrap CEO invite when
+the service restarts. It does not create or revoke an invite on each start.
+When `PAPERCLIP_SERVICE_MANAGED=1`, the service log does not contain the invite
+URL or bearer token. Run `paperclipai auth bootstrap-ceo` in a terminal to
+rotate the pending invite and print a new URL.
+
 Choose a specific instance:
 
 ```sh
@@ -116,6 +122,10 @@ Allow a private hostname for authenticated/private mode:
 ```sh
 npx paperclipai allowed-hostname my-tailscale-host
 ```
+
+The `paperclipai auth bootstrap-ceo` command prints an invite URL. It uses
+`--base-url` first, then an explicit public URL. For a LAN bind without an
+explicit public URL, it uses the first allowed hostname.
 
 ## Local Storage Paths
 
