@@ -1340,6 +1340,33 @@ export function createHeartbeatScheduling(
     return eligible;
   }
 
+  /**
+   * The one issue a timer heartbeat should bind to, if the choice is
+   * unambiguous: the agent's sole open assigned issue. Binding gives the run
+   * an attribution source (snapshot issueId/taskId, from which the wake
+   * enrichment derives taskKey) that unscoped timer wakes lack entirely: the
+   * adapter injects PAPERCLIP_TASK_ID from that snapshot, and the cross-issue
+   * write guard refuses every write from a run it cannot attribute to a
+   * source issue — a timer run holds no issue checkout to fall back on. With
+   * zero or multiple open assignments the wake stays unscoped; the scheduler
+   * does not guess which task a heartbeat "is".
+   */
+  async function soleOpenAssignedIssueId(
+    agent: typeof agents.$inferSelect,
+  ): Promise<string | null> {
+    const rows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          inArray(issues.status, ["todo", "in_progress"]),
+        ),
+      );
+    return rows.length === 1 ? rows[0].id : null;
+  }
+
   async function nextAgentTimerAt(now = new Date()): Promise<number | null> {
     if ((await getSchedulingSuppression(true)).suppressed) return null;
     let next: number | null = null;
@@ -1361,11 +1388,24 @@ export function createHeartbeatScheduling(
       if (!canContinue()) break;
       const timerClaim = await claimDueTimerHeartbeat(agent, now, intervalSec);
       if (!timerClaim) continue;
+      // The timer wake is the only wake this scheduler creates, and the only
+      // one created without task context. Without a binding, downstream
+      // consumers degrade: the adapter cannot inject PAPERCLIP_TASK_ID (the
+      // session cannot prioritize its task), the cross-issue write guard
+      // refuses every write from the run (no attribution source, no issue
+      // checkout to fall back on), and PF-4 session reset pays the full
+      // fresh-session cost every tick. Bind the wake to the agent's sole
+      // open assigned issue — the documented heartbeat contract ("if
+      // PAPERCLIP_TASK_ID is set and assigned to you, prioritize that task")
+      // — and keep exploratory wakes unscoped when there is no unambiguous
+      // assignment (PF-4: unscoped timer wakes are "any new work?" scans).
+      const boundIssueId = await soleOpenAssignedIssueId(agent);
       const run = await enqueueWakeup(agent.id, {
         source: "timer", triggerDetail: "system", reason: "heartbeat_timer",
         requestedByActorType: "system", requestedByActorId: "heartbeat_scheduler",
         contextSnapshot: { source: "scheduler", reason: "interval_elapsed", now: now.toISOString(),
-          timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat },
+          timerClaimWasFirstHeartbeat: timerClaim.wasFirstHeartbeat,
+          ...(boundIssueId ? { issueId: boundIssueId, taskId: boundIssueId } : {}) },
       });
       if (run) enqueued++; else skipped++;
     }
