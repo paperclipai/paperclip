@@ -6,6 +6,11 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+/** Composio's own outcome flags. Provider data nested in an account record is never read as one. */
+function reportsFailure(entry: Record<string, unknown>) {
+  return Boolean(entry.error) || entry.success === false || entry.successful === false;
+}
+
 function payloadsFrom(response: unknown) {
   const root = record(response);
   const result = record(root?.result) ?? root;
@@ -17,7 +22,7 @@ function payloadsFrom(response: unknown) {
       try { payloads.push(record(JSON.parse(block.text))); } catch { /* Plain text is not proof. */ }
     }
   }
-  if (root?.error || result?.isError === true || payloads.some(p => p?.successful === false || p?.success === false || p?.error)) {
+  if (root?.error || result?.isError === true || payloads.some(p => p !== null && reportsFailure(p))) {
     throw unprocessable("Composio could not configure this app. Check the app in Composio and try again.");
   }
   return payloads;
@@ -29,6 +34,7 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
   let observed = false;
   let incomplete = false;
   let visited = 0;
+  const checkFailed = () => unprocessable("Composio could not check this app. Refresh its accounts before trying again.");
   function visit(value: unknown, matched: boolean, depth: number) {
     if (++visited > 20_000 || depth > 12) { incomplete = true; return; }
     if (Array.isArray(value)) { value.forEach(item => visit(item, matched, depth + 1)); return; }
@@ -36,9 +42,7 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
     if (!entry) return;
     const named = entry.toolkit ?? entry.toolkit_name ?? entry.toolkit_slug;
     const selected = matched || named === toolkit || record(named)?.slug === toolkit;
-    if (selected && (entry.error || entry.success === false || entry.successful === false)) {
-      throw unprocessable("Composio could not check this app. Refresh its accounts before trying again.");
-    }
+    if (selected && reportsFailure(entry)) throw checkFailed();
     if (selected && Array.isArray(entry.accounts)) {
       observed = true;
       for (const item of entry.accounts) {
