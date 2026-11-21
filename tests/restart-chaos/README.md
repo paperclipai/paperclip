@@ -306,11 +306,11 @@ minutes is not a live owner, the same window the drain uses. The drain also wait
 (`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading.
 
 **Gate D verdict** (`hosted-gate.ts`). A run exits 0 only when every check in the `Gate D` block of `SUMMARY.md` holds:
-every started task completed hands-off; every planned task was created; every started task passes the local waves'
+every started task completed hands-off; every task the harness launched was created; every started task passes the local waves'
 R1 (`gradeR1` from `grader.ts`); no Retry banner was shown; no health probe failed; no overlapping runs, duplicated
 agent comments or duplicated subtasks; no release was stop-then-start; and at least one release was detected, each
 with a live run carried across it. A fixed batch (`--hosted-releases 0`) skips the release check. R1 uses the
-staging-mix budget (`stagingMixBudgetMs`); an agent-created subtask is graded from its own creation time with the
+staging-mix budget (`stagingMixBudgetMs`); a subtask the agent created under a launched task is graded from its own creation time with the
 budget of its two rounds. It adds outage time only for a release whose health probes failed
 before the new build answered. It credits the first run's queue wait when the agent's slots prove it fair
 (`queueWaitFairnessFrom`, from the run list and each agent's `runtimeConfig.heartbeat.maxConcurrentRuns`). The API

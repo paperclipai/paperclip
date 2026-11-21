@@ -168,7 +168,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const started = new Set(issues.map(issue => issue.id));
   const planned = input.tasks();
   const plannedIds = new Set(planned.flatMap(task => task.issueId ? [task.issueId] : []));
-  const subtasks = issues.filter(issue => !plannedIds.has(issue.id)).map(issue => subtaskRecord({ ...views.get(issue.id), id: issue.id,
+  const subtasks = issues.filter(issue => !plannedIds.has(issue.id) && issue.parentId !== null && plannedIds.has(issue.parentId)).map(issue => subtaskRecord({ ...views.get(issue.id), id: issue.id,
     identifier: issue.identifier }, clicks.get(issue.id) ?? []));
   const r1 = [...planned.filter(task => task.issueId && started.has(task.issueId)), ...subtasks].map(task => ({ identifier: task.identifier,
     result: hostedR1({ record: task, view: views.get(task.issueId!), runs: runsByIssue.get(task.issueId!) ?? [], queueWait: slotProof.queueWait, outages }) }));

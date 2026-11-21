@@ -185,6 +185,20 @@ describe("hosted grade with the run's task records", () => {
     expect(child).toMatchObject({ issueId: "c1", identifier: "GIT-9", createdAt: T0 + 3 * MIN, createError: null });
     expect(child.plan.task.rounds).toBe(SUBTASK_ROUNDS);
     expect(subtaskRecord({ id: "c2", status: "done" }, []).createError).toBe("subtask has no createdAt");
+    expect(subtaskRecord({ id: "c3", status: "done", createdAt: T0 }, []).createdAt).toBe(T0);
+  });
+
+  it("reads a numeric completedAt as well as an ISO string", () => {
+    const graded = hostedR1({ record: record(), view: { status: "done", completedAt: T0 + 10 * MIN }, runs: [run("r1", 0, 0, 10)], queueWait: qw([run("r1", 0, 0, 10)]), outages: [] });
+    expect(graded.verdict).toBe("pass");
+  });
+
+  it("grades only subtasks of launched tasks, not another issue the agent created", async () => {
+    const budget = stagingMixBudgetMs({ ...task, rounds: SUBTASK_ROUNDS }) / MIN;
+    const late = budget + 5;
+    const stray = issue("x1", { createdAt: at(1), completedAt: at(1 + late) });
+    const graded = await grade([issue("i1"), stray], [runOf("r1", "i1", 0, 10), runOf("r2", "x1", 1, 1 + late)], [record()], 0);
+    expect(graded.markdown).not.toContain("FAIL R1");
   });
 
   it("fails the gate and records why when the agent list cannot be read", async () => {

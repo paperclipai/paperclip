@@ -1,7 +1,7 @@
 import { agentSlotsFromRows, queueWaitFairnessFrom, type QueueWaitFairness } from "./agent-slots.js";
 import { gradeR1 } from "./grader.js";
 import type { ContinuityReport, DetectedRelease } from "./hosted-release.js";
-import type { HostedRunRow } from "./hosted-readers.js";
+import { ms, type HostedRunRow } from "./hosted-readers.js";
 import type { HostedTaskRecord } from "./hosted-workload.js";
 import type { RetryClick, SwapMetrics } from "./release-swap-grade.js";
 import { stagingMixBudgetMs, SUBTASK_ROUNDS } from "./staging-mix.js";
@@ -27,7 +27,7 @@ function runSample(run: HostedRunRow): RunSample {
 }
 
 /** The task view fields R1 reads. */
-export interface HostedIssueView { status?: string | null; completedAt?: string | null }
+export interface HostedIssueView { status?: string | null; completedAt?: string | number | null }
 /** The agent fields the queue-wait proof reads. */
 export interface HostedAgentRow { id: string; runtimeConfig?: { heartbeat?: { maxConcurrentRuns?: unknown } } | null }
 
@@ -57,9 +57,9 @@ export function hostedQueueWait(agentIds: readonly string[], agents: readonly Ho
 export function hostedR1(input: { record: HostedTaskRecord; view: HostedIssueView | undefined; runs: readonly HostedRunRow[];
   queueWait: QueueWaitFairness; outages: readonly FaultReceipt[] }): RuleResult {
   const { record, view } = input;
-  const completedAt = Date.parse(String(view?.completedAt ?? ""));
+  const completedAt = ms(view?.completedAt);
   const status = String(view?.status ?? record.status);
-  const restAt = status === "done" ? (Number.isFinite(completedAt) ? completedAt : record.doneAt) : null;
+  const restAt = status === "done" ? (completedAt ?? record.doneAt) : null;
   const subject: R1Subject = {
     plan: { workload: "SM", nonce: record.plan.nonce }, issueId: record.issueId, identifier: record.identifier, createdAt: record.createdAt,
     launchError: record.createError, samples: [{ at: restAt ?? Date.now(), reachable: true, serverReady: true, runs: input.runs.map(runSample) }],
@@ -70,12 +70,12 @@ export function hostedR1(input: { record: HostedTaskRecord; view: HostedIssueVie
   return gradeR1(subject as unknown as TaskRecord, stagingMixBudgetMs(record.plan.task), input.outages, input.queueWait);
 }
 
-/** An agent-created subtask graded on its own: created when the issue was, with the budget of its two rounds. */
-export function subtaskRecord(view: { id: string; identifier?: string | null; status?: string | null; createdAt?: string | null }, retryClicks: readonly RetryClick[]): HostedTaskRecord {
-  const created = Date.parse(String(view.createdAt ?? ""));
+/** A planned task's agent-created subtask graded on its own: created when the issue was, with the budget of its two rounds. */
+export function subtaskRecord(view: { id: string; identifier?: string | null; status?: string | null; createdAt?: string | number | null }, retryClicks: readonly RetryClick[]): HostedTaskRecord {
+  const created = ms(view.createdAt);
   return { plan: { index: -1, adapter: "opencode", nonce: String(view.id), task: { turnMinutes: 0, rounds: SUBTASK_ROUNDS, subtasks: 0, followUpAfterMs: null,
     arriveAtMs: 0, holdMs: 0 } }, issueId: String(view.id), identifier: view.identifier ? String(view.identifier) : null,
-    createdAt: Number.isFinite(created) ? created : null, createError: Number.isFinite(created) ? null : "subtask has no createdAt",
+    createdAt: created, createError: created === null ? "subtask has no createdAt" : null,
     status: String(view.status), lastLiveAt: null, followUp: null, retryClicks: [...retryClicks], retriedRuns: [], doneAt: null };
 }
 
