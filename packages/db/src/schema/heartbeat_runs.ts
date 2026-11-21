@@ -248,6 +248,18 @@ export const heartbeatRuns = pgTable(
       table.status,
       table.processStartedAt,
     ),
+    companyFinishedIdx: index("heartbeat_runs_company_finished_idx").on(table.companyId, table.finishedAt.desc())
+      .where(sql`${table.finishedAt} is not null`).concurrently(),
+    settledProcessIdentityIdx: index("heartbeat_runs_settled_process_identity_idx")
+      .on(table.processHostHash, table.companyId, table.id)
+      .where(sql`${table.runtimeMode} = 'native' and ${table.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
+        and ${table.finishedAt} is not null
+        and (${table.processPid} is not null or ${table.processGroupId} is not null or ${table.processStartedAt} is not null)`)
+      .concurrently(),
+    pendingApiStopIdx: index("heartbeat_runs_pending_api_stop_idx").on(table.companyId, table.id)
+      .where(sql`${table.status} = 'cancelled' and ${table.driverKind} = 'cursor_cloud_api'
+        and (${table.resultJson}->'executionCancellation'->>'state') = 'requested'`)
+      .concurrently(),
     companyCreatedAtDescIdx: index("heartbeat_runs_company_created_at_desc_idx").on(
       table.companyId,
       table.createdAt.desc(),

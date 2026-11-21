@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { nativeSystemInstructions } from "./backends/runtime-context.js";
 
 import type {
+  AppendedEventReceipt,
   CheckpointControlPlaneSessionOptions,
   ControlPlanePort,
 } from "./contracts/control-plane-port.js";
@@ -45,6 +46,7 @@ import {
   type PrpTerminalState,
 } from "./protocol/replay-contract.js";
 import { parsePaperclipQuestionSet } from "./contracts/question-set.js";
+import { awaitsProviderTurn, createProviderTurnWait, type ProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
 import {
   retainedRunnerdCleanupProofIsCurrent,
   type RetainedRunnerdCleanupProof,
@@ -65,6 +67,8 @@ const REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS = 10_000;
 // elapsed time or a cancellation acknowledgement as usage/terminal evidence.
 const GOVERNED_ACCOUNTING_DRAIN_MS = 15_000;
 const MAX_GOVERNED_ACCOUNTING_DRAIN_MS = 30_000;
+// Text delta receipts a turn may leave unsettled before it waits for them.
+const MAX_PENDING_DELTA_RECEIPTS = 256;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
 /**
  * A retained cleanup owner can only still hold resources it was bound to.
@@ -271,6 +275,47 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
   return true;
 }
 
+function quarantinedRemoteCleanupScope(
+  entry: QuarantinedSessionCleanup,
+  input: { companyId: string; issueId: string },
+): string | null {
+  const [companyId, , , remoteCleanupScope] = JSON.parse(entry.domain.key) as string[];
+  return companyId === input.companyId && remoteCleanupScope &&
+    entry.domain.resources.includes(JSON.stringify(["issue", input.issueId]))
+    ? remoteCleanupScope : null;
+}
+
+export function nativeSessionCleanupRemoteScopes(input: {
+  companyId: string;
+  issueId: string;
+}): string[] {
+  const scopes = new Set<string>();
+  for (const entry of quarantinedSessionCleanups) {
+    const scope = quarantinedRemoteCleanupScope(entry, input);
+    if (scope) scopes.add(scope);
+  }
+  return [...scopes];
+}
+
+export function completeTerminatedRemoteNativeSessionCleanupForTask(input: {
+  companyId: string;
+  issueId: string;
+  remoteCleanupScope: string;
+}): number {
+  if (!input.remoteCleanupScope) return 0;
+  let retired = 0;
+  for (const entry of [...quarantinedSessionCleanups]) {
+    if (quarantinedRemoteCleanupScope(entry, input) !== input.remoteCleanupScope) continue;
+    if (entry.attempt || entry.recovery) continue;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
+    retired += 1;
+  }
+  return retired;
+}
+
 /** Host-only counterpart of remote resource termination. The caller has verified
  * both exact local process identities and durably fenced their run. This removes
  * only cleanup ownership; the retained checkpoint is never made resumable.
@@ -413,6 +458,7 @@ export interface ExecuteNativeSessionOptions {
     turnId: string | null;
     event: PrpEvent;
   }) => PrpStructuredRunResult | null;
+  providerTurnWait?: ProviderTurnWaitOptions;
 }
 
 function isTurnTerminal(event: PrpEvent): boolean {
@@ -1186,8 +1232,16 @@ async function consumeTurn(
   /** Settles a compaction-only turn, which reports no semantic result. */
   compactionResult?: PrpStructuredRunResult,
   supersededTerminal?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
+  providerTurnWaitOptions?: ProviderTurnWaitOptions,
+  resumedProviderTurnWait?: PrpEvent,
+  checkpointProviderTurn?: (signal: AbortSignal, sourceSeq: number) => Promise<unknown>,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const providerTurnWait = createProviderTurnWait({
+    session,
+    options: providerTurnWaitOptions,
+    overallDeadlineMs: timeoutMs > 0 ? Date.now() + timeoutMs : null,
+  });
   const appendAbort = new AbortController();
   const governedCleanupOperations = new Set<Promise<unknown>>();
   let governedCancellationCommitted = false;
@@ -1228,7 +1282,16 @@ async function consumeTurn(
     if (inputTimer !== undefined) clearTimeout(inputTimer);
     inputTimers.delete(requestId);
   };
-  const consumer = (async () => {
+  // Delta appends the consumer started and that have not settled. The consumer
+  // joins them before it settles, whatever way it ends, so their observers
+  // never outlive the turn's cleanup.
+  const outstandingDeltas = new Set<Promise<unknown>>();
+  const joinOutstandingDeltas = async () => {
+    if (outstandingDeltas.size === 0) return;
+    controlPlane.flushStreamingEvents?.();
+    await Promise.allSettled([...outstandingDeltas]);
+  };
+  const consumerBody = (async () => {
     let eventCount = 0;
     let highestContiguousSourceSeq = 0;
     let governedResult: PrpStructuredRunResult | null = null;
@@ -1239,11 +1302,31 @@ async function consumeTurn(
     let latestSessionGoal: HarnessThreadGoal | null = null;
     let resultSource: "semantic_result" | "governed_wait" | null = null;
     let providerFailure: NativeProviderTerminalFailure | null = null;
+    // A port that batches text deltas lets the next event start before a
+    // delta's receipt settles. Every other event, and every result, waits for
+    // the receipts of the deltas before it.
+    const pipelinesDeltas = controlPlane.pipelinesStreamingEvents === true;
+    const pipelinedEventTypes: ReadonlySet<string> = controlPlane.pipelinedEventTypes ?? new Set(["item.delta"]);
+    let pendingDeltas: Promise<AppendedEventReceipt>[] = [];
+    let deltaFailure = null as { error: unknown } | null;
+    const settlePendingDeltas = async () => {
+      // Queued deltas commit now: the next event must not wait for the batch timer.
+      if (pendingDeltas.length > 0) controlPlane.flushStreamingEvents?.();
+      while (pendingDeltas.length > 0) {
+        const pending = pendingDeltas;
+        pendingDeltas = [];
+        for (const receipt of await Promise.all(pending)) {
+          eventCount += receipt.disposition === "committed" ? 1 : 0;
+          highestContiguousSourceSeq = Math.max(highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);
+        }
+      }
+    };
     const settleDurableResult = async (
       event: PrpEvent,
       result: PrpStructuredRunResult,
       reason: string,
     ) => {
+      await settlePendingDeltas();
       if (session.cancel === undefined) {
         throw new Error("native_governed_wait_cancellation_unavailable");
       }
@@ -1358,11 +1441,33 @@ async function consumeTurn(
       return settleDurableResult(initialGovernedWait.sourceEvent, initialGovernedWait.result,
         "Paperclip resumed settlement of this durable governed interaction.");
     }
+    const endProviderTurnWait = async (terminal: PrpEvent) => {
+      if (providerTurnWait.ending !== null && semanticResultProposal === null && governedResult === null &&
+          inputTimers.size === 0 && await resumeInterruptedTurn?.(terminal, appendAbort.signal)) return null;
+      await settlePendingDeltas();
+      return { event: terminal, eventCount, highestContiguousSourceSeq, governedResult };
+    };
+    let pendingRead: Promise<IteratorResult<PrpEvent>> | null = null;
+    let forcedEndTaken = false;
+    if (resumedProviderTurnWait) providerTurnWait.begin(resumedProviderTurnWait);
     while (true) {
-      const next = await eventIterator.next().catch((error) => {
-        throw providerFailure ?? error;
-      });
+      if (pendingRead === null) {
+        pendingRead = eventIterator.next().catch((error) => {
+          throw providerFailure ?? error;
+        });
+        void pendingRead.catch(() => undefined);
+      }
+      const next = providerTurnWait.started && !forcedEndTaken
+        ? await Promise.race([pendingRead, providerTurnWait.forced])
+        : await pendingRead;
       if (stopConsumer) throw new Error("native event consumer stopped");
+      if (next === null) {
+        forcedEndTaken = true;
+        const ended = await endProviderTurnWait(providerTurnWait.awaitedTerminal!);
+        if (ended === null) continue;
+        return ended;
+      }
+      pendingRead = null;
       if (next.done) {
         if (providerFailure) throw providerFailure;
         throw new Error(
@@ -1384,15 +1489,39 @@ async function consumeTurn(
       // the timer stayed live until the receipt returned, both settlement
       // and a durable handoff could commit for the same request.
       if (settlingRequestId !== null) clearInputTimer(settlingRequestId);
-      const receipt = await controlPlane.appendEvent(event, {
-        signal: appendAbort.signal,
-      });
+      // A failed delta stops the turn before any later event is appended.
+      if (deltaFailure) throw deltaFailure.error;
+      let receipt: AppendedEventReceipt | null = null;
+      if (pipelinesDeltas && pipelinedEventTypes.has(event.eventType)) {
+        const pending = controlPlane.appendEvent(event, { signal: appendAbort.signal, streaming: true });
+        const settled = pending.then(() => undefined, (error: unknown) => { deltaFailure ??= { error }; });
+        outstandingDeltas.add(settled);
+        void settled.finally(() => outstandingDeltas.delete(settled));
+        pendingDeltas.push(pending);
+        if (pendingDeltas.length >= MAX_PENDING_DELTA_RECEIPTS) await settlePendingDeltas();
+      } else {
+        await settlePendingDeltas();
+        receipt = await controlPlane.appendEvent(event, {
+          signal: appendAbort.signal,
+        });
+      }
       if (stopConsumer) throw new Error("native event consumer stopped");
-      eventCount += receipt.disposition === "committed" ? 1 : 0;
-      highestContiguousSourceSeq = Math.max(
-        highestContiguousSourceSeq,
-        receipt.highestContiguousSourceSeq,
-      );
+      if (receipt !== null) {
+        eventCount += receipt.disposition === "committed" ? 1 : 0;
+        highestContiguousSourceSeq = Math.max(
+          highestContiguousSourceSeq,
+          receipt.highestContiguousSourceSeq,
+        );
+      }
+      if (providerTurnWait.endedBy(event)) {
+        const ended = await endProviderTurnWait(providerTurnWait.awaitedTerminal!);
+        if (ended !== null) return ended;
+      }
+      providerTurnWait.observe(event);
+      if (event.eventType === "turn.started" && payload.origin === "provider") {
+        await checkpointProviderTurn?.(appendAbort.signal, event.sourceSeq);
+        appendAbort.signal.throwIfAborted();
+      }
       const eventGoal = goalFromEvent(event);
       const goalChanged = eventGoal !== undefined &&
         goalLifecycleFingerprint(eventGoal) !== goalLifecycleFingerprint(previousGoal);
@@ -1430,7 +1559,7 @@ async function consumeTurn(
           typeof failure.message === "string" ? failure.message : undefined,
           readProviderFailure(failure.providerFailure),
         );
-        if ((receipt.disposition === "committed" || receipt.disposition === "duplicate") && !providerFailure.recoverable && failure.code === "provider_exited"
+        if ((receipt?.disposition === "committed" || receipt?.disposition === "duplicate") && !providerFailure.recoverable && failure.code === "provider_exited"
           && failure.expected === false && failure.completedByExitedProcess === false
           && failure.previousTurnCompleted === false && failure.provider === input.provider.kind
           && event.runId === input.binding.runId && event.normalizedSessionId === session.identity().sessionId) {
@@ -1444,7 +1573,7 @@ async function consumeTurn(
           ? (payload.request as Record<string, unknown>)
           : null;
       if (
-        receipt.disposition === "committed" &&
+        receipt?.disposition === "committed" &&
         event.eventType === "runtime_request.created" &&
         request?.schema === "paperclip.runtime_request.v2" &&
         request.type === "input" &&
@@ -1555,6 +1684,7 @@ async function consumeTurn(
           goalStatus(eventGoal) !== "active" &&
           payload.workingNow !== true
         ) {
+          await settlePendingDeltas();
           return {
             event,
             eventCount,
@@ -1574,6 +1704,7 @@ async function consumeTurn(
             latestSessionGoal !== null &&
             goalStatus(latestSessionGoal) !== "active"
           ) {
+            await settlePendingDeltas();
             return {
               event,
               eventCount,
@@ -1603,6 +1734,7 @@ async function consumeTurn(
         if (await supersededTerminal?.(event, appendAbort.signal)) continue;
         if (providerFailure) throw providerFailure;
         if (compactionResult && event.eventType === "turn.completed") {
+          await settlePendingDeltas();
           return {
             event,
             eventCount,
@@ -1610,8 +1742,15 @@ async function consumeTurn(
             governedResult: compactionResult,
           };
         }
+        if (semanticResultProposal === null && governedResult === null && inputTimers.size === 0 &&
+            awaitsProviderTurn(event) && providerTurnWait.begin(event)) {
+          await checkpointProviderTurn?.(appendAbort.signal, event.sourceSeq);
+          appendAbort.signal.throwIfAborted();
+          continue;
+        }
         if (semanticResultProposal === null && governedResult === null &&
             inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
+        await settlePendingDeltas();
         return {
           event,
           eventCount,
@@ -1621,13 +1760,17 @@ async function consumeTurn(
       }
     }
   })();
+  // The race below sees the consumer's own outcome, so a failure reaches abort
+  // and provider cancellation at once. Teardown waits, within its bound, for
+  // the consumer together with its pending delta appends.
+  const consumer = consumerBody.finally(joinOutstandingDeltas);
   // A timeout can win the race while an iterator is still waiting for data.
   // Observe any later consumer rejection so it cannot become process-fatal.
   void consumer.catch(() => undefined);
   let consumptionFailed = false;
   try {
     return await Promise.race([
-      consumer,
+      consumerBody,
       new Promise<never>((_, reject) => {
         if (timeoutMs <= 0) return;
         // Node timers overflow above ~24.8 days. Keep explicit long deadlines
@@ -1756,6 +1899,7 @@ async function consumeTurn(
         quarantineSession("provider_event_teardown_timed_out");
     }
     if (timer !== undefined) clearTimeout(timer);
+    providerTurnWait.dispose();
     removeExternalAbort();
   }
 }
@@ -2840,8 +2984,8 @@ export async function executeNativeSession(
     if (reconciledRecoveryCheckpoint !== null) {
       await persistCheckpoint(reconciledRecoveryCheckpoint);
     }
-    const checkpoint = async (signal?: AbortSignal) => {
-      const snapshot = await session.snapshot(signal ? { signal } : undefined);
+    const checkpoint = async (signal?: AbortSignal, sourceSeq?: number) => {
+      const snapshot = await session.snapshot(signal ? { signal, ...(sourceSeq === undefined ? {} : { sourceSeq }) } : undefined);
       signal?.throwIfAborted();
       await persistCheckpoint(snapshot, signal);
       return snapshot;
@@ -2896,6 +3040,7 @@ export async function executeNativeSession(
       };
     };
     let restartContinuationStarted = false;
+    let ownTurnId: string | null = null;
     let borrowedContinuationTurnId: string | null = null;
     let restartContinuationTurnId: string | null = null;
     let settleStartupDecision: () => void = () => undefined;
@@ -2956,14 +3101,18 @@ export async function executeNativeSession(
     };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (await requestContinuationDisposition(event, signal)) return true;
-      if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
+      const restoredAtStartup = recovered && options.resumeInterruptedTurn === true &&
+        event.turnId === persistedSession?.activeTurnId;
+      // The task turn this execution started is its own, whether the session
+      // was opened fresh or resumed from a warm or recovered checkpoint.
+      const restoredInThisExecution = ownTurnId !== null && event.turnId === ownTurnId;
+      if (restartContinuationStarted || !(restoredAtStartup || restoredInThisExecution) ||
           // A compaction-only run never continues task work after a restart.
           // Runnerd records a restart-lost turn only for these providers, after
           // proving the old process ended and restoring the same conversation.
           !["codex", "acpx", "opencode"].includes(input.provider.kind) || options.sessionCompaction || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
           recoveredSnapshot.goal || persistedSession?.semanticResult || persistedSession?.pendingRuntimeRequests?.length ||
-          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error) ||
-          event.turnId !== persistedSession?.activeTurnId) return false;
+          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error)) return false;
       const snapshot = await session.snapshot();
       signal.throwIfAborted();
       if (nativeRestartInterruptedTurnId(snapshot) !== event.turnId || snapshot.pendingRuntimeRequests?.length) return false;
@@ -3058,7 +3207,8 @@ export async function executeNativeSession(
         recovered &&
         persistedSession?.dispositionOnlyRecoveryConsumed &&
         !recoveredSnapshot.semanticResult &&
-        !recoveredActiveTurnId,
+        !recoveredActiveTurnId &&
+        recoveredSnapshot.awaitingProviderTurn !== true,
       );
       const dispositionRecoveryTurnId =
         persistedSession?.dispositionOnlyRecoveryTurnId ??
@@ -3107,6 +3257,18 @@ export async function executeNativeSession(
         replayedDisposition !== null || dispositionFallback !== null;
       const recoveryTerminal =
         replayedDisposition?.terminal ?? dispositionFallback;
+      const awaitedTurnId = persistedSession?.terminalTurns?.at(-1)?.turnId ?? null;
+      const awaitedTerminal = recovered && recoveredSnapshot.awaitingProviderTurn === true && !recoveredActiveTurnId &&
+          !recoveredSnapshot.semanticResult && !governedWait && !checkpointedDispositionTerminal && awaitedTurnId !== null
+        ? (await replayCheckpointedTurnTerminal({
+            controlPlane: options.controlPlane,
+            runId: input.binding.runId,
+            sourceInstanceId: options.runnerInstanceId,
+            priorTerminalTurnIds: [],
+            expectedTurnId: awaitedTurnId,
+          }))?.terminal ?? null
+        : null;
+      const resumedProviderTurnWait = awaitedTerminal !== null && awaitsProviderTurn(awaitedTerminal) ? awaitedTerminal : undefined;
       const consumptionAbort = new AbortController();
       const consuming =
         (governedTerminal || governedWait?.settlement) && governedWait
@@ -3144,6 +3306,9 @@ export async function executeNativeSession(
                 ? sessionCompactionResult(input, options.sessionCompaction.requestId)
                 : undefined,
               supersededByRestartContinuation,
+              options.providerTurnWait,
+              resumedProviderTurnWait,
+              checkpoint,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -3167,7 +3332,8 @@ export async function executeNativeSession(
           (!recoveredActiveTurnId &&
             !adoptedProviderTerminal &&
             !checkpointedDispositionTerminal &&
-            !dispositionRecoveryStillOwned));
+            !dispositionRecoveryStillOwned &&
+            !resumedProviderTurnWait));
         if (options.sessionCompaction) {
           // Compaction summarizes existing provider context. A new session or
           // one that is still running a turn has nothing safe to compact.
@@ -3264,7 +3430,7 @@ export async function executeNativeSession(
           // the fenced checkpoint right before the submit. A new session's
           // normal path adds nothing before turn.start.
           if (recovered) await checkpoint();
-          await session.startTurn({
+          const startedTaskTurn = await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
@@ -3275,6 +3441,9 @@ export async function executeNativeSession(
                 ? "default"
                 : "executionMode" in input ? input.executionMode : "default",
           });
+          // Only a turn carrying this run's task work can be continued after a
+          // mid-run runnerd restore. A disposition-only recovery turn cannot.
+          if (!dispositionOnlyRecovery || effectFreeInitialAcpxTurn) ownTurnId = startedTaskTurn.turnId;
           await checkpoint();
         }
         settleStartupDecision();

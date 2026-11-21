@@ -343,7 +343,7 @@ idempotent redaction projection. Repeated projection preserves the original
 payload digest. Provider recovery uses the same projection to compare saved
 completion results with provider history. Changed private bodies still conflict.
 Restart preparation preserves the run's admitted REST credential scope, even
-when the task mode changes. See [the run-log guide](run-log-events.md) for stored fields.
+when the task mode changes. The stored fields are defined where the run-log event is written.
 
 The server-issued REST credential for the bound run is never returned to the model.
 Streaming, WebSocket, MCP and authentication

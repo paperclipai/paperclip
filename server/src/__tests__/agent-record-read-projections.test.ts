@@ -94,7 +94,7 @@ describe.skipIf(!support.supported)("agent roster read projections", () => {
   it("keeps detail reads small while returning the selected agent's complete current configuration", async () => {
     const f = await fixture();
     const captured = await observe(observed => agentRecordQueries(observed).getById(f.workerId));
-    expect(captured.calls).toBe(2);
+    expect(captured.calls).toBe(1);
     expect(captured.bytes).toBeLessThan(8192);
     expect(captured.result).toMatchObject({ id: f.workerId, companyId: f.companyId, adapterConfig: f.worker.adapterConfig,
       runtimeConfig: f.worker.runtimeConfig, metadata: f.worker.metadata, permissions: { canCreateAgents: true }, spentMonthlyCents: 19.5,

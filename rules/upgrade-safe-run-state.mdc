@@ -65,6 +65,3 @@ Persisted run identity includes:
   where the run can be in flight?
 - Is the fix class-level, rather than one more per-code exception?
 - Do remote-sandbox paths have a test that applies the provider's confinement?
-
-The release-compatibility contract is stated in
-[`doc/execution-semantics.md`](../doc/execution-semantics.md#94-release-compatibility-of-saved-run-state).

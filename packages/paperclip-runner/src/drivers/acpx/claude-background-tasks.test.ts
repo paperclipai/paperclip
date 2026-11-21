@@ -173,4 +173,32 @@ describe("ClaudeBackgroundTaskTracker", () => {
     }
     expect(tasks.state()).toBeNull();
   });
+
+  it("counts only running shells once a shell finished or Claude acted, and is unknown when none runs", () => {
+    const finishedOne = negotiated();
+    prompt(finishedOne, 1, [spawned(), backgrounded, { ...spawned(), asyncTaskId: "task-2" }]);
+    finishedOne.observe("inbound", update(settled("completed")));
+    expect(finishedOne.state()).toEqual({ live: 1 });
+    finishedOne.providerTurnStarted();
+    finishedOne.observe("inbound", update({ sessionUpdate: "tool_call", toolCallId: "toolu_9", _meta: { claudeCode: { toolName: "Read" } } }), true);
+    finishedOne.observe("inbound", { jsonrpc: "2.0", id: 4, method: "session/request_permission", params: {} }, true);
+    finishedOne.providerTurnEnded(true);
+    expect(finishedOne.state()).toEqual({ live: 1 });
+    finishedOne.observe("inbound", update({ ...settled("completed"), asyncTaskId: "task-2" }));
+    expect(finishedOne.state()).toBeNull();
+
+    const acted = negotiated();
+    prompt(acted, 1, []);
+    acted.providerTurnStarted();
+    acted.providerTurnEnded(true);
+    expect(acted.state()).toBeNull();
+  });
+
+  it("stays unknown after a cycle that did not complete, even while a shell runs", () => {
+    const failed = negotiated();
+    prompt(failed, 1, [spawned(), backgrounded]);
+    failed.providerTurnStarted();
+    failed.providerTurnEnded(false);
+    expect(failed.state()).toBeNull();
+  });
 });

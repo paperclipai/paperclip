@@ -104,3 +104,4 @@ test-results/
 
 # Content-addressed CI task results
 .turbo/
+scripts/scale-ramp/results/

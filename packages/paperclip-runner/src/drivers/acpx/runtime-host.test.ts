@@ -20,7 +20,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {
@@ -256,6 +256,31 @@ describe("ACPX runtime host", () => {
     expect(openRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).not.toHaveBeenCalled();
   });
+  it("admits Claude instructions larger than the provider-delivered bound and passes them to the provider", async () => {
+    const fixture = await hostFixture();
+    const systemInstructions = "x".repeat(54_734);
+    const openRuntime = vi.fn(async (_options: { systemInstructions?: string }) => runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) }));
+    const host = await AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-all",
+      providerPolicy: { readOnly: false }, systemInstructions }, fixture.dependencies({ openRuntime }));
+    try {
+      expect(openRuntime).toHaveBeenCalledOnce();
+      expect(openRuntime.mock.calls[0]![0].systemInstructions).toBe(systemInstructions);
+    } finally { await host.close({ reason: "instructions admitted" }); }
+  });
+  it.each([
+    { agent: "pi" as const, model: "anthropic/claude-sonnet-5", bytes: 32 * 1024 + 1, extra: { piThinkingLevel: "low" as const } },
+    { agent: "copilot" as const, model: "gpt-5.6-sol", bytes: 32 * 1024 + 1, extra: { environment: { COPILOT_GITHUB_TOKEN: "synthetic-test-token" } } },
+    { agent: "claude" as const, model: "claude-sonnet-5", bytes: 256 * 1024 + 1, extra: {} },
+  ])("reports oversized $agent instructions as instructions admission before launch", async ({ agent, model, bytes, extra }) => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => runtimePort());
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent, model, permissionMode: "approve-all",
+      providerPolicy: { readOnly: false }, systemInstructions: "x".repeat(bytes), ...extra }, fixture.dependencies({ openRuntime })).catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toMatch(/instructions exceed their bounded size/);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_INSTRUCTIONS");
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
   it.each(["installation", "sandbox", "credential", "runtime"] as const)("retains the failed %s admission stage through the sidecar boundary", async stage => {
     const fixture = await hostFixture();
     const failure = new Error("private-token-canary");
@@ -374,17 +399,6 @@ describe("ACPX runtime host", () => {
     expect(await readFile(auth, "utf8")).toBe('{"user_owned":true}');
   });
 
-  it.each([
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned" },
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned", PAPERCLIP_NATIVE_MCP_URL: "http://external.example/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
-  ])("rejects invalid assigned connection bindings before runtime launch", async (environment) => {
-    const fixture = await hostFixture();
-    const openRuntime = vi.fn();
-    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-reads", environment }, fixture.dependencies({ openRuntime }))).rejects.toThrow(/assigned native MCP/);
-    expect(openRuntime).not.toHaveBeenCalled();
-  });
-
   it("leaves an active Claude owner's effort settings unchanged when a second opener loses the lifetime lease", async () => {
     const fixture = await hostFixture();
     let settingsPath = "";
@@ -487,28 +501,34 @@ describe("ACPX runtime host", () => {
     expect(openRuntime).toHaveBeenCalledTimes(1);
   });
 
-  it("registers the assigned connection gateway alongside the Claude task bridge", async () => {
+  it.each([
+    { agent: "claude" as const, model: "claude-sonnet-5", environment: {} },
+    { agent: "codex" as const, model: "gpt-5.6-sol", environment: { OPENAI_API_KEY: "synthetic-test-key" } },
+    { agent: "cursor" as const, model: "explicit-test-model", environment: { CURSOR_API_KEY: "test" } },
+  ])("admits a relayed $agent run with a binding id and ignores a previous-release gateway binding", async ({ agent, model, environment }) => {
     const fixture = await hostFixture();
-    let servers: AcpxRuntimePortOpenOptions["mcpServers"] = [];
+    const retiredGateway = {
+      PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+      PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateways/previous-release",
+      PAPERCLIP_NATIVE_MCP_TOKEN: "previous-release-gateway-token-".repeat(2),
+    };
+    let launch: AcpxRuntimePortOpenOptions | undefined;
     const host = await AcpxRuntimeHost.open({
-      ...fixture.options,
-      agent: "claude", model: "claude-sonnet-5",
-      permissionMode: "approve-reads",
-      environment: {
-        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
-        PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateway",
-        PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-gateway-token-".repeat(3),
-      },
+      ...fixture.options, agent, model, permissionMode: "approve-all",
+      runtimeContext: { skills: [], instructions: {}, mcp: { bindingId: "assigned-run" } } as unknown as NativeRuntimeContextSnapshot,
+      environment: { ...environment, ...retiredGateway },
+      assignedMcpTransport: "prp",
       semanticTools: { tools: [], handler: async () => ({}) },
-    }, fixture.dependencies({ openRuntime: async (options) => {
-      servers = options.mcpServers;
-      return runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) });
+    }, fixture.dependencies({ openRuntime: async options => {
+      launch = options;
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }),
+        ...(agent === "cursor" ? { identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", mode: "agent" }) } : {}) });
     } }));
     try {
-      expect(servers.map(server => server.name)).toEqual(["paperclip", "paperclip-assigned"]);
-      expect(servers[1]).toEqual({ name: "paperclip-assigned", url: "http://127.0.0.1:3211/mcp/gateway",
-        bearerToken: "fixture-gateway-token-".repeat(3), runnerOwned: true });
-    } finally { await host.close({ reason: "gateway test complete" }); }
+      expect(launch!.mcpServers.map(server => server.name)).toEqual(["paperclip"]);
+      for (const name of Object.keys(retiredGateway)) expect(launch!.launchEnvironment).not.toHaveProperty(name);
+      expect(JSON.stringify(launch!.launchEnvironment)).not.toContain("previous-release");
+    } finally { await host.close({ reason: "relayed admission verified" }); }
   });
 
   it.each([false, true])("keeps stdio registration session-local and omits it for readOnly=%s", async readOnly => {
@@ -929,7 +949,7 @@ describe("ACPX runtime host", () => {
       // staged credential to that pending admission. Abort before entering the
       // adapter so its pre-entry path must publish a completed cleanup proof.
       controller.abort(cancellation);
-      return openCodexAcpxRuntime(options, { createRuntime });
+      return openQualifiedAcpxRuntime(options, { createRuntime });
     });
 
     await expect(

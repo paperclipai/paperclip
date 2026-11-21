@@ -88,7 +88,7 @@ vi.mock("@mdxeditor/editor", async () => {
       () => ({
         setMarkdown: (value: string) => {
           contentRef.current = value;
-          if (editableRef.current) editableRef.current.textContent = value;
+          if (editableRef.current) editableRef.current.textContent = value.replace(/(?:&#x20;)+$/, (suffix) => " ".repeat(suffix.length / 6));
         },
         insertMarkdown: (value: string) => {
           const next = contentRef.current

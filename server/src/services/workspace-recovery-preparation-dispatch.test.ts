@@ -238,7 +238,14 @@ describe("automatic retained workspace recovery", () => {
         recoveryWorker = registerWorkspaceRecoveryWork(db, recoveryCoordinator, runtime, heartbeat.resumeRemoteStopComments);
         await recoveryWorker.ready;
         const retryIntent = { observedRunId: completed.id, idempotencyKey: randomUUID() };
-        const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
+        // Until saved-work recovery verifies the files, admission refuses this
+        // Retry and the answer says so. The saved request still starts by
+        // itself once the files are verified.
+        const answer = await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent);
+        expect([200, 202]).toContain(answer.status);
+        if (answer.status === 200) expect(answer.body).toMatchObject({ accepted: false,
+          refused: { reason: "previous_execution_unverified" } });
+        const retry = answer.body;
         const resumed = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
           sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${retry.requestId}`));
         await expect.poll(async () => await hasVerifiedWorkspaceRepair(db, await run(completed.id)), { timeout: 20_000 }).toBe(true);
@@ -410,6 +417,23 @@ describe("automatic retained workspace recovery", () => {
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
       expect(await nextWorkspaceRecoveryAt(restarted)).toBeNull();
     } finally { await restarted.$client.end(); }
+  }, 30_000);
+
+  it.each([["remote_workspace_prepare_timeout", 1], ["adapter_failed", 0]] as const)(
+    "continues a recovered preparation that failed with %s only when its bounded retry owns it", async (errorCode, continuations) => {
+    const f = await interruptedRemotePreparation("process_lost");
+    await db.update(heartbeatRuns).set({ errorCode, error: "Could not exclude agent files from task Git staging (reason=timed_out)" })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await recoverRetainedWorkspace(f.input);
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    const listed = await retainedWorkspaceCandidates(db, undefined, false, true);
+    expect(listed.some(row => row.run.id === f.runId)).toBe(continuations === 1);
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeRemoteStopComments(await run(f.runId)),
+      heartbeat.resumeRemoteStopComments(await run(f.runId))]);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toHaveLength(continuations);
+    if (continuations) expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
   }, 30_000);
 
   it.each(["restart", "pause", "claimed", "duplicate"] as const)("retains preparation continuation after settlement before enqueue (%s)", async mode => {

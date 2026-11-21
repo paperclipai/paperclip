@@ -546,6 +546,20 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain(saved.executionWait.message);
     expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
   });
+  it("shows an Interrupt as sent while the stopped turn hands off, with no wait or error text", async () => {
+    const handoff = { ...queue, targetRunId: null,
+      executionWait: { reason: "interrupt_handoff", message: "Sending your messages." } };
+    const onInterrupt = vi.fn().mockResolvedValue(handoff);
+    render({ queue: { ...queue, steeringDisposition: "temporarily_unavailable" }, onInterrupt });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!.click(); });
+    // A poll during the hand-off still lists the saved messages.
+    render({ queue: handoff, onInterrupt });
+    await act(async () => {});
+    expect(container.textContent).not.toContain("First queued message");
+    expect(container.textContent).not.toContain("Sending your messages.");
+    expect(container.textContent).not.toContain("Couldn’t");
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+  });
   it("clears a deferred wait message when a refreshed queue finishes sending", async () => {
     const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };
     render({ queue: saved, onInterrupt: vi.fn().mockResolvedValue(saved) });

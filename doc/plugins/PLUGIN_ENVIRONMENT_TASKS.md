@@ -66,8 +66,45 @@ query, or fragment. Return authentication in the secret headers.
 
 `submit` contains the PRP version range, Runner identity, bootstrap ticket,
 authorized project IDs, and optional launch limits. It can also contain a saved
-task ID for session reuse and a typed Codex or Claude credential. Core does not
-supply an executable command or a guest path.
+task ID for session reuse and a typed credential. Core does not supply an
+executable command or a guest path.
+
+### Typed credentials
+
+The `credential` field has one of these types:
+
+| `type` | Contents | Harness |
+| --- | --- | --- |
+| `codex-auth-json` | `authJson`: the selected Codex `auth.json` | `codex` |
+| `claude-env` | `environment`: exactly one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | `claude` |
+| `provider-env` | `provider` and `environment`: one complete variable set for that provider | `grok`, `copilot` or `opencode` |
+
+A `provider-env` credential contains exactly one of these variable sets and no
+other variable:
+
+| `provider` | Variable sets |
+| --- | --- |
+| `grok` | `XAI_API_KEY` |
+| `copilot` | `COPILOT_GITHUB_TOKEN` |
+| `opencode` | `OPENROUTER_API_KEY`, or `PAPERCLIP_AI_PROVIDER_URL` with `PAPERCLIP_AI_PROVIDER_KEY` |
+
+`ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS` exports this list. A server test
+checks every set against the names that the Runner forwards to each provider. Every value
+is non-empty and contains no NUL byte. The `provider` always matches the
+Runner harness of the task. Set the variables in the environment of the Runner
+process. The Runner gives each variable only to its provider.
+
+For `copilot`, also set `PAPERCLIP_ACPX_CREDENTIAL_BINDING` in the Runner
+environment. Its value is this JSON object, with the normalized session ID of
+the task's PRP identity:
+
+```json
+{"schema":"paperclip.acpx_credential_binding.v1","agent":"copilot","sessionId":"<normalizedSessionId>","names":["COPILOT_GITHUB_TOKEN"]}
+```
+
+The Runner refuses a Copilot token without a matching binding.
+Core does not send a Grok subscription login. A Grok agent must use an xAI API
+key in a plugin environment.
 
 ## Configured environment
 
@@ -90,6 +127,8 @@ run log line that names the variables it did not set.
   task. It does not resume the retained Runner.
 - A session handoff starts a new Runner, so its `resume` has
   `configuredEnvironment`.
+- A provider that also returns `resumeLaunchInputsVersion: 1` gets
+  `configuredEnvironment` on every `resume`. See "Release and resume".
 
 A driver can declare `protectedEnvironmentKeys` in the manifest. These are the
 variables that the driver always sets on its tasks. Core rejects a protected
@@ -117,20 +156,73 @@ workspace and current authority before installing the ticket or reserving reuse.
 The ticket is bounded transient authentication input, as on submission. Never
 copy its bytes into status, metadata, logs, results or durable replay records.
 
-A provider can return `resumeCredentialVersion: 1` from `describe`. Core then
-adds `credential` to `resume` when it would add `credential` to `submit` for the
-claimant run. The field has the same shape and validation as on `submit`. Core
-resolves it for the claimant run's selected account, so the value can be newer
-than the credential that started the Runner. When Core has no credential for the
-task, `resume` has no `credential`. An older provider gets no new field.
+A provider can return `resumeLaunchInputsVersion: 1` from `describe`. Core then
+adds the launch inputs of `submit` to every `resume`, with the same values and
+rules as on `submit` for the claimant run:
+
+- `credential`, when Core would add `credential` to `submit`. Core resolves it
+  for the claimant run's selected account, so the value can be newer than the
+  credential that started the Runner. When Core has no credential for the task,
+  `resume` has no `credential`.
+- `configuredEnvironment`, when the provider also returns
+  `configuredEnvironmentVersion: 1`.
+
+An older provider gets no new fields. A session handoff keeps its existing
+fields.
 
 - A provider that must start the Runner again to resume the session, for example
-  after it moved the session to a new sandbox or after a reboot, can use this
-  credential to start the Runner.
-- A provider with a live Runner ignores the field. The running Runner keeps its
-  own credential.
-- The credential is transient secret input, as on `submit`. Do not save it in
+  after it moved the session to a new sandbox or after a reboot, starts the
+  Runner with these inputs, as on `submit`.
+- A provider with a live Runner ignores the fields. The running Runner keeps the
+  credential and environment that it started with.
+- The values are transient secret input, as on `submit`. Do not save them in
   task state, lease metadata, journals, logs, results or durable replay records.
+
+A provider can return `resumeRelaunchedRunnerVersion: 1` from `describe`. Core
+then adds `relaunchedRunnerVersion: 1` to every `resume`. With this field, a
+provider that must start the Runner again can start it on a different Runner
+build. Use a build whose version can read the parked Runner's state: the same
+version, or a newer semantic version. A prerelease is older than its release.
+Report that build as `runner: { version, digest }` on the `resumed` result.
+Core accepts the build only when its version can read the parked state. Core
+then expects that build when the Runner authenticates. Core treats any other
+build as `unavailable`. Without `relaunchedRunnerVersion`, start the Runner
+again only on the parked build, and do not add `runner` to the result. Older
+strict Core schemas reject `resumeRelaunchedRunnerVersion` in a description, so
+advertise it only to a Core version that supports it.
+
+A provider can return `resumeIdentityVersion: 1` from `describe`. Use it only
+for a provider that stops a released Runner, so that every `resume` starts the
+Runner again. Core then rotates the session to the claimant run before it calls
+`resume`, and adds `runner: { runId, turnId, itemId }` to `resume`. These are the
+claimant run's identity fields. The other identity fields do not change. With
+this field, the provider must:
+
+- Move the source Runner state (`runner-state.json`) out of the Runner state
+  directory into an archive, so that the Runner creates new state.
+- Start the Runner as the claimant identity with the fresh `bootstrapTicket`.
+- Return `runner: { version, digest }` and `archivedState` (the archived Runner
+  state) on the `resumed` result.
+
+Core accepts the archived state only when it is the source's settled cut: the
+`suspended` lifecycle, or the `ready` lifecycle with an empty outbox, every
+event acknowledged and no command in progress. Core then sends one ordinary
+`run.attach` with no authority hand-off. A retry with the same source, ticket
+and `runner` must return the original result and must not start a second
+Runner. Without `runner` on `resume`, keep the claimant handover above.
+
+Core prepares the claimant run before this `resume`: its `prepare` has
+`priorIdentity` set to the released source, and the released task is not yet
+claimed. Core also takes this path when it recovers a released task after a
+Core restart, if it recorded the build the task was released on and the
+session's process configuration has not changed. A provider must then accept
+that `prepare` without state it kept in memory before the restart.
+
+While a released task can still be resumed, its `status` must report
+`executionStopped: false`, even when its Runner process is stopped. Core
+replaces a reused task whose `status` reports a stop, and then cannot resume
+the released session on it. Report the stop only when the task can no longer
+resume.
 
 The `resume` result has a closed `outcome`:
 

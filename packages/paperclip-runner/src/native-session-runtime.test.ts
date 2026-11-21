@@ -311,6 +311,122 @@ describe("executeNativeSession recovery", () => {
     } finally { abort.abort(); await completion.catch(() => undefined); }
   });
 
+  /** A batching port whose queued deltas commit only when flushed: it has no timer. */
+  const batchingDeltaFixture = (events: () => AsyncGenerator<PrpEvent>, commitDelta: (sourceSeq: number) => Promise<void> = async () => {},
+    pipelinedEventTypes?: ReadonlySet<PrpEvent["eventType"]>) => {
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      events,
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      async result() { return { result, terminal, turnId: "turn-recovery" }; },
+      async snapshot() {
+        return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery",
+          cursor: null, activeTurnId: null, semanticResult: null, terminal: null, terminalTurns: [], pendingRuntimeRequests: [], lineage: [] };
+      },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "delta-fixture", version: "1", capabilities,
+        runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }; },
+      async openSession() { return session; },
+    };
+    const log: string[] = [];
+    let queued: Array<() => void> = [];
+    const port: ControlPlanePort = {
+      pipelinesStreamingEvents: true,
+      ...(pipelinedEventTypes ? { pipelinedEventTypes } : {}),
+      flushStreamingEvents() {
+        log.push("flush");
+        const flushed = queued;
+        queued = [];
+        for (const commit of flushed) commit();
+      },
+      async openRun() {}, async checkpointSession() {},
+      async appendEvent(event: PrpEvent, options) {
+        if (event.sourceKind !== "runner") return { cursor: 0, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+        log.push(`append:${event.sourceSeq}`);
+        if ((pipelinedEventTypes ?? new Set(["item.delta"])).has(event.eventType)) {
+          expect(options?.streaming).toBe(true);
+          await new Promise<void>(resolve => queued.push(resolve));
+          await commitDelta(event.sourceSeq);
+          log.push(`committed:${event.sourceSeq}`);
+        }
+        return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+      },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    return { backend, port, log };
+  };
+  const streamedDelta = (sourceSeq: number) => ({ ...runnerEvent(sourceSeq, "item.delta", { kind: "agentMessage", text: `chunk ${sourceSeq}` }),
+    itemId: "message-1", priority: 1 as const });
+
+  it("starts text delta appends without waiting and flushes them before any other event", async () => {
+    const f = batchingDeltaFixture(async function* () {
+      for (const sourceSeq of [1, 2, 3]) yield streamedDelta(sourceSeq);
+      yield runnerEvent(4, "run.result.proposed", result);
+      yield runnerEvent(5, "turn.completed");
+    });
+    // The port has no timer: the turn finishes only if the next event flushes the queued deltas.
+    const execution = await executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
+    expect(f.log.slice(0, 5)).toEqual(["append:1", "append:2", "append:3", "flush", "committed:1"]);
+    expect(f.log.indexOf("append:4")).toBeGreaterThan(Math.max(...[1, 2, 3].map(seq => f.log.indexOf(`committed:${seq}`))));
+    expect(execution).toMatchObject({ nativeEventCount: 7, highestContiguousSourceSeq: 5 });
+  });
+
+  it.each([true, false])("starts progress appends without waiting only when the port pipelines them (pipelined=%s)", async pipelined => {
+    const progress = (sourceSeq: number) => runnerEvent(sourceSeq, "tool.execution.progressed", { name: "build", status: "running" });
+    const f = batchingDeltaFixture(async function* () {
+      for (const sourceSeq of [1, 2]) yield progress(sourceSeq);
+      yield streamedDelta(3);
+      yield runnerEvent(4, "run.result.proposed", result);
+      yield runnerEvent(5, "turn.completed");
+    }, async () => {}, pipelined ? new Set(["item.delta", "tool.execution.progressed"]) : undefined);
+    const execution = await executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
+    expect(f.log.slice(0, 4)).toEqual(["append:1", "append:2", "append:3", "flush"]);
+    if (pipelined) {
+      expect(f.log.indexOf("append:2")).toBeLessThan(f.log.indexOf("committed:1"));
+      expect(f.log.indexOf("append:4")).toBeGreaterThan(Math.max(...[1, 2, 3].map(seq => f.log.indexOf(`committed:${seq}`))));
+    } else {
+      expect(f.log).not.toContain("committed:1");
+    }
+    expect(execution).toMatchObject({ highestContiguousSourceSeq: 5 });
+  });
+
+  it("joins pending delta appends before a failed turn settles", async () => {
+    let releaseCommit = () => {};
+    const commitReleased = new Promise<void>(resolve => { releaseCommit = resolve; });
+    const f = batchingDeltaFixture(async function* () {
+      yield streamedDelta(1);
+      throw new Error("provider stream broke");
+    }, () => commitReleased);
+    let settled = false;
+    const execution = executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" }).finally(() => { settled = true; f.log.push("settled"); });
+    void execution.catch(() => undefined);
+    await vi.waitFor(() => expect(f.log).toContain("flush"));
+    // The delta's commit still runs, so the turn has not settled.
+    expect(settled).toBe(false);
+    releaseCommit();
+    await expect(execution).rejects.toThrow("provider stream broke");
+    expect(f.log.indexOf("committed:1")).toBeLessThan(f.log.indexOf("settled"));
+  });
+
+  it("fails the turn within the cleanup bound when a pending delta append never settles", async () => {
+    const f = batchingDeltaFixture(async function* () {
+      yield streamedDelta(1);
+      throw new Error("provider stream broke");
+    }, () => new Promise<void>(() => {}));
+    // No turn timeout: only the bounded cleanup can end this turn.
+    await expect(executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" })).rejects.toThrow("provider stream broke");
+    expect(f.log).not.toContain("committed:1");
+  });
+
   it.each([false, true].flatMap(recovered => [
     { recovered, cwd: "/home/agent" },
     { recovered, cwd: "/projects/repository/worktrees/task" },
@@ -592,6 +708,145 @@ describe("executeNativeSession recovery", () => {
     expect(events.filter(event => event.eventType === "turn.failed")).toHaveLength(1);
     expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
     expect(checkpoints.some(snapshot => snapshot.terminalTurns?.some(turn => turn.turnId === "turn-recovery"))).toBe(true);
+  });
+
+  it.each([
+    { label: "continues its own turn once when runnerd is restored mid-execution", lostTurnId: "turn-recovery", continues: true },
+    { label: "does not continue a lost turn this execution never started", lostTurnId: "turn-elsewhere", continues: false },
+  ])("$label", async ({ lostTurnId, continues }) => {
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const interrupted: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "acpx_runtime", sessionId: "thread-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: null, semanticResult: null,
+      pendingRuntimeRequests: [], lineage: [],
+      terminalTurns: [{ turnId: lostTurnId, fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    let turnStarts = 0;
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({
+      turnId: ++turnStarts === 1 ? "turn-recovery" : "turn-continuation",
+    }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        yield { ...runnerEvent(1, "turn.failed", { status: "failed", error: failure }), turnId: lostTurnId };
+        if (startTurn.mock.calls.length < 2) return;
+        yield { ...runnerEvent(2, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
+      },
+      startTurn,
+      async result() { return startTurn.mock.calls.length > 1 ? { result, terminal, turnId: "turn-continuation" } : null; },
+      async snapshot() { return startTurn.mock.calls.length ? structuredClone(interrupted) : { ...structuredClone(interrupted), terminalTurns: [] }; },
+      async close() {},
+    };
+    const events: PrpEvent[] = [];
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "in-execution-restore", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { return session; },
+      async recoverSession() { throw new Error("a fresh execution opens its own session"); },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) { events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    const execution = executeNativeSession({
+      input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+    });
+    if (!continues) {
+      await expect(execution).rejects.toMatchObject({ code: "native_provider_terminal_failed" });
+      expect(startTurn).toHaveBeenCalledOnce();
+      return;
+    }
+    await expect(execution).resolves.toMatchObject({ result, turnId: "turn-continuation", terminal: { runTerminalState: "succeeded" } });
+    expect(startTurn).toHaveBeenCalledTimes(2);
+    const submitted = startTurn.mock.calls[1]![0] as Parameters<NativeSession["startTurn"]>[0];
+    expect(submitted.continuation).toBe(true);
+    expectRestartContinuationGuidance(submitted.message.text);
+    expect(submitted.message.text).not.toContain(input.task.prompt);
+    expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
+  });
+
+  // A chat follow-up resumes the warm conversation of its previous run, so its
+  // session is recovered, and no restart claim exists. The turn it starts is
+  // still its own when a mid-run runnerd restore reports that turn lost.
+  it.each([
+    { label: "continues its own turn on a resumed warm session once when runnerd is restored mid-execution", lostTurnId: "turn-own", dispositionOnly: false, continues: true },
+    { label: "does not continue a lost turn a resumed warm session never started", lostTurnId: "turn-elsewhere", dispositionOnly: false, continues: false },
+    { label: "does not continue a lost disposition-only recovery turn", lostTurnId: "turn-own", dispositionOnly: true, continues: false },
+  ])("$label", async ({ lostTurnId, dispositionOnly, continues }) => {
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    // A warm checkpoint rebound to a new run keeps only its provider identity
+    // (loadWarmNativeCheckpoint). A same-run recovery after a completed turn
+    // keeps that turn and asks only for the disposition.
+    const warm: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "acpx_runtime", sessionId: "thread-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: null, semanticResult: null,
+      pendingRuntimeRequests: [], lineage: [],
+      terminalTurns: dispositionOnly
+        ? [{ turnId: "turn-completed", fingerprint: JSON.stringify({ terminalState: "completed", error: null, result: null }) }]
+        : [],
+    };
+    const interrupted: PersistedNativeSession = {
+      ...warm,
+      terminalTurns: [...warm.terminalTurns!,
+        { turnId: lostTurnId, fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    let startedTurns = 0;
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => {
+      startedTurns += 1;
+      return { turnId: startedTurns === 1 ? "turn-own" : "turn-continuation" };
+    });
+    // The runner reports the loss only after this execution submitted its turn.
+    const turnSubmitted = vi.waitFor(() => { expect(startedTurns).toBeGreaterThan(0); });
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        await turnSubmitted;
+        yield { ...runnerEvent(1, "turn.failed", { status: "failed", error: failure }), turnId: lostTurnId };
+        if (startTurn.mock.calls.length < 2) return;
+        yield { ...runnerEvent(2, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
+      },
+      startTurn,
+      async result() { return startTurn.mock.calls.length > 1 ? { result, terminal, turnId: "turn-continuation" } : null; },
+      async snapshot() { return structuredClone(startTurn.mock.calls.length ? interrupted : warm); },
+      async close() {},
+    };
+    const events: PrpEvent[] = [];
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "warm-restore", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must resume the warm provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) { events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    const execution = executeNativeSession({
+      input, backend, controlPlane: port, persistedSession: warm,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+    });
+    if (!continues) {
+      await expect(execution).rejects.toMatchObject({ code: "native_provider_terminal_failed" });
+      expect(startTurn).toHaveBeenCalledOnce();
+      return;
+    }
+    await expect(execution).resolves.toMatchObject({ result, turnId: "turn-continuation", terminal: { runTerminalState: "succeeded" } });
+    expect(startTurn).toHaveBeenCalledTimes(2);
+    // The lost turn carried this run's task, not a disposition-only request.
+    const first = startTurn.mock.calls[0]![0] as Parameters<NativeSession["startTurn"]>[0];
+    expect(first.message.text).toContain(JSON.stringify(input.task.prompt).slice(1, -1));
+    const submitted = startTurn.mock.calls[1]![0] as Parameters<NativeSession["startTurn"]>[0];
+    expect(submitted.continuation).toBe(true);
+    expectRestartContinuationGuidance(submitted.message.text);
+    expect(submitted.message.text).not.toContain(input.task.prompt);
+    expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
   });
 
   it.each([

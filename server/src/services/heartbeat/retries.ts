@@ -3,7 +3,7 @@ import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_MAX_DEFERRALS, AGENT_DIRECTORY_BUSY_RETRY_REASON, AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON, agentDirectoryBusyRetryDelayMs, type AgentDirectoryPreparationDeferral } from "./agent-directory-busy.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
-import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { notifyIssueAttentionRetentionWork } from "../retention-work-notifications.js";
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -32,9 +32,7 @@ import {
   serverRestartBudgetSpent,
 } from "../execution-recovery-attempt.js";
 import { isReplacedPreparation, isServerReplacementInterruption } from "../server-replacement-interruption.js";
-import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
-import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
-import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
+import { failedPreparationOwnsBoundedRetry, isTransientWorkspacePreparationCode } from "../failed-preparation-retry.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import { REPOSITORY_CATALOG_UNAVAILABLE_CODE } from "../repository-catalog-unavailable-error.js";
@@ -42,6 +40,7 @@ import { REVIEWED_CHAT_BINDING_NOT_READY } from "../reviewed-chat-binding-diagno
 import { RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY, RUNNER_REVISION_WAIT_RETRY_REASON } from "../runner-revision-mismatch.js";
 import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_RETRY, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../../storage/storage-unavailable.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
+import { ENVIRONMENT_PROVIDER_WAIT_KEY, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON, environmentProviderWaitFor, environmentProviderWaitRetry } from "../environment-provider-wait.js";
 import { randomUUID } from "node:crypto";
 import {
   and,
@@ -92,6 +91,7 @@ import {
 import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
+import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION } from "../native-runtime/native-sandbox-disk-full.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -153,37 +153,7 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 
-export function isTransientWorkspacePreparationCode(code: string | null | undefined): boolean {
-  return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated
-    || code === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || code === REUSABLE_SANDBOX_RESUME_FAILED_CODE
-    || code === REMOTE_WORKSPACE_RESTORE_FAILED_CODE || code === PLUGIN_WORKER_UNAVAILABLE_CODE
-    || code === RUNNER_REVISION_MISMATCH_CODE || code === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
-    || code === REPOSITORY_CATALOG_UNAVAILABLE_CODE || code === REVIEWED_CHAT_BINDING_NOT_READY
-    || code === STORAGE_UNAVAILABLE_CODE;
-}
-
-/**
- * The persisted form of the setup-failure decision in run completion: this
- * failed legacy run stopped before provider work with a transient preparation
- * code, so its own bounded retry (scheduleBoundedRetryForRun) continues it.
- * The stranded-task sweep uses it to offer a run whose executor has not
- * scheduled that retry (still settling, or its server stopped) to the same
- * idempotent scheduler instead of escalating it.
- */
-export function failedPreparationOwnsBoundedRetry(run: Pick<HeartbeatRun,
-  "status" | "runtimeMode" | "nativeSessionId" | "runnerInstanceId" | "errorCode" | "resultJson" | "contextSnapshot">): boolean {
-  if (run.status !== "failed" || run.runtimeMode !== "legacy" || run.nativeSessionId !== null || run.runnerInstanceId !== null
-    || !isTransientWorkspacePreparationCode(run.errorCode)) return false;
-  const recovery = parseObject(run.resultJson?.executionRecovery);
-  if (recovery.kind !== "bootstrap" || recovery.providerWorkStarted !== false) return false;
-  // A restore failure is retried only when its owner proved it retryable.
-  if (run.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE)
-    return parseObject(run.resultJson?.remoteWorkspaceRestore).retryable === true;
-  // An accepted interaction keeps its own continuation retry.
-  return !((run.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
-    || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE || run.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
-    && isResolvedInteractionContinuationWakeContext(run.contextSnapshot));
-}
+export { failedPreparationOwnsBoundedRetry, isTransientWorkspacePreparationCode };
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
@@ -556,11 +526,21 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     if (!opts?.retryReason && run.errorCode === RUNNER_REVISION_MISMATCH_CODE) opts = { ...RUNNER_REVISION_MISMATCH_RETRY, ...opts };
     if (!opts?.retryReason && run.errorCode === STORAGE_UNAVAILABLE_CODE) opts = { ...STORAGE_UNAVAILABLE_RETRY, ...opts };
+    if (!opts?.retryReason && run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+        && (run.scheduledRetryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON
+          || executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS)) {
+      const providerWait = environmentProviderWaitRetry(run, opts?.now ?? new Date());
+      if (providerWait) opts = { ...providerWait, ...opts };
+    }
     if (await hasCaseHandoffForRun(run)) return { outcome: "not_scheduled" as const,
       reason: "The durable case handoff owns successor work.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
         || ["openai_dot", "muse"].includes(String(parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind))) {
       return { outcome: "not_scheduled" as const, reason: "Dot external execution must be reconciled before a new assignment; Paperclip cannot confirm its external stop.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (run.errorCode === NATIVE_SANDBOX_DISK_FULL) {
+      return { outcome: "not_scheduled" as const, reason: NATIVE_SANDBOX_DISK_FULL_ACTION,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (run.errorCode === "provider_tool_definition_invalid") {
       return { outcome: "not_scheduled" as const,
@@ -813,6 +793,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           ? { preparationWait: { kind: retryReason, attempt: schedule.attempt, nextAttemptAt: schedule.dueAt.toISOString() } }
           : { wakeReason, retryReason }),
         ...(interactionRunnerWait ? { mutation: "interaction" } : {}),
+        ...(retryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON
+          ? { [ENVIRONMENT_PROVIDER_WAIT_KEY]: environmentProviderWaitFor(run, now) }
+          : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {
               failureRetriesBeforeWorkspaceWait:
@@ -863,6 +846,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     delete retryContextSnapshot.skillSelectionSnapshot;
     delete retryContextSnapshot.shadowedSkills;
     delete retryContextSnapshot.retryWorkspaceRefusal;
+    if (retryReason !== ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON) delete retryContextSnapshot[ENVIRONMENT_PROVIDER_WAIT_KEY];
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,
@@ -1209,8 +1193,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           }
         }
 
-        await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
-        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
+        await notifyIssueAttentionRetentionWork(tx, { companyId: run.companyId, runId: run.id });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId, runId: run.id });
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -2068,7 +2052,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     };
 
     const updated = await db.transaction(async (tx) => {
-      await notifyScheduledRetryDispatch(tx, { companyId: scheduled.run.companyId });
+      await notifyScheduledRetryDispatch(tx, { companyId: scheduled.run.companyId, runId: scheduled.run.id });
       const row = await tx
         .update(heartbeatRuns)
         .set({

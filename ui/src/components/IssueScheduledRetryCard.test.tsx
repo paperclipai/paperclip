@@ -126,6 +126,11 @@ describe("IssueScheduledRetryCard", () => {
     expect(container.textContent).toBe("");
     expect(getRetryNowButton()).toBeNull();
   });
+  it("offers no Retry while the task waits for the sandbox provider to come back", () => {
+    renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={{ ...baseRetry, scheduledRetryReason: "environment_provider_wait" }} />);
+    expect(container.textContent).toBe("");
+    expect(getRetryNowButton()).toBeNull();
+  });
   it("surfaces model capacity and the automatic retry without a generic failure", () => {
     renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={{ ...baseRetry, scheduledRetryAttempt: 1, scheduledRetryReason: "native_provider_overloaded",
       error: "Selected model is at capacity. Please try a different model.", errorCode: "native_provider_overloaded" }} />);

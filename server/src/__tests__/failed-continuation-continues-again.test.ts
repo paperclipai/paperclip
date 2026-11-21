@@ -3,10 +3,11 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import { recoveryService } from "../services/recovery/service.js";
-import { ASSIGNED_WORK_CONTINUED_ACTION, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, ASSIGNED_WORK_REPAIRS_PER_MINUTE, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
+import { taskAutomaticAttempts, transientRetryWithinTaskCap } from "../services/recovery/task-automatic-attempts.js";
 import { FRESH_CONTINUATION_SCHEMA, continueHeldExecutions, ensureFreshContinuation, resetBacklogContinuationPacingForTests } from "../services/fresh-continuation-fallback.js";
 import { PERMANENT_FAILURE_CODES, PERSON_OWNED_FAILURE_CODES } from "../services/continuation-cause.js";
-import { AUTOMATIC_RETRY_REASONS, SHARED_CONTINUATION_WINDOW_MS } from "../services/recovery/continuation-ledger.js";
+import { AUTOMATIC_RETRY_REASONS, SHARED_CONTINUATION_WINDOW_MS, sharedContinuationAttempts } from "../services/recovery/continuation-ledger.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_REASON, SERVER_RESTART_RETRY_WINDOW_MS } from "../services/execution-recovery-attempt.js";
 import { FRESH_CONTINUATIONS_PER_HOUR } from "../services/fresh-continuation-fallback.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -413,5 +414,103 @@ describePostgres("a continuation that fails before doing any work is continued a
     clock = new Date(Date.now() + 16 * MINUTE);
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id })).toMatchObject({ outcome: "repaired" });
     expect(await continuationsOf(stopped.id)).toHaveLength(1);
+  }, 60_000);
+
+  async function blockedBehindRefusedRun(f: Awaited<ReturnType<typeof seed>>) {
+    const blockedAt = new Date(Date.now() - 20 * MINUTE);
+    const task = await f.task({ status: "blocked", blockedTransitionAt: blockedAt, statusVersion: 3 });
+    const source = await f.run(task.id, { errorCode: "adapter_failed", error: "native_instruction_materialization_handoff_unavailable",
+      finishedAt: new Date(blockedAt.getTime() - 500), resultJson: { workspaceRestoreFailure: "restore_failed" },
+      contextSnapshot: { wakeReason: "issue_children_completed" } });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: task.id, kind: "active_run_watchdog",
+      status: "active", ownerType: "board", returnOwnerAgentId: f.agentId, cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${source.id}`, nextAction: "Held.", createdAt: blockedAt,
+      evidence: { runId: source.id, originalFailureCode: "adapter_failed", workspaceRestoreFailure: "restore_failed",
+        systemRecovery: { ...createSystemRecovery(source.id), state: "complete" } } }).returning();
+    const refused = await f.run(task.id, { status: "cancelled", errorCode: "execution_reconciliation_required", startedAt: null,
+      retryOfRunId: source.id, finishedAt: new Date(blockedAt.getTime() + 1_000), createdAt: new Date(blockedAt.getTime() - 100), resultJson: {},
+      contextSnapshot: { wakeReason: "issue_continuation_needed", retryReason: "issue_continuation_needed" } });
+    return { task, source, hold: hold!, refused };
+  }
+
+  it("the sweep continues a blocked task whose system retry was refused at claim behind a recovered saved-work hold", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const { task, source, hold, refused } = await blockedBehindRefusedRun(f);
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
+
+    expect((await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id)).toContain(task.id);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: task.id }))
+      .toMatchObject({ outcome: "repaired", verdict: { kind: "violation" } });
+    const [record] = await continuationsOf(source.id);
+    expect(record?.id).toBe(hold.id);
+    expect(record?.evidence).toMatchObject({ continuationDelivery: "pending", freshContinuation: { sourceRunId: source.id, trigger: "assigned_work" },
+      freshContinuationSettlement: { refusedAtDispatchRunId: refused.id, requestedBy: "system" } });
+    expect((await taskRow(task.id)).status).toBe("todo");
+    expect(queue.calls).toHaveLength(0);
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: task.id }))
+      .toMatchObject({ outcome: "ok", verdict: { clause: "pending_intent" } });
+  }, 60_000);
+
+  it("a continuation the sweep records behind a refused run counts once toward the task's hourly cap", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const { task } = await blockedBehindRefusedRun(f);
+    for (const minutesAgo of [50, 45, 40, 35, 30]) await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system",
+      actorId: "system", action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: task.id,
+      details: { outcome: "queued" }, createdAt: new Date(Date.now() - minutesAgo * MINUTE) });
+    expect(await transientRetryWithinTaskCap(db, f.companyId, task.id, new Date())).toBe(true);
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: wakeQueue().enqueueWakeup });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id })).toMatchObject({ outcome: "repaired" });
+    const attempts = await taskAutomaticAttempts(db, f.companyId, task.id, new Date());
+    expect(attempts.started).toHaveLength(FRESH_CONTINUATIONS_PER_HOUR);
+    expect(await transientRetryWithinTaskCap(db, f.companyId, task.id, new Date())).toBe(false);
+  }, 60_000);
+
+  it("continuations behind refused runs spend the sweep's per-minute repair budget", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const tasks = [];
+    for (let index = 0; index < 20; index++) tasks.push((await blockedBehindRefusedRun(f)).task);
+    let clock = new Date();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: wakeQueue().enqueueWakeup, now: () => clock });
+    const first = [];
+    for (const task of tasks) first.push(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id }));
+    expect(first.filter(check => check?.outcome === "repaired")).toHaveLength(ASSIGNED_WORK_REPAIRS_PER_MINUTE);
+    const deferred = first.filter(check => check?.outcome === "deferred_rate_limit");
+    expect(deferred).toHaveLength(20 - ASSIGNED_WORK_REPAIRS_PER_MINUTE);
+    expect(deferred.every(check => check!.retryAt!.getTime() > clock.getTime())).toBe(true);
+    clock = new Date(clock.getTime() + 66_000);
+    const second = [];
+    for (const task of tasks) second.push(await sweep.checkIssue({ companyId: f.companyId, issueId: task.id }));
+    expect(second.filter(check => check?.outcome === "repaired")).toHaveLength(20 - ASSIGNED_WORK_REPAIRS_PER_MINUTE);
+  }, 120_000);
+
+  it("a sweep continuation interrupted right after it was recorded still counts once", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const task = await f.task();
+    const failed = await f.continued(task.id);
+    for (const minutesAgo of [50, 45, 40, 35]) await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system",
+      actorId: "system", action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: task.id,
+      details: { outcome: "queued" }, createdAt: new Date(Date.now() - minutesAgo * MINUTE) });
+    const before = (await taskAutomaticAttempts(db, f.companyId, task.id, new Date())).started.length;
+    const crashAfterCommit = new Proxy(db, { get(target, property) {
+      if (property === "update") return (table: unknown) => {
+        if (table === activityLog) throw new Error("server stopped");
+        return target.update(table as typeof activityLog);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const sweep = assignedWorkSweep(crashAfterCommit, { enqueueWakeup: wakeQueue().enqueueWakeup });
+    await expect(sweep.checkIssue({ companyId: f.companyId, issueId: task.id })).rejects.toThrow("server stopped");
+    expect(await continuationsOf(failed.id)).toHaveLength(1);
+    const attempts = await taskAutomaticAttempts(db, f.companyId, task.id, new Date());
+    expect(attempts.started).toHaveLength(before + 1);
+    expect(attempts.started).toHaveLength(5);
+    expect(await sharedContinuationAttempts(db, f.companyId, task.id, new Date())).toHaveLength(before + 1);
+    expect(await transientRetryWithinTaskCap(db, f.companyId, task.id, new Date())).toBe(true);
   }, 60_000);
 });

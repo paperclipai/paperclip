@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { constants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { companySkillRepositorySnapshots as snapshots, companySkillVersions, companySkillSources, withDedicatedDbConnection, type Db, type SkillPackageFileMapping, type SkillPackageStorageReceipt, type SkillPackageRestoreRecipe } from "@paperclipai/db";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
@@ -101,6 +102,9 @@ const coldResponses: PackageIoQueue = { active: 0, waiting: [] };
 // Bound local response buffers independently so stalled storage does not prevent
 // verified cached reads, including reads inside an existing DB transaction.
 const inventoryIo: PackageIoQueue = { active: 0, waiting: [] };
+export function skillPackageStorageIoDepth() {
+  return { active: storageIo.active, waiting: storageIo.waiting.length };
+}
 async function withPackageIo<T>(action: () => Promise<T>, signal: AbortSignal, queue = storageIo): Promise<T> {
   signal.throwIfAborted();
   if (queue.active >= 2) {
@@ -353,16 +357,14 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     // the ordinary pool connection needed by an active cold response.
     const row = await descriptor(companyId, id);
     const manifest = await manifestFor(row, signal);
-    const read = () => withDedicatedDbConnection(cacheOwner, database =>
-      readIsolatedPackage(row, manifest, consume, allowRecovery, signal, cacheRead, database));
+    const read = () => readIsolatedPackage(row, manifest, consume, allowRecovery, signal, cacheRead);
     return cacheRead ? withPackageIo(read, signal, coldResponses) : read();
   }
   async function readIsolatedPackage<T>(row: Descriptor, manifest: SkillPackageManifest,
-    consume: (root: string, manifest: SkillPackageManifest) => Promise<T>, allowRecovery: boolean, signal: AbortSignal, cacheRead: boolean,
-    database: Db) {
+    consume: (root: string, manifest: SkillPackageManifest) => Promise<T>, allowRecovery: boolean, signal: AbortSignal, cacheRead: boolean) {
     const { companyId, id } = row;
     let published = false;
-    const result = await withPackageIo(async () => {
+    const result = await withPackageIo(() => withDedicatedDbConnection(cacheOwner, async database => {
       const parent = skillPackagePaths(companyId, id).parent;
       await ensureSkillCacheDirectory(parent, true);
       const staging = await fs.mkdtemp(path.join(parent, ".verify-"));
@@ -391,8 +393,8 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         }
         return result;
       } finally { await fs.rm(staging, { recursive: true, force: true }); await fs.rm(archive, { force: true }); }
-    }, signal);
-    if (published) {
+    }, { admitWithoutWaiting: true }), signal);
+    if (published) await withDedicatedDbConnection(cacheOwner, async database => {
       // Verify possible eviction candidates outside both the preparation lock
       // and the storage slot used for this fill; take the lock only to remove.
       const reader = skillPackageStore(database, storage(), cacheOwner);
@@ -402,7 +404,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           try { await withSkillVersionCacheLock(cacheOwner, companyId, remove, true); }
           catch (error) { if (!(error instanceof SkillCacheBusy)) throw error; }
         }, signal);
-    }
+    }, { admitWithoutWaiting: cacheRead });
     signal.throwIfAborted();
     return result;
   }
@@ -445,6 +447,24 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
       return result;
     });
   }
+  async function expireFailedUpload(companyId: string, id: string, token: string) {
+    const deadline = performance.now() + 1_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        db.transaction(async tx => {
+          if (performance.now() >= deadline) return;
+          const remainingMs = Math.max(1, Math.floor(deadline - performance.now()));
+          await tx.execute(sql`select set_config('statement_timeout', ${`${remainingMs}ms`}, true)`);
+          if (performance.now() >= deadline) return;
+          await tx.update(snapshots).set({ upload: sql`jsonb_set(${snapshots.upload}, '{expiresAt}', to_jsonb(now()))` })
+            .where(and(scope(companyId, id), sql`${snapshots.storage} is null`, sql`${snapshots.upload}->>'token' = ${token}`));
+        }),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, 1_000); }),
+      ]);
+    } catch {
+    } finally { clearTimeout(timer); }
+  }
   async function prepare(companyId: string, files: CompanySkillVersionFileInventoryEntry[], migrateLegacy = false, cancellation?: AbortSignal, restore?: SkillPackageRestoreRecipe): Promise<string> {
     cancellation?.throwIfAborted();
     const manifest = skillPackageManifest(files);
@@ -460,7 +480,8 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           migrationAt: null, maintenanceAt: new Date(Date.now() + 24 * 60 * 60_000) }).onConflictDoNothing().returning(descriptorColumns);
       });
       let existing = created ?? (await db.select(descriptorColumns).from(snapshots).where(and(eq(snapshots.companyId, companyId), eq(snapshots.contentHash, manifest.contentHash))))[0]!;
-      if (!created) {
+      while (!created) {
+        signal.throwIfAborted();
         if (existing.storage || (!existing.upload && !migrateLegacy && !existing.restorable)) {
           // Content deduplication must not attach a recipe with different kind or
           // encoding metadata to an already published manifest.
@@ -475,8 +496,12 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         const [claimed] = await db.update(snapshots).set({ upload }).where(and(scope(companyId, existing.id),
           sql`${snapshots.storage} is null`,
           sql`(${snapshots.upload} is null or (${snapshots.upload}->>'expiresAt')::timestamptz <= now())`)).returning(descriptorColumns);
-        if (!claimed) throw conflict("This skill package is being saved. Retry after its upload settles.");
-        existing = claimed;
+        if (claimed) { existing = claimed; break; }
+        try { await delay(250, undefined, { signal }); }
+        catch (error) { signal.throwIfAborted(); throw error; }
+        const [current] = await db.select(descriptorColumns).from(snapshots).where(scope(companyId, existing.id));
+        if (!current) throw notFound("Skill package was removed during preparation");
+        existing = current;
       }
       return withPackageIo(async () => {
         const root = skillPackagePaths(companyId, existing.id).parent;
@@ -516,11 +541,12 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           if (!saved) throw conflict("Skill package upload ownership changed");
           return saved.id;
         } finally {
-          // Failed/ambiguous uploads retain their durable claim. Maintenance reconciles
-          // exact owned keys; never delete a successful object on an uncertain SQL result.
           await fs.rm(staging, { recursive: true, force: true });
         }
-      }, signal);
+      }, signal).catch(async error => {
+        await expireFailedUpload(companyId, existing.id, token);
+        throw error;
+      });
     });
     {
       const [retained] = await db.update(snapshots).set({ maintenanceAt: new Date(Date.now() + 24 * 60 * 60_000),
