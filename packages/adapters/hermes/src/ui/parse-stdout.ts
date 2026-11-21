@@ -167,6 +167,56 @@ function syntheticToolUseId(): string {
   return `hermes-tool-${++toolCallCounter}`;
 }
 
+// ── Reasoning box (quiet mode) ─────────────────────────────────────────────
+
+/**
+ * Hermes CLI quiet mode (pipe/TTY) renders reasoning as a dim TUI box:
+ *
+ *   ┌─ Reasoning ───────────────────────────────────────────────┐
+ *    wrapped reasoning text, one terminal line per chunk
+ *   └───────────────────────────────────────────────────────────┘
+ *
+ * The opening border carries the literal title `Reasoning`; the closing
+ * border is a bare └─…─┘ rule. The closing border can arrive glued to the
+ * tail of the last interior text line in the same chunk, so interior lines
+ * also strip a trailing border rule.
+ *
+ * Border width varies with the terminal width, so only the box glyphs are
+ * matched, never a fixed column count.
+ */
+const REASONING_BOX_OPEN = /^┌─\s*Reasoning\s*─+┐$/u;
+const REASONING_BOX_CLOSE = /^└─+┘$/u;
+const REASONING_BOX_CLOSE_TRAILING = /└─+┘$/u;
+
+/**
+ * Strip a trailing closing-border rule from an interior line.
+ * Returns the original string when no border is attached.
+ */
+function stripTrailingReasoningBorder(text: string): string {
+  return text.replace(REASONING_BOX_CLOSE_TRAILING, "").trim();
+}
+
+/**
+ * Build the thinking entry for one wrapped Reasoning-box line.
+ *
+ * `delta: true` coalesces consecutive wrapped lines into a single thinking
+ * bubble (appendTranscriptEntry) — the issue chat keeps only ~30 visible
+ * transcript entries, so one entry per wrapped line would flood the window.
+ * Hermes wraps reasoning at the terminal width and drops the trailing space
+ * at each break, so every line carries an explicit newline to keep words from
+ * fusing; markdown renders that soft break back into a space.
+ *
+ * Every interior line carries `delta: true`: appendTranscriptEntry only merges
+ * into a chain whose head is also a delta, so a `delta: false` head would split
+ * each box into two bubbles. The cost is that two Reasoning boxes emitted back
+ * to back share one bubble — the delta contract has no way to start a new
+ * segment within the same kind, and a fragmented box is worse than a merged
+ * pair of adjacent boxes.
+ */
+function reasoningLineEntry(text: string, ts: string): TranscriptEntry {
+  return { kind: "thinking", ts, text: `${text}\n`, delta: true };
+}
+
 // ── Thinking detection ─────────────────────────────────────────────────────
 
 function isThinkingLine(line: string): boolean {
@@ -181,23 +231,58 @@ function isThinkingLine(line: string): boolean {
 // ── Main parser ────────────────────────────────────────────────────────────
 
 /**
- * Parse a single line of Hermes stdout into transcript entries.
+ * Stateful stdout parser. The Reasoning box spans many lines, so the parser
+ * tracks whether a box is open across calls.
  *
- * Emits structured tool_call/tool_result pairs (with synthetic IDs) so
- * Paperclip renders proper tool cards with status icons and expand/collapse.
- *
- * @param line  Raw stdout line from Hermes CLI
- * @param ts    ISO timestamp for the entry
- * @returns     Array of TranscriptEntry objects (may be empty)
+ * `reset` lets the transcript builder clear that state (buildTranscript calls
+ * it when a line fails to parse and when a transcript build finishes).
  */
-export function parseHermesStdoutLine(
-  line: string,
-  ts: string,
-): TranscriptEntry[] {
-  const trimmed = stripAnsi(line).trim();
-  if (!trimmed) return [];
+export interface HermesStdoutParser {
+  parseLine: (line: string, ts: string) => TranscriptEntry[];
+  reset: () => void;
+}
 
-  // ── System/adapter messages ────────────────────────────────────────────
+/**
+ * Create a fresh parser with its own Reasoning-box state.
+ *
+ * Consumers that parse one transcript at a time should prefer this; the
+ * module-level {@link parseHermesStdoutLine} convenience below shares a single
+ * instance, which is safe because both call sites (the direct TS import in
+ * hermes-local and the eval'd sandboxed worker) keep one parser per adapter.
+ */
+export function createStdoutParser(): HermesStdoutParser {
+  let inReasoningBox = false;
+
+  return {
+    parseLine(line: string, ts: string): TranscriptEntry[] {
+      const trimmed = stripAnsi(line).trim();
+      if (!trimmed) return [];
+
+      // ── Reasoning box (checked before everything else) ──────────────────
+      // Interior lines are dim reasoning text; a box that never closes must
+      // not leak its body into assistant output, so classify eagerly.
+      if (inReasoningBox) {
+        if (REASONING_BOX_CLOSE.test(trimmed)) {
+          inReasoningBox = false;
+          return [];
+        }
+
+        // Closing border glued to the tail of the last text line.
+        const withoutBorder = stripTrailingReasoningBorder(trimmed);
+        if (withoutBorder !== trimmed) {
+          inReasoningBox = false;
+          return withoutBorder ? [reasoningLineEntry(withoutBorder, ts)] : [];
+        }
+
+        return [reasoningLineEntry(trimmed, ts)];
+      }
+
+      if (REASONING_BOX_OPEN.test(trimmed)) {
+        inReasoningBox = true;
+        return [];
+      }
+
+      // ── System/adapter messages ────────────────────────────────────────
   if (trimmed.startsWith("[hermes]") || trimmed.startsWith("[paperclip]")) {
     return [{ kind: "system", ts, text: trimmed }];
   }
@@ -289,5 +374,45 @@ export function parseHermesStdoutLine(
   }
 
   // ── Regular assistant output ───────────────────────────────────────────
-  return [{ kind: "assistant", ts, text: trimmed }];
+      return [{ kind: "assistant", ts, text: trimmed }];
+    },
+
+    reset() {
+      inReasoningBox = false;
+    },
+  };
+}
+
+/**
+ * Shared parser instance backing {@link parseHermesStdoutLine}.
+ *
+ * One instance per module is correct for both consumers of this contract: the
+ * hermes-local UI adapter imports the function directly, and the sandboxed
+ * worker evaluates ui-parser.cjs once per adapter and reuses it for every
+ * parse request.
+ */
+const defaultParser = createStdoutParser();
+
+/**
+ * Parse a single line of Hermes stdout into transcript entries.
+ *
+ * Emits structured tool_call/tool_result pairs (with synthetic IDs) so
+ * Paperclip renders proper tool cards with status icons and expand/collapse.
+ *
+ * @param line  Raw stdout line from Hermes CLI
+ * @param ts    ISO timestamp for the entry
+ * @returns     Array of TranscriptEntry objects (may be empty)
+ */
+export function parseHermesStdoutLine(
+  line: string,
+  ts: string,
+): TranscriptEntry[] {
+  return defaultParser.parseLine(line, ts);
+}
+
+/**
+ * Clear Reasoning-box state on the shared instance (test helper).
+ */
+export function resetHermesStdoutParser(): void {
+  defaultParser.reset();
 }
