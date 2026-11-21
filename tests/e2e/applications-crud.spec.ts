@@ -57,6 +57,7 @@ async function createConnection(
 async function gotoApps(page: Page, prefix: string) {
   await page.goto(`/${prefix}/apps/connections`);
   await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("searchbox", { name: "Search connectors" }).fill(APP_PREFIX);
 }
 
 test.describe.serial("applications lifecycle", () => {
