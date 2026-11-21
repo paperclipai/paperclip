@@ -491,6 +491,13 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
   return sections.join("\n");
 }
 
+// Streamed deltas carry their own word-boundary whitespace (e.g. " world").
+// Keep them verbatim; trimming here glues words together once chunks are joined.
+export function readAssistantChunk(data: Record<string, unknown>): string | null {
+  if (typeof data.delta === "string" && data.delta.length > 0) return data.delta;
+  return nonEmpty(data.text);
+}
+
 export function buildAgentParams(input: {
   payloadTemplate: Record<string, unknown>;
   message: string;
@@ -1230,13 +1237,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
 
       if (stream === "assistant") {
-        const delta = nonEmpty(data.delta);
-        const text = nonEmpty(data.text);
-        if (delta) {
-          assistantChunks.push(delta);
-        } else if (text) {
-          assistantChunks.push(text);
-        }
+        const chunk = readAssistantChunk(data);
+        if (chunk) assistantChunks.push(chunk);
         return;
       }
 
