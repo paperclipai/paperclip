@@ -220,6 +220,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   cache.clear();
   container.remove();
+  vi.unstubAllGlobals();
 });
 
 export { api, envApi, settings, secrets, state, managedApi, adapterApi, root, container, cache, settle, click, fill, render, connect, pass, renderCurrentParams };
