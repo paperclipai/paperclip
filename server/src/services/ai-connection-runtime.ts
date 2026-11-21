@@ -101,6 +101,15 @@ export function stripAiAuthBindings(env: unknown): Record<string, unknown> {
       delete result[key];
   return result;
 }
+const AGENT_MODEL_ENV_KEYS = ["CLAUDE_CODE_SUBAGENT_MODEL"] as const;
+export function agentModelDefaults(env: unknown): Record<string, unknown> {
+  if (!env || typeof env !== "object") return {};
+  const source = env as Record<string, unknown>;
+  return Object.fromEntries(
+    AGENT_MODEL_ENV_KEYS.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]),
+  );
+}
+
 export async function assertManagedAiProjectAuth(
   config: Record<string, unknown>,
   provider: AiConnectionBinding["provider"],
@@ -321,6 +330,7 @@ export async function prepareManagedAiRuntime(
     const env: Record<string, unknown> = {
       ...stripAiAuthBindings(input.config.env),
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
+      ...agentModelDefaults(input.config.env),
       ...managedAiHomeEnvironment(home),
       ...(input.binding.provider === "github" ? { GH_TOKEN: "", GITHUB_TOKEN: "" } : {}),
     };

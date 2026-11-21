@@ -16,7 +16,7 @@ import { AI_CONNECTION_BUSY_RETRY_REASON, extractWakeCommentIds, isNonAssigneeWo
 import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "../agent-identity.js";
 import { readAiConnectionConfigurationFailure, readAiCredentialAccessFailure } from "../ai-connection-configuration-failure.js";
-import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiAuthBindings } from "../ai-connection-runtime.js";
+import { AI_AUTH_ENV_KEYS, agentModelDefaults, isAiConnectionBusy, prepareManagedAiRuntime, stripAiAuthBindings } from "../ai-connection-runtime.js";
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -217,7 +217,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       projectId: taskProjectContext?.id ?? null,
       routineId: routineEnvContext.routineId,
       responsibleUserId,
-      executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
+      executionRunConfig: aiBinding ? { ...executionRunConfig, env: { ...stripAiAuthBindings(executionRunConfig.env), ...agentModelDefaults(executionRunConfig.env) } } : executionRunConfig,
       projectEnv: aiBinding ? stripAiAuthBindings(taskProjectContext?.env) : taskProjectContext?.env ?? null,
       routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
       secretsSvc,
