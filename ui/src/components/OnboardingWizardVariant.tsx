@@ -23,7 +23,7 @@ export function OnboardingWizardVariant() {
   return (
     <>
       {requested ? (
-        <div className="fixed top-4 right-4 z-[200]">
+        <div className="fixed top-4 right-4 z-(--z-200)">
           <LanguageSwitcher className="border-border bg-background text-foreground shadow-sm" />
         </div>
       ) : null}

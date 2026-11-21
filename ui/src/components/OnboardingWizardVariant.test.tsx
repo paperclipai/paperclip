@@ -43,6 +43,8 @@ describe("OnboardingWizardVariant", () => {
     state.pathname = pathname;
     await renderVariant();
     expect(container.querySelector('[data-testid="wizard-capsule"]')).not.toBeNull();
+    expect(container.innerHTML).toContain("z-(--z-200)");
+    expect(container.innerHTML).not.toContain("z-[200]");
   });
   it("loads on dialog request and preserves the mounted wizard after closing", async () => {
     await renderVariant();
