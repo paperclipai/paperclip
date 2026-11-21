@@ -45,6 +45,7 @@ function createEventBusStub() {
       return {
         emit: async () => {},
         subscribe: () => {},
+        clear: () => {},
       };
     },
   } as any;
@@ -213,10 +214,27 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await expect(services.executionWorkspaces.get({ workspaceId, companyId: otherCompanyId })).resolves.toBeNull();
   });
 
-  it("creates plugin-origin issues with full orchestration fields and audit activity", async () => {
+  it("rejects attributed issue creation before writing", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const beforeCompany = await db.select().from(companies).where(eq(companies.id, companyId));
+    const beforeIssues = await db.select().from(issues);
+    const beforeActivity = await db.select().from(activityLog);
+    await expect(services.issues.create({
+      companyId,
+      title: "Forged attribution",
+      actorAgentId: agentId,
+      actorRunId: randomUUID(),
+    })).rejects.toThrow("not authenticated");
+    expect(await db.select().from(companies).where(eq(companies.id, companyId))).toEqual(beforeCompany);
+    expect(await db.select().from(issues)).toEqual(beforeIssues);
+    expect(await db.select().from(activityLog)).toEqual(beforeActivity);
+    services.dispose();
+  });
+
+  it("creates plugin-origin issues without attributed actors and logs plugin identity", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const blockerIssueId = randomUUID();
-    const originRunId = randomUUID();
     await db.insert(issues).values({
       id: blockerIssueId,
       companyId,
@@ -225,16 +243,6 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       priority: "medium",
       identifier: `${issuePrefix(companyId)}-blocker`,
     });
-    await db.insert(heartbeatRuns).values({
-      id: originRunId,
-      companyId,
-      agentId,
-      status: "running",
-      invocationSource: "assignment",
-      contextSnapshot: { issueId: blockerIssueId },
-    });
-
-
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
     const issue = await services.issues.create({
       companyId,
@@ -244,8 +252,6 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       billingCode: "mission:alpha",
       originId: "mission-alpha",
       blockedByIssueIds: [blockerIssueId],
-      actorAgentId: agentId,
-      actorRunId: originRunId,
     });
 
     const [stored] = await db.select().from(issues).where(eq(issues.id, issue.id));
@@ -253,8 +259,8 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(stored?.originId).toBe("mission-alpha");
     expect(stored?.billingCode).toBe("mission:alpha");
     expect(stored?.assigneeAgentId).toBe(agentId);
-    expect(stored?.createdByAgentId).toBe(agentId);
-    expect(stored?.originRunId).toBe(originRunId);
+    expect(stored?.createdByAgentId).toBeNull();
+    expect(stored?.originRunId).toBeNull();
 
     const [relation] = await db
       .select()
@@ -272,13 +278,13 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
           actorType: "plugin",
           actorId: "plugin-record-id",
           action: "issue.created",
-          agentId,
+          agentId: null,
           details: expect.objectContaining({
             sourcePluginId: "plugin-record-id",
             sourcePluginKey: "paperclip.missions",
-            initiatingActorType: "agent",
-            initiatingActorId: agentId,
-            initiatingRunId: originRunId,
+            initiatingActorType: null,
+            initiatingActorId: null,
+            initiatingRunId: null,
           }),
         }),
       ]),
