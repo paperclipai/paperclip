@@ -117,6 +117,7 @@ export function resolvePinnedOpenCodeCommand(
     const architecture = target.architecture ?? process.arch;
     const packageNames: Record<string, string[]> = {
       "linux-x64": ["opencode-linux-x64-baseline"],
+      "linux-arm64": ["opencode-linux-arm64"],
       "darwin-arm64": ["opencode-darwin-arm64"],
       "darwin-x64": ["opencode-darwin-x64-baseline"],
     };
