@@ -1,5 +1,5 @@
 import { HttpError, unprocessable } from "../../../errors.js";
-import { asRecord, originOf } from "./metadata.js";
+import { asRecord, originOf, shouldOmitMicrosoftResourceIndicator } from "./metadata.js";
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
 import type { OAuthProviderEndpoints, OAuthTokenEndpointAuthMethod, OAuthTransport } from "./types.js";
 import { oauthApplicationType } from "./client-metadata.js";
@@ -318,6 +318,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     refreshToken?: string | null;
     /** RFC 8707 resource indicator: the MCP server this token is for. */
     resource?: string | null;
+    serverUrl?: string | null;
     /**
      * RFC 7523 signed client assertion (`private_key_jwt`). When present it is
      * the only client authentication sent: the client is identified by the
@@ -362,7 +363,17 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     // RFC 8707: repeat the resource indicator on the token request so the
     // authorization server audience-restricts the access token (and any refresh
     // exchange) to this MCP server.
-    if (input.resource) body.set("resource", input.resource);
+    // Microsoft Entra ID v2.0 rejects token requests if `resource` does not match the scope prefix.
+    // Microsoft v1 endpoints still require `resource`.
+    // Only a matching Microsoft destination or an operator-approved binding may omit it.
+    const omitResource = shouldOmitMicrosoftResourceIndicator({
+      oauthUrl: input.tokenUrl,
+      resource: input.resource,
+      serverUrl: input.serverUrl,
+      scopes: input.scopes,
+    });
+    if (input.resource && !omitResource)
+      body.set("resource", input.resource);
 
     // The token URL can come from a connection row written before the endpoint
     // gate existed, so a client secret / authorization code never leaves

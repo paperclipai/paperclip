@@ -1,7 +1,7 @@
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
-import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
+import { connectionServerUrl, oauthConfig, normalizeOauthScopes } from "./metadata.js";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -189,6 +189,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
     try {
       token = machineSignIn || !client ? await requireClientCredentials(requestClientCredentialsToken)(connection, actor) : await exchangeOAuthToken({
         tokenUrl: oauth.tokenUrl,
+        serverUrl: connectionServerUrl(connection.config),
         clientId: client.clientId!,
         clientSecret: client.clientSecret,
         tokenEndpointAuthMethod: storedOAuthTokenEndpointAuthMethod(
