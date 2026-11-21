@@ -39,6 +39,7 @@ vi.mock("../middleware/logger.js", () => ({
 import { logger } from "../middleware/logger.ts";
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.ts";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { withEnvironmentLeaseController } from "../services/environment-lease-controller.js";
 import { nativeWorkspaceExportPendingForLease } from "../services/native-runtime/native-workspace-finalization-state.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -275,6 +276,29 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
 
     expect(await leaseRow(leaseId)).toMatchObject({ status: "expired", cleanupStatus: "success" });
     expect((await leaseRow(leaseId))?.releasedAt).toBeInstanceOf(Date);
+  });
+
+  it("settles a cancelled legacy run's local lease stamped with this boot", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    await db.delete(environments).where(eq(environments.driver, "local"));
+    await db.update(environments).set({ driver: "local", config: {} }).where(eq(environments.id, environmentId));
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "cancelled" });
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", processPid: 8028, finishedAt: oldEnough(),
+    }).where(eq(heartbeatRuns.id, runId));
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({
+      id: leaseId, companyId, environmentId, heartbeatRunId: runId,
+      status: "active", leasePolicy: "ephemeral", provider: "local", providerLeaseId: null,
+      metadata: withEnvironmentLeaseController({ driver: "local" }),
+      acquiredAt: oldEnough(), lastUsedAt: oldEnough(), createdAt: oldEnough(), updatedAt: oldEnough(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 5 * 60 * 1000 })).toEqual({ recovered: 1 });
+    expect(await leaseRow(leaseId)).toMatchObject({
+      status: "pending_cleanup", failureReason: "orphaned_active_lease_recovered",
+    });
   });
 
   it("does not discard an unexpected provider resource from a local lease", async () => {

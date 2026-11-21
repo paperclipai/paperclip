@@ -75,6 +75,7 @@ export type RunProcessMetadata = {
   adapterType: string;
   fallbackPid: number | null;
   fallbackProcessGroupId: number | null;
+  fallbackProcessStartedAt?: Date | string | null;
 };
 
 export type RunProcessCleanupOutcome =

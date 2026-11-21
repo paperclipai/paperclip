@@ -12,6 +12,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { terminateWindowsOwnedTree } from "./windows-process-ownership.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
@@ -65,6 +66,7 @@ export interface RunProcessResult {
   // run-disposition seam sets it to `duplex_channel_lost` when the sandbox
   // duplex control channel died before a clean completion.
   errorCode?: string | null;
+  processTreeStopFailure?: string | null;
   terminalResultCleanup?: TerminalResultCleanupEvidence | null;
 }
 
@@ -92,6 +94,7 @@ interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  spawnStartedAtMs?: number | null;
 }
 
 interface SpawnTarget {
@@ -122,11 +125,49 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
-// Exported so the direct-child fallback branch can be unit-tested directly.
-export function signalRunningProcess(
-  running: Pick<RunningProcess, "child" | "processGroupId">,
+const windowsTreeStops = new WeakMap<ChildProcess, Promise<void>>();
+
+async function stopWindowsOwnedTree(
+  running: Pick<RunningProcess, "child" | "spawnStartedAtMs">,
   signal: NodeJS.Signals,
 ) {
+  try {
+    running.child.kill(signal);
+  } catch {}
+  const rootCreatedAtMs = running.spawnStartedAtMs ?? null;
+  if (rootCreatedAtMs === null) return;
+  if (typeof running.child.pid !== "number" || running.child.pid <= 0) return;
+  const result = await terminateWindowsOwnedTree({
+    rootPid: running.child.pid,
+    rootCreatedAtMs,
+    killRoot: false,
+  });
+  if (result.status === "failed" || result.status === "unproven") {
+    const reason = result.reason ? ` (${result.reason})` : "";
+    throw new Error(
+      `Failed to stop the descendant process tree of pid ${running.child.pid}: ${result.status}${reason}`,
+    );
+  }
+}
+
+export function stopWindowsOwnedProcessTree(
+  running: Pick<RunningProcess, "child" | "spawnStartedAtMs">,
+  signal: NodeJS.Signals,
+): Promise<void> {
+  const inFlight = windowsTreeStops.get(running.child);
+  if (inFlight) return inFlight;
+  const stop = stopWindowsOwnedTree(running, signal).finally(() => {
+    windowsTreeStops.delete(running.child);
+  });
+  windowsTreeStops.set(running.child, stop);
+  return stop;
+}
+
+// Exported so the direct-child fallback branch can be unit-tested directly.
+export function signalRunningProcess(
+  running: Pick<RunningProcess, "child" | "processGroupId" | "spawnStartedAtMs">,
+  signal: NodeJS.Signals,
+): Promise<void> {
   if (
     process.platform !== "win32" &&
     running.processGroupId &&
@@ -134,7 +175,7 @@ export function signalRunningProcess(
   ) {
     try {
       process.kill(-running.processGroupId, signal);
-      return;
+      return Promise.resolve();
     } catch {
       // Fall back to the direct child signal if group signaling fails.
     }
@@ -143,8 +184,12 @@ export function signalRunningProcess(
   // the process exited, so escalating on it would suppress a follow-up SIGKILL.
   // `exitCode`/`signalCode` are null until the child actually closes.
   if (running.child.exitCode === null && running.child.signalCode === null) {
+    if (process.platform === "win32") {
+      return stopWindowsOwnedProcessTree(running, signal);
+    }
     running.child.kill(signal);
   }
+  return Promise.resolve();
 }
 
 export const runningProcesses = new Map<string, RunningProcess>();
@@ -4879,6 +4924,7 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
+        const spawnStartedAtMs = Date.now();
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
@@ -4906,7 +4952,18 @@ export async function runChildProcess(
           child,
           graceSec: opts.graceSec,
           processGroupId,
+          spawnStartedAtMs,
         });
+
+        let treeStop: Promise<void> = Promise.resolve();
+        let treeStopFailure: string | null = null;
+        const signalChild = (signal: NodeJS.Signals) => {
+          treeStop = signalRunningProcess({ child, processGroupId, spawnStartedAtMs }, signal).catch(
+            (err) => {
+              treeStopFailure = err instanceof Error ? err.message : String(err);
+            },
+          );
+        };
 
         let timedOut = false;
         let stdout = "";
@@ -4973,13 +5030,13 @@ export async function runChildProcess(
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
             terminalCleanupSignal = "SIGTERM";
-            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            signalChild("SIGTERM");
             terminalCleanupKillTimer = setTimeout(
               () => {
                 terminalCleanupKillTimer = null;
                 terminalCleanupSignal = "SIGKILL";
                 terminalCleanupForceKilled = true;
-                signalRunningProcess({ child, processGroupId }, "SIGKILL");
+                signalChild("SIGKILL");
               },
               Math.max(1, opts.graceSec) * 1000,
             );
@@ -4991,10 +5048,10 @@ export async function runChildProcess(
             ? setTimeout(() => {
                 timedOut = true;
                 clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
+                signalChild("SIGTERM");
                 setTimeout(
                   () => {
-                    signalRunningProcess({ child, processGroupId }, "SIGKILL");
+                    signalChild("SIGKILL");
                   },
                   Math.max(1, opts.graceSec) * 1000,
                 );
@@ -5094,25 +5151,35 @@ export async function runChildProcess(
               void Promise.resolve()
                 .then(() => target.cleanup?.())
                 .finally(() => {
-                  resolve({
-                    exitCode: code,
-                    signal,
-                    timedOut,
-                    stdout,
-                    stderr,
-                    pid: child.pid ?? null,
-                    startedAt,
-                    terminalResultCleanup: terminalCleanupStarted
-                      ? {
-                          kind: "terminal_result_cleanup",
-                          stopped: true,
-                          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-                          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-                          terminalResultSeen,
-                          signal: terminalCleanupSignal,
-                          forceKilled: terminalCleanupForceKilled,
-                        }
-                      : null,
+                  void treeStop.finally(() => {
+                    if (treeStopFailure) {
+                      onLogError(
+                        new Error(treeStopFailure),
+                        runId,
+                        "failed to stop the descendant process tree",
+                      );
+                    }
+                    resolve({
+                      exitCode: code,
+                      signal,
+                      timedOut,
+                      stdout,
+                      stderr,
+                      pid: child.pid ?? null,
+                      startedAt,
+                      processTreeStopFailure: treeStopFailure,
+                      terminalResultCleanup: terminalCleanupStarted
+                        ? {
+                            kind: "terminal_result_cleanup",
+                            stopped: true,
+                            stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                            reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                            terminalResultSeen,
+                            signal: terminalCleanupSignal,
+                            forceKilled: terminalCleanupForceKilled,
+                          }
+                        : null,
+                    });
                   });
                 });
             });
