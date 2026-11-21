@@ -48,7 +48,7 @@ interface NetworkAllowlistProxy {
   close: () => Promise<void>;
 }
 
-const SYSTEM_READ_PATHS = [
+export const SYSTEM_READ_PATHS = [
   "/bin",
   "/sbin",
   "/usr",
@@ -64,6 +64,7 @@ const SYSTEM_READ_PATHS = [
   "/etc/localtime",
   "/etc/timezone",
   "/etc/gitconfig",
+  "/etc/claude-code",
 ] as const;
 
 const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] as const;

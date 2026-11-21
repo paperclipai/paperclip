@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildLocalProcessSandboxSpawnTarget,
+  SYSTEM_READ_PATHS,
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
@@ -31,6 +32,34 @@ afterEach(async () => {
 });
 
 describe("local process sandbox", () => {
+  it("mounts Claude Code managed settings read-only inside the workspace confinement", () => {
+    expect(SYSTEM_READ_PATHS).toContain("/etc/claude-code");
+  });
+
+  it.runIf(process.platform === "linux")("passes --ro-bind for every system read path that exists on the host", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-system-read-"));
+    cleanup.push(workspace);
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: { workspaceDir: workspace, filesystemScope: "workspace" },
+    });
+
+    const readOnlyBinds = new Set<string>();
+    for (let index = 0; index + 2 < target.args.length; index += 1) {
+      if (target.args[index] === "--ro-bind" && target.args[index + 1] === target.args[index + 2]) {
+        readOnlyBinds.add(target.args[index + 1]);
+      }
+    }
+    for (const systemPath of SYSTEM_READ_PATHS) {
+      const exists = await fs.lstat(systemPath).then(() => true, () => false);
+      if (exists) expect(readOnlyBinds.has(systemPath)).toBe(true);
+    }
+    expect(readOnlyBinds.size).toBeGreaterThan(0);
+  });
+
   it.runIf(process.platform !== "linux")("rejects sandbox scopes on unsupported hosts", async () => {
     await expect(buildLocalProcessSandboxSpawnTarget({
       executable: process.execPath, args: ["-e", "process.exit(0)"], cwd: process.cwd(),
