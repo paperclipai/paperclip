@@ -124,7 +124,8 @@ const timerKey = (companyId: string, agentId: string) => JSON.stringify([company
 function dailyRunConditions(scope: SQL, now: Date) {
   const { start, end } = currentUtcDayWindow(now);
   return and(scope, gte(heartbeatRuns.startedAt, start), lt(heartbeatRuns.startedAt, end),
-    notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]));
+    notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+    sql`not (${heartbeatRuns.status} = 'cancelled' and coalesce(${heartbeatRuns.errorCode}, '') = 'workspace_busy')`);
 }
 function dailyCostConditions(scope: SQL, now: Date) {
   const { start, end } = currentUtcDayWindow(now);

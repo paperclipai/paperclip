@@ -8,6 +8,7 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatRunPreparation } from "../services/heartbeat/run-preparation.js";
 import { createHeartbeatScheduling } from "../services/heartbeat/scheduling.js";
+import { createHeartbeatTimerPolicy } from "../services/heartbeat/timer-policy.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { registerScheduledWork } from "../services/scheduled-work.js";
@@ -155,6 +156,25 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
     expect(await f.queue.nextTimerHeartbeatAt(f.agent, now)).toBe(Date.parse("2026-10-28T00:00:00Z"));
     expect(await f.queue.nextTimerHeartbeatAt({ ...f.agent, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 600, maxDailyRuns: 0 } } }, now)).toBeNull();
     expect(await f.queue.nextTimerHeartbeatAt(f.agent, new Date("2026-10-28T00:00:00Z"))).toBe(now.getTime() + 600_000);
+  });
+
+  it("leaves workspace-busy deferrals out of the daily run count", async () => {
+    const f = await fixture({ enabled: true, intervalSec: 600, maxDailyRuns: 4 });
+    const policy = createHeartbeatTimerPolicy(db);
+    const run = (status: typeof heartbeatRuns.$inferInsert.status, errorCode: string | null = null) =>
+      ({ companyId: f.company.id, agentId: f.agent.id, status, errorCode, startedAt: now, finishedAt: now });
+    await db.insert(heartbeatRuns).values([run("cancelled", "workspace_busy"), run("cancelled", "workspace_busy"),
+      run("cancelled", "workspace_busy"), run("succeeded")]);
+    expect(await policy.getHeartbeatDailyCapBlock(f.agent, policy.parseHeartbeatPolicy(f.agent), { now })).toBeNull();
+    expect(await f.queue.nextTimerHeartbeatAt(f.agent, now)).toBe(now.getTime() + 600_000);
+    expect((await policy.readTimerHeartbeatSchedules([f.agent], now))?.schedules.get(f.agent.id)?.cap).toBeNull();
+
+    await db.insert(heartbeatRuns).values([run("cancelled"), run("cancelled", "issue_reassigned"),
+      run("failed", "workspace_busy")]);
+    const reached = { reason: "heartbeat.daily_run_limit", observed: 4, limit: 4 };
+    expect(await policy.getHeartbeatDailyCapBlock(f.agent, policy.parseHeartbeatPolicy(f.agent), { now })).toEqual(reached);
+    expect(await f.queue.nextTimerHeartbeatAt(f.agent, now)).toBe(Date.parse("2026-10-28T00:00:00Z"));
+    expect((await policy.readTimerHeartbeatSchedules([f.agent], now))?.schedules.get(f.agent.id)?.cap).toEqual(reached);
   });
 
   it("defers a reached daily cost cap until UTC midnight", async () => {
