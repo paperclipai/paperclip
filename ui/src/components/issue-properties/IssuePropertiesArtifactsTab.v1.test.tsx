@@ -247,7 +247,7 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
       <TaskGeneralDocuments issue={conversation} documentEditor={options} />
     </QueryClientProvider>));
     await waitFor(() => expect(documentEditor).toHaveBeenCalledWith(expect.objectContaining({
-      ...options, issue: conversation, generalDocumentsOnly: true, canDeleteDocuments: true, canManageDocumentLocks: true,
+      ...options, issue: conversation, annotationPanelPlacement: "popover", generalDocumentsOnly: true, canDeleteDocuments: true, canManageDocumentLocks: true,
     })));
     expect(container.querySelectorAll('[data-testid="general-document-editor"]')).toHaveLength(1);
   });

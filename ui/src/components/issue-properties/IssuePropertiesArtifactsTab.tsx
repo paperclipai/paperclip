@@ -61,6 +61,7 @@ export function TaskGeneralDocuments({ issue, documentEditor }: { issue: Issue; 
     <IssueDocumentsSection
       issue={issue}
       generalDocumentsOnly
+      annotationPanelPlacement="popover"
       canDeleteDocuments={Boolean(session?.user?.id)}
       canManageDocumentLocks={Boolean(session?.user?.id)}
       {...documentEditor}
