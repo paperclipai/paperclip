@@ -29,6 +29,75 @@ const SESSION_STORAGE_KEY = "paperclip-runner.sdk.v1.session";
 const RECONNECT_DELAY_MS = 1500;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
+export interface RunnerStreamCursor {
+  cursor: number;
+  seenSourceEventIds: Set<string>;
+}
+
+/** Matches the server ring. Older ids cannot be replayed, so they do not need to stay in memory. */
+const SEEN_SOURCE_EVENT_LIMIT = 4096;
+
+function rememberSourceEventId(seen: Set<string>, sourceEventId: string): void {
+  if (seen.has(sourceEventId)) seen.delete(sourceEventId);
+  seen.add(sourceEventId);
+  while (seen.size > SEEN_SOURCE_EVENT_LIMIT) {
+    const oldest = seen.values().next().value;
+    if (oldest === undefined) break;
+    seen.delete(oldest);
+  }
+}
+
+export function createRunnerStreamCursor(
+  events: readonly PrpEvent[] = [],
+  cursor = 0,
+): RunnerStreamCursor {
+  return {
+    cursor,
+    seenSourceEventIds: new Set(events.map((event) => event.sourceEventId)),
+  };
+}
+
+/** Accept a stream event only for the generation that opened the socket, and only once per source id. */
+export function acceptRunnerStreamEvent(
+  cursor: RunnerStreamCursor,
+  event: PrpEvent,
+  currentGeneration: number,
+  eventGeneration: number,
+): boolean {
+  if (currentGeneration !== eventGeneration) return false;
+  // A second live delivery of the same source id is a protocol duplicate.
+  // The reducer records it; only a stale socket generation is dropped here.
+  rememberSourceEventId(cursor.seenSourceEventIds, event.sourceEventId);
+  cursor.cursor += 1;
+  return true;
+}
+
+/**
+ * Merge a replay page into the cursor. Duplicate source ids are ignored.
+ * The cursor then becomes the server's absolute cursor, not the ring length.
+ * A stale generation leaves the cursor untouched.
+ */
+export function takeFreshStreamEvents(
+  cursor: RunnerStreamCursor,
+  events: readonly PrpEvent[],
+  nextCursor: number,
+  currentGeneration: number,
+  eventGeneration: number,
+): PrpEvent[] {
+  if (currentGeneration !== eventGeneration) return [];
+  const alreadyApplied = new Set(cursor.seenSourceEventIds);
+  const fresh: PrpEvent[] = [];
+  for (const event of events) {
+    // Skip ids applied by an earlier page or socket event. Duplicates inside
+    // this page are new deliveries and must reach the reducer.
+    if (alreadyApplied.has(event.sourceEventId)) continue;
+    rememberSourceEventId(cursor.seenSourceEventIds, event.sourceEventId);
+    fresh.push(event);
+  }
+  cursor.cursor = nextCursor;
+  return fresh;
+}
+
 export type SteeringChipStatus = "pending" | "acknowledged" | "rejected" | "failed";
 
 export interface SteeringChip {
@@ -126,7 +195,7 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
 
   const streamRef = useRef<EventStreamHandle | null>(null);
   const streamGenerationRef = useRef(0);
-  const cursorRef = useRef(0);
+  const cursorStateRef = useRef(createRunnerStreamCursor());
   const sessionIdRef = useRef<string | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -148,17 +217,19 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
       setReconnectAttempt(attempt);
       const open = () => {
         if (streamGenerationRef.current !== generation) return;
-        streamRef.current = runnerClient.openEventStream(sessionId, cursorRef.current, {
+        streamRef.current = runnerClient.openEventStream(sessionId, cursorStateRef.current.cursor, {
           onOpen: () => {
             setConnection("connected");
             setReconnectAttempt(0);
             setAnnouncement(attempt === 0 ? "Connected" : "Reconnected with gap recovery");
           },
           onEvent: (event) => {
-            cursorRef.current += 1;
-            // Preserve the exact canonical stream, including deliberate
-            // duplicate ids. The shared reducer, not the hook, owns duplicate
-            // detection and replay integrity.
+            if (!acceptRunnerStreamEvent(
+              cursorStateRef.current,
+              event,
+              streamGenerationRef.current,
+              generation,
+            )) return;
             setEvents((current) => [...current, event]);
           },
           onError: () => {
@@ -183,10 +254,16 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
         open();
         return;
       }
-      void runnerClient.readEvents(sessionId, cursorRef.current).then((history) => {
+      void runnerClient.readEvents(sessionId, cursorStateRef.current.cursor).then((history) => {
         if (streamGenerationRef.current !== generation) return;
-        setEvents((current) => [...current, ...history.events]);
-        cursorRef.current = history.cursor;
+        const fresh = takeFreshStreamEvents(
+          cursorStateRef.current,
+          history.events,
+          history.cursor,
+          streamGenerationRef.current,
+          generation,
+        );
+        if (fresh.length > 0) setEvents((current) => [...current, ...fresh]);
         open();
       }).catch(open);
     },
@@ -211,7 +288,7 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
       window.sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
       adopt(next);
       setEvents(history.events);
-      cursorRef.current = history.cursor;
+      cursorStateRef.current = createRunnerStreamCursor(history.events, history.cursor);
       if (resume) setAnnouncement("Replayed the durable transcript");
       subscribe(sessionId, 0);
     },
@@ -353,7 +430,7 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
       await guard(async () => {
         closeStream();
         setEvents([]);
-        cursorRef.current = 0;
+        cursorStateRef.current = createRunnerStreamCursor();
         setSteeringChips([]);
         setReplayActive(false);
         setReplayPosition(0);
@@ -501,7 +578,7 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
       adopt(resumed);
       const history = await runnerClient.readEvents(sessionId, 0);
       setEvents(history.events);
-      cursorRef.current = history.cursor;
+      cursorStateRef.current = createRunnerStreamCursor(history.events, history.cursor);
       subscribe(sessionId, 0);
       setAnnouncement("Resumed the same session");
     });
@@ -522,7 +599,7 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
     }
     window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
     sessionIdRef.current = null;
-    cursorRef.current = 0;
+    cursorStateRef.current = createRunnerStreamCursor();
     setState(null);
     setEvents([]);
     setSteeringChips([]);
