@@ -433,6 +433,9 @@ export async function prepareAcpxRuntimeSandbox(input: {
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
   }
   const initializeOwnedConfiguration = input.agent === "claude" ? async () => {
+    const pluginsDirectory = await ensurePrivateDirectory(join(agentHomeDirectory, "plugins"), agentHomeDirectory);
+    await writePrivateFile(join(pluginsDirectory, "known_marketplaces.json"), "{}\n");
+    await writePrivateFile(join(pluginsDirectory, "installed_plugins.json"), `${JSON.stringify({ version: 2, plugins: {} })}\n`);
     // ACP otherwise rewrites exact IDs (including user-entered model IDs) to
     // picker aliases such as "sonnet". Its supported availableModels setting
     // preserves our requested ID through selection and model verification.
@@ -441,6 +444,9 @@ export async function prepareAcpxRuntimeSandbox(input: {
       `${JSON.stringify({
         model: input.binding.requestedModel,
         availableModels: [input.binding.requestedModel],
+        syncClaudeAiPlugins: false,
+        syncClaudeAiSkills: false,
+        disableClaudeAiConnectors: true,
         ...(input.binding.claudeEffort ? { effortLevel: input.binding.claudeEffort } : {}),
         permissions: {
           ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")

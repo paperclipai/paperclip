@@ -1,3 +1,4 @@
+import { sanitizeRemoteExecutionEnv } from "@paperclipai/adapter-utils/remote-execution-env";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetShellCommand } from "@paperclipai/adapter-utils/execution-target";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
@@ -43,12 +44,13 @@ try {
 `;
 
 export async function prepareGrokRemoteProjectAssets(input: {
-  runId: string; target: AdapterExecutionTarget; cwd: string; assets: string;
+  runId: string; target: AdapterExecutionTarget; cwd: string; assets: string; env?: NodeJS.ProcessEnv;
 }): Promise<{ rulesFilePath: string | null; cleanup: () => Promise<void> }> {
+  const environment = sanitizeRemoteExecutionEnv(input.env?.PATH ? { PATH: input.env.PATH } : {});
   const execute = async (operation: string, entries: unknown[]) => {
     const result = await runAdapterExecutionTargetShellCommand(input.runId, input.target,
-      ["node", "-e", program, operation, input.assets, input.cwd, JSON.stringify(entries)].map(shellQuote).join(" "),
-      { cwd: input.cwd, env: {}, timeoutSec: 15 });
+      [...(environment.PATH ? ["env", `PATH=${environment.PATH}`] : []), "node", "-e", program, operation, input.assets, input.cwd, JSON.stringify(entries)].map(shellQuote).join(" "),
+      { cwd: input.cwd, env: environment, timeoutSec: 15 });
     if (result.exitCode !== 0 || result.timedOut || result.signal) throw new Error("Could not prepare Grok SSH runtime assets");
     return result.stdout;
   };
