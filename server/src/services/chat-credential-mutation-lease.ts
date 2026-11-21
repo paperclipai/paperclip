@@ -10,6 +10,7 @@ type DbOrTransaction = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 export const CREDENTIAL_MUTATION_LEASE_TTL_MS = 90_000;
 const CREDENTIAL_MUTATION_LEASE_WAIT_MS = 10_000;
 const CREDENTIAL_MUTATION_LEASE_POLL_MS = 25;
+const CREDENTIAL_MUTATION_LEASE_POLL_MAX_MS = 400;
 
 export interface CredentialMutationLeaseGuard {
   assertOwned(database?: DbOrTransaction): Promise<void>;
@@ -30,7 +31,16 @@ export function chatCredentialMutationLease(db: Db, options: Pick<ChatChannelSer
     const token = randomUUID();
     const leaseKey = "credentials";
     const deadline = Date.now() + CREDENTIAL_MUTATION_LEASE_WAIT_MS;
+    let retryDelayMs = CREDENTIAL_MUTATION_LEASE_POLL_MS;
     while (true) {
+      if (Date.now() >= deadline) {
+        throw conflict(
+          "Another credential update is still in progress; try again",
+          {
+            code: "chat_endpoint_credentials_busy",
+          },
+        );
+      }
       const now = new Date();
       const expiresAt = new Date(
         now.getTime() + CREDENTIAL_MUTATION_LEASE_TTL_MS,
@@ -68,9 +78,14 @@ export function chatCredentialMutationLease(db: Db, options: Pick<ChatChannelSer
           },
         );
       }
-      await new Promise((resolve) =>
-        setTimeout(resolve, CREDENTIAL_MUTATION_LEASE_POLL_MS),
+      const remainingMs = deadline - Date.now();
+      const jitteredDelayMs = Math.floor(
+        retryDelayMs * (0.5 + Math.random() * 0.5),
       );
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(jitteredDelayMs, remainingMs)),
+      );
+      retryDelayMs = Math.min(retryDelayMs * 2, CREDENTIAL_MUTATION_LEASE_POLL_MAX_MS);
     }
   }
 
