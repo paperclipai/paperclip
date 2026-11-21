@@ -12,6 +12,7 @@ import { flushSync } from "react-dom";
 import { AlertCircle, KeyRound, Plus, RotateCcw, Save, UserRound } from "lucide-react";
 import type { CompanySecret, EnvBinding, UserSecretDefinition } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "@/context/ToastContext";
 import { EnvironmentVariableRow } from "./Row";
@@ -141,6 +142,7 @@ export interface EnvironmentVariablesEditorProps {
   startWithEmptyRow?: boolean;
   /** Label for the add-row action. Defaults to "Add variable". */
   addLabel?: string;
+  addButtonVariant?: "subtle" | "outline";
 }
 
 export interface EnvironmentVariablesEditorHandle {
@@ -165,6 +167,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   hideDraftActions = false,
   startWithEmptyRow = false,
   addLabel = "Add variable",
+  addButtonVariant = "subtle",
 }: EnvironmentVariablesEditorProps, ref) {
   const toast = useOptionalToastActions();
   const editorRootRef = useRef<HTMLDivElement | null>(null);
@@ -500,15 +503,22 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
       {/* Footer bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-        <button
-          type="button"
-          onClick={addRow}
-          disabled={disabled}
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-        >
-          <Plus className="size-3.5" />
-          {addLabel}
-        </button>
+        {addButtonVariant === "outline" ? (
+          <Button type="button" variant="outline" size="sm" onClick={addRow} disabled={disabled}>
+            <Plus className="size-3.5" />
+            {addLabel}
+          </Button>
+        ) : (
+          <button
+            type="button"
+            onClick={addRow}
+            disabled={disabled}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+          >
+            <Plus className="size-3.5" />
+            {addLabel}
+          </button>
+        )}
 
         {quickBind.length > 0 && !disabled ? (
           <div className="flex flex-wrap items-center gap-1.5">

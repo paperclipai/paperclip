@@ -53,6 +53,7 @@ import {
   webhookHealth,
   webhookTitle,
 } from "./routine-summary";
+import type { RoutineEditFocus } from "./RoutineEditDialog";
 
 export type RoutinePerson = { id: string; name: string; avatarUrl?: string | null };
 export type RoutinePageAgent = AvatarAgent & { id: string; name: string; urlKey?: string | null };
@@ -90,7 +91,7 @@ export type RoutinePageProps = {
   instructionCommentCount?: number;
   statusPending?: boolean;
   onToggleActive: (active: boolean) => void;
-  onEdit: () => void;
+  onEdit: (focus?: RoutineEditFocus) => void;
   onSaveSchedule: (triggerId: string, change: RoutineScheduleChange) => void;
   onRemoveSchedule: (triggerId: string) => void;
   onOpenWebhook: (trigger: RoutineTrigger) => void;
@@ -98,7 +99,7 @@ export type RoutinePageProps = {
   onSetTriggerPaused?: (triggerId: string, paused: boolean) => void;
   /** Removes a standing check or API trigger. Omit to keep those rows read-only. */
   onRemoveTrigger?: (trigger: RoutineTrigger) => void;
-  /** Triggers removed from this page, offered back with Undo under Repeats. */
+  /** Triggers removed from this page, offered back with Undo in their section. */
   removedTriggers?: readonly RoutineTrigger[];
   onRestoreTrigger?: (trigger: RoutineTrigger) => void;
   onOpenInstructionComments?: () => void;
@@ -115,7 +116,7 @@ function Field({ label, children, action }: { label: string; children: ReactNode
   return (
     <section className="flex min-w-0 flex-col gap-2" aria-labelledby={headingId}>
       <div className="flex items-center justify-between gap-2">
-        <h2 id={headingId} className="text-sm text-muted-foreground">{label}</h2>
+        <h2 id={headingId} className="text-sm font-medium text-foreground">{label}</h2>
         {action}
       </div>
       {children}
@@ -224,6 +225,23 @@ function ScheduleRow({
       </PopoverContent>
     </Popover>
   );
+}
+
+function RemovedTriggers({
+  triggers,
+  onRestore,
+}: {
+  triggers: readonly RoutineTrigger[];
+  onRestore?: (trigger: RoutineTrigger) => void;
+}) {
+  return triggers.map((trigger) => (
+    <p key={trigger.id} role="status" className="flex min-w-0 items-center gap-2 py-1.5 text-sm text-muted-foreground">
+      <span className="min-w-0 flex-1 truncate">{triggerTitle(trigger)} removed.</span>
+      {onRestore ? (
+        <Button type="button" variant="ghost" size="xs" onClick={() => onRestore(trigger)}>Undo</Button>
+      ) : null}
+    </p>
+  ));
 }
 
 function WebhookRow({
@@ -451,6 +469,9 @@ export function RoutinePage({
   const webhooks = routine.triggers.filter((trigger) => trigger.kind === "webhook");
   const standingCheck = routine.triggers.find((trigger) => trigger.kind === "heartbeat");
   const apiTrigger = routine.triggers.find((trigger) => trigger.kind === "api");
+  const removedWebhooks = removedTriggers.filter((trigger) => trigger.kind === "webhook");
+  const removedApi = removedTriggers.filter((trigger) => trigger.kind === "api");
+  const removedRepeats = removedTriggers.filter((trigger) => trigger.kind !== "webhook" && trigger.kind !== "api");
   const nextRun = state === "active" ? nextScheduledRun(routine.triggers) : null;
   const hasEnabledWebhook = webhooks.some((trigger) => trigger.enabled && !trigger.setupPending);
   const runRules = customRunRules(routine);
@@ -490,7 +511,7 @@ export function RoutinePage({
           {pausedNotice ? <p className="text-sm text-muted-foreground" role="note">{pausedNotice}</p> : null}
           {state === "draft" ? (
             <p className="text-sm text-muted-foreground">
-              <button type="button" className="font-medium text-foreground underline-offset-4 hover:underline" onClick={onEdit}>
+              <button type="button" className="font-medium text-foreground underline-offset-4 hover:underline" onClick={() => onEdit()}>
                 Choose a default agent
               </button>{" "}
               to turn this routine on.
@@ -510,9 +531,6 @@ export function RoutinePage({
                 onSetPaused={onSetTriggerPaused ? (paused) => onSetTriggerPaused(trigger.id, paused) : undefined}
               />
             ))}
-            {webhooks.map((trigger) => (
-              <WebhookRow key={trigger.id} trigger={trigger} routineActive={active} onOpen={() => onOpenWebhook(trigger)} />
-            ))}
             {standingCheck ? (
               <StaticTriggerRow
                 icon={Radar}
@@ -525,31 +543,46 @@ export function RoutinePage({
                 onRemove={onRemoveTrigger ? () => onRemoveTrigger(standingCheck) : undefined}
               />
             ) : null}
-            {apiTrigger ? (
-              <StaticTriggerRow
-                icon={Terminal}
-                title="API"
-                detail="Started by an API call"
-                description="Starts this routine when an app or agent calls the routine API."
-                trigger={apiTrigger}
-                routineActive={active}
-                onSetPaused={onSetTriggerPaused ? (paused) => onSetTriggerPaused(apiTrigger.id, paused) : undefined}
-                onRemove={onRemoveTrigger ? () => onRemoveTrigger(apiTrigger) : undefined}
-              />
-            ) : null}
-            {removedTriggers.map((trigger) => (
-              <p key={trigger.id} role="status" className="flex min-w-0 items-center gap-2 py-1.5 text-sm text-muted-foreground">
-                <span className="min-w-0 flex-1 truncate">{triggerTitle(trigger)} removed.</span>
-                {onRestoreTrigger ? (
-                  <Button type="button" variant="ghost" size="xs" onClick={() => onRestoreTrigger(trigger)}>Undo</Button>
-                ) : null}
+            <RemovedTriggers triggers={removedRepeats} onRestore={onRestoreTrigger} />
+            {schedules.length === 0 && !standingCheck && removedRepeats.length === 0 ? (
+              <p className="py-1.5 text-sm text-muted-foreground">
+                {webhooks.length > 0 || apiTrigger ? "Doesn’t repeat." : "Doesn’t repeat. Runs only when you start it."}
               </p>
-            ))}
-            {routine.triggers.length === 0 && removedTriggers.length === 0 ? (
-              <p className="py-1.5 text-sm text-muted-foreground">Doesn’t repeat. Runs only when you start it.</p>
             ) : null}
           </div>
         </Field>
+
+        <Field label="Webhooks">
+          <div className="flex min-w-0 flex-col">
+            {webhooks.map((trigger) => (
+              <WebhookRow key={trigger.id} trigger={trigger} routineActive={active} onOpen={() => onOpenWebhook(trigger)} />
+            ))}
+            <RemovedTriggers triggers={removedWebhooks} onRestore={onRestoreTrigger} />
+            {webhooks.length === 0 && removedWebhooks.length === 0 ? (
+              <p className="py-1.5 text-sm text-muted-foreground">No webhooks. Another app can start this routine by sending one.</p>
+            ) : null}
+          </div>
+        </Field>
+
+        {apiTrigger || removedApi.length > 0 ? (
+          <Field label="API">
+            <div className="flex min-w-0 flex-col">
+              {apiTrigger ? (
+                <StaticTriggerRow
+                  icon={Terminal}
+                  title="API"
+                  detail="Started by an API call"
+                  description="Starts this routine when an app or agent calls the routine API."
+                  trigger={apiTrigger}
+                  routineActive={active}
+                  onSetPaused={onSetTriggerPaused ? (paused) => onSetTriggerPaused(apiTrigger.id, paused) : undefined}
+                  onRemove={onRemoveTrigger ? () => onRemoveTrigger(apiTrigger) : undefined}
+                />
+              ) : null}
+              <RemovedTriggers triggers={removedApi} onRestore={onRestoreTrigger} />
+            </div>
+          </Field>
+        ) : null}
 
         <Field label="Default agent">
           {agent ? (
@@ -561,7 +594,7 @@ export function RoutinePage({
               <span className="truncate">{agent.name}</span>
             </Link>
           ) : (
-            <Button variant="outline" size="sm" className="w-fit" onClick={onEdit}>Choose an agent</Button>
+            <Button variant="outline" size="sm" className="w-fit" onClick={() => onEdit()}>Choose an agent</Button>
           )}
         </Field>
 
@@ -635,8 +668,8 @@ export function RoutinePage({
           </Field>
         ) : null}
 
-        {secretNames.length > 0 ? (
-          <Field label="Secrets">
+        <Field label="Secrets">
+          {secretNames.length > 0 ? (
             <ul className="flex min-w-0 flex-wrap gap-x-4 gap-y-1.5 py-1.5">
               {secretNames.map((name) => (
                 <li key={name} className="flex min-w-0 items-center gap-1.5 font-mono text-xs">
@@ -645,8 +678,10 @@ export function RoutinePage({
                 </li>
               ))}
             </ul>
-          </Field>
-        ) : null}
+          ) : (
+            <p className="py-1.5 text-sm text-muted-foreground">No secrets. The agent gets no API keys or passwords from this routine.</p>
+          )}
+        </Field>
 
         {runRules.length > 0 ? (
           <Field label="Run rules">
@@ -662,7 +697,7 @@ export function RoutinePage({
           markdown={routine.description ?? ""}
           commentCount={instructionCommentCount}
           onOpenComments={onOpenInstructionComments}
-          onEdit={onEdit}
+          onEdit={() => onEdit("instructions")}
           forceExpanded={instructionsExpanded}
           renderBody={renderInstructionsBody}
         />

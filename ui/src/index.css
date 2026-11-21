@@ -2147,9 +2147,17 @@ html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shel
 }
 
 /* MDXEditor defaults placeholders to a single clipped line. The task-chat
-   composer uses longer, assignee-aware copy, so keep it inside the editor by
-   giving the absolutely positioned placeholder a wrapping inline size. */
+   composer and the routine instructions use longer copy, so keep it inside the
+   editor by giving the absolutely positioned placeholder a wrapping inline size.
+   Each scope keeps its own rule so the stylesheet tests can find it by selector. */
 .paperclip-task-chat-composer .paperclip-mdxeditor [class*="_placeholder_"] {
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.paperclip-routine-instructions .paperclip-mdxeditor [class*="_placeholder_"] {
   display: block;
   width: 100%;
   overflow-wrap: anywhere;
@@ -3301,7 +3309,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-11: 12rem 1fr; /* Extracted from ui/src/components/SourceResolvedFoldCallout.tsx (grid-cols-[12rem_1fr]). */
   --gtc-12: minmax(0,0.75fr) minmax(0,1fr); /* Extracted from ui/src/components/TrustPresetSection.tsx (grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)]). */
   --gtc-13: minmax(0,1fr) auto; /* Extracted from ui/src/components/environment-variables-editor/Row.tsx (grid-cols-[minmax(0,1fr)_auto]). */
-  --gtc-14: minmax(160px,2fr) minmax(240px,3fr) 32px; /* Extracted from ui/src/components/environment-variables-editor/Row.tsx (grid-cols-[minmax(160px,2fr)_minmax(240px,3fr)_32px]). */
+  --gtc-14: minmax(160px,2fr) minmax(240px,3fr) 52px; /* Extracted from ui/src/components/environment-variables-editor/Row.tsx (grid-cols-[minmax(160px,2fr)_minmax(240px,3fr)_52px]). */
   --gtc-15: 6rem 1fr; /* Extracted from ui/src/components/issue-properties/IssueProperties.tsx (grid-cols-[6rem_1fr]). */
   --gtc-16: auto 1fr; /* Extracted from ui/src/components/transcript/RunTranscriptView.tsx (grid-cols-[auto_1fr]). */
   --gtc-17: 1fr auto; /* Extracted from ui/src/components/ui/card.tsx (grid-cols-[1fr_auto]). */

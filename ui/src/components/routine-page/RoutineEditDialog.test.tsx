@@ -1,13 +1,21 @@
 // @vitest-environment jsdom
 
+import { forwardRef, useImperativeHandle, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RoutineTrigger } from "@paperclipai/shared";
 import { EMPTY_ROUTINE_FORM_DRAFT, RoutineEditDialog, type RoutineFormDraft } from "./RoutineEditDialog";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-vi.mock("@/components/MarkdownEditor", () => ({ MarkdownEditor: () => <div data-testid="markdown-editor" /> }));
+const focusEditor = vi.hoisted(() => vi.fn());
+vi.mock("@/components/MarkdownEditor", () => ({
+  MarkdownEditor: forwardRef(function MarkdownEditor(_props, ref) {
+    useImperativeHandle(ref, () => ({ focus: focusEditor }));
+    return <div data-testid="markdown-editor" />;
+  }),
+}));
 vi.mock("@/components/RoutineVariablesEditor", () => ({ RoutineVariablesEditor: () => null }));
 
 async function act(callback: () => void | Promise<void>) {
@@ -45,12 +53,22 @@ describe("RoutineEditDialog", () => {
   let root: Root;
   const onSave = vi.fn();
 
-  async function render(draft: RoutineFormDraft = initial) {
+  const onOpenChange = vi.fn();
+
+  async function render(
+    draft: RoutineFormDraft = initial,
+    initialFocus?: "instructions",
+    webhooks: RoutineTrigger[] = [],
+    extra: Partial<ComponentProps<typeof RoutineEditDialog>> = {},
+  ) {
     await act(async () => {
       root.render(
         <RoutineEditDialog
           open
-          onOpenChange={() => {}}
+          initialFocus={initialFocus}
+          webhooks={webhooks}
+          onOpenWebhook={() => {}}
+          onOpenChange={onOpenChange}
           initial={draft}
           agents={[]}
           projects={[]}
@@ -58,6 +76,7 @@ describe("RoutineEditDialog", () => {
           secrets={[]}
           onSave={onSave}
           onCreateSecret={vi.fn()}
+          {...extra}
         />,
       );
       await flush();
@@ -66,6 +85,8 @@ describe("RoutineEditDialog", () => {
 
   beforeEach(() => {
     onSave.mockReset();
+    onOpenChange.mockReset();
+    focusEditor.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -75,6 +96,38 @@ describe("RoutineEditDialog", () => {
     await act(() => root.unmount());
     container.remove();
     document.body.innerHTML = "";
+  });
+
+  it("puts the cursor in Instructions when opened to add instructions", async () => {
+    await render(initial, "instructions");
+    expect(focusEditor).toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(document.querySelector("input"));
+  });
+
+  it("offers Done after adding a webhook, which saves right away", async () => {
+    await render();
+    expect(button("Save changes")?.disabled).toBe(true);
+    const hook = { id: "webhook-1", kind: "webhook", signingMode: "app_webhook", enabled: true } as RoutineTrigger;
+    await render(initial, undefined, [hook]);
+    expect(button("Save changes")).toBeUndefined();
+    expect(document.body.textContent).toContain("Webhooks save right away.");
+    await act(async () => { button("Done")!.click(); await flush(); });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("shows a webhook error next to Done", async () => {
+    await render();
+    const hook = { id: "webhook-1", kind: "webhook", signingMode: "app_webhook", enabled: true } as RoutineTrigger;
+    await render(initial, undefined, [], { removedWebhooks: [hook], error: "Couldn't restore the webhook." });
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe("Couldn't restore the webhook.");
+    expect(button("Done")).toBeDefined();
+  });
+
+  it("keeps the same Add secret button after the first secret", async () => {
+    await render();
+    expect(button("Add secret")?.dataset.variant).toBe("outline");
+    await act(async () => { button("Add secret")!.click(); await flush(); });
+    expect(button("Add secret")?.dataset.variant).toBe("outline");
   });
 
   it("saves a change made only to Secrets", async () => {

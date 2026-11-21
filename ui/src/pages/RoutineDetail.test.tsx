@@ -383,6 +383,49 @@ describe("RoutineDetail (routed routine page)", () => {
     expect(button("Finish testing")).toBeDefined();
   });
 
+  function section(name: string) {
+    return Array.from(container.querySelectorAll("section")).find((element) => element.querySelector("h2")?.textContent === name) ?? null;
+  }
+
+  it("lists webhooks in their own section instead of under Repeats", async () => {
+    const hook = trigger({ id: "webhook-1", kind: "webhook", cronExpression: null, timezone: null, nextRunAt: null, signingMode: "app_webhook" });
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [trigger({}), hook] }));
+    await render();
+    expect(section("Repeats")?.textContent).toContain("Weekdays at 9:00 AM");
+    expect(button("Open Webhook", section("Repeats")!)).toBeUndefined();
+    expect(button("Open Webhook", section("Webhooks")!)).toBeDefined();
+  });
+
+  it("shows an empty Webhooks section", async () => {
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [] }));
+    await render();
+    expect(section("Repeats")?.textContent).toContain("Doesn’t repeat");
+    expect(section("Webhooks")?.textContent).toContain("No webhooks");
+  });
+
+  it("shows an empty Secrets section", async () => {
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ env: null }));
+    await render();
+    expect(section("Secrets")?.textContent).toContain("No secrets");
+  });
+
+  it("shows an API trigger in its own section", async () => {
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({
+      triggers: [trigger({ id: "api-1", kind: "api", cronExpression: null, timezone: null, nextRunAt: null })],
+    }));
+    await render();
+    expect(section("Repeats")?.textContent).not.toContain("Started by an API call");
+    expect(section("API")?.textContent).toContain("Started by an API call");
+  });
+
+  it("opens the editor on Instructions from Add instructions", async () => {
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ description: "" }));
+    await render();
+    await act(async () => { button("Add instructions")!.click(); await flush(); });
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.activeElement).not.toBe(document.querySelector('[role="dialog"] input'));
+  });
+
   it("pauses and resumes one schedule from its popover", async () => {
     await render();
     await act(async () => { button("Change schedule: Weekdays at 9:00 AM")!.click(); await flush(); });
