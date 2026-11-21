@@ -151,6 +151,54 @@ function issueTerminalTimestamp(issue: {
   return null;
 }
 
+/**
+ * Belt-and-braces depth bound for the guarded issue-tree walks below. The path
+ * array is what actually stops a cycle; this cap only bounds a walk whose path
+ * check was dropped by a future edit. Healthy trees stay orders of magnitude
+ * under it (issue hierarchy placement limits are single digits), so the bound
+ * never prunes a real subtree.
+ */
+const ISSUE_TREE_WALK_MAX_DEPTH = 1000;
+
+/**
+ * Builds a cycle-guarded recursive descendant CTE over the `issues` tree rooted
+ * at `rootIssueId`. The recursive step carries the walked path and stops when
+ * the next child is already on it, so a poisoned tree (a parent chain with a
+ * cycle, such as a row whose `parent_id` points back at itself) can no longer
+ * make the `UNION ALL` recursion grow forever and spill giant sorts to
+ * `pgsql_tmp`. On a healthy tree the guarded walk returns exactly the rows of
+ * the equivalent unguarded one: the path grows monotonically and every node is
+ * visited once through its real parent edge.
+ */
+function cycleGuardedIssueDescendantTree(input: {
+  cteName: string;
+  columns: readonly string[];
+  companyId: string;
+  /** A null root matches no row, so the walk is empty — same as the unguarded shape. */
+  rootIssueId: string | null;
+}): SQL {
+  const { cteName, columns, companyId, rootIssueId } = input;
+  const name = sql.raw(cteName);
+  const cteColumns = sql.join(columns.map(column => sql.raw(column)), sql`, `);
+  const rootColumns = sql.join(columns.map(column => sql.raw(`root.${column}`)), sql`, `);
+  const childColumns = sql.join(columns.map(column => sql.raw(`child.${column}`)), sql`, `);
+  return sql`
+    WITH RECURSIVE ${name}(${cteColumns}, path, depth) AS (
+      SELECT ${rootColumns}, ARRAY[root.id]::uuid[], 0
+      FROM ${issues} root
+      WHERE root.company_id = ${companyId}
+        AND root.id = ${rootIssueId}
+      UNION ALL
+      SELECT ${childColumns}, ${name}.path || child.id, ${name}.depth + 1
+      FROM ${issues} child
+      JOIN ${name} ON child.parent_id = ${name}.id
+      WHERE child.company_id = ${companyId}
+        AND ${name}.depth < ${ISSUE_TREE_WALK_MAX_DEPTH}
+        AND NOT child.id = ANY(${name}.path)
+    )
+  `;
+}
+
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
@@ -2081,17 +2129,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         eq(issues.companyId, workspace.companyId),
         sql<boolean>`
           ${issues.id} IN (
-            WITH RECURSIVE issue_tree(id) AS (
-              SELECT ${issues.id}
-              FROM ${issues}
-              WHERE ${issues.companyId} = ${workspace.companyId}
-                AND ${issues.id} = ${sourceIssueId}
-              UNION ALL
-              SELECT child.id
-              FROM ${issues} child
-              JOIN issue_tree parent ON child.parent_id = parent.id
-              WHERE child.company_id = ${workspace.companyId}
-            )
+            ${cycleGuardedIssueDescendantTree({
+              cteName: "issue_tree",
+              columns: ["id"],
+              companyId: workspace.companyId,
+              rootIssueId: sourceIssueId,
+            })}
             SELECT id FROM issue_tree
           )
         `,
@@ -2269,6 +2312,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId, status: issues.status,
         completedAt: issues.completedAt, cancelledAt: issues.cancelledAt, updatedAt: issues.updatedAt })
       .from(issues)
+      // `UNION` (not `UNION ALL`) drops rows it has already produced, so this
+      // walk terminates on a cyclic parent chain on its own; the guarded helper
+      // below is only needed for `UNION ALL` walks.
       .where(sql<boolean>`(${issues.companyId}, ${issues.id}) IN (
         WITH RECURSIVE issue_tree(company_id, id) AS (
           SELECT (root->>'companyId')::uuid, (root->>'issueId')::uuid FROM jsonb_array_elements(${JSON.stringify(roots)}::jsonb) root
@@ -2511,17 +2557,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // still runs from the worktree.
   async function terminalWorkspaceCompactionGuardPasses(tx: DbTransaction, workspace: ExecutionWorkspaceRow) {
     const rows = await tx.execute<{ allowed: boolean }>(sql`
-      WITH RECURSIVE issue_tree(id, status) AS (
-        SELECT root.id, root.status
-        FROM ${issues} root
-        WHERE root.company_id = ${workspace.companyId}
-          AND root.id = ${workspace.sourceIssueId}
-        UNION ALL
-        SELECT child.id, child.status
-        FROM ${issues} child
-        JOIN issue_tree parent ON child.parent_id = parent.id
-        WHERE child.company_id = ${workspace.companyId}
-      )
+      ${cycleGuardedIssueDescendantTree({
+        cteName: "issue_tree",
+        columns: ["id", "status"],
+        companyId: workspace.companyId,
+        rootIssueId: workspace.sourceIssueId,
+      })}
       SELECT (
         EXISTS (SELECT 1 FROM issue_tree)
         AND NOT EXISTS (SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled'))
@@ -4387,17 +4428,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   AND live_run.status IN ('queued', 'running')
               )`,
               sql<boolean>`NOT EXISTS (
-                WITH RECURSIVE issue_tree(id, status) AS (
-                  SELECT root.id, root.status
-                  FROM ${issues} root
-                  WHERE root.company_id = ${workspace.companyId}
-                    AND root.id = ${workspace.sourceIssueId}
-                  UNION ALL
-                  SELECT child.id, child.status
-                  FROM ${issues} child
-                  JOIN issue_tree parent ON child.parent_id = parent.id
-                  WHERE child.company_id = ${workspace.companyId}
-                )
+                ${cycleGuardedIssueDescendantTree({
+                  cteName: "issue_tree",
+                  columns: ["id", "status"],
+                  companyId: workspace.companyId,
+                  rootIssueId: workspace.sourceIssueId,
+                })}
                 SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
               )`,
               // Re-check the cooldown under the lifecycle lock. This predicate
@@ -4407,17 +4443,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               // disabled, so this predicate drops out of the guard.
               cooldownCutoff
                 ? sql<boolean>`NOT EXISTS (
-                WITH RECURSIVE cooldown_tree(id, status, completed_at, cancelled_at, updated_at) AS (
-                  SELECT root.id, root.status, root.completed_at, root.cancelled_at, root.updated_at
-                  FROM ${issues} root
-                  WHERE root.company_id = ${workspace.companyId}
-                    AND root.id = ${workspace.sourceIssueId}
-                  UNION ALL
-                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at
-                  FROM ${issues} child
-                  JOIN cooldown_tree parent ON child.parent_id = parent.id
-                  WHERE child.company_id = ${workspace.companyId}
-                )
+                ${cycleGuardedIssueDescendantTree({
+                  cteName: "cooldown_tree",
+                  columns: ["id", "status", "completed_at", "cancelled_at", "updated_at"],
+                  companyId: workspace.companyId,
+                  rootIssueId: workspace.sourceIssueId,
+                })}
                 SELECT 1 FROM cooldown_tree
                 WHERE COALESCE(
                   CASE

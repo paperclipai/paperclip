@@ -3487,6 +3487,13 @@
       "when": 1795048062306,
       "tag": "0499_numerous_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 500,
+      "version": "7",
+      "when": 1795087200000,
+      "tag": "0500_issue_parent_cycle_repair",
+      "breakpoints": true
     }
   ]
 }

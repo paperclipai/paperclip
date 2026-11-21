@@ -62,6 +62,7 @@ import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import type { IssueParentAdjustment } from "@paperclipai/shared";
 import {
+  assertParentWriteAllowed,
   confirmPlacement,
   planIssueParentChange,
   resolveNewTaskParent,
@@ -11751,6 +11752,14 @@ export function issueService(db: Db) {
       }
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+      }
+      // A repeated explicit parent write still validates: the stored edge
+      // itself can be poisoned (a self-parent or a cycle written before this
+      // guard existed), and re-affirming it must surface the corruption
+      // instead of silently keeping it. A move to a different parent already
+      // validates inside planIssueParentChange above.
+      if (typeof data.parentId === "string" && data.parentId === existing.parentId) {
+        await assertParentWriteAllowed(dbOrTx, existing, data.parentId);
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
