@@ -6432,6 +6432,87 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe(requests.filter(({ method }) => method === "initialize").length);
   });
 
+  it("initializes stateful Streamable HTTP servers that answer a sessionless request with 404", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const requests: Array<{ method: string; sessionId: string | null }> = [];
+    let sessionSequence = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        id?: string;
+      };
+      const requestHeaders = new Headers(init?.headers);
+      requests.push({
+        method: payload.method ?? "",
+        sessionId: requestHeaders.get("mcp-session-id"),
+      });
+      if (payload.method === "initialize") {
+        sessionSequence += 1;
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "stateful", version: "1" },
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "mcp-session-id": `session-${sessionSequence}`,
+            },
+          },
+        );
+      }
+      if (payload.method === "notifications/initialized") {
+        expect(requestHeaders.get("mcp-session-id")).toBeTruthy();
+        return new Response(null, { status: 202 });
+      }
+      if (!requestHeaders.get("mcp-session-id")) {
+        return new Response("Invalid session ID", {
+          status: 404,
+          headers: { "content-type": "text/plain" },
+        });
+      }
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: {
+          tools: [{ name: "list_state", annotations: { readOnlyHint: true } }],
+        },
+      });
+    });
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        link: "https://stateful-404.example/mcp",
+        name: "Stateful 404 MCP",
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(result.connection.config).toMatchObject({
+      mcpSessionRequired: true,
+    });
+    expect(result.actions.readOnly).toEqual([
+      expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
+    ]);
+    expect(requests[0]).toEqual({ method: "server/discover", sessionId: null });
+    expect(requests[1]).toEqual({ method: "tools/list", sessionId: null });
+    expect(
+      requests.filter(({ method }) => method === "initialize").length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      requests.filter(({ method }) => method === "notifications/initialized")
+        .length,
+    ).toBe(requests.filter(({ method }) => method === "initialize").length);
+  });
+
   it("serves persisted MCP actions until the cache expires and then refreshes them", async () => {
     const company = await createCompany(db);
     let currentTime = new Date("2026-08-20T12:00:00.000Z");
