@@ -57,3 +57,25 @@ function rewriteRegistry(image: string, registry: string): string {
   const imageName = segments.slice(2).join("/") || segments[segments.length - 1];
   return `${cleanRegistry}/${imageName}${tag}`;
 }
+
+const FLOATING_TAGS = new Set(["latest", "dev", "main", "stable"]);
+
+export function imagePullPolicyFor(image: string): "Always" | "IfNotPresent" {
+  if (image.includes("@sha256:")) {
+    return "IfNotPresent";
+  }
+  const lastSegment = image.split("/").pop() ?? image;
+  const colonIdx = lastSegment.lastIndexOf(":");
+  const tag = colonIdx >= 0 ? lastSegment.slice(colonIdx + 1) : "latest";
+  return FLOATING_TAGS.has(tag) ? "Always" : "IfNotPresent";
+}
+
+export function resolveImagePullPolicy(
+  image: string,
+  preloadedImages: boolean | undefined,
+): "Always" | "IfNotPresent" {
+  if (preloadedImages) {
+    return "IfNotPresent";
+  }
+  return imagePullPolicyFor(image);
+}
