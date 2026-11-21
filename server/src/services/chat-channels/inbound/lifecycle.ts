@@ -1,3 +1,4 @@
+import { inboundRequestText } from "./request-text.js";
 import type { EndpointRow, DbTransaction, DbOrTransaction, RuntimeContext, LifecycleRuntimeFence, InboundRuntimeContext } from "../runtime-types.js";
 
 import {
@@ -1023,7 +1024,8 @@ export function createChatMessageLifecycle(db: Db, options: MessageLifecycleOpti
     ) {
       return;
     }
-    const text = `An external message was edited:\n\n${event.message.text.slice(0, MAX_INBOUND_TEXT)}`;
+    const requestText = inboundRequestText(event.provider, event.message);
+    const text = `An external message was edited:\n\n${requestText.slice(0, MAX_INBOUND_TEXT)}`;
     const telegramRich =
       event.provider === "telegram"
         ? normalizeTelegramRichMessage(event.message.raw)
@@ -1049,7 +1051,7 @@ export function createChatMessageLifecycle(db: Db, options: MessageLifecycleOpti
             event.message.metadata.editedAt ?? event.message.metadata.dateSent
           )?.toISOString() ?? null,
         raw: event.message.raw,
-        revision: `${event.message.metadata.editedAt?.toISOString() ?? "unknown"}:${createHash("sha256").update(event.message.text).digest("hex")}${event.provider === "slack" ? `:${slackLifecycleFilesDigest(event.message.raw)}` : event.provider === "discord" ? `:${discordLifecycleFilesDigest(event.message.raw)}` : telegramRich ? `:${telegramRich.mediaDigest}` : ""}`,
+        revision: `${event.message.metadata.editedAt?.toISOString() ?? "unknown"}:${createHash("sha256").update(requestText).digest("hex")}${event.provider === "slack" ? `:${slackLifecycleFilesDigest(event.message.raw)}` : event.provider === "discord" ? `:${discordLifecycleFilesDigest(event.message.raw)}` : telegramRich ? `:${telegramRich.mediaDigest}` : ""}`,
       },
       runtimeContext,
     );

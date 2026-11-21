@@ -1,3 +1,4 @@
+import { PaperclipSlackAdapter } from "../services/chat-channels/slack/adapter.js";
 import { releaseAbandonedNativeOwners } from "../services/native-runtime/native-failed-run-owner-release.js";
 import { guardSlackFixtureNetwork } from "./helpers/slack-cloud/transport.js";
 import { chatHistoryActionBlocks } from "./helpers/chat-history-proof.js";
@@ -193,7 +194,7 @@ import {
 } from "@paperclipai/db";
 import { defaultGitHubReviewPolicy, type ChatProvider } from "@paperclipai/shared";
 import { isPaperclipExternalChatTurn } from "@paperclipai/adapter-utils/server-utils";
-import type { Attachment, Author, Message, Thread } from "chat";
+import { Chat, type Attachment, type Author, type Message, type Thread } from "chat";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
@@ -61497,6 +61498,68 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     },
   );
+
+  it("does not admit a Slack task from a bot handle hidden in a link destination", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture, { requireAtMention: true });
+    const channel = makeThread({ channelId: "C-HIDDEN-HANDLE", id: "slack:C-HIDDEN-HANDLE:1740000001.100000" });
+    const adapter = new PaperclipSlackAdapter({ botToken: "xoxb-synthetic", signingSecret: "synthetic", userName: "test-bot" });
+    const sdk = Object.create(Chat.prototype) as { setMentionFlags(adapter: PaperclipSlackAdapter, message: Message): boolean };
+    try {
+      const message = adapter.parseMessage({ type: "message", channel: "C-HIDDEN-HANDLE", ts: "1740000001.100000", user: "U-EXTERNAL", username: "alex", text: "Look <https://example.com/@test-bot|profile>" });
+      expect(sdk.setMentionFlags(adapter, message)).toBe(false);
+      await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread, message, trigger: "subscribed_message" });
+      expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(0);
+      expect(await readIssueCommentsByCompanyId(fixture.companyId)).toHaveLength(0);
+      const [delivery] = await readChatDeliveriesByEndpointId(endpoint.id);
+      expect(delivery.state).toBe("filtered");
+      expect(JSON.stringify(delivery.normalizedEvent)).not.toContain("https://example.com/@test-bot");
+    } finally {
+      await retirePublicationFixture(service, endpoint.id);
+    }
+  });
+
+  it("persists full Slack link destinations in task requests, replies, edits and wake comments", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
+    const channel = makeThread({ channelId: "C-LINKS", id: "slack:C-LINKS:1740000001.100000" });
+    const adapter = new PaperclipSlackAdapter({ botToken: "xoxb-synthetic", signingSecret: "synthetic", userName: "test-bot" });
+    const parse = (id: string, url: string) => adapter.parseMessage({
+      type: "message", channel: "C-LINKS", ts: id, thread_ts: "1740000001.100000",
+      user: "U-EXTERNAL", username: "alex", text: `Review <${url.replaceAll("&", "&amp;")}|example.com/…>`,
+    });
+    const replay = "https://example.com/project/123/replay/abc?from=recording&return_to=%2Fhome";
+    const chat = "https://example.com/REP/chats/abc";
+    try {
+      const original = parse("1740000001.100000", replay);
+      await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread, message: original, trigger: "mention" });
+      await qualifySetupRoundTrip(service, endpoint.id);
+      await service.test(endpoint.id);
+      const reply = parse("1740000002.100000", chat);
+      await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread, message: reply, trigger: "subscribed_message" });
+      // Same label and timestamp, different destinations must remain distinct edits.
+      for (const url of [chat + "?revision=1", chat + "?revision=2"]) {
+        const edited = parse(reply.id, url);
+        edited.metadata.edited = true;
+        edited.metadata.editedAt = new Date("2026-09-04T10:01:00.000Z");
+        await callbacks.onMessageUpdated!({ endpointId: endpoint.id, provider: "slack", thread: channel.thread, message: edited, previousMessage: reply });
+      }
+      const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+      const deliveries = await readChatDeliveriesByEndpointId(endpoint.id);
+      const comments = await readIssueCommentsByIssueId(conversation.issueId);
+      for (const url of [replay, chat, chat + "?revision=1", chat + "?revision=2"]) {
+        expect(deliveries.some(row => JSON.stringify(row.normalizedEvent).includes(url))).toBe(true);
+        expect(comments.some(row => row.body.includes(url))).toBe(true);
+      }
+      const requestComment = comments.find(row => row.body.includes(replay))!;
+      const replyComment = comments.find(row => row.body.includes(chat) && !row.body.includes("revision="))!;
+      expect(wakeup.mock.calls.some(([, opts]) => JSON.stringify(opts).includes(requestComment.id))).toBe(true);
+      expect(wakeup.mock.calls.some(([, opts]) => JSON.stringify(opts).includes(replyComment.id))).toBe(true);
+      expect(comments.filter(row => row.body.includes("revision="))).toHaveLength(2);
+    } finally {
+      await retirePublicationFixture(service, endpoint.id);
+    }
+  });
 
   it("records message edits and deletes durably and deduplicates lifecycle callbacks", async () => {
     const fixture = await seedCompany();
