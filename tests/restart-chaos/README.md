@@ -305,6 +305,19 @@ run list when that list is full, so no task's early runs are lost. A queued or r
 minutes is not a live owner, the same window the drain uses. The drain also waits for the 90 s quiet period
 (`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading.
 
+**Gate D verdict** (`hosted-gate.ts`). A run exits 0 only when every check in the `Gate D` block of `SUMMARY.md` holds:
+every started task completed hands-off; every task the harness launched was created; every started task passes the local waves'
+R1 (`gradeR1` from `grader.ts`); no Retry banner was shown; no health probe failed; no overlapping runs, duplicated
+agent comments or duplicated subtasks; no release was stop-then-start; and at least one release was detected, each
+with a live run carried across it. A fixed batch (`--hosted-releases 0`) skips the release check. R1 uses the
+staging-mix budget (`stagingMixBudgetMs`); a subtask the agent created under a launched task is graded from its own creation time with the
+budget of its two rounds. It adds outage time only for a release whose health probes failed
+before the new build answered. It credits the first run's queue wait when the agent's slots prove it fair
+(`queueWaitFairnessFrom`, from the run list and each agent's `runtimeConfig.heartbeat.maxConcurrentRuns`). The API
+has no wake evidence, so a follow-up run's queue wait is never credited. Per-release hand-off and reach are API
+proxies: runs alive at the old build's last answer, and how many of them wrote an event after it. The server log's
+`handed live native runs` and `reattach phase ended` lines are not readable through the tenant API.
+
 These fields are unavailable over the API and are reported as unavailable, not guessed:
 
 | Field | Why |
@@ -406,7 +419,28 @@ part of U3 is checked only in waves run with this harness.
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
   A task that never rested within its deadline fails R1 as `no_rest_within_budget`,
-  whatever its last status.
+  whatever its last status. R1 also allows fair queue waits of runs that new
+  input started, chosen by these rules in order:
+  1. If any run on the task has no `createdAt`, nothing is credited.
+  2. The first run (earliest `createdAt`) is a candidate unless it is a retry.
+  3. For each harness follow-up comment: without a send time, nothing is
+     credited for it. Otherwise the candidate is the earliest run that carries
+     the comment, was created at or after the send time, and was not cancelled
+     before it executed.
+  4. That run counts only if it is not a retry, the previous executed run
+     succeeded and finished before it was created, and
+     `wake-evidence/<task>.json` shows a comment wake reason and no continued
+     run (no wake evidence: nothing is credited).
+  5. Each candidate's wait, from `createdAt` to `startedAt` inside the task's
+     own lifetime and minus outage time, is credited only when
+     `wake-evidence/agent-slots.json` proves it fair: no newer fresh assignment
+     run of that agent started during the wait (newer follow-ups and retries
+     rank higher by design), and the agent had no idle slot for more than 2 s
+     outside a server outage. A provably unfair wait fails as
+     `unfair_queue_wait`; one that cannot be proven is not credited, and the R1
+     detail says why.
+  The observer holds the deadline while a candidate run is queued (up to one
+  more budget) and extends it by that run's wait once it starts.
 - Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
   smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
   over its p95 budget, and every restart recovery whose Paperclip share exceeds

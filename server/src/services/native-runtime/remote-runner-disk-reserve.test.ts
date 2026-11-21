@@ -284,4 +284,16 @@ describe("remote runner disk reserve scripts", () => {
       .toBe("/home/daytona/ws/.paperclip-runtime/paperclip-runner/disk-reserve");
     expect(remoteRunnerDiskReservePath({ transport: "ssh", remoteCwd: "/home/me/ws" })).toBeUndefined();
   });
+
+  it("leaves scarce inodes available to the running agent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "runner-disk-reserve-"));
+    const reserve = join(root, "disk-reserve");
+    try {
+      await holdRemoteRunnerDiskReserve({ execute: localExecute }, reserve,
+        { bytes: 1024 * 1024, minimumFreeBytes: 0, minimumFreeInodes: Number.MAX_SAFE_INTEGER });
+      expect(existsSync(reserve)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

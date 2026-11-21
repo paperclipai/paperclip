@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatProviderLimitMessage } from "./provider-limit-message";
+import { formatProviderLimitMessage, providerLimitMessageResetAt } from "./provider-limit-message";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -39,9 +39,13 @@ describe("provider limit messages", () => {
       `Waiting for the provider usage limit to reset at ${resetAt} before starting work`,
       `The provider usage limit resets at ${resetAt}; this wake could not schedule its retry and released the task`,
       `Waiting for the agent's provider usage limit to reset; the work starts at ${resetAt}.`,
+      `This agent's provider usage limit has no reported reset time. Work is held; a retry can recheck availability after ${resetAt}; the limit may still apply then.`,
+      `Waiting to recheck the provider usage limit after ${resetAt} before starting work`,
+      `Paperclip will recheck the agent's provider usage limit at ${resetAt} before starting work.`,
     ]) {
       expect(formatProviderLimitMessage(text)).toContain("in 1 hour (");
       expect(formatProviderLimitMessage(text)).not.toContain(resetAt);
+      expect(providerLimitMessageResetAt(text)).toBe(Date.parse(resetAt));
     }
   });
 

@@ -9,8 +9,7 @@ import type { InProgressRecord, OwnableKind } from "./ownership-registry.js";
 
 /** Recovery action cause: a stuck record whose owner Paperclip cannot judge. */
 export const OWNER_UNPROVABLE_CAUSE = "ownership_owner_unprovable";
-/** Lease metadata key the board's confirmation writes; the owner proof reads it as gone. */
-export const OWNER_GONE_ATTESTATION_KEY = "ownerGoneAttestation";
+export { OWNER_GONE_ATTESTATION_KEY } from "./human-gate-evidence.js";
 
 /** Unprovable because the record names no usable owner: saved before owners were recorded. */
 export const LEGACY_OWNER_REASONS: ReadonlySet<string> = new Set(["no_owner_stamp", "process_space_unrecorded", "missing_identity"]);
