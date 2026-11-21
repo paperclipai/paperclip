@@ -11224,8 +11224,9 @@ async function executePaperclipNativeSessionAttempt(
             NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8"))).processConfigDigest),
       }) ?? undefined;
       if (remoteWarmRecovery) {
-        const releasedSource = portableSource?.identity ?? (pluginTaskDescription?.releaseResumeVersion === 1
-          && pluginTaskDescription.resumeIdentityVersion === 1 ? releasedDurableIdentity(identity) : undefined);
+        const releasedSource = portableSource?.identity
+          ?? (pluginTaskDescription?.releaseResumeVersion === 1 ? releasedDurableIdentity(identity) : undefined);
+        remoteWarmRecovery.releasedSource = releasedSource;
         if (releasedSource) {
           const header = await loadNativeRunnerCheckpointHeader(input.db, remoteWarmRecovery.previousExecution.binding).catch((error: unknown) => {
             if (error instanceof Error && error.message === "native_runner_checkpoint_retired") return null;
@@ -11233,7 +11234,6 @@ async function executePaperclipNativeSessionAttempt(
           });
           remoteWarmRecovery.releasedSourceRunner = header ? inspectDurablePrpCheckpointRunner(header) ?? undefined : undefined;
         }
-        if (portableSource || remoteWarmRecovery.releasedSourceRunner) remoteWarmRecovery.releasedSource = releasedSource;
       }
     }
   }
@@ -12536,7 +12536,7 @@ async function executePaperclipNativeSessionAttempt(
       toolTrace,
     });
     const releasedRecovery = remoteWarmRecovery;
-    if (releasedRecovery?.releasedSource && releasedRecovery.releasedSourceRunner
+    if (releasedRecovery?.releasedSource && releasedRecovery.releasedSourceRunner && releasedRecovery.reuseProcess
         && !releasedRecovery.portableSourceTaskId && pluginTaskDescription?.resumeIdentityVersion === 1 && warmConfigDigest !== null) {
       const checkpoint = loadWarmNativeCheckpoint(input.execution, warmConfigDigest, "remote");
       if (checkpoint) {

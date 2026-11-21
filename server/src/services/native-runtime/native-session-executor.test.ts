@@ -19678,6 +19678,10 @@ describe("runnerd provider runtime wiring", () => {
               { runnerExecutionTarget: { ...target, remoteCwd: "different-workspace" } },
               { runnerExecutionTarget: { ...target, sandboxLeaseAcquisition: { ...target.sandboxLeaseAcquisition, providerLeaseId: "different-task" } } },
             ]) await expect(executePaperclipNativeSession({ ...base, ...changed })).rejects.toThrow("fixture completed-source proof checked");
+            await writeFile(path, JSON.stringify({ ...envelope,
+              releasedRunner: { source, taskId: "retained-task", scopeDigest: `sha256:${"0".repeat(64)}` } }));
+            await expect(executePaperclipNativeSession(base)).rejects.toThrow("fixture completed-source proof checked");
+            expect(inspected.mock.calls.at(-1)![0].loadCheckpoint(current)).toMatchObject({ identity: envelope.snapshot.identity });
             expect(owners).toHaveBeenCalledTimes(calls);
             expect(state.execute).toHaveBeenCalledTimes(1);
           } finally { inspected.mockRestore(); }
