@@ -23,11 +23,11 @@ const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:(?:5[-\s]?hour|\w+)\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:(?:5[-\s]?hour|\w+)\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -468,6 +468,8 @@ function dateFromTimeZoneWallClock(input: {
   return candidate;
 }
 
+const CLAUDE_RESET_CLOCK_GRACE_MS = 5 * 60_000;
+
 function nextClockTimeInTimeZone(input: {
   now: Date;
   hour: number;
@@ -488,7 +490,10 @@ function nextClockTimeInTimeZone(input: {
   });
   if (!retryAt) return null;
 
-  if (retryAt.getTime() <= input.now.getTime()) {
+  if (
+    retryAt.getTime() <= input.now.getTime() &&
+    input.now.getTime() - retryAt.getTime() > CLAUDE_RESET_CLOCK_GRACE_MS
+  ) {
     const nextDay = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day + 1, 0, 0, 0, 0));
     retryAt = dateFromTimeZoneWallClock({
       year: nextDay.getUTCFullYear(),
@@ -528,7 +533,10 @@ function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: 
 
   const retryAt = new Date(now);
   retryAt.setHours(hour24, minute, 0, 0);
-  if (retryAt.getTime() <= now.getTime()) {
+  if (
+    retryAt.getTime() <= now.getTime() &&
+    now.getTime() - retryAt.getTime() > CLAUDE_RESET_CLOCK_GRACE_MS
+  ) {
     retryAt.setDate(retryAt.getDate() + 1);
   }
   return retryAt;
@@ -546,7 +554,8 @@ export function extractClaudeRetryNotBefore(
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
-  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  const retryAt = parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  return retryAt && retryAt.getTime() > now.getTime() ? retryAt : null;
 }
 
 export function isClaudeTransientUpstreamError(input: {

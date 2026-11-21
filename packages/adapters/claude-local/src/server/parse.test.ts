@@ -211,6 +211,15 @@ describe("isClaudeTransientUpstreamError", () => {
     );
   });
 
+  it("recognizes the five hour limit and its Amsterdam reset time", () => {
+    const now = new Date("2026-11-06T07:00:00.000Z");
+    const errorMessage = "You've hit your 5 hour limit · resets 9:30am (Europe/Amsterdam)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe("2026-11-06T08:30:00.000Z");
+  });
+
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
@@ -483,6 +492,29 @@ describe("extractClaudeRetryNotBefore", () => {
       now,
     );
     expect(extracted?.toISOString()).toBe("2026-04-23T03:15:00.000Z");
+  });
+
+  it.each([
+    ["2026-11-06T08:30:00.000Z", "Europe/Amsterdam"],
+    ["2026-11-06T08:30:01.000Z", "Europe/Amsterdam"],
+    ["2026-11-06T08:32:00.000Z", "Europe/Amsterdam"],
+    ["2026-11-06T09:30:01.000Z", "UTC"],
+  ])("ignores a just-expired reset at %s in %s", (timestamp, zone) => {
+    expect(extractClaudeRetryNotBefore({
+      errorMessage: `You've hit your 5 hour limit · resets 9:30am (${zone})`,
+    }, new Date(timestamp))).toBeNull();
+  });
+
+  it("ignores a just-expired reset in the local timezone", () => {
+    expect(extractClaudeRetryNotBefore({
+      errorMessage: "You've hit your 5 hour limit · resets 9:30am",
+    }, new Date(2026, 10, 6, 9, 30, 1))).toBeNull();
+  });
+
+  it("keeps a future Amsterdam reset after the autumn timezone change", () => {
+    expect(extractClaudeRetryNotBefore({
+      errorMessage: "You've hit your 5 hour limit · resets 9:30am (Europe/Amsterdam)",
+    }, new Date("2026-11-06T08:29:59.000Z"))?.toISOString()).toBe("2026-11-06T08:30:00.000Z");
   });
 
   it("returns null when no reset hint is present", () => {
