@@ -75,6 +75,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { grantLegacyPluginTools } from "./helpers/legacy-plugin-tools.js";
 import { recordingDb } from "./helpers/tool-gateway-listing-fixture.js";
+import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 
 const externalTestDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_GATEWAY_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -2607,6 +2608,65 @@ rl.on("line", (line) => {
     } finally {
       await fake.close();
     }
+  });
+
+  it("finds the same GitHub account's tool on a different connection after credential failure", async () => {
+    const { seed, grant } = githubCredentialsFixture(() => db);
+    const context = await seed();
+    const { companyId, agentId, runId, issueId } = context;
+    const older = await grant(context, "A");
+    const newer = await grant(context, "A");
+    const alternateCredential = "synthetic-alternate-credential";
+    const secrets = secretService(db);
+    await secrets.rotateCurrentUserSecretValue(companyId, "A", older.secretId, { value: alternateCredential });
+    await secrets.syncUserSecretDeclarationsForTarget(companyId,
+      { targetType: "tool_connection", targetId: older.connectionId },
+      [{ definitionKey: older.definitionId, configPath: "oauth.access_token", envKey: "Authorization", required: true }],
+      { replaceAll: true });
+    const upstreamToolName = "list_issues";
+    const olderUrl = "https://github-mcp-fixture.invalid/older";
+    const newerUrl = "https://github-mcp-fixture.invalid/newer";
+    let requestedName = "";
+    for (const [candidate, url, createdAt] of [
+      [older, olderUrl, new Date(0)],
+      [newer, newerUrl, new Date(1)],
+    ] as const) {
+      const [connection] = await db.update(toolConnections)
+        .set({ authKind: "oauth", config: { sourceTemplateKey: "github", url } })
+        .where(eq(toolConnections.id, candidate.connectionId)).returning();
+      await db.update(connectionGrants).set({ createdAt }).where(eq(connectionGrants.id, candidate.id));
+      await db.insert(toolCatalogEntries).values({
+        companyId, applicationId: connection.applicationId, connectionId: connection.id,
+        name: upstreamToolName, toolName: upstreamToolName, riskLevel: "read", versionHash: randomUUID(),
+      });
+      if (candidate === newer) {
+        const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
+        requestedName = expectedConnectedToolName({
+          applicationKey: application.applicationKey ?? connection.name, connectionId: connection.id, toolName: upstreamToolName,
+        });
+      }
+    }
+    await allowAllToolsForAgent(db, companyId, agentId);
+    const refresh = vi.fn(async ({ grantId }: { grantId: string }) => {
+      if (grantId === newer.id) throw new Error("Synthetic credential acquisition failure");
+      const [current] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
+      return current;
+    });
+    const remoteHttpRequest = vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body));
+      expect(request.params.name).toBe(upstreamToolName);
+      expect(new Headers(init.headers).get("Authorization")).toBe(`Bearer ${alternateCredential}`);
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "alternate ok" }] } });
+    });
+    const gateway = createTestToolGatewayService(db, { oauthGrantRefresher: refresh, remoteHttpRequest });
+    const session = await gateway.createSession({ companyId, agentId, runId, issueId });
+    const result = await gateway.executeTool({ sessionToken: session.token, tool: requestedName, parameters: {} });
+
+    expect(result).toMatchObject({ status: "completed", result: { content: "alternate ok" } });
+    expect(refresh.mock.calls.map(([input]) => input.grantId)).toEqual([newer.id, older.id]);
+    expect(remoteHttpRequest.mock.calls.map(([url]) => url)).toEqual([olderUrl]);
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, result.invocationId));
+    expect(invocation?.connectionId).toBe(older.connectionId);
   });
 
   it("dispatches a bounded alias to the original long upstream tool name", async () => {

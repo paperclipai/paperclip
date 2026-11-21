@@ -3480,9 +3480,9 @@ export function createToolGatewayService(
         // gets its own catalog descriptor and policy checks; never replay a call.
         for (let attempt = 0; attempt < 2; attempt += 1) {
           const grant = selected.grant!;
-          const target = connectedTools.find(
+          const target = (await connectedMcpToolsForConnection(session.companyId, grant.connectionId)).find(
             (candidate) =>
-              candidate.connectionId === grant.connectionId &&
+              isModelVisibleTool(candidate) &&
               candidate.upstreamToolName === tool.upstreamToolName &&
               candidate.providerType === tool.providerType,
           );
