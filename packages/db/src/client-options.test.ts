@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DATABASE_APPLICATION_NAME,
+  DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
   DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
   databaseClientOptionsFromEnv,
   postgresJsOptions,
@@ -37,6 +38,7 @@ describe("databaseClientOptionsFromEnv", () => {
         DATABASE_CONNECT_TIMEOUT_SECONDS: "10",
         DATABASE_MAX_LIFETIME_SECONDS: "1800",
         DATABASE_APPLICATION_NAME: " paperclip-web ",
+        DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS: "30000",
       }),
     ).toEqual({
       maxConnections: 25,
@@ -44,11 +46,18 @@ describe("databaseClientOptionsFromEnv", () => {
       connectTimeoutSeconds: 10,
       maxLifetimeSeconds: 1800,
       applicationName: "paperclip-web",
+      idleInTransactionSessionTimeoutMs: 30_000,
     });
   });
 
   it("accepts DATABASE_IDLE_TIMEOUT_SECONDS=0 as an explicit opt-out of idle reaping", () => {
     expect(databaseClientOptionsFromEnv({ DATABASE_IDLE_TIMEOUT_SECONDS: "0" })).toEqual({ idleTimeoutSeconds: 0 });
+  });
+
+  it("accepts DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=0 as an explicit opt-out", () => {
+    expect(databaseClientOptionsFromEnv({ DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS: "0" })).toEqual({
+      idleInTransactionSessionTimeoutMs: 0,
+    });
   });
 
   it("rejects malformed values instead of silently ignoring them", () => {
@@ -71,6 +80,12 @@ describe("databaseClientOptionsFromEnv", () => {
     );
     expect(() => databaseClientOptionsFromEnv({ DATABASE_MAX_LIFETIME_SECONDS: "NaN" })).toThrow(
       /DATABASE_MAX_LIFETIME_SECONDS/,
+    );
+    expect(() => databaseClientOptionsFromEnv({ DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS: "-1" })).toThrow(
+      /DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS/,
+    );
+    expect(() => databaseClientOptionsFromEnv({ DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS: "abc" })).toThrow(
+      /DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS/,
     );
   });
 
@@ -99,6 +114,19 @@ describe("databaseClientOptionsFromEnv", () => {
       connection: { application_name: "paperclip-controller-instance-lease", statement_timeout: "8000" },
     });
   });
+
+  it("sends idle-in-transaction timeout as a startup parameter and omits an explicit 0", () => {
+    expect(postgresJsOptions({ idleInTransactionSessionTimeoutMs: 30_000 })).toEqual({
+      connection: { idle_in_transaction_session_timeout: "30000" },
+    });
+    expect(postgresJsOptions({ idleInTransactionSessionTimeoutMs: 0 })).toEqual({});
+    expect(postgresJsOptions({
+      applicationName: "paperclip-workspace-finalization-lock",
+      idleInTransactionSessionTimeoutMs: 0,
+    })).toEqual({
+      connection: { application_name: "paperclip-workspace-finalization-lock" },
+    });
+  });
 });
 
 describe("resolveDatabaseClientOptions", () => {
@@ -106,10 +134,14 @@ describe("resolveDatabaseClientOptions", () => {
     expect(resolveDatabaseClientOptions({})).toEqual({
       idleTimeoutSeconds: DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
       applicationName: DEFAULT_DATABASE_APPLICATION_NAME,
+      idleInTransactionSessionTimeoutMs: DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
     });
     expect(postgresJsOptions(resolveDatabaseClientOptions(databaseClientOptionsFromEnv({})))).toEqual({
       idle_timeout: DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
-      connection: { application_name: DEFAULT_DATABASE_APPLICATION_NAME },
+      connection: {
+        application_name: DEFAULT_DATABASE_APPLICATION_NAME,
+        idle_in_transaction_session_timeout: String(DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS),
+      },
     });
   });
 
@@ -119,10 +151,23 @@ describe("resolveDatabaseClientOptions", () => {
         maxConnections: 3,
         idleTimeoutSeconds: 0,
         applicationName: "paperclip-cli",
+        idleInTransactionSessionTimeoutMs: 0,
       }),
-    ).toEqual({ maxConnections: 3, idleTimeoutSeconds: 0, applicationName: "paperclip-cli" });
+    ).toEqual({
+      maxConnections: 3,
+      idleTimeoutSeconds: 0,
+      applicationName: "paperclip-cli",
+      idleInTransactionSessionTimeoutMs: 0,
+    });
     expect(postgresJsOptions(resolveDatabaseClientOptions({ idleTimeoutSeconds: 0 }))).toMatchObject({
       idle_timeout: 0,
+      connection: {
+        idle_in_transaction_session_timeout: String(DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS),
+      },
+    });
+    expect(postgresJsOptions(resolveDatabaseClientOptions({ idleInTransactionSessionTimeoutMs: 0 }))).toEqual({
+      idle_timeout: DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
+      connection: { application_name: DEFAULT_DATABASE_APPLICATION_NAME },
     });
   });
 });

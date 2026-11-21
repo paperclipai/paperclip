@@ -126,16 +126,32 @@ See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Client tuning (optional)
 
-All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
+All of these are optional. Paperclip fills in idle connection reaping (60s),
+`application_name`, and a 30s idle-in-transaction abort when they are unset.
+Typical self-hosted setups still need none of these variables:
 
 ```sh
 DATABASE_PREPARED_STATEMENTS=false   # use false when the pooler does not support named prepared statements
 DATABASE_POOL_MAX=25                 # connection pool size; default: 10
 DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
+DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=30000  # abort a session idle in an open transaction; default: 30000 (0 = disable)
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
 DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default for the server's main pool: paperclip:<boot id>
 ```
+
+An idle-in-transaction session still holds the row and advisory locks it
+already took. PostgreSQL's default is to keep that session until the client
+commits, rolls back, or disconnects. Paperclip sets
+`idle_in_transaction_session_timeout` to 30 seconds on the main pool and
+private pools so a transaction that waits on the event loop, another pool
+connection, or an external call cannot block issue inserts and company locks
+indefinitely. Dedicated lock connections (`paperclip-workspace-finalization-lock`)
+omit this startup parameter, because some lock transactions hold work that
+can last longer than 30 seconds. Set
+`DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=0` to omit the parameter on
+every pool: that restores PostgreSQL's default, and it is the opt-out when a
+transaction-mode pooler rejects this GUC (`unsupported startup parameter`).
 
 The server names its main pool `paperclip:<boot id>`, so after a restart the
 sessions of each server process can be told apart in `pg_stat_activity`. When a

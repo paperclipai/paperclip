@@ -73,7 +73,7 @@ statements longer than 8 KB. If a prepared statement fails because the pooler's 
 stale after a schema change or was lost, Paperclip stops preparing that
 statement and retries it once unprepared.
 
-Related optional client tuning: `DATABASE_POOL_MAX`, `DATABASE_IDLE_TIMEOUT_SECONDS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`, `DATABASE_MAX_LIFETIME_SECONDS`, `DATABASE_APPLICATION_NAME`. Driver defaults apply when unset, except that idle pooled connections close after 60 seconds (`DATABASE_IDLE_TIMEOUT_SECONDS=0` keeps them open) and the server's main pool reports `application_name=paperclip:<boot id>` (other pools use names that start with `paperclip`). See [Connection pool settings](#connection-pool-settings).
+Related optional client tuning: `DATABASE_POOL_MAX`, `DATABASE_IDLE_TIMEOUT_SECONDS`, `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`, `DATABASE_MAX_LIFETIME_SECONDS`, `DATABASE_APPLICATION_NAME`. Driver defaults apply when unset, except that idle pooled connections close after 60 seconds (`DATABASE_IDLE_TIMEOUT_SECONDS=0` keeps them open), a session that stays idle inside an open transaction is aborted after 30 seconds (`DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=0` omits that startup parameter), and the server's main pool reports `application_name=paperclip:<boot id>` (other pools use names that start with `paperclip`). See [Connection pool settings](#connection-pool-settings).
 
 ## Connection Pool Settings
 
@@ -83,6 +83,7 @@ The server opens one postgres.js pool for its own queries (and a second one when
 |----------|---------|--------|
 | `DATABASE_POOL_MAX` | `10` (driver) | Maximum pooled connections. |
 | `DATABASE_IDLE_TIMEOUT_SECONDS` | `60` | Close a pooled connection after this much idle time. `0` keeps idle connections open forever (the driver default). |
+| `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS` | `30000` | Abort a session that stays idle inside an open transaction. `0` omits the startup parameter (PostgreSQL's default, and the opt-out when a pooler rejects this GUC). Dedicated lock connections omit it regardless. |
 | `DATABASE_CONNECT_TIMEOUT_SECONDS` | `30` (driver) | Give up on a connection attempt after this long. |
 | `DATABASE_MAX_LIFETIME_SECONDS` | 30–60 min, randomized (driver) | Recycle a pooled connection once it is this old. |
 | `DATABASE_APPLICATION_NAME` | `paperclip:<boot id>` (server main pool) | Value of `application_name` in `pg_stat_activity`. The boot id tells the sessions of each server process apart after a restart. Find Paperclip's backends with `SELECT * FROM pg_stat_activity WHERE application_name LIKE 'paperclip%';` |
