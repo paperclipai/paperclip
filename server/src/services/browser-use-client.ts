@@ -209,6 +209,7 @@ export function browserUseClient(
         profileId?: string;
         record: false;
         allowResizing?: true;
+        proxyCountryCode?: string | null;
       };
       maxCostUsd?: number;
     }, beforeDispatch?: () => Promise<void>) {
