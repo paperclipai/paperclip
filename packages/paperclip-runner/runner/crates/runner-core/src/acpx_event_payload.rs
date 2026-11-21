@@ -16,6 +16,8 @@ use crate::provider_bridge::semantic_value_digest;
 use crate::stable_identity::{is_stable_id, SHORT_STABLE_ID_CHARS};
 
 const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
+// Keep the encoded document event within the encrypted tool-input budget.
+const MAX_DOCUMENT_TOOL_PAYLOAD_BYTES: usize = 480 * 1024;
 const MAX_ID_CHARS: usize = 160;
 const MAX_RUNTIME_ITEM_ID_CHARS: usize = 240;
 const MAX_INPUT_REQUEST_ID_CHARS: usize = 240;
@@ -94,10 +96,17 @@ pub fn admit_acpx_event_payload_size(event: &AcpxSidecarEvent) -> Result<(), Loc
     let payload_bytes = serde_json::to_vec(&event.payload).map_err(|error| {
         LocalRunnerError::invalid(format!("ACPX event payload is invalid: {error}"))
     })?;
-    if payload_bytes.len() > MAX_EVENT_PAYLOAD_BYTES {
-        return Err(LocalRunnerError::invalid(
-            "ACPX event payload exceeds the 256 KiB admission limit",
-        ));
+    let max_payload_bytes = match (event.event_type, event.payload["operationId"].as_str()) {
+        (GeneratedAcpxSidecarEventType::RuntimeToolCalled, Some("write_task_document")) => {
+            MAX_DOCUMENT_TOOL_PAYLOAD_BYTES
+        }
+        _ => MAX_EVENT_PAYLOAD_BYTES,
+    };
+    if payload_bytes.len() > max_payload_bytes {
+        return Err(LocalRunnerError::invalid(format!(
+            "ACPX event payload exceeds the {} KiB admission limit",
+            max_payload_bytes / 1024,
+        )));
     }
     Ok(())
 }
