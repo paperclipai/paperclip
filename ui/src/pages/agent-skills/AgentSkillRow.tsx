@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { Lock, type LucideIcon } from "lucide-react";
+import { Lock, Plus, type LucideIcon } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SkillCardIcon, type SkillIconCard } from "../../components/SkillCardIcon";
@@ -123,7 +124,13 @@ export function AgentSkillRow({
     <Lock className="h-4 w-4 shrink-0 text-muted-foreground/60" aria-label="Read-only" />
   ) : (
     (() => {
-      const toggle = (
+      const toggle = variant === "available" ? (
+        <Button variant="outline" size="sm" disabled={disabled} aria-label={`Add ${data.name}`}
+          onClick={() => onCheckedChange?.(true)}>
+          <Plus aria-hidden="true" className="h-3.5 w-3.5" />
+          Add
+        </Button>
+      ) : (
         <ToggleSwitch
           checked={checked}
           disabled={disabled}

@@ -1,4 +1,4 @@
-import type { AgentSkillEntry } from "@paperclipai/shared";
+import type { AgentSkillEntry, AgentSkillSnapshot } from "@paperclipai/shared";
 
 export interface AgentSkillDraftState {
   draft: string[];
@@ -72,4 +72,26 @@ export function isReadOnlyUnmanagedSkillEntry(
   if (companySkillKeys.has(entry.key)) return false;
   if (entry.origin === "user_installed" || entry.origin === "external_unknown") return true;
   return entry.managed === false && entry.state === "external";
+}
+
+/** Installed membership is independent of the skills enabled for execution. */
+export interface AgentSkillLibrarySelection {
+  enabled: string[];
+  installed: string[];
+}
+
+export function agentSkillLibrarySelection(snapshot: AgentSkillSnapshot): AgentSkillLibrarySelection {
+  return {
+    enabled: snapshot.desiredSkills,
+    installed: Array.from(new Set([
+      ...(snapshot.installedSkills ?? []),
+      ...snapshot.desiredSkills,
+      ...snapshot.entries.filter((entry) => !entry.readOnly && entry.managed && entry.state === "installed")
+        .map((entry) => entry.key),
+    ])),
+  };
+}
+
+export function sameSkillLibrarySelection(a: AgentSkillLibrarySelection, b: AgentSkillLibrarySelection): boolean {
+  return sameSkillSelection(a.enabled, b.enabled) && sameSkillSelection(a.installed, b.installed);
 }

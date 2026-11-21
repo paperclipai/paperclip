@@ -70,7 +70,7 @@ function ToggleableRow({ data, initial }: { data: AgentSkillRowData; initial: bo
   const [checked, setChecked] = useState(initial);
   return (
     <AgentSkillRow
-      variant={checked ? "enabled" : "available"}
+      variant="enabled"
       data={data}
       checked={checked}
       onCheckedChange={setChecked}
@@ -83,7 +83,7 @@ export const Enabled: Story = {
 };
 
 export const Available: Story = {
-  render: () => <ToggleableRow data={AVAILABLE} initial={false} />,
+  args: { variant: "available", data: AVAILABLE },
 };
 
 export const ReadOnly: Story = {

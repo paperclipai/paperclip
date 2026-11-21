@@ -417,6 +417,30 @@ describe("agent skill routes", () => {
     );
   }, 10_000);
 
+  it("persists disabled installed membership without passing it to runtime skill sync", async () => {
+    const key = "company-1/design";
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [key] } },
+    });
+    mockAdapter.syncSkills.mockResolvedValue({ ...skillSnapshot(), desiredSkills: [] });
+    mockAdapter.listSkills.mockResolvedValue({ ...skillSnapshot(), desiredSkills: [] });
+    const app = await createApp();
+    const saved = await requestApp(app, baseUrl => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: [], installedSkills: [key, "company-1/browser"], mode: "replace" }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.installedSkills).toEqual([key, "company-1/browser"]);
+    expect(saved.body.desiredSkills).toEqual([]);
+    expect(mockAdapter.syncSkills.mock.calls.at(-1)?.[1]).toEqual([]);
+    const config = mockAgentService.update.mock.calls.at(-1)?.[1].adapterConfig;
+    expect(config.paperclipSkillSync.installedSkills).toEqual([key, "company-1/browser"]);
+    mockAgentService.getById.mockResolvedValue({ ...makeAgent("claude_local"), adapterConfig: config });
+    const reloaded = await requestApp(app, baseUrl => request(baseUrl)
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"));
+    expect(reloaded.body.installedSkills).toEqual(saved.body.installedSkills);
+  });
+
   it("round-trips latest assignments without inventing beta version pins", async () => {
     const existing = "github/fixture/existing";
     const added = "github/fixture/added";
@@ -645,6 +669,7 @@ describe("agent skill routes", () => {
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: {
             desiredSkills: ["company-1/keep", "paperclipai/paperclip/paperclip"],
+            installedSkills: ["company-1/keep", "paperclipai/paperclip/paperclip"],
           },
         }),
       }),
@@ -671,7 +696,7 @@ describe("agent skill routes", () => {
       expect.any(String),
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
-          paperclipSkillSync: { desiredSkills: ["company-1/keep"] },
+          paperclipSkillSync: { desiredSkills: ["company-1/keep"], installedSkills: ["company-1/keep", "paperclipai/paperclip/paperclip"] },
         }),
       }),
       expect.any(Object),
@@ -697,6 +722,7 @@ describe("agent skill routes", () => {
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: {
             desiredSkills: ["paperclipai/paperclip/paperclip"],
+            installedSkills: ["company-1/keep", "paperclipai/paperclip/paperclip"],
           },
         }),
       }),
@@ -843,7 +869,7 @@ describe("agent skill routes", () => {
       expect.any(String),
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
-          paperclipSkillSync: { desiredSkills: [] },
+          paperclipSkillSync: { desiredSkills: [], installedSkills: [] },
         }),
       }),
       expect.any(Object),
@@ -873,7 +899,7 @@ describe("agent skill routes", () => {
       expect.any(String),
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
-          paperclipSkillSync: { desiredSkills: ["company-1/keep"] },
+          paperclipSkillSync: { desiredSkills: ["company-1/keep"], installedSkills: ["company-1/keep"] },
         }),
       }),
       expect.any(Object),

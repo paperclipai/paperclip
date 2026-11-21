@@ -3495,6 +3495,50 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     }
   });
 
+  it.each(["managed", "legacy"] as const)("preserves disabled installed membership across a %s skill rename", async (storage) => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await seedCompany(companyId);
+    await seedCompany(otherCompanyId);
+    const key = `company/${companyId}/shared`;
+    const nextKey = `company/${companyId}/shared-renamed`;
+    const unrelated = `company/${companyId}/other`;
+    let skillId: string;
+    if (storage === "managed") {
+      skillId = (await svc.createLocalSkill(companyId, { name: "Shared", slug: "shared" })).id;
+    } else {
+      skillId = randomUUID();
+      const dir = await createManagedSkillDir(companyId, "shared-");
+      const markdown = "---\nname: Shared\n---\n\nShared instructions.\n";
+      await fs.writeFile(path.join(dir, "SKILL.md"), markdown);
+      await db.insert(companySkills).values({ id: skillId, companyId, key, slug: "shared", name: "Shared", markdown,
+        sourceType: "local_path", sourceLocator: dir, trustLevel: "markdown_only", compatibility: "compatible",
+        metadata: { sourceKind: "managed_local" }, fileInventory: [{ path: "SKILL.md", kind: "skill" }] });
+    }
+    const disabledId = randomUUID();
+    const enabledId = randomUUID();
+    const foreignId = randomUUID();
+    const versionId = randomUUID();
+    const disabledConfig = { paperclipSkillSync: { desiredSkills: [], installedSkills: [key, unrelated] } };
+    await db.insert(agents).values([
+      { id: disabledId, companyId, name: "Disabled", role: "engineer", adapterType: "codex_local", status: "terminated", adapterConfig: disabledConfig },
+      { id: enabledId, companyId, name: "Enabled", role: "engineer", adapterType: "codex_local", adapterConfig: {
+        paperclipSkillSync: { desiredSkills: [{ key, versionId }], installedSkills: [key, unrelated] },
+      } },
+      { id: foreignId, companyId: otherCompanyId, name: "Foreign", role: "engineer", adapterType: "codex_local", adapterConfig: disabledConfig },
+    ]);
+    const renamed = await svc.renameSkill(companyId, skillId, { name: "Shared Renamed", slug: "shared-renamed" });
+    const rows = await db.select().from(agents);
+    const preference = (id: string) => (rows.find((row) => row.id === id)!.adapterConfig as Record<string, any>).paperclipSkillSync;
+    expect(preference(disabledId)).toEqual({ desiredSkills: [], installedSkills: [nextKey, unrelated] });
+    expect(preference(enabledId)).toEqual({ desiredSkills: [{ key: nextKey, versionId }], installedSkills: [nextKey, unrelated] });
+    expect(preference(foreignId)).toEqual(disabledConfig.paperclipSkillSync);
+    expect(renamed.reassignments).toEqual(expect.arrayContaining([
+      { agentId: disabledId, previousSkillKey: key, nextSkillKey: nextKey },
+      { agentId: enabledId, previousSkillKey: key, nextSkillKey: nextKey },
+    ]));
+  });
+
   it("rewrites agent desired-skill keys on rename while preserving version pins", async () => {
     const companyId = randomUUID();
     await seedCompany(companyId);
