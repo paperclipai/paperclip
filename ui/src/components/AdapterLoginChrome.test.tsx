@@ -269,9 +269,15 @@ describe("session replay", () => {
     expect(isBlockedFromReplay("MNPL-48WQD", document.body)).toBe(true);
   });
 
-  it("blocks the terminal sign-in command", async () => {
-    await render(<LocalProviderLoginInstructions adapterType="grok_local" login={{ ...login, command: "grok login --token-hint vexmoor-9182" }} />);
-    expect(isBlockedFromReplay("grok login --token-hint vexmoor-9182", document.body)).toBe(true);
+  it("keeps the Grok device code out of session recordings", async () => {
+    await render(<LocalProviderLoginInstructions adapterType="grok_local" login={{
+      ...login,
+      authorizationUrl: "https://auth.example.test/device",
+      code: "GRK4-9182",
+      command: "grok login --token-hint vexmoor-9182",
+    }} />);
+    expect(isBlockedFromReplay("GRK4-9182", document.body)).toBe(true);
+    expect(document.body.textContent).not.toContain("grok login --token-hint vexmoor-9182");
   });
 
   it("masks the signed-in account label", async () => {
