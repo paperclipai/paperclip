@@ -591,8 +591,8 @@ export function createHeartbeatScheduling(
     claimed: IssueMonitorDispatchRow,
     input: Pick<Parameters<typeof dispatchClaimedIssueMonitor>[1],
       "now" | "actorType" | "actorId" | "agentId" | "runId" | "activitySource">,
-    diagnostic: { action: "issue.monitor_deferred" | "issue.monitor_dispatch_failed";
-      reason: string; blockerCause?: string; httpStatus?: number },
+    diagnostic: { action: "issue.monitor_deferred" | "issue.monitor_dispatch_failed" | "issue.monitor_wake_parked";
+      reason: string; blockerCause?: string; httpStatus?: number; nextAction?: string },
   ) {
     const publications: ActivityPublication[] = [];
     try {
@@ -623,6 +623,7 @@ export function createHeartbeatScheduling(
             reason: diagnostic.reason, source: input.activitySource,
             ...(diagnostic.blockerCause ? { blockerCause: diagnostic.blockerCause } : {}),
             ...(diagnostic.httpStatus ? { httpStatus: diagnostic.httpStatus } : {}),
+            ...(diagnostic.nextAction ? { nextAction: diagnostic.nextAction } : {}),
           },
         }, publications);
       });
@@ -824,6 +825,18 @@ export function createHeartbeatScheduling(
             ([...EXECUTION_RECONCILIATION_CAUSES, "execution_owner_active"] as readonly string[]).includes(executionDeferredCause)
             ? executionDeferredCause : undefined;
           const reason = executionDeferredCause ? "execution_reconciliation_required" : "monitor_dispatch_deferred";
+          if (blockerCause) {
+            // An execution blocker parked the wake — keep the monitor armed so
+            // it retries on the next tick after the stale-claim window instead of
+            // dying after one fire. The limit check (timeout / max attempts) runs
+            // before dispatch on each tick, so parked retries still exhaust.
+            await releaseIssueMonitorWithDiagnostic(claimed, input, {
+              action: "issue.monitor_wake_parked", reason,
+              blockerCause,
+              nextAction: "Monitor stays armed; the next tick reclaims after the stale-claim window or clears on timeout/max-attempts.",
+            });
+            return { outcome: "parked" as const };
+          }
           await releaseIssueMonitorWithDiagnostic(claimed, input, {
             action: "issue.monitor_deferred", reason, ...(blockerCause ? { blockerCause } : {}),
           });
@@ -1053,6 +1066,7 @@ export function createHeartbeatScheduling(
 
     let triggered = 0;
     let skipped = 0;
+    let parked = 0;
 
     for (const due of dueMonitors) {
       if (!canContinue()) break;
@@ -1102,6 +1116,7 @@ export function createHeartbeatScheduling(
         });
         if (result.outcome === "triggered") triggered += 1;
         if (result.outcome === "skipped") skipped += 1;
+        if (result.outcome === "parked") parked += 1;
       } catch (err) {
         logger.error({ err, issueId: claimed.id }, "issue monitor tick failed");
       }
@@ -1111,12 +1126,13 @@ export function createHeartbeatScheduling(
       checked: dueMonitors.length,
       triggered,
       skipped,
+      parked,
     };
   }
 
   async function tickIssueMonitors(now = new Date(), canContinue: () => boolean = () => true) {
     if (!canContinue() || (await getSchedulingSuppression(true)).suppressed) {
-      return { checked: 0, triggered: 0, skipped: 0 };
+      return { checked: 0, triggered: 0, skipped: 0, parked: 0 };
     }
     return tickDueIssueMonitors(now, canContinue);
   }
