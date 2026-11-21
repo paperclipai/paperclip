@@ -1,5 +1,65 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
+import {
+  accumulateAssistantStreamText,
+  buildAgentParams,
+  resolveClaimedApiKeyPath,
+  resolveSessionKey,
+} from "./execute.js";
+
+describe("accumulateAssistantStreamText", () => {
+  it("stores one intact reply when stream snapshots and the final chunk are replayed", () => {
+    const update = "I’m running the prescribed briefing and ground-truth checks now.";
+    const events = [
+      { text: update, delta: update },
+      { text: update, delta: update },
+      { text: update, delta: update, phase: "final_answer" },
+    ];
+
+    expect(events.reduce(accumulateAssistantStreamText, "")).toBe(update);
+  });
+
+  it("uses cumulative snapshots while preserving genuine incremental deltas", () => {
+    const events = [
+      { text: "Hello", delta: "Hello" },
+      { text: "Hello world", delta: " world" },
+      { delta: "!" },
+    ];
+
+    expect(events.reduce(accumulateAssistantStreamText, "")).toBe("Hello world!");
+  });
+
+  it("uses non-empty text as the authoritative snapshot", () => {
+    expect(
+      accumulateAssistantStreamText("coordination draft", {
+        text: "final answer",
+        delta: "",
+      }),
+    ).toBe("final answer");
+  });
+
+  it("keeps the final reply when a run streams several assistant messages", () => {
+    // Embedded runs restart `text` at each assistant message; CLI runs stream a
+    // run-wide snapshot and then replay the final result as a text-only frame.
+    const embedded = [
+      { text: "Checking now.", delta: "Checking now." },
+      { text: "Result: X", delta: "Result: X" },
+    ];
+    const cli = [
+      { text: "Checking now.", delta: "Checking now." },
+      { text: "Checking now.Result: X", delta: "Result: X" },
+      { text: "Result: X" },
+    ];
+
+    expect(embedded.reduce(accumulateAssistantStreamText, "")).toBe("Result: X");
+    expect(cli.reduce(accumulateAssistantStreamText, "")).toBe("Result: X");
+  });
+
+  it("keeps spaces carried by delta-only frames", () => {
+    const events = [{ delta: "Hello" }, { delta: " " }, { delta: "world" }, { delta: " again" }];
+
+    expect(events.reduce(accumulateAssistantStreamText, "")).toBe("Hello world again");
+  });
+});
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {

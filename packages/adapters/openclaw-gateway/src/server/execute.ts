@@ -67,6 +67,22 @@ type GatewayEventFrame = {
   seq?: number;
 };
 
+export function accumulateAssistantStreamText(
+  current: string,
+  data: Record<string, unknown>,
+): string {
+  // A non-empty `text` is a full snapshot of the reply so far, never a fragment.
+  // OpenClaw replays it (the final result frame, `replace: true` frames), and
+  // embedded runs restart it at each assistant message. Keeping the latest
+  // snapshot therefore yields the final reply, matching the result-payload
+  // fallback; appending it is what multiplied one update in the comment body.
+  if (typeof data.text === "string" && data.text.trim().length > 0) return data.text;
+
+  // Deltas are appended untrimmed so whitespace-only or space-led fragments
+  // keep the spaces between words. The summary is trimmed once at the end.
+  return typeof data.delta === "string" ? `${current}${data.delta}` : current;
+}
+
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -1201,7 +1217,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   while (true) {
     const trackedRunIds = new Set<string>([ctx.runId]);
-    const assistantChunks: string[] = [];
+    let assistantText = "";
     let lifecycleError: string | null = null;
     let deviceIdentity: GatewayDeviceIdentity | null = null;
 
@@ -1230,13 +1246,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
 
       if (stream === "assistant") {
-        const delta = nonEmpty(data.delta);
-        const text = nonEmpty(data.text);
-        if (delta) {
-          assistantChunks.push(delta);
-        } else if (text) {
-          assistantChunks.push(text);
-        }
+        assistantText = accumulateAssistantStreamText(assistantText, data);
         return;
       }
 
@@ -1406,7 +1416,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
-      const summaryFromEvents = assistantChunks.join("").trim();
+      const summaryFromEvents = assistantText.trim();
       const summaryFromPayload =
         extractResultText(asRecord(acceptedPayload?.result)) ??
         extractResultText(acceptedPayload) ??
