@@ -84,11 +84,11 @@ export type ProfileEntryMatch = Pick<typeof toolProfileEntries.$inferSelect,
   "selectorType" | "applicationId" | "connectionId" | "catalogEntryId" | "toolName" | "riskLevel">;
 
 export const profileSummaryEntryColumns = {
+  catalogEntryId: toolProfileEntries.catalogEntryId,
+  connectionId: toolProfileEntries.connectionId,
+  applicationId: toolProfileEntries.applicationId,
   selectorType: toolProfileEntries.selectorType,
   effect: toolProfileEntries.effect,
-  applicationId: toolProfileEntries.applicationId,
-  connectionId: toolProfileEntries.connectionId,
-  catalogEntryId: toolProfileEntries.catalogEntryId,
   toolName: toolProfileEntries.toolName,
   riskLevel: toolProfileEntries.riskLevel,
 };
