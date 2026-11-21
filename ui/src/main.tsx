@@ -26,6 +26,7 @@ import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startChunkLoadRecovery } from "./lib/chunk-load-recovery";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
+import { startTranslationDomGuard } from "./lib/translation-dom-guard";
 import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
@@ -44,6 +45,10 @@ initPluginBridge(React, ReactDOM);
 startPerfMeasureReaper();
 
 startChunkLoadRecovery();
+
+// Browser page translation rewrites React-owned text nodes. Install before the
+// first render so a later commit does not crash the route on NotFoundError.
+startTranslationDomGuard();
 
 // The global mutation error toast is raised from the MutationCache, outside
 // React; the bridge below hands it the ToastProvider's pushToast.

@@ -44,11 +44,25 @@ export function readBrowserErrorState() {
       if (state === "visible" || state === "hidden") browserState.visibility_state = state;
     } catch { /* diagnostic unavailable */ }
     try {
-      const classes = document.documentElement.classList;
-      browserState.translation_marker = classes.contains("translated-ltr") || classes.contains("translated-rtl");
+      browserState.translation_marker = readPageTranslationMarker();
     } catch { /* diagnostic unavailable */ }
   }
   return browserState;
+}
+
+/** Chrome and Google Translate put one of these classes on `<html>` while a page is translated. */
+function readPageTranslationMarker(): boolean {
+  const classes = document.documentElement.classList;
+  return classes.contains("translated-ltr") || classes.contains("translated-rtl");
+}
+
+/** True while browser page translation is active. Never throws. */
+export function hasPageTranslationMarker(): boolean {
+  try {
+    return typeof document !== "undefined" && readPageTranslationMarker();
+  } catch {
+    return false;
+  }
 }
 
 type PageTransition = "visible" | "hidden" | "pagehide" | "pageshow" | "freeze" | "resume";
