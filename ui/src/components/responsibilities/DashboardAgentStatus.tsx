@@ -458,7 +458,7 @@ function AgentStatusBody({
     mutationFn: (row: AgentStatusRow) => responsibilitiesApi.requestStatusUpdate(row.responsibility.id),
     onSuccess: async (_state, row) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.responsibilities.statusReports(companyId) }),
+        queryClient.invalidateQueries({ queryKey: ["responsibilities", "status-reports", companyId] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.responsibilities.statusReport(row.responsibility.id) }),
       ]);
     },
@@ -577,7 +577,7 @@ export function DashboardAgentStatus(props: DashboardViewProps) {
   const active = useMemo(() => activeResponsibilities(overview.responsibilities), [overview.responsibilities]);
   const { data: session } = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
   const query = useQuery({
-    queryKey: queryKeys.responsibilities.statusReports(companyId),
+    queryKey: queryKeys.responsibilities.statusReports(companyId, props.overview.ownerUserId),
     queryFn: () => responsibilitiesApi.statusReports(companyId),
     enabled: active.length > 0,
   });

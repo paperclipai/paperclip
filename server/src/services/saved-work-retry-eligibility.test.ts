@@ -46,7 +46,7 @@ describe("Retry of a task whose saved work recovery settled", () => {
     return { companyId, issueId, agentId, workspaceId };
   }
 
-  async function sourceUnavailable() {
+  async function sourceUnavailable({ heldRun = true } = {}) {
     const f = await base("SU");
     const { companyId, issueId, agentId, workspaceId } = f;
     const firstId = randomUUID(), preparedId = randomUUID(), heldId = randomUUID(), actionId = randomUUID();
@@ -126,7 +126,7 @@ describe("Retry of a task whose saved work recovery settled", () => {
         workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] },
         historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: preparedId, leaseIds: [leaseId] },
         previousWorkspaceRecovery: null } });
-    await db.insert(heartbeatRuns).values({ id: heldId, companyId, agentId, issueId, status: "cancelled", runtimeMode: "legacy",
+    if (heldRun) await db.insert(heartbeatRuns).values({ id: heldId, companyId, agentId, issueId, status: "cancelled", runtimeMode: "legacy",
       errorCode: "execution_reconciliation_required", error: "Recovering saved work…", invocationSource: "automation",
       triggerDetail: "system", retryOfRunId: preparedId, createdAt: new Date(now - 680_000), finishedAt: new Date(now - 600_000),
       contextSnapshot: { issueId, taskId: issueId, source: "issue.continuation_recovery", wakeReason: "issue_continuation_needed",
@@ -274,6 +274,50 @@ describe("Retry of a task whose saved work recovery settled", () => {
     expect(["queued", "running"]).toContain(successor.status);
     expect(successor.contextSnapshot).toMatchObject({ taskRetryRequestId: wake.id });
   });
+
+  it("admits Retry when the latest run is the verified legacy adapter preparation itself", async () => {
+    const f = await sourceUnavailable({ heldRun: false });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId,
+      observedRunId: f.preparedId, idempotencyKey: randomUUID(), actorSource: "local_implicit" });
+    expect(receipt).toMatchObject({ accepted: true, requestId: expect.any(String) });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
+    await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(wake).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ id: wake.runId, status: "queued",
+      contextSnapshot: { previousRunId: f.preparedId, taskRetryRequestId: receipt.requestId } });
+  });
+
+  it.each(["provider_event", "unverified_log", "live_controller", "unsaved_files", "missing_lease", "no_allocation"] as const)(
+    "refuses Retry of the latest legacy adapter preparation without proof: %s", async gate => {
+      const f = await sourceUnavailable({ heldRun: false });
+      if (gate === "provider_event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId,
+        runId: f.preparedId, seq: 5, eventType: "tool.execution.started", stream: "system" });
+      if (gate === "unverified_log") logs.content.clear();
+      if (gate === "live_controller") await db.update(heartbeatRuns)
+        .set({ controllerLeaseExpiresAt: new Date(Date.now() + 3_600_000) }).where(eq(heartbeatRuns.id, f.preparedId));
+      if (gate === "unsaved_files") await db.update(executionWorkspaces)
+        .set({ metadata: sql`${executionWorkspaces.metadata} - 'remoteWorkspaceAbandonedEpochs'` })
+        .where(eq(executionWorkspaces.id, f.workspaceId));
+      if (gate === "missing_lease" || gate === "no_allocation")
+        await db.delete(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.preparedId));
+      if (gate === "no_allocation") await db.update(heartbeatRuns).set({
+        runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - 'remoteWorkspace'`,
+        resultJson: sql`${heartbeatRuns.resultJson} - 'workspaceRestoreFailure' - 'workspaceRestoreRecovery'`,
+      }).where(eq(heartbeatRuns.id, f.preparedId));
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId,
+        observedRunId: f.preparedId, idempotencyKey: randomUUID(), actorSource: "local_implicit" });
+      expect(receipt.requestId).toEqual(expect.any(String));
+      await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId!);
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(wake.payload?.executionWait).toMatchObject({ reason: "previous_execution_unverified" });
+    });
 
   it("verifies the repair of a restored snapshot that the failed preparation never changed", async () => {
     const f = await restoredSnapshot();

@@ -199,6 +199,15 @@ The executor receives credential ownership and failure-redaction updates as soon
 as they are available, so later setup failures still clean up acquired resources.
 Busy-account deferral returns explicitly before session/workspace preparation.
 
+During standing-instruction resolution, the gateway's [OpenTelemetry trace](observability.md)
+separates the catalog transaction and its two reads from availability checks
+and tool descriptor construction. The transaction span carries the number of
+catalog entries and connections returned. With or without an OTLP endpoint,
+native run preparation also buffers phase timings of 50 ms or longer, subject
+to the existing per-run limits. At dispatch, the native executor queues these
+timings for the [instance run log](run-log-events.md). The catalog counts are
+trace attributes only.
+
 On Cloud-managed sandbox connections, an ACPX platform check can defer runtime
 preparation to the normal Runner launch. After the selected account completes
 its provider hello probe or live API-key check, that specific deferred check is
@@ -342,10 +351,11 @@ checks conversation eligibility before locking the task. The locked task supplie
 the attribution fields used to select the responsible user for a fresh run.
 Wake-queue reads recovery state inside the admission transaction. It checks
 continuation eligibility before allowing a wake to join active work, then
-settles any explicit continuation before allowing a fresh run. Heartbeat
-uses the same transaction for its other eligibility gates and specialized
-receipt handling. Wake-queue selects eligible saved comment receipts in request
-order and binds them to the new run. Chat authorization and its admission callback run in
+settles any explicit continuation before allowing a fresh run. Wake-queue
+saves blocked comments in the admission transaction and updates the same receipt
+if its retry is still blocked. Heartbeat uses the same transaction for its other
+eligibility gates and specialized receipt handling. Wake-queue selects eligible
+saved comment receipts in request order and binds them to the new run. Chat authorization and its admission callback run in
 the same transaction. Authorization contention defers the wake and rolls back
 without publishing buffered effects.
 `createHeartbeatQueue` binds these operations without querying or starting work.

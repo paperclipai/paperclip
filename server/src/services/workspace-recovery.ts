@@ -41,7 +41,7 @@ import { capturePolicyRearmDueCondition, retainedSourceFallbackDueCondition, sto
 import { rearmExhaustedCapturePolicy } from "./workspace-recovery-capture-policy.js";
 import { rearmExhaustedStopProof } from "./workspace-recovery-stop-proof.js";
 import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
-import { expediteFreshContinuationChecks } from "./fresh-continuation-fallback.js";
+import { expediteFreshContinuationChecks, settleHoldIntoAbandonedEpochContinuation } from "./fresh-continuation-fallback.js";
 import { reusableSandboxNotKeptAfterReplacementSql } from "./reusable-sandbox-kept-marker.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
@@ -206,6 +206,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const { db } = input;
   await adoptSystemRecovery(db, input);
   let initial = await loadSystemRecovery(db, input);
+  if (initial?.state === "exhausted" && await settleHoldIntoAbandonedEpochContinuation(db, input)) return;
   // A hold whose files a sibling saved, or whose source is refused permanently
   // (including holds saved by older releases), settles without a person.
   // An adoptable native source keeps its retention path; only the sibling
@@ -510,6 +511,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         ...(cause ? { cause } : {}),
       });
       const recorded = await updateSystemRecovery(db, input, current!, failed);
+      if (recorded && failed.state === "exhausted" && await settleHoldIntoAbandonedEpochContinuation(db, input)) return;
       // A permanent refusal of the recorded source repeats on every retry.
       // Continue from the last save in this same pass, under this ownership.
       if (recorded && failed.state === "exhausted" && isUnverifiableSourceFailure(failed.failure)) {

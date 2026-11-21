@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
@@ -58,7 +59,7 @@ function useResponsibilityPage(responsibility: ResponsibilityDetailData, company
   const [removed, setRemoved] = useState<{ label: string; relink: LinkResponsibility } | null>(null);
   const directory = useAgentDirectory(companyId);
   const areasQuery = useResponsibilityAreas(companyId);
-  const detailKey = queryKeys.responsibilities.detail(responsibility.id);
+  const detailKey = [...queryKeys.responsibilities.detail(responsibility.id), companyId, responsibility.ownerUserId];
   const refreshAll = () => queryClient.invalidateQueries({ queryKey: queryKeys.responsibilities.all });
 
   const update = useMutation({
@@ -247,10 +248,11 @@ export function ResponsibilityDetail() {
   const { responsibilityId } = useParams<{ responsibilityId: string }>();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { userId } = useResolvedViewerId();
   const detailQuery = useQuery({
-    queryKey: queryKeys.responsibilities.detail(responsibilityId ?? "__none__"),
+    queryKey: [...queryKeys.responsibilities.detail(responsibilityId ?? "__none__"), selectedCompanyId, userId],
     queryFn: () => responsibilitiesApi.get(responsibilityId!),
-    enabled: !!responsibilityId,
+    enabled: !!responsibilityId && !!selectedCompanyId && !!userId,
   });
   const title = detailQuery.data?.title;
 

@@ -671,7 +671,7 @@ function AutomationSkeleton() {
 export function DashboardAutomation({ companyId, overview, agents, agentsById, now, onAddResponsibility, onReviewProposals }: DashboardViewProps) {
   const active = useMemo(() => activeResponsibilities(overview.responsibilities), [overview.responsibilities]);
   const query = useQuery({
-    queryKey: queryKeys.responsibilities.automation(companyId),
+    queryKey: queryKeys.responsibilities.automation(companyId, overview.ownerUserId),
     queryFn: () => responsibilitiesApi.automation(companyId),
     enabled: active.length > 0,
   });

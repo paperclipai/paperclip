@@ -15,7 +15,7 @@ describe("wake recovery admission", () => {
     const prepare = createWakeRecoveryAdmission({
       readBlocker: async () => ({ blocker, verifiedReset: false }),
       admitExplicit,
-    }, vi.fn(), vi.fn());
+    }, vi.fn(), vi.fn(), vi.fn());
 
     const recovery = await prepare(wake);
     expect(recovery).not.toHaveProperty("admitBusy");
@@ -33,7 +33,7 @@ describe("wake recovery admission", () => {
     const prepare = createWakeRecoveryAdmission({
       readBlocker: async () => ({ blocker, verifiedReset: false }),
       admitExplicit,
-    }, admitBusy, admitFresh);
+    }, admitBusy, admitFresh, vi.fn());
 
     const busy = await (await prepare(wake)).checkBusyAdmission();
     expect(busy.kind).toBe("allowed");
@@ -53,7 +53,7 @@ describe("wake recovery admission", () => {
     const prepare = createWakeRecoveryAdmission({
       readBlocker: async () => ({ blocker: null, verifiedReset: false }),
       admitExplicit,
-    }, vi.fn(), admitFresh);
+    }, vi.fn(), admitFresh, vi.fn());
     const busy = await (await prepare(wake)).checkBusyAdmission();
     expect(admitExplicit).not.toHaveBeenCalled();
     if (busy.kind !== "allowed") throw new Error("Expected busy admission");

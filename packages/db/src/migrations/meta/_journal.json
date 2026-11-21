@@ -3491,29 +3491,8 @@
     {
       "idx": 500,
       "version": "7",
-      "when": 1795104766007,
-      "tag": "0500_skill_source_security_override",
-      "breakpoints": true
-    },
-    {
-      "idx": 501,
-      "version": "7",
-      "when": 1795104766008,
-      "tag": "0501_skill_version_security_approval",
-      "breakpoints": true
-    },
-    {
-      "idx": 502,
-      "version": "7",
-      "when": 1795104766009,
-      "tag": "0502_skill_source_security_override_summary",
-      "breakpoints": true
-    },
-    {
-      "idx": 503,
-      "version": "7",
-      "when": 1795104766010,
-      "tag": "0503_skill_version_security_approval_index",
+      "when": 1795206084746,
+      "tag": "0500_funny_malcolm_colcord",
       "breakpoints": true
     }
   ]

@@ -240,6 +240,7 @@ export function activityRoutes(db: Db) {
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
       readCondition: await issueReadSqlCondition(db, req.actor),
+      dashboardUserId: req.actor.type === "board" ? req.actor.userId : null,
       caseReadCondition: await caseActivityReadSqlCondition(db, req.actor),
     };
     const result = await svc.list(filters);
@@ -267,6 +268,7 @@ export function activityRoutes(db: Db) {
     }
     if (parsedQuery.data.actorScope === "agents") {
       const result = await agentAudit.list({ companyId, ...parsedQuery.data,
+        dashboardUserId: req.actor.type === "board" ? req.actor.userId : null,
         caseReadCondition: await caseActivityReadSqlCondition(db, req.actor) });
       res.json({ ...result, accessTier: "full" });
       return;
@@ -277,6 +279,7 @@ export function activityRoutes(db: Db) {
       throw forbidden("Audit filters require permission: audit:view_agent_actions");
     }
     const result = await agentAudit.list({ companyId, ...parsedQuery.data,
+      dashboardUserId: req.actor.type === "board" ? req.actor.userId : null,
       caseReadCondition: await caseActivityReadSqlCondition(db, req.actor) });
     res.json({
       ...(canViewAttribution ? result : stripAuditAttribution(result)),
@@ -298,7 +301,7 @@ export function activityRoutes(db: Db) {
     const rows: Awaited<ReturnType<typeof agentAudit.list>>["items"] = [];
     let cursor: string | undefined;
     do {
-      const page = await agentAudit.list({ companyId, ...filters, cursor, limit: AUDIT_CSV_PAGE_SIZE, caseReadCondition });
+      const page = await agentAudit.list({ companyId, ...filters, cursor, limit: AUDIT_CSV_PAGE_SIZE, dashboardUserId: req.actor.userId, caseReadCondition });
       for (const item of page.items) {
         if (rows.length >= AUDIT_CSV_EXPORT_MAX_ROWS) break;
         rows.push(item);
