@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { requestBreakdown, type HostedApi, type RequestRecord } from "./hosted-api.js";
-import { hostedGate, hostedR1, releaseOutages, subtaskRecord } from "./hosted-gate.js";
+import { hostedGate, hostedQueueWait, hostedR1, releaseOutages, subtaskRecord, type HostedAgentRow } from "./hosted-gate.js";
 import { trackBanner, type HostedTaskRecord, type RetryBanner } from "./hosted-workload.js";
 import { handsOffSummary, invariantLine, readAssignedWorkInvariant } from "./hosted-handsoff.js";
 import { releaseMarkdown, type ContinuityReport, type DetectedRelease } from "./hosted-release.js";
@@ -40,8 +40,10 @@ export interface HostedGradeInput {
   now?: () => number;
   quietMs?: number;
   requests?: () => readonly RequestRecord[];
-  tasks?: () => readonly HostedTaskRecord[];
-  wantedReleases?: number;
+  /** The run's planned task records: R1 and the create check read them. */
+  tasks: () => readonly HostedTaskRecord[];
+  /** `--hosted-releases`: 0 is a fixed batch that waits for no release. */
+  wantedReleases: number;
 }
 
 export function releaseWindows(releases: readonly DetectedRelease[]): SwapWindow[] {
@@ -156,16 +158,21 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const health = input.health();
   const apiContinuity = input.apiContinuity();
   const handsOffPass = result.uncollected === 0 && result.stillRunning === 0 && result.started > 0 && result.completedWithoutHuman === result.started;
-  const agents = (await api.get<Json[]>(`/api/companies/${companyId}/agents`).catch(() => [] as Json[])).filter(agent => agentIds.includes(String(agent.id)));
+  const agents = (await api.get<HostedAgentRow[]>(`/api/companies/${companyId}/agents`).catch(error => {
+    input.record("hosted_agents_unavailable", { error: String(error) });
+    return [] as HostedAgentRow[];
+  })).filter(agent => agentIds.includes(String(agent.id)));
+  const slotProof = hostedQueueWait(agentIds, agents, runs);
+  if (slotProof.missing.length) input.record("hosted_agent_slots_unavailable", { agentIds: slotProof.missing });
   const outages = releaseOutages(input.releases);
   const started = new Set(issues.map(issue => issue.id));
-  const planned = input.tasks?.() ?? [];
+  const planned = input.tasks();
   const plannedIds = new Set(planned.flatMap(task => task.issueId ? [task.issueId] : []));
   const subtasks = issues.filter(issue => !plannedIds.has(issue.id)).map(issue => subtaskRecord({ ...views.get(issue.id), id: issue.id,
     identifier: issue.identifier }, clicks.get(issue.id) ?? []));
   const r1 = [...planned.filter(task => task.issueId && started.has(task.issueId)), ...subtasks].map(task => ({ identifier: task.identifier,
-    result: hostedR1({ record: task, view: views.get(task.issueId!), runs: runsByIssue.get(task.issueId!) ?? [], agents, companyRuns: runs, outages }) }));
-  const gate = hostedGate({ handsOffPass, wantedReleases: input.wantedReleases ?? 1, createErrors: planned.filter(task => task.createError).length, r1, bannersShown: handsOff.bannerShown, health, duplicates, releases: input.releases, metrics });
+    result: hostedR1({ record: task, view: views.get(task.issueId!), runs: runsByIssue.get(task.issueId!) ?? [], queueWait: slotProof.queueWait, outages }) }));
+  const gate = hostedGate({ handsOffPass, wantedReleases: input.wantedReleases, slotEvidenceMissing: slotProof.missing, createErrors: planned.filter(task => task.createError).length, r1, bannersShown: handsOff.bannerShown, health, duplicates, releases: input.releases, metrics });
   const releaseSpans = input.releases.map(release => ({ from: release.lastOldOnlyAt, to: Math.max(release.firstNewAt, release.lastOldAt) + 60_000 }));
   const records = input.requests?.() ?? [];
   const breakdown = { api: requestBreakdown(records.filter(record => record.kind === "api"), releaseSpans),
@@ -195,5 +202,5 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   input.record("hosted_graded", { gate: gate.pass, r1Failed: gate.r1Failed.length, headline: result.headline, byVerdict: result.byVerdict, byLabel: result.byLabel, retry: result.retry,
     failedPerRelease: metrics.map(metric => metric.failedRuns.length) });
   return { headline: handsOff.lines[0]!, markdown,
-    pass: input.tasks ? gate.pass : handsOffPass };
+    pass: gate.pass };
 }

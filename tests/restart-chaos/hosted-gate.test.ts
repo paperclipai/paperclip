@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { hostedGate, hostedR1, releaseOutages, subtaskRecord } from "./hosted-gate.js";
+import { hostedGate, hostedQueueWait, hostedR1, releaseOutages, subtaskRecord } from "./hosted-gate.js";
 import { gradeHosted } from "./hosted-grade.js";
 import { continuity } from "./hosted-release.js";
 import { runRow, type HostedRunRow } from "./hosted-readers.js";
@@ -30,6 +30,7 @@ const run = (id: string, created: number, started: number | null, finished: numb
     finishedAt: finished === null ? null : at(finished), invocationSource: "assignment", ...extra });
 
 const agents = [{ id: "a1", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }];
+const qw = (companyRuns: HostedRunRow[]) => hostedQueueWait(["a1"], agents, companyRuns).queueWait;
 
 function release(overrides: Partial<DetectedRelease> = {}): DetectedRelease {
   return { index: 1, from: { processStartedAt: "a", commit: "c1" }, to: { processStartedAt: "b", commit: "c2" }, commitChanged: true, lastOldOnlyAt: T0,
@@ -39,11 +40,10 @@ function release(overrides: Partial<DetectedRelease> = {}): DetectedRelease {
 
 describe("hosted R1", () => {
   it("passes a task done inside the staging-mix budget and fails one done after it with no fair queue wait", () => {
-    const fast = hostedR1({ record: record(), view: { status: "done", completedAt: at(10) }, runs: [run("r1", 0, 0, 10)], agents, companyRuns: [run("r1", 0, 0, 10)], outages: [] });
+    const fast = hostedR1({ record: record(), view: { status: "done", completedAt: at(10) }, runs: [run("r1", 0, 0, 10)], queueWait: qw([run("r1", 0, 0, 10)]), outages: [] });
     expect(fast.verdict).toBe("pass");
     const late = BUDGET_MIN + 5;
-    const slow = hostedR1({ record: record(), view: { status: "done", completedAt: at(late) }, runs: [run("r1", 0, 0, late)], agents,
-      companyRuns: [run("r1", 0, 0, late)], outages: [] });
+    const slow = hostedR1({ record: record(), view: { status: "done", completedAt: at(late) }, runs: [run("r1", 0, 0, late)], queueWait: qw([run("r1", 0, 0, late)]), outages: [] });
     expect(slow).toMatchObject({ verdict: "fail" });
     expect(slow.detail).toMatch(/^done_too_late/);
   });
@@ -53,7 +53,7 @@ describe("hosted R1", () => {
     const done = wait + BUDGET_MIN - 5;
     const busy = run("other", -1, -1, wait, { issueId: "i0" });
     const mine = run("r1", 0, wait, done);
-    const graded = hostedR1({ record: record(), view: { status: "done", completedAt: at(done) }, runs: [mine], agents, companyRuns: [busy, mine], outages: [] });
+    const graded = hostedR1({ record: record(), view: { status: "done", completedAt: at(done) }, runs: [mine], queueWait: qw([busy, mine]), outages: [] });
     expect(graded.verdict).toBe("pass");
     expect(graded.detail).toContain("fair queue wait");
   });
@@ -63,7 +63,7 @@ describe("hosted R1", () => {
     const done = wait + BUDGET_MIN - 5;
     const overtaker = run("newer", 1, 2, wait, { issueId: "i0" });
     const mine = run("r1", 0, wait, done);
-    const graded = hostedR1({ record: record(), view: { status: "done", completedAt: at(done) }, runs: [mine], agents, companyRuns: [overtaker, mine], outages: [] });
+    const graded = hostedR1({ record: record(), view: { status: "done", completedAt: at(done) }, runs: [mine], queueWait: qw([overtaker, mine]), outages: [] });
     expect(graded.verdict).toBe("fail");
     expect(graded.detail).toMatch(/^unfair_queue_wait/);
   });
@@ -74,16 +74,32 @@ describe("hosted R1", () => {
     expect(outage).toHaveLength(1);
     expect(outage[0]).toMatchObject({ startedAt: T0 + 10 * MIN, readyAt: T0 + 20 * MIN });
     const done = BUDGET_MIN + 5;
-    const graded = hostedR1({ record: record(), view: { status: "done", completedAt: at(done) }, runs: [run("r1", 0, 0, done)], agents,
-      companyRuns: [run("r1", 0, 0, done)], outages: outage });
+    const graded = hostedR1({ record: record(), view: { status: "done", completedAt: at(done) }, runs: [run("r1", 0, 0, done)], queueWait: qw([run("r1", 0, 0, done)]), outages: outage });
     expect(graded.verdict).toBe("pass");
+  });
+
+  it("never credits a follow-up run's queue wait, because the API has no wake evidence", () => {
+    const first = run("r1", 0, 0, 5);
+    const busy = run("other", 4, 4, 40, { issueId: "i0" });
+    const follow = run("r2", 6, 40, 45, { invocationSource: "automation", contextSnapshot: { wakeCommentIds: ["c1"] } });
+    const done = 45;
+    expect(done).toBeGreaterThan(BUDGET_MIN);
+    const graded = hostedR1({ record: record({ followUp: { at: T0 + 6 * MIN - 1, commentId: "c1", error: null } }), view: { status: "done", completedAt: at(done) },
+      runs: [first, follow], queueWait: qw([first, busy, follow]), outages: [] });
+    expect(graded.verdict).toBe("fail");
+    expect(graded.detail).toContain("no wake evidence for follow-up run r2");
+  });
+
+  it("names an agent whose maxConcurrentRuns cannot be read", () => {
+    expect(hostedQueueWait(["a1", "a2"], [agents[0]!, { id: "a2", runtimeConfig: null }], []).missing).toEqual(["a2"]);
+    expect(hostedQueueWait(["a1"], [], []).missing).toEqual(["a1"]);
   });
 
   it("marks a task that needed Retry n/a for R1 and fails one that did not rest done", () => {
     const retried = hostedR1({ record: record({ retryClicks: [{ at: T0, accepted: true, via: "grader" }] }), view: { status: "done", completedAt: at(10) },
-      runs: [], agents, companyRuns: [], outages: [] });
+      runs: [], queueWait: qw([]), outages: [] });
     expect(retried.verdict).toBe("n/a");
-    const open = hostedR1({ record: record(), view: { status: "in_progress" }, runs: [run("r1", 0, 0, null)], agents, companyRuns: [], outages: [] });
+    const open = hostedR1({ record: record(), view: { status: "in_progress" }, runs: [run("r1", 0, 0, null)], queueWait: qw([]), outages: [] });
     expect(open.detail).toMatch(/^rested_not_done/);
   });
 });
@@ -91,7 +107,7 @@ describe("hosted R1", () => {
 describe("gate D verdict", () => {
   const metric = (index: number, survivors: number): SwapMetrics => ({ index, failedRuns: [], lostWhileOldAlive: [],
     survivors: Array.from({ length: survivors }, (_, n) => ({ runId: `r${n}`, nextEventAfterMs: 1_000 })), nextEventP50Ms: 1_000, nextEventMaxMs: 1_000, survivorsWithoutEvent: 0 });
-  const clean = { handsOffPass: true, wantedReleases: 1, createErrors: 0, r1: [{ identifier: "GIT-1", result: { verdict: "pass" as const, detail: "done" } }], bannersShown: 0,
+  const clean = { handsOffPass: true, wantedReleases: 1, createErrors: 0, slotEvidenceMissing: [] as string[], r1: [{ identifier: "GIT-1", result: { verdict: "pass" as const, detail: "done" } }], bannersShown: 0,
     health: { requests: 100, failures: 0, slow: 0, longestGapMs: 2_000, longestGap: null },
     duplicates: { overlappingRuns: [], duplicateComments: [], duplicateChildren: [] }, releases: [release()], metrics: [metric(1, 3)] };
 
@@ -111,6 +127,7 @@ describe("gate D verdict", () => {
     ["an R1 failure", { r1: [{ identifier: "GIT-2", result: { verdict: "fail" as const, detail: "done_too_late 9s > 1s" } }] }, "R1"],
     ["a task that was not hands-off", { handsOffPass: false }, "hands-off"],
     ["a task that could not be created", { createErrors: 1 }, "tasks created"],
+    ["unreadable agent slots", { slotEvidenceMissing: ["a1"] }, "agent slot evidence"],
   ])("fails on %s", (_name, change, check) => {
     const gate = hostedGate({ ...clean, ...change });
     expect(gate.pass).toBe(false);
@@ -130,16 +147,19 @@ describe("hosted grade with the run's task records", () => {
   const apiFor = (issues: Json[], runs: Json[]) => ({
     get: async <T>(route: string) => (route.includes("heartbeat-runs") ? runs : route.includes("/issues?") ? issues
       : route.startsWith("/api/issues/") && !route.slice("/api/issues/".length).includes("/") ? issues.find(entry => route.endsWith(`/${entry.id}`)) ?? { status: "unreadable" }
-        : route.endsWith("/agents") ? agents : []) as T,
+        : route.endsWith("/agents") ? (agentList ?? (() => { throw new Error("forbidden"); })()) : []) as T,
     post: async <T>() => ({}) as T,
   });
   type Json = Record<string, any>;
+  let events: string[] = [];
+  let agentList: Json[] | null = agents;
   const grade = async (issues: Json[], runs: Json[], tasks: HostedTaskRecord[], wantedReleases: number) => {
+    events = [];
     const dir = await mkdtemp(path.join(os.tmpdir(), "hosted-gate-"));
     dirs.push(dir);
     return gradeHosted({ api: apiFor(issues, runs), companyId: "c1", agentIds: ["a1"], releases: [], health: () => continuity([]), apiContinuity: () => continuity([]),
       stopObserver: async () => {}, observedClicks: () => new Map(), lastReleaseAt: Date.now() - 1_000, settleMs: 5, drainMs: 5, dir, cancelled: () => false,
-      record: () => {}, pollMs: 5, tasks: () => tasks, wantedReleases });
+      record: event => events.push(event), pollMs: 5, tasks: () => tasks, wantedReleases });
   };
   const runOf = (id: string, issueId: string, created: number, finished: number) => ({ id, agentId: "a1", issueId, status: "succeeded", invocationSource: "assignment",
     createdAt: at(created), startedAt: at(created), finishedAt: at(finished) });
@@ -165,5 +185,17 @@ describe("hosted grade with the run's task records", () => {
     expect(child).toMatchObject({ issueId: "c1", identifier: "GIT-9", createdAt: T0 + 3 * MIN, createError: null });
     expect(child.plan.task.rounds).toBe(SUBTASK_ROUNDS);
     expect(subtaskRecord({ id: "c2", status: "done" }, []).createError).toBe("subtask has no createdAt");
+  });
+
+  it("fails the gate and records why when the agent list cannot be read", async () => {
+    agentList = null;
+    try {
+      const graded = await grade([issue("i1")], [runOf("r1", "i1", 0, 10)], [record()], 0);
+      expect(graded.pass).toBe(false);
+      expect(graded.markdown).toContain("FAIL agent slot evidence");
+      expect(events).toEqual(expect.arrayContaining(["hosted_agents_unavailable", "hosted_agent_slots_unavailable"]));
+    } finally {
+      agentList = agents;
+    }
   });
 });
