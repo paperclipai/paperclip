@@ -14,6 +14,7 @@ import { INBOX_MINE_ISSUE_STATUS_FILTER, latestFailedRunsByAgent } from "@paperc
 import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../services/heartbeat-run-privacy.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations, taskRetryRefusal } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
+import { requiresSignedNativeReviewCredential } from "./native-review-credential.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
@@ -18046,6 +18047,9 @@ export function issueRoutes(
       if (!authorizedResolution) return;
       const { interactionSvc, current, resolutionAuthorization } =
         authorizedResolution;
+      if (requiresSignedNativeReviewCredential(req.actor, current)) {
+        throw forbidden("Native completion review requires a signed agent run credential");
+      }
       if (current.kind === "connection_intent") {
         throw unprocessable(
           "Connection intents must be resolved through the connection intent endpoints",
@@ -18376,6 +18380,9 @@ export function issueRoutes(
       if (!authorizedResolution) return;
       const { interactionSvc, current, resolutionAuthorization } =
         authorizedResolution;
+      if (requiresSignedNativeReviewCredential(req.actor, current)) {
+        throw forbidden("Native completion review requires a signed agent run credential");
+      }
       if (current.kind === "connection_intent") {
         throw unprocessable(
           "Connection intents must be resolved through the connection intent endpoints",
