@@ -24,18 +24,11 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactApprovalPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { approvalReadSqlCondition, canActorReadApproval } from "../services/authorization.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
-
-function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
-  return {
-    ...approval,
-    payload: redactEventPayload(approval.payload) ?? {},
-  };
-}
 
 function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;

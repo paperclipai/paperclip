@@ -115,6 +115,21 @@ async function createAgentApp(options: { runId?: string; contextSnapshot?: Recor
 }
 
 describe("approval routes idempotent retries", () => {
+  it("hides duplicated adapter values from same-company approval readers", async () => {
+    const config = { env: { TZ: { type: "plain", value: "Asia/Seoul" } } };
+    const approval = { id: "approval-copy", companyId: "company-1", type: "hire_agent", payload: {
+      adapterConfig: config, requestedConfigurationSnapshot: { adapterConfig: config },
+    } };
+    mockApprovalService.getById.mockResolvedValue(approval);
+    const app = await createApp({ type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_key" });
+    const response = await request(app).get("/api/approvals/approval-copy");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.payload.adapterConfig.env.TZ.value).toBe("***REDACTED***");
+    expect(response.body.payload.requestedConfigurationSnapshot.adapterConfig.env.TZ.value).toBe("***REDACTED***");
+    expect(JSON.stringify(response.body)).not.toContain("Asia/Seoul");
+    expect(approval.payload.adapterConfig.env.TZ.value).toBe("Asia/Seoul");
+  }, 60000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockApprovalService.list.mockReset();
