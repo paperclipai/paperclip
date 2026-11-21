@@ -7,11 +7,19 @@ export function isPersonalDashboardConversation(kind: string | null) {
   return kind !== null && conversationKinds.includes(kind);
 }
 
-/** A dashboard conversation can be read by its owner and the agent participating for that owner. */
-export function dashboardConversationReadable(actor: AuthorizationActor, ownerId: string | null, agentId: string | null) {
+export type DashboardConversationFields = {
+  originKind?: string | null;
+  originId?: string | null;
+  responsibleUserId?: string | null;
+  assigneeAgentId?: string | null;
+};
+
+export function dashboardConversationReadable(actor: AuthorizationActor, issue: DashboardConversationFields) {
+  if (!isPersonalDashboardConversation(issue.originKind ?? null)) return true;
+  const ownerId = issue.originKind === "responsibility_dashboard" ? issue.originId : issue.responsibleUserId;
   if (!ownerId) return false;
   if (actor.type === "board") return actor.userId === ownerId;
-  return actor.type === "agent" && !!agentId && actor.agentId === agentId
+  return actor.type === "agent" && !!issue.assigneeAgentId && actor.agentId === issue.assigneeAgentId
     && (!actor.onBehalfOfUserId || actor.onBehalfOfUserId === ownerId)
     && (!actor.authorizingUserId || actor.authorizingUserId === ownerId);
 }

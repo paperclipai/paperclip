@@ -1,4 +1,4 @@
-import { dashboardConversationCondition, dashboardConversationReadable, isPersonalDashboardConversation } from "./responsibility-privacy.js";
+import { dashboardConversationCondition, dashboardConversationReadable } from "./responsibility-privacy.js";
 import { readOncePerRequest } from "./authorization-read-scope.js";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -173,6 +173,7 @@ export type AuthorizationDecision = {
     | "deny_agent_interaction"
     | "deny_low_trust_boundary"
     | "deny_issue_private"
+    | "deny_dashboard_conversation_private"
     | "deny_project_private"
     | "deny_scope"
     | "deny_unsupported_action";
@@ -227,6 +228,7 @@ const PLAIN_DELEGATED_USER_DENIALS: Record<AuthorizationDenialReason, (subject: 
   deny_low_trust_boundary: (subject, action) => `This company's limits for this agent do not let ${lowerFirst(subject)} ${action}.`,
   deny_agent_interaction: (_subject, action) => `Agents are not allowed to ${action} in this company; a person who manages permissions can change this.`,
   deny_issue_private: (subject) => `${subject} cannot see this private task.`,
+  deny_dashboard_conversation_private: (subject) => `${subject} cannot see this personal dashboard conversation.`,
   deny_project_private: (subject) => `${subject} cannot see this private project.`,
   inbox_target_user_unresolved: () => "Paperclip could not tell whose inbox this is.",
   inbox_management_disabled: () => "This person has turned off agent management of their inbox.",
@@ -3040,11 +3042,12 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         .from(issues)
         .where(and(eq(issues.id, resource.issueId!), eq(issues.companyId, resource.companyId)))
         .then((rows) => rows[0] ?? null);
-      if (issue && isPersonalDashboardConversation(issue.originKind)) {
-        const owner = issue.originKind === "responsibility_dashboard" ? issue.originId : issue.responsibleUserId;
-        if (!dashboardConversationReadable(input.actor, owner, issue.assigneeAgentId)) {
-          return deny({ action: input.action, reason: "deny_issue_private", explanation: "This personal dashboard conversation is private." });
-        }
+      if (issue && !dashboardConversationReadable(input.actor, issue)) {
+        return deny({
+          action: input.action,
+          reason: "deny_dashboard_conversation_private",
+          explanation: "This personal dashboard conversation is private.",
+        });
       }
       if (intersectedDecision.reason === "allow_instance_admin" || intersectedDecision.reason === "allow_local_board"
         || (!input.actor.authorizingUserId && issuePrivacyMode() === "off")) return intersectedDecision;
