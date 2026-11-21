@@ -412,6 +412,37 @@ fn decodes_terminal_and_redacts_diagnostic_payloads() {
 }
 
 #[test]
+fn admits_large_cross_task_document_input_without_changing_it() {
+    let input = json!({"body": "A testable requirement with an example.  \n".repeat(9_300)});
+    let scope = active_scope();
+    let tool_event = |operation_id, input: Value| {
+        event(
+            GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+            json!({"callId": "call-1", "operationId": operation_id, "input": input}),
+        )
+    };
+    let decoded =
+        decode_acpx_event(&scope, &tool_event("write_task_document", input.clone())).unwrap();
+    assert!(matches!(decoded, AcpxEventPayload::ToolCalled { input: body, .. } if body == input));
+    assert!(
+        decode_acpx_event(&scope, &tool_event("comment_on_task", input))
+            .unwrap_err()
+            .to_string()
+            .contains("256 KiB")
+    );
+    assert!(decode_acpx_event(
+        &scope,
+        &tool_event(
+            "write_task_document",
+            json!({"body": "x".repeat(480 * 1024)})
+        ),
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("480 KiB"));
+}
+
+#[test]
 fn rejects_payloads_before_decoding_when_scope_or_size_is_invalid() {
     let scope = active_scope();
     let mut wrong_run = event(
