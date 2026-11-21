@@ -1340,6 +1340,31 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(result.selfBlockedSkipped).toBe(1);
   });
 
+  it.each([
+    ["active", 0, 1],
+    ["resolved", 1, 0],
+  ] as const)("respects a disposition repair board escalation that is %s", async (status, healed, skipped) => {
+    const { companyId, blockedIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: blockedIssueId,
+      kind: "deliberate_wait_without_target",
+      status,
+      ownerType: "board",
+      cause: "deliberate_wait_without_target",
+      fingerprint: `disposition:${blockedIssueId}`,
+      nextAction: "Mark the task done if it is, or press Retry to let the agent continue from the saved work.",
+      wakePolicy: { type: "board_escalation", reason: "unchanged_source_state_exhausted", preservesSourceAssignee: true },
+      ...(status === "resolved" ? { outcome: "restored", resolvedAt: new Date() } : {}),
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    expect(result.healed).toBe(healed);
+    expect(result.boardEscalationSkipped).toBe(skipped);
+  });
+
   it("heals a self-blocked issue after a later board edit in the same blocked cycle", async () => {
     const { companyId, agentId, blockedIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
