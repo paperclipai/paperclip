@@ -20,6 +20,10 @@ interface RuntimeActionOptions extends BaseClientOptions {
   payloadJson?: string;
 }
 
+interface DeleteOptions extends BaseClientOptions {
+  yes?: boolean;
+}
+
 interface OrgOutputOptions extends CompanyOptions {
   out?: string;
 }
@@ -90,8 +94,10 @@ export function registerWorkspaceCommands(program: Command): void {
       .description("Delete a project workspace")
       .argument("<projectId>", "Project ID")
       .argument("<workspaceId>", "Workspace ID")
-      .action(async (projectId: string, workspaceId: string, opts: BaseClientOptions) => {
+      .option("--yes", "Confirm deletion")
+      .action(async (projectId: string, workspaceId: string, opts: DeleteOptions) => {
         try {
+          if (!opts.yes) throw new Error("Deletion requires --yes.");
           const ctx = resolveCommandContext(opts);
           const result = await ctx.api.delete(apiPath`/api/projects/${projectId}/workspaces/${workspaceId}`);
           printOutput(result, { json: ctx.json });
@@ -216,8 +222,10 @@ function addDelete(parent: Command, name: string, description: string, resource:
       .command(name)
       .description(description)
       .argument("<id>", "ID")
-      .action(async (id: string, opts: BaseClientOptions) => {
+      .option("--yes", "Confirm deletion")
+      .action(async (id: string, opts: DeleteOptions) => {
         try {
+          if (!opts.yes) throw new Error("Deletion requires --yes.");
           const ctx = resolveCommandContext(opts);
           const result = await ctx.api.delete(`/api/${resource}/${encodeURIComponent(id)}`);
           printOutput(result, { json: ctx.json });
