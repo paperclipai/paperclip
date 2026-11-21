@@ -1,8 +1,21 @@
-import type { Message, Thread } from "chat";
+import { toPlainText, walkAst, type Message, type Thread } from "chat";
 import type { EndpointRow } from "../runtime-types.js";
 import type { ChatSdkMessageCallbackEvent } from "../../chat-sdk-runtime.js";
 import { createHash } from "node:crypto";
 
+
+// Render only for persisted request content. Message.text remains the SDK's
+// routing projection: hidden destinations must not become bot mentions or
+// match onNewMessage patterns. Keep the author AST intact for SDK consumers.
+export function slackInboundRequestText(message: Pick<Message, "text"> & Partial<Pick<Message, "formatted">>): string {
+  if (!message.formatted?.children.length) return message.text;
+  const formatted = walkAst(structuredClone(message.formatted), (node) => {
+    if (node.type !== "link") return node;
+    const label = toPlainText({ type: "root", children: [node] });
+    return { type: "text", value: label === node.url ? label : `${label} (${node.url})` };
+  });
+  return toPlainText(formatted);
+}
 
 export function slackLifecycleFilesDigest(raw: unknown): string {
   const files =

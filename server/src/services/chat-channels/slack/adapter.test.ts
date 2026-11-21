@@ -1,7 +1,8 @@
 import { SlackAdapter, type SlackEvent } from "@chat-adapter/slack";
-import { ConsoleLogger, type ChatInstance } from "chat";
+import { Chat, ConsoleLogger, type ChatInstance, type Message } from "chat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PaperclipSlackAdapter } from "./adapter.js";
+import { slackMessageMeetsMentionRequirement, slackInboundRequestText } from "./messages.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -22,7 +23,8 @@ describe("Slack inbound link latency", () => {
     } as SlackEvent;
     const config = { botToken: "xoxb-synthetic", signingSecret: "synthetic", userName: "test-bot", logger: new ConsoleLogger("silent") };
     const received = await new Candidate(config).parse(event);
-    expect(received.text).toBe("Review this link (https://example.com/review)");
+    expect(received.text).toBe("Review this link");
+    expect(slackInboundRequestText(received)).toBe("Review this link (https://example.com/review)");
     expect(received.links).toMatchObject([{ url: "https://example.com/review" }]);
     expect(received.attachments).toMatchObject([{ name: "notes.txt", fetchData: expect.any(Function) }]);
     expect(state.get).not.toHaveBeenCalled();
@@ -57,7 +59,23 @@ describe("Slack inbound link destinations", () => {
   ])("preserves author links for async and sync parsing: %s", async (text, expected) => {
     const adapter = new Candidate(config);
     const event = { type: "message", channel: "C123", ts: "1740000001.1", username: "Test sender", text } as SlackEvent;
-    expect((await adapter.parse(event)).text).toBe(expected);
-    expect(adapter.parseMessage(event).text).toBe(expected);
+    const received = await adapter.parse(event);
+    expect(slackInboundRequestText(received)).toBe(expected);
+    expect(slackInboundRequestText(adapter.parseMessage(event))).toBe(expected);
   });
+});
+
+// Exercise the pinned SDK routing implementation, rather than a copy of its regex.
+it("does not route a hidden link destination as a bot mention", () => {
+  const adapter = new PaperclipSlackAdapter({ botToken: "xoxb-synthetic", signingSecret: "synthetic", userName: "test-bot", logger: new ConsoleLogger("silent") });
+  const sdk = Object.create(Chat.prototype) as { setMentionFlags(adapter: PaperclipSlackAdapter, message: Message): boolean };
+  for (const url of ["https://example.com/@test-bot", "https://example.com/?user=@test-bot"]) {
+    const message = adapter.parseMessage({ type: "message", channel: "C123", ts: "1740000001.1", username: "Test sender", text: `Look <${url}|profile>` });
+    expect(sdk.setMentionFlags(adapter, message)).toBe(false);
+    expect(message.isMention).toBe(false);
+    expect(slackMessageMeetsMentionRequirement({ requireAtMention: true }, { id: "slack:C123:1740000001.1", isDM: false }, "subscribed_message", message)).toBe(false);
+  }
+  const addressed = adapter.parseMessage({ type: "message", channel: "C123", ts: "1740000001.1", username: "Test sender", text: "@test-bot review this" });
+  expect(sdk.setMentionFlags(adapter, addressed)).toBe(true);
+  expect(slackMessageMeetsMentionRequirement({ requireAtMention: true }, { id: "slack:C123:1740000001.1", isDM: false }, "mention", addressed)).toBe(true);
 });

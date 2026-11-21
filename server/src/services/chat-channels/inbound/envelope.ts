@@ -12,6 +12,7 @@ import {
 } from "../telegram/messages.js";
 import {
   slackMessageSentAt,
+  slackInboundRequestText,
 } from "../slack/messages.js";
 import {
   teamsActivitySentAt,
@@ -290,7 +291,7 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
             : null,
         providerUpdateId:
           endpoint.provider === "telegram" ? (providerUpdateId ?? null) : null,
-        text: message.text.slice(0, MAX_INBOUND_TEXT),
+        text: (endpoint.provider === "slack" ? slackInboundRequestText(message) : message.text).slice(0, MAX_INBOUND_TEXT),
         mentionedBot: message.isMention === true,
         providerSentAt: providerSentAt?.toISOString() ?? null,
         ...(providerSentAtSource ? { providerSentAtSource } : {}),

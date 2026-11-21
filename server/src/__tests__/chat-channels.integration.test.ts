@@ -194,7 +194,7 @@ import {
 } from "@paperclipai/db";
 import { defaultGitHubReviewPolicy, type ChatProvider } from "@paperclipai/shared";
 import { isPaperclipExternalChatTurn } from "@paperclipai/adapter-utils/server-utils";
-import type { Attachment, Author, Message, Thread } from "chat";
+import { Chat, type Attachment, type Author, type Message, type Thread } from "chat";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
@@ -61498,6 +61498,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     },
   );
+
+  it("does not admit a Slack task from a bot handle hidden in a link destination", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture, { requireAtMention: true });
+    const channel = makeThread({ channelId: "C-HIDDEN-HANDLE", id: "slack:C-HIDDEN-HANDLE:1740000001.100000" });
+    const adapter = new PaperclipSlackAdapter({ botToken: "xoxb-synthetic", signingSecret: "synthetic", userName: "test-bot" });
+    const sdk = Object.create(Chat.prototype) as { setMentionFlags(adapter: PaperclipSlackAdapter, message: Message): boolean };
+    try {
+      const message = adapter.parseMessage({ type: "message", channel: "C-HIDDEN-HANDLE", ts: "1740000001.100000", user: "U-EXTERNAL", username: "alex", text: "Look <https://example.com/@test-bot|profile>" });
+      expect(sdk.setMentionFlags(adapter, message)).toBe(false);
+      await deliverMessage({ callbacks, endpointId: endpoint.id, thread: channel.thread, message, trigger: "subscribed_message" });
+      expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(0);
+      expect(await readIssueCommentsByCompanyId(fixture.companyId)).toHaveLength(0);
+      const [delivery] = await readChatDeliveriesByEndpointId(endpoint.id);
+      expect(delivery.state).toBe("filtered");
+      expect(JSON.stringify(delivery.normalizedEvent)).not.toContain("https://example.com/@test-bot");
+    } finally {
+      await retirePublicationFixture(service, endpoint.id);
+    }
+  });
 
   it("persists full Slack link destinations in task requests, replies, edits and wake comments", async () => {
     const fixture = await seedCompany();
