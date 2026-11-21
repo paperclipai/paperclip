@@ -1,6 +1,6 @@
 
 import { readFile, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
@@ -51,6 +51,7 @@ function externalizeThirdParty(isBundled, runtimeDir) {
     name: "externalize-third-party",
     setup(builder) {
       builder.onResolve({ filter: /^[^./]/ }, async (args) => {
+        if (isAbsolute(args.path)) return undefined;
         if (args.pluginData?.externalizeThirdParty || isBundled(args.path)) return undefined;
         const resolved = await builder.resolve(args.path, {
           kind: args.kind,
@@ -65,7 +66,8 @@ function externalizeThirdParty(isBundled, runtimeDir) {
           pluginData: { externalizeThirdParty: true },
         });
         if (fromServer.errors.length === 0 && fromServer.path === resolved.path) return { path: args.path, external: true };
-        return { path: resolved.path, external: true };
+        const isEsmImport = args.kind === "import-statement" || args.kind === "dynamic-import";
+        return { path: isEsmImport ? pathToFileURL(resolved.path).href : resolved.path, external: true };
       });
     },
   };

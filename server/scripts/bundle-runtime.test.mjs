@@ -205,6 +205,28 @@ describe("bundleRuntime", () => {
     expect(JSON.parse(stdout).flavor).toBe("replaced after build");
   });
 
+  it("loads a third-party package required from a CommonJS workspace package", async () => {
+    const legacy = path.join(root, "packages", "legacy");
+    write(path.join(legacy, "package.json"), JSON.stringify({ name: "@paperclipai/legacy", main: "index.js" }));
+    write(path.join(legacy, "index.js"), [
+      "const dep = require(\"legacy-private-dep\");",
+      "exports.legacy = dep.value;",
+      "",
+    ].join("\n"));
+    write(path.join(legacy, "node_modules", "legacy-private-dep", "package.json"), JSON.stringify({ name: "legacy-private-dep", main: "index.js" }));
+    write(path.join(legacy, "node_modules", "legacy-private-dep", "index.js"), "exports.value = \"required from the package\";\n");
+    symlinkSync(legacy, path.join(root, "server", "node_modules", "@paperclipai", "legacy"), "dir");
+    write(path.join(root, "server", "dist", "index.js"), [
+      "import legacy from \"@paperclipai/legacy\";",
+      "console.log(JSON.stringify({ legacy: legacy.legacy }));",
+      "",
+    ].join("\n"));
+    const outdir = path.join(root, "server", "dist-runtime");
+    const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir });
+    const { stdout } = await execFileAsync(process.execPath, [summary.outfile], { cwd: path.join(root, "server"), timeout: 30_000 });
+    expect(JSON.parse(stdout)).toEqual({ legacy: "required from the package" });
+  });
+
   it("keeps third-party packages external", async () => {
     const outdir = path.join(root, "server", "dist-runtime");
     await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir });
