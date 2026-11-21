@@ -1,4 +1,4 @@
-import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
+import { agentInteractionDenial, assertAgentInteraction, isAgentQuestionToHumans } from "../services/agent-interaction-policy.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
@@ -17859,6 +17859,23 @@ export function issueRoutes(
           return;
       } else {
         assertBoard(req);
+      }
+
+      if (req.actor.type === "agent" && isAgentQuestionToHumans({
+        actorType: req.actor.type, kind: req.body.kind, addresseeAgentId: req.body.addresseeAgentId,
+      })) {
+        const denial = await agentInteractionDenial(db, {
+          companyId: issue.companyId,
+          actorAgentId: req.actor.agentId,
+          operation: "ask_human",
+          issueId: issue.id,
+        });
+        if (denial) {
+          throw forbidden(
+            "This agent may not ask people directly (canAskHumans is off). Ask your manager instead: address the interaction to your manager with addresseeAgentId, or create a child issue assigned to your manager.",
+            denial,
+          );
+        }
       }
 
       const actor = getActorInfo(req);
