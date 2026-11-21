@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "company_skill_versions_security_approval_idx" ON "company_skill_versions" USING btree ("security_approval_id") WHERE "company_skill_versions"."security_approval_id" is not null;

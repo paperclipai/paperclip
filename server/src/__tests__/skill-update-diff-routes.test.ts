@@ -5,8 +5,8 @@ import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const INSTALLED = "a".repeat(40);
 const LATEST = "b".repeat(40);
-const mockSkills = vi.hoisted(() => ({ getById: vi.fn(), getByRouteRef: vi.fn() }));
-const mockSources = vi.hoisted(() => ({ sourceForSkill: vi.fn() }));
+const mockSkills = vi.hoisted(() => ({ getById: vi.fn(), getByRouteRef: vi.fn(), installedSecurityApproval: vi.fn(async () => null) }));
+const mockSources = vi.hoisted(() => ({ sourceForSkill: vi.fn(), savedSecurityOverride: vi.fn(async () => null) }));
 const mockRead = vi.hoisted(() => vi.fn());
 const mockDiff = vi.hoisted(() => vi.fn());
 

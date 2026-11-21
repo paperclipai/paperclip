@@ -181,7 +181,9 @@ export function companySkillPolicyService(db: Db) {
     // These grants historically authorized the full company-skill mutation surface.
     // Preserve that broad scope only as a default-deny compatibility fallback;
     // explicit policy rules and platform invariants still take precedence.
-    if (policy.defaultEffect === "deny" && await hasLegacyBroadMutationGrant(input.companyId, input.principal)) {
+    // Security overrides postdate those grants and need an explicit rule under default-deny.
+    if (policy.defaultEffect === "deny" && input.action !== "skills.override_security"
+      && await hasLegacyBroadMutationGrant(input.companyId, input.principal)) {
       return decision(true, input.action, "legacy_compatibility", policy.revision);
     }
     return decision(policy.defaultEffect === "allow", input.action, "policy_default", policy.revision);

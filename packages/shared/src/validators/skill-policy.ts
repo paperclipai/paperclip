@@ -9,6 +9,7 @@ export const SKILL_POLICY_ACTIONS = [
   "skills.test",
   "skills.reset",
   "skills.remove",
+  "skills.override_security",
 ] as const;
 
 export const SKILL_POLICY_SOURCE_TYPES = [

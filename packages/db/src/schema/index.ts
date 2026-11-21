@@ -212,7 +212,7 @@ export {
 export {
   companySkills,
   companySkillMutationReceipts,
-  companySkillVersions, companySkillRepositorySnapshots, skillPackageDeletions,
+  companySkillVersions, companySkillRepositorySnapshots, skillPackageDeletions, companySkillSecurityApprovals,
   companySkillStars,
   companySkillComments,
   companySkillTestInputs,

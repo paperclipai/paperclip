@@ -127,6 +127,7 @@
               "api/approvals",
               "api/attention",
               "api/goals-and-projects",
+              "api/skill-sources",
               "api/costs",
               "api/secrets",
               "api/tool-gateway-tokens",
