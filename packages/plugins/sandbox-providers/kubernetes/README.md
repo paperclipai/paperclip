@@ -9,8 +9,9 @@ First-party Paperclip sandbox-provider plugin for Kubernetes.
 ### For `sandbox-cr` backend (default, recommended)
 
 1. A Kubernetes cluster running k8s 1.27+
-2. [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) controller installed in the cluster (alpha — installs the `sandboxes.agents.x-k8s.io/v1alpha1` CRD and controller)
+2. [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) controller installed in the cluster (alpha — installs the `sandboxes.agents.x-k8s.io/v1alpha1` CRD and controller). Use v0.5.x or earlier. agent-sandbox v1.0.0 and later no longer serve `v1alpha1`, so the `sandbox-cr` backend cannot create its Sandbox objects on those releases.
 3. Paperclip-server running with access to the cluster (in-cluster via `inCluster: true` or external via `kubeconfig`)
+4. RBAC that lets the Paperclip server identity manage `sandboxes.agents.x-k8s.io` (see [Server RBAC for `sandbox-cr`](#server-rbac-for-sandbox-cr))
 
 ### For `job` backend (stable fallback)
 
@@ -44,9 +45,44 @@ The plugin supports two backend modes, selected via the `backend` config field:
 
 ### Migrating from `job` to `sandbox-cr`
 
-1. Install the agent-sandbox controller: `kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/sandbox.yaml`
-2. Update your environment config to set `backend: "sandbox-cr"` (or remove `backend` since `sandbox-cr` is the default)
-3. New leases will use the Sandbox CR backend. Existing leases created with `job` mode continue to use job semantics until they are released.
+1. Install the agent-sandbox controller. Pin the release, because v1.0.0 and later do not serve the `v1alpha1` API that this backend uses: `kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.6/sandbox.yaml`
+2. Grant the Paperclip server identity access to Sandbox objects (see [Server RBAC for `sandbox-cr`](#server-rbac-for-sandbox-cr)).
+3. Update your environment config to set `backend: "sandbox-cr"` (or remove `backend` since `sandbox-cr` is the default)
+4. New leases will use the Sandbox CR backend. Existing leases created with `job` mode continue to use job semantics until they are released.
+
+### Server RBAC for `sandbox-cr`
+
+The `sandbox-cr` backend creates, reads, and deletes `sandboxes.agents.x-k8s.io` objects in each tenant namespace. The identity that paperclip-server uses (its in-cluster ServiceAccount, or the user in its kubeconfig) needs these verbs in addition to the rights it uses for the tenant objects in [What gets created in your cluster](#what-gets-created-in-your-cluster).
+
+The plugin creates tenant namespaces on first dispatch, so bind the rule cluster-wide. Replace the subject with the ServiceAccount (or kubeconfig user) that your deployment uses:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: paperclip-sandbox-cr
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["create", "get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: paperclip-sandbox-cr
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: paperclip-sandbox-cr
+subjects:
+  - kind: ServiceAccount
+    name: paperclip-server
+    namespace: paperclip
+```
+
+If you create the tenant namespaces yourself before the first run, you can use a Role and RoleBinding with the same rule in each tenant namespace instead.
+
+The per-run Secret sets `blockOwnerDeletion` on its owner reference to the Sandbox. If your cluster enables the `OwnerReferencesPermissionEnforcement` admission plugin (OpenShift does), also grant `update` on `sandboxes/finalizers`.
 
 ## Configuration
 
