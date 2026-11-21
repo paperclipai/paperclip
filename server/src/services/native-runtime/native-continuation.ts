@@ -51,7 +51,7 @@ export function buildNativeContinuationPrompt(input: {
   const caseHandoff = wake.reason === "case_handoff" && !!input.workflowCase && !!input.caseContext?.incomingHandoff;
   // Other provider, attachment, question, approval, and recovery paths keep
   // their specialized framing. A matching prior run still gates every delta.
-  if (rawWake.chatCompletionUpdates || (wake.externalChatProvider && !externalChat) ||
+  if (rawWake.chatCompletionUpdates || rawWake.slackFinalResponseUndelivered || (wake.externalChatProvider && !externalChat) ||
     (!['issue_commented', 'issue_children_completed'].includes(wake.reason ?? '') && !caseHandoff &&
       !(externalChat && wake.reason === "External chat message received")) ||
     wake.fallbackFetchNeeded || wake.truncated || wake.recovery || continuation?.interruptedRunId ||
