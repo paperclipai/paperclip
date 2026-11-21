@@ -444,6 +444,13 @@ describe("R1 follow-up queue wait credit", () => {
       .toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no posted time for follow-up comment c1)" });
   });
 
+  it("credits a run created after the comment request was sent but before it returned", () => {
+    const { queuedAt } = shape();
+    const followUp = { at: T0 + queuedAt - 1_000, sentAt: T0 + queuedAt - 500, postedAt: T0 + queuedAt + 400, commentId: "c1", error: null };
+    expect(gradeR1(followUpTask(2_310_000, 0, {}, {}, { stagingMix: {}, followUp }), BUDGET, [], queueWaitFairnessFrom(slots(agent()))))
+      .toEqual({ verdict: "pass", detail: "done after 2310s (allowed 3568s incl. 1558s fair queue wait)" });
+  });
+
   it("refuses follow-up credit without wake evidence", () => {
     const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, { runWakes: undefined }), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
     expect(graded).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no wake evidence for follow-up run r2)" });

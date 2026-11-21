@@ -69,7 +69,7 @@ export type CreditedRun = { run: TaskRun; kind: "first run" | "follow-up run" };
 function boardComments(record: TaskRecord): Map<string, number | null> {
   const posted = (at: number | undefined) => typeof at === "number" && Number.isFinite(at) ? at : null;
   const entries: Array<[string | null | undefined, number | null]> = [
-    [record.followUp?.commentId, posted(record.followUp?.postedAt ?? record.followUp?.sentAt ?? record.followUp?.at)],
+    [record.followUp?.commentId, posted(record.followUp?.sentAt ?? record.followUp?.at)],
     [record.stagingMix?.followUp?.commentId, posted(record.stagingMix?.followUp?.at)],
     ...(record.stagingMix?.afterEndFollowUps ?? []).map((entry): [string, number | null] => [entry.commentId, posted(entry.at)]),
   ];
