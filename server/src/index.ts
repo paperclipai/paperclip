@@ -221,6 +221,7 @@ import {
   afterStalledShutdownStep,
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  createCoordinatedShutdown,
   createPreDrainShutdownBudget,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
@@ -2445,16 +2446,7 @@ async function startServerWithDatabaseTeardown(
     if (exitProcess) process.exit(0);
   };
 
-  let shutdownPromise: Promise<void> | undefined;
-  const shutdown = (signal: "SIGINT" | "SIGTERM", exitProcess: boolean) =>
-    shutdownPromise ??= performShutdown(signal, exitProcess);
-
-  process.once("SIGINT", () => {
-    void shutdown("SIGINT", true);
-  });
-  process.once("SIGTERM", () => {
-    void shutdown("SIGTERM", true);
-  });
+  const shutdown = createCoordinatedShutdown(performShutdown);
 
   return {
     server,
