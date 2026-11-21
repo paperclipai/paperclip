@@ -170,4 +170,39 @@ describe("provider routing", () => {
     expect(aiProviderRoutingSchema.safeParse({ ...routing, auth: "aws_credentials" }).success).toBe(false);
     for (const key of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) expect(projected.env).not.toHaveProperty(key);
   });
+  it.each([
+    "http://192.168.88.53:1234/v1",
+    "http://10.0.0.5:1234/v1",
+    "http://172.20.0.5:1234/v1",
+  ])("requires opt-in for private HTTP endpoint %s", (baseUrl) => {
+    const routing = {kind: "local", 
+      protocol: "chat", 
+      auth: "none", 
+      baseUrl, 
+    };
+
+    expect(aiProviderRoutingSchema.safeParse(routing).success).toBe(false);
+
+    expect(
+      aiProviderRoutingSchema.safeParse({
+        ...routing,
+        allowPrivateHttp: true,
+      }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    "http://8.8.8.8:1234/v1",
+    "http://169.254.169.254/v1",
+    "http://192.168.999.1:1234/v1",
+  ])("rejects non-private HTTP endpoint %s", (baseUrl) => {
+    expect(
+      aiProviderRoutingSchema.safeParse({
+        kind: "gateway",
+        protocol: "chat",
+        baseUrl,
+        allowPrivateHttp: true,
+      }).success,
+    ).toBe(false);
+  });
 });
