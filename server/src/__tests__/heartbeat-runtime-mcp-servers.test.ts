@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   activityLog,
@@ -27,10 +27,70 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { buildPaperclipRuntimeMcpServers, createManagedMcpRunConfig } from "../services/heartbeat.js";
+import {
+  buildPaperclipRuntimeMcpServers,
+  configuredPaperclipApiBaseUrl,
+  configuredPaperclipMcpBaseUrl,
+  createManagedMcpRunConfig,
+} from "../services/heartbeat.js";
+import { createAdapterRuntimeToolAccess } from "../services/heartbeat/run-preparation.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 
 import { toolAccessService } from "../services/tool-access.js";
+
+describe("heartbeat runtime URL configuration", () => {
+  it("keeps the REST API base private and selects the public MCP base", () => {
+    const previousApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
+    try {
+      process.env.PAPERCLIP_API_URL = "http://192.168.1.212:3100/api/";
+      process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example.test/api/";
+      expect(configuredPaperclipApiBaseUrl()).toBe("http://192.168.1.212:3100");
+      expect(configuredPaperclipMcpBaseUrl()).toBe("https://paperclip.example.test");
+    } finally {
+      if (previousApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousApiUrl;
+      if (previousPublicUrl === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
+      else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
+  it("falls back to the API base when no public MCP base is configured", () => {
+    const previousApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
+    try {
+      process.env.PAPERCLIP_API_URL = "http://127.0.0.1:3100";
+      delete process.env.PAPERCLIP_PUBLIC_URL;
+      expect(configuredPaperclipMcpBaseUrl()).toBe("http://127.0.0.1:3100");
+    } finally {
+      if (previousApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousApiUrl;
+      if (previousPublicUrl === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
+      else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
+  it("advertises the public base for the MCP endpoint and the API base for REST URLs", () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-runtime-tools-secret");
+    vi.stubEnv("PAPERCLIP_API_URL", "http://192.168.1.212:3100/api/");
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example.test/api/");
+    try {
+      const access = createAdapterRuntimeToolAccess({
+        agentId: "agent-1",
+        companyId: "company-1",
+        runId: "run-1",
+        responsibleUserId: "user-1",
+      });
+      expect(access?.mcpEndpoint).toBe("https://paperclip.example.test/mcp/runtime-tools");
+      expect(access?.rest).toEqual({
+        connectionsSearch: "http://192.168.1.212:3100/runtime-tools/connections/search",
+        connectionRequest: "http://192.168.1.212:3100/runtime-tools/connections/request",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -39,6 +99,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const originalApiUrl = process.env.PAPERCLIP_API_URL;
+  const originalPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-runtime-mcp-");
@@ -48,6 +109,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   afterEach(async () => {
     if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = originalApiUrl;
+    if (originalPublicUrl === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
+    else process.env.PAPERCLIP_PUBLIC_URL = originalPublicUrl;
     await db.delete(toolMcpGatewayTokens);
     await db.delete(activityLog);
     await db.delete(toolAccessAuditEvents);
@@ -70,7 +133,10 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   });
 
   it("provisions one aggregate gateway and omits unavailable access without blocking any runtime", async () => {
-    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    process.env.PAPERCLIP_API_URL = "http://192.168.1.212:3100";
+    process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example.test";
+    expect(configuredPaperclipApiBaseUrl()).toBe("http://192.168.1.212:3100");
+    expect(configuredPaperclipMcpBaseUrl()).toBe("https://paperclip.example.test");
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP ${randomUUID()}`,
       issuePrefix: `RM${randomUUID().slice(0, 5).toUpperCase()}`,
