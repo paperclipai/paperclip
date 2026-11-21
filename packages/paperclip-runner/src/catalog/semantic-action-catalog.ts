@@ -11,6 +11,7 @@ import { setTaskMonitorInputSchema } from "../protocol-actions/set-task-monitor.
 import { listProjectsDescription, listProjectsInputSchema } from "../protocol-actions/list-projects.js";
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
 import { sendChatMessageAction } from "../protocol-actions/send-chat-message.js";
+import { humanInputAddresseeSchema } from "../protocol-actions/request-human-input.js";
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import { listRoutinesAction } from "../protocol-actions/list-routines.js";
 import { updateRoutineAction } from "../protocol-actions/update-routine.js";
@@ -264,6 +265,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         title: text("Interaction card title.", 300),
         prompt: text("Question or decision prompt.", 10_000),
         payload: openObject,
+        addresseeUserId: humanInputAddresseeSchema,
         resolverPolicy: { const: "human_only", description: "Optionally require an authenticated human response." },
         targetRevisionId: nullableText(
           "Optional bound document revision.",

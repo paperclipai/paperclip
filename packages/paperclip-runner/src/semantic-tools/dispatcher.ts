@@ -382,6 +382,7 @@ export class CapabilitySemanticDispatcher {
           title: requiredString(input.title),
           prompt: requiredString(input.prompt),
           payload: optionalJson(input.payload),
+          ...(input.addresseeUserId === undefined ? {} : { addresseeUserId: requiredString(input.addresseeUserId) }),
           targetRevisionId: nullableOptionalString(input.targetRevisionId),
           continuationPolicy: requiredString(input.continuationPolicy) as Extract<CapabilitySemanticCommand, { kind: "request_human_input" }>["continuationPolicy"],
         };

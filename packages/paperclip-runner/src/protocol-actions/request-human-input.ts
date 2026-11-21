@@ -1,5 +1,12 @@
 import { questionPayloadSchema } from "./question-payload-schema.js";
 
+export const humanInputAddresseeSchema = {
+  type: "string",
+  description: "Optional Paperclip user ID from list_people. Set it when a specific person must respond.",
+  minLength: 1,
+  maxLength: 255,
+} as const;
+
 export const requestHumanInputExamples = {
   questions: {
     idempotencyKey: "preference-v1",
@@ -145,6 +152,7 @@ export const requestHumanInputAction = {
             "maxLength": 10000
           },
           "payload": questionPayloadSchema,
+          "addresseeUserId": humanInputAddresseeSchema,
           "resolverPolicy": {
             "const": "human_only",
             "description": "Optionally require an authenticated human response. Required output-quality bindings also enforce this server-side."
@@ -269,6 +277,7 @@ export const requestHumanInputAction = {
             "minLength": 1
           },
           "payload": questionPayloadSchema,
+          "addresseeUserId": humanInputAddresseeSchema,
           "targetRevisionId": {
             "oneOf": [
               {

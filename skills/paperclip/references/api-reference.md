@@ -931,7 +931,7 @@ Ask only when missing input materially blocks the request. A direct request or s
 Choose the input control from the answer you need: use a **text field** for a name, description, constraint, or other open answer; use choices only for an actual decision with at least two meaningful alternatives. Do not turn an open question into invented categories.
 
 Omit `addresseeUserId` for ordinary questions.
-Agent Chat uses its conversation owner automatically. On ordinary tasks, explicitly set `addresseeUserId` only when a particular person must answer, using their exact Paperclip user ID, including any prefix. The server validates that the named user can respond in the company before saving the interaction. A chat question cannot name a different user.
+Agent Chat uses its conversation owner automatically. On ordinary tasks, explicitly set `addresseeUserId` only when a particular person must answer, using their exact Paperclip user ID, including any prefix. The server validates that the named user can respond in the company before saving the interaction. A chat question cannot name a different user. Native Runner agents can look up company members with `list_people` and pass the chosen ID as a top-level `addresseeUserId` to `request_human_input`.
 Agent-directed questions instead set `addresseeAgentId` and omit `resolverPolicy`. Do not infer permissions from a title or reporting line. Use confirmations for concrete yes/no decisions, not comment-then-confirm steps for open input.
 
 **Text answer (copy this complete payload)**

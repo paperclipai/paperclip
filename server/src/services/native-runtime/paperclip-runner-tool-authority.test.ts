@@ -29,6 +29,7 @@ import {
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
+import { attentionService } from "../attention.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -873,6 +874,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       expect(advertised.description).not.toContain("questionSpec");
       expect(advertised.inputSchema).toEqual(original.inputSchema);
       expect(advertised.inputSchema.properties).toHaveProperty("payload");
+      expect(advertised.inputSchema.properties).toHaveProperty("addresseeUserId");
       expect(advertised.inputSchema.properties).not.toHaveProperty(
         "questionSpec",
       );
@@ -946,6 +948,18 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(payloadDescription).toContain("at least two meaningful options");
     expect(payloadDescription).toContain("questionSet");
     expect(payloadDescription).not.toContain("use exactly");
+    const addresseeUserId = answerMode === "mixed" ? randomUUID() : undefined;
+    const otherMemberId = randomUUID();
+    if (addresseeUserId) {
+      const members = [addresseeUserId, otherMemberId];
+      await db.insert(authUsers).values(members.map(id => ({
+        id, name: "Company member", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date(),
+      })));
+      await db.insert(companyMemberships).values(members.map(principalId => ({
+        companyId: binding.companyId, principalType: "user", principalId,
+        status: "active", membershipRole: "operator",
+      })));
+    }
     const payload = answerMode === "choice"
       ? { version: 1, questions }
       : {
@@ -967,9 +981,22 @@ describe("PaperclipRunnerToolAuthority", () => {
         title: "Choose one color",
         prompt: "Choose one color",
         continuationPolicy: "wake_assignee",
+        ...(addresseeUserId ? { resolverPolicy: "human_only", addresseeUserId } : {}),
         payload,
       },
     };
+    if (addresseeUserId) {
+      const unavailableUserId = randomUUID();
+      await db.insert(authUsers).values({
+        id: unavailableUserId, name: "Nonmember", email: `${unavailableUserId}@example.test`,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+      await expect(authority.execute({
+        ...call,
+        callId: "unavailable-question-recipient",
+        arguments: { ...call.arguments, idempotencyKey: "unavailable-question-recipient", addresseeUserId: unavailableUserId },
+      })).rejects.toThrow("addresseeUserId must identify a user authorized to respond in this company");
+    }
     const first = await authority.execute(call);
     expect(first).toMatchObject({
       disposition: "applied",
@@ -991,6 +1018,15 @@ describe("PaperclipRunnerToolAuthority", () => {
       .from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.issueId, binding.issueId));
     expect(rows).toHaveLength(1);
+    expect(rows[0].addresseeUserId).toBe(addresseeUserId ?? null);
+    if (addresseeUserId) {
+      const attention = attentionService(db);
+      const chosen = await attention.list(binding.companyId, { userId: addresseeUserId, view: "mine" });
+      expect(chosen.items.find(item => item.subject.id === rows[0].id)?.audience)
+        .toEqual({ kind: "user", userId: addresseeUserId, reason: "addressee" });
+      const other = await attention.list(binding.companyId, { userId: otherMemberId, view: "mine" });
+      expect(other.items.some(item => item.subject.id === rows[0].id)).toBe(false);
+    }
     expect((rows[0].payload as { questions: { id: string }[] }).questions.map((question) => question.id))
       .toEqual(answerMode === "choice" ? ["color"] : answerMode === "text" ? ["goal"] : ["goal", "color"]);
     const [task] = await db
@@ -1001,6 +1037,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       status: "in_review",
       reviewPolicy: "human_only",
       assigneeAgentId: binding.agentId,
+      assigneeUserId: null,
       executionRunId: binding.runId,
     });
     const entries = await db
