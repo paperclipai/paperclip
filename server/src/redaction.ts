@@ -1015,7 +1015,8 @@ export function redactAgentAdapterConfig(
 }
 
 /** Present approvals without exposing saved adapter values to approval readers. */
-export function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
+export function redactApprovalPayload<T extends { payload?: Record<string, unknown> | null }>(approval: T): T {
+  if (!isPlainObject(approval.payload)) return approval;
   const payload = redactEventPayload(approval.payload) ?? {};
   const adapterConfig = approval.payload.adapterConfig;
   if (isPlainObject(adapterConfig)) payload.adapterConfig = redactAgentAdapterConfig(adapterConfig);
