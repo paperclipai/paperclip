@@ -84,7 +84,6 @@ export type ProfileEntryMatch = Pick<typeof toolProfileEntries.$inferSelect,
   "selectorType" | "applicationId" | "connectionId" | "catalogEntryId" | "toolName" | "riskLevel">;
 
 export const profileSummaryEntryColumns = {
-  profileId: toolProfileEntries.profileId,
   selectorType: toolProfileEntries.selectorType,
   effect: toolProfileEntries.effect,
   applicationId: toolProfileEntries.applicationId,
@@ -193,7 +192,7 @@ export function summarizeProfile(input: {
 }
 
 export function profileCoversCatalogScope(input: {
-  entry: typeof toolProfileEntries.$inferSelect;
+  entry: ProfileSummaryEntry;
   catalogEntry: ProfileCatalogEntry;
   catalogById: Map<string, ProfileCatalogEntry>;
 }): boolean {

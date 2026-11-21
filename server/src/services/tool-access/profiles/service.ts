@@ -4,7 +4,7 @@ import { createConnectionProfileConfigurationReader } from "./connection-configu
 import { connectionActorUserId } from "../actor.js";
 import { assertProfileEntryInputs } from "../../tool-profile-entry-validation.js";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, issues, projects, routines, toolApplications, toolCatalogEntries, toolConnections, toolMcpGateways, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, CreateToolProfileWithEntries, DeleteToolProfile, DuplicateToolProfile, ToolProfile, ToolProfileBinding, ToolProfileEntry, ToolProfileListItem, ToolProfileNewToolReviewItem, ToolProfileNewToolsReview, ToolProfileNewToolsReviewResult, ToolProfileSummary, ToolProfileWithDetails, ReviewToolProfileNewTools, UpdateToolProfileEntry, UpdateToolProfileWithEntries, UnbindToolProfileBinding } from "@paperclipai/shared";
@@ -387,10 +387,15 @@ export function createToolProfileService(db: Db, now: () => Date) {
       }).from(toolProfiles).where(eq(toolProfiles.companyId, companyId)).orderBy(desc(toolProfiles.updatedAt));
       if (!profiles.length) return [];
       const ids = profiles.map(profile => profile.id);
-      const [entries, bindings, catalog, companyAgents] = await Promise.all([
-        db.select(profileSummaryEntryColumns).from(toolProfileEntries).where(and(
-          eq(toolProfileEntries.companyId, companyId), inArray(toolProfileEntries.profileId, ids),
-        )),
+      const [entryGroups, bindings, catalog, companyAgents] = await Promise.all([
+        db.select({
+          ...profileSummaryEntryColumns,
+          profiles: sql<number[]>`json_agg(summary_profiles.ordinal)`,
+        }).from(toolProfileEntries)
+          .innerJoin(sql`unnest(${sql.param(ids)}::uuid[]) with ordinality as summary_profiles(id, ordinal)`,
+            sql`summary_profiles.id = ${toolProfileEntries.profileId}`)
+          .where(eq(toolProfileEntries.companyId, companyId))
+          .groupBy(...Object.values(profileSummaryEntryColumns)),
         db.select({
           profileId: toolProfileBindings.profileId,
           targetType: toolProfileBindings.targetType,
@@ -403,12 +408,16 @@ export function createToolProfileService(db: Db, now: () => Date) {
         )),
         db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId)),
       ]);
-      const entriesByProfile = groupByProfile(entries);
+      type Entry = Omit<(typeof entryGroups)[number], "profiles">;
+      const entriesByProfile = ids.map((): Entry[] => []);
+      for (const { profiles: ordinals, ...entry } of entryGroups) {
+        for (const ordinal of ordinals) entriesByProfile[ordinal - 1].push(entry);
+      }
       const bindingsByProfile = groupByProfile(bindings);
       const agentIds = companyAgents.map(agent => agent.id);
-      return profiles.map(profile => {
+      return profiles.map((profile, index) => {
         const { id, name, status, updatedAt } = profile;
-        const entries = entriesByProfile.get(id) ?? [];
+        const entries = entriesByProfile[index];
         const bindings = bindingsByProfile.get(id) ?? [];
         return {
           id, name, status, updatedAt,
