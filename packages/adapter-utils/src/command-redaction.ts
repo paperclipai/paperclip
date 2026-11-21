@@ -192,10 +192,58 @@ function isOrdinaryDiagnosticEnvSetting(key: string, value: string): boolean {
     (name === "PAPERCLIP_SENTRY_RUN_FAILURES" && /^(?:off|unexpected|all)$/.test(value));
 }
 
+/** In the host process environment, an undeclared value under an
+ * unrecognized name is redacted as a substring only if it could be a
+ * credential: at least 8 characters, and not a bare number, hex number or
+ * boolean-like word. Shorter values ("vi", "RUN") are redacted only as whole
+ * tokens (`collectHostEnvironmentTokenSecrets`): as substrings they corrupted
+ * unrelated report text ("service" became "ser***REDACTED***ce"). Declared,
+ * secret-named and credential-shaped values are always substring-private. An
+ * agent's configured environment keeps the fail-closed substring rule. */
+function plausibleUndeclaredCredential(key: string, value: string): boolean {
+  if (credentialNameSegments(key)) return true;
+  return value.length >= 8 && !/^(?:\d+|0x[0-9a-f]+|true|false|on|off|yes|no)$/i.test(value);
+}
+
+const CREDENTIAL_SEGMENTS = new Set(["TOKEN", "TOKENS", "SECRET", "SECRETS", "PASSWORD", "PASSWD", "PASSPHRASE",
+  "CREDENTIAL", "CREDENTIALS", "PRIVATE", "BEARER", "AUTHORIZATION", "APIKEY"]);
+
+/** A name with a credential segment (AWS_SECRET_ACCESS_KEY, AWS_BEARER_TOKEN_BEDROCK),
+ * or a KEY segment that is last or followed only by ID (KEY, AWS_ACCESS_KEY_ID).
+ * Such a value stays private whatever its length. */
+function credentialNameSegments(key: string): boolean {
+  const segments = key.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  return segments.some((segment, index) => CREDENTIAL_SEGMENTS.has(segment) ||
+    (segment === "KEY" && (index === segments.length - 1 || (index === segments.length - 2 && segments[index + 1] === "ID"))));
+}
+
+const BOOLEAN_WORD = /^(?:true|false|on|off|yes|no)$/i;
+
+/**
+ * Host process values under unknown names that are too short or too plain to
+ * redact as substrings (see `plausibleUndeclaredCredential`). They are still
+ * private: callers redact them where they appear as a whole token, numbers
+ * included. Only flag values are exempt (boolean words, and `0` or `1`): they
+ * cannot hold a credential, and as tokens they would erase ordinary words
+ * ("on", "no") and exit codes from every report.
+ */
+export function collectHostEnvironmentTokenSecrets(env: unknown): string[] {
+  if (!env || typeof env !== "object") return [];
+  const substringValues = new Set(collectDiagnosticEnvironmentSecrets(env, [], { hostProcess: true }));
+  const values = new Set<string>();
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string" || !value.trim() || substringValues.has(value)) continue;
+    if (isOrdinaryDiagnosticEnvSetting(key, value) || BOOLEAN_WORD.test(value) || /^[01]$/.test(value)) continue;
+    values.add(value);
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
 /** Select private values while preserving explicit ordinary process settings. */
 export function collectDiagnosticEnvironmentSecrets(
   env: unknown,
   secretKeys: Iterable<string> = [],
+  options: { hostProcess?: boolean } = {},
 ): string[] {
   if (!env || typeof env !== "object") return [];
   const declared = new Set(secretKeys);
@@ -206,7 +254,7 @@ export function collectDiagnosticEnvironmentSecrets(
     if (declared.has(key) || secretName.test(key) ||
       redactDiagnosticText(value) !== value || looksLikeCredentialJwt(value) ||
       /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(value) ||
-      !isOrdinaryDiagnosticEnvSetting(key, value)) {
+      (!isOrdinaryDiagnosticEnvSetting(key, value) && (!options.hostProcess || plausibleUndeclaredCredential(key, value)))) {
       values.add(value);
     }
     try {

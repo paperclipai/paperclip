@@ -2,8 +2,8 @@ import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { notifyScheduledRetryDispatch } from "../../../services/run-dispatch-notifications.js";
-import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
-import { readRemoteWorkspaceWriterHold } from "../../../services/remote-workspace-writer-hold.js";
+import { parkScheduledRetryInTx } from "./scheduled-retry-park.js";
+import { readRemoteWorkspaceWriterHold, runOwnerFenceHeldSql } from "../../../services/remote-workspace-writer-hold.js";
 import {
   WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
   WORKSPACE_BUSY_PARKED_RECHECK_MS,
@@ -42,6 +42,7 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
     .select({
       status: heartbeatRuns.status,
       lastActivityAt: sql<Date>`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt})`,
+      ownerFenceHeld: runOwnerFenceHeldSql(),
     })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, wait.holderRunId)));
@@ -50,7 +51,8 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
   // Reservation defers on that hold, so the wait stays parked through it too.
   const settlingSince = holder && holder.status !== "running" ? await settlingWriterActivityAt(tx, run, wait) : null;
   const holderStaleAt = holder?.status === "running"
-    ? new Date(holder.lastActivityAt).getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS
+    ? Math.max(new Date(holder.lastActivityAt).getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+      holder.ownerFenceHeld === true ? now.getTime() + WORKSPACE_BUSY_PARKED_RECHECK_MS : 0)
     : settlingSince ? settlingSince.getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS : null;
   const holderLive = holderStaleAt !== null && holderStaleAt > now.getTime();
 
@@ -78,21 +80,7 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
     now.getTime() + (holderLive && settlingSince ? WORKSPACE_BUSY_SETTLING_RECHECK_MS : WORKSPACE_BUSY_PARKED_RECHECK_MS),
     holderLive ? holderStaleAt! + 1_000 : Number.POSITIVE_INFINITY,
   ));
-  await notifyScheduledRetryCancellation(tx, { companyId: run.companyId, runId: run.id });
-  const [parked] = await tx
-    .update(heartbeatRuns)
-    .set({
-      scheduledRetryAt: recheckAt,
-      updatedAt: now,
-      contextSnapshot: sql`jsonb_set(coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb), '{scheduledRetryAt}', to_jsonb(${recheckAt.toISOString()}::text))`,
-    })
-    .where(and(
-      eq(heartbeatRuns.id, run.id),
-      eq(heartbeatRuns.companyId, run.companyId),
-      eq(heartbeatRuns.status, "scheduled_retry"),
-    ))
-    .returning({ id: heartbeatRuns.id });
-  return Boolean(parked);
+  return parkScheduledRetryInTx(tx, run, now, recheckAt);
 }
 
 /**
@@ -156,7 +144,7 @@ export async function wakeWorkspaceBusyWaitersInTx(tx: Db, input: {
   );
   const waiters = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(waiting).for("update");
   if (waiters.length === 0) return 0;
-  await notifyScheduledRetryDispatch(tx, { companyId: input.companyId });
+  await notifyScheduledRetryDispatch(tx, { companyId: input.companyId, runId: input.runId });
   const woken = await tx
     .update(heartbeatRuns)
     .set({ scheduledRetryAt: input.now, updatedAt: input.now })

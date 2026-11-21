@@ -12,8 +12,8 @@ import { TASK_VIEW_GROUPS, taskView, type TaskViewKey } from "@/lib/task-views";
 import { cn } from "@/lib/utils";
 
 /**
- * The single control that replaced both the Inbox tab bar and the implicit
- * "all tasks" default on Tasks (PAP-670). One menu, grouped by scope, so the
+ * The single control for Inbox views and task status presets (PAP-670).
+ * One menu, grouped by scope, so the
  * nav does not have to grow a row every time a view is added.
  */
 export function TaskViewsMenu({

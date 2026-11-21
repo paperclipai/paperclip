@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import { environmentLeases, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, asc, eq, exists, inArray, or, sql } from "drizzle-orm";
+import { environmentLeases, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import { inspectDurablePrpCheckpointHeader, type DurablePrpCheckpoint } from "../../vendor/paperclip-runner/index.js";
+import { nativeSha256 } from "./canonical.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -12,9 +13,14 @@ export async function lockSourceRecoveryCoordinators(tx: Transaction, companyId:
 }
 
 export async function readNativeSourceConsumers(tx: Transaction, companyId: string, runId: string) {
-  return tx.select({ id: environmentLeases.id, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
+  const retired = exists(tx.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
+    eq(nativeRunnerCheckpoints.companyId, companyId), eq(nativeRunnerCheckpoints.runId, runId),
+    eq(nativeRunnerCheckpoints.part, "header"),
+    sql`${nativeRunnerCheckpoints.material}->>'schema' like 'paperclip.native-runner-checkpoint-retirement.%'`)));
+  return tx.select({ id: environmentLeases.id, metadata: environmentLeases.metadata, retired }).from(environmentLeases).where(and(
     eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
-    sql`${environmentLeases.metadata}->'runnerTaskSourceConsumer' is not null`));
+    or(sql`${environmentLeases.metadata}->'runnerTaskSourceConsumer' is not null`,
+      sql`${environmentLeases.metadata}->'portableTaskSuccessor' is not null`)));
 }
 
 /** Physical source consumption revokes the completed controller's late writer. */
@@ -22,16 +28,30 @@ export async function assertNativeSourceCheckpointConsumer(tx: Transaction, owne
   companyId: string; runId: string; authorityRunId: string; bootId: string; generation: number;
 }, checkpoint?: DurablePrpCheckpoint) {
   const rows = await readNativeSourceConsumers(tx, owner.companyId, owner.runId);
+  if (rows.some(row => row.retired)) throw new Error("native_runner_checkpoint_retired");
   if (!rows.length) return;
   const deny = (): never => { throw new Error("native_runner_checkpoint_owner_lost"); };
   if (owner.runId === owner.authorityRunId || rows.length !== 1 || !checkpoint) return deny();
-  const source = rows[0]!, consumer = record(source.metadata?.runnerTaskSourceConsumer);
+  const source = rows[0]!;
+  const header = checkpoint.records.get("header");
+  const identity = header ? inspectDurablePrpCheckpointHeader(header) : null;
+  const portable = record(source.metadata?.portableTaskSuccessor);
+  if (source.metadata?.portableTaskSuccessor !== undefined) {
+    if (typeof portable.targetLeaseId !== "string" || portable.sourceLeaseId !== source.id ||
+        !identity || nativeSha256(record(portable.operation).identity ?? null) !== nativeSha256(identity)) return deny();
+    const [target] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, owner.companyId),
+      eq(environmentLeases.id, portable.targetLeaseId)));
+    if (!target || target.heartbeatRunId !== owner.authorityRunId || target.status !== "active" || target.releasedAt ||
+        target.expiresAt && target.expiresAt.getTime() <= Date.now() ||
+        target.metadata?.portableTaskOwnershipReady !== true || target.metadata.portableTaskSuccessor !== undefined ||
+        nativeSha256(target.metadata.portableTaskPredecessor ?? null) !== nativeSha256(portable)) return deny();
+    return;
+  }
+  const consumer = record(source.metadata?.runnerTaskSourceConsumer);
   if (typeof consumer.leaseId !== "string" || consumer.runId !== owner.authorityRunId) return deny();
   const [lease] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, owner.companyId),
     eq(environmentLeases.id, consumer.leaseId)));
   const recovery = record(lease?.metadata?.runnerTaskSourceRecovery);
-  const header = checkpoint.records.get("header");
-  const identity = header ? inspectDurablePrpCheckpointHeader(header) : null;
   const expected = record(recovery.identity);
   if (!lease || lease.heartbeatRunId !== owner.authorityRunId || lease.status !== "active" || lease.releasedAt ||
       lease.expiresAt && lease.expiresAt.getTime() <= Date.now() ||

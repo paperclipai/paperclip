@@ -387,6 +387,141 @@ describe("resolveHeartbeatRunResponse", () => {
     },
   };
 
+  it.each([
+    "Handling the request to set your personal publishing credential. I will verify which piece is missing (definition vs. value) and direct you to the secure entry surface; personal secret values cannot be entered or read through chat.",
+    "Checking the configuration.", "Looking at the request.", "Fetching the current state.",
+    "I will check again tomorrow; the release is ready at /releases/latest.",
+  ])("delivers the native conversation final without classifying the earlier comment: %s", body => {
+    const summary = "Open Settings → Secrets → My secrets. Select the publishing definition and Set my value. Keep the value out of chat.";
+    expect(resolveHeartbeatRunResponse({
+      resultJson: { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary } },
+      nativeConversationFinalResponse: true, existingComment: { id: "earlier", body },
+    })).toMatchObject({ text: summary, decision: { chosenSource: "semantic_result_summary", commentAction: "create",
+      reasonCodes: ["accepted_semantic_result_summary", "native_conversation_final_precedence"] } });
+    expect(resolveHeartbeatRunResponse({ resultJson, existingComment: { id: "earlier", body } }))
+      .toMatchObject({ text: body, decision: { commentAction: "reuse", commentId: "earlier" } });
+  });
+
+  it.each(["done", "needs_review", "blocked", "failed"])("presents an accepted %s conversation response and reuses identical text", reportedWorkDisposition => {
+    const summary = "The requested work needs your attention.";
+    const resultJson = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition, summary } };
+    expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+      existingComment: { id: "earlier", body: "I will check." } })).toMatchObject({ text: summary, decision: { commentAction: "create" } });
+    expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+      existingComment: { id: "same", body: summary } })).toMatchObject({ text: summary, decision: { commentAction: "reuse", commentId: "same" } });
+  });
+
+  it("prefers the completed provider final over the conversation semantic summary", () => {
+    expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+      existingComment: { id: "earlier", body: "Earlier comment" },
+      finalAgentMessage: { text: "The complete answer", sourceEventId: "final", channel: "final" },
+    })).toMatchObject({ text: "The complete answer", decision: { chosenSource: "final_agent_message", commentAction: "create" } });
+  });
+
+  it("does not let compatibility narration outrank an accepted conversation result", () => {
+    const resultJson = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "blocked", summary: "The accepted handoff" },
+      finalResponse: { final: true, text: "Adapter compatibility prose" }, summary: "Legacy compatibility prose" };
+    expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+      existingComment: { id: "earlier", body: "Earlier comment" },
+      finalAgentMessage: { text: "Unknown-channel narration", sourceEventId: "unknown", channel: "unknown" },
+    })).toMatchObject({ text: "The accepted handoff", decision: { chosenSource: "semantic_result_summary" } });
+  });
+
+  it("keeps the explicit conversation comment when no qualified final exists", () => {
+    for (const resultJson of [{}, { summary: "Unqualified legacy summary" }]) {
+      expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+        existingComment: { id: "explicit", body: "The release is ready at /releases/latest." },
+      })).toMatchObject({ text: "The release is ready at /releases/latest.", decision: { commentAction: "reuse" } });
+      expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+        finalAgentMessage: { text: "Unknown narration", sourceEventId: "unknown", channel: "unknown" },
+      })).toMatchObject({ text: null, decision: { commentAction: "none" } });
+    }
+  });
+
+  it("keeps a governed interaction in control of the conversation response", () => {
+    for (const input of [{ resultJson, interactionOwnsResponse: true },
+      { resultJson: { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded", summary: "Waiting for an answer" } } }]) {
+      expect(resolveHeartbeatRunResponse({ ...input, nativeConversationFinalResponse: true,
+        existingComment: { id: "earlier", body: "I will check." },
+        finalAgentMessage: { text: "Do not publish this", sourceEventId: "final", channel: "final" },
+      })).toMatchObject({ text: null, decision: { commentAction: "none" } });
+    }
+  });
+
+  describe("run-log previews of the final message", () => {
+    const complete = "**Open work — 501 tasks**\n\n### Morgan\n" +
+      Array.from({ length: 501 }, (_, i) => `RUN-${i + 1}`).join(", ");
+    const preview = complete.slice(0, 3_988) + "…[truncated]";
+    const accepted = (summary: string) => ({
+      nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary },
+    });
+
+    it("posts a complete final message longer than the run-log preview bound", () => {
+      expect(complete.length).toBeGreaterThan(4_000);
+      expect(resolveHeartbeatRunResponse({
+        resultJson: accepted("Short summary."),
+        finalAgentMessage: { text: complete, sourceEventId: "event-1", channel: "final" },
+      })).toMatchObject({ text: complete, decision: { chosenSource: "final_agent_message" } });
+    });
+
+    it("posts the complete accepted answer when the preview is its exact prefix", () => {
+      for (const channel of ["final", "unknown"] as const) {
+        expect(resolveHeartbeatRunResponse({
+          resultJson: accepted(complete),
+          finalAgentMessage: { text: preview, sourceEventId: "event-1", channel },
+        })).toMatchObject({
+          text: complete,
+          decision: {
+            chosenSource: "semantic_result_summary",
+            reasonCodes: ["bounded_final_agent_message_replaced_by_semantic_summary"],
+          },
+        });
+      }
+    });
+
+    it("posts the complete accepted answer when the final prose differs from it", () => {
+      const different = "Here is every open task, grouped by owner.\n\n" + complete;
+      for (const preferFinalResponseOverExistingComment of [false, true]) {
+        expect(resolveHeartbeatRunResponse({
+          resultJson: accepted(different),
+          preferFinalResponseOverExistingComment,
+          finalAgentMessage: { text: preview, sourceEventId: "event-1", channel: "final" },
+        })).toMatchObject({ text: different, decision: { chosenSource: "semantic_result_summary" } });
+      }
+    });
+
+    it("never prefers a preview over a marked adapter final response", () => {
+      expect(resolveHeartbeatRunResponse({
+        resultJson: { ...accepted("summary"), finalResponse: { disposition: "final", text: complete } },
+        finalAgentMessage: { text: preview, sourceEventId: "event-1", channel: "final" },
+      })).toMatchObject({ text: complete, decision: { chosenSource: "adapter_final_response" } });
+    });
+
+    it("posts the marked preview only when no complete text exists", () => {
+      expect(resolveHeartbeatRunResponse({
+        resultJson: {},
+        finalAgentMessage: { text: preview, sourceEventId: "event-1", channel: "final" },
+      })).toMatchObject({
+        text: preview,
+        decision: {
+          chosenSource: "final_agent_message",
+          reasonCodes: ["bounded_final_agent_message_without_complete_source"],
+        },
+      });
+    });
+
+    it("marks a stored preview candidate as bounded", () => {
+      expect(readCompletedAssistantMessageCandidate({
+        seq: 3,
+        prpEvent: { sourceEventId: "event-3", payload: { kind: "agentMessage", channel: "final", text: preview } },
+      })).toMatchObject({ text: preview, bounded: true });
+      expect(readCompletedAssistantMessageCandidate({
+        seq: 4,
+        prpEvent: { sourceEventId: "event-4", payload: { kind: "agentMessage", channel: "final", text: complete } },
+      })).not.toHaveProperty("bounded");
+    });
+  });
+
   it("applies comment, explicit provider, adapter, terminal fallback, and semantic precedence", () => {
     const resultWithAdapterFinal = {
       ...resultJson,
@@ -533,6 +668,22 @@ describe("resolveHeartbeatRunResponse", () => {
         reasonCodes: ["yielded_control_plane_wait"],
       },
     });
+  });
+
+  it.each([
+    { conversationTurnFinished: true, interactionOwnsResponse: false, channel: "final" as const, visible: true },
+    { conversationTurnFinished: true, interactionOwnsResponse: false, channel: "unknown" as const, visible: true },
+    { conversationTurnFinished: false, interactionOwnsResponse: false, channel: "unknown" as const, visible: false },
+    { conversationTurnFinished: true, interactionOwnsResponse: true, channel: "unknown" as const, visible: false },
+  ])("preserves server-finished conversation authority for a yielded result: %j", ({ visible, ...authority }) => {
+    const { channel, ...flags } = authority;
+    const resolved = resolveHeartbeatRunResponse({ ...flags, nativeConversationFinalResponse: true,
+      resultJson: { summary: "Unqualified legacy summary", nativeResult: { schema: "paperclip.run_result.v1",
+        reportedWorkDisposition: "yielded", summary: "Waiting for the next message." } },
+      finalAgentMessage: { text: "Which project should own this?", sourceEventId: "chat-final-1", channel },
+    });
+    expect(resolved.text).toBe(visible ? "Which project should own this?" : null);
+    expect(resolved.decision.commentAction).toBe(visible ? "create" : "none");
   });
 
   it("persists a final assistant reply when the server completed a conversation turn", () => {

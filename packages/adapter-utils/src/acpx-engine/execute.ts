@@ -1,3 +1,5 @@
+import { managedAiSessionFingerprintConfig } from "../managed-ai-runtime-env.js";
+import { createWorkspaceRestoreTeardown } from "../workspace-restore-teardown.js";
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { prepareAcpxCodexObservabilityHome } from "../codex-observability-home.js";
 import { codexShellEnvironmentKeys } from "../codex-shell-environment.js";
@@ -21,12 +23,14 @@ import type {
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 import {
+  managedRemoteHomeEnvironment,
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
   adapterExecutionTargetDuplexObservabilityRecorder,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  ensureAdapterExecutionTargetLocalWorkspace,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
@@ -51,9 +55,12 @@ import {
   classifyToolDefinitionFailure,
   formatTerminalSessionFailure,
   sanitizeTerminalSessionFailure,
+  typedSessionFailureClientCapabilities,
+  typedTerminalTurnResult,
   type AcpxTerminalSessionFailure,
   type AcpxTerminalSessionFailureDiagnostic,
 } from "./terminal-session-failure.js";
+import { assertNoHostAcpxAuthEnvironment, splitWindowsAgentCommand, stockAcpRuntimeOptions, type AcpxAgentSpawnHooks } from "./stock-runtime-options.js";
 export type { AcpxTerminalSessionFailure } from "./terminal-session-failure.js";
 import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 import type { WorkspaceRestoreDiagnostic } from "../workspace-restore-diagnostics.js";
@@ -69,7 +76,6 @@ import {
   asString,
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
-  ensureAbsoluteDirectory,
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
   isForbiddenConfigEnvKey,
@@ -161,7 +167,7 @@ import {
   type ChildStderrState,
   type RuntimeCacheEntry,
 } from "./run-site-host.js";
-import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
+import { createSandboxRunSite, type SandboxRunSite, type ManagedHomeRunRebind } from "./run-site-sandbox.js";
 import {
   createRuntimeSpanRunner,
   emitRunPhaseTiming,
@@ -211,12 +217,12 @@ function flushChildStderr(state: ChildStderrState) {
   state.pendingLiveLine = "";
 }
 
-type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
+type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & AcpxAgentSpawnHooks & {
   onAgentSpawn?: (meta: AcpxAgentProcessIdentity) => Promise<void>;
   // Return the current-run parent-context token. It is the `task.run` token
   // during startup and after the turn, and the `agent.turn` token during the
   // turn. A detached exec reads this getter to parent to the live run span. The
-  // real `createAcpRuntime` ignores this optional field.
+  // real runtime factory drops this field before creating the ACPX runtime.
   getRuntimeParentContext?: () => StartupSpanContext | undefined;
 };
 
@@ -237,6 +243,7 @@ type AcpxRuntimeFactory = (options: PaperclipAcpRuntimeOptions) => AcpRuntime;
  * in-sandbox staged workspace + home, which this cache reuses.
  */
 export interface StagedRuntimeCacheEntry {
+  rebindRun?: ManagedHomeRunRebind;
   observabilityCompatibilityKey?: string;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   /**
@@ -349,6 +356,8 @@ export interface AcpxRemoteManagedHomeContext {
 }
 
 export interface AcpxRemoteManagedHomeResult {
+  /** Rebind a retained home's copyback destination before a compatible follow-up. */
+  rebindRun?: ManagedHomeRunRebind;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   /**
    * Per-run copy-back, invoked once on every teardown/exit path (mirrors the CLI
@@ -503,6 +512,7 @@ interface AcpxPreparedRuntime {
   // keeps the runtime warm. Null for local runs, the runner-less fallback, and
   // adapters with no disposable temp.
   remoteStagingDispose: (() => Promise<void>) | null;
+  remoteStagingOwner?: Pick<StagedRuntimeCacheEntry, "teardown" | "dispose" | "rebindRun">;
   // PR 3: for the remote runner-backed lane, the env keys the managed-home seam
   // mutated on this run (or the reused delta on a compatible resume), so the
   // executor can cache/refresh the staged-runtime entry after a clean turn.
@@ -1653,11 +1663,12 @@ function uniqueSorted(values: Array<string | null | undefined>): string[] {
 // denies every non-allowlisted tool and never reaches `canUseTool`), and we
 // widen the SDK's Read sandbox to include the Paperclip state dirs the agent
 // needs to talk to its own control plane.
-async function writePaperclipClaudeSettings(input: {
+async function preparePaperclipClaudeSettings(input: {
   cwd: string;
   stateDir: string;
   agentHome: string;
   companyId: string;
+  persist: boolean;
 }): Promise<PaperclipClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
   const instanceRoot = defaultPaperclipInstanceDir();
@@ -1713,7 +1724,7 @@ async function writePaperclipClaudeSettings(input: {
     defaultMode,
   };
   const next: Record<string, unknown> = { ...existing, permissions: nextPermissions };
-  await writeFileAtomically({
+  if (input.persist) await writeFileAtomically({
     target: filePath,
     contents: `${JSON.stringify(next, null, 2)}\n`,
     mode: 0o600,
@@ -1741,6 +1752,8 @@ async function writePaperclipClaudeSettings(input: {
 async function stageAcpRemoteRuntime(input: {
   runId: string;
   target: AdapterExecutionTarget;
+  privateRuntime?: boolean;
+  syncWorkspace?: boolean;
   adapterKey: string;
   workspaceLocalDir: string;
   // Pin the in-sandbox workspace dir so it provably equals the deterministic
@@ -1763,9 +1776,12 @@ async function stageAcpRemoteRuntime(input: {
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   await input.onLog(
     "stdout",
-    `[paperclip] Syncing workspace to ${describeAdapterExecutionTarget(input.target)}.\n`,
+    `[paperclip] Syncing ${input.syncWorkspace === false ? "runtime assets" : "workspace"} to ${describeAdapterExecutionTarget(input.target)}.\n`,
   );
   return await prepareAdapterExecutionTargetRuntime({
+    privateRuntime: input.privateRuntime,
+    retainRuntime: input.privateRuntime,
+    syncWorkspace: input.syncWorkspace,
     runId: input.runId,
     target: input.target,
     adapterKey: input.adapterKey,
@@ -1955,6 +1971,8 @@ async function buildRuntime(input: {
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
   });
+  const sshWorkspaceInPlace = executionTarget?.kind === "remote" &&
+    executionTarget.transport === "ssh" && executionTarget.workspaceRealization?.mode === "in_place";
   const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
   const effectiveExecutionCwd =
     remoteExecutionIdentity && typeof remoteExecutionIdentity.remoteCwd === "string"
@@ -1984,7 +2002,7 @@ async function buildRuntime(input: {
   // Step 1 — workspace.resolve: the workspace resolution/fallback chain closes
   // here on the awaited directory materialization.
   await measureStartupStep(input.ctx, nowMs, "workspace.resolve", () =>
-    ensureAbsoluteDirectory(cwd, { createIfMissing: true }),
+    ensureAdapterExecutionTargetLocalWorkspace(executionTarget, cwd),
     stepMetrics,
   );
 
@@ -2020,6 +2038,7 @@ async function buildRuntime(input: {
   const timeoutSec = timeoutResolution.timeoutSec;
   const stateDir = path.resolve(asString(config.stateDir, "") || defaultStateDir(agent.companyId, agent.id));
   await fs.mkdir(stateDir, { recursive: true });
+  const hostSpawnCwd = sshWorkspaceInPlace ? stateDir : cwd;
 
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent, input.ctx.agentIdentity), PAPERCLIP_RUN_ID: runId };
@@ -2159,7 +2178,7 @@ async function buildRuntime(input: {
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
     claudeSkillsBundleDir = preparedSkills.bundleDir;
-    paperclipClaudeSettings = await writePaperclipClaudeSettings({
+    paperclipClaudeSettings = await preparePaperclipClaudeSettings({
       cwd,
       stateDir,
       // A run's writable AGENT_HOME moves, but the existing permission root
@@ -2168,8 +2187,9 @@ async function buildRuntime(input: {
       // still receives this run's actual AGENT_HOME.
       agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
+      persist: !sshWorkspaceInPlace,
     });
-    skillCommandNotes.push(
+    if (!sshWorkspaceInPlace) skillCommandNotes.push(
       `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
@@ -2230,13 +2250,9 @@ async function buildRuntime(input: {
   });
   let agentCommand = configuredCommand || builtInCommand?.command || null;
   let agentCommandShell = configuredCommand || builtInCommand?.shellCommand || "";
-  // A runner-backed remote sandbox is the only lane that crosses the staging
-  // and serialized-launch-env seam. Runner-less ACP→CLI fallback, SSH, and
-  // local runs keep their historical host-provider compatibility behavior.
   const useRemoteProcessSession =
     executionTarget?.kind === "remote" &&
-    executionTarget.transport === "sandbox" &&
-    Boolean(executionTarget.runner) &&
+    (executionTarget.transport === "sandbox" ? Boolean(executionTarget.runner) : executionTarget.spec.useHostAuth === false && Boolean(config.managedAiConnection)) &&
     Boolean(agentCommandShell);
   if (acpxAgent === "gemini" && agentCommandShell) {
     const normalized = await normalizeGeminiAcpCommandShell(
@@ -2280,7 +2296,7 @@ async function buildRuntime(input: {
   // workspace / re-seeding the managed home. The stage call below pins its
   // `workspaceRemoteDir` to this same value, so the staged cwd can never
   // diverge from the cwd that fed the fingerprint.
-  const sessionCwd =
+  let sessionCwd =
     useRemoteProcessSession && executionTarget?.kind === "remote"
       ? executionTarget.remoteCwd
       : acpxAgent === "gemini" && !executionTargetIsRemote
@@ -2289,7 +2305,7 @@ async function buildRuntime(input: {
   // The 17 fields the session fingerprint hashes. Company, agent, and task
   // identifiers are NOT here; they scope the outer session key only (see
   // `keyIdentity`). The fingerprint builder accepts only this identity.
-  const fingerprintIdentity: SessionFingerprintIdentity = {
+  let fingerprintIdentity: SessionFingerprintIdentity = {
     ...(input.ctx.agentIdentity ? { agentIdentityKeyId: input.ctx.agentIdentity.keyId } : {}),
     acpxAgent,
     agentCommand: agentCommand ?? acpxAgent,
@@ -2326,10 +2342,34 @@ async function buildRuntime(input: {
     // that sources the latest env. secretManifestHash alone misses plain-value
     // edits and same-version secret rotations. Per-wake runtime vars never enter
     // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
-    adapterEnvHash: shortHash(resolvedAdapterEnv),
+    // Managed SSH identity uses the selected account's stable session identity;
+    // temporary credential homes and token refreshes affect only the launch env.
+    adapterEnvHash: shortHash(
+      useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+        ? managedAiSessionFingerprintConfig(
+          { env: resolvedAdapterEnv, managedAiConnection: config.managedAiConnection },
+          asString(resolvedAdapterEnv.HOME, "") || undefined,
+        )
+        : resolvedAdapterEnv,
+    ),
   };
-  const fingerprint = buildSessionFingerprint(fingerprintIdentity);
+  if (useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && config.managedAiConnection && env.HOME) {
+    const managedHome = path.resolve(env.HOME);
+    const skills = Object.fromEntries(Object.entries(skillsIdentity).map(([key, value]) => [key,
+      typeof value === "string" && path.isAbsolute(value) && (value === managedHome || value.startsWith(managedHome + path.sep))
+        ? path.join("<managed-ai-home>", path.relative(managedHome, value)) : value,
+    ]));
+    fingerprintIdentity = { ...fingerprintIdentity, skillsIdentity: skills };
+  }
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
+  const sshWorkspaceRunId = useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+    ? shortHash({ companyId: agent.companyId, agentId: agent.id, taskKey, fingerprintIdentity })
+    : null;
+  if (sshWorkspaceRunId && executionTarget?.kind === "remote" && executionTarget.workspaceRealization?.mode !== "in_place") {
+    sessionCwd = path.posix.join(executionTarget.remoteCwd, ".paperclip-runtime", "runs", sshWorkspaceRunId, "workspace");
+    fingerprintIdentity = { ...fingerprintIdentity, cwd: sessionCwd };
+  }
+  const fingerprint = buildSessionFingerprint(fingerprintIdentity);
   // Company, agent, and task identity for the outer session key. These parts
   // stay out of the fingerprint hash.
   const keyIdentity: SessionKeyIdentity = {
@@ -2387,6 +2427,7 @@ async function buildRuntime(input: {
   let stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = null;
   let remoteManagedHomeTeardown: (() => Promise<WorkspaceRestoreOutcome>) | null = null;
   let remoteStagingDispose: (() => Promise<void>) | null = null;
+  let remoteStagingOwner: Pick<StagedRuntimeCacheEntry, "teardown" | "dispose" | "rebindRun"> | undefined;
   let remoteStagingEnvDelta: Record<string, string> | null = null;
   let sessionStagingLeaseRelease: (() => void) | null = null;
   // The sandbox run site owns the sandbox lane's staging, the per-session
@@ -2405,28 +2446,34 @@ async function buildRuntime(input: {
       now: nowMs,
       idleMs: input.stagedIdleMs,
       sessionCwd,
-      spawnCwd: cwd,
+      spawnCwd: hostSpawnCwd,
       target: remoteTarget,
       env,
+      managedHomeRunBinding: { env: { ...env }, onLog: input.ctx.onLog },
       isCompatibleResume,
       observabilityCompatibilityKey: input.ctx.observability?.compatibilityKey,
-      stage: (assets) =>
-        stageAcpRemoteRuntime({
-          runId,
+      stage: async (assets) => {
+        const staged = await stageAcpRemoteRuntime({
+          runId: sshWorkspaceRunId ?? runId,
+          privateRuntime: remoteTarget.transport === "ssh",
+          syncWorkspace: remoteTarget.transport === "ssh" ? remoteTarget.workspaceRealization?.mode !== "in_place" : undefined,
           target: remoteTarget,
           adapterKey: input.engine.adapterType,
           workspaceLocalDir: cwd,
-          workspaceRemoteDir: sessionCwd,
+          workspaceRemoteDir: remoteTarget.transport === "ssh" ? remoteTarget.remoteCwd : sessionCwd,
           timeoutSec,
           assets,
           additionalSources,
           onLog: input.ctx.onLog,
           onRuntimeProgress: input.ctx.onRuntimeProgress,
           runtimeSpan: input.stageRuntimeSpan,
-        }),
-      seedManagedHome: input.deps.prepareRemoteManagedHome
+        });
+        if (remoteTarget.transport === "ssh" && config.managedAiConnection && staged.runtimeRootDir) Object.assign(env, managedRemoteHomeEnvironment(staged.runtimeRootDir));
+        return staged;
+      },
+      seedManagedHome: input.deps.prepareRemoteManagedHome || remoteTarget.transport === "ssh"
         ? async (stage) => {
-            const seeded = await input.deps.prepareRemoteManagedHome!({
+            const seeded: AcpxRemoteManagedHomeResult = input.deps.prepareRemoteManagedHome ? await input.deps.prepareRemoteManagedHome({
               acpxAgent,
               companyId: agent.companyId,
               runId,
@@ -2439,11 +2486,19 @@ async function buildRuntime(input: {
               onRuntimeProgress: input.ctx.onRuntimeProgress,
               skillsBundleDir: claudeSkillsBundleDir,
               stage,
-            });
+            }) : { stagedRuntime: await stage([]) };
             return {
               stagedRuntime: seeded.stagedRuntime,
-              teardown: seeded.teardown ?? null,
-              dispose: seeded.disposeStaged ?? null,
+              rebindRun: seeded.rebindRun,
+              teardown: seeded.teardown ?? (remoteTarget.transport === "ssh" ? createWorkspaceRestoreTeardown({
+                stagedRuntime: seeded.stagedRuntime, onLog: input.ctx.onLog,
+                startMessage: "[paperclip] Restoring SSH workspace and managed credentials.\n",
+                failurePrefix: "[paperclip] SSH workspace restore failed",
+              }) : null),
+              dispose: remoteTarget.transport === "ssh" ? async () => {
+                try { await seeded.disposeStaged?.(); }
+                finally { await seeded.stagedRuntime.disposeRuntime?.(); }
+              } : seeded.disposeStaged ?? null,
             };
           }
         : undefined,
@@ -2478,7 +2533,7 @@ async function buildRuntime(input: {
       startPaperclipBridge: (runtimeRootDir) =>
         startAdapterExecutionTargetPaperclipBridge({
           runId,
-          target: { ...remoteTarget, streamRunLogs: false },
+          target: remoteTarget.transport === "sandbox" ? { ...remoteTarget, streamRunLogs: false } : remoteTarget,
           runtimeRootDir,
           adapterKey: input.engine.adapterType,
           timeoutSec,
@@ -2496,7 +2551,7 @@ async function buildRuntime(input: {
           runtimeRootDir,
           adapterKey: input.engine.adapterType,
           command: "sh",
-          args: ["-lc", `exec ${agentCommandShell}`],
+          args: [remoteTarget.transport === "ssh" ? "-c" : "-lc", `exec ${agentCommandShell}`],
           cwd: sessionCwd,
           env: launchEnv,
           timeoutSec,
@@ -2518,6 +2573,8 @@ async function buildRuntime(input: {
         await Promise.allSettled([agentBridge?.stop(), controlBridge?.stop()]);
         if (remoteManagedHomeTeardown) {
           await remoteManagedHomeTeardown().catch(() => {});
+        } else if (remoteTarget.transport === "ssh") {
+          await stagedRuntime?.restoreWorkspace();
         }
       },
     });
@@ -2532,6 +2589,23 @@ async function buildRuntime(input: {
     stagedRuntime = placedStaged?.stagedRuntime ?? null;
     remoteManagedHomeTeardown = placedStaged?.teardown ?? null;
     remoteStagingDispose = placedStaged?.dispose ?? null;
+    remoteStagingOwner = { teardown: remoteManagedHomeTeardown, dispose: remoteStagingDispose, rebindRun: placedStaged?.rebindRun };
+    if (remoteTarget.transport === "ssh") {
+      const owner = remoteStagingOwner;
+      let copyBackComplete = false;
+      let disposeRequested = false;
+      remoteManagedHomeTeardown = async () => {
+        try { return await owner.teardown?.() ?? { ok: true }; }
+        finally {
+          copyBackComplete = true;
+          if (disposeRequested) await owner.dispose?.();
+        }
+      };
+      remoteStagingDispose = async () => {
+        disposeRequested = true;
+        if (copyBackComplete) await owner.dispose?.();
+      };
+    }
     remoteStagingEnvDelta = placedStaged?.envDelta ?? null;
     sessionStagingLeaseRelease = sandboxSite.stagingLeaseRelease;
   }
@@ -2656,11 +2730,16 @@ async function buildRuntime(input: {
   }
   // The relay runs on the host with the sanitized remote launch environment.
   // Its /usr/bin/env node shebang cannot rely on that environment's PATH.
-  const overrideCommand = processSessionBridge?.agentCommand
-    ? [process.execPath, processSessionBridge.agentCommand]
-      .map((part) => JSON.stringify(part.replaceAll("\\", "/"))).join(" ")
+  const relayArgv = processSessionBridge?.agentCommand
+    ? [process.execPath, processSessionBridge.agentCommand].map((part) => part.replaceAll("\\", "/"))
+    : null;
+  const overrideCommand = relayArgv
+    ? relayArgv.map((part) => JSON.stringify(part)).join(" ")
     : agentCommand;
-  const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
+  // ACPX launches only argv arrays on Windows; keep POSIX command identities unchanged.
+  const overrides = overrideCommand
+    ? { [acpxAgent]: process.platform === "win32" ? relayArgv ?? splitWindowsAgentCommand(overrideCommand) : overrideCommand }
+    : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
@@ -2676,11 +2755,7 @@ async function buildRuntime(input: {
     // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
     // reads `prepared.cwd`, so binding it once here keeps them consistent.
     cwd: sessionCwd,
-    // Only the remote process-session lane needs the host proxy's `spawn()`
-    // `chdir` redirected off the in-sandbox `sessionCwd` and onto the host
-    // `cwd` (which is where the workspace was staged FROM, so it is host-valid).
-    // Every other lane leaves it `undefined` → acpx falls back to `cwd`.
-    hostSpawnCwd: useRemoteProcessSession ? cwd : undefined,
+    hostSpawnCwd: useRemoteProcessSession ? hostSpawnCwd : undefined,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -2703,6 +2778,7 @@ async function buildRuntime(input: {
     stagedRuntime,
     remoteManagedHomeTeardown,
     remoteStagingDispose,
+    ...(remoteStagingOwner ? { remoteStagingOwner } : {}),
     remoteStagingEnvDelta,
     sessionStagingLeaseRelease,
     remoteExecutionIdentity,
@@ -3732,9 +3808,10 @@ function saveStagedRuntimeAfterCleanTurn(input: {
   input.handles.set(prepared.sessionKey, {
     observabilityCompatibilityKey: input.observabilityCompatibilityKey,
     stagedRuntime: prepared.stagedRuntime,
+    rebindRun: prepared.remoteStagingOwner?.rebindRun,
     envDelta: prepared.remoteStagingEnvDelta,
-    teardown: prepared.remoteManagedHomeTeardown,
-    dispose: prepared.remoteStagingDispose,
+    teardown: prepared.remoteStagingOwner?.teardown ?? prepared.remoteManagedHomeTeardown,
+    dispose: prepared.remoteStagingOwner?.dispose ?? prepared.remoteStagingDispose,
     lastUsedAt: input.now,
   });
 }
@@ -4067,7 +4144,12 @@ function openTurnSpan(
 }
 
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
-  const createRuntime = deps.createRuntime ?? createAcpRuntime;
+  const createRuntime = deps.createRuntime
+    ?? ((options: PaperclipAcpRuntimeOptions) => {
+      assertNoHostAcpxAuthEnvironment();
+      const { getRuntimeParentContext: _parentContext, ...acpx } = stockAcpRuntimeOptions(options);
+      return createAcpRuntime(acpx);
+    });
   const now = deps.now ?? (() => Date.now());
   const duplexLossCancelDeadlineMs = deps.duplexLossCancelDeadlineMs ?? ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS;
   const stalledToolCheckIntervalMs = deps.stalledToolCheckIntervalMs ?? ACPX_STALLED_TOOL_CHECK_INTERVAL_MS;
@@ -4351,6 +4433,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // `endSession` step can cancel a running turn before it closes the runtime
       // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
       let activeTurn: AcpRuntimeTurn | null = null;
+      // Receives this turn's typed AIR failure, read from its prompt response `_meta`.
+      let activeTurnFailureHandler: (failure: AcpxTerminalSessionFailure) => void = () => {};
       let terminalFailureClassification: AcpxTerminalFailureClassification | null = null;
       let terminalSessionFailure: AcpxTerminalSessionFailureDiagnostic | null = null;
       // How the settlement `endSession` step must release the runtime for the path
@@ -4498,6 +4582,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // target mutable so a later agent respawn records identity on the current
         // heartbeat instead of the run that originally created the runtime.
         processIdentitySink.current = ctx.onSpawn;
+        processIdentitySink.launchEnvironment = prepared.env;
         // The process-session bridge starts its provider inside the sandbox.
         // ACPX observes only the host relay on that lane, so neither its spawn
         // callback nor a cached relay establishes physical provider reuse.
@@ -4513,6 +4598,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Resume with this run's launch environment; keep it out of the saved
         // conversation record without mutating the live runtime's options.
         const runtimeStore = createEphemeralSessionEnvironmentStore(persistedRuntimeStore, prepared.env);
+        const launchSink = processIdentitySink;
         const runtimeOptions: PaperclipAcpRuntimeOptions = {
           cwd: prepared.cwd,
           // Host-only spawn cwd for the relay proxy on the remote process-session
@@ -4533,8 +4619,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           verbose: prepared.acpxAgent === "claude",
           // The engine passes a complete, sanitized launch environment. ACPX
           // must not merge the Paperclip server's ambient environment back in
-          // when it spawns the provider child.
-          inheritProcessEnv: false,
+          // when it spawns the provider child, so the spawn uses exactly it.
+          agentEnvironment: () => launchSink.launchEnvironment ?? {},
+          // ACPX enables Grok's API-key login only when the agent would inherit
+          // XAI_API_KEY; the server's own key must never qualify.
+          agentProcessEnvBlock: ["XAI_API_KEY"],
+          // ACP agents that support it report terminal failures as typed AIR metadata.
+          clientCapabilities: typedSessionFailureClientCapabilities(),
           // Observe permission requests without deciding them: returning
           // undefined leaves the decision to ACPX's permission-mode resolver.
           onPermissionRequest: async (request) => {
@@ -5087,6 +5178,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // After entering startTurn, a thrown error cannot prove the provider
         // received no work. Only failures before this boundary are free to settle.
         turnDispatchAttempted = true;
+        // Diagnostics are retained even when an adapter has no recovery
+        // classifier. Redact before bounding so partial secrets cannot leak.
+        activeTurnFailureHandler = (failure: AcpxTerminalSessionFailure) => {
+          terminalFailureClassification = classifyToolDefinitionFailure(failure)
+            ?? deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
+          terminalSessionFailure = sanitizeTerminalSessionFailure(
+            failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
+          );
+        };
         const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,
@@ -5094,16 +5194,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           requestId: ctx.runId,
           timeoutMs: startTimeoutMs,
           signal,
-          // The callback belongs to this turn, including when a runtime is reused.
-          // Diagnostics are retained even when an adapter has no recovery
-          // classifier. Redact before bounding so partial secrets cannot leak.
-          onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
-            terminalFailureClassification = classifyToolDefinitionFailure(failure)
-              ?? deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
-            terminalSessionFailure = sanitizeTerminalSessionFailure(
-              failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
-            );
-          },
         });
         activeTurn = turn;
         // A latched sandbox duplex-channel loss otherwise has no way to reach
@@ -5297,7 +5387,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // `turn.result` settles only when the agent's provider process
         // returns or rejects; a latched loss that armed the deadline after
         // the event drain already ended must still bound this wait.
-        return await Promise.race([turn.result, lossDeadline.then(cancelDeadlineTerminal)]);
+        // The typed-failure handler belongs to this turn, including when a runtime is reused.
+        const onTerminalSessionFailure = activeTurnFailureHandler;
+        const result = turn.result.then((settled) => typedTerminalTurnResult(settled, onTerminalSessionFailure));
+        return await Promise.race([result, lossDeadline.then(cancelDeadlineTerminal)]);
       };
       const stepTurnFinalize = async (
         input: TurnFinalizeInput<AcpRuntimeTurnResult>,
@@ -5921,7 +6014,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           };
         },
       };
-      return await runAttempt(plan);
+      const result = await runAttempt(plan);
+      const previousSession = parseObject(ctx.runtime.sessionParams);
+      if (asString(previousSession.acpSessionId, "") && result.sessionParams?.configFingerprint
+        && previousSession.configFingerprint !== result.sessionParams.configFingerprint) {
+        return { ...result, resultJson: { ...result.resultJson,
+          sessionReset: { code: "acpx_session_identity_changed", reason: "The agent configuration or execution identity changed." },
+        } };
+      }
+      return result;
     } finally {
       // Record the in-memory evidence synchronously, but never let diagnostic
       // persistence hold the staging lease or delay the completed run's return.

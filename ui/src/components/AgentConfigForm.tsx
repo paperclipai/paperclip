@@ -1,9 +1,10 @@
+import { environmentSupportsLoginPty } from "@paperclipai/shared";
+import { matchesAdapterLoginTarget, useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
 import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
-import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
@@ -94,6 +95,8 @@ import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
@@ -112,6 +115,7 @@ import {
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 /* ---- Props ---- */
 
@@ -541,8 +545,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
+  const displayedOriginals = new Map<string, unknown>();
+
   /** Read effective value: overlay if dirty, else original */
   function eff<T>(group: RecordOverlayGroup, field: string, original: T): T {
+    displayedOriginals.set(`${group}.${field}`, original);
     const o = overlay[group];
     if (field in o) return o[field] as T;
     return original;
@@ -550,10 +557,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   /** Mark field dirty in overlay */
   function mark(group: RecordOverlayGroup, field: string, value: unknown) {
-    setOverlay((prev) => ({
-      ...prev,
-      [group]: { ...prev[group], [field]: value },
-    }));
+    const key = `${group}.${field}`;
+    setOverlay((prev) => {
+      const next = { ...prev[group] };
+      if (displayedOriginals.has(key) && overlayValuesEqual(value, displayedOriginals.get(key))) {
+        delete next[field];
+      } else {
+        next[field] = value;
+      }
+      return { ...prev, [group]: next };
+    });
   }
 
   function flushEnvironmentDraft() {
@@ -628,6 +641,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
   const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
+  displayedOriginals.set("runtime.runtimeConfig", { ...runtimeConfig, aiConnection: runtimeConfig.aiConnection });
 
   const adapterType = isCreate
     ? props.values.adapterType
@@ -1036,10 +1050,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
+  const cloudHarnessAllowed = !cloud || harnessPolicy.isCloudHarnessAllowed(adapterType, { provider: runnerProvider, acpxAgent: runnerAcpxAgent });
   const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
   const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
-  const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
+  const connectionModels = useConnectionModels(isExternalRunner || !cloudHarnessAllowed ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
@@ -1055,14 +1072,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       agentId: isCreate ? undefined : props.agent.id,
     }),
     ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
-    enabled: Boolean(selectedCompanyId) && !isExternalRunner && !connectionModels,
+    enabled: Boolean(selectedCompanyId) && cloudHarnessAllowed && !isExternalRunner && !connectionModels,
   });
   const { data: fetchedModels, error: fetchedModelsError, isLoading: fetchingModels, refetch: refreshConnectionModels } = fetchedModelsQuery;
   const fetchedModelsView = useQueryView(fetchedModelsQuery);
   const accountModelScope = accountBoundCatalog ? JSON.stringify(modelQueryKey) : null;
   useEffect(() => {
-    if (accountModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
-  }, [accountModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
+    if (accountModelScope && selectedCompanyId && cloudHarnessAllowed && !isExternalRunner && !connectionModels) void refreshConnectionModels();
+  }, [accountModelScope, selectedCompanyId, cloudHarnessAllowed, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
@@ -1084,7 +1101,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
-    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local" && adapterType !== "paperclip_runner"),
+    enabled: Boolean(selectedCompanyId && cloudHarnessAllowed && isLocal && adapterType !== "opencode_local" && adapterType !== "paperclip_runner"),
   });
   const detectedModel = detectedModelData?.model ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];
@@ -1117,6 +1134,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // every adapter without a per-adapter edit.
     hideInstructionsFile: hideInstructionsFile || hideHostPaths || isExternalRunner,
     managedSandboxOnly: hideHostPaths || isExternalRunner,
+    availableHarnesses: cloud ? harnessPolicy.availableHarnesses : undefined,
     openAiDotEnabled: experimentalSettings?.enableOpenAiDot === true,
     museEnabled: experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true,
   };
@@ -1125,6 +1143,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   const [configurationAdvancedOpen, setConfigurationAdvancedOpen] = useState(false);
   const configSchema = useConfigSchema(adapterType);
+  const hasLocalAdvancedFields = isLocal && (!isRunnerHarness || fieldsAdapterType !== "paperclip_runner");
+  const hasConfigurationAdvancedFields = hasLocalAdvancedFields
+    || adapterType === "process"
+    || (adapterType === "claude_local" && !hideHostPaths && (isCreate ? props.values.claudeEngine : eff("adapterConfig", "engine", config.engine)) === "acp")
+    || (fieldsAdapterType !== "paperclip_runner" && configSchema?.fields.some((field) => schemaFieldSection(field.key) === "advanced"));
   const renderAdapterFields = (section: AdapterConfigSection) => (
     <>
       {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
@@ -1321,18 +1344,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // advertises the login pseudo-terminal capability. Read the capability for the
   // effective environment provider. The form reads the adapter login capability,
   // not the adapter name: every adapter login gates on this provider capability.
-  const effectiveLoginProvider =
-    typeof effectiveLoginEnvironment?.config?.provider === "string"
-      ? effectiveLoginEnvironment.config.provider
-      : null;
-  const providerSupportsLoginPty =
-    effectiveLoginProvider != null &&
-    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
+  const providerSupportsLoginPty = environmentSupportsLoginPty(effectiveLoginEnvironment, environmentCapabilities, isRunnerHarness ? harnessType : adapterType);
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
     (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
     adapterSupportsSandboxLogin &&
-    effectiveLoginEnvironment?.driver === "sandbox" &&
+    (effectiveLoginEnvironment?.driver === "sandbox" || (effectiveLoginEnvironment?.driver === "plugin" && !isCreate)) &&
     Boolean(effectiveLoginEnvironmentId) &&
     Boolean(selectedCompanyId) &&
     Boolean(authMissingCheck) &&
@@ -1510,7 +1527,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     };
   }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
   const effectiveHeartbeat = asObject(effectiveRuntimeConfig.heartbeat);
-  const maxTurnContinuation = asObject(effectiveHeartbeat.maxTurnContinuation);
+  const savedContinuation = asObject(heartbeat.maxTurnContinuation);
+  const continuationDefaults = {
+    ...savedContinuation,
+    enabled: asBoolean(savedContinuation.enabled, true),
+    maxAttempts: clampInteger(asFiniteNumber(savedContinuation.maxAttempts, MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS), 0, MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP),
+    delayMs: clampInteger(asFiniteNumber(savedContinuation.delayMs, MAX_TURN_CONTINUATION_DEFAULT_DELAY_SEC * 1000) / 1000, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000,
+  };
+  const maxTurnContinuation = isCreate ? asObject(effectiveHeartbeat.maxTurnContinuation)
+    : eff("heartbeat", "maxTurnContinuation", continuationDefaults);
   const maxTurnContinuationEnabled = asBoolean(maxTurnContinuation.enabled, true);
   const maxTurnContinuationMaxAttempts = clampInteger(
     asFiniteNumber(maxTurnContinuation.maxAttempts, MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS),
@@ -1610,7 +1635,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     <div className="space-y-6">
       {showRunnerUpgrade && !runnerUpgraded ? (
         <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-4">
-          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+          <div className="agent-runner-upgrade flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
             <div className="min-w-0 flex-1 space-y-1">
               <p className="text-sm font-medium">Upgrade to Paperclip Runner</p>
               <p className="text-sm text-muted-foreground">
@@ -1887,6 +1912,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
+          {isRunnerHarness && runnerDiscoveryView.kind === "error" && (
+            <QueryErrorState size="inline" error={runnerDiscoveryView.error}
+              action="load agent setup data" retrying={runnerDiscoveryView.isFetching}
+              onRetry={runnerDiscoveryView.retry} />
+          )}
           {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
             routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
@@ -1907,6 +1937,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {showInlineAdapterTestEnvironmentFeedback && showAdapterLogin && (
             <AdapterLoginPanel
+              requiresAgent={effectiveLoginEnvironment?.driver === "plugin"}
+              agentId={!isCreate && effectiveLoginEnvironment?.driver === "plugin" ? props.agent.id : undefined}
               key={`${adapterType}:${effectiveLoginEnvironmentId}`}
               companyId={selectedCompanyId!}
               adapterType={isRunnerHarness ? harnessType : adapterType}
@@ -1945,7 +1977,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {renderAdapterFields("adapter")}
-          {isLocal && (<>
+          {isLocal && cloudHarnessAllowed && (<>
               <ModelDropdown
                 models={models}
                 loadingModels={connectionModels?.isLoading ?? (fetchingModels || fetchedModelsView.kind === "reconnecting")}
@@ -2081,19 +2113,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </>
               )}
               {renderAdapterFields("configuration")}
-              {(isLocal || adapterType === "process" || configSchema?.fields.some((field) => schemaFieldSection(field.key) === "advanced")) && (
+              {hasConfigurationAdvancedFields && (
               <CollapsibleSection
                 title="Advanced"
                 open={configurationAdvancedOpen}
                 onToggle={() => setConfigurationAdvancedOpen(!configurationAdvancedOpen)}
               >
                 <div className="space-y-3">
-                  {isRunnerHarness && <AgentRunnerSelect value={runner}
-                    pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
-                    defaultRunner={runnerAvailability?.defaultRunner}
-                    supportedRunners={runnerAvailability?.supportedRunners}
-                    onChange={next => isCreate ? set!({ runner: next }) : setOverlay(prev => ({ ...prev, runner: next }))} />}
-                  {isLocal && (!isRunnerHarness || fieldsAdapterType !== "paperclip_runner") && (<>              {/*
+                  {hasLocalAdvancedFields && (<>              {/*
                 The command names a binary on the execution host, so the
                 managed-sandbox-only policy hides it: the platform-managed image
                 owns the binary. Hiding is presentation only. A stored
@@ -2493,6 +2520,7 @@ function AdapterLoginTerminalState({
 // environment for one company. A parent that lifts the test feedback renders
 // the panel from this descriptor.
 export type AdapterLoginDescriptor = {
+  agentId?: string;
   companyId: string;
   adapterType: string;
   environmentId: string;
@@ -2515,6 +2543,8 @@ export type AdapterLoginDescriptor = {
 // correctly, and the first thing to rot would have been the timeout and
 // cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
+  requiresAgent?: boolean;
+  active?: boolean;
   aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
@@ -2579,11 +2609,10 @@ function adapterLoginTitle(adapterType: string): string {
 
 export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   const getCapabilities = useAdapterCapabilities();
-  const panelMode = getCapabilities(props.adapterType).login?.panelMode;
-  if (panelMode === "submitted_browser_code") {
-    return <SubmittedBrowserCodeLoginPanel {...props} />;
-  }
-  return <DisplayedCodeLoginPanel {...props} />;
+  const Panel = getCapabilities(props.adapterType).login?.panelMode === "submitted_browser_code"
+    ? SubmittedBrowserCodeLoginPanel : DisplayedCodeLoginPanel;
+  const agentId = props.requiresAgent ? props.agentId : undefined;
+  return <Panel key={agentId} {...props} agentId={agentId} />;
 }
 
 class AdapterLoginConflictError extends Error {
@@ -2593,9 +2622,12 @@ class AdapterLoginConflictError extends Error {
 }
 
 function DisplayedCodeLoginPanel({
+  active: loginActive = true,
+  requiresAgent,
   companyId,
   adapterType,
   environmentId,
+  agentId,
   autoStart,
   onConnected,
   onAccountBinding,
@@ -2606,6 +2638,8 @@ function DisplayedCodeLoginPanel({
   onRetryReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const automaticComputer = Boolean(requiresAgent && !agentId && aiConnection);
+  const cancellation = useAdapterLoginCancellation(loginActive, companyId, adapterType, false, sessionId, { environmentId, aiConnection });
   const [retrying, setRetrying] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   // The server delivers the one-time prompt on the first owner read only. Latch
@@ -2628,8 +2662,9 @@ function DisplayedCodeLoginPanel({
   const resumedRef = useRef(false);
 
   const startLogin = useMutation({
-    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, aiConnection }),
+    mutationFn: () => cancellation.accept(() => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, ...(agentId ? { agentId } : {}), ...(aiConnection ? { aiConnection } : {}) })),
     onSuccess: (session) => {
+      if (!session || !cancellation.isActive()) return;
       resumedRef.current = false;
       setStartError(null);
       setLatchedPrompt(null);
@@ -2639,6 +2674,7 @@ function DisplayedCodeLoginPanel({
       setSessionId(session.sessionId);
     },
     onError: (error) => {
+      if (!cancellation.isActive()) return;
       setStartError(describeError(error).body);
     },
   });
@@ -2656,6 +2692,7 @@ function DisplayedCodeLoginPanel({
     mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
     onSuccess: clearActiveSession,
     onError: (error) => {
+      if (!cancellation.isActive()) return;
       setStartError(describeError(error).body);
     },
   });
@@ -2664,12 +2701,16 @@ function DisplayedCodeLoginPanel({
   // browser rediscovers its own session after a reload with no local state. A
   // 404 means no active session for the caller.
   const activeSessionQuery = useQuery({
-    queryKey: ["adapter-login-active-session", companyId, adapterType],
-    queryFn: async () => {
+    queryKey: ["adapter-login-active-session", companyId, adapterType, environmentId, agentId],
+    queryFn: async ({ signal }) => {
       try {
-        const active = await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+        const active = await cancellation.resume(() => agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType, { signal }));
         if (!active) return null;
-        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new AdapterLoginConflictError(active.sessionId);
+        const wrongComputer = !automaticComputer && active.agentId !== agentId;
+        const wrongConnection = aiConnection
+          ? !matchesAdapterLoginTarget(active, { environmentId, aiConnection })
+          : Boolean(active.aiConnection);
+        if (wrongComputer || wrongConnection) throw new AdapterLoginConflictError(active.sessionId);
         return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
@@ -2683,6 +2724,7 @@ function DisplayedCodeLoginPanel({
     // in flight — which the per-owner cap then rejects.
     gcTime: 0,
     staleTime: 0,
+    enabled: loginActive,
   });
   const activeSessionView = useQueryView(activeSessionQuery);
 
@@ -2693,8 +2735,8 @@ function DisplayedCodeLoginPanel({
 
   const statusQuery = useQuery({
     queryKey: ["adapter-login-status", companyId, adapterType, sessionId],
-    queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
-    enabled: Boolean(sessionId) && !releasingResumedSession && !retrying,
+    queryFn: ({ signal }) => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!, { signal }),
+    enabled: loginActive && Boolean(sessionId) && !releasingResumedSession && !retrying,
     // A status 404 is unrecoverable: the server removed the row, so a retry
     // cannot bring it back. The shared retry policy never retries a 4xx, so
     // it stops at once and fails loudly; only transient errors are retried.
@@ -2717,14 +2759,14 @@ function DisplayedCodeLoginPanel({
   const status = session?.status ?? null;
   const prompt = latchedPrompt;
   const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
-  const isActive = Boolean(sessionId) && !isTerminal && !retrying;
+  const isActive = loginActive && Boolean(sessionId) && !isTerminal && !retrying;
   // A saving bind also blocks a new Sign in: the bind is an agent-update save,
   // and a second login started while it is in flight could finish its own
   // save first — the older save would then land last and silently revert the
   // agent to the previous account while the panel reports the newer bind.
   // Serializing at the only entry point is the whole fix; the panel has no
   // other way to start a login mid-save.
-  const startDisabled = startLogin.isPending || isActive || accountBindState === "saving";
+  const startDisabled = !loginActive || startLogin.isPending || isActive || accountBindState === "saving";
 
   // Adopt the caller's active session once, on mount. This is what makes a
   // page reload keep the session: with no local state at all, the panel would
@@ -2732,7 +2774,7 @@ function DisplayedCodeLoginPanel({
   // active login for this owner.
   const resumeAttemptedRef = useRef(false);
   useEffect(() => {
-    if (resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
+    if (!loginActive || resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
     resumeAttemptedRef.current = true;
     const active = activeSessionQuery.data;
     if (!active) return;
@@ -2740,7 +2782,7 @@ function DisplayedCodeLoginPanel({
     setStartError(null);
     setLatchedPrompt(active.prompt ?? null);
     setSessionId(active.sessionId);
-  }, [activeSessionQuery.isFetched, activeSessionQuery.data]);
+  }, [loginActive, activeSessionQuery.isFetched, activeSessionQuery.data]);
 
   // A resumed session's status poll found the session already gone: the read
   // that discovered it and the poll that tried to use it raced, and the
@@ -2789,7 +2831,7 @@ function DisplayedCodeLoginPanel({
   const startLoginRef = useRef(startLogin.mutate);
   startLoginRef.current = startLogin.mutate;
   useEffect(() => {
-    if (!autoStart || autoStartedRef.current) return;
+    if (!loginActive || !autoStart || autoStartedRef.current) return;
     // A failed lookup is not proof that no session exists: only a successful
     // lookup is. Show the failure to the user instead of starting a second
     // login the server would reject against the per-owner cap.
@@ -2804,6 +2846,7 @@ function DisplayedCodeLoginPanel({
     startLoginRef.current();
   }, [
     autoStart,
+    loginActive,
     activeSessionQuery.isSuccess,
     activeSessionView.kind,
     activeSessionQuery.data,
@@ -2817,10 +2860,10 @@ function DisplayedCodeLoginPanel({
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
   useEffect(() => {
-    if (status !== "authenticated" || connectedRef.current) return;
+    if (!loginActive || status !== "authenticated" || connectedRef.current) return;
     connectedRef.current = true;
     onConnectedRef.current?.(sessionId ?? undefined);
-  }, [status]);
+  }, [loginActive, status]);
 
   // Drive the account-binding hand-off as a visible state machine, not a
   // fire-and-forget latch. The bind saves the agent, and the status poll
@@ -2865,8 +2908,8 @@ function DisplayedCodeLoginPanel({
   const onPromptReadyRef = useRef(onPromptReady);
   onPromptReadyRef.current = onPromptReady;
   useEffect(() => {
-    onPromptReadyRef.current?.(prompt?.url ?? null);
-  }, [prompt]);
+    onPromptReadyRef.current?.(loginActive ? prompt?.url ?? null : null);
+  }, [loginActive, prompt]);
 
   const failed = Boolean(isTerminal && status !== "authenticated") || statusQuery.isError;
   const retryingRef = useRef(false);
@@ -2922,6 +2965,7 @@ function DisplayedCodeLoginPanel({
       <ProviderSubscriptionCard
         loading={retryLogin.isPending || (!prompt && !failure)}
         failure={failure}
+        failureMessage={automaticComputer ? startError ?? undefined : undefined}
         onRetry={!onRetryReady && retryReady ? retryAction : undefined}
         providerName={connectSourceName(adapterType)}
         authorizationUrl={prompt?.url}
@@ -3016,7 +3060,7 @@ function DisplayedCodeLoginPanel({
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
                 1. Code
               </div>
-              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
+              <span className={cn("font-mono text-xs text-foreground break-all", ANALYTICS_NO_CAPTURE_CLASS)}>{prompt.code}</span>
             </div>
             <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
           </div>
@@ -3126,9 +3170,12 @@ const CLAUDE_LOGIN_TIMED_OUT_MESSAGE = "The login timed out. Start the login aga
 // and submits it. The panel clears the code right after submit. The panel treats
 // only the server `stored` state as success, and it never shows the OAuth token.
 function SubmittedBrowserCodeLoginPanel({
+  active: loginActive = true,
+  requiresAgent,
   companyId,
   adapterType,
   environmentId,
+  agentId,
   onStored,
   onApplyStored,
   autoStart,
@@ -3143,6 +3190,8 @@ function SubmittedBrowserCodeLoginPanel({
   onRetryReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const automaticComputer = Boolean(requiresAgent && !agentId && aiConnection);
+  const cancellation = useAdapterLoginCancellation(loginActive, companyId, adapterType, true, sessionId, { environmentId, aiConnection });
   const [retrying, setRetrying] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   // The server delivers the authorization URL on the guarded prompt read only.
@@ -3223,10 +3272,11 @@ function SubmittedBrowserCodeLoginPanel({
   const storedToken = storedTokenQuery.data ?? null;
 
   const startLogin = useMutation({
-    mutationFn: () =>
+    mutationFn: () => cancellation.accept(() =>
       agentsApi.startClaudeSetupTokenLogin(companyId, {
         environmentId,
-        aiConnection,
+        ...(agentId ? { agentId } : {}),
+        ...(aiConnection ? { aiConnection } : {}),
         // When the owner already has a stored token, the login rotates it under
         // the captured version, so a replacement login never conflicts with an
         // existing value. Without a stored token the login is a first write.
@@ -3238,13 +3288,15 @@ function SubmittedBrowserCodeLoginPanel({
               },
             }
           : {}),
-      }),
+      })),
     onSuccess: (session) => {
+      if (!session || !cancellation.isActive()) return;
       resumedRef.current = false;
       resetLocalState();
       setSessionId(session.sessionId);
     },
     onError: (error) => {
+      if (!cancellation.isActive()) return;
       setStartError(describeError(error).body);
     },
   });
@@ -3301,12 +3353,16 @@ function SubmittedBrowserCodeLoginPanel({
   // session id, so the browser rediscovers its own session after a reload
   // with no local state. A 404 means no active session for the caller.
   const activeSessionQuery = useQuery({
-    queryKey: ["claude-setup-token-active-session", companyId],
-    queryFn: async () => {
+    queryKey: ["claude-setup-token-active-session", companyId, environmentId, agentId],
+    queryFn: async ({ signal }) => {
       try {
-        const active = await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+        const active = await cancellation.resume(() => agentsApi.getActiveClaudeSetupTokenLoginSession(companyId, { signal }));
         if (!active) return null;
-        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        const wrongComputer = !automaticComputer && active.agentId !== agentId;
+        const wrongConnection = aiConnection
+          ? !matchesAdapterLoginTarget(active, { environmentId, aiConnection })
+          : Boolean(active.aiConnection);
+        if (wrongComputer || wrongConnection) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
         return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
@@ -3320,6 +3376,7 @@ function SubmittedBrowserCodeLoginPanel({
     // in flight — which the per-owner cap then rejects.
     gcTime: 0,
     staleTime: 0,
+    enabled: loginActive,
   });
   const activeSessionView = useQueryView(activeSessionQuery);
 
@@ -3333,11 +3390,11 @@ function SubmittedBrowserCodeLoginPanel({
   // status 404 also stops the polls: the server cleaned up the session, so the
   // panel enters a terminal failure state instead.
   const pollingEnabled =
-    Boolean(sessionId) && !timedOut && !statusGone && !releasingResumedSession && !retrying;
+    loginActive && Boolean(sessionId) && !timedOut && !statusGone && !releasingResumedSession && !retrying;
 
   const statusQuery = useQuery({
     queryKey: ["claude-setup-token-status", companyId, sessionId],
-    queryFn: () => agentsApi.getClaudeSetupTokenLoginStatus(companyId, sessionId!),
+    queryFn: ({ signal }) => agentsApi.getClaudeSetupTokenLoginStatus(companyId, sessionId!, { signal }),
     enabled: pollingEnabled,
     // A status 404 is terminal. The server removes a cleaned-up session at once,
     // so a retry cannot recover it. The shared retry policy never retries a
@@ -3390,7 +3447,7 @@ function SubmittedBrowserCodeLoginPanel({
   // active login for this owner.
   const resumeAttemptedRef = useRef(false);
   useEffect(() => {
-    if (resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
+    if (!loginActive || resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
     resumeAttemptedRef.current = true;
     const active = activeSessionQuery.data;
     if (!active) return;
@@ -3401,7 +3458,7 @@ function SubmittedBrowserCodeLoginPanel({
       setAuthorizationUrl(active.prompt.authorizationUrl);
       if (active.prompt.transportAdvisory) setTransportInsecure(true);
     }
-  }, [activeSessionQuery.isFetched, activeSessionQuery.data]);
+  }, [loginActive, activeSessionQuery.isFetched, activeSessionQuery.data]);
 
   // Poll the guarded prompt route until it returns the authorization URL. The
   // route returns 404 until the URL is ready, so the panel treats a 404 as
@@ -3409,9 +3466,9 @@ function SubmittedBrowserCodeLoginPanel({
   const promptQuery = useQuery({
     queryKey: ["claude-setup-token-prompt", companyId, sessionId],
     enabled: pollingEnabled && !authorizationUrl,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
-        return await agentsApi.getClaudeSetupTokenLoginPrompt(companyId, sessionId!);
+        return await agentsApi.getClaudeSetupTokenLoginPrompt(companyId, sessionId!, { signal });
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
@@ -3433,6 +3490,7 @@ function SubmittedBrowserCodeLoginPanel({
     mutationFn: (code: string) =>
       agentsApi.submitClaudeSetupTokenBrowserCode(companyId, sessionId!, code),
     onError: (error) => {
+      if (!cancellation.isActive()) return;
       setStartError(describeError(error).body);
     },
   });
@@ -3440,6 +3498,7 @@ function SubmittedBrowserCodeLoginPanel({
   const completeLogin = useMutation({
     mutationFn: () => agentsApi.completeClaudeSetupTokenLogin(companyId, sessionId!),
     onSuccess: (result) => {
+      if (!cancellation.isActive()) return;
       // The server reached the `stored` state. Hold the non-secret claim and
       // report it to the parent. The response carries no token.
       setStoredSessionId(result.storedSessionId);
@@ -3461,11 +3520,11 @@ function SubmittedBrowserCodeLoginPanel({
   const completeLoginRef = useRef(completeLogin.mutate);
   completeLoginRef.current = completeLogin.mutate;
   useEffect(() => {
-    if (status === "authenticated" && !completionStartedRef.current) {
+    if (loginActive && status === "authenticated" && !completionStartedRef.current) {
       completionStartedRef.current = true;
       completeLoginRef.current();
     }
-  }, [status]);
+  }, [loginActive, status]);
 
   const isStored = storedSessionId !== null;
   const isFailure =
@@ -3473,8 +3532,8 @@ function SubmittedBrowserCodeLoginPanel({
     statusGone ||
     Boolean(status && CLAUDE_LOGIN_FAILURE_STATUSES.has(status));
   const isCompleting = status === "authenticated" && !isStored && !completionFailed;
-  const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut && !retrying;
-  const startDisabled = startLogin.isPending || isActive;
+  const isActive = loginActive && Boolean(sessionId) && !isStored && !isFailure && !timedOut && !retrying;
+  const startDisabled = !loginActive || startLogin.isPending || isActive;
 
   // Cap the active login at the server deadline. The timer arms when the login
   // becomes active and clears when the login leaves the active state (a terminal
@@ -3558,7 +3617,7 @@ function SubmittedBrowserCodeLoginPanel({
   const startLoginRef = useRef(startLogin.mutate);
   startLoginRef.current = startLogin.mutate;
   useEffect(() => {
-    if (!autoStart || autoStartedRef.current) return;
+    if (!loginActive || !autoStart || autoStartedRef.current) return;
     // A failed lookup is not proof that no session exists: only a successful
     // lookup is. Show the failure to the user instead of starting a second
     // login the server would reject against the per-owner cap.
@@ -3573,6 +3632,7 @@ function SubmittedBrowserCodeLoginPanel({
     startLoginRef.current();
   }, [
     autoStart,
+    loginActive,
     activeSessionQuery.isSuccess,
     activeSessionView.kind,
     activeSessionQuery.data,
@@ -3626,10 +3686,10 @@ function SubmittedBrowserCodeLoginPanel({
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
   useEffect(() => {
-    if (!isStored || connectedRef.current) return;
+    if (!loginActive || !isStored || connectedRef.current) return;
     connectedRef.current = true;
     onConnectedRef.current?.(sessionId ?? undefined);
-  }, [isStored]);
+  }, [loginActive, isStored]);
 
   // The other end of `onCodeSubmitted`. Any of these after a submit means the
   // code is not going to become a stored login, and a caller still showing
@@ -3647,8 +3707,8 @@ function SubmittedBrowserCodeLoginPanel({
   const onPromptReadyRef = useRef(onPromptReady);
   onPromptReadyRef.current = onPromptReady;
   useEffect(() => {
-    onPromptReadyRef.current?.(authorizationUrl);
-  }, [authorizationUrl]);
+    onPromptReadyRef.current?.(loginActive ? authorizationUrl : null);
+  }, [loginActive, authorizationUrl]);
 
   const retryingRef = useRef(false);
   const retryLogin = useMutation({
@@ -3707,6 +3767,7 @@ function SubmittedBrowserCodeLoginPanel({
       <ProviderSubscriptionCard
         loading={retryLogin.isPending || (!authorizationUrl && !failure)}
         failure={failure}
+        failureMessage={automaticComputer ? startError ?? undefined : undefined}
         onRetry={!onRetryReady && retryReady ? retryAction : undefined}
         providerName={connectSourceName(adapterType)}
         authorizationUrl={authorizationUrl ?? undefined}
@@ -3987,14 +4048,16 @@ export function AdapterTypeDropdown({
   museEnabled?: boolean;
   nativeRunnerEnabled?: boolean;
 }) {
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(() =>
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
-    ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
+    ].filter(item => (!cloud || harnessPolicy.isCloudHarnessAllowed(item.value)) && !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
-    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
+    [cloud, harnessPolicy, disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
     displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
       <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>

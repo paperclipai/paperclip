@@ -26,7 +26,7 @@ interface PositionedNode {
 }
 
 /** True when the character at `index` is escaped by an odd number of backslashes. */
-function isEscaped(text: string, index: number): boolean {
+export function isEscaped(text: string, index: number): boolean {
   let count = 0;
   for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) count += 1;
   return count % 2 === 1;
@@ -50,8 +50,11 @@ function codeRanges(node: PositionedNode, ranges: Array<[number, number]>): Arra
   return ranges;
 }
 
-export function unescapeIntrawordUnderscores(markdown: string): string {
-  if (!markdown.includes("\\_")) return markdown;
+/**
+ * Apply `rewrite` to prose only: code spans, code blocks and raw HTML stay
+ * byte-identical. Text the parser cannot place is returned unchanged.
+ */
+export function rewriteMarkdownProse(markdown: string, rewrite: (prose: string) => string): string {
   let ranges: Array<[number, number]>;
   try {
     ranges = codeRanges(fromMarkdown(markdown) as PositionedNode, []);
@@ -63,8 +66,13 @@ export function unescapeIntrawordUnderscores(markdown: string): string {
   let cursor = 0;
   for (const [start, end] of ranges) {
     if (start < cursor) continue;
-    result += unescapeProse(markdown.slice(cursor, start)) + markdown.slice(start, end);
+    result += rewrite(markdown.slice(cursor, start)) + markdown.slice(start, end);
     cursor = end;
   }
-  return result + unescapeProse(markdown.slice(cursor));
+  return result + rewrite(markdown.slice(cursor));
+}
+
+export function unescapeIntrawordUnderscores(markdown: string): string {
+  if (!markdown.includes("\\_")) return markdown;
+  return rewriteMarkdownProse(markdown, unescapeProse);
 }

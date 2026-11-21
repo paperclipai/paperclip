@@ -9,18 +9,46 @@ import { nativeHarnessBackupOwner, persistNativeHarnessBackup, verifyDurableNati
 import { MAX_NATIVE_HARNESS_BYTES, MAX_NATIVE_HARNESS_OBJECT_BYTES, nativeHarnessArchiveSizeLimit } from "./native-harness-backup-archive.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { NativeHarnessBackupSourceError, readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
+import { settledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
+import { hasValidNativeHarnessFilesystemIndependence } from "./native-harness-filesystem-independence.js";
+
+const MAX_PARALLEL_INDEPENDENCE_CHECKS = 4;
 
 export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean> {
-  const rows = await db.execute(sql`select 1 from agent_task_sessions s
-    join heartbeat_runs r on r.id = s.last_run_id and r.company_id = s.company_id and r.agent_id = s.agent_id
-    join environment_leases e on e.company_id = r.company_id and e.issue_id = r.native_issue_id
-      and e.metadata->'nativeHarnessBackup'->>'normalizedSessionId' = r.native_session_id::text
-    where s.adapter_type = 'paperclip_runner'
-      and e.metadata->'nativeHarnessBackup'->>'schema' = 'paperclip.native-harness-backup-stamp.v2'
-      and not exists (select 1 from native_harness_backups b where b.company_id = r.company_id
+  let afterSession = "", afterScope = "";
+  for (;;) {
+    const rows = await db.execute<{ company_id: string; selected_session_id: string; scope_digest: string; has_receipt: boolean }>(sql`with selected_sessions as materialized (
+      select s.company_id, s.id, s.last_run_id, r.native_issue_id, r.native_session_id
+      from agent_task_sessions s
+      join heartbeat_runs r on r.id = s.last_run_id and r.company_id = s.company_id and r.agent_id = s.agent_id
+      where s.adapter_type = 'paperclip_runner'
+    ) select distinct
+    s.company_id, s.id::text as selected_session_id, coalesce(e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256', '') as scope_digest,
+    r.runner_profile_json ? 'nativeHarnessFilesystemIndependence' as has_receipt from selected_sessions s
+    join heartbeat_runs r on r.id = s.last_run_id and r.company_id = s.company_id
+    join environment_leases e on e.company_id = s.company_id and e.issue_id = s.native_issue_id
+      and e.metadata->'nativeHarnessBackup'->>'normalizedSessionId' = s.native_session_id::text
+    where e.metadata->'nativeHarnessBackup'->>'schema' = 'paperclip.native-harness-backup-stamp.v2'
+      and not exists (select 1 from native_harness_backups b where b.company_id = s.company_id
         and b.scope_digest = e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256' and b.status = 'current')
-    limit 1`);
-  return rows.length > 0;
+      and (s.id::text, coalesce(e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256', '')) > (${afterSession}, ${afterScope})
+    order by selected_session_id, scope_digest limit 100`);
+    let next = 0, invalid = false;
+    const checked = await Promise.allSettled(Array.from({ length: Math.min(MAX_PARALLEL_INDEPENDENCE_CHECKS, rows.length) }, async () => {
+      while (!invalid && next < rows.length) {
+        const row = rows[next++]!;
+        try {
+          if (!row.has_receipt || !await hasValidNativeHarnessFilesystemIndependence(db, {
+            companyId: row.company_id, selectedSessionId: row.selected_session_id, scopeDigest: row.scope_digest,
+          })) invalid = true;
+        } catch (error) { invalid = true; throw error; }
+      }
+    }));
+    for (const result of checked) if (result.status === "rejected") throw result.reason;
+    if (invalid) return true;
+    if (rows.length < 100) return false;
+    afterSession = rows.at(-1)!.selected_session_id; afterScope = rows.at(-1)!.scope_digest;
+  }
 }
 
 const MAX_PARALLEL_BACKUPS = 4;
@@ -100,7 +128,7 @@ async function migrateSource(db: Db, input: { storage: StorageService; signal: A
   return 1;
 }
 
-async function mapSources<T>(input: { signal: AbortSignal; concurrency?: number;
+async function mapSources<T>(input: { signal: AbortSignal; concurrency?: number; onResult?: (result: T) => void;
   unavailableSource?: (error: unknown, scopeDigest: string) => T | undefined }, visit: (source: Source, signal: AbortSignal) => Promise<T>) {
   const base = nativeHarnessStateBase();
   const directories = await readdir(base).catch((error: NodeJS.ErrnoException) => {
@@ -121,6 +149,7 @@ async function mapSources<T>(input: { signal: AbortSignal; concurrency?: number;
     for (const result of settled) {
       if (result.status === "rejected") throw result.reason;
       results.push(result.value);
+      input.onResult?.(result.value);
     }
     wave = []; reserved = 0;
   };
@@ -132,7 +161,7 @@ async function mapSources<T>(input: { signal: AbortSignal; concurrency?: number;
       input.signal.throwIfAborted();
       const deferred = input.unavailableSource?.(error, scopeDigest);
       if (deferred === undefined) throw error;
-      results.push(deferred); continue;
+      results.push(deferred); input.onResult?.(deferred); continue;
     }
     if (!source) continue;
     const reservation = 2 * source.archiveLimit;
@@ -153,12 +182,12 @@ export async function migrateNativeHarnessBackups(db: Db, input: {
   return counts.reduce<number>((total, count) => total + count, 0);
 }
 
-export async function prestageNativeHarnessBackups(db: Db, input: { storage: StorageService; signal: AbortSignal }) {
+export async function prestageNativeHarnessBackups(db: Db, input: { storage: StorageService; signal: AbortSignal; onOutcome?: (outcome: string) => void }) {
   const deferSource = (scopeDigest: string, reason: string, outcome: string) => {
     console.warn(JSON.stringify({ schema: "paperclip.native-harness-prestage-source.v1", scopeDigest, reason }));
     return outcome;
   };
-  const outcomes = await mapSources({ ...input, concurrency: 1, unavailableSource: (error, scopeDigest) => {
+  const outcomes = await mapSources({ ...input, concurrency: 1, onResult: (outcome: string) => input.onOutcome?.(outcome), unavailableSource: (error, scopeDigest) => {
     if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && error.message === "native_harness_migration_source_unsettled") {
       return deferSource(scopeDigest, error.message, "source_unavailable");
     }
@@ -181,7 +210,31 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
         scopeDigest: source.scopeDigest, manifestSha256: source.manifestSha256, signal });
       return "current";
     }
-    if (run.status !== "succeeded" || !run.finishedAt) return "source_not_successful";
+    if (run.status !== "succeeded" || !run.finishedAt) {
+      if (!run.finishedAt || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) {
+        return ["queued", "scheduled_retry", "running"].includes(run.status) ? "source_run_active" : "source_run_unfinished";
+      }
+      const providerLeaseId = await verifiedSourceLease(db, source, run, signal);
+      if (!providerLeaseId) return "source_unverified";
+      try {
+        const { owner, reason } = await settledNativeHarnessBackupOwner(db, { companyId: run.companyId, issueId: run.issueId,
+          runId: source.runId, sessionId: run.sessionId, runnerInstanceId: run.runnerId, scopeDigest: source.scopeDigest,
+          root: source.root, manifestSha256: source.manifestSha256, providerLeaseId, signal });
+        if (!owner) return `source_${reason}`;
+        await persistNativeHarnessBackup({ db, storage: input.storage, owner, root: source.root,
+          scopeDigest: source.scopeDigest, signal, maxArchiveBytes: source.archiveLimit });
+        return "published";
+      } catch (error) {
+        signal.throwIfAborted();
+        if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && ["native_harness_preservation_source_unsettled",
+          "native_harness_archive_invalid"].includes(error.message)
+          || ((error as { code?: string; cause?: { code?: string } })?.code
+            ?? (error as { cause?: { code?: string } })?.cause?.code) === "55P03") {
+          return deferSource(source.scopeDigest, error instanceof Error ? error.message : "native_harness_source_busy", "source_changed");
+        }
+        throw error;
+      }
+    }
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.issueId, run.issueId),
       eq(nativeRunFinalizations.runId, source.runId)));

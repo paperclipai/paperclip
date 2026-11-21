@@ -193,7 +193,7 @@ vi.mock("@mdxeditor/editor", async () => {
         }}
       >
         {/* The real editor paints resolved text, never the escapes that carried it in. */}
-        {content.replace(/\\</g, "<") || placeholder || ""}
+        {content.replace(/\\</g, "<").replace(/(?:&#x20;)+$/, (suffix) => " ".repeat(suffix.length / 6)) || placeholder || ""}
       </div>
     );
   });
@@ -1053,6 +1053,27 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("stores a pasted command's `=` as typed instead of the highlight exporter's escaped form", async () => {
+    const value = "Run node -e 'const fs=require(\"fs\");x.map(a=>a)' then check a == b.\n\n```js\nconst keep\\=1\n```";
+    // MDXEditor's highlight extension escapes every prose `=`; code is exported as typed.
+    mdxEditorMockState.emitMountChange =
+      "Run node -e 'const fs\\=require(\"fs\");x.map(a\\=>a)' then check a \\=\\= b.\n\n```js\nconst keep\\=1\n```";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(value);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("keeps a code span after an escaped HTML-like tag byte-identical", async () => {
     const stored = "<div>\n`a\\_b` and snake_case";
     // The exporter escapes the `<` (reversed on storage) and the prose underscore.
@@ -1689,14 +1710,14 @@ describe("MarkdownEditor", () => {
   it("places the caret after a plain action command", () => {
     const editable = document.createElement("div");
     editable.contentEditable = "true";
-    editable.textContent = "/goal\u00a0";
+    editable.innerHTML = '<p><span data-lexical-text="true">/goal </span></p>';
     document.body.appendChild(editable);
 
     expect(placeCaretAtEditableEnd(editable)).toBe(true);
 
     const selection = window.getSelection();
-    expect(selection?.anchorNode).toBe(editable);
-    expect(selection?.anchorOffset).toBe(1);
+    expect(selection?.anchorNode).toBe(editable.querySelector("span")?.firstChild);
+    expect(selection?.anchorOffset).toBe("/goal ".length);
 
     editable.remove();
   });

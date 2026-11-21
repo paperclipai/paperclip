@@ -68,8 +68,10 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
       name: "Inherited remote workspace", mode, strategyType: "project_primary", providerType: "cloud_sandbox",
       cwd: `/workspaces/${randomUUID()}`, metadata: { remoteWorkspace: authority } }).returning();
     await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, parent.id));
-    const [child] = await db.insert(issues).values({ companyId: company.id, parentId: parent.id,
-      title: "Use the inherited files", status: "todo", assigneeAgentId: agent.id, responsibleUserId: userId,
+    // An unrelated task that explicitly shares the running task's workspace. A
+    // child bound this way would get its own workspace at admission instead.
+    const [child] = await db.insert(issues).values({ companyId: company.id,
+      title: "Use the shared files", status: "todo", assigneeAgentId: agent.id, responsibleUserId: userId,
       executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode } }).returning();
     const originalTransaction = db.transaction.bind(db);
     let reassignmentInjected = false;

@@ -129,7 +129,6 @@ describe("Codex app-server Codex driver", () => {
         "skills.include_instructions": false,
         include_apps_instructions: false,
         include_collaboration_mode_instructions: true,
-        "features.image_generation": false,
       },
       permissions: "paperclip-runner-workspace-only",
       runtimeWorkspaceRoots: [WORKSPACE],
@@ -156,12 +155,11 @@ describe("Codex app-server Codex driver", () => {
           "permissions.paperclip-runner-workspace-only.filesystem=",
         ),
         "permissions.paperclip-runner-workspace-only.network.enabled=false",
-        'shell_environment_policy.inherit="none"',
+        'shell_environment_policy.inherit="all"',
+        "shell_environment_policy.ignore_default_excludes=true",
         expect.stringContaining(
           'shell_environment_policy.set={PATH="/bin",LANG="C.UTF-8"}',
         ),
-        "--disable",
-        "image_generation",
       ]),
     );
     expect(

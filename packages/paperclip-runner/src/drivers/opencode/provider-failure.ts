@@ -22,6 +22,9 @@ function providerErrorEnvelope(message: string): { message?: string; httpStatus?
   };
 }
 
+// OpenRouter reports an unknown model ID as "<id> is not a valid model ID".
+const MODEL_UNAVAILABLE = /not a valid model|model_not_found|model[^\n]*(?:does not exist|not found|not supported)/i;
+
 export function openCodeProviderFailure(error: Record<string, unknown>, provider: string,
   environment: NodeJS.ProcessEnv = {}) {
   const data = error.data && typeof error.data === "object" ? error.data as Record<string, unknown> : {};
@@ -31,5 +34,7 @@ export function openCodeProviderFailure(error: Record<string, unknown>, provider
   return createProviderFailure({ provider, phase: "turn", message: envelope.message ?? message,
     httpStatus: data.statusCode ?? envelope.httpStatus,
     providerCode: data.code ?? envelope.providerCode ?? error.name, requestId: data.requestID,
-    category: error.name === "ProviderAuthError" ? "authentication" : undefined, environment });
+    category: error.name === "ProviderAuthError" ? "authentication"
+      : data.isRetryable !== true && MODEL_UNAVAILABLE.test(envelope.message ?? message) ? "model_unavailable" : undefined,
+    environment });
 }

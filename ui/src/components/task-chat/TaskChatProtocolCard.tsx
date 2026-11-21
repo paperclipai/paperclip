@@ -1,4 +1,6 @@
 import { useContext, useEffect, useMemo, useState } from "react";
+import { TaskChatImageGrid } from "./TaskChatImageGrid";
+import { imageResourceSource } from "./image-resources";
 import { TaskChatStatusNotice } from "./TaskChatStatusNotice";
 import { isStatusNotice } from "./status-notice-presentation";
 import {
@@ -55,6 +57,7 @@ import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { parseUnifiedDiffLines } from "./diff-lines";
 import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
 import { ArtifactFileRow, ArtifactRow, fileRowSourceFromAttachment, fileRowSourceFromWorkProduct, subjectFromAttachment, subjectFromDocumentSummary, subjectFromWorkProduct, workProductStateBadge } from "@/components/artifacts/v1";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export interface TaskChatProtocolCardProps {
   item: TaskChatProtocolItem;
@@ -398,7 +401,7 @@ function ProviderActivityCard({
             </dl>
           ) : null}
           {item.output ? (
-            <pre className="mt-2 max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-xs text-foreground">
+            <pre className={cn("mt-2 max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
               {item.output}
             </pre>
           ) : null}
@@ -621,7 +624,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
               src={item.preview}
             />
           ) : (
-            <pre className="max-h-(--sz-70vh) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-3 font-mono text-xs">
+            <pre className={cn("max-h-(--sz-70vh) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-3 font-mono text-xs", ANALYTICS_MASK_CLASS)}>
               {item.preview}
             </pre>
           )}
@@ -1088,6 +1091,9 @@ function ResourceCard({
   item: Extract<TaskChatProtocolItem, { surface: "resource" }>;
 }) {
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
+  if (imageResourceSource(item)) {
+    return <TaskChatImageGrid items={item.imageItems ?? [item]} />;
+  }
   if (artifactsV1) {
     // Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): one full-width row named after the file. A
     // registered file keeps the shipped card's actions (gallery, text tab, open raw, download, CSV preview);

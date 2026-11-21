@@ -123,6 +123,25 @@ describe("issue recovery obligation lifecycle", () => {
     expect(f.check.mock.calls.length).toBe(checked * 2); expect(f.load).toHaveBeenCalledTimes(loaded);
     expect(f.coordinator.nextWakeAt()).toBeNull();
   });
+  it("retries a recovery-action pass whose blocker stall wake failed to enqueue", async () => {
+    const f = fixture(); f.rows.actions.push({ id: "selected", companyId: "selected" });
+    f.recoveryActions.mockResolvedValueOnce({ blockerStallWakeFailures: 1 } as never);
+    await f.worker.ready;
+    expect(f.recoveryActions).toHaveBeenCalledTimes(1);
+    expect(f.coordinator.nextWakeAt()).toBe(1_030_000);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.recoveryActions).toHaveBeenCalledTimes(2);
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+  });
+  it("comes back for a stall held while its agent takes no wakes", async () => {
+    const f = fixture(); f.rows.actions.push({ id: "selected", companyId: "selected" });
+    f.recoveryActions.mockResolvedValueOnce({ blockerStallRetryAt: 1_600_000 } as never);
+    await f.worker.ready;
+    expect(f.coordinator.nextWakeAt()).toBe(1_600_000);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(f.recoveryActions).toHaveBeenCalledTimes(2);
+    expect(f.coordinator.nextWakeAt()).toBeNull();
+  });
   it("keeps an incomplete watchdog subtree as concrete retry debt", async () => {
     const f = fixture(); f.rows.watchdogs.push({ id: "watchdog", companyId: "selected" }); f.state.incomplete = true;
     await f.worker.ready; expect(f.coordinator.nextWakeAt()).toBe(1_030_000);

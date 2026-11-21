@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues,
   nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -8,6 +8,8 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../task-admission.js";
 
 // An accepted native task result whose final reply was never published must
 // not be abandoned after one refused or failed publication attempt. Retries
@@ -25,20 +27,21 @@ describe.skipIf(!support.supported)("native final reply publication retry", () =
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
   const reply = "Keyboard shortcuts are now available on every plan.";
-  async function fixture() {
-    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+  async function fixture(options: { companyId?: string; agentId?: string; runId?: string; issueId?: string; contract?: typeof completionContracts.$inferSelect } = {}) {
+    const companyId = options.companyId ?? randomUUID(), agentId = options.agentId ?? randomUUID();
+    const issueId = options.issueId ?? randomUUID(), runId = options.runId ?? randomUUID();
     const sessionId = randomUUID(), runnerId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Reply publication fixture", issuePrefix: companyId.slice(0, 8) });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Writer", adapterType: "paperclip_runner" });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Short changelog blurb", status: "in_progress", assigneeAgentId: agentId });
-    const [contract] = await db.insert(completionContracts).values({ companyId, issueId, revision: 1,
+    if (!options.companyId) await db.insert(companies).values({ id: companyId, name: "Reply publication fixture", issuePrefix: companyId.slice(0, 8) });
+    if (!options.agentId) await db.insert(agents).values({ id: agentId, companyId, name: "Writer", adapterType: "paperclip_runner" });
+    if (!options.issueId) await db.insert(issues).values({ id: issueId, companyId, title: "Short changelog blurb", status: "in_progress", assigneeAgentId: agentId });
+    const [contract] = options.contract ? [options.contract] : await db.insert(completionContracts).values({ companyId, issueId, revision: 1,
       schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard", completionAuthority: "server_arbiter",
       incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: { revision: "test", objective: "Write the blurb", criteria: [] },
       canonicalSha256: "fixture-publication-contract", createdByActorType: "system", createdByActorId: "test" }).returning();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, nativeSessionId: sessionId,
       runnerInstanceId: runnerId, completionContractId: contract.id, completionContractSha256: contract.canonicalSha256,
       status: "running", runtimeMode: "native", contextSnapshot: { issueId, source: "assignment" } });
-    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.update(issues).set({ executionRunId: runId, status: "in_progress" }).where(eq(issues.id, issueId));
     const port = new NativeRunCoordinatorStore(db, { companyId, issueId, runId, agentId, normalizedSessionId: sessionId,
       runnerSourceInstanceId: runnerId, completionContractId: contract.id, completionContractSha256: contract.canonicalSha256,
       completionContractRevision: "test", completionContractCriterionIds: [] });
@@ -54,7 +57,7 @@ describe.skipIf(!support.supported)("native final reply publication retry", () =
       payload: { kind: "agentMessage", channel: "final", providerPhase: "final", text: reply } };
     const saveFinalReply = () => db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 170, eventType: "item.completed",
       payload: { prpEvent } });
-    return { companyId, issueId, runId, agentId, saveFinalReply };
+    return { companyId, issueId, runId, agentId, contract, saveFinalReply };
   }
   const comments = (runId: string) => db.select().from(issueComments).where(eq(issueComments.createdByRunId, runId));
   const run = async (runId: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0];
@@ -63,6 +66,74 @@ describe.skipIf(!support.supported)("native final reply publication retry", () =
   // worker agree on "due" without faking timers inside the driver.
   const makeDue = (runId: string) => db.execute(sql`update heartbeat_runs set result_json = jsonb_set(result_json,
     '{responsePublication,nextAttemptAt}', to_jsonb('2000-01-01T00:00:00.000Z'::text)) where id = ${runId}`);
+
+  it("publishes a later-page reply while older publication groups remain contended", async () => {
+    const first = await fixture({ runId: "00000000-0000-4000-8000-000000000001" });
+    const group = { companyId: first.companyId, agentId: first.agentId };
+    const older = [first];
+    // A full real SQL page of retained replies shares one publication owner.
+    // This is the same grouping boundary as retained replies to one endpoint.
+    for (let i = 2; i <= 100; i++) older.push(await fixture({ ...group,
+      issueId: first.issueId, contract: first.contract,
+      runId: `00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}` }));
+    const independent = await fixture({ ...group, runId: "ffffffff-ffff-4fff-8fff-ffffffffffff" });
+    for (const f of [...older, independent]) await f.saveFinalReply();
+
+    let unlock!: () => void, locked!: () => void;
+    const release = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+        .where(inArray(nativeRunFinalizations.runId, older.map(f => f.runId))).for("update");
+      locked();
+      await release;
+    });
+    await acquired;
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    let firstPassSettled = false;
+    const startup = worker.ready.then(() => { firstPassSettled = true; });
+    const debug = db.$client.options.debug;
+    let queries = 0;
+    db.$client.options.debug = () => { queries++; };
+    try {
+      await vi.waitFor(async () => expect(await comments(independent.runId)).toHaveLength(1), { timeout: 3000 });
+      expect(firstPassSettled).toBe(false);
+      expect(await comments(first.runId)).toEqual([]);
+      expect((await comments(independent.runId))[0].body).toBe(reply);
+      unlock();
+      await holder;
+      await startup;
+      await vi.waitFor(async () => {
+        const posted = await db.select({ runId: issueComments.createdByRunId }).from(issueComments)
+          .where(eq(issueComments.issueId, first.issueId));
+        expect(posted.map(comment => comment.runId).sort()).toEqual(older.map(f => f.runId).sort());
+      }, { timeout: 20_000 });
+      await vi.waitFor(() => {
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      // Neither retained history nor the completed contention owns an idle scan.
+      const settledQueries = queries;
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(queries).toBe(settledQueries);
+      expect(coordinator.nextWakeAt()).toBeNull();
+      vi.useRealTimers();
+      expect(await comments(independent.runId)).toHaveLength(1);
+      expect(errors).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      unlock();
+      await holder;
+      await startup;
+      worker.stop();
+      await coordinator.stop();
+      db.$client.options.debug = debug;
+    }
+  }, 120_000);
 
   it("keeps an accepted reply scheduled after a single refused publication and posts it exactly once", async () => {
     const f = await fixture();

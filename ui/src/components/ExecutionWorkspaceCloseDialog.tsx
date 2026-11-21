@@ -17,6 +17,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 type ExecutionWorkspaceCloseDialogProps = {
   workspaceId: string;
@@ -268,7 +270,7 @@ export function ExecutionWorkspaceCloseDialog({
                     <div className="font-medium">{action.label}</div>
                     <div className="mt-1 break-words text-muted-foreground">{action.description}</div>
                     {action.command ? (
-                      <pre className="mt-2 whitespace-pre-wrap break-all rounded-lg bg-background px-3 py-2 font-mono text-xs text-foreground">
+                      <pre className={cn("mt-2 whitespace-pre-wrap break-all rounded-lg bg-background px-3 py-2 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
                         {action.command}
                       </pre>
                     ) : null}

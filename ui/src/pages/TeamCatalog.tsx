@@ -22,6 +22,9 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import { teamCatalogApi } from "../api/teamCatalog";
 import { agentsApi } from "../api/agents";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
+import { unrestrictedCloudHarnessPolicy, type CloudHarnessPolicy } from "@/lib/cloud-harness-policy";
 import {
   useAdapterRegistryLoaded,
   useDisabledAdaptersSync,
@@ -114,6 +117,7 @@ import {
   XOctagon,
 } from "lucide-react";
 import { GithubIcon } from "../components/icons/github-icon";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 // Matches design §11 breakpoints. Module-level so stories and the page agree.
 const DESKTOP_MIN = 1024;
@@ -124,9 +128,12 @@ const TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 export function listTeamInstallAdapterTypes(
   disabledTypes: Set<string>,
   adapterRegistryLoaded: boolean,
+  cloud = false,
+  harnessPolicy: CloudHarnessPolicy = unrestrictedCloudHarnessPolicy,
 ) {
   return AGENT_ADAPTER_TYPES.filter(
     (type) =>
+      (!cloud || harnessPolicy.isCloudHarnessAllowed(type)) &&
       !TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES.has(type) &&
       !disabledTypes.has(type) &&
       (type !== "paperclip_runner" || adapterRegistryLoaded),
@@ -136,12 +143,29 @@ export function listTeamInstallAdapterTypes(
 export function resolveTeamInstallAdapterType(
   requestedType: string,
   selectableAdapterTypes: readonly string[],
+  { cloud = false, adapterConfig = {}, harnessPolicy = unrestrictedCloudHarnessPolicy, nativeRunnerAvailable = selectableAdapterTypes.includes("paperclip_runner") }: {
+    cloud?: boolean; adapterConfig?: Record<string, unknown>; harnessPolicy?: CloudHarnessPolicy; nativeRunnerAvailable?: boolean;
+  } = {},
 ) {
-  if (selectableAdapterTypes.includes(requestedType)) return requestedType;
+  const profileAllowed = !cloud || harnessPolicy.isCloudHarnessAllowed(requestedType, adapterConfig);
+  // A saved native profile can be allowed even when the default Codex profile
+  // is excluded. Keep that profile without adding an invalid generic fallback.
+  if (profileAllowed && (selectableAdapterTypes.includes(requestedType) || (requestedType === "paperclip_runner" && nativeRunnerAvailable))) return requestedType;
   if (selectableAdapterTypes.includes(TEAM_INSTALL_FALLBACK_ADAPTER_TYPE)) {
     return TEAM_INSTALL_FALLBACK_ADAPTER_TYPE;
   }
   return selectableAdapterTypes[0] ?? null;
+}
+
+function teamInstallSelectionConfig(
+  source: { adapterType: string; adapterConfig: Record<string, unknown> },
+  overrideType: string | undefined,
+  cloud: boolean,
+  harnessPolicy: CloudHarnessPolicy,
+) {
+  const preserveSource = !overrideType || (overrideType === source.adapterType
+    && (!cloud || harnessPolicy.isCloudHarnessAllowed(source.adapterType, source.adapterConfig)));
+  return preserveSource ? source.adapterConfig : {};
 }
 
 function useMediaQuery(query: string): boolean {
@@ -853,7 +877,7 @@ export function TeamDetailPane({
                     <MarkdownBody>{fileContent}</MarkdownBody>
                   </div>
                 ) : (
-                  <pre className="whitespace-pre-wrap break-words font-mono text-xs">{fileContent}</pre>
+                  <pre className={cn("whitespace-pre-wrap break-words font-mono text-xs", ANALYTICS_MASK_CLASS)}>{fileContent}</pre>
                 )}
               </div>
             </div>
@@ -1088,9 +1112,12 @@ export function TeamInstallerDialog({
   const [phase, setPhase] = useState<ApplyPhase>("form");
   const disabledAdapterTypes = useDisabledAdaptersSync({ enabled: open });
   const adapterRegistryLoaded = useAdapterRegistryLoaded({ enabled: open });
+  const nativeRunnerAvailable = adapterRegistryLoaded && !disabledAdapterTypes.has("paperclip_runner");
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const selectableAdapterTypes = useMemo(
-    () => listTeamInstallAdapterTypes(disabledAdapterTypes, adapterRegistryLoaded),
-    [adapterRegistryLoaded, disabledAdapterTypes],
+    () => listTeamInstallAdapterTypes(disabledAdapterTypes, adapterRegistryLoaded, cloud, harnessPolicy),
+    [adapterRegistryLoaded, disabledAdapterTypes, cloud, harnessPolicy],
   );
 
   // Step 1 — target manager
@@ -1159,15 +1186,21 @@ export function TeamInstallerDialog({
     const overrides: Record<string, CompanyPortabilityAdapterOverride> = {};
     for (const [slug, adapterType] of Object.entries(adapterOverrides)) {
       if (adapterType) {
+        const source = previewResult?.portabilityPreview.manifest.agents.find(agent => agent.slug === slug);
+        const adapterConfig = source ? teamInstallSelectionConfig(source, adapterType, cloud, harnessPolicy) : {};
         const resolvedAdapterType = resolveTeamInstallAdapterType(
           adapterType,
           selectableAdapterTypes,
+          { cloud, adapterConfig, harnessPolicy, nativeRunnerAvailable },
         );
         if (!resolvedAdapterType) {
           throw new Error("Enable a legacy adapter before installing this team.");
         }
+        if (cloud && source?.adapterType === "paperclip_runner" && resolvedAdapterType === source.adapterType
+          && harnessPolicy.isCloudHarnessAllowed(source.adapterType, source.adapterConfig)) continue;
         overrides[slug] = {
           adapterType: resolvedAdapterType,
+          ...(cloud ? { adapterConfig: resolvedAdapterType === "paperclip_runner" ? { provider: "codex" } : {} } : {}),
         };
       }
     }
@@ -1176,12 +1209,15 @@ export function TeamInstallerDialog({
       const adapterType = resolveTeamInstallAdapterType(
         agent.adapterType,
         selectableAdapterTypes,
+        { cloud, adapterConfig: agent.adapterConfig, harnessPolicy, nativeRunnerAvailable },
       );
       if (!adapterType) {
         throw new Error("Enable a legacy adapter before installing this team.");
       }
-      if (adapterType !== agent.adapterType) {
-        overrides[agent.slug] = { adapterType };
+      if (adapterType !== agent.adapterType || (cloud && !harnessPolicy.isCloudHarnessAllowed(agent.adapterType, agent.adapterConfig))) {
+        overrides[agent.slug] = { adapterType,
+          ...(cloud ? { adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} } : {}),
+        };
       }
     }
     const enteredSecretValues = Object.fromEntries(
@@ -1257,6 +1293,7 @@ export function TeamInstallerDialog({
         !resolveTeamInstallAdapterType(
           adapterOverrides[agent.slug] ?? agent.adapterType,
           selectableAdapterTypes,
+          { cloud, adapterConfig: teamInstallSelectionConfig(agent, adapterOverrides[agent.slug], cloud, harnessPolicy), harnessPolicy, nativeRunnerAvailable },
         ),
     ),
   );
@@ -1353,6 +1390,9 @@ export function TeamInstallerDialog({
                 onRename={(slug, name) => setNameOverrides((cur) => ({ ...cur, [slug]: name }))}
                 adapterOverrides={adapterOverrides}
                 selectableAdapterTypes={selectableAdapterTypes}
+                cloud={cloud}
+                harnessPolicy={harnessPolicy}
+                nativeRunnerAvailable={nativeRunnerAvailable}
                 onAdapterChange={(slug, adapterType) => setAdapterOverrides((cur) => ({ ...cur, [slug]: adapterType }))}
                 secretValues={secretValues}
                 visibleSecretKeys={visibleSecretKeys}
@@ -1777,6 +1817,9 @@ export function StepPreview({
   onRename,
   adapterOverrides,
   selectableAdapterTypes,
+  cloud = false,
+  harnessPolicy = unrestrictedCloudHarnessPolicy,
+  nativeRunnerAvailable = selectableAdapterTypes.includes("paperclip_runner"),
   onAdapterChange,
   secretValues = {},
   visibleSecretKeys = {},
@@ -1794,6 +1837,9 @@ export function StepPreview({
   onRename: (slug: string, name: string) => void;
   adapterOverrides: Record<string, string>;
   selectableAdapterTypes: readonly string[];
+  cloud?: boolean;
+  harnessPolicy?: CloudHarnessPolicy;
+  nativeRunnerAvailable?: boolean;
   onAdapterChange: (slug: string, adapterType: string) => void;
   secretValues?: Record<string, string>;
   visibleSecretKeys?: Record<string, boolean>;
@@ -1921,9 +1967,12 @@ export function StepPreview({
       {manifestAgents.length > 0 && (
         <PreviewSection title={`Adapter selection · ${manifestAgents.length}`}>
           {manifestAgents.map((agent) => {
+            const savedRunnerSelectable = agent.adapterType === "paperclip_runner" && nativeRunnerAvailable
+              && (!cloud || harnessPolicy.isCloudHarnessAllowed(agent.adapterType, agent.adapterConfig));
             const selected = resolveTeamInstallAdapterType(
               adapterOverrides[agent.slug] ?? agent.adapterType,
               selectableAdapterTypes,
+              { cloud, adapterConfig: teamInstallSelectionConfig(agent, adapterOverrides[agent.slug], cloud, harnessPolicy), harnessPolicy, nativeRunnerAvailable },
             );
             return (
               <li key={agent.slug} className="flex items-center gap-2 px-3 py-2 text-sm">
@@ -1939,6 +1988,9 @@ export function StepPreview({
                       {selectableAdapterTypes.map((type) => (
                         <SelectItem key={type} value={type}>{getAdapterLabel(type)}</SelectItem>
                       ))}
+                      {savedRunnerSelectable && !selectableAdapterTypes.includes("paperclip_runner") && (
+                        <SelectItem value="paperclip_runner">{getAdapterLabel("paperclip_runner")}</SelectItem>
+                      )}
                     </SelectContent>
                   </Select>
                 ) : (

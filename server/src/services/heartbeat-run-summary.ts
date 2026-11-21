@@ -66,13 +66,23 @@ function splitProposedPlanBlock(value: string): { plan: string | null; rest: str
 }
 
 /**
+ * Marker the runner appends when it cuts provider text to a run-log display
+ * preview. Text ending with it is an incomplete copy, never a final reply.
+ */
+export const RUN_EVENT_TEXT_BOUND_MARKER = "…[truncated]";
+
+export function isBoundedRunEventText(value: unknown): boolean {
+  return typeof value === "string" && value.endsWith(RUN_EVENT_TEXT_BOUND_MARKER);
+}
+
+/**
  * The posted reply leaves a proposal to its Plan document. A stored message
  * preview can be cut inside the block; its cut-off remainder is hidden too.
  */
 function withoutProposedPlanBlock(value: string): string {
   const { plan, rest, unclosedStart } = splitProposedPlanBlock(value);
   if (plan !== null) return rest;
-  if (!value.endsWith("…[truncated]") || unclosedStart === null) return value;
+  if (!isBoundedRunEventText(value) || unclosedStart === null) return value;
   return value.slice(0, unclosedStart).trim();
 }
 
@@ -194,6 +204,8 @@ export interface CompletedFinalAgentMessageCandidate {
   text: string;
   sourceEventId: string | null;
   channel: "final" | "unknown";
+  /** The run log kept only a display preview of this message. */
+  bounded?: boolean;
 }
 
 /**
@@ -323,6 +335,7 @@ export function readCompletedAssistantMessageCandidate(input: {
     text,
     sourceEventId: readCommentText(prpEvent.sourceEventId),
     channel: payload.channel,
+    ...(isBoundedRunEventText(payload.text) ? { bounded: true } : {}),
   };
 }
 
@@ -479,6 +492,7 @@ export function resolveHeartbeatRunResponse(input: {
   existingComment?: { id: string; body?: string | null } | null;
   interactionOwnsResponse?: boolean;
   preferFinalResponseOverExistingComment?: boolean;
+  nativeConversationFinalResponse?: boolean;
   externalChatResponseWakeSummaryAuthorized?: boolean;
   /** Server-only proof of the exact accepted response after durable status
    * finalization. Never read this capability from provider/context JSON. */
@@ -489,6 +503,7 @@ export function resolveHeartbeatRunResponse(input: {
     sourceEventId: string | null;
     channel: "final" | "unknown";
     reasonCode?: string;
+    bounded?: boolean;
   } | null;
 }): ResolvedHeartbeatRunResponse {
   const resultJson = record(input.resultJson);
@@ -510,11 +525,19 @@ export function resolveHeartbeatRunResponse(input: {
       }),
     };
   }
-  const finalAgentText = readCommentText(input.finalAgentMessage?.text);
+  const rawFinalAgentText = readCommentText(input.finalAgentMessage?.text);
+  // A run-log preview is an incomplete copy of the agent's message. It never
+  // outranks a complete source; it is posted only when no complete text exists.
+  const boundedFinalAgentText =
+    rawFinalAgentText &&
+    (input.finalAgentMessage?.bounded === true || isBoundedRunEventText(rawFinalAgentText))
+      ? rawFinalAgentText
+      : null;
+  const finalAgentText = boundedFinalAgentText ? null : rawFinalAgentText;
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =
     input.finalAgentMessage?.channel === "unknown";
-  const resolveCompletedUpstreamResponse = () => {
+  const resolveCompletedUpstreamResponse = (allowCompatibility = true) => {
     if (
       explicitProviderFinal &&
       finalAgentText &&
@@ -534,7 +557,7 @@ export function resolveHeartbeatRunResponse(input: {
     }
 
     const adapterFinal = readMarkedAdapterFinalResponse(resultJson);
-    if (adapterFinal) {
+    if (allowCompatibility && adapterFinal) {
       return {
         text: adapterFinal,
         decision: decision("adapter_final_response", {
@@ -545,7 +568,7 @@ export function resolveHeartbeatRunResponse(input: {
     }
 
     if (
-      compatibleTerminalAssistant &&
+      allowCompatibility && compatibleTerminalAssistant &&
       finalAgentText &&
       !isStructuredSemanticResultText(finalAgentText)
     ) {
@@ -568,7 +591,21 @@ export function resolveHeartbeatRunResponse(input: {
         text: semanticSummary,
         decision: decision("semantic_result_summary", {
           commentAction: "create",
-          reasonCodes: ["accepted_semantic_result_summary"],
+          reasonCodes: boundedFinalAgentText
+            ? ["bounded_final_agent_message_replaced_by_semantic_summary"]
+            : ["accepted_semantic_result_summary"],
+        }),
+      } satisfies ResolvedHeartbeatRunResponse;
+    }
+
+    if (boundedFinalAgentText && !isStructuredSemanticResultText(boundedFinalAgentText)) {
+      // No complete source exists. The visible marker says the text was cut.
+      return {
+        text: boundedFinalAgentText,
+        decision: decision("final_agent_message", {
+          sourceEventId: input.finalAgentMessage?.sourceEventId,
+          commentAction: "create",
+          reasonCodes: ["bounded_final_agent_message_without_complete_source"],
         }),
       } satisfies ResolvedHeartbeatRunResponse;
     }
@@ -577,7 +614,7 @@ export function resolveHeartbeatRunResponse(input: {
       readCommentText(resultJson.summary) ??
       readCommentText(resultJson.result) ??
       readCommentText(resultJson.message);
-    if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
+    if (allowCompatibility && legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
       return {
         text: legacyText,
         decision: decision("adapter_final_response", {
@@ -642,6 +679,31 @@ export function resolveHeartbeatRunResponse(input: {
   }
 
   const existingText = readCommentText(input.existingComment?.body);
+  if (input.nativeConversationFinalResponse) {
+    if (input.interactionOwnsResponse || (hasYieldedSemanticResult(resultJson) && !input.conversationTurnFinished)) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_conversation_response"] }),
+    };
+    const final = resolveCompletedUpstreamResponse(false)
+      ?? (input.conversationTurnFinished && compatibleTerminalAssistant && finalAgentText
+        && !isStructuredSemanticResultText(finalAgentText) ? {
+          text: finalAgentText,
+          decision: decision("final_agent_message", { sourceEventId: input.finalAgentMessage?.sourceEventId,
+            commentAction: "create", reasonCodes: ["server_finished_conversation_terminal_message"] }),
+        } : null);
+    if (final) {
+      const reuse = !!input.existingComment && final.text === existingText;
+      return { ...final, decision: { ...final.decision,
+        commentAction: reuse ? "reuse" : "create",
+        commentId: reuse ? input.existingComment!.id : null,
+        reasonCodes: [...final.decision.reasonCodes, "native_conversation_final_precedence"],
+      } };
+    }
+    if (!existingText) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["native_conversation_final_response_unavailable"] }),
+    };
+  }
   if (input.existingComment && existingText) {
     return {
       text: existingText,

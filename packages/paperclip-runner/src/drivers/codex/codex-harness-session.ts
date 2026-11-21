@@ -1,7 +1,8 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
-import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
+import { NativeProviderTerminalFailure, NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 
 import type {
   HarnessGoalOperation,
@@ -52,7 +53,8 @@ import { pumpNotifications } from "./codex-session-notifications.js";
 import { handleServerRequest } from "./codex-session-server-requests.js";
 import {
   mapTerminalTurn,
-  terminalReplayConflict,
+  settleRestoreLostTurnWithHeldResult,
+  settledTerminalReplayConflict,
 } from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
@@ -81,12 +83,16 @@ export class CodexHarnessSession
         "runtime_request_recovery_failed", error instanceof Error ? error.message : String(error),
       ));
     }
-    if (this.terminal) {
+    if (this.terminal && !this.awaitingProviderTurn) {
       this.#deferredNotificationPump = true;
       this.eventQueue.close();
     } else {
       void pumpNotifications(this);
     }
+  }
+
+  downloadAttachment(grant: Parameters<NonNullable<HarnessSession["downloadAttachment"]>>[0]) {
+    return this.transport.downloadAttachment?.(grant) ?? Promise.resolve(null);
   }
 
   supportsTurnReasoning(): boolean {
@@ -108,7 +114,12 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
+  beginRunAttachment(input: { runId: string }): boolean {
+    if (this.protocolIntegrityFailure !== null || this.turnStartPending || this.pendingRunAttachment !== null || !input.runId) return false;
+    return this.transport.beginRunAttachment?.(input) ?? false;
+  }
+
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
@@ -127,6 +138,7 @@ export class CodexHarnessSession
         turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
         itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
         ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+        ...(input.completionContract ? { completionContract: structuredClone(input.completionContract) } : {}),
       });
       this.assertProtocolIntegrity();
       if (transportOwnsQuiescence) {
@@ -150,6 +162,7 @@ export class CodexHarnessSession
       this.resultTurnId = null;
       this.dispositionOnlyRecoveryConsumed = false;
       this.dispositionOnlyRecoveryTurnId = null;
+      this.restartContinuationTurnId = null;
       this.terminal = false;
       this.terminalTurns.clear();
       this.turnStarted = false;
@@ -325,6 +338,14 @@ export class CodexHarnessSession
           this.terminal = true;
         }
       }
+      if (this.protocolFailed && !(error instanceof CodexRpcError) && !(error instanceof NativeSessionProtocolIntegrityError)) {
+        // This session's own protocol failure closed the transport, so the
+        // start then reports a lost runner. Keep the cause that ended it.
+        throw new Error(
+          `codex_turn_start_protocol_failure: ${this.protocolFailureCode}: ${this.protocolFailureMessage}`,
+          { cause: error },
+        );
+      }
       throw error;
     } finally {
       this.turnStartPending = false;
@@ -358,6 +379,7 @@ export class CodexHarnessSession
     if (dispositionOnlyRecovery) {
       this.dispositionOnlyRecoveryTurnId = turnId;
     }
+    this.restartContinuationTurnId = dispositionOnlyRecovery && continuationTurn ? turnId : null;
     this.emit("turn.accepted", { turnId }, { turnId });
     if (this.interruptQueued) {
       this.interruptQueued = false;
@@ -366,6 +388,7 @@ export class CodexHarnessSession
     return {
       turnId,
       effectiveCollaborationMode,
+      ...(this.restartContinuationTurnId === turnId ? { borrowedDispositionMarker: true as const } : {}),
     };
   }
 
@@ -450,6 +473,19 @@ export class CodexHarnessSession
           status: "queued",
         },
         { itemId: `interrupt:queued:${++this.interruptSequence}` },
+      );
+      return;
+    }
+    if (this.awaitingProviderTurn && this.activeTurnId === null && !this.turnStartPending) {
+      this.emit(
+        "item.completed",
+        {
+          kind: "interrupt_acknowledgement",
+          text: "Paperclip stopped waiting for the provider's own next turn.",
+          status: "provider_turn_wait_ended",
+          reason: boundedText(input.reason),
+        },
+        { itemId: `interrupt:provider-turn-wait:${++this.interruptSequence}` },
       );
       return;
     }
@@ -724,7 +760,13 @@ export class CodexHarnessSession
     }
   }
 
-  async reconcile(): Promise<Record<string, unknown>> {
+  reconcile(): Promise<Record<string, unknown>> {
+    const reconciled = this.#reconcile();
+    this.recoveryReconciled = reconciled.then(() => undefined, () => undefined);
+    return reconciled;
+  }
+
+  async #reconcile(): Promise<Record<string, unknown>> {
     this.assertProtocolIntegrity();
     this.requireCapability("reconciliation");
     const snapshot = await this.read();
@@ -780,40 +822,61 @@ export class CodexHarnessSession
     const unexpectedActive = activeTurns.find(
       (turn) => text(turn.id) !== expectedTurnId,
     );
-    if (unexpectedActive !== undefined) {
-      throw new HarnessReconciliationError(
-        `thread/read exposed active turn ${text(unexpectedActive.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
-      );
-    }
+    const expectedIndex = turns.findIndex((turn) => text(turn.id) === expectedTurnId);
+    const awaitedProviderTurn = unexpectedActive !== undefined && activeTurns.length === 1 && expectedIndex >= 0
+      && turns.indexOf(unexpectedActive) > expectedIndex && text(turns[expectedIndex]!.status) === "completed"
+      && turns[expectedIndex]!.awaitingProviderTurn === true;
+    const unexpectedActiveTurn = () => new HarnessReconciliationError(
+      `thread/read exposed active turn ${text(unexpectedActive?.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
+    );
+    const lastTerminalIndex = turns.findLastIndex((turn) => this.terminalTurns.has(text(turn.id)));
+    const awaitedWhileWaiting = unexpectedActive !== undefined && activeTurns.length === 1 && expectedTurnId === null
+      && this.awaitingProviderTurn && lastTerminalIndex >= 0 && turns.indexOf(unexpectedActive) > lastTerminalIndex;
+    if (unexpectedActive !== undefined && !awaitedProviderTurn && !awaitedWhileWaiting) throw unexpectedActiveTurn();
 
     let reconciledTerminalTurnId: string | null = null;
     if (expectedTurnId !== null) {
       const expectedTurn = turns.find(
         (turn) => text(turn.id) === expectedTurnId,
       );
-      if (expectedTurn === undefined) {
+      if (expectedTurn === undefined && this.result !== null && this.resultTurnId === expectedTurnId) {
+        // Provider history can lose a turn whose process was killed before its
+        // terminal was flushed. Paperclip already holds the semantic result this
+        // exact turn proposed, so that durable result is the turn's outcome:
+        // settle it rather than fail recovery and rerun finished work. Without
+        // such a result the outcome stays unknown and recovery fails closed.
+        // (A turn reported lost on restore settles the same way in
+        // mapTerminalTurn.)
+        reconciledTerminalTurnId = expectedTurnId;
+        mapTerminalTurn(this, { id: expectedTurnId, status: "completed", items: [] }, expectedTurnId, true);
+      } else if (expectedTurn === undefined) {
         throw new HarnessReconciliationError(
           `persisted active turn ${expectedTurnId} is missing from thread/read`,
         );
-      }
-      const status = text(expectedTurn.status);
-      if (status === "inProgress") {
-        this.activeTurnId = expectedTurnId;
-      } else if (
-        ["completed", "failed", "interrupted", "cancelled"].includes(status)
-      ) {
-        reconciledTerminalTurnId = expectedTurnId;
-        mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
       } else {
-        throw new HarnessReconciliationError(
-          `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
-        );
+        const status = text(expectedTurn.status);
+        if (status === "inProgress") {
+          this.activeTurnId = expectedTurnId;
+        } else if (
+          ["completed", "failed", "interrupted", "cancelled"].includes(status)
+        ) {
+          reconciledTerminalTurnId = expectedTurnId;
+          mapTerminalTurn(this, expectedTurn, expectedTurnId, true, expectedTurn.awaitingProviderTurn === true);
+        } else {
+          throw new HarnessReconciliationError(
+            `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
+          );
+        }
       }
     }
+    if (awaitedProviderTurn && !this.awaitingProviderTurn) throw unexpectedActiveTurn();
 
     for (const [turnId, fingerprint] of this.terminalTurns) {
-      const observed = turns.find((turn) => text(turn.id) === turnId);
-      if (observed === undefined) continue;
+      const reported = turns.find((turn) => text(turn.id) === turnId);
+      if (reported === undefined) continue;
+      // A turn settled from its held result keeps that outcome when the
+      // restored runner later reports the same turn lost on restore.
+      const observed = settleRestoreLostTurnWithHeldResult(this, reported, turnId);
       if (
         !["completed", "failed", "interrupted", "cancelled"].includes(
           text(observed.status),
@@ -823,7 +886,7 @@ export class CodexHarnessSession
           `previously terminal turn ${turnId} is no longer terminal in thread/read`,
         );
       }
-      const conflict = terminalReplayConflict(this, observed, fingerprint);
+      const conflict = settledTerminalReplayConflict(this, reported, observed, fingerprint);
       if (conflict !== null) {
         throw new HarnessReconciliationError(
           `previously terminal turn ${turnId} ${conflict.message}`,
@@ -849,6 +912,10 @@ export class CodexHarnessSession
 
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
+    return this.persistedSnapshot();
+  }
+
+  protected persistedSnapshot(): PersistedHarnessSession {
     return {
       driverKind: this.driverKind,
       workingDirectory: this.opened.context.workingDirectory,
@@ -883,15 +950,39 @@ export class CodexHarnessSession
         this.currentGoal === null ? null : structuredClone(this.currentGoal),
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
+      ...(this.awaitingProviderTurn ? { awaitingProviderTurn: true } : {}),
     };
   }
 
+  async settleCancelledTurn(input: { turnId: string; reason: string }) {
+    this.assertProtocolIntegrity();
+    if (this.activeTurnId !== null && this.activeTurnId !== input.turnId) return null;
+    const receipt = await this.transport.settleCancelledTurn?.(input) ?? null;
+    this.assertProtocolIntegrity();
+    if (receipt) {
+      this.cancelPendingRequests("session_closed");
+      this.activeTurnId = null;
+      this.eventQueue.close();
+    }
+    return receipt;
+  }
+
   // `force` is part of the contract. Codex closes the same way with or without it.
-  async close(input: { reason: string; force?: boolean }): Promise<void> {
+  async close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
     // Untyped callers (for example generated scripts) may still omit the input.
-    await this.transport.close(input?.reason);
+    await this.transport.close(input?.reason, { retainUnsettledRemoteRunner: input?.retainUnsettledRemoteRunner === true });
+  }
+
+  async release(): Promise<DurableRecoveryIdentity | false> {
+    this.assertProtocolIntegrity();
+    return this.transport.release?.() ?? false;
+  }
+
+  async retireReleasedController(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null> {
+    this.assertProtocolIntegrity();
+    return this.transport.retireReleasedController?.() ?? null;
   }
 
   async detachControllerForRestart(): Promise<void> {

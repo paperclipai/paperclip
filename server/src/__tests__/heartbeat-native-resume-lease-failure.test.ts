@@ -16,7 +16,8 @@ describeEmbeddedPostgres("heartbeat native session resume environment failure", 
   beforeAll(() => { ({ companyId, agentId } = fixture.current); });
 
   it("releases the resume owner when the resumed run cannot acquire its environment lease", async () => {
-    const f = await fixture.seedRun("RESUME-LEASE-FAILURE");
+    const label = `RESUME-LEASE-FAILURE-${randomUUID()}`;
+    const f = await fixture.seedRun(label);
     const db = f.db, environmentId = randomUUID();
     const settings = instanceSettingsService(db), previous = await settings.getExperimental();
     let heartbeat: ReturnType<typeof heartbeatService> | undefined;
@@ -29,10 +30,10 @@ describeEmbeddedPostgres("heartbeat native session resume environment failure", 
         config: { provider: "fake", image: "fixture:test" } });
       await db.update(agents).set({ defaultEnvironmentId: environmentId }).where(eq(agents.id, agentId));
       const execution = buildNativeExecutionInput({ companyId, agentId, runId: f.runId,
-        issue: { id: f.issueId, identifier: "NRR-RESUME-LEASE-FAILURE", title: "Resume after a sandbox failure",
+        issue: { id: f.issueId, identifier: `NRR-${label}`, title: "Resume after a sandbox failure",
           description: null, workMode: "standard" },
         taskPrompt: "Continue the original task.", provider: "codex",
-        workspace: { id: randomUUID(), cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+        workspace: { id: f.runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
         normalizedSessionId: f.native.normalizedSessionId, runtimeContext: nativeRuntimeContextFixture(),
         completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
           contract: { revision: "1", objective: "Resume", criteria: [{ id: "objective", requirement: "Resume the session" }] } } });

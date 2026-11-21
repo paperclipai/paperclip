@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
-import { parseNativeExecutionInput, inspectDurablePrpCheckpointHeader, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { createRunnerProviderLaunch, parseNativeExecutionInput, parseNativeRuntimeContext, QUALIFIED_ACPX_PROFILES, inspectDurablePrpCheckpointHeader, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { resolvePluginTaskResume } from "../plugin-task-resume.js";
 import { legacyShutdownWorkspaceResourceProtected } from "../legacy-shutdown-workspace-settlement.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
@@ -11,11 +11,48 @@ import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownersh
 import { loadNativeRunnerCheckpointHeader } from "./native-runner-checkpoint.js";
 import { nativeSha256 as fingerprint } from "./canonical.js";
 
-type Identity = Extract<PluginEnvironmentTaskOperation, { kind: "prepare" }>["requirements"]["identity"];
+type Requirements = Extract<PluginEnvironmentTaskOperation, { kind: "prepare" }>["requirements"];
+type Identity = Requirements["identity"];
+type Harness = "codex" | "claude";
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const keys = ["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"] as const;
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const deny = (): never => { throw new Error("native_source_recovery_ownership_unverified"); };
+
+function sourceHarness(execution: NativeExecutionInput): Harness | null {
+  const provider = execution.provider;
+  if (provider.kind === "codex") return "codex";
+  if (provider.kind !== "acpx" || provider.agent !== "claude") return null;
+  const qualified = QUALIFIED_ACPX_PROFILES.claude;
+  return qualified.qualificationStatus !== "pending" && Object.entries(provider.profile).every(([key, value]) =>
+    qualified[key as keyof typeof qualified] === value) ? "claude" : null;
+}
+
+function requestHarness(requirements: Requirements): Harness | null {
+  return requirements.provider === "codex" ? "codex"
+    : requirements.provider === "acpx" && requirements.settings.acpxAgent === "claude" ? "claude" : null;
+}
+
+function matchesLaunchPolicy(requirements: Requirements, execution: NativeExecutionInput): boolean {
+  if (requestHarness(requirements) !== sourceHarness(execution)) return false;
+  const provider = execution.provider;
+  if (provider.kind !== "acpx") return true;
+  let prepared: Record<string, unknown>;
+  try {
+    prepared = createRunnerProviderLaunch({ ...requirements, provider: "acpx", settings: {
+      acpxAgent: "claude", acpxMode: requirements.settings.acpxMode,
+      acpxPermissionMode: requirements.settings.acpxPermissionMode,
+      acpxPermissionModePinned: requirements.settings.acpxPermissionModePinned, claudeEffort: requirements.settings.claudeEffort,
+    }, runtimeContext: requirements.runtimeContext === null ? null : parseNativeRuntimeContext(requirements.runtimeContext) }, {
+      options: {}, root: "/", cwd: "/", codexHome: "/", providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "",
+    });
+  } catch { return false; }
+  return prepared.model === provider.model && prepared.agent === provider.agent && prepared.mode === provider.mode &&
+    prepared.permissionMode === (provider.permissionMode ?? "approve-all") && prepared.permissionModePinned === true &&
+    prepared.claudeEffort === ("claudeEffort" in provider ? provider.claudeEffort : undefined) &&
+    record(prepared.providerPolicy).readOnly === ("executionMode" in execution && execution.executionMode === "plan") &&
+    record(prepared.runtimeContext).aggregateDigest === ("runtimeContext" in execution ? execution.runtimeContext.aggregateDigest : undefined);
+}
 
 export type PluginTaskSourceRecovery = {
   schema: "paperclip.runner.source-recovery.v1";
@@ -81,7 +118,8 @@ async function inspect(tx: Transaction, input: {
   if (!protocolIdentity || keys.some(key => protocolIdentity[key] !== input.identity[key])) return deny();
   const sourceExecution = parseNativeExecutionInput(source.runnerProfileJson?.nativeExecutionInput);
   const consumerExecution = parseNativeExecutionInput(current.runnerProfileJson?.nativeExecutionInput);
-  if (sourceExecution.provider.kind !== "codex" || consumerExecution.provider.kind !== "codex" ||
+  const harness = sourceHarness(sourceExecution);
+  if (!harness || harness !== sourceHarness(consumerExecution) ||
       sourceExecution.binding.companyId !== input.companyId || sourceExecution.binding.issueId !== binding.issueId ||
       sourceExecution.binding.agentId !== binding.agentId || sourceExecution.binding.runId !== source.id ||
       sourceExecution.session.normalizedSessionId !== input.identity.normalizedSessionId ||
@@ -115,10 +153,11 @@ async function inspect(tx: Transaction, input: {
 /** Only current B's native authority can consume succeeded A for maintenance. */
 export async function claimPluginTaskSourceRecovery(db: Db, input: {
   companyId: string; leaseId: string; context: NativeExecutionContext; identity: Identity; resumeFrom: string; accountIdentity: string;
-  selectedSourceRecoveryVersion?: 1;
+  codexSourceRecoveryVersion?: 1; acpxSourceRecoveryVersion?: 1;
   matchesExecution(source: NativeExecutionInput): boolean;
 }): Promise<PluginTaskSourceRecovery> {
-  if (input.selectedSourceRecoveryVersion !== 1 || !input.accountIdentity) return deny();
+  const harness = sourceHarness(input.context.execution);
+  if (!harness || (harness === "codex" ? input.codexSourceRecoveryVersion : input.acpxSourceRecoveryVersion) !== 1 || !input.accountIdentity) return deny();
   return db.transaction(async tx => {
     const inspected = await inspect(tx, input);
     if (!input.matchesExecution(inspected.sourceExecution)) return deny();
@@ -148,7 +187,7 @@ export async function claimPluginTaskSourceRecovery(db: Db, input: {
 
 async function assertSourceIdentity(db: Db, input: {
   companyId: string; leaseId: string; context: NativeExecutionContext | undefined;
-  identity: Identity; accountIdentity?: string; resumeFrom?: string; requireDispatched?: boolean;
+  identity: Identity; harness: Harness; requirements?: Requirements; accountIdentity?: string; resumeFrom?: string; requireDispatched?: boolean;
 }): Promise<PluginTaskSourceRecovery> {
   if (!input.context) return deny();
   const { identity } = input;
@@ -159,6 +198,12 @@ async function assertSourceIdentity(db: Db, input: {
     if (!expected || keys.some(key => expected.identity[key] !== identity[key]) ||
         input.resumeFrom !== undefined && expected.resumeFrom !== input.resumeFrom || expected.accountIdentity !== input.accountIdentity) return deny();
     const inspected = await inspect(tx, { ...input, context: input.context!, resumeFrom: expected.resumeFrom, accountIdentity: expected.accountIdentity }, expected);
+    if (sourceHarness(inspected.sourceExecution) !== input.harness) return deny();
+    if (input.requirements) {
+      const execution = input.requirements.identity.runId === expected.identity.runId ? inspected.sourceExecution
+        : input.requirements.identity.runId === expected.consumerRunId ? inspected.consumerExecution : undefined;
+      if (!execution || !matchesLaunchPolicy(input.requirements, execution)) return deny();
+    }
     if (input.requireDispatched && (inspected.lease.metadata?.runnerTaskDispatched !== true ||
         inspected.lease.metadata?.runnerTaskExecutionStopped === true)) return deny();
     const consumer = record(inspected.sourceLease.metadata?.runnerTaskSourceConsumer);
@@ -174,14 +219,16 @@ export async function assertPluginTaskSourceRecovery(db: Db, input: {
   operation: Extract<PluginEnvironmentTaskOperation, { kind: "prepare" | "submit" }>;
 }): Promise<PluginTaskSourceRecovery> {
   const operation = input.operation;
-  if (!operation.resumeFrom || !operation.accountIdentity ||
-      (operation.kind === "prepare" ? operation.requirements.provider !== "codex" || !!operation.priorIdentity
-        : operation.runner.harness !== "codex" || !operation.preparedLaunchId || !operation.launch)) return deny();
+  const harness = operation.kind === "prepare" ? requestHarness(operation.requirements)
+    : operation.runner.harness === "codex" || operation.runner.harness === "claude" ? operation.runner.harness : null;
+  if (!harness || !operation.resumeFrom || !operation.accountIdentity ||
+      (operation.kind === "prepare" ? !!operation.priorIdentity : !operation.preparedLaunchId || !operation.launch)) return deny();
   const identity = operation.kind === "prepare" ? operation.requirements.identity : {
     runnerInstanceId: operation.runner.runnerId, environmentLeaseId: operation.runner.leaseId, runId: operation.runner.runId,
     normalizedSessionId: operation.runner.sessionId, turnId: operation.runner.turnId, itemId: operation.runner.itemId,
   };
-  return assertSourceIdentity(db, { ...input, identity, resumeFrom: operation.resumeFrom, accountIdentity: operation.accountIdentity });
+  return assertSourceIdentity(db, { ...input, identity, harness, ...(operation.kind === "prepare" ? { requirements: operation.requirements } : {}),
+    resumeFrom: operation.resumeFrom, accountIdentity: operation.accountIdentity });
 }
 
 /** A fresh source incarnation can attach B without pretending it was warm reuse. */
@@ -190,8 +237,10 @@ export async function assertPluginTaskSourceAttachment(db: Db, input: {
   operation: Extract<PluginEnvironmentTaskOperation, { kind: "prepare" }>;
 }): Promise<PluginTaskSourceRecovery> {
   const { operation } = input, target = operation.requirements.identity;
-  if (!operation.priorIdentity || operation.resumeFrom || operation.requirements.provider !== "codex") return deny();
-  const recovery = await assertSourceIdentity(db, { ...input, identity: operation.priorIdentity, accountIdentity: operation.accountIdentity, requireDispatched: true });
+  const harness = requestHarness(operation.requirements);
+  if (!harness || !operation.priorIdentity || operation.resumeFrom) return deny();
+  const recovery = await assertSourceIdentity(db, { ...input, harness, requirements: operation.requirements, identity: operation.priorIdentity,
+    accountIdentity: operation.accountIdentity, requireDispatched: true });
   if (target.runId !== recovery.consumerRunId || ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].some(key =>
     target[key as keyof Identity] !== recovery.identity[key as keyof Identity])) return deny();
   return recovery;

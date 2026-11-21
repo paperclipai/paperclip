@@ -88,6 +88,7 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
           if (!before.isFile() || !original.isFile() || Number(before.dev) !== stat.dev || Number(before.ino) !== stat.ino
             || Number(before.size) !== stat.size || Number(before.mode) !== stat.mode
             || fields.some(key => original[key] !== before[key]) || await fs.realpath(file) !== file) fail();
+          check();
           for await (const bytes of handle.createReadStream({ autoClose: false, signal })) { check(); size += bytes.length; hash.update(bytes); }
           const after = await handle.stat({ bigint: true }), current = await fs.lstat(file, { bigint: true });
           if (!current.isFile() || size !== Number(before.size) || await fs.realpath(file) !== file

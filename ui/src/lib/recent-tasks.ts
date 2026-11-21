@@ -1,9 +1,8 @@
 import type { Issue, IssueStatus, IssueSummary } from "@paperclipai/shared";
 
-export const RECENT_TASKS_LIMIT = 5;
 export const RECENT_TASKS_UPDATED_EVENT = "paperclip:recent-tasks-updated";
-const STORAGE_PREFIX = "paperclip.recentTasks.v2:";
-const LEGACY_STORAGE_PREFIX = "paperclip.recentTasks:";
+const STORAGE_PREFIX = "paperclip.recentTasks.v3:";
+const LEGACY_STORAGE_PREFIXES = ["paperclip.recentTasks.v2:", "paperclip.recentTasks:"];
 
 export interface RecentTaskEntry {
   id: string;
@@ -15,6 +14,7 @@ export interface RecentTaskEntry {
   externalConversationState?: Issue["externalConversationState"];
   /** Blocked tasks covered by active work render the "in queue" glyph everywhere. */
   blockerAttention?: Issue["blockerAttention"];
+  isUnreadForMe?: boolean;
   recordedAt: number;
   // Server version of the title/status snapshot, independent of comment activity.
   // Legacy entries have no version until a detail query refreshes them.
@@ -27,7 +27,7 @@ interface RecentTasksUpdatedDetail {
 }
 
 export function getRecentTasksStorageKey(companyId: string, userId: string | null | undefined) {
-  // Old tabs can still publish stale snapshots. Keep their writes out of v2.
+  // Old tabs still promote machine activity. Keep their writes out of v3.
   return `${STORAGE_PREFIX}${companyId}:${userId ?? "__local_board__"}`;
 }
 
@@ -50,10 +50,10 @@ function isRecentTaskEntry(value: unknown, companyId: string): value is RecentTa
 export function readRecentTasks(storageKey: string, companyId: string): RecentTaskEntry[] {
   if (typeof window === "undefined") return [];
   try {
-    const legacyKey = storageKey.startsWith(STORAGE_PREFIX)
-      ? LEGACY_STORAGE_PREFIX + storageKey.slice(STORAGE_PREFIX.length)
-      : storageKey;
-    const raw = window.localStorage.getItem(storageKey) ?? window.localStorage.getItem(legacyKey);
+    const keys = storageKey.startsWith(STORAGE_PREFIX)
+      ? [storageKey, ...LEGACY_STORAGE_PREFIXES.map(prefix => prefix + storageKey.slice(STORAGE_PREFIX.length))]
+      : [storageKey];
+    const raw = keys.map(key => window.localStorage.getItem(key)).find(value => value !== null);
     const parsed = JSON.parse(raw ?? "[]") as unknown;
     if (!Array.isArray(parsed)) return [];
     return normalizeRecentTasks(
@@ -83,8 +83,7 @@ function normalizeRecentTasks(entries: RecentTaskEntry[]) {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id);
       return true;
-    })
-    .slice(0, RECENT_TASKS_LIMIT);
+    });
 }
 
 function publishRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
@@ -96,15 +95,15 @@ function publishRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
 
 export function writeRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
   if (typeof window === "undefined") return;
-  const bounded = normalizeRecentTasks(entries);
+  const normalized = normalizeRecentTasks(entries);
   try {
-    const serialized = JSON.stringify(bounded);
+    const serialized = JSON.stringify(normalized);
     if (window.localStorage.getItem(storageKey) === serialized) return;
     window.localStorage.setItem(storageKey, serialized);
   } catch {
     // The in-tab event still keeps mounted navigation current for this session.
   }
-  publishRecentTasks(storageKey, bounded);
+  publishRecentTasks(storageKey, normalized);
 }
 
 type TaskSnapshot = Omit<IssueSummary, "externalConversationState"> & Pick<Issue, "externalConversationState">;
@@ -136,23 +135,25 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
     externalConversationState: issue.externalConversationState,
     blockerAttention: issue.blockerAttention,
     snapshotUpdatedAt,
-    recordedAt: Math.max(entry.recordedAt, snapshotUpdatedAt),
   };
 }
 
 export function recordRecentTask(
-  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention" | "updatedAt" | "conversationAgentId">,
+  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention" | "updatedAt" | "conversationAgentId" | "archivedAt">,
   userId: string | null | undefined,
-  recordedAt = new Date(issue.updatedAt).getTime(),
+  recordedAt?: number,
 ) {
-  if (issue.conversationAgentId) return;
+  if (issue.conversationAgentId || issue.archivedAt) return;
   const storageKey = getRecentTasksStorageKey(issue.companyId, userId);
   const current = readRecentTasks(storageKey, issue.companyId);
   const existing = current.find((candidate) => candidate.id === issue.id);
-  const activityAt = Number.isFinite(recordedAt)
-    ? recordedAt
-    : existing?.recordedAt ?? Date.now();
   const snapshotUpdatedAt = new Date(issue.updatedAt).getTime();
+  // Passive reads can seed a candidate, but only explicit local human actions
+  // advance its recency. New passive candidates go below existing history;
+  // their server update times are not personal activity.
+  const activityAt = recordedAt !== undefined && Number.isFinite(recordedAt)
+    ? recordedAt
+    : existing?.recordedAt ?? Math.min(0, (current.at(-1)?.recordedAt ?? 1) - 1);
   const snapshot: RecentTaskEntry = existing ? mergeRecentTaskSnapshot(existing, issue) : {
     id: issue.id,
     companyId: issue.companyId,

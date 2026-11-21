@@ -18,15 +18,15 @@ describe("task views registry (PAP-670)", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("routes My-work views to the inbox surface with a tab, and organization views to the task list with statuses", () => {
+  it("renders the archived collection and organization views in the task list", () => {
     const [myWork, organization] = TASK_VIEW_GROUPS;
 
-    expect(myWork.views.map((view) => view.inboxTab)).toEqual(["mine", "unread", "blocked", "recent", "all"]);
-    for (const view of myWork.views) {
-      expect(view.surface).toBe("inbox");
-      expect(view.statuses).toBeUndefined();
-    }
+    const inboxViews = myWork.views.filter(view => view.surface === "inbox");
+    expect(inboxViews.map(view => view.inboxTab)).toEqual(["mine", "unread", "blocked", "recent", "all"]);
+    for (const view of inboxViews) expect(view.statuses).toBeUndefined();
 
+    expect(myWork.views.find(view => view.key === "archived")).toMatchObject({ surface: "issues", statuses: [] });
+    expect(taskViewPath("archived")).toBe("/issues?view=archived");
     for (const view of organization.views) {
       expect(view.surface).toBe("issues");
       expect(view.inboxTab).toBeUndefined();

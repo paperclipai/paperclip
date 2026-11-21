@@ -1,5 +1,5 @@
-import { agentWakeupRequests, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db, type issues } from "@paperclipai/db";
-import { and, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { agentWakeupRequests, heartbeatRuns, issueComments, nativeRunFinalizations, nativeRunResults, type Db, type issues } from "@paperclipai/db";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
@@ -21,7 +21,14 @@ export async function readNativePreservedMonitorWait(
       issue.executionRunId !== null || issue.checkoutRunId !== null) return null;
   const nextCheckAt = scheduledIssueMonitorWait(issue, binding.agentId);
   if (!nextCheckAt) return null;
-  const [source] = await db.select({ resultId: nativeRunResults.id, hasReceipt: sql<boolean>`exists (
+  const source = await readCompletedNativeMonitorResult(db, binding);
+  return source?.hasReceipt ? { agentId: binding.agentId, nextCheckAt, resultId: source.resultId } : null;
+}
+
+type MonitorBinding = { companyId: string; issueId: string; runId: string; agentId: string };
+
+async function readCompletedNativeMonitorResult(db: Db, binding: MonitorBinding) {
+  const [source] = await db.select({ resultId: nativeRunResults.id, finishedAt: heartbeatRuns.finishedAt, hasReceipt: sql<boolean>`exists (
     select 1 from jsonb_each(case when jsonb_typeof(${heartbeatRuns.resultJson}->'semanticToolReceipts') = 'object'
       then ${heartbeatRuns.resultJson}->'semanticToolReceipts' else '{}'::jsonb end) receipt
     where receipt.value->>'operationId' = 'set_task_monitor'
@@ -41,7 +48,54 @@ export async function readNativePreservedMonitorWait(
     ...["cancellation", "nativeCancellation", "executionCancellation", "startupCancellation"].map(key =>
       sql`coalesce(${heartbeatRuns.resultJson}->${key}, 'null'::jsonb) = 'null'::jsonb`),
   )).limit(1);
-  return source?.hasReceipt ? { agentId: binding.agentId, nextCheckAt, resultId: source.resultId } : null;
+  return source?.hasReceipt ? source : null;
+}
+
+export type NativeSupersededMonitorWait = {
+  agentId: string; resultId: string; wakeId: string; commentId: string; successorRunId: string | null;
+};
+
+export async function readNativeSupersededMonitorWait(db: Db, binding: MonitorBinding,
+  issue: typeof issues.$inferSelect, lockProof = false): Promise<NativeSupersededMonitorWait | null> {
+  if (issue.companyId !== binding.companyId || issue.id !== binding.issueId ||
+      issue.executionRunId === binding.runId || issue.checkoutRunId === binding.runId ||
+      scheduledIssueMonitorWait(issue, binding.agentId) !== null) return null;
+  const source = await readCompletedNativeMonitorResult(db, binding);
+  if (!source?.finishedAt) return null;
+  const successor = alias(heartbeatRuns, "monitor_superseding_run");
+  const query = db.select({ wakeId: agentWakeupRequests.id, commentId: issueComments.id,
+    successorRunId: successor.id }).from(agentWakeupRequests).innerJoin(issueComments, and(
+      eq(issueComments.companyId, binding.companyId), eq(issueComments.issueId, binding.issueId),
+      eq(issueComments.authorType, "user"), eq(issueComments.authorUserId, agentWakeupRequests.requestedByActorId),
+      isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId),
+      isNull(issueComments.deletedAt), isNull(issueComments.sourceTrust),
+      gt(issueComments.createdAt, source.finishedAt),
+      sql`${issueComments.updatedAt} = ${issueComments.createdAt}`,
+      sql`length(trim(${issueComments.body})) > 0`,
+      sql`${agentWakeupRequests.payload}->>'commentId' = ${issueComments.id}::text`,
+    )).leftJoin(successor, and(eq(successor.id, agentWakeupRequests.runId),
+      eq(successor.companyId, binding.companyId), eq(successor.agentId, binding.agentId),
+      eq(successor.nativeIssueId, binding.issueId), ne(successor.id, binding.runId),
+      eq(successor.wakeupRequestId, agentWakeupRequests.id),
+      sql`${successor.contextSnapshot}#>>'{executionContinuation,companyId}' = ${binding.companyId}`,
+      sql`${successor.contextSnapshot}#>>'{executionContinuation,issueId}' = ${binding.issueId}`,
+      sql`${successor.contextSnapshot}#>>'{executionContinuation,resumeDelta,baseRunId}' = ${binding.runId}`,
+      sql`${successor.contextSnapshot}#>>'{executionContinuation,objectiveSource,kind}' = 'comment'`,
+      sql`${successor.contextSnapshot}#>>'{executionContinuation,objectiveSource,id}' = ${issueComments.id}::text`,
+      sql`${successor.contextSnapshot}#>>'{executionContinuation,objectiveSource,revision}' =
+        to_char(${issueComments.updatedAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+    )).where(and(eq(agentWakeupRequests.companyId, binding.companyId),
+      eq(agentWakeupRequests.agentId, binding.agentId), gt(agentWakeupRequests.requestedAt, source.finishedAt),
+      inArray(agentWakeupRequests.source, ["automation", "on_demand"]),
+      inArray(agentWakeupRequests.reason, ["issue_commented", "issue_reopened_via_comment"]),
+      eq(agentWakeupRequests.requestedByActorType, "user"),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${binding.issueId}`,
+      notInArray(agentWakeupRequests.status, ["skipped", "cancelled"]),
+      or(and(isNull(agentWakeupRequests.runId), inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"])),
+        isNotNull(successor.id)),
+    )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+  const [request] = await (lockProof ? query.for("share", { of: [agentWakeupRequests, issueComments], noWait: true }) : query);
+  return request ? { ...request, agentId: binding.agentId, resultId: source.resultId } : null;
 }
 
 export async function readNativeMonitorSource(

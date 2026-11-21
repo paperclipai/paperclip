@@ -160,7 +160,7 @@ async function startupFixture(mode: "normal" | "wrong-model" | "ambient-codex" |
       constructor(options){this.options=options;}
       async openSession(){state.calls.push("open");save();
         ${mode === "startup-and-cleanup-failed" ? 'throw new Error("fixture original provider startup failure");' : ''}
-        const model=${JSON.stringify(mode === "wrong-model" ? "wrong-model" : "gpt-5.6-sol")};
+        const model=${JSON.stringify(mode === "wrong-model" ? "wrong-model" : "gpt-6.1-sol")};
         return {ids:()=>({driverSessionId:"PRIVATE-DRIVER-ID",providerSessionId:"PRIVATE-PROVIDER-ID"}),
           events:()=>({async *[Symbol.asyncIterator](){yield {eventType:"session.started",payload:{context:{model,sandbox:{permissionProfile:{id:"paperclip-runner-workspace-read-only"}}}}};}}),
           startTurn(){state.calls.push("FORBIDDEN-TURN");save();throw new Error("No provider turn is permitted");},

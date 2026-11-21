@@ -26,7 +26,7 @@ describe("instance settings service", () => {
     }
     expect(applyExperimentalSettingsPatch({}, { enableAgentChat: false }).enableAgentChat).toBe(true);
     const config: ManagedInstanceConfig = {
-      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [],
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [], pluginEnvironments: [],
       features: { enableAgentChat: false },
     };
     const result = applyManagedExperimentalOverlay(normalizeExperimentalSettings({ enableAgentChat: false }), config);
@@ -54,7 +54,7 @@ describe("instance settings service", () => {
     { stored: { remoteWorkspaceStorageEnabled: true }, managed: false, expected: false },
   ])("respects Cloud enrollment defaults and managed choices: $expected", ({ stored, managed, expected }) => {
     const config: ManagedInstanceConfig = {
-      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [],
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [], pluginEnvironments: [],
       features: managed === undefined ? {} : { remoteWorkspaceStorageEnabled: managed },
     };
     const normalized = normalizeExperimentalSettings(stored);
@@ -80,7 +80,7 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableOpenAiDot).toBe(false);
     const enabled = applyExperimentalSettingsPatch({}, { enableOpenAiDot: true });
     expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled)))).toMatchObject({
-      enableOpenAiDot: true, enablePublicMcp: false,
+      enableOpenAiDot: true, enablePublicMcp: true,
     });
     expect(applyExperimentalSettingsPatch(enabled, { enableOpenAiDot: false }).enableOpenAiDot).toBe(false);
   });
@@ -129,7 +129,7 @@ describe("instance settings service", () => {
       enableApps: true,
     enableMcpAggregators: true,
       enableAgentChat: true,
-      enablePublicMcp: false,
+      enablePublicMcp: true,
       enableOpenAiDot: false,
       enableMuse: false,
       enableGrokBot: false,
@@ -140,6 +140,7 @@ describe("instance settings service", () => {
       enableMemoryConnectors: false,
       enablePaperclipNotebook: false,
       enableGoogleWorkspaceConnector: false,
+      enableAwsConnector: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableLegacyComposerSubmit: false,
@@ -152,6 +153,7 @@ describe("instance settings service", () => {
       enableBetaSkills: false,
       enableSummaries: false,
       enableStatusCards: false,
+      enableResponsibilities: false,
       enableDecisions: false,
       enableFastResponses: false,
       enableGoalsSidebarLink: true,
@@ -164,6 +166,7 @@ describe("instance settings service", () => {
       enableWorkspaceDirtyQuarantineRepair: false,
       enableOwnerInstanceAdmin: false,
       enableSandboxDuplexBridge: false,
+      enableMcpTasks: false,
       enableRunnerPreviewIngress: false,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,

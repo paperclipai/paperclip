@@ -1,15 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { agents, companies, createDb, applyPendingMigrations, closeRegisteredClients, type Db } from "@paperclipai/db";
+import { agents, companies, companyMemberships, createDb, applyPendingMigrations, closeRegisteredClients, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle } from "../../../services/agent-lifecycle.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
-import { startAgentLifecycle } from "../index.js";
+import { requestAgentLifecycleRecheckInTransaction, startAgentLifecycle } from "../index.js";
 import { createLifecycleStore } from "../adapters/postgres.js";
 import { createLifecycleWorker } from "../application/worker.js";
 import type { LifecycleAgent } from "../application/ports.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
+
+import { aiConnectionService } from "../../../services/ai-connections.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LIFECYCLE_VERIFICATION_RETRY_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -19,8 +22,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let companyId: string;
   const workers: Array<{ stop(): Promise<void> }> = [];
   beforeAll(async () => {
-    if (external) { await applyPendingMigrations(external); db = createDb(external, { maxConnections: 6 }); }
-    else { database = await startEmbeddedPostgresTestDatabase("paperclip-verification-retry-"); db = createDb(database.connectionString, { maxConnections: 6 }); }
+    if (external) { await applyPendingMigrations(external); db = createDb(external, { maxConnections: 4 }); }
+    else { database = await startEmbeddedPostgresTestDatabase("paperclip-verification-retry-"); db = createDb(database.connectionString, { maxConnections: 4 }); }
   }, 90_000);
   afterAll(async () => { if (external) await closeRegisteredClients(external); else await database?.cleanup(); });
   beforeEach(async () => {
@@ -52,6 +55,80 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     return { agent: await current(agent.id), work, driver, runHost };
   }
 
+  it("parks a real missing-default selection across restart and permits repair through the normal ready handoff", async () => {
+    const userId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active" });
+    let repaired = false;
+    const runHost = vi.fn(async (agent: LifecycleAgent) => {
+      if (agent.lifecycleState === "verifying" && !repaired) await aiConnectionService(db).select({
+        companyId, userId, agentId: agent.id, adapterType: "paperclip_runner", runnerProvider: "opencode",
+        model: "openrouter/deepseek/deepseek-v4.1-flash-1017",
+        binding: { mode: "responsible_user", provider: "openrouter", method: "api_key" },
+      });
+      return "complete" as const;
+    });
+    const onReady = vi.fn();
+    const driver = { requiredPluginIds: async () => [], runHost, runPlugin: async () => "complete" as const, onReady };
+    const work = configureAgentLifecycle(db, driver); workers.push(work);
+    const hired = await createAgentLifecycle(db).requestHire(companyId, { name: "Missing default", adapterType: "process" });
+    await work.process(hired.id);
+    const held = await current(hired.id);
+    expect(held).toMatchObject({ lifecycleState: "verifying", status: "paused", lifecycleOperation: { retryRequired: true } });
+    expect(held.lifecycleError).toContain("personal default");
+    expect(held.lifecycleError).not.toContain("retry automatically");
+    expect(held.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(onReady).not.toHaveBeenCalled();
+    await work.stop();
+    const restarted = startAgentLifecycle(db, createAgentLifecycleEffects(), driver, () => true); workers.push(restarted);
+    const calls = runHost.mock.calls.length;
+    expect(await restarted.hasPending()).toBe(false);
+    expect(restarted.nextRunAt()).toBeNull();
+    await restarted.sweep();
+    expect(runHost).toHaveBeenCalledTimes(calls);
+    // Repair and Retry must still pass verification before the normal ready handoff.
+    repaired = true;
+    await createAgentLifecycle(db).retry(hired.id);
+    await restarted.sweep();
+    expect(await current(hired.id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleError: null });
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
+  it("parks owned account failures after pause/resume and accepts a durable connection repair recheck", async () => {
+    const userId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active" });
+    let repaired = false;
+    const runHost = vi.fn(async (agent: LifecycleAgent) => {
+      if (agent.lifecycleState === "resuming" && !repaired) await aiConnectionService(db).select({ companyId, userId,
+        agentId: agent.id, adapterType: "paperclip_runner", runnerProvider: "opencode",
+        model: "openrouter/deepseek/deepseek-v4.1-flash-1017", binding: { mode: "responsible_user", provider: "openrouter", method: "api_key" } });
+      return "complete" as const;
+    });
+    const onReady = vi.fn();
+    const driver = { requiredPluginIds: async () => [], runHost, runPlugin: async () => "complete" as const, onReady };
+    const lifecycle = createAgentLifecycle(db), work = configureAgentLifecycle(db, driver); workers.push(work);
+    const hired = await lifecycle.requestHire(companyId, { name: "Resume account repair", adapterType: "process" });
+    await work.process(hired.id);
+    await lifecycle.pauseAgent(hired.id); await work.process(hired.id);
+    expect((await current(hired.id)).lifecycleState).toBe("paused");
+    onReady.mockClear();
+    await lifecycle.resumeAgent(hired.id); await work.process(hired.id);
+    const held = await current(hired.id);
+    expect(held).toMatchObject({ lifecycleState: "resuming", lifecycleOperation: { retryRequired: true } });
+    expect(held.lifecycleOperation).not.toHaveProperty("retryAt");
+    await work.stop();
+    const restarted = startAgentLifecycle(db, createAgentLifecycleEffects(), driver, () => true); workers.push(restarted);
+    const calls = runHost.mock.calls.length;
+    expect(await restarted.hasPending()).toBe(false);
+    expect(restarted.nextRunAt()).toBeNull();
+    await restarted.sweep(); expect(runHost).toHaveBeenCalledTimes(calls);
+    repaired = true;
+    expect(await db.transaction(tx => requestAgentLifecycleRecheckInTransaction(tx, { companyId, agentId: hired.id,
+      configurationRepaired: true }, () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle)))).toBe(true);
+    await restarted.sweep();
+    expect((await current(hired.id)).lifecycleState).toBe("ready");
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
   it("persists a failed test across worker restarts without scanning, claiming, or probing it again", async () => {
     const { agent, work, driver, runHost } = await failed();
     expect(agent).toMatchObject({ lifecycleState: "verifying", status: "paused", lifecycleOperation: { retryRequired: true } });
@@ -72,6 +149,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await work.process(agent.id);
     expect(runHost).toHaveBeenCalledTimes(calls);
     expect((await current(agent.id)).lifecycleOperation).toEqual(agent.lifecycleOperation);
+  });
+
+  it("does not let an in-flight failed verifier overwrite a completed connection repair", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Repair while checking", status: "paused",
+      lifecycleState: "verifying", lifecycleHolds: [], lifecycleRequiredPluginIds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, verificationFailures: 2 } }).returning();
+    const store = createLifecycleStore(db, createAgentLifecycleEffects());
+    const owner = "old-account-check";
+    const claimed = await store.claim(agent!.id, owner, new Date());
+    expect(claimed).not.toBeNull();
+    await db.transaction(async tx => {
+      expect(await requestAgentLifecycleRecheckInTransaction(tx, { companyId, agentId: agent!.id,
+        expectedVersion: agent!.lifecycleVersion, configurationRepaired: true },
+      () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle))).toBe(true);
+    });
+    await store.defer(claimed!, owner, "Old missing account", new Date(), { retryRequired: true });
+    const repaired = await current(agent!.id);
+    expect(repaired.lifecycleError).toBeNull();
+    expect(repaired.lifecycleOperation).not.toHaveProperty("retryRequired");
+    expect(repaired.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(repaired.lifecycleOperation).not.toHaveProperty("verificationFailures");
+    expect(await store.claim(agent!.id, "new-check", new Date())).not.toBeNull();
   });
 
   it("permits an explicit retry of the same operation and completes verification before readiness", async () => {
@@ -207,5 +306,151 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await work.process(agent.id);
     expect((await current(agent.id)).lifecycleState).toBe("terminated");
     expect(runHost.mock.calls.map(([a]) => a.lifecycleState)).toContain("cleaning_up");
+  });
+
+  async function eventWaitFixture() {
+    let complete = false;
+    const runHost = vi.fn(async (agent: LifecycleAgent) => agent.lifecycleState !== "verifying" || complete
+      ? "complete" as const : "waiting" as const);
+    const driver = { requiredPluginIds: async () => [], runPlugin: async () => "complete" as const, runHost };
+    const work = configureAgentLifecycle(db, driver); workers.push(work);
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "External reply wait", adapterType: "process" });
+    await work.process(agent.id);
+    return { agent: await current(agent.id), work, driver, runHost, complete: () => { complete = true; } };
+  }
+  function recheck(tx: Pick<Db, "select" | "update">, id: string, scopeCompanyId = companyId, version?: number) {
+    return requestAgentLifecycleRecheckInTransaction(tx,
+      { companyId: scopeCompanyId, agentId: id, expectedVersion: version },
+      () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle));
+  }
+
+  it("parks healthy external verification without a retry deadline, claim or readiness bypass", async () => {
+    const { agent, work, runHost } = await eventWaitFixture();
+    expect(agent).toMatchObject({ lifecycleState: "verifying", status: "paused", lifecycleError: null,
+      lifecycleOperation: { waitingForSignal: true, hostComplete: false } });
+    expect(agent.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(agent.lifecycleOperation).not.toHaveProperty("retryRequired");
+    expect(agent.lifecycleOperation).not.toHaveProperty("leaseOwner");
+    const store = createLifecycleStore(db, createAgentLifecycleEffects()), calls = runHost.mock.calls.length;
+    const later = new Date(Date.now() + 86_400_000);
+    expect(await store.pending(100, later)).not.toContain(agent.id);
+    expect(await store.claim(agent.id, "unnotified", later)).toBeNull();
+    await work.process(agent.id);
+    expect(runHost).toHaveBeenCalledTimes(calls);
+    expect((await current(agent.id)).lifecycleState).toBe("verifying");
+  });
+
+  it.each(["during", "after"] as const)("retains a committed recheck %s the active attempt parks", async ordering => {
+    let entered!: () => void, release!: () => void, ready = false;
+    const inside = new Promise<void>(resolve => { entered = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const runHost = vi.fn(async (agent: LifecycleAgent) => {
+      if (agent.lifecycleState !== "verifying" || ready) return "complete" as const;
+      entered(); await hold; return "waiting" as const;
+    });
+    const work = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost });
+    workers.push(work);
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Commit race", adapterType: "process" });
+    const processing = work.process(agent.id);
+    await inside;
+    try {
+      if (ordering === "after") { release(); await processing; }
+      await db.transaction(async tx => {
+        expect(await recheck(tx, agent.id)).toBe(true);
+      });
+      ready = true;
+    } finally { release(); await processing; }
+    const signalled = await current(agent.id);
+    expect(signalled.lifecycleOperation?.waitingForSignal).not.toBe(true);
+    expect(signalled.lifecycleOperation).not.toHaveProperty("retryAt");
+    await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle" });
+    expect(runHost.mock.calls.filter(([a]) => a.lifecycleState === "verifying")).toHaveLength(2);
+  });
+
+  it("retains a committed recheck when an expired attempt returns its earlier wait", async () => {
+    const { agent, work, complete, runHost } = await eventWaitFixture();
+    await db.transaction(async tx => { expect(await recheck(tx, agent.id)).toBe(true); });
+    const store = createLifecycleStore(db, createAgentLifecycleEffects());
+    const owner = "expired-verification-owner";
+    // Use the store's normal clock input: the real claim is already expired when
+    // confirmation commits, without changing timers or waiting two minutes.
+    const claimed = await store.claim(agent.id, owner, new Date(Date.now() - 121_000));
+    if (!claimed) throw new Error("Expected a real verification claim");
+    expect(Date.parse(claimed.lifecycleOperation!.leaseUntil!)).toBeLessThan(Date.now());
+    await db.transaction(async tx => { expect(await recheck(tx, agent.id)).toBe(true); });
+    const afterConfirmation = await current(agent.id);
+    complete();
+    expect(await store.defer(claimed, owner, null, new Date(), { waitForSignal: true })).toBe(true);
+    const signalled = await current(agent.id);
+    expect(signalled.lifecycleOperation).not.toHaveProperty("waitingForSignal");
+    expect(afterConfirmation.lifecycleOperation).toMatchObject({ leaseOwner: owner, recheckRequested: true });
+    expect(signalled.lifecycleOperation).not.toHaveProperty("leaseOwner");
+    expect(signalled.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(await store.pending(100, new Date())).toContain(agent.id);
+    await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle" });
+    expect(runHost.mock.calls.filter(([a]) => a.lifecycleState === "verifying")).toHaveLength(2);
+  });
+
+  it("rolls back the recheck with its producer and coalesces redundant committed signals", async () => {
+    const { agent, work, complete, runHost } = await eventWaitFixture();
+    await expect(db.transaction(async tx => {
+      expect(await recheck(tx, agent.id)).toBe(true);
+      throw new Error("Rollback this producer");
+    })).rejects.toThrow("Rollback this producer");
+    expect((await current(agent.id)).lifecycleOperation?.waitingForSignal).toBe(true);
+    await db.transaction(async tx => {
+      expect(await recheck(tx, agent.id)).toBe(true);
+      expect(await recheck(tx, agent.id)).toBe(true);
+    });
+    complete(); await work.process(agent.id);
+    const calls = runHost.mock.calls.length;
+    await work.process(agent.id);
+    expect(runHost).toHaveBeenCalledTimes(calls);
+    expect((await current(agent.id)).lifecycleState).toBe("ready");
+  });
+
+  it("finishes a committed recheck on a new owner without a post-commit scheduling call", async () => {
+    const { agent, work, driver, complete } = await eventWaitFixture();
+    await work.stop();
+    await db.transaction(async tx => { expect(await recheck(tx, agent.id)).toBe(true); });
+    complete();
+    // No process/Retry/wake callback follows the committed producer here.
+    const restarted = startAgentLifecycle(db, createAgentLifecycleEffects(), driver, () => true); workers.push(restarted);
+    await restarted.sweep();
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle" });
+    expect(await restarted.hasPending()).toBe(false);
+  });
+
+  it("rechecks a saved wait once at startup and remains parked without recurring startup scans", async () => {
+    const { agent, work, driver, runHost } = await eventWaitFixture();
+    await work.stop();
+    const restarted = startAgentLifecycle(db, createAgentLifecycleEffects(), driver, () => true); workers.push(restarted);
+    const calls = runHost.mock.calls.length;
+    expect(await restarted.hasPending()).toBe(true);
+    await restarted.sweep();
+    expect(runHost).toHaveBeenCalledTimes(calls + 1);
+    expect((await current(agent.id)).lifecycleOperation?.waitingForSignal).toBe(true);
+    expect(await restarted.hasPending()).toBe(false);
+    expect(restarted.nextRunAt()).toBeNull();
+    await restarted.sweep();
+    expect(runHost).toHaveBeenCalledTimes(calls + 1);
+  });
+
+  it("does not rearm a parked wait after a company or version mismatch, pause or required manual repair", async () => {
+    const { agent, work } = await eventWaitFixture();
+    await db.transaction(async tx => {
+      expect(await recheck(tx, agent.id, randomUUID())).toBe(false);
+      expect(await recheck(tx, agent.id, companyId, agent.lifecycleVersion - 1)).toBe(false);
+    });
+    expect((await current(agent.id)).lifecycleOperation).toEqual(agent.lifecycleOperation);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    await db.transaction(async tx => { expect(await recheck(tx, agent.id)).toBe(false); });
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "paused", status: "paused" });
+    const manual = await failed();
+    await db.transaction(async tx => { expect(await recheck(tx, manual.agent.id)).toBe(false); });
+    expect((await current(manual.agent.id)).lifecycleOperation?.retryRequired).toBe(true);
   });
 });
