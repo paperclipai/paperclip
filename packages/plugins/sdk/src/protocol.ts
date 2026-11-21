@@ -1805,6 +1805,14 @@ export interface WorkerToHostMethods {
     params: { secretRef: string | EnvSecretRefBinding; companyId?: string; configPath?: string },
     result: string,
   ];
+  "secrets.store": [
+    params: { companyId?: string; value: string },
+    result: { secretId: string; configPath: string },
+  ];
+  "secrets.discard": [
+    params: { companyId?: string; secretId: string },
+    result: void,
+  ];
 
   // Activity
   "activity.log": [
@@ -2175,6 +2183,16 @@ export interface WorkerToHostMethods {
   "issues.getAttachmentContent": [
     params: { attachmentId: string; companyId: string; maxBytes?: number | null },
     result: PluginIssueAttachmentContent | null,
+  ];
+  "issues.createAttachment": [
+    params: {
+      issueId: string;
+      companyId: string;
+      filename: string;
+      contentType: string;
+      contentBase64: string;
+    },
+    result: IssueAttachment,
   ];
 
   // Issue Documents

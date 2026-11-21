@@ -3,9 +3,10 @@
  * `secret_ref` config bindings only with an explicit company context.
  */
 
+import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySecretBindings } from "@paperclipai/db";
+import { companySecretBindings, companySecrets } from "@paperclipai/db";
 import type { EnvSecretRefBinding, SecretProjectionClass, SecretVersionSelector } from "@paperclipai/shared";
 import { envBindingSecretRefSchema } from "@paperclipai/shared";
 import {
@@ -146,8 +147,27 @@ export interface PluginSecretsHandlerOptions {
   pluginId: string;
 }
 
+export interface PluginSecretsStoreParams {
+  companyId?: string;
+  value: string;
+}
+
+export interface PluginSecretsDiscardParams {
+  companyId?: string;
+  secretId: string;
+}
+
 export interface PluginSecretsService {
   resolve(params: PluginSecretsResolveParams): Promise<string>;
+  store(params: PluginSecretsStoreParams): Promise<{ secretId: string; configPath: string }>;
+  discard(params: PluginSecretsDiscardParams): Promise<void>;
+}
+
+const PLUGIN_OWNED_SECRET_PREFIX = "plugin-secret.";
+const MAX_PLUGIN_SECRET_VALUE_CHARS = 256 * 1024;
+
+function pluginOwnedConfigPath(secretId: string): string {
+  return `${PLUGIN_OWNED_SECRET_PREFIX}${secretId}`;
 }
 
 function createRateLimiter(maxAttempts: number, windowMs: number) {
@@ -258,6 +278,112 @@ export function createPluginSecretsHandler(
           pluginId,
         },
       });
+    },
+
+    async store(params: PluginSecretsStoreParams): Promise<{ secretId: string; configPath: string }> {
+      const companyId = requireCompanyId(params.companyId);
+      if (!rateLimiter.check(`${companyId}:${pluginId}:write`)) {
+        const err = new Error("Rate limit exceeded for secret writes");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+      const value = typeof params.value === "string" ? params.value : "";
+      if (!value) throw unprocessable("Refusing to store an empty secret");
+      if (value.length > MAX_PLUGIN_SECRET_VALUE_CHARS) {
+        throw unprocessable("Secret value is too large");
+      }
+      const created = await secretService(db).create(companyId, {
+        name: `plugin-session-${randomUUID()}`,
+        provider: "local_encrypted",
+        value,
+      });
+      const configPath = pluginOwnedConfigPath(created.id);
+      try {
+        await secretService(db).createBinding({
+          companyId,
+          secretId: created.id,
+          targetType: "plugin",
+          targetId: pluginId,
+          configPath,
+          versionSelector: "latest",
+          projectionClass: "unclassified",
+        });
+      } catch (error) {
+        await secretService(db).remove(created.id).catch(() => undefined);
+        throw error;
+      }
+      return { secretId: created.id, configPath };
+    },
+
+    async discard(params: PluginSecretsDiscardParams): Promise<void> {
+      const companyId = requireCompanyId(params.companyId);
+      const secretId = params.secretId.trim();
+      if (!secretId) throw unprocessable("secretId is required");
+      if (!rateLimiter.check(`${companyId}:${pluginId}:write`)) {
+        const err = new Error("Rate limit exceeded for secret writes");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+      const configPath = pluginOwnedConfigPath(secretId);
+      const owned = await db
+        .select({ id: companySecretBindings.id })
+        .from(companySecretBindings)
+        .where(and(
+          eq(companySecretBindings.companyId, companyId),
+          eq(companySecretBindings.targetType, "plugin"),
+          eq(companySecretBindings.targetId, pluginId),
+          eq(companySecretBindings.secretId, secretId),
+          eq(companySecretBindings.configPath, configPath),
+        ));
+      if (owned.length === 0) {
+        throw unprocessable("Secret is not a plugin-owned session binding");
+      }
+      const bindings = await db
+        .select({
+          id: companySecretBindings.id,
+          companyId: companySecretBindings.companyId,
+          targetType: companySecretBindings.targetType,
+          targetId: companySecretBindings.targetId,
+          configPath: companySecretBindings.configPath,
+        })
+        .from(companySecretBindings)
+        .where(eq(companySecretBindings.secretId, secretId));
+      const foreign = bindings.filter((row) => !(
+        row.companyId === companyId
+        && row.targetType === "plugin"
+        && row.targetId === pluginId
+        && row.configPath === configPath
+      ));
+      if (foreign.length > 0) {
+        await db
+          .delete(companySecretBindings)
+          .where(and(
+            eq(companySecretBindings.companyId, companyId),
+            eq(companySecretBindings.targetType, "plugin"),
+            eq(companySecretBindings.targetId, pluginId),
+            eq(companySecretBindings.secretId, secretId),
+            eq(companySecretBindings.configPath, configPath),
+          ));
+        return;
+      }
+      const secret = await db
+        .select({ id: companySecrets.id, companyId: companySecrets.companyId })
+        .from(companySecrets)
+        .where(eq(companySecrets.id, secretId))
+        .then((rows) => rows[0] ?? null);
+      if (!secret || secret.companyId !== companyId) {
+        await db
+          .delete(companySecretBindings)
+          .where(and(
+            eq(companySecretBindings.companyId, companyId),
+            eq(companySecretBindings.targetType, "plugin"),
+            eq(companySecretBindings.targetId, pluginId),
+            eq(companySecretBindings.secretId, secretId),
+            eq(companySecretBindings.configPath, configPath),
+          ));
+        return;
+      }
+      await secretService(db).remove(secretId);
     },
   };
 }
