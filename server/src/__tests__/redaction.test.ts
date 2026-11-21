@@ -541,6 +541,22 @@ describe("redaction", () => {
     });
   });
 
+  it("keeps numeric token budgets in redacted payloads", () => {
+    expect(
+      redactEventPayload({
+        heartbeat: {
+          sessionCompaction: { maxRawInputTokens: 2_000_000 },
+        },
+        invocationLimits: { maxOutputTokens: 4_096 },
+      }),
+    ).toEqual({
+      heartbeat: {
+        sessionCompaction: { maxRawInputTokens: 2_000_000 },
+      },
+      invocationLimits: { maxOutputTokens: 4_096 },
+    });
+  });
+
   it("redacts common secret shapes from unstructured text", () => {
     const jwt =
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
