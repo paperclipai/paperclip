@@ -211,6 +211,28 @@ describe("PropertiesPanel", () => {
       );
     });
 
+    it("resizes the docked pane from the keyboard and announces its saved width", async () => {
+      await renderPanel({ taskDetailLayout: true });
+      const grip = container.querySelector<HTMLElement>('[role="separator"]')!;
+      const aside = container.querySelector("aside")!;
+      expect(grip.tabIndex).toBe(0);
+      grip.focus();
+      const press = async (key: string, width: number) => {
+        grip.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+        await flushReact();
+        expect(document.activeElement).toBe(grip);
+        expect(aside.style.width).toBe(`${width}px`);
+        expect(grip.getAttribute("aria-valuenow")).toBe(String(width));
+        expect(window.localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth")).toBe(String(width));
+      };
+      await press("ArrowLeft", 450);
+      await press("ArrowRight", 434);
+      await press("Home", 260);
+      await press("ArrowRight", 260);
+      await press("End", 784);
+      await press("ArrowLeft", 784);
+    });
+
     it("uses the proposal width token and resets only the sandbox's saved width", async () => {
       mockSandbox.enabled = true;
       document.documentElement.style.setProperty("--design-page-aside-width", "320px");
