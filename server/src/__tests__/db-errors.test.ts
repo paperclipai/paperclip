@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUniqueViolation } from "../db-errors.js";
+import { isDeadlock, isUniqueViolation } from "../db-errors.js";
 
 const CONSTRAINT = "issues_open_routine_execution_uq";
 
@@ -41,6 +41,13 @@ describe("isUniqueViolation", () => {
     expect(isUniqueViolation(new Error("boom"), CONSTRAINT)).toBe(false);
     expect(isUniqueViolation(null, CONSTRAINT)).toBe(false);
     expect(isUniqueViolation(undefined, CONSTRAINT)).toBe(false);
+  });
+
+  it("recognizes a deadlock through the driver cause", () => {
+    const wrapped = new Error("Failed query: insert into \"departments\"");
+    (wrapped as { cause?: unknown }).cause = { code: "40P01" };
+    expect(isDeadlock(wrapped)).toBe(true);
+    expect(isDeadlock({ code: "23505" })).toBe(false);
   });
 
   it("stops walking a self-referential cause chain", () => {

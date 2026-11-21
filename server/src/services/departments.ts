@@ -5,7 +5,7 @@ import {
   normalizeDepartmentName,
   type Department,
 } from "@paperclipai/shared";
-import { isUniqueViolation } from "../db-errors.js";
+import { isDeadlock, isUniqueViolation } from "../db-errors.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 
 const NAME_CONSTRAINT = "departments_company_name_key_uq";
@@ -14,6 +14,22 @@ function requireName(input: string): string {
   const name = normalizeDepartmentName(input);
   if (!name) throw badRequest("Enter a department name of 1 to 80 characters");
   return name;
+}
+
+// Insert names in one order. Two agents creating the same names in opposite
+// orders otherwise deadlock on the unique index.
+function compareDepartmentNames(left: string, right: string): number {
+  const foldedLeft = left.toLowerCase();
+  const foldedRight = right.toLowerCase();
+  if (foldedLeft < foldedRight) return -1;
+  if (foldedLeft > foldedRight) return 1;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+export function orderedDepartmentNames(names: readonly string[]): string[] {
+  return names.map((input) => requireName(input)).sort(compareDepartmentNames);
 }
 
 // Fast path before the insert. Postgres `lower()` on the unique index is the
@@ -126,8 +142,8 @@ export function departmentService(db: Db) {
       names: readonly string[] = [],
     ): Promise<{ memberships: Department[]; created: Department[] }> {
       const requestedIds = [...new Set(departmentIds)];
-      const requestedNames = names.map((input) => requireName(input));
-      const { finalIds, createdIds } = await db.transaction(async (tx) => {
+      const requestedNames = orderedDepartmentNames(names);
+      const write = () => db.transaction(async (tx) => {
         const [agent] = await tx
           .select({ id: agents.id })
           .from(agents)
@@ -191,14 +207,23 @@ export function departmentService(db: Db) {
             departmentId,
           })));
         }
-        return { finalIds, createdIds };
+        const listed = await listDepartments(tx as unknown as Db, companyId);
+        const createdIdSet = new Set(createdIds);
+        return {
+          memberships: listed.filter((row) => finalIds.includes(row.id) && row.agentIds.includes(agentId)),
+          created: listed.filter((row) => createdIdSet.has(row.id)),
+        };
       });
-      const listed = await listDepartments(db, companyId);
-      const createdIdSet = new Set(createdIds);
-      return {
-        memberships: listed.filter((row) => finalIds.includes(row.id) && row.agentIds.includes(agentId)),
-        created: listed.filter((row) => createdIdSet.has(row.id)),
-      };
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          return await write();
+        } catch (error) {
+          lastError = error;
+          if (attempt >= 2 || !isDeadlock(error)) throw error;
+        }
+      }
+      throw lastError;
     },
   };
 }

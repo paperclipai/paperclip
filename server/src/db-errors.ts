@@ -1,5 +1,6 @@
 const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
+const DEADLOCK = "40P01";
 const MAX_CAUSE_DEPTH = 4;
 
 /**
@@ -28,6 +29,21 @@ export function isUniqueViolation(error: unknown, constraintName?: string): bool
       if (constraint === constraintName) return true;
       if (typeof candidate.message === "string" && candidate.message.includes(constraintName)) return true;
     }
+    current = candidate.cause;
+  }
+  return false;
+}
+
+/**
+ * Recognizes a Postgres deadlock (SQLSTATE 40P01).
+ *
+ * Drizzle wraps the driver failure, so the code is reachable through `cause`.
+ */
+export function isDeadlock(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current && typeof current === "object"; depth += 1) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (candidate.code === DEADLOCK) return true;
     current = candidate.cause;
   }
   return false;
