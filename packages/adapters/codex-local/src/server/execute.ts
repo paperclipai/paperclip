@@ -94,6 +94,7 @@ import {
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
 } from "./codex-home.js";
+import { removeUnsafeCodexHomeEntries } from "./codex-home-cleanup.js";
 import {
   CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
   CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING,
@@ -120,6 +121,7 @@ import {
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
 import { codexShellEnvironmentKeys } from "@paperclipai/adapter-utils/codex-shell-environment";
+import { acquireRuntimeHomeLease, type RuntimeHomeLease } from "./runtime-home-lease.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeCodexAcp = createCodexAcpExecutor();
@@ -581,6 +583,22 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  // A leased generated home is released on every exit path: success, provider
+  // failure, timeout/cancellation, and errors thrown during setup.
+  const runtimeHomeLeases: RuntimeHomeLease[] = [];
+  try {
+    return await executeWithRuntimeHomeLeases(ctx, runtimeHomeLeases);
+  } finally {
+    for (const lease of runtimeHomeLeases) {
+      await lease.release().catch(() => {});
+    }
+  }
+}
+
+async function executeWithRuntimeHomeLeases(
+  ctx: AdapterExecutionContext,
+  runtimeHomeLeases: RuntimeHomeLease[],
+): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
@@ -654,6 +672,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !useSshHostAuth && typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
+  // Basename of the leased generated home, saved with the session so a
+  // continued conversation returns to the slot that holds it.
+  let leasedRuntimeHomeName: string | null = null;
   const configuredOpenAiApiKey =
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
@@ -687,13 +708,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // the same subscription identity preserve its cache and session state.
     const credentialIdentity = credentialBytes
       ? readSubscriptionAccountId(credentialBytes) ?? createHash("sha256").update(credentialBytes).digest("hex") : null;
+    // A managed AI connection materializes its credential into a new temporary
+    // directory for every run, so its path must not select the home (it would
+    // leak one full home per run). Key on the connection's stable session
+    // identity instead: it changes with the grant, user, secret or reconnect
+    // epoch, but not with a token refresh. Other credential homes are stable
+    // paths and keep their previous digest input.
+    const managedAiConnection = parseObject(config.managedAiConnection);
+    const credentialHomeKey = config.managedAiConnection
+      ? `managed-ai-connection:${asString(managedAiConnection.sessionIdentity, "")}`
+      : credentialHome;
     runtimeSkillDigest = createHash("sha256").update(JSON.stringify({
-      runtimeSkillDigest, credentialHome, credentialIdentity, selectedConfigDigest, apiKey: envConfig.OPENAI_API_KEY ?? null,
+      runtimeSkillDigest, credentialHome: credentialHomeKey, credentialIdentity, selectedConfigDigest,
+      apiKey: envConfig.OPENAI_API_KEY ?? null,
     })).digest("hex");
     // Different authorized versions/assignments get separate homes, including
     // session state. Previously permitted private links cannot survive revocation.
-    configuredCodexHome = path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
-      connectorSkillDigest ? "connector-runtimes" : "skill-runtimes", agent.id, runtimeSkillDigest);
+    // Unchanged runs reuse the home; an overlapping run of the same agent leases
+    // the next reusable slot so it never relinks another run's credential.
+    // A continued conversation lives in the slot that started it; ask for that
+    // slot first so Codex finds the conversation.
+    const savedRuntimeHome = asString(parseObject(runtime.sessionParams).codexRuntimeHome, "") || null;
+    const runtimeHomeLease = await acquireRuntimeHomeLease(
+      path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
+        connectorSkillDigest ? "connector-runtimes" : "skill-runtimes", agent.id),
+      runtimeSkillDigest,
+      runId,
+      { preferredHome: savedRuntimeHome },
+    );
+    runtimeHomeLeases.push(runtimeHomeLease);
+    configuredCodexHome = runtimeHomeLease.home;
+    leasedRuntimeHomeName = path.basename(runtimeHomeLease.home);
+    if (savedRuntimeHome && savedRuntimeHome !== leasedRuntimeHomeName
+      && (savedRuntimeHome === runtimeSkillDigest || savedRuntimeHome.startsWith(`${runtimeSkillDigest}-`))) {
+      await onLog(
+        "stdout",
+        `[paperclip] Codex runtime home "${savedRuntimeHome}" that holds the saved session is in use by another run; using "${leasedRuntimeHomeName}".\n`,
+      );
+    }
+    // An earlier run could rewrite this home; never seed or stage through what it left.
+    const removedEntries = await removeUnsafeCodexHomeEntries(configuredCodexHome);
+    if (removedEntries.length > 0) {
+      await onLog(
+        "stdout",
+        `[paperclip] Removed unexpected links or shared files from reused Codex home "${configuredCodexHome}": ${removedEntries.join(", ")}.\n`,
+      );
+    }
+    if (config.managedAiConnection) {
+      // The connection's credential for THIS run is authoritative. Drop any
+      // link to an earlier run's (now removed) credential directory, or a
+      // regular file left by a copy-back, so seeding links the current one.
+      await fs.rm(path.join(configuredCodexHome, "auth.json"), { force: true });
+    }
   }
   if (!executionTargetIsRemote) {
     await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
@@ -1602,6 +1668,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
                 }
               : {}),
+            ...(leasedRuntimeHomeName ? { codexRuntimeHome: leasedRuntimeHomeName } : {}),
             ...(workspaceId ? { workspaceId } : {}),
             ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
             ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
