@@ -7,6 +7,7 @@ import {
   configCheck,
   databaseCheck,
   deploymentAuthCheck,
+  diskSpaceCheck,
   llmCheck,
   logCheck,
   managedInstallChecks,
@@ -16,6 +17,7 @@ import {
   serviceHealthChecks,
   storageCheck,
   type CheckResult,
+  type DiskSpaceCheckDeps,
 } from "../checks/index.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { printPaperclipCliBanner } from "../utils/banner.js";
@@ -31,6 +33,7 @@ export async function doctor(opts: {
   config?: string;
   repair?: boolean;
   yes?: boolean;
+  diskSpace?: DiskSpaceCheckDeps;
 }): Promise<{ passed: number; warned: number; failed: number }> {
   await printUpdateNotice(opts.config);
   printPaperclipCliBanner();
@@ -119,6 +122,10 @@ export async function doctor(opts: {
       opts,
     }),
   );
+
+  const diskSpaceResult = await diskSpaceCheck(config, configPath, opts.diskSpace);
+  results.push(diskSpaceResult);
+  printResult(diskSpaceResult);
 
   // 9. Port check
   const portResult = await portCheck(config);
