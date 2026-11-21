@@ -68,6 +68,8 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
     .update(issues)
     .set({ assigneeAgentId: null, createdByAgentId: null })
     .where(or(eq(issues.assigneeAgentId, id), eq(issues.createdByAgentId, id)));
+  const { routineService } = await import("./routines.js");
+  await routineService(tx).releaseDeletedAgentRoutines(tx, companyId, id);
   await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.agentId, id));
   await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.agentId, id));
   await tx.delete(activityLog).where(
