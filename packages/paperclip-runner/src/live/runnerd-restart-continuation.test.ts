@@ -8,9 +8,15 @@ import type { PersistedNativeSession } from "../contracts/native-session-backend
 import type { PrpEvent } from "../protocol/replay-contract.js";
 import { executeNativeSession } from "../native-session-runtime.js";
 import { unreadSteeredMessageIds } from "../steering-delivery.js";
-import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
+import { createRunnerdCodexTransport } from "./runnerd-codex-transport.js";
+import { defaultCapabilityRunnerdBinary } from "../../test/support/runnerd-transport.js";
 
-it.each(["none", "before-start", "after-start"] as const)("completes after the real runner and provider are killed (second crash: %s)", async (crash) => {
+it.each([
+  { crash: "none", cause: "restart" },
+  { crash: "before-start", cause: "restart" },
+  { crash: "after-start", cause: "restart" },
+  { crash: "none", cause: "internal-capacity" },
+] as const)("completes after a real provider interruption ($cause, second crash: $crash)", async ({ crash, cause }) => {
   const root = await mkdtemp(join(tmpdir(), "runner-restart-continuation-"));
   const identity = { runId: "run-restart", sessionId: "session-restart", companyId: "company-restart", issueId: "issue-restart", agentId: "agent-restart" };
   const execution: NativeExecutionInputV1 = {
@@ -28,10 +34,13 @@ it.each(["none", "before-start", "after-start"] as const)("completes after the r
   const options = {
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
-    codexArgs: ["--state-file", join(root, "fake-state.json"), "--call-log", join(root, "calls.log"), "--durable-turn-ids", "--hold-first-durable-turn"],
+    codexArgs: ["--state-file", join(root, "fake-state.json"), "--call-log", join(root, "calls.log"), "--durable-turn-ids", "--hold-first-durable-turn",
+      ...(cause === "internal-capacity" ? ["--require-dynamic-tool", "--emit-tool-call-on-resume"] : [])],
     stateDirectory: root,
     prpIdentity: { runnerInstanceId: "runner-restart", environmentLeaseId: "lease-restart", runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "turn-restart", itemId: "item-restart" },
   };
+  const dynamicTools = cause === "internal-capacity" ? [{ name: "get_task_context", description: "Read context", inputSchema: { type: "object" } }] : [];
+  const dynamicToolHandler = vi.fn(async () => ({ ok: true }));
   const first = createRunnerdCodexTransport(options);
   let restored: ReturnType<typeof createRunnerdCodexTransport> | undefined;
   const alive = (pid: number | null) => {
@@ -43,7 +52,7 @@ it.each(["none", "before-start", "after-start"] as const)("completes after the r
     try { process.kill(pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
   };
   try {
-    const backend = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-restart", transportFactory: () => first.transport });
+    const backend = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-restart", transportFactory: () => first.transport, dynamicTools, dynamicToolHandler });
     const session = await backend.openSession({ identity, workingDirectory: root });
     await session.startTurn({ message: { role: "user", text: execution.task.prompt } });
     const persisted = await session.snapshot();
@@ -63,10 +72,16 @@ it.each(["none", "before-start", "after-start"] as const)("completes after the r
     // Simulate Codex's process-loss history: the thread remains, its in-memory
     // turn does not. Keep the turn counter to prevent provider identity reuse.
     const providerState = JSON.parse(await readFile(join(root, "fake-state.json"), "utf8"));
-    providerState.activeTurnId = null;
+    if (cause === "restart") providerState.activeTurnId = null;
     await writeFile(join(root, "fake-state.json"), JSON.stringify(providerState));
-    restored = createRunnerdCodexTransport({ ...options, resumeDynamicTools: [], resumeActiveTurnId: persisted.activeTurnId });
-    let recovering = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-restart", transportFactory: () => restored!.transport });
+    if (cause === "internal-capacity") {
+      const statePath = join(root, "runner/codex-provider-state.json");
+      const state = JSON.parse(await readFile(statePath, "utf8"));
+      state.toolBridge.durableRunReceiptLimitReached = true;
+      await writeFile(statePath, JSON.stringify(state));
+    }
+    restored = createRunnerdCodexTransport({ ...options, resumeDynamicTools: dynamicTools, resumeActiveTurnId: persisted.activeTurnId });
+    let recovering = createRunnerdNativeSessionBackend(execution, { runnerInstanceId: "runner-restart", transportFactory: () => restored!.transport, dynamicTools, dynamicToolHandler });
     const events: PrpEvent[] = [];
     const checkpoints: PersistedNativeSession[] = [];
     let recoveryCheckpoint = persisted;
@@ -105,7 +120,7 @@ it.each(["none", "before-start", "after-start"] as const)("completes after the r
     }
     const completion = await execute();
     expect(completion).toMatchObject({ providerSessionId: persisted.providerSessionId, turnId: "provider-turn-2", terminal: { runTerminalState: "succeeded" } });
-    expect(events.filter(event => event.eventType === "turn.failed")).toHaveLength(1);
+    expect(events.filter(event => event.eventType === (cause === "restart" ? "turn.failed" : "turn.interrupted"))).toHaveLength(1);
     expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
     if (crash !== "after-start") expect(checkpoints.some(snapshot => snapshot.activeTurnId === "provider-turn-2" && snapshot.terminal === null)).toBe(true);
     expect((await readFile(join(root, "calls.log"), "utf8")).match(/^turn\/start$/gm)).toHaveLength(2);
@@ -113,6 +128,11 @@ it.each(["none", "before-start", "after-start"] as const)("completes after the r
     const submissions = journal.commands.filter((command: { type: string }) => command.type === "turn.start");
     expect(submissions).toHaveLength(2);
     expect(submissions[1].payload.text).toContain("Reconcile any unfinished tool or command");
+    if (cause === "internal-capacity") {
+      expect(submissions[1].payload.text).toContain("internally interrupted");
+      expect(events.some(event => event.eventType === "turn.interrupted" &&
+        (event.payload.error as { code?: string } | undefined)?.code === "semantic_tool_receipt_limit_recovered")).toBe(true);
+    }
   } finally {
     await restored?.transport.close().catch(() => undefined);
     for (const bundle of [first, restored]) {

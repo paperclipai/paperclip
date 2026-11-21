@@ -35,6 +35,7 @@ const { createPrivateHostControlFixture } = await import(new URL("../../../../pa
 };
 
 const fakeAcpxSidecar = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
+const originalToolDefinitions = PaperclipRunnerToolAuthority.prototype.definitions;
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const adoptedIdleTimeoutMs = 10_000;
 const toolDefinitions = PaperclipRunnerToolAuthority.prototype.definitions;
@@ -78,6 +79,9 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const qualifiedCancellation = mode === "adopted cancellation" || mode === "cached cancellation";
     const managedGitHub = mode.endsWith("managed GitHub"), brokerUrl = "https://core.example.test/api", brokerToken = (runId: string) => `fixture-broker-${runId}`;
     const preparedBrokers: Array<{ runId: string; token?: string }> = [];
+    let phase = "fixture preparation", failurePhase: string | undefined;
+    const operationKinds: string[] = [];
+    context.onTestFailed(() => console.info("entry-fixture-failure", { harness, mode, phase: failurePhase ?? phase, operations: operationKinds.slice(-30) }));
     const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}-${randomUUID().slice(0, 8)}`);
     const { db, runId, issueId, native } = first;
     const { companyId, agentId, runtimeRoot } = environment.current;
@@ -151,7 +155,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const operationsDuringClaim: string[] = [];
     let claimHeld = false, holdPreparationFor: string | undefined, claimedDuringPreparation = false;
     const preparation = vi.spyOn(PaperclipRunnerToolAuthority.prototype, "definitions").mockImplementation(function (this: PaperclipRunnerToolAuthority) {
-      const definitions = toolDefinitions.call(this);
+      const definitions = originalToolDefinitions.call(this);
       if (holdPreparationFor === undefined || this.binding.runId !== holdPreparationFor) return definitions;
       holdPreparationFor = undefined;
       return waitForCondition("claim during preparation", () => claims.length === 1)
@@ -185,6 +189,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const sameSource = (a: DurableRecoveryIdentity, b: DurableRecoveryIdentity) => Object.entries(a).every(([key, value]) => b[key as keyof DurableRecoveryIdentity] === value);
     const task = async (raw: unknown, authorityRunId: string): Promise<unknown> => {
       const operation = environmentTaskOperationSchema.parse(raw);
+      operationKinds.push(operation.kind);
       if (claimHeld) operationsDuringClaim.push(operation.kind);
       if (operation.kind === "describe") return { kind: "description", taskId, launchPreparationVersion: 1,
         projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1, runner: artifact, ...(qualifiedCancellation ? { executionContextVersion: 1 } : {}),
@@ -307,7 +312,9 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const adoption = vi.spyOn(remoteWarmRecovery, "inspectRemoteWarmSessionRecovery");
     restoreAdoption = () => adoption.mockRestore();
     try {
+      phase = "first execution";
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
+      phase = "first release";
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
       expect(await proof()).toMatchObject({ source: releases[0], taskId });
@@ -366,6 +373,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         await reconcileNativeFinalizations(db, [runB]);
         return runB;
       };
+      phase = "retained continuation";
       const runB = await admitNext();
       if (cancellation) return;
       await waitForCondition("automatic release B", () => releases.length === 2);
@@ -411,11 +419,13 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         expect(journal.filter(entry => entry.command === "turn.start")).toHaveLength(adopted ? 3 : 2);
       }
     } catch (error) {
+      failurePhase = phase;
       const live = await state().catch(() => ({}));
       console.info("entry-fixture", { releases: releases.length, claims: claims.length, lifecycle: live.lifecycle,
         lastCommand: live.lastControllerCommandSeq, ackedSource: live.ackedSourceSeq, outbox: live.outbox?.map((e: { envelope?: { payload?: { eventType?: string } } }) => e.envelope?.payload?.eventType), wire: wireEvents.slice(-70) });
       throw error;
     } finally {
+      phase = "cleanup";
       releaseClaimReply();
       await pendingFollowup?.catch(() => undefined);
     }
