@@ -3,11 +3,37 @@ import type { ModalElement } from "chat";
 import { slackDeferredCallbackActive } from "./cloud-callback.js";
 import { slackFormOpenContext } from "./cloud-forms.js";
 import { SlackCloudReceiptError } from "./cloud-event.js";
-import { SlackAdapter } from "@chat-adapter/slack";
+import { SlackAdapter, type SlackEvent } from "@chat-adapter/slack";
+import { toPlainText, walkAst, type Message } from "chat";
 import type { AdapterPostableMessage, LinkPreview, RawMessage } from "chat";
 import { slackSelectionMessage } from "./cards.js";
 
+function preserveLinkDestinations(message: Message): Message {
+  // Intake persists text, whereas the SDK's plain-text projection keeps only
+  // link labels. Use author content, never unfurl/preview metadata, and leave
+  // the original formatted AST intact for other SDK consumers.
+  const formatted = walkAst(structuredClone(message.formatted), (node) => {
+    if (node.type !== "link") return node;
+    const label = toPlainText({ type: "root", children: [node] });
+    return { type: "text", value: label === node.url ? label : `${label} (${node.url})` };
+  });
+  message.text = toPlainText(formatted);
+  return message;
+}
+
 export class PaperclipSlackAdapter extends SlackAdapter {
+  protected override async parseSlackMessage(
+    event: SlackEvent,
+    threadId: string,
+    options?: { skipSelfMention?: boolean },
+  ): Promise<Message> {
+    return preserveLinkDestinations(await super.parseSlackMessage(event, threadId, options));
+  }
+
+  protected override parseSlackMessageSync(event: SlackEvent, threadId: string): Message {
+    return preserveLinkDestinations(super.parseSlackMessageSync(event, threadId));
+  }
+
   override async openModal(triggerId: string, modal: ModalElement, contextId?: string): Promise<{ viewId: string }> {
     const current = slackFormOpenContext();
     if (!current) {

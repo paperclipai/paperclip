@@ -22,7 +22,7 @@ describe("Slack inbound link latency", () => {
     } as SlackEvent;
     const config = { botToken: "xoxb-synthetic", signingSecret: "synthetic", userName: "test-bot", logger: new ConsoleLogger("silent") };
     const received = await new Candidate(config).parse(event);
-    expect(received.text).toBe("Review this link");
+    expect(received.text).toBe("Review this link (https://example.com/review)");
     expect(received.links).toMatchObject([{ url: "https://example.com/review" }]);
     expect(received.attachments).toMatchObject([{ name: "notes.txt", fetchData: expect.any(Function) }]);
     expect(state.get).not.toHaveBeenCalled();
@@ -34,8 +34,30 @@ describe("Slack inbound link latency", () => {
     expect(state.get).toHaveBeenCalledWith("slack:unfurls:1740000001.1");
     await vi.runAllTimersAsync();
     const original = await baseline;
-    expect(received.text).toBe(original.text);
+    expect(original.text).toBe("Review this link");
     expect(received.formatted).toEqual(original.formatted);
     expect(received.links).toEqual(original.links);
+  });
+});
+
+describe("Slack inbound link destinations", () => {
+  const config = { botToken: "xoxb-synthetic", signingSecret: "synthetic", userName: "test-bot", logger: new ConsoleLogger("silent") };
+  class Candidate extends PaperclipSlackAdapter {
+    parse(event: SlackEvent) { return this.parseSlackMessage(event, "slack:C123:1740000001.1"); }
+  }
+  it.each([
+    ["Review <https://example.com/project/123/replay/abc?from=recording&amp;return_to=%2Fhome|example.com/project/…/…>", "Review example.com/project/…/… (https://example.com/project/123/replay/abc?from=recording&return_to=%2Fhome)"],
+    ["Bug <https://example.com/REP/chats/abc|example.com/REP/chats/…>", "Bug example.com/REP/chats/… (https://example.com/REP/chats/abc)"],
+    ["<https://example.com/full|https://example.com/full>", "https://example.com/full"],
+    ["<https://example.com/bare>", "https://example.com/bare"],
+    ["plain *bold* and `code`", "plain bold and code"],
+    ["`<https://example.com/code|literal>`", "[literal](https://example.com/code)"],
+    ["<@U123> <#C123|general> &amp; &lt;words&gt;", "@U123 #general (C123) & <words>"],
+    ["<https://example.com/a|same> <https://example.com/b|same>", "same (https://example.com/a) same (https://example.com/b)"],
+  ])("preserves author links for async and sync parsing: %s", async (text, expected) => {
+    const adapter = new Candidate(config);
+    const event = { type: "message", channel: "C123", ts: "1740000001.1", username: "Test sender", text } as SlackEvent;
+    expect((await adapter.parse(event)).text).toBe(expected);
+    expect(adapter.parseMessage(event).text).toBe(expected);
   });
 });
