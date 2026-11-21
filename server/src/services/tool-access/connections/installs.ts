@@ -8,7 +8,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolAccessAuditEvents, toolConnectionInstalls, toolConnections, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { ToolConnection, ToolConnectionInstall, ToolConnectionInstallSnapshot, PutToolConnectionInstalls } from "@paperclipai/shared";
-import { unprocessable } from "../../../errors.js";
+import { conflict, unprocessable } from "../../../errors.js";
 import { logActivity } from "../../activity-log.js";
 
 type InstallDependencies = {
@@ -148,6 +148,12 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
       connectionId: string,
       input: PutToolConnectionInstalls,
       actor?: ActorInfo,
+      options?: {
+        expectedExistingInstalls?: ReadonlyArray<{
+          targetType: "company" | "agent";
+          targetId: string;
+        }>;
+      },
     ): Promise<ToolConnectionInstallSnapshot> => {
       await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(connectionId);
@@ -206,6 +212,21 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
             (install) => `${install.targetType}:${install.targetId}`,
           ),
         );
+        if (options?.expectedExistingInstalls) {
+          const expectedKeys = new Set(
+            options.expectedExistingInstalls.map(
+              (install) => `${install.targetType}:${install.targetId}`,
+            ),
+          );
+          if (
+            expectedKeys.size !== existingKeys.size ||
+            [...expectedKeys].some((key) => !existingKeys.has(key))
+          ) {
+            throw conflict("Connection installs changed", {
+              code: "tool_connection_installs_changed",
+            });
+          }
+        }
         const bindings = await tx.select({ targetType: toolProfileBindings.targetType, targetId: toolProfileBindings.targetId })
           .from(toolProfileBindings).innerJoin(toolProfiles, eq(toolProfiles.id, toolProfileBindings.profileId))
           .where(and(eq(toolProfileBindings.companyId, connection.companyId), eq(toolProfiles.companyId, connection.companyId), eq(toolProfiles.profileKey, `app:${connection.id}`)));
