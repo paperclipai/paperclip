@@ -115,6 +115,31 @@ describeEmbeddedPostgres("access service", () => {
     expect(unchanged.membershipRole).toBe("owner");
   });
 
+  it("keeps an existing grant scope when re-ensuring without a scope", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const access = accessService(db);
+    const scope = { projects: ["project-1"] };
+    const readGrant = () =>
+      db
+        .select()
+        .from(principalPermissionGrants)
+        .where(
+          and(
+            eq(principalPermissionGrants.companyId, company.id),
+            eq(principalPermissionGrants.principalType, "user"),
+            eq(principalPermissionGrants.principalId, owner.principalId),
+            eq(principalPermissionGrants.permissionKey, "agents:configure"),
+          ),
+        )
+        .then((rows) => rows[0]!);
+
+    await access.setPrincipalPermission(company.id, "user", owner.principalId, "agents:configure", true, null, scope);
+    await access.setPrincipalPermission(company.id, "user", owner.principalId, "agents:configure", true, null);
+    expect((await readGrant()).scope).toEqual(scope);
+    await access.setPrincipalPermission(company.id, "user", owner.principalId, "agents:configure", true, null, null);
+    expect((await readGrant()).scope).toBeNull();
+  });
+
   it("rejects role-only updates that would suspend the last active owner", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const access = accessService(db);
