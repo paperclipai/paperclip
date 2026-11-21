@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ensureServiceShim,
@@ -296,6 +297,35 @@ describe("onboarded service dashboard handoff", () => {
     expect(info).toHaveBeenCalledWith(expect.stringContaining("http://127.0.0.1:3100"));
     expect(waitUntilReady).toHaveBeenCalledOnce();
     expect(openDashboard).not.toHaveBeenCalled();
+  });
+
+  it("opens a local_trusted board through the operator sign-in link and an authenticated board directly", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-onboard-open-"));
+    const previous = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = home;
+    try {
+      const runtime = {
+        schemaVersion: 1 as const, instanceId: "default", pid: 123, host: "127.0.0.1", port: 3101,
+        dashboardUrl: "http://127.0.0.1:3101", startedAt: "2026-08-25T00:00:00.000Z",
+      };
+      for (const deploymentMode of ["local_trusted", "authenticated"] as const) {
+        const openDashboard = vi.fn(async (_url: string) => true);
+        const config = dashboardConfig();
+        await handoffToOnboardedService({ ...config, server: { ...config.server, deploymentMode } }, {
+          isInteractive: () => true,
+          waitUntilReady: async () => runtime,
+          openDashboard,
+          info: vi.fn(),
+          success: vi.fn(),
+        });
+        const opened = new URL(openDashboard.mock.calls[0]![0]);
+        expect(opened.pathname).toBe(deploymentMode === "local_trusted" ? "/api/local-operator/sign-in" : "/");
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("uses the ready service runtime port before opening the dashboard", async () => {

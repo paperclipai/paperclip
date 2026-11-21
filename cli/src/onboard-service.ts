@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { localBoardEntryUrl } from "./commands/open.js";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -30,7 +31,7 @@ export type OnboardServiceOptions = {
 type EnsureShimResult = { ok: boolean; installedNow: boolean; reason?: string };
 type OnboardServiceDashboardConfig = {
   auth: Pick<PaperclipConfig["auth"], "baseUrlMode" | "publicBaseUrl">;
-  server: Pick<PaperclipConfig["server"], "host" | "port">;
+  server: Pick<PaperclipConfig["server"], "host" | "port"> & Partial<Pick<PaperclipConfig["server"], "deploymentMode">>;
 };
 
 type OnboardServiceDashboardDependencies = {
@@ -110,7 +111,10 @@ export async function handoffToOnboardedService(
 
   if (!deps.isInteractive() || envDisablesBrowser()) return;
 
-  if (await deps.openDashboard(dashboardUrl)) {
+  // A local_trusted board opens through the operator's sign-in link, so it
+  // opens signed in when the board requires the operator credential.
+  const entryUrl = config.server.deploymentMode === "local_trusted" ? localBoardEntryUrl(dashboardUrl) : dashboardUrl;
+  if (await deps.openDashboard(entryUrl)) {
     deps.success("Sent the Paperclip dashboard to your browser.");
   } else {
     deps.warn(`Could not open a browser automatically. Open ${dashboardUrl} manually.`);
