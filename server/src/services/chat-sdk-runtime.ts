@@ -107,6 +107,13 @@ import {
   type TeamsFileConsentEvent,
 } from "./chat-teams-file-consent.js";
 import {
+  enableTeamsFeedbackLoop,
+  enableTeamsFeedbackLoopUpdates,
+  installTeamsFeedbackHook,
+  type TeamsFeedbackApp,
+  type TeamsFeedbackEvent,
+} from "./chat-channels/microsoft-teams/feedback-loop.js";
+import {
   githubAttachmentLocator,
   githubAttachmentCommentFetch,
   githubAttachmentDiagnosticCode,
@@ -492,6 +499,9 @@ export interface ChatSdkRuntimeCallbacks {
     | "recorded"
     | "ignored"
     | "denied";
+  onTeamsFeedback?(
+    event: ChatSdkCallbackEvent<TeamsFeedbackEvent>,
+  ): Promise<"retry" | void> | "retry" | void;
   onMessageDeleted?(
     event: ChatSdkCallbackEvent<MessageDeletedEvent>,
   ): Promise<void> | void;
@@ -952,6 +962,12 @@ interface TeamsAdapterInternals {
     kind: "consent" | "file_info",
     card: unknown,
   ) => Promise<{ id: string }>;
+  paperclipFeedbackLoop?: AsyncLocalStorage<true>;
+  encodeThreadId?: (platformData: {
+    conversationId: string;
+    conversationType?: string;
+    serviceUrl: string;
+  }) => string;
   [key: string]: unknown;
 }
 
@@ -1175,6 +1191,18 @@ export function scopeMicrosoftTeamsEgress(
     }
     await Promise.all(writes);
   };
+  const feedbackLoop = new AsyncLocalStorage<true>();
+  teams.paperclipFeedbackLoop = feedbackLoop;
+  const originalSend = teams.app.send;
+  if (typeof originalSend === "function") {
+    teams.app.send = async (conversationId: string, activity: unknown) => {
+      if (feedbackLoop.getStore()) enableTeamsFeedbackLoop(activity);
+      return await Reflect.apply(originalSend, teams.app, [
+        conversationId,
+        activity,
+      ]);
+    };
+  }
   let defaultApi = teams.app.api;
   const apiScope = new AsyncLocalStorage<TeamsApiClientInternals>();
   Object.defineProperty(teams.app, "api", {
@@ -1203,6 +1231,7 @@ export function scopeMicrosoftTeamsEgress(
       defaultApi.http,
       defaultApi._apiClientSettings,
     );
+    if (feedbackLoop.getStore()) enableTeamsFeedbackLoopUpdates(scopedApi);
     return await apiScope.run(scopedApi, operation);
   };
   const withThreadServiceUrl = async <T>(
@@ -2290,6 +2319,55 @@ export class ChatSdkEndpointRuntime {
         },
       });
     }
+    if (
+      options.providerConfig.provider === "microsoft-teams" &&
+      typeof options.callbacks.onTeamsFeedback === "function"
+    ) {
+      const teams = this.adapter as unknown as TeamsAdapterInternals;
+      const encodeThreadId = teams.encodeThreadId;
+      if (
+        !teams.app ||
+        typeof teams.app.on !== "function" ||
+        typeof encodeThreadId !== "function"
+      ) {
+        throw new TeamsAdapterCompatibilityError(
+          "feedback requires the App hook and thread encoder",
+        );
+      }
+      const callback = options.callbacks.onTeamsFeedback;
+      installTeamsFeedbackHook(teams.app as unknown as TeamsFeedbackApp, {
+        botAppId: options.providerConfig.credentials.appId,
+        acceptsScope: (activity) => this.acceptsProviderScope(activity),
+        threadIdFor: (locator) =>
+          Reflect.apply(encodeThreadId, teams, [locator]),
+        onFeedback: async (event) => {
+          const attempt = this.webhookIngress.getStore();
+          const promise = Promise.resolve().then(() =>
+            callback({
+              endpointId: this.endpointId,
+              provider: this.provider,
+              event,
+            }),
+          );
+          if (!attempt) {
+            await promise;
+            return;
+          }
+          attempt.callbackPromises.add(promise);
+          try {
+            if (
+              (await promise) === "retry" &&
+              attempt.callbackError === undefined
+            )
+              attempt.callbackError = new Error(
+                "Teams feedback target is not settled yet",
+              );
+          } finally {
+            attempt.callbackPromises.delete(promise);
+          }
+        },
+      });
+    }
   }
 
   async initialize(): Promise<void> {
@@ -2520,6 +2598,20 @@ export class ChatSdkEndpointRuntime {
     return adapter.stream(threadId, textStream, {
       paperclipDraftControl: control,
     });
+  }
+
+  async withTeamsFeedbackLoop<T>(operation: () => Promise<T>): Promise<T> {
+    const scope =
+      this.provider === "microsoft-teams"
+        ? (this.adapter as unknown as TeamsAdapterInternals)
+            .paperclipFeedbackLoop
+        : undefined;
+    if (!scope) {
+      throw new TeamsAdapterCompatibilityError(
+        "feedback loop scope is unavailable",
+      );
+    }
+    return await scope.run(true, operation);
   }
 
   /**

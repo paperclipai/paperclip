@@ -198,8 +198,8 @@ function buildTargetSummary(input: {
   };
 }
 
-function normalizeReason(vote: FeedbackVoteValue, reason: string | null | undefined) {
-  if (vote !== "down" || typeof reason !== "string") return null;
+function normalizeReason(reason: string | null | undefined) {
+  if (typeof reason !== "string") return null;
   const trimmed = reason.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
@@ -1722,6 +1722,248 @@ async function buildFeedbackTraceBundleFromRow(
   return bundle;
 }
 
+type FeedbackTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+type SaveIssueVoteInput = {
+  issueId: string;
+  targetType: FeedbackTargetType;
+  targetId: string;
+  vote: FeedbackVoteValue;
+  authorUserId: string;
+  reason?: string | null;
+  allowSharing?: boolean;
+  recordSharingConsent?: boolean;
+};
+
+async function saveIssueVoteInTransaction(tx: FeedbackTransaction, input: SaveIssueVoteInput) {
+  const issue = await tx
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      projectId: issues.projectId,
+      identifier: issues.identifier,
+      title: issues.title,
+      description: issues.description,
+    })
+    .from(issues)
+    .where(eq(issues.id, input.issueId))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) throw notFound("Issue not found");
+
+  const target = await resolveFeedbackTarget(tx, issue, input.targetType, input.targetId);
+
+  const existingCompany = await tx
+    .select({
+      feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
+      feedbackDataSharingTermsVersion: companies.feedbackDataSharingTermsVersion,
+    })
+    .from(companies)
+    .where(eq(companies.id, issue.companyId))
+    .then((rows) => rows[0] ?? null);
+  if (!existingCompany) throw notFound("Company not found");
+
+  const now = new Date();
+  const normalizedReason = normalizeReason(input.reason);
+  const recordSharingConsent = input.recordSharingConsent !== false;
+  const sharedWithLabs = recordSharingConsent && input.allowSharing === true;
+  let consentEnabledNow = false;
+  let consentVersion = existingCompany.feedbackDataSharingTermsVersion ?? null;
+  let persistedSharingPreference: "allowed" | "not_allowed" | null = null;
+
+  if (sharedWithLabs && !existingCompany.feedbackDataSharingEnabled) {
+    consentEnabledNow = true;
+    consentVersion = DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION;
+    await tx
+      .update(companies)
+      .set({
+        feedbackDataSharingEnabled: true,
+        feedbackDataSharingConsentAt: now,
+        feedbackDataSharingConsentByUserId: input.authorUserId,
+        feedbackDataSharingTermsVersion: consentVersion,
+        updatedAt: now,
+      })
+      .where(eq(companies.id, issue.companyId));
+  }
+
+  if (recordSharingConsent) {
+    const existingInstanceSettings = await tx
+      .select({
+        id: instanceSettings.id,
+        general: instanceSettings.general,
+      })
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY))
+      .then((rows) => rows[0] ?? null);
+
+    const currentInstanceSettings =
+      existingInstanceSettings ??
+      (await tx
+        .insert(instanceSettings)
+        .values({
+          singletonKey: DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY,
+          general: {},
+          experimental: {},
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [instanceSettings.singletonKey],
+          set: {
+            updatedAt: now,
+          },
+        })
+        .returning({
+          id: instanceSettings.id,
+          general: instanceSettings.general,
+        })
+        .then((rows) => rows[0] ?? null));
+
+    // Operator setting defaults apply to the effective value: when the
+    // operator supplies a feedback-sharing default, the preference is no
+    // longer "prompt", so a stray answer must not persist over it.
+    const currentGeneral = applyOperatorGeneralDefaults(
+      normalizeInstanceGeneralSettings(currentInstanceSettings?.general),
+      getOperatorSettingDefaults(),
+    );
+    if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
+      await announceInstanceSettingsChange(tx);
+      const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
+      const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
+      await tx
+        .update(instanceSettings)
+        .set({
+          general: {
+            ...currentGeneralRaw,
+            censorUsernameInLogs: currentGeneral.censorUsernameInLogs,
+            feedbackDataSharingPreference: nextSharingPreference,
+          },
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, currentInstanceSettings.id));
+      persistedSharingPreference = nextSharingPreference;
+    }
+  }
+
+  const [savedVote] = await tx
+    .insert(feedbackVotes)
+    .values({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      authorUserId: input.authorUserId,
+      vote: input.vote,
+      reason: normalizedReason,
+      sharedWithLabs,
+      sharedAt: sharedWithLabs ? now : null,
+      consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
+      redactionSummary: null,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [
+        feedbackVotes.companyId,
+        feedbackVotes.targetType,
+        feedbackVotes.targetId,
+        feedbackVotes.authorUserId,
+      ],
+      set: {
+        vote: input.vote,
+        reason: normalizedReason,
+        sharedWithLabs,
+        sharedAt: sharedWithLabs ? now : null,
+        consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
+        redactionSummary: null,
+        updatedAt: now,
+      },
+    })
+    .returning();
+
+  const artifacts = await buildPayloadArtifacts(tx, {
+    issue,
+    target,
+    voteId: savedVote.id,
+    vote: input.vote,
+    reason: normalizedReason,
+    authorUserId: input.authorUserId,
+    consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
+    sharedWithLabs,
+    now,
+  });
+
+  await tx
+    .update(feedbackVotes)
+    .set({
+      redactionSummary: artifacts.redactionSummary,
+      updatedAt: now,
+    })
+    .where(eq(feedbackVotes.id, savedVote.id));
+
+  if (sharedWithLabs) await notifyDeliveryWork(tx, DELIVERY_QUEUES.feedback);
+  const [savedTrace] = await tx
+    .insert(feedbackExports)
+    .values({
+      companyId: issue.companyId,
+      feedbackVoteId: savedVote.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      authorUserId: input.authorUserId,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      vote: input.vote,
+      status: sharedWithLabs ? "pending" : "local_only",
+      destination: sharedWithLabs ? FEEDBACK_DESTINATION : null,
+      exportId: artifacts.exportId,
+      consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
+      schemaVersion: FEEDBACK_SCHEMA_VERSION,
+      bundleVersion: FEEDBACK_BUNDLE_VERSION,
+      payloadVersion: FEEDBACK_PAYLOAD_VERSION,
+      payloadDigest: artifacts.payloadDigest,
+      payloadSnapshot: artifacts.payloadSnapshot,
+      targetSummary: artifacts.targetSummary,
+      redactionSummary: artifacts.redactionSummary,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [feedbackExports.feedbackVoteId],
+      set: {
+        issueId: issue.id,
+        projectId: issue.projectId,
+        authorUserId: input.authorUserId,
+        targetType: input.targetType,
+        targetId: input.targetId,
+        vote: input.vote,
+        status: sharedWithLabs ? "pending" : "local_only",
+        destination: sharedWithLabs ? FEEDBACK_DESTINATION : null,
+        exportId: artifacts.exportId,
+        consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
+        schemaVersion: FEEDBACK_SCHEMA_VERSION,
+        bundleVersion: FEEDBACK_BUNDLE_VERSION,
+        payloadVersion: FEEDBACK_PAYLOAD_VERSION,
+        payloadDigest: artifacts.payloadDigest,
+        payloadSnapshot: artifacts.payloadSnapshot,
+        targetSummary: artifacts.targetSummary,
+        redactionSummary: artifacts.redactionSummary,
+        failureReason: null,
+        updatedAt: now,
+      },
+    })
+    .returning({
+      id: feedbackExports.id,
+    });
+
+  return {
+    vote: {
+      ...savedVote,
+      redactionSummary: artifacts.redactionSummary,
+    },
+    traceId: savedTrace?.id ?? null,
+    consentEnabledNow,
+    persistedSharingPreference,
+    sharingEnabled: sharedWithLabs,
+  };
+}
+
 export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
   // Serialize explicit flushes and the worker's batches so callers cannot
   // upload the same trace concurrently. HTTP vote handlers only save and notify.
@@ -1930,239 +2172,9 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       };
     }),
 
-    saveIssueVote: async (input: {
-      issueId: string;
-      targetType: FeedbackTargetType;
-      targetId: string;
-      vote: FeedbackVoteValue;
-      authorUserId: string;
-      reason?: string | null;
-      allowSharing?: boolean;
-    }) =>
-      db.transaction(async (tx) => {
-        const issue = await tx
-          .select({
-            id: issues.id,
-            companyId: issues.companyId,
-            projectId: issues.projectId,
-            identifier: issues.identifier,
-            title: issues.title,
-            description: issues.description,
-          })
-          .from(issues)
-          .where(eq(issues.id, input.issueId))
-          .then((rows) => rows[0] ?? null);
-        if (!issue) throw notFound("Issue not found");
+    saveIssueVote: async (input: SaveIssueVoteInput) =>
+      db.transaction((tx) => saveIssueVoteInTransaction(tx, input)),
 
-        const target = await resolveFeedbackTarget(tx, issue, input.targetType, input.targetId);
-
-        const existingCompany = await tx
-          .select({
-            feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
-            feedbackDataSharingTermsVersion: companies.feedbackDataSharingTermsVersion,
-          })
-          .from(companies)
-          .where(eq(companies.id, issue.companyId))
-          .then((rows) => rows[0] ?? null);
-        if (!existingCompany) throw notFound("Company not found");
-
-        const now = new Date();
-        const normalizedReason = normalizeReason(input.vote, input.reason);
-        const sharedWithLabs = input.allowSharing === true;
-        let consentEnabledNow = false;
-        let consentVersion = existingCompany.feedbackDataSharingTermsVersion ?? null;
-        let persistedSharingPreference: "allowed" | "not_allowed" | null = null;
-
-        if (sharedWithLabs && !existingCompany.feedbackDataSharingEnabled) {
-          consentEnabledNow = true;
-          consentVersion = DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION;
-          await tx
-            .update(companies)
-            .set({
-              feedbackDataSharingEnabled: true,
-              feedbackDataSharingConsentAt: now,
-              feedbackDataSharingConsentByUserId: input.authorUserId,
-              feedbackDataSharingTermsVersion: consentVersion,
-              updatedAt: now,
-            })
-            .where(eq(companies.id, issue.companyId));
-        }
-
-        const existingInstanceSettings = await tx
-          .select({
-            id: instanceSettings.id,
-            general: instanceSettings.general,
-          })
-          .from(instanceSettings)
-          .where(eq(instanceSettings.singletonKey, DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY))
-          .then((rows) => rows[0] ?? null);
-
-        const currentInstanceSettings =
-          existingInstanceSettings ??
-          (await tx
-            .insert(instanceSettings)
-            .values({
-              singletonKey: DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY,
-              general: {},
-              experimental: {},
-              createdAt: now,
-              updatedAt: now,
-            })
-            .onConflictDoUpdate({
-              target: [instanceSettings.singletonKey],
-              set: {
-                updatedAt: now,
-              },
-            })
-            .returning({
-              id: instanceSettings.id,
-              general: instanceSettings.general,
-            })
-            .then((rows) => rows[0] ?? null));
-
-        // Operator setting defaults apply to the effective value: when the
-        // operator supplies a feedback-sharing default, the preference is no
-        // longer "prompt", so a stray answer must not persist over it.
-        const currentGeneral = applyOperatorGeneralDefaults(
-          normalizeInstanceGeneralSettings(currentInstanceSettings?.general),
-          getOperatorSettingDefaults(),
-        );
-        if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
-          await announceInstanceSettingsChange(tx);
-          const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
-          const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
-          await tx
-            .update(instanceSettings)
-            .set({
-              general: {
-                ...currentGeneralRaw,
-                censorUsernameInLogs: currentGeneral.censorUsernameInLogs,
-                feedbackDataSharingPreference: nextSharingPreference,
-              },
-              updatedAt: now,
-            })
-            .where(eq(instanceSettings.id, currentInstanceSettings.id));
-          persistedSharingPreference = nextSharingPreference;
-        }
-
-        const [savedVote] = await tx
-          .insert(feedbackVotes)
-          .values({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            targetType: input.targetType,
-            targetId: input.targetId,
-            authorUserId: input.authorUserId,
-            vote: input.vote,
-            reason: normalizedReason,
-            sharedWithLabs,
-            sharedAt: sharedWithLabs ? now : null,
-            consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
-            redactionSummary: null,
-            updatedAt: now,
-          })
-          .onConflictDoUpdate({
-            target: [
-              feedbackVotes.companyId,
-              feedbackVotes.targetType,
-              feedbackVotes.targetId,
-              feedbackVotes.authorUserId,
-            ],
-            set: {
-              vote: input.vote,
-              reason: normalizedReason,
-              sharedWithLabs,
-              sharedAt: sharedWithLabs ? now : null,
-              consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
-              redactionSummary: null,
-              updatedAt: now,
-            },
-          })
-          .returning();
-
-        const artifacts = await buildPayloadArtifacts(tx, {
-          issue,
-          target,
-          voteId: savedVote.id,
-          vote: input.vote,
-          reason: normalizedReason,
-          authorUserId: input.authorUserId,
-          consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
-          sharedWithLabs,
-          now,
-        });
-
-        await tx
-          .update(feedbackVotes)
-          .set({
-            redactionSummary: artifacts.redactionSummary,
-            updatedAt: now,
-          })
-          .where(eq(feedbackVotes.id, savedVote.id));
-
-        if (sharedWithLabs) await notifyDeliveryWork(tx, DELIVERY_QUEUES.feedback);
-        const [savedTrace] = await tx
-          .insert(feedbackExports)
-          .values({
-            companyId: issue.companyId,
-            feedbackVoteId: savedVote.id,
-            issueId: issue.id,
-            projectId: issue.projectId,
-            authorUserId: input.authorUserId,
-            targetType: input.targetType,
-            targetId: input.targetId,
-            vote: input.vote,
-            status: sharedWithLabs ? "pending" : "local_only",
-            destination: sharedWithLabs ? FEEDBACK_DESTINATION : null,
-            exportId: artifacts.exportId,
-            consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
-            schemaVersion: FEEDBACK_SCHEMA_VERSION,
-            bundleVersion: FEEDBACK_BUNDLE_VERSION,
-            payloadVersion: FEEDBACK_PAYLOAD_VERSION,
-            payloadDigest: artifacts.payloadDigest,
-            payloadSnapshot: artifacts.payloadSnapshot,
-            targetSummary: artifacts.targetSummary,
-            redactionSummary: artifacts.redactionSummary,
-            updatedAt: now,
-          })
-          .onConflictDoUpdate({
-            target: [feedbackExports.feedbackVoteId],
-            set: {
-              issueId: issue.id,
-              projectId: issue.projectId,
-              authorUserId: input.authorUserId,
-              targetType: input.targetType,
-              targetId: input.targetId,
-              vote: input.vote,
-              status: sharedWithLabs ? "pending" : "local_only",
-              destination: sharedWithLabs ? FEEDBACK_DESTINATION : null,
-              exportId: artifacts.exportId,
-              consentVersion: sharedWithLabs ? (consentVersion ?? DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION) : null,
-              schemaVersion: FEEDBACK_SCHEMA_VERSION,
-              bundleVersion: FEEDBACK_BUNDLE_VERSION,
-              payloadVersion: FEEDBACK_PAYLOAD_VERSION,
-              payloadDigest: artifacts.payloadDigest,
-              payloadSnapshot: artifacts.payloadSnapshot,
-              targetSummary: artifacts.targetSummary,
-              redactionSummary: artifacts.redactionSummary,
-              failureReason: null,
-              updatedAt: now,
-            },
-          })
-          .returning({
-            id: feedbackExports.id,
-          });
-
-        return {
-          vote: {
-            ...savedVote,
-            redactionSummary: artifacts.redactionSummary,
-          },
-          traceId: savedTrace?.id ?? null,
-          consentEnabledNow,
-          persistedSharingPreference,
-          sharingEnabled: sharedWithLabs,
-        };
-      }),
+    saveIssueVoteInTransaction,
   };
 }
