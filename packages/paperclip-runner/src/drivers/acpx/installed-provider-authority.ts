@@ -1,6 +1,22 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+export function sourceWorkspaceProviderRoot(serverRoot: string): string | undefined {
+  const workspaceRoot = dirname(serverRoot);
+  if (basename(serverRoot) !== "server" ||
+      existsSync(resolve(serverRoot, "node_modules/.pnpm")) ||
+      !existsSync(resolve(workspaceRoot, "node_modules/.pnpm")) ||
+      !existsSync(resolve(workspaceRoot, "pnpm-workspace.yaml")) ||
+      !existsSync(resolve(workspaceRoot, "package.json"))) {
+    return undefined;
+  }
+  const workspace = JSON.parse(readFileSync(resolve(workspaceRoot, "package.json"), "utf8"));
+  const server = JSON.parse(readFileSync(resolve(serverRoot, "package.json"), "utf8"));
+  return workspace.name === "paperclip" && workspace.private === true && server.name === "@paperclipai/server"
+    ? workspaceRoot
+    : undefined;
+}
 
 export function resolveInstalledProviderAuthority(moduleUrl: string): { root: string; manifest: string } | undefined {
   const url = new URL(moduleUrl);
@@ -47,5 +63,5 @@ export function resolveInstalledProviderAuthority(moduleUrl: string): { root: st
   } finally {
     closeSync(fd);
   }
-  return { root, manifest };
+  return { root: sourceWorkspaceProviderRoot(root) ?? root, manifest };
 }
