@@ -47,7 +47,7 @@ describe("end-of-wave drain", () => {
     };
     const graded = await gradeHosted({ api, companyId: "c1", agentIds: ["a1"], releases: [], health: () => continuity([]), apiContinuity: () => continuity([]),
       stopObserver: async () => {}, observedClicks: () => new Map(), lastReleaseAt: ended - 1_000, settleMs: 1, drainMs: 3_600_000, dir,
-      cancelled: () => false, record: () => {}, pollMs: 1, now: () => clock, quietMs: 90_000 });
+      cancelled: () => false, record: () => {}, pollMs: 1, now: () => clock, quietMs: 90_000, tasks: () => [], wantedReleases: 0 });
     const json = JSON.parse(await readFile(path.join(dir, "hosted-release-swap.json"), "utf8"));
     expect(json.grades.map((grade: Json) => [grade.identifier, grade.verdict])).toEqual([["GIT-87", "pass"]]);
     expect(graded.headline).toBe("1 / 1 tasks completed hands-off");

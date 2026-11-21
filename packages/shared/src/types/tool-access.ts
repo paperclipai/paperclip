@@ -863,6 +863,10 @@ export interface ToolProfileWithDetails extends ToolProfile {
   summary: ToolProfileSummary;
 }
 
+export type ToolProfileListItem = Pick<ToolProfileWithDetails, "id" | "name" | "status" | "updatedAt" | "summary"> & {
+  newToolsPendingCount: number;
+};
+
 export type ToolProfileNewToolReviewDecision = "allow" | "keep_blocked";
 
 export interface ToolProfileNewToolReviewItem {
