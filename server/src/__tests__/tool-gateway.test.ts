@@ -74,6 +74,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { grantLegacyPluginTools } from "./helpers/legacy-plugin-tools.js";
+import { recordingDb } from "./helpers/tool-gateway-listing-fixture.js";
 
 const externalTestDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_GATEWAY_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -2527,6 +2528,87 @@ rl.on("line", (line) => {
     ]));
   });
 
+  it("loads only candidate catalog rows for a live exact connected name", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer(({ body }) => ({
+      body: { jsonrpc: "2.0", id: body?.id, result: { content: [{ type: "text", text: "found" }] } },
+    }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "exact-demo", toolName: " READ__Item ", url: fake.url, riskLevel: "read",
+      });
+      const connectionPrefix = connection.id.slice(0, 8);
+      const peerId = connectionPrefix + randomUUID().slice(8);
+      await db.insert(toolConnections).values({
+        ...connection, id: peerId, uid: "exact-lookup-peer", name: "Name collision peer",
+      });
+      const [peer, unicode, natural] = await db.insert(toolCatalogEntries).values([
+        { ...catalogEntry, id: randomUUID(), connectionId: peerId, name: "read-item", toolName: "read-item" },
+        { ...catalogEntry, id: randomUUID(), name: "unicode-name", toolName: "Key_İtem" },
+        { ...catalogEntry, id: randomUUID(), name: "natural-suffix", toolName: "natural-deadbeef" },
+        { ...catalogEntry, id: randomUUID(), name: "unrelated-name", toolName: "unrelated-name" },
+      ]).returning();
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const recorded = recordingDb(db);
+      const gateway = createTestToolGatewayService(recorded.db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const call = (tool: string) => gateway.executeTool({ sessionToken: session.token, tool, parameters: {} });
+      const baseName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: "read_item" });
+      const collidingName = baseName + "-" + catalogEntry.id.slice(0, 8);
+      const list = await gateway.listToolsForSession(session.token);
+      expect(list.find((tool) => tool.catalogEntryId === catalogEntry.id)?.name).toBe(collidingName);
+      expect(list.find((tool) => tool.catalogEntryId === peer.id)?.name).toBe(baseName + "-" + peer.id.slice(0, 8));
+      expect(list.find((tool) => tool.catalogEntryId === unicode.id)?.name).toBe(`mcp.exact-demo-${connectionPrefix}:key-i-tem`);
+
+      recorded.statements.length = 0;
+      recorded.statementParams.length = 0;
+      await expect(call(collidingName)).resolves.toMatchObject({ status: "completed" });
+      const catalogRead = recorded.statements.findIndex((sql) => sql.includes('"input_schema"') &&
+        sql.includes('order by "tool_connections"."name", "tool_catalog_entries"."name"'));
+      expect(catalogRead).toBeGreaterThanOrEqual(0);
+      expect(recorded.statements[catalogRead]).toContain("regexp_replace");
+      expect(recorded.statementParams[catalogRead]).toEqual(expect.arrayContaining([
+        connectionPrefix, "read-item", collidingName.split(":")[1],
+      ]));
+      for (const entry of [unicode, natural]) {
+        await expect(call(list.find((tool) => tool.catalogEntryId === entry.id)!.name))
+          .resolves.toMatchObject({ status: "completed" });
+        expect(fake.requests.at(-1)?.body).toMatchObject({ params: { name: entry.toolName } });
+      }
+
+      const summary = await gateway.summarizeConnectionAccessForAgent({ companyId: company.id,
+        connectionId: connection.id, agentId: agent.id, heartbeatRunId: run.id });
+      expect(summary.tools.map((tool) => tool.gatewayToolName)).toEqual(expect.arrayContaining([collidingName]));
+      expect(summary.tools.some((tool) => tool.gatewayToolName === baseName + "-" + peer.id.slice(0, 8))).toBe(false);
+
+      // A natural slug can also be another entry's disambiguated name.
+      const [duplicate] = await db.insert(toolCatalogEntries).values({
+        ...catalogEntry, id: randomUUID(), name: "zz-duplicate-alias", toolName: collidingName.split(":")[1]!,
+      }).returning();
+      await expect(call(collidingName)).resolves.toMatchObject({ status: "completed" });
+      expect(fake.requests.at(-1)?.body).toMatchObject({ params: { name: catalogEntry.toolName } });
+      await db.delete(toolCatalogEntries).where(eq(toolCatalogEntries.id, duplicate.id));
+
+      // With the peer quarantined, the surviving entry loses its suffix.
+      await db.update(toolCatalogEntries).set({ status: "quarantined", quarantinedAt: new Date() })
+        .where(eq(toolCatalogEntries.id, peer.id));
+      const versionHash = randomUUID();
+      await db.update(toolCatalogEntries).set({ toolName: "Read.Item", versionHash, schemaHash: randomUUID() })
+        .where(eq(toolCatalogEntries.id, catalogEntry.id));
+      await expect(call(collidingName)).rejects.toMatchObject({ reasonCode: "tool_not_found" });
+      const updated = await call(baseName);
+      expect(updated.status).toBe("completed");
+      const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, updated.invocationId));
+      expect(invocation?.catalogVersionHash).toBe(versionHash);
+      expect(fake.requests.at(-1)?.body).toMatchObject({ params: { name: "Read.Item" } });
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("dispatches a bounded alias to the original long upstream tool name", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
@@ -3514,6 +3596,13 @@ rl.on("line", (line) => {
           }),
         }),
       ]));
+
+      await db.update(toolConnections).set({ config: { url: fake.url } })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: "search_tools", parameters: { query: "kv" } }))
+        .rejects.toMatchObject({ reasonCode: "tool_not_found" });
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: targetToolName,
+        parameters: { key: "direct-key", value: "direct-value" } })).resolves.toMatchObject({ status: "completed" });
     } finally {
       await fake.close();
     }
