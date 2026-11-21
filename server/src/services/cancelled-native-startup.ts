@@ -48,8 +48,7 @@ export async function isFailedNativePreparationRetryAncestor(db: Db, run: Run, c
 async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined, historicalRetryAncestor: boolean) {
   if (!historicalRetryAncestor && !coordinator && await isInterruptedNativePreparation(db, run)) return true;
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
-  const historicalEvidence = historicalRetryAncestor || run.errorCode === "adapter_failed";
-  const preparationFailure = run.errorCode === "setup_failed" || run.errorCode === "adapter_failed";
+  const preparationFailure = run.errorCode === "setup_failed" || historicalRetryAncestor && run.errorCode === "adapter_failed";
   if (run.status !== "failed" || !run.finishedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt
     || !preparationFailure || run.executionStage !== "preparing"
     || claimedAdapterType(run) !== "paperclip_runner" || coordinator
@@ -65,11 +64,11 @@ async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinato
     eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id),
   )).limit(1);
   if (result || await nativeStartupHasExecutionEvidence(db, run)) return false;
-  if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null) return !historicalEvidence;
+  if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null) return !historicalRetryAncestor;
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId
     && lease.metadata?.pendingCleanupInFlight !== true && hasRemoteTerminationReceipt(lease))
-    && await hasSettledFailedPreparationEvidence(db, run, historicalEvidence)
+    && await hasSettledFailedPreparationEvidence(db, run, historicalRetryAncestor)
     && (!holdsPreparedFiles(run) || await hasVerifiedWorkspaceRepair(db, run));
 }
 
