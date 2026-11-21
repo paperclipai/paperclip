@@ -1,8 +1,10 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { createGunzip } from "node:zlib";
 
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
+  | "database_backup_empty"
   | "database_backup_last_failure"
   | "database_backup_missing"
   | "database_backup_stale";
@@ -23,6 +25,7 @@ export type DatabaseBackupHealthStatus = {
     mtime: string;
     ageHours: number;
     sizeBytes: number;
+    empty: boolean;
   } | null;
   lastFailure: {
     path: string;
@@ -78,7 +81,56 @@ function readLastFailure(alertFiles: string[]) {
   };
 }
 
-function findLatestBackup(backupDir: string, nowMs: number) {
+// gzip stores the uncompressed size mod 2^32 in the last 4 bytes of the
+// stream (RFC 1952 ISIZE). A backup that never received real content
+// (e.g. an aborted run) is a valid, small gzip stream whose ISIZE is 0 -
+// that case is otherwise indistinguishable from a healthy backup by
+// looking only at the compressed file size.
+async function readGzipIsEmpty(filePath: string, compressedSizeBytes: number): Promise<boolean> {
+  if (compressedSizeBytes < 18) return false;
+  const fd = openSync(filePath, "r");
+  try {
+    const trailer = Buffer.alloc(4);
+    readSync(fd, trailer, 0, 4, compressedSizeBytes - 4);
+    if (trailer.readUInt32LE(0) !== 0) return false;
+  } finally {
+    closeSync(fd);
+  }
+
+  // ISIZE is stored modulo 2^32. Confirm a zero trailer by streaming the
+  // archive and stopping after the first output byte. This keeps large,
+  // wrapped-ISIZE backups off the synchronous health-request path and avoids
+  // materializing the compressed archive in memory.
+  return await new Promise<boolean>((resolvePromise, reject) => {
+    const input = createReadStream(filePath);
+    const gunzip = createGunzip();
+    let settled = false;
+
+    const settle = (empty: boolean) => {
+      if (settled) return;
+      settled = true;
+      input.destroy();
+      gunzip.destroy();
+      resolvePromise(empty);
+    };
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      input.destroy();
+      gunzip.destroy();
+      reject(error);
+    };
+
+    input.on("error", fail);
+    gunzip.on("error", fail);
+    gunzip.once("data", () => settle(false));
+    gunzip.once("end", () => settle(true));
+    input.pipe(gunzip);
+  });
+}
+
+async function findLatestBackup(backupDir: string, nowMs: number) {
   if (!existsSync(backupDir)) return null;
 
   const candidates = readdirSync(backupDir)
@@ -99,12 +151,13 @@ function findLatestBackup(backupDir: string, nowMs: number) {
     mtime: new Date(latest.stat.mtimeMs).toISOString(),
     ageHours: roundHours((nowMs - latest.stat.mtimeMs) / 3_600_000),
     sizeBytes: latest.stat.size,
+    empty: await readGzipIsEmpty(latest.fullPath, latest.stat.size),
   };
 }
 
-export function inspectDatabaseBackupHealth(
+export async function inspectDatabaseBackupHealth(
   opts: InspectDatabaseBackupHealthOptions,
-): DatabaseBackupHealthStatus {
+): Promise<DatabaseBackupHealthStatus> {
   const warnings: DatabaseBackupHealthWarning[] = [];
   const now = opts.now ?? new Date();
   const maxAgeHours = Math.max(1, opts.maxAgeHours);
@@ -113,7 +166,7 @@ export function inspectDatabaseBackupHealth(
   let lastFailure: DatabaseBackupHealthStatus["lastFailure"] = null;
 
   try {
-    latestBackup = findLatestBackup(opts.backupDir, now.getTime());
+    latestBackup = await findLatestBackup(opts.backupDir, now.getTime());
     lastFailure = readLastFailure(alertFileCandidates(opts));
 
     if (!latestBackup) {
@@ -121,11 +174,19 @@ export function inspectDatabaseBackupHealth(
         code: "database_backup_missing",
         message: `No .sql.gz database backups found in ${opts.backupDir}.`,
       });
-    } else if (latestBackup.ageHours > maxAgeHours) {
-      warnings.push({
-        code: "database_backup_stale",
-        message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
-      });
+    } else {
+      if (latestBackup.empty) {
+        warnings.push({
+          code: "database_backup_empty",
+          message: `Latest database backup ${latestBackup.name} contains no uncompressed data.`,
+        });
+      }
+      if (latestBackup.ageHours > maxAgeHours) {
+        warnings.push({
+          code: "database_backup_stale",
+          message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
+        });
+      }
     }
 
     if (lastFailure) {
