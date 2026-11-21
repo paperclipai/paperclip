@@ -245,7 +245,7 @@ describeEmbeddedPostgres("issue creation visibility", () => {
     await ctx.db.insert(authUsers).values({ id: userId, name: "Recipient", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     const [agent] = await ctx.db.insert(agents).values({ companyId, name: "Requester", role: "engineer", adapterType: "process" }).returning();
     const tasks = await ctx.db.insert(issues).values(["addressed", "otherRecipient"].map((title) => ({
-      companyId, title, originKind: "chat_channel", status: "todo",
+      companyId, title, originKind: "chat_channel", status: "todo", assigneeAgentId: agent!.id,
       createdAt: new Date("2026-01-01"), updatedAt: new Date("2026-01-01"),
     }))).returning();
     const svc = issueService(ctx.db);

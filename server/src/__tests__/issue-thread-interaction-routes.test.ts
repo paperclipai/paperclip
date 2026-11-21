@@ -858,7 +858,7 @@ describe("issue thread interaction routes", () => {
         expect.objectContaining({ id: "repo", options: [{ id: "paperclip_text_answer", label: "Type an answer", freeText: true }] }),
         expect.objectContaining({ id: "scope", options: questionSet.questions[1].options }),
       ] }),
-    }), expect.anything());
+    }), expect.anything(), expect.anything());
   });
 
   it.each(["in_review", "done"])("keeps interaction reads free of expiry, activity writes, and recovery while %s", async (status) => {
@@ -1871,6 +1871,7 @@ describe("issue thread interaction routes", () => {
         }),
       }),
       expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -2646,7 +2647,18 @@ describe("issue thread interaction routes", () => {
         agentId: CREATED_AGENT_ID,
         userId: null,
       },
+      expect.objectContaining({ authorizeWakeTargetAdoption: expect.any(Function) }),
     );
+    // The hook must run the same tasks:assign decision as the issue PATCH route.
+    const options = mockInteractionService.create.mock.calls.at(-1)![3] as { authorizeWakeTargetAdoption: () => Promise<void> };
+    mockAccessDecide.mockClear();
+    await options.authorizeWakeTargetAdoption();
+    expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({ assigneeAgentId: CREATED_AGENT_ID, assigneeUserId: null }),
+    }));
+    mockAccessDecide.mockResolvedValueOnce({ allowed: false, explanation: "no assign grant", reasons: [] });
+    await expect(options.authorizeWakeTargetAdoption()).rejects.toMatchObject({ status: 403 });
   });
 
   it("allows a different in-scope agent run to respond when policy permits", async () => {

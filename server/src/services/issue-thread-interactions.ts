@@ -228,6 +228,8 @@ type CreateInteractionOptions = {
   supersedePendingSiblingInteractions?: boolean;
   replayAcceptedInteractionIds?: readonly string[];
   requireAcceptedReplay?: boolean;
+  /** Runs before an ownerless issue is assigned to the creating agent. Throw to deny. */
+  authorizeWakeTargetAdoption?: () => Promise<void>;
 };
 
 type InteractionWakeup = (
@@ -5078,6 +5080,9 @@ export function issueThreadInteractionService(
       let sourceIdentityContextId: string | null = null;
       let sourceRunContext: Record<string, unknown> | null = null;
       let sourceRunCreatedAt: Date | null = null;
+      // Evidence that the creating agent is actually working this issue; gates
+      // auto-adoption of an ownerless issue below.
+      let sourceRunBoundToIssue = false;
       if (data.sourceRunId) {
         const sourceRun = await db
           .select({
@@ -5094,16 +5099,20 @@ export function issueThreadInteractionService(
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
+        const snapshot = sourceRun.contextSnapshot ?? {};
+        const boundIssueIds = [
+          sourceRun.nativeIssueId,
+          snapshot.issueId,
+          snapshot.taskId,
+        ].filter((value): value is string => typeof value === "string" && value.length > 0);
+        sourceRunBoundToIssue =
+          boundIssueIds.length > 0 &&
+          boundIssueIds.every((boundIssueId) => boundIssueId === issue.id) &&
+          (!actor.agentId || sourceRun.agentId === actor.agentId);
         if (data.kind === "ask_user_questions") {
           if (actor.agentId && sourceRun.agentId !== actor.agentId) {
             throw unprocessable("sourceRunId must belong to the creating agent");
           }
-          const snapshot = sourceRun.contextSnapshot ?? {};
-          const boundIssueIds = [
-            sourceRun.nativeIssueId,
-            snapshot.issueId,
-            snapshot.taskId,
-          ].filter((value): value is string => typeof value === "string" && value.length > 0);
           if (boundIssueIds.some((boundIssueId) => boundIssueId !== issue.id)) {
             throw unprocessable("sourceRunId must belong to the same issue");
           }
@@ -5184,6 +5193,48 @@ export function issueThreadInteractionService(
           }
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
+          }
+          // A waking interaction on an ownerless issue would never get its
+          // continuation wakeup (every wake site needs assigneeAgentId). Adopt
+          // the creating agent as assignee under the issue row lock taken
+          // above, so concurrent creators serialize. Only an agent whose own
+          // run is bound to this issue qualifies: generic write access to a
+          // visible ownerless issue must not let an agent claim it. Without
+          // that evidence, reject rather than insert a pending card nobody
+          // can ever wake.
+          if (
+            (data.continuationPolicy === "wake_assignee" || data.continuationPolicy === "wake_assignee_on_accept") &&
+            actor.agentId &&
+            !issueRow.assigneeAgentId &&
+            !issueRow.assigneeUserId
+          ) {
+            if (!sourceRunBoundToIssue) {
+              throw unprocessable(
+                "A wake_assignee interaction on an ownerless issue requires sourceRunId bound to this issue, so the continuation wakeup has a live target",
+                { code: "interaction_wake_target_unbound", issueId: issue.id },
+              );
+            }
+            await options.authorizeWakeTargetAdoption?.();
+            await tx.update(issues)
+              .set({ assigneeAgentId: actor.agentId, updatedAt: new Date() })
+              .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+            issueRow.assigneeAgentId = actor.agentId;
+            await logActivity(tx as unknown as Db, {
+              companyId: issue.companyId,
+              actorType: "agent",
+              actorId: actor.agentId,
+              agentId: actor.agentId,
+              runId: data.sourceRunId ?? null,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                identifier: issueRow.identifier,
+                assigneeAgentId: actor.agentId,
+                source: "wake_assignee_interaction_adoption",
+                _previous: { assigneeAgentId: null, assigneeUserId: null },
+              },
+            });
           }
           if (data.addresseeUserId) {
             await assertInteractionAddresseeUserAvailable(tx as unknown as Db, issue, issueRow, data.addresseeUserId);

@@ -17911,6 +17911,16 @@ export function issueRoutes(
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
+        {
+          authorizeWakeTargetAdoption: () =>
+            assertCanAssignTasks(req, issue.companyId, {
+              issueId: issue.id,
+              projectId: issue.projectId,
+              parentIssueId: issue.parentId,
+              assigneeAgentId: actor.agentId,
+              assigneeUserId: null,
+            }),
+        },
       );
 
       await logActivity(db, {
