@@ -80,8 +80,8 @@ describeDatabase("connector access runtime synchronization", () => {
       const [member] = await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "alice", status: "active", membershipRole: "member" }).returning();
       memberId = member.id;
       await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: "alice", permissionKey: "agents:create" });
-      first = client => accessService(client).updateMemberAndPermissions(companyId, member.id, { membershipRole: "admin", grants: [{ permissionKey: "agents:create" }] }, null);
-      second = client => accessService(client).setMemberPermissions(companyId, member.id, [{ permissionKey: "tasks:assign" }], null);
+      first = client => accessService(client).updateMemberAndPermissions(companyId, member.id, { membershipRole: "admin", grants: [{ permissionKey: "tools:manage_profiles" }] }, null);
+      second = client => accessService(client).setMemberPermissions(companyId, member.id, [{ permissionKey: "tools:view_audit" }], null);
     }
     let locked!: () => void; let release!: () => void;
     const held = new Promise<void>(resolve => { locked = resolve; });
@@ -123,7 +123,9 @@ describeDatabase("connector access runtime synchronization", () => {
       expect(bindings.some(binding => binding.metadata?.source === "tool_connection_install")).toBe(false);
     } else {
       expect(await accessService(db).getMemberById(companyId, memberId!)).toMatchObject({ membershipRole: "admin" });
-      expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toEqual([expect.objectContaining({ permissionKey: "tasks:assign" })]);
+      const finalKeys = (await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).map(grant => grant.permissionKey);
+      expect(finalKeys).toContain("tools:view_audit");
+      expect(finalKeys).not.toContain("tools:manage_profiles");
     }
   }, 15000);
   it.each(["email allowAgent", "connection intent"] as const)("orders outer %s with direct install saves", async caller => {

@@ -524,6 +524,14 @@ export function accessService(db: Db) {
           })),
         );
       }
+      if (member.principalType === "user") {
+        await ensureHumanRoleDefaultGrants(tx, {
+          companyId,
+          principalId: member.principalId,
+          membershipRole: member.membershipRole,
+          grantedByUserId,
+        });
+      }
       return member;
     });
   }
@@ -630,6 +638,14 @@ export function accessService(db: Db) {
             updatedAt: now,
           })),
         );
+      }
+      if (existing.principalType === "user") {
+        await ensureHumanRoleDefaultGrants(tx, {
+          companyId,
+          principalId: existing.principalId,
+          membershipRole: nextMembershipRole,
+          grantedByUserId,
+        });
       }
 
       return updated;
@@ -1207,7 +1223,7 @@ export function accessService(db: Db) {
         await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
       }
 
-      return tx
+      const updated = await tx
         .update(companyMemberships)
         .set({
           membershipRole: nextMembershipRole,
@@ -1217,6 +1233,20 @@ export function accessService(db: Db) {
         .where(eq(companyMemberships.id, existing.id))
         .returning()
         .then((rows) => rows[0] ?? existing);
+
+      if (
+        existing.principalType === "user" &&
+        nextMembershipRole !== existing.membershipRole
+      ) {
+        await ensureHumanRoleDefaultGrants(tx, {
+          companyId,
+          principalId: existing.principalId,
+          membershipRole: nextMembershipRole,
+          grantedByUserId: null,
+        });
+      }
+
+      return updated;
     });
   }
 
