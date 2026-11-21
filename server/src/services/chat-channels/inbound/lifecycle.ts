@@ -1,3 +1,4 @@
+import { inboundRequestText } from "./request-text.js";
 import type { EndpointRow, DbTransaction, DbOrTransaction, RuntimeContext, LifecycleRuntimeFence, InboundRuntimeContext } from "../runtime-types.js";
 
 import {
@@ -10,7 +11,6 @@ import {
 } from "../telegram/messages.js";
 import {
   slackLifecycleFilesDigest,
-  slackInboundRequestText,
 } from "../slack/messages.js";
 import {
   discordLifecycleFilesDigest,
@@ -1024,7 +1024,7 @@ export function createChatMessageLifecycle(db: Db, options: MessageLifecycleOpti
     ) {
       return;
     }
-    const requestText = event.provider === "slack" ? slackInboundRequestText(event.message) : event.message.text;
+    const requestText = inboundRequestText(event.provider, event.message);
     const text = `An external message was edited:\n\n${requestText.slice(0, MAX_INBOUND_TEXT)}`;
     const telegramRich =
       event.provider === "telegram"

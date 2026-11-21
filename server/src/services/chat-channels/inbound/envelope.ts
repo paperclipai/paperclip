@@ -1,3 +1,4 @@
+import { inboundRequestText } from "./request-text.js";
 import { providerResourceType, durableExternalThreadIdentity, canonicalProviderResourceId, chatSurfaceKind } from "./surfaces.js";
 
 import type { EndpointRow, InboundRuntimeContext } from "../runtime-types.js";
@@ -12,7 +13,6 @@ import {
 } from "../telegram/messages.js";
 import {
   slackMessageSentAt,
-  slackInboundRequestText,
 } from "../slack/messages.js";
 import {
   teamsActivitySentAt,
@@ -98,6 +98,7 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
         githubManual = { policy: { ...config.configuration.defaults, ...config.configuration.repositories[repositoryId] }, revision: config.revision, event: trigger === "mention" || message.isMention ? "mention" : "comment" };
       }
     }
+    const requestText = inboundRequestText(endpoint.provider, message);
     const providerEventId = `${durableExternalThreadIdentity(thread.id)}:${message.id}`;
     const surfaceKind = chatSurfaceKind(endpoint.provider, thread);
     const addressed =
@@ -291,7 +292,7 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
             : null,
         providerUpdateId:
           endpoint.provider === "telegram" ? (providerUpdateId ?? null) : null,
-        text: (endpoint.provider === "slack" ? slackInboundRequestText(message) : message.text).slice(0, MAX_INBOUND_TEXT),
+        text: requestText.slice(0, MAX_INBOUND_TEXT),
         mentionedBot: message.isMention === true,
         providerSentAt: providerSentAt?.toISOString() ?? null,
         ...(providerSentAtSource ? { providerSentAtSource } : {}),
@@ -354,7 +355,7 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
       },
       filtering: { contentRetained: false },
     };
-    return { githubAutomatic, githubIssue, githubManual, providerEventId, surfaceKind, addressed, eventKind, endpointRuntime, nativeInboundAttachments, unavailableTeamsReferences, providerSentAt, providerUrl, normalized, redactedDestinationNormalized };
+    return { githubAutomatic, githubIssue, githubManual, providerEventId, surfaceKind, addressed, eventKind, endpointRuntime, nativeInboundAttachments, unavailableTeamsReferences, providerSentAt, providerUrl, normalized, redactedDestinationNormalized, requestText };
   }
   return { prepareInboundEnvelope };
 }
