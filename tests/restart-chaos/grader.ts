@@ -71,11 +71,21 @@ function boardCommentIds(record: TaskRecord): Set<string> {
     .filter((id): id is string => typeof id === "string" && id.length > 0));
 }
 
+export function followUpCreditRefusal(record: TaskRecord): string | null {
+  const latest = new Map<string, TaskRun>();
+  for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
+  const comments = boardCommentIds(record);
+  const carried = [...latest.values()].some(run => (run.wakeCommentIds ?? []).some(id => comments.has(id)));
+  const undated = [...latest.values()].filter(run => !Number.isFinite(ms(run.createdAt))).map(run => run.id);
+  return carried && undated.length ? `no createdAt for ${undated.join(",")}, so follow-up runs cannot be ordered` : null;
+}
+
 export function creditedRuns(record: TaskRecord): CreditedRun[] {
   const latest = new Map<string, TaskRun>();
   for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
   const runs = [...latest.values()].filter(run => Number.isFinite(ms(run.createdAt))).sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
   const credited: CreditedRun[] = runs[0] && !runs[0].retryOfRunId ? [{ run: runs[0], kind: "first run" }] : [];
+  if (followUpCreditRefusal(record)) return credited;
   for (const commentId of boardCommentIds(record)) {
     const index = runs.findIndex(run => (run.wakeCommentIds ?? []).includes(commentId));
     const run = runs[index];
@@ -130,7 +140,8 @@ export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly F
     return { verdict: "fail", detail: `unfair_queue_wait ${unfair.reason}; done ${seconds(took)}s > ${seconds(base)}s without queue credit` };
   }
   const credit = proofs.reduce((total, proof) => total + (proof.fairness.verdict === "fair" ? proof.credit : 0), 0);
-  const unproven = proofs.flatMap(({ fairness }) => fairness.verdict === "unproven" ? [fairness.reason] : []);
+  const refusal = followUpCreditRefusal(record);
+  const unproven = [...proofs.flatMap(({ fairness }) => fairness.verdict === "unproven" ? [fairness.reason] : []), ...(refusal ? [refusal] : [])];
   const allowed = base + credit;
   const note = `${credit ? ` incl. ${seconds(credit)}s fair queue wait` : ""}${unproven.length ? ` (queue wait not credited: ${unproven.join("; ")})` : ""}`;
   return took <= allowed
