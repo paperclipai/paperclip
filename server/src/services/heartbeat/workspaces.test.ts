@@ -11,6 +11,7 @@ import {
 } from "../heartbeat.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../home-paths.js";
 import {
+  buildRepositoryWorkspaceNote,
   createHeartbeatWorkspaceResolver,
   ensureManagedProjectWorkspace,
   WorkspaceValidationFailure,
@@ -219,7 +220,8 @@ describe("heartbeat workspace module", () => {
     await started.promise;
     release.resolve();
     const results = await Promise.all(attempts);
-    expect(resolveGitAuth).toHaveBeenCalledTimes(1);
+    // One clone, plus one fetch from the shared-checkout refresh; the refresh throttle keeps the other callers from fetching.
+    expect(resolveGitAuth).toHaveBeenCalledTimes(2);
     expect(new Set(results.map(result => result.cwd)).size).toBe(1);
     expect(await fs.readFile(path.join(results[0]!.cwd, "README.md"), "utf8")).toBe("shared checkout\n");
     expect((await runGit("git", ["-C", results[0]!.cwd, "remote", "get-url", "origin"])).stdout.trim()).toBe(repoUrl);
@@ -246,7 +248,58 @@ describe("heartbeat workspace module", () => {
     const input = { companyId: "company-one", projectId: "retry-project", repoUrl, resolveGitAuth };
     await expect(ensureManagedProjectWorkspace(input)).rejects.toThrow("credential lookup failed");
     const result = await legacyEnsureManagedProjectWorkspace(input);
-    expect(resolveGitAuth).toHaveBeenCalledTimes(2);
+    // The failed attempt, the retried clone, and one fetch from the shared-checkout refresh.
+    expect(resolveGitAuth).toHaveBeenCalledTimes(3);
     expect(await fs.readFile(path.join(result.cwd, "README.md"), "utf8")).toBe("retry succeeded\n");
+  });
+});
+
+describe("buildRepositoryWorkspaceNote", () => {
+  const nested = {
+    workspaceId: "w2",
+    cwd: "/w/proj/app/.paperclip-repositories/lib-1a2b",
+    repoUrl: "https://github.com/acme/lib.git",
+    repoRef: "main",
+  };
+  const base = {
+    cwd: "/w/proj/app",
+    anchorRepoUrl: "https://github.com/acme/app.git",
+    anchorRepoRef: null,
+    hints: [nested],
+    sharedCheckout: true,
+  };
+
+  it("lists the anchor and nested repositories by relative path", () => {
+    const note = buildRepositoryWorkspaceNote(base)!;
+    expect(note).toContain("- `.` — app (https://github.com/acme/app.git)");
+    expect(note).toContain("- `.paperclip-repositories/lib-1a2b` — lib (https://github.com/acme/lib.git), ref main");
+    expect(note).toContain("read its AGENTS.md or CLAUDE.md");
+    expect(note).toContain("Do not switch the checked-out branch");
+  });
+
+  it("omits the branch rule for an isolated workspace", () => {
+    const note = buildRepositoryWorkspaceNote({ ...base, sharedCheckout: false })!;
+    expect(note).not.toContain("Do not switch");
+  });
+
+  it("omits workspaces outside the working directory", () => {
+    const note = buildRepositoryWorkspaceNote({
+      ...base,
+      hints: [nested, { workspaceId: "w3", cwd: "/elsewhere/x", repoUrl: "https://github.com/acme/x.git", repoRef: null }],
+    })!;
+    expect(note).not.toContain("elsewhere");
+    expect(note).not.toContain("..");
+  });
+
+  it("does not repeat the anchor when a hint points at the working directory", () => {
+    const note = buildRepositoryWorkspaceNote({
+      ...base,
+      hints: [{ workspaceId: "w1", cwd: "/w/proj/app", repoUrl: "https://github.com/acme/app.git", repoRef: null }],
+    })!;
+    expect(note.split("- `.`").length - 1).toBe(1);
+  });
+
+  it("returns null without any repository", () => {
+    expect(buildRepositoryWorkspaceNote({ ...base, anchorRepoUrl: null, hints: [] })).toBeNull();
   });
 });

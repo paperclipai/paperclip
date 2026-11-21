@@ -938,6 +938,10 @@ suite("task project repository provisioning", () => {
     }, { timeout: 15_000 });
     const input = execute.mock.calls.find(([ctx]) => ctx.runId === run!.id)![0];
     const hints = input.context.paperclipWorkspaces as Array<{ workspaceId: string; cwd: string }>;
+    if (count === 2) {
+      expect(input.context.paperclipTaskMarkdown).toContain("Repositories in this workspace");
+      expect(input.context.paperclipTaskMarkdown).toContain("`.paperclip-repositories/");
+    }
     for (let index = 0; index < count; index++) {
       const hint = hints.find((entry) => entry.workspaceId === repositoryRows[index]!.id);
       expect(hint?.cwd).toBeTruthy();
@@ -945,4 +949,63 @@ suite("task project repository provisioning", () => {
       expect(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: hint!.cwd, encoding: "utf8" }).trim()).toBe(await realpath(hint!.cwd));
     }
   }, 25_000);
+
+  describe("shared anchor checkout refresh", () => {
+    async function seedProjectWithOrigin() {
+      const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID();
+      const source = path.join(root, companyId, "origin");
+      await mkdir(source, { recursive: true });
+      const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      const commit = (message: string) => git(source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", message);
+      git(source, "init", "-b", "main");
+      await writeFile(path.join(source, "README.md"), "seed");
+      git(source, "add", ".");
+      commit("seed");
+      await db.insert(companies).values({ id: companyId, name: "Refresh test", issuePrefix: `F${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Refresh", status: "in_progress" });
+      await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Repo", sourceType: "git_repo", repoUrl: pathToFileURL(source).href, cwd: null, isPrimary: true });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Test", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+      const runOnce = async () => {
+        const issueId = randomUUID();
+        await db.insert(issues).values({ id: issueId, companyId, projectId, title: `Refresh ${issueId.slice(0, 6)}`, status: "todo", assigneeAgentId: agentId });
+        const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+        expect(run).not.toBeNull();
+        await vi.waitFor(async () => {
+          const latest = await heartbeat.getRun(run!.id);
+          expect({ status: latest?.status, error: latest?.error }).toEqual({ status: "succeeded", error: null });
+        }, { timeout: 15_000 });
+        return { runId: run!.id, log: (await heartbeat.readLog(run!.id)).content };
+      };
+      const managedCheckout = resolveManagedProjectWorkspaceDir({ companyId, projectId, repoName: "origin" });
+      // Expire the refresh throttle the way a later run would find it.
+      const expireThrottle = async () => {
+        const marker = git(managedCheckout, "rev-parse", "--path-format=absolute", "--git-path", "paperclip-shared-checkout-refresh");
+        await rm(marker, { force: true });
+      };
+      return { source, managedCheckout, git, commit, runOnce, expireThrottle };
+    }
+
+    it("refreshes the shared anchor checkout before a later run", async () => {
+      const { source, managedCheckout, git, commit, runOnce, expireThrottle } = await seedProjectWithOrigin();
+      await runOnce();
+      commit("advance");
+      const advanced = git(source, "rev-parse", "HEAD");
+      expect(git(managedCheckout, "rev-parse", "HEAD")).not.toBe(advanced);
+      await expireThrottle();
+      await runOnce();
+      expect(git(managedCheckout, "rev-parse", "HEAD")).toBe(advanced);
+    }, 40_000);
+
+    it("reports an off-default shared checkout as a run warning", async () => {
+      const { source, managedCheckout, git, commit, runOnce, expireThrottle } = await seedProjectWithOrigin();
+      await runOnce();
+      git(managedCheckout, "checkout", "-b", "feature");
+      commit("advance");
+      await expireThrottle();
+      const second = await runOnce();
+      expect(second.log).toContain("is on `feature`");
+      expect(git(managedCheckout, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
+    }, 40_000);
+  });
 });

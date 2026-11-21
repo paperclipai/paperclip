@@ -35,6 +35,7 @@ import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { WorkspaceBusyDeferral, type createHeartbeatRetries } from "./retries.js";
 import { ConfigurationIncompleteFailure } from "./run-preparation.js";
+import { appendTaskMarkdownNote } from "./task-context.js";
 import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspaceReuseRequestForIssue, WorkspaceValidationFailure } from "./workspaces.js";
 
 type Issue = typeof issues.$inferSelect;
@@ -481,30 +482,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       const concurrentWorkspaceNote =
         `shared workspace is concurrently held by run ${workspaceHolder.runId} (issue ${holderIssueLabel}); ` +
         "expect concurrent mutations, coordinate via commits";
-      const appendConcurrentWorkspaceNote = (value: unknown) => {
-        const existing = typeof value === "string" ? value.trimEnd() : "";
-        return existing
-          ? `${existing}\n${concurrentWorkspaceNote}`
-          : concurrentWorkspaceNote;
-      };
-      context.paperclipTaskMarkdown = appendConcurrentWorkspaceNote(
-        context.paperclipTaskMarkdown,
-      );
-      context.paperclipTaskMarkdownAssignment = appendConcurrentWorkspaceNote(
-        context.paperclipTaskMarkdownAssignment,
-      );
-      if (typeof context.paperclipTaskMarkdownCompact === "string") {
-        context.paperclipTaskMarkdownCompact =
-          appendConcurrentWorkspaceNote(
-            context.paperclipTaskMarkdownCompact,
-          );
-      }
-      if (typeof context.paperclipTaskMarkdownAssignmentCompact === "string") {
-        context.paperclipTaskMarkdownAssignmentCompact =
-          appendConcurrentWorkspaceNote(
-            context.paperclipTaskMarkdownAssignmentCompact,
-          );
-      }
+      appendTaskMarkdownNote(context, concurrentWorkspaceNote);
       logger.info(
         {
           event: "shared_workspace_concurrent_dispatch",
