@@ -15,6 +15,7 @@ import type {
   WorkspaceDiffWarning,
   WorkspaceDiffWarningCode,
 } from "./contracts.js";
+import { diffTargetPaths, parseNumstat, selectFilePatch } from "./git-diff-selection.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -281,36 +282,25 @@ function addStatusEntries(
   }
 }
 
-function diffTargetPaths(filePath: string, oldPath: string | null | undefined) {
-  return oldPath && oldPath !== filePath ? [oldPath, filePath] : [filePath];
-}
-
-function parseNumstat(output: string) {
-  const line = output.split(/\r?\n/).find(Boolean);
-  if (!line) return { additions: 0, deletions: 0, binary: false };
-  const [additionsRaw, deletionsRaw] = line.split(/\t/);
-  if (additionsRaw === "-" || deletionsRaw === "-") {
-    return { additions: 0, deletions: 0, binary: true };
-  }
-  return {
-    additions: Number.parseInt(additionsRaw ?? "0", 10) || 0,
-    deletions: Number.parseInt(deletionsRaw ?? "0", 10) || 0,
-    binary: false,
-  };
-}
-
-async function readNumstat(cwd: string, scopeArgs: string[], targetPaths: string[]) {
+async function readNumstat(
+  cwd: string,
+  scopeArgs: string[],
+  targetPaths: string[],
+  filePath: string,
+  oldPath?: string | null,
+) {
   const result = await runGit(cwd, [
     "diff",
     "--relative",
     "--numstat",
+    "-z",
     "--no-ext-diff",
     "--find-renames",
     ...scopeArgs,
     "--",
     ...targetPaths,
   ], 128 * 1024);
-  return parseNumstat(result.stdout);
+  return parseNumstat(result.stdout, filePath, oldPath);
 }
 
 async function statWorkspaceFile(workspaceRoot: string, filePath: string) {
@@ -396,13 +386,14 @@ async function buildTrackedPatch(input: {
   cwd: string;
   filePath: string;
   oldPath?: string | null;
+  scopePaths: readonly string[];
   kind: WorkspaceDiffPatchKind;
   scopeArgs: string[];
   budget: PatchBudget;
 }): Promise<WorkspaceDiffFilePatch> {
   const warnings: WorkspaceDiffWarning[] = [];
-  const targetPaths = diffTargetPaths(input.filePath, input.oldPath);
-  const numstat = await readNumstat(input.cwd, input.scopeArgs, targetPaths);
+  const targetPaths = diffTargetPaths(input.filePath, input.oldPath, input.scopePaths);
+  const numstat = await readNumstat(input.cwd, input.scopeArgs, targetPaths, input.filePath, input.oldPath);
   const sizeBytes = await statWorkspaceFile(input.cwd, input.filePath);
 
   if (numstat.binary) {
@@ -457,7 +448,8 @@ async function buildTrackedPatch(input: {
     };
   }
 
-  const patch = reservePatchBytes(patchOutput.stdout, input.budget, input.filePath, warnings);
+  const selectedPatch = selectFilePatch(patchOutput.stdout, input.filePath, input.oldPath);
+  const patch = reservePatchBytes(selectedPatch, input.budget, input.filePath, warnings);
   return {
     kind: input.kind,
     patch,
@@ -788,6 +780,12 @@ export function workspaceDiffService() {
         ));
       }
 
+      const scopePathsByScope: Record<DiffScope, string[]> = {
+        head: allFiles.map((entry) => entry.path),
+        staged: allFiles.filter((entry) => entry.staged).map((entry) => entry.path),
+        unstaged: allFiles.filter((entry) => entry.unstaged).map((entry) => entry.path),
+      };
+
       const patchBudget: PatchBudget = { totalPatchBytes: 0 };
       for (const file of cappedFiles) {
         if (query.view === "head") {
@@ -795,6 +793,7 @@ export function workspaceDiffService() {
             cwd,
             filePath: file.path,
             oldPath: file.renameSourceByScope.head,
+            scopePaths: scopePathsByScope.head,
             kind: "head",
             scopeArgs: [`${baseRef}...HEAD`],
             budget: patchBudget,
@@ -808,6 +807,7 @@ export function workspaceDiffService() {
             cwd,
             filePath: file.path,
             oldPath: file.renameSourceByScope.staged,
+            scopePaths: scopePathsByScope.staged,
             kind: "staged",
             scopeArgs: ["--cached"],
             budget: patchBudget,
@@ -819,6 +819,7 @@ export function workspaceDiffService() {
             cwd,
             filePath: file.path,
             oldPath: file.renameSourceByScope.unstaged,
+            scopePaths: scopePathsByScope.unstaged,
             kind: "unstaged",
             scopeArgs: [],
             budget: patchBudget,

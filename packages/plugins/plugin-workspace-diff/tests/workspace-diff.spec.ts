@@ -271,6 +271,60 @@ describe("plugin workspace diff service", () => {
     expect(headRenamed?.patches[0]?.patch).not.toContain("new file mode");
   }, 20_000);
 
+  it("isolates a rename when oldPath becomes a directory containing other changed files", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.writeFile(path.join(repoRoot, "foo"), "one\ntwo\nthree\nfour\n", "utf8");
+    await runGit(repoRoot, ["add", "foo"]);
+    await runGit(repoRoot, ["commit", "-m", "Add foo file"]);
+    await runGit(repoRoot, ["checkout", "-b", "feature"]);
+
+    await fs.rm(path.join(repoRoot, "foo"));
+    await fs.mkdir(path.join(repoRoot, "foo"), { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "foo", "aaa"), "alpha\nbeta\ngamma\n", "utf8");
+    await fs.writeFile(path.join(repoRoot, "foo", "bar"), "one\ntwo\nthree\nfour\nfive\n", "utf8");
+    await fs.writeFile(path.join(repoRoot, "foo", "extra"), "x\ny\n", "utf8");
+    await runGit(repoRoot, ["add", "-A"]);
+
+    const stagedDiff = await workspaceDiffService().getDiff(createWorkspace(repoRoot), workingTreeQuery());
+    const stagedByPath = new Map(stagedDiff.files.map((file) => [file.path, file]));
+    const stagedRenamed = stagedByPath.get("foo/bar");
+
+    expect(stagedRenamed).toMatchObject({
+      path: "foo/bar",
+      oldPath: "foo",
+      status: "renamed",
+      staged: true,
+      additions: 1,
+      deletions: 0,
+    });
+    expect(stagedRenamed?.patches[0]?.patch).toContain("rename from foo");
+    expect(stagedRenamed?.patches[0]?.patch).toContain("rename to foo/bar");
+    expect(stagedRenamed?.patches[0]?.patch).toContain("+five");
+    expect(stagedRenamed?.patches[0]?.patch).not.toContain("foo/aaa");
+    expect(stagedRenamed?.patches[0]?.patch).not.toContain("foo/extra");
+    expect(stagedByPath.get("foo/aaa")).toMatchObject({ status: "added", additions: 3, deletions: 0 });
+    expect(stagedByPath.get("foo/extra")).toMatchObject({ status: "added", additions: 2, deletions: 0 });
+
+    await runGit(repoRoot, ["commit", "-m", "Replace foo file with directory"]);
+
+    const headDiff = await workspaceDiffService().getDiff(
+      createWorkspace(repoRoot, { baseRef: "main" }),
+      workingTreeQuery({ view: "head", includeUntracked: false }),
+    );
+    const headRenamed = headDiff.files.find((file) => file.path === "foo/bar");
+    expect(headRenamed).toMatchObject({
+      path: "foo/bar",
+      oldPath: "foo",
+      status: "renamed",
+      additions: 1,
+      deletions: 0,
+    });
+    expect(headRenamed?.patches[0]?.patch).toContain("rename from foo");
+    expect(headRenamed?.patches[0]?.patch).toContain("rename to foo/bar");
+    expect(headRenamed?.patches[0]?.patch).not.toContain("foo/aaa");
+    expect(headRenamed?.patches[0]?.patch).not.toContain("foo/extra");
+  }, 20_000);
+
   it("scopes working-tree and head diffs to subdirectory workspaces with workspace-relative paths", async () => {
     const repoRoot = await createTempRepo();
     const appDir = path.join(repoRoot, "packages", "app");
