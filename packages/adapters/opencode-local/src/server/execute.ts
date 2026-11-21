@@ -58,6 +58,7 @@ import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlP
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
+  openCodeCatalogModelId,
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
 } from "./models.js";
@@ -103,6 +104,7 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   graceSec: number;
 }) {
   const model = requireOpenCodeModelId(input.model);
+  const catalogId = openCodeCatalogModelId(model);
 
   // When the caller opts into OPENCODE_ALLOW_ALL_MODELS, OpenCode accepts any
   // provider/model at run time (e.g. gateway-routed models that never appear in
@@ -165,7 +167,7 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
     return;
   }
 
-  if (!models.some((entry) => entry.id === model)) {
+  if (!models.some((entry) => entry.id === catalogId)) {
     const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
     throw new Error(
       `Configured OpenCode model is unavailable on the remote execution target: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
