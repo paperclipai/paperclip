@@ -2302,6 +2302,112 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(interactions.find((interaction) => interaction.id === checkboxId)?.status).toBe("pending");
   });
 
+  it("keeps secret proposal, tool action, and quality review cards pending when the historical sweep runs", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Historical sweep keeps proposal cards");
+    const agentId = randomUUID();
+    await db.insert(agents).values(activeCodexAgentRow(agentId, companyId, "Proposal agent", "engineer"));
+
+    const proposalIds = [randomUUID(), randomUUID(), randomUUID()];
+    const toolActionId = randomUUID();
+    const qualityReviewId = randomUUID();
+    const draftIds = [randomUUID(), randomUUID()];
+    const secretProposal = (proposalId: string) => ({
+      version: 1 as const,
+      proposalId,
+      sourceSecretLabel: "API token",
+      configPath: "env.API_TOKEN",
+      targetAgentId: agentId,
+      targetAgentName: "Proposal agent",
+      justification: "Bind the token for this agent",
+      expiresAt: "2026-08-01T00:00:00.000Z",
+    });
+    await db.insert(issueThreadInteractions).values([
+      ...proposalIds.map((id, index) => ({
+        id,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: agentId,
+        payload: { version: 1 as const, prompt: `Bind secret ${index + 1}`, secretProposal: secretProposal(randomUUID()) },
+        createdAt: new Date(`2026-07-01T12:0${index}:00.000Z`),
+        updatedAt: new Date(`2026-07-01T12:0${index}:00.000Z`),
+      })),
+      {
+        id: toolActionId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: agentId,
+        payload: {
+          version: 1 as const,
+          prompt: "Run the tool action",
+          toolAction: {
+            version: 1 as const,
+            actionRequestId: randomUUID(),
+            invocationId: randomUUID(),
+            toolName: "create_record",
+            toolDisplayName: "Create record",
+            connectionId: null,
+            applicationId: null,
+            appDisplayName: null,
+            risk: "write" as const,
+            previewMarkdown: "Create one record",
+            argumentsSummaryJson: "{}",
+            argumentsHash: "hash",
+            expiresAt: null,
+          },
+        },
+        createdAt: new Date("2026-07-01T12:05:00.000Z"),
+        updatedAt: new Date("2026-07-01T12:05:00.000Z"),
+      },
+      {
+        id: qualityReviewId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: agentId,
+        payload: { version: 1 as const, prompt: "Review the result", qualityReview: { key: "release-check" } },
+        createdAt: new Date("2026-07-01T12:06:00.000Z"),
+        updatedAt: new Date("2026-07-01T12:06:00.000Z"),
+      },
+      ...draftIds.map((id, index) => ({
+        id,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: agentId,
+        payload: { version: 1 as const, prompt: `Plain draft ${index + 1}` },
+        createdAt: new Date(`2026-07-01T11:0${index}:00.000Z`),
+        updatedAt: new Date(`2026-07-01T11:0${index}:00.000Z`),
+      })),
+    ]);
+
+    await expect(interactionsSvc.sweepSupersededPendingRequestConfirmations())
+      .resolves.toEqual({ expired: 1 });
+
+    const rows = await db
+      .select({ id: issueThreadInteractions.id, status: issueThreadInteractions.status, result: issueThreadInteractions.result })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    const statusById = new Map(rows.map((row) => [row.id, row.status]));
+    for (const id of [...proposalIds, toolActionId, qualityReviewId]) {
+      expect(statusById.get(id)).toBe("pending");
+    }
+    expect(statusById.get(draftIds[1])).toBe("pending");
+    expect(rows.find((row) => row.id === draftIds[0])).toMatchObject({
+      status: "expired",
+      result: { outcome: "superseded_by_newer_request", supersededByInteractionId: draftIds[1] },
+    });
+  });
+
   it("refuses to create an interaction on a closed issue", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Closed issue create guard");
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
