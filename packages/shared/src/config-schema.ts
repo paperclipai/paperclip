@@ -56,10 +56,21 @@ export const serverConfigSchema = z.object({
   serveUi: z.boolean().default(true),
 }).passthrough();
 
+export const authOidcConfigSchema = z.object({
+  providerId: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
+  displayName: z.string().min(1),
+  discoveryUrl: z.string().url(),
+  authorizationUrl: z.string().url().optional(),
+  tokenUrl: z.string().url().optional(),
+  userInfoUrl: z.string().url().optional(),
+  clientId: z.string().min(1),
+}).strict();
+
 export const authConfigSchema = z.object({
   baseUrlMode: z.enum(AUTH_BASE_URL_MODES).default("auto"),
   publicBaseUrl: z.string().url().optional(),
   disableSignUp: z.boolean().default(false),
+  oidc: authOidcConfigSchema.optional(),
 }).passthrough();
 
 export const storageLocalDiskConfigSchema = z.object({
@@ -199,6 +210,7 @@ export type StorageLocalDiskConfig = z.infer<typeof storageLocalDiskConfigSchema
 export type StorageS3Config = z.infer<typeof storageS3ConfigSchema>;
 export type SecretsConfig = z.infer<typeof secretsConfigSchema>;
 export type SecretsLocalEncryptedConfig = z.infer<typeof secretsLocalEncryptedConfigSchema>;
+export type AuthOidcConfig = z.infer<typeof authOidcConfigSchema>;
 export type AuthConfig = z.infer<typeof authConfigSchema>;
 export type TelemetryConfig = z.infer<typeof telemetryConfigSchema>;
 export type UpdatesConfig = z.infer<typeof updatesConfigSchema>;
