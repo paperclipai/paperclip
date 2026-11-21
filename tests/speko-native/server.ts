@@ -25,7 +25,7 @@ Object.assign(process.env, {
   PAPERCLIP_DEPLOYMENT_MODE: process.env.SPEKO_NATIVE_AUTH === "1" ? "authenticated" : "local_trusted",
   PAPERCLIP_AUTH_PUBLIC_BASE_URL: origin, PAPERCLIP_AUTH_BASE_URL_MODE: "explicit", PAPERCLIP_DEPLOYMENT_EXPOSURE: "private",
   PAPERCLIP_VITE_CACHE_DIR: resolve(home, "vite-cache"), PAPERCLIP_OPEN_ON_LISTEN: "false",
-  PAPERCLIP_TELEMETRY_ENABLED: "false",
+  PAPERCLIP_TELEMETRY_DISABLED: "1",
 });
 delete process.env.DATABASE_URL;
 delete process.env.PAPERCLIP_IN_WORKTREE;
