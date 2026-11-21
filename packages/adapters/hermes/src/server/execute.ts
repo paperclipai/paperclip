@@ -321,7 +321,10 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   // Extract cost
   const costMatch = combined.match(COST_REGEX);
   if (costMatch?.[1]) {
-    result.costUsd = parseFloat(costMatch[1]);
+    const cost = parseFloat(costMatch[1]);
+    if (Number.isFinite(cost)) {
+      result.costUsd = cost;
+    }
   }
 
   // Check for error patterns in stderr
