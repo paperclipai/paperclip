@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="#EA4B71">
+  <!-- n8n-claw Logo: Crab made of connected workflow nodes -->
+
+  <!-- Body: large hollow circle (n8n node style) -->
+  <circle cx="256" cy="280" r="80" />
+  <circle cx="256" cy="280" r="45" fill="white" />
+
+  <!-- Eyes: two small nodes on top of body -->
+  <circle cx="220" cy="185" r="18" />
+  <circle cx="220" cy="185" r="9" fill="white" />
+  <circle cx="292" cy="185" r="18" />
+  <circle cx="292" cy="185" r="9" fill="white" />
+
+  <!-- Eye stalks: connection lines from body to eyes -->
+  <line x1="235" y1="210" x2="225" y2="200" stroke="#EA4B71" stroke-width="8" stroke-linecap="round" />
+  <line x1="277" y1="210" x2="287" y2="200" stroke="#EA4B71" stroke-width="8" stroke-linecap="round" />
+
+  <!-- Left claw: curved connection line ending in a node (pincer) -->
+  <path d="M 176 280 Q 100 220 70 160 Q 55 130 80 110"
+        stroke="#EA4B71" stroke-width="10" fill="none" stroke-linecap="round" />
+  <!-- Left claw upper pincer -->
+  <path d="M 80 110 Q 60 90 90 75"
+        stroke="#EA4B71" stroke-width="10" fill="none" stroke-linecap="round" />
+  <circle cx="90" cy="75" r="16" />
+  <circle cx="90" cy="75" r="8" fill="white" />
+  <!-- Left claw lower pincer -->
+  <path d="M 80 110 Q 100 85 130 90"
+        stroke="#EA4B71" stroke-width="10" fill="none" stroke-linecap="round" />
+  <circle cx="130" cy="90" r="16" />
+  <circle cx="130" cy="90" r="8" fill="white" />
+  <!-- Left claw joint node -->
+  <circle cx="80" cy="110" r="14" />
+  <circle cx="80" cy="110" r="7" fill="white" />
+
+  <!-- Right claw: mirrored -->
+  <path d="M 336 280 Q 412 220 442 160 Q 457 130 432 110"
+        stroke="#EA4B71" stroke-width="10" fill="none" stroke-linecap="round" />
+  <!-- Right claw upper pincer -->
+  <path d="M 432 110 Q 452 90 422 75"
+        stroke="#EA4B71" stroke-width="10" fill="none" stroke-linecap="round" />
+  <circle cx="422" cy="75" r="16" />
+  <circle cx="422" cy="75" r="8" fill="white" />
+  <!-- Right claw lower pincer -->
+  <path d="M 432 110 Q 412 85 382 90"
+        stroke="#EA4B71" stroke-width="10" fill="none" stroke-linecap="round" />
+  <circle cx="382" cy="90" r="16" />
+  <circle cx="382" cy="90" r="8" fill="white" />
+  <!-- Right claw joint node -->
+  <circle cx="432" cy="110" r="14" />
+  <circle cx="432" cy="110" r="7" fill="white" />
+
+  <!-- Legs left side: 3 curved lines -->
+  <path d="M 185 300 Q 130 310 90 340"
+        stroke="#EA4B71" stroke-width="8" fill="none" stroke-linecap="round" />
+  <path d="M 180 320 Q 120 340 80 380"
+        stroke="#EA4B71" stroke-width="8" fill="none" stroke-linecap="round" />
+  <path d="M 185 340 Q 130 370 95 415"
+        stroke="#EA4B71" stroke-width="8" fill="none" stroke-linecap="round" />
+
+  <!-- Legs right side: 3 curved lines mirrored -->
+  <path d="M 327 300 Q 382 310 422 340"
+        stroke="#EA4B71" stroke-width="8" fill="none" stroke-linecap="round" />
+  <path d="M 332 320 Q 392 340 432 380"
+        stroke="#EA4B71" stroke-width="8" fill="none" stroke-linecap="round" />
+  <path d="M 327 340 Q 382 370 417 415"
+        stroke="#EA4B71" stroke-width="8" fill="none" stroke-linecap="round" />
+</svg>
