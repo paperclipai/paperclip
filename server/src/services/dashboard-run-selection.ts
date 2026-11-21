@@ -1,9 +1,10 @@
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 
 const MAX_CANDIDATES_PER_POOL = 1_000;
 const ACTIVE_STATUSES = ["queued", "running"];
+const ACTIVE_STATUS_LITERALS = sql.raw(ACTIVE_STATUSES.map((status) => `'${status}'`).join(", "));
 
 /** Select recent dashboard cards without ranking the company's full run history. */
 export async function selectDashboardRunIds(db: Db, companyId: string, limit: number): Promise<string[]> {
@@ -15,12 +16,15 @@ export async function selectDashboardRunIds(db: Db, companyId: string, limit: nu
     createdAt: heartbeatRuns.createdAt,
     issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
   };
-  const [activeRuns, recentRuns] = await Promise.all([
-    db.select(columns)
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ACTIVE_STATUSES)))
-      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-      .limit(MAX_CANDIDATES_PER_POOL),
+  const [activeRows, recentRuns] = await Promise.all([
+    db.execute(sql`with active_runs as materialized (
+      select id, status, created_at, context_snapshot ->> 'issueId' as issue_id
+      from heartbeat_runs
+      where company_id = ${companyId}::uuid and status in (${ACTIVE_STATUS_LITERALS})
+    )
+    select id, status, created_at, issue_id from active_runs
+    order by created_at desc, id desc
+    limit ${MAX_CANDIDATES_PER_POOL}`) as unknown as Promise<Array<{ id: string; status: string; created_at: string | Date; issue_id: string | null }>>,
     db.select(columns)
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.companyId, companyId))
@@ -28,6 +32,9 @@ export async function selectDashboardRunIds(db: Db, companyId: string, limit: nu
       .limit(MAX_CANDIDATES_PER_POOL),
   ]);
 
+  const activeRuns = activeRows.map((row) => ({
+    id: row.id, status: row.status, createdAt: new Date(row.created_at), issueId: row.issue_id,
+  }));
   const candidates = [...new Map([...activeRuns, ...recentRuns].map((run) => [run.id, run])).values()];
   candidates.sort((a, b) => {
     const activeOrder = Number(ACTIVE_STATUSES.includes(b.status)) - Number(ACTIVE_STATUSES.includes(a.status));

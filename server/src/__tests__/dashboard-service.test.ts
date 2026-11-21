@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { PgDialect } from "drizzle-orm/pg-core";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -91,6 +92,83 @@ describeEmbeddedPostgres("dashboard service", () => {
     expect(await selectDashboardRunIds(db, companyId, 3)).toEqual([
       activeRunId, otherTaskRunId, tasklessRunId,
     ]);
+  });
+
+  it("reads only the active rows from the active-pool scans under default, generic, and custom plans", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const activeStatuses = ["queued", "running"] as const;
+    await db.insert(companies).values({ id: companyId, name: "Active pool", issuePrefix: "POOL" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Agent", adapterType: "codex_local" });
+    await db.insert(heartbeatRuns).values([
+      ...Array.from({ length: 1_500 }, (_, index) => ({
+        id: randomUUID(), companyId, agentId, status: "succeeded",
+        createdAt: new Date(Date.UTC(2026, 0, 1) + index * 1_000),
+      })),
+      ...activeStatuses.map((status, index) => ({
+        id: randomUUID(), companyId, agentId, status,
+        createdAt: new Date(Date.UTC(2026, 0, 2) + index * 1_000),
+      })),
+    ]);
+    await db.$client.unsafe("ANALYZE heartbeat_runs");
+
+    const dialect = new PgDialect();
+    const captured: Array<{ sql: string; params: unknown[] }> = [];
+    const captureBuilder = (builder: object): object => new Proxy(builder, { get(target, key) {
+      if (key === "then") captured.push((target as { toSQL(): { sql: string; params: unknown[] } }).toSQL());
+      const prop = Reflect.get(target, key);
+      if (typeof prop !== "function") return prop;
+      return (...args: unknown[]) => {
+        const result = prop.apply(target, args);
+        return result !== null && typeof result === "object" && typeof (result as { toSQL?: unknown }).toSQL === "function"
+          ? captureBuilder(result) : result;
+      };
+    } });
+    const captureDb = new Proxy(db, { get(target, key) {
+      const value = Reflect.get(target, key);
+      if (key === "execute") return (query: unknown) => {
+        captured.push(dialect.sqlToQuery(query as never));
+        return value.call(target, query);
+      };
+      if (key === "select") return (...args: unknown[]) => captureBuilder(value.apply(target, args));
+      return value;
+    } });
+    expect(await selectDashboardRunIds(captureDb, companyId, 3)).toHaveLength(3);
+    const capturedPool = captured.find((query) => query.sql.includes("heartbeat_runs") && query.sql.includes("status"));
+    expect(capturedPool).toBeDefined();
+
+    const literal = (value: unknown) => `'${String(value).replaceAll("'", "''")}'`;
+    const inspected = (plan: Record<string, unknown>): number => {
+      let rows = 0;
+      const visit = (node: Record<string, unknown>) => {
+        if (node["Relation Name"] === "heartbeat_runs") {
+          rows += (Number(node["Actual Rows"] ?? 0) + Number(node["Rows Removed by Filter"] ?? 0))
+            * Number(node["Actual Loops"] ?? 1);
+        }
+        for (const child of (node.Plans as Record<string, unknown>[]) ?? []) visit(child);
+      };
+      visit(plan);
+      return rows;
+    };
+
+    const plans = await db.$client.begin(async (tx) => {
+      const fresh = await tx.unsafe(`EXPLAIN (ANALYZE, FORMAT JSON) ${capturedPool!.sql}`, capturedPool!.params as never[]);
+      await tx.unsafe(`PREPARE dashboard_active_pool AS ${capturedPool!.sql}`);
+      const byMode = {} as Record<string, unknown>;
+      for (const mode of ["force_generic_plan", "force_custom_plan"]) {
+        await tx.unsafe(`SET LOCAL plan_cache_mode = ${mode}`);
+        byMode[mode] = await tx.unsafe(
+          `EXPLAIN (ANALYZE, FORMAT JSON) EXECUTE dashboard_active_pool(${capturedPool!.params.map(literal).join(", ")})`,
+        );
+      }
+      await tx.unsafe("DEALLOCATE dashboard_active_pool");
+      return { fresh, ...byMode };
+    });
+
+    for (const [mode, explain] of Object.entries(plans)) {
+      const root = (explain as unknown as Array<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>)[0]!["QUERY PLAN"][0]!.Plan;
+      expect(inspected(root), mode).toBeLessThanOrEqual(activeStatuses.length);
+    }
   });
 
   it("aggregates the full 14-day run activity window without recent-run truncation", async () => {
