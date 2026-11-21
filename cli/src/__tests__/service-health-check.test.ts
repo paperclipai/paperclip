@@ -10,7 +10,8 @@ import {
   renderLaunchdPlist,
   renderSystemdUnit,
 } from "../services/service-manager.js";
-import { resolveRestartExpectedVersion, withHotRestartLock } from "../commands/service.js";
+import { readRestartReportVersion, resolveRestartExpectedVersion, waitForHealth, withHotRestartLock } from "../commands/service.js";
+import { resolvePaperclipInstanceRoot } from "../config/home.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 
@@ -251,5 +252,34 @@ describe("definition executable extraction", () => {
     expect(extractExecutableFromSystemdUnit(unit)).toBe(hostile);
     const plist = renderLaunchdPlist({ instanceId: "default", shimPath: hostile, homeDir: "/home/x/.paperclip", stdoutPath: "/tmp/o.log", stderrPath: "/tmp/e.log" });
     expect(extractExecutableFromLaunchdPlist(plist)).toBe(hostile);
+  });
+});
+
+describe("restart version check in authenticated deployments", () => {
+  function writeReport(report: Record<string, unknown>) {
+    const root = resolvePaperclipInstanceRoot("default");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, "hot-restart-report.json"), JSON.stringify(report));
+  }
+  const redacted = vi.fn(async () => ({ ok: true, serverVersion: null }));
+
+  it("accepts the restarted server's own report when public health hides the version", async () => {
+    writeReport({ requestedAt: "2026-11-11T14:35:00.000Z", newServerVersion: "1.2.3" });
+    await expect(waitForHealth("default", "1.2.3", { requestedAt: "2026-11-11T14:35:00.000Z", probe: redacted, timeoutMs: 2_000 }))
+      .resolves.toEqual({ ok: true, serverVersion: "1.2.3" });
+  });
+
+  it("still fails when the report names another version or another restart", async () => {
+    writeReport({ requestedAt: "2026-11-11T14:35:00.000Z", newServerVersion: "1.2.2" });
+    await expect(waitForHealth("default", "1.2.3", { requestedAt: "2026-11-11T14:35:00.000Z", probe: redacted, timeoutMs: 600 }))
+      .rejects.toThrow("at version 1.2.3");
+    expect(await readRestartReportVersion("default", "2026-11-11T09:00:00.000Z")).toBeNull();
+  });
+
+  it("prefers the version the health endpoint reports", async () => {
+    writeReport({ requestedAt: "2026-11-11T14:35:00.000Z", newServerVersion: "1.2.3" });
+    const visible = vi.fn(async () => ({ ok: true, serverVersion: "1.2.2" }));
+    await expect(waitForHealth("default", "1.2.3", { requestedAt: "2026-11-11T14:35:00.000Z", probe: visible, timeoutMs: 600 }))
+      .rejects.toThrow("reported 1.2.2");
   });
 });
