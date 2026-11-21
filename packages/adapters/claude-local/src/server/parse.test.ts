@@ -145,6 +145,68 @@ describe("detectClaudeLoginRequired", () => {
       }).requiresLogin,
     ).toBe(false);
   });
+
+  it("does not classify a stream-json tool result that says not logged in as login required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { is_error: true, subtype: "error_max_turns", result: "Maximum turns reached." },
+        stdout:
+          '{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu-1","content":"You are not logged into any GitHub hosts."}]}}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does not classify unauthorized prose in stream-json stdout as login required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { is_error: true, subtype: "error_max_turns", result: "Maximum turns reached." },
+        stdout:
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"The server rejects unknown or unauthorized recipients."}]}}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does not match not logged in when it runs into another word", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "",
+        stderr: "You are not logged into any GitHub hosts.",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("still classifies a whole not logged in phrase on stderr as login required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "",
+        stderr: "You are not logged in. Please run /login",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("still classifies a plain-text login prompt on stdout as login required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "Please log in to continue.",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("still classifies a login prompt in the parsed result as login required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: { is_error: true, subtype: "error", result: "Please log in. Run `claude login` first." },
+        stdout: "",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
 });
 
 describe("isClaudeModelNotFoundError", () => {

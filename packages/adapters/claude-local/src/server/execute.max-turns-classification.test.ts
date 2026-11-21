@@ -53,6 +53,26 @@ function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = "")
   };
 }
 
+function buildProcResultWithToolResult(resultEvent: Record<string, unknown>, toolResultText: string) {
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    stdout: [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
+      JSON.stringify({
+        type: "assistant",
+        session_id: "claude-session-1",
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu-1", content: toolResultText }] },
+      }),
+      JSON.stringify({ type: "result", session_id: "claude-session-1", ...resultEvent }),
+    ].join("\n"),
+    stderr: "",
+    pid: 321,
+    startedAt: new Date().toISOString(),
+  };
+}
+
 function mockExecutionResult(result: ReturnType<typeof buildProcResult>) {
   runAdapterExecutionTargetProcess.mockImplementation(async (_runId: string, _target: unknown, _command: string, args: string[]) =>
     args.includes("--version")
@@ -101,5 +121,41 @@ describe("claude_local failure classification precedence", () => {
     const result = await execute(buildContext() as never);
 
     expect(result.errorCode).toBe("model_not_found");
+  });
+
+  it("keeps max_turns_exhausted when a tool result says not logged in", async () => {
+    mockExecutionResult(
+      buildProcResultWithToolResult(
+        { is_error: true, subtype: "error_max_turns" },
+        "You are not logged into any GitHub hosts.",
+      ),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("keeps max_turns_exhausted when stdout mentions unauthorized", async () => {
+    mockExecutionResult(
+      buildProcResult(
+        { is_error: true, subtype: "error_max_turns" },
+        "The server rejects unknown or unauthorized recipients.",
+      ),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("still reports claude_auth_required when the result carries a login prompt", async () => {
+    mockExecutionResult(
+      buildProcResult({ is_error: true, subtype: "error", result: "Please log in. Run `claude login` first." }),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_auth_required");
   });
 });

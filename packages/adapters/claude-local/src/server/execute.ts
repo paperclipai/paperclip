@@ -1250,7 +1250,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // first. A lost duplex control channel surfaces the typed
         // `duplex_channel_lost` code before any provider classification.
         ? proc.errorCode
-        : loginMeta.requiresLogin
+        : loginMeta.requiresLogin && !clearSessionForMaxTurns
         ? "claude_auth_required"
         // Structured CLI signals outrank the model-not-found detector, which
         // scans the run's full stdout for a literal "model not found" phrase.
