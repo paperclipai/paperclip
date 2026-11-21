@@ -381,15 +381,6 @@ defines synchronization, permissions and evidence. After map edits, run
 `node scripts/check-maps.mjs` for structural/reference checks; it does not start an
 instance or qualify access as an agent.
 
-### Database test fixtures
-
-After seeding a large test population, run `ANALYZE` before measuring or
-exercising it. The empty template has no statistics for those rows, and waiting
-for automatic analysis can cause slow query plans and test timeouts. Tests that
-exercise route-triggered heartbeats must await `drainActiveRunExecutions()`
-before deleting fixture rows; a completed HTTP response can still have a wakeup
-in flight.
-
 ### Agent worktree preflight
 
 Prepare a new or updated agent worktree with one command:

@@ -5,6 +5,7 @@ import { agents, chatEndpointResources, chatEndpoints, companies, createDb, tool
 import type { Thread } from "chat";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createMessageResourceAdmission } from "./resource-admission.js";
+import { createChatInboundAuthority } from "./authorization.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -38,16 +39,21 @@ describePostgres("setup destination admission with concurrent runtime invalidati
     let releaseAgent!: () => void;
     const endpointLocked = new Promise<void>(resolve => { releaseEndpoint = resolve; });
     const agentLocked = new Promise<void>(resolve => { releaseAgent = resolve; });
+    const authority = createChatInboundAuthority(db, {
+      voiceStore: { authorizePrincipal: async () => { throw new Error("Unexpected voice authorization"); } },
+      runtimeCallbackEndpoint: async () => { throw new Error("Unexpected runtime callback"); },
+    });
     const admission = createMessageResourceAdmission(db, {
-      ensureResource: async (_endpoint, _thread, _enabled, tx = db) => {
+      ensureResource: async (...args) => {
         releaseEndpoint();
         await agentLocked;
-        return tx.select().from(chatEndpointResources).where(eq(chatEndpointResources.id, resource!.id))
-          .then(rows => rows[0]!);
+        return authority.ensureResource(...args);
       },
     });
 
-    const admitting = admission.admitMessageResource({ endpoint: endpoint!, thread: { isDM: false } as Thread,
+    const thread = { isDM: false, id: "github:example/first:1", channelId: "example/first",
+      channel: { name: "example/first" } } as Thread;
+    const admitting = admission.admitMessageResource({ endpoint: endpoint!, thread,
       addressed: true, suppressSetupDestinationActivation: false, surfaceKind: "native_thread" });
     const inserting = (async () => {
       await endpointLocked;
