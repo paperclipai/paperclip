@@ -479,6 +479,22 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(await opening).toMatchObject({ prepared: true, runtimeConfig: { homeMode: "isolated", model: "gpt-6.1-sol" } });
   });
 
+  it("moves run-scoped connector metadata into the prompt only for claude_local's CLI engine", async () => {
+    const f = await seed();
+    const apply = vi.spyOn(connectorRuntime, "applyConnectorSkills");
+    try {
+      for (const [type, expected] of [["claude_local", true], ["codex_local", false]] as const) {
+        apply.mockClear();
+        const configured = await configuration(f, { engine: "cli" }, {}, type);
+        await configured.prepare().catch(() => undefined);
+        expect(apply).toHaveBeenCalled();
+        expect(apply.mock.calls[0]![3]).toEqual({ runScopedMetadataInPrompt: expected });
+      }
+    } finally {
+      apply.mockRestore();
+    }
+  });
+
   it("settles concurrent configuration reads before exposing the first preparation failure", async () => {
     const f = await seed();
     const assignmentGate = deferred<Awaited<ReturnType<typeof connectorRuntime.resolveConnectorAssignments>>>();

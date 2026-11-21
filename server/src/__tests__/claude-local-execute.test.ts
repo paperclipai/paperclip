@@ -1502,6 +1502,53 @@ describe("claude execute", () => {
     }
   });
 
+  it("keeps the prompt bundle path but starts a fresh session when the connector session key changes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-connector-session-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "paperclip-home"));
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    try {
+      let sessionParams: Record<string, unknown> | null = null;
+      const addDirs: Array<string | null> = [];
+      for (const [index, key] of ["a".repeat(64), "a".repeat(64), "b".repeat(64)].entries()) {
+        const logs: string[] = [];
+        const result = await execute({
+          runId: `run-${index}`,
+          agent: { id: "agent-1", companyId: "company-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+          runtime: { sessionId: null, sessionParams, sessionDisplayId: null, taskKey: "issue-1" },
+          config: {
+            engine: "cli",
+            command: commandPath,
+            cwd: workspace,
+            paperclipConnectorSessionKey: key,
+            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath, CLAUDE_CONFIG_DIR: path.join(root, "claude-config") },
+          },
+          context: { issueId: "issue-1" },
+          onLog: async (_stream, chunk) => { logs.push(chunk); },
+        });
+        expect(result.exitCode).toBe(0);
+        const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+        addDirs.push(capture.addDir);
+        if (index === 1) {
+          expect(capture.argv).toContain("--resume");
+        } else {
+          expect(capture.argv).not.toContain("--resume");
+        }
+        if (index === 2) expect(logs.join("")).toContain("was saved for prompt bundle");
+        sessionParams = sessionCodec.deserialize(sessionCodec.serialize(result.sessionParams ?? null));
+      }
+      expect(addDirs[0]).toBeTruthy();
+      expect(new Set(addDirs).size).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("starts a fresh Claude session when the stable prompt bundle changes", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-reset-"));
     const workspace = path.join(root, "workspace");

@@ -5,6 +5,7 @@ import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-check
 import { prepareSshConversationState } from "@paperclipai/adapter-utils/ssh-conversation-state";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
@@ -798,9 +799,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
     const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
+    // The bundle stays the same across Slack conversations so its path can be
+    // cached; the connector session key brings their access revision back into
+    // session compatibility.
+    const connectorSessionKey = asString(config.paperclipConnectorSessionKey, "");
+    const sessionBundleKey = connectorSessionKey
+      ? createHash("sha256").update(`${promptBundle.bundleKey}\n${connectorSessionKey}`).digest("hex")
+      : promptBundle.bundleKey;
     const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
     const hasMatchingPromptBundle =
-      runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
+      runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === sessionBundleKey;
     const hasMatchingMcpServers =
       runtimeMcpServerIdentity.length === 0
         ? runtimeMcpServers.length === 0
@@ -848,10 +856,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
       );
     }
-    if (runtimeSessionId && runtimePromptBundleKey.length > 0 && runtimePromptBundleKey !== promptBundle.bundleKey) {
+    if (runtimeSessionId && runtimePromptBundleKey.length > 0 && runtimePromptBundleKey !== sessionBundleKey) {
       await onLog(
         "stdout",
-        `[paperclip] Claude session "${runtimeSessionId}" was saved for prompt bundle "${runtimePromptBundleKey}" and will not be resumed with "${promptBundle.bundleKey}".\n`,
+        `[paperclip] Claude session "${runtimeSessionId}" was saved for prompt bundle "${runtimePromptBundleKey}" and will not be resumed with "${sessionBundleKey}".\n`,
       );
     }
     if (runtimeSessionId && !hasMatchingMcpServers) {
@@ -1199,7 +1207,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           sessionId: resolvedSessionId,
           ...(sshSessionState ? { sshClaudeConversationId: sshSessionState.conversationId, sshClaudeAccountScope: sshSessionState.scope } : {}),
           cwd,
-          promptBundleKey: promptBundle.bundleKey,
+          promptBundleKey: sessionBundleKey,
           mcpServerIdentity: runtimeMcpIdentity,
           ...(executionTargetIsRemote
             ? {
