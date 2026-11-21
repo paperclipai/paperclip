@@ -298,7 +298,13 @@ Paperclip                          Hermes Agent
 ```
 
 The adapter spawns Hermes Agent's CLI in single-query mode (`-q`). Hermes
-processes the task using its full tool suite, then exits. The adapter:
+processes the task using its full tool suite, then exits. When a rendered query
+exceeds the platform's inline command-line budget (131072 bytes per argv entry
+on Linux; 32767 UTF-16 units for the full command line on Windows, plus a
+relaunch margin when supported), the adapter writes the query to a private
+temporary file (`0600` inside a `0700` directory) and passes `--query-file
+<path>` instead after probing `hermes chat --help` for support (see
+`src/server/query-transport.ts`). The adapter:
 
 1. **Captures** stdout/stderr and parses token usage, session IDs, and cost
 2. **Parses** raw output into structured `TranscriptEntry` objects (tool cards with status icons)
@@ -328,10 +334,11 @@ checks still control session reuse. A missing or failed resume remains a failed
 run and requires an explicit session reset; it does not automatically restart
 work. The next fresh run receives the complete current instruction overlay.
 
-The `-q` user turn contains current runtime identity, task/wake context, handoff
-content, and the rendered custom `promptTemplate`, if configured. Custom templates
-run on every normal wake. `quiet` changes CLI display only. Disabling persistence
-uses full fresh-session context even if old session parameters are supplied.
+The `-q` (or `--query-file` for oversized prompts) user turn contains current
+runtime identity, task/wake context, handoff content, and the rendered custom
+`promptTemplate`, if configured. Custom templates run on every normal wake.
+`quiet` changes CLI display only. Disabling persistence uses full fresh-session
+context even if old session parameters are supplied.
 
 An explicit `HERMES_EPHEMERAL_SYSTEM_PROMPT` in `env` is preserved before the
 Paperclip overlay. Hermes gives this environment hook precedence over its profile's

@@ -6,6 +6,9 @@
  *
  * Verified CLI flags (hermes chat):
  *   -q/--query         single query (non-interactive)
+ *   --query-file       read the query from a file ('-' reads stdin); used when
+ *                      the query exceeds the platform's inline argv budget
+ *                      (see query-transport.ts)
  *   -Q/--quiet         quiet mode (no banner/spinner, only response + session_id)
  *   -m/--model         model name (e.g. anthropic/claude-sonnet-4)
  *   -t/--toolsets      comma-separated toolsets to enable
@@ -19,6 +22,7 @@
  */
 
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import type {
@@ -52,6 +56,15 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { hermesSupportsQueryFile } from "./cli-capabilities.js";
+import {
+  HERMES_MAX_COMMAND_LINE_UNITS_WINDOWS,
+  HERMES_MAX_INLINE_QUERY_BYTES,
+  HERMES_QUERY_FILE_FLAG,
+  applyQueryFileTransport,
+  assertHermesChatQueryTransport,
+  classifyHermesQueryTransport,
+} from "./query-transport.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 
 // ---------------------------------------------------------------------------
@@ -455,7 +468,7 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
+  let args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
   if (model) {
@@ -546,18 +559,6 @@ export async function execute(
     // Non-fatal
   }
 
-  // ── Log start ──────────────────────────────────────────────────────────
-  await ctx.onLog(
-    "stdout",
-    `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
-  );
-  if (sessionId) {
-    await ctx.onLog(
-      "stdout",
-      `[hermes] Resuming session: ${sessionId}\n`,
-    );
-  }
-
   // ── Execute ────────────────────────────────────────────────────────────
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
@@ -582,14 +583,100 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  // Keep oversized queries out of argv (Linux caps a single argv entry at
+  // MAX_ARG_STRLEN = 131072 bytes; Windows caps the whole CreateProcess
+  // command line at 32767 UTF-16 units and Hermes's bootstrapper re-escapes
+  // argv via Python repr()). Cover temp-dir creation through child completion
+  // in one try/finally so no pre-spawn failure can leave prompt text on disk.
+  const transportDecision = classifyHermesQueryTransport(prompt, args);
+  let promptTempDir: string | null = null;
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    if (transportDecision !== "inline") {
+      const promptBytes = Buffer.byteLength(prompt, "utf8");
+      const limitText =
+        process.platform === "win32"
+          ? `the ${HERMES_MAX_COMMAND_LINE_UNITS_WINDOWS}-unit Windows command-line limit`
+          : `the ${HERMES_MAX_INLINE_QUERY_BYTES}-byte single-argument limit`;
+      const support = await hermesSupportsQueryFile({
+        command: hermesCmd,
+        cwd,
+        env,
+        signal: ctx.signal,
+      });
+
+      if (support === true) {
+        // 0700 directory holding a 0600 file: the prompt carries task content
+        // and must not be world-readable in a shared temp directory.
+        promptTempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-prompt-"));
+        const queryFilePath = path.join(promptTempDir, "query.txt");
+        await fs.writeFile(queryFilePath, prompt, { encoding: "utf8", mode: 0o600 });
+        args = applyQueryFileTransport(args, queryFilePath);
+        const detail =
+          transportDecision === "require-file"
+            ? `over ${limitText}`
+            : "near the Windows relaunch command-line limit";
+        await ctx.onLog(
+          "stdout",
+          `[hermes] Prompt is ${promptBytes} bytes, ${detail}; passing it via ${HERMES_QUERY_FILE_FLAG}\n`,
+        );
+      } else if (transportDecision === "require-file") {
+        const spawnErrno = process.platform === "win32" ? "ENAMETOOLONG" : "E2BIG";
+        const cause =
+          support === false
+            ? `the configured CLI (${hermesCmd}) does not advertise --query-file in "hermes chat --help"`
+            : `the --query-file capability probe on ${hermesCmd} was inconclusive (cancelled, timed out, or the binary could not be started)`;
+        const message =
+          `[hermes] Prompt is ${promptBytes} bytes, over ${limitText}, and ${cause}. ` +
+          `Refusing to start instead of failing later with ${spawnErrno}. Update the Hermes CLI to a build that supports ` +
+          '"hermes chat --query-file", or reduce the wake history / agent instructions.';
+        await ctx.onLog("stderr", `${message}\n`);
+        throw new Error(message);
+      } else {
+        const probeOutcome =
+          support === false
+            ? `did not advertise ${HERMES_QUERY_FILE_FLAG}`
+            : "returned an inconclusive --query-file probe";
+        await ctx.onLog(
+          "stdout",
+          `[hermes] Warning: prompt is ${promptBytes} bytes and may exceed the Windows relaunch command-line limit, ` +
+            `but ${hermesCmd} ${probeOutcome}; keeping inline -q transport.\n`,
+        );
+      }
+    }
+
+    // Assert the query slot before spawning: a `--query-file` placed anywhere
+    // else in argv is read as positional text by `hermes chat` and the run
+    // never starts.
+    assertHermesChatQueryTransport(args);
+
+    // ── Log start ──────────────────────────────────────────────────────────
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
+    );
+    if (sessionId) {
+      await ctx.onLog(
+        "stdout",
+        `[hermes] Resuming session: ${sessionId}\n`,
+      );
+    }
+
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+    });
+  } finally {
+    if (promptTempDir) {
+      await fs.rm(promptTempDir, { recursive: true, force: true }).catch(() => {
+        // Best-effort cleanup: the run result or original failure matters more than the temp dir.
+      });
+    }
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
