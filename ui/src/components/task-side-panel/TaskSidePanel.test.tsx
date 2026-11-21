@@ -28,8 +28,29 @@ class ResizeObserverStub {
 
 (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompanyId: "company-selected",
+    companies: [
+      { id: "company-selected", issuePrefix: "SEL" },
+      { id: "company-1", issuePrefix: "ACME" },
+    ],
+  }),
+}));
 vi.mock("@/plugins/slots", () => ({
-  PluginSlotMount: ({ context }: { context: { entityId: string } }) => <div data-plugin-viewer>Plugin viewer {context.entityId}</div>,
+  PluginSlotMount: ({
+    context,
+  }: {
+    context: { entityId: string; companyId: string; companyPrefix?: string | null };
+  }) => (
+    <div
+      data-plugin-viewer
+      data-company-id={context.companyId}
+      data-company-prefix={context.companyPrefix ?? ""}
+    >
+      Plugin viewer {context.entityId}
+    </div>
+  ),
 }));
 const pluginPanel = { entityId: "33333333-3333-4333-8333-333333333333", runId: "run-1", autoOpen: true, slot: { pluginKey: "example.live-view", id: "screen", displayName: "Live view" } } as TaskPluginPanel;
 const browserFixture = vi.hoisted(() => ({ data: [] as import("@paperclipai/shared").TaskBrowser[], viewer: vi.fn(async () => ({ url: "https://live.browser-use.com/test-viewer" })), control: vi.fn(async () => ({})) }));
@@ -954,5 +975,17 @@ describe("TaskSidePanel", () => {
       expect.objectContaining({ pathname: "/issues/PAP-1", search: "" }),
       expect.objectContaining({ replace: false }),
     );
+  });
+
+  it("passes issue companyId and resolved companyPrefix to plugin slot context", async () => {
+    await render(
+      panel({
+        pluginPanels: [pluginPanel],
+      }),
+    );
+
+    const viewer = container.querySelector<HTMLElement>("[data-plugin-viewer]");
+    expect(viewer?.getAttribute("data-company-id")).toBe("company-1");
+    expect(viewer?.getAttribute("data-company-prefix")).toBe("ACME");
   });
 });
