@@ -14,7 +14,7 @@ import { questionResponseDeliveryService } from "../services/question-response-d
 import { createQueuedCommentIssueLockWriter } from "../modules/wake-queue/adapters/queued-comment-postgres.js";
 import { createDiscardQueuedComment, createReorderQueuedComments } from "../modules/wake-queue/application/queued-comment-use-cases.js";
 import { createRunDispatch } from "../modules/run-dispatch/index.js";
-import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
@@ -335,8 +335,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const seeded = await run(f, { contextSnapshot: { issueId: f.issueId, source: "issue_assigned" } });
     await start(); await flush(); expect(await publications()).toEqual([]); await quiet();
     await db.transaction(async tx => {
-      await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
-        createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
+      await createWakeAdmissionWriter(tx, f.companyId).coalesceIntoActiveExecutionRun({
           companyId: f.companyId, activeExecutionRunId: seeded.id, activeExecutionRunStatus: seeded.status, mergedContextSnapshot: chatContextSnapshot(),
           agentId: f.agentId, source: "on_demand", triggerDetail: null, payload: { issueId: f.issueId },
           requestedByActorType: "user", requestedByActorId: f.userId, idempotencyKey: null,

@@ -12,6 +12,7 @@ import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_HINT, NATIV
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_CONTINUATION_DELAY_MS, NATIVE_AGENT_BLOCKER_HINT,
   NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MESSAGE } from "./native-agent-blocker.js";
 import { NativeStatusRaceError } from "./status-decision-committer.js";
+import { freshSessionRetryContext } from "./fresh-session-retry-context.js";
 
 type NativeRetryTarget = {
   tx: Db;
@@ -112,18 +113,8 @@ async function materializeNativeFreshSessionRetry(input: NativeRetryTarget, lane
   const now = new Date();
   const dueAt = new Date(now.getTime() + lane.delayMs(attempt));
   const retryId = randomUUID();
-  const predecessorContext = { ...run.contextSnapshot };
-  // Resume receipts and delivered wake input belong to the failed run. The
-  // new turn has ordinary task authority; history comes from retryOfRunId.
-  // Match the consumed-input boundary used by native safe replacements.
-  for (const key of [
-    "explicitUserContinuation", "wakeCommentId", "wakeCommentIds", "commentId",
-    "commentIds", "latestCommentId", "resumeIntent", "followUpRequested",
-    "paperclipWake", "paperclipWakeComment", "paperclipTaskMarkdown", "paperclipTaskMarkdownCompact",
-    "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact", "paperclipTurnContext",
-  ]) delete predecessorContext[key];
   const contextSnapshot = {
-    ...predecessorContext,
+    ...freshSessionRetryContext(run.contextSnapshot),
     issueId: input.issueId,
     taskId: input.issueId,
     forceFreshSession: true,

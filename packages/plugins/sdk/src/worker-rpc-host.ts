@@ -1675,7 +1675,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
       sendMessage(createErrorResponse(id, errorCode, errorMessage,
-        method === "environmentAcquireLease" ? environmentAcquireErrorData(err)
+        // An interactive setup creates a sandbox the same way an acquisition does,
+        // so a failed create keeps the same ownership envelope and create status.
+        method === "environmentAcquireLease" || method === "environmentStartInteractiveSetup" ? environmentAcquireErrorData(err)
           : method === "environmentDestroyLease" ? environmentCreationCleanupErrorData(err)
           : method === "environmentSyncOut" ? environmentSyncErrorData(err)
           : method === "environmentRunnerIngressEndpoint" ? environmentRunnerIngressErrorData(err)

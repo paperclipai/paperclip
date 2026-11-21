@@ -51,6 +51,8 @@ export interface AdapterConfigFieldsProps {
    * so a stored path never flashes before the policy resolves.
    */
   managedSandboxOnly?: boolean;
+  /** Operator-supplied selection policy; absent leaves existing choices intact. */
+  availableHarnesses?: readonly string[];
   /** Show Dot for new selections only when its experimental prerequisites are enabled. */
   openAiDotEnabled?: boolean;
   /** Personal Muse is offered only with its own flag and the native Runner enabled. */

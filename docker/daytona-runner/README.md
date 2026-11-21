@@ -20,15 +20,14 @@ image that this Dockerfile can extend directly.
 
 ## Harness versions
 
-The October 2026 refreshes pin Codex 0.160.0, Claude Agent SDK
-0.3.286 (Claude Code 2.1.286), and OpenCode 1.18.34 in the shared provider
-pack. Claude Code 2.1.280 is the minimum for
-[Opus 5.5](https://code.claude.com/docs/en/model-config) and 2.1.284 is the
-minimum for Sonnet 5.5; the pinned runtime also supports Fable 5.1. Fable 5.2
-needs Claude Code 2.1.321, so it does not run on Paperclip Runner with this
-image until the provider pack moves past that version. Codex 0.160.0 ships bundled metadata for the
-[GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna model IDs](https://learn.chatgpt.com/docs/models);
-GPT-6.2 Sol and Astra need Codex 0.169.1.
+The November 19, 2026 refresh pins Codex 0.170.0 and Claude Agent SDK
+0.3.328 (Claude Code 2.1.328) in the shared provider pack; OpenCode stays at
+1.18.34. Claude Code 2.1.280 is the minimum for
+[Opus 5.5](https://code.claude.com/docs/en/model-config), 2.1.284 for Sonnet 5.5,
+and 2.1.321 for Fable 5.2, so the pinned runtime supports all three and Fable 5.1.
+Codex 0.170.0 ships bundled metadata for
+[GPT-6.2 Sol and Astra](https://learn.chatgpt.com/docs/models) (minimum 0.169.1)
+as well as GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna.
 The sandbox layer pins Grok CLI 1.0.89, Gemini CLI 0.68.0, Kimi Code 2.3.3,
 Cursor CLI 2026.11.17-f532c45, and GitHub CLI 2.105.0 (November 2026
 refresh). The native Cursor provider uses its separately verified distribution,

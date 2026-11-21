@@ -1,5 +1,5 @@
 {
-  "id": "7e487b1f-9906-4ddf-945f-4d12e529b8f3",
+  "id": "a80ac568-accd-4c40-b63a-82b870052e0a",
   "prevId": "00aaeb32-9423-4cdd-ae8d-dc721ac83170",
   "version": "7",
   "dialect": "postgresql",
@@ -4748,7 +4748,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -5221,7 +5221,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         }
       },
       "isRLSEnabled": false
@@ -53190,6 +53190,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "skill_id": {
+          "name": "skill_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -53280,6 +53286,28 @@
           "method": "btree",
           "with": {}
         },
+        "responsibility_links_responsibility_skill_uq": {
+          "name": "responsibility_links_responsibility_skill_uq",
+          "columns": [
+            {
+              "expression": "responsibility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "skill_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"responsibility_links\".\"skill_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "responsibility_links_project_idx": {
           "name": "responsibility_links_project_idx",
           "columns": [
@@ -53315,6 +53343,21 @@
           "columns": [
             {
               "expression": "routine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "responsibility_links_skill_idx": {
+          "name": "responsibility_links_skill_idx",
+          "columns": [
+            {
+              "expression": "skill_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -53391,6 +53434,19 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "responsibility_links_skill_id_company_skills_id_fk": {
+          "name": "responsibility_links_skill_id_company_skills_id_fk",
+          "tableFrom": "responsibility_links",
+          "tableTo": "company_skills",
+          "columnsFrom": [
+            "skill_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -53399,7 +53455,7 @@
       "checkConstraints": {
         "responsibility_links_single_target_check": {
           "name": "responsibility_links_single_target_check",
-          "value": "(\"responsibility_links\".\"project_id\" is not null)::int + (\"responsibility_links\".\"issue_id\" is not null)::int + (\"responsibility_links\".\"routine_id\" is not null)::int = 1"
+          "value": "(\"responsibility_links\".\"project_id\" is not null)::int + (\"responsibility_links\".\"issue_id\" is not null)::int + (\"responsibility_links\".\"routine_id\" is not null)::int + (\"responsibility_links\".\"skill_id\" is not null)::int = 1"
         }
       },
       "isRLSEnabled": false

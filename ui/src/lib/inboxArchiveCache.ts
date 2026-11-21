@@ -3,6 +3,8 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 
+export const PERSONAL_ARCHIVE_QUERY_KEY = "personal-archive";
+
 export type InboxIssueCacheSnapshot = Array<readonly [QueryKey, Issue[] | undefined]>;
 
 export const INBOX_ARCHIVE_CONFIRMATION_GRACE_MS = 5_000;
@@ -242,6 +244,16 @@ export function invalidateInboxIssueQueries(queryClient: QueryClient, companyId:
     ),
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) }),
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(companyId) }),
+  ]);
+}
+
+export function invalidateTaskArchiveQueries(queryClient: QueryClient, companyId: string) {
+  return Promise.all([
+    invalidateInboxIssueQueries(queryClient, companyId),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.list(companyId),
+      predicate: ({ queryKey }) => queryKey.includes(PERSONAL_ARCHIVE_QUERY_KEY),
+    }),
   ]);
 }
 

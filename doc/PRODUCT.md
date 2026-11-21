@@ -235,6 +235,8 @@ and read markers do not establish participation in automatic work. Direct board 
 human API comments, human assignment, and deliberate user mutations do establish
 participation. Open requests addressed to the person also admit the task until
 resolution. Ordinary human-created tasks keep their creator's participation.
+Responsibility-repair audit entries do not establish personal participation,
+even when the repair is attributed to a human operator.
 These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
 Approvals retain their existing recipient and permission rules.
 
@@ -547,6 +549,12 @@ swipe-to-archive, grouping, and saved columns. Its existing preferences carry
 over. Unread, Recent, Blocked, and Everything are also task views. Organization
 views retain the task table and board. The table saves column selection and
 order per person and company. Old `/inbox/*` links redirect to their Tasks view.
+
+Archive is personal. Use it from Mine, Unread, or a task-table row to
+remove a task from your Mine and Unread views. All tasks and its status views
+still include archived tasks. Use Undo after archiving, or open **Archived**
+from the Views menu and restore a task. New replies from other people, mentions,
+and other inbox activity such as a new decision request can bring a task back.
 
 ### Combined Inbox + Task List
 

@@ -596,6 +596,22 @@ export async function captureRunIdentity<Scope extends RunIdentityReadScope | un
   input: { companyId: string; runId: string; agentId: string },
   options?: { readScope: Scope },
 ): Promise<RunIdentityCapture<Scope>> {
+  return captureRunIdentityForPurpose(db, input, options);
+}
+
+export async function captureRunCompletionIdentity(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string; issueId: string },
+): Promise<RunIdentityCapture<"github_credentials">> {
+  return captureRunIdentityForPurpose(db, input, { readScope: "github_credentials" }, input.issueId);
+}
+
+async function captureRunIdentityForPurpose<Scope extends RunIdentityReadScope | undefined = undefined>(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string },
+  options?: { readScope: Scope },
+  completionIssueId?: string,
+): Promise<RunIdentityCapture<Scope>> {
   // Lock acquisition serializes with steering delivery and its durable acknowledgement.
   return db.transaction(async (tx) => {
     await lockIdentityTask(tx, input.companyId, input.runId);
@@ -620,10 +636,11 @@ export async function captureRunIdentity<Scope extends RunIdentityReadScope | un
           eq(heartbeatRuns.id, input.runId),
           eq(heartbeatRuns.companyId, input.companyId),
           eq(heartbeatRuns.agentId, input.agentId),
+          completionIssueId !== undefined ? eq(heartbeatRuns.nativeIssueId, completionIssueId) : undefined,
         ),
       )
       .for("no key update");
-    if (!run || run.status !== "running")
+    if (!run || (run.status !== "running" && !(completionIssueId !== undefined && run.status === "succeeded")))
       throw forbidden(
         "Credential acquisition requires this agent's active run",
       );

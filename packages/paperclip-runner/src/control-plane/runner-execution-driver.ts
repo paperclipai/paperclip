@@ -27,6 +27,7 @@ export interface RunnerExecutionDriver {
     releasedSource?: DurableRecoveryIdentity;
     releasedSourceRunner?: { version: string; digest: string };
   };
+  relaunchReleasedRunner?: DurableRecoveryIdentity;
   /** Current authenticated lease/checkpoint-writer owner; may change during warm reuse. */
   authorityRunId?: string;
   /** Own provider configuration and file preparation in the execution environment. */

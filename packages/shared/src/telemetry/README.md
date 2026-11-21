@@ -53,6 +53,13 @@ to a stable reporting shape.
 Do not add client-side lowercasing, alias mapping, or fallback mapping unless
 the generated telemetry contract specifically requires that emitted value.
 
+The `adapter_type` dimension on `agent.task_run` and `agent.task_completed` is
+not an alias map. For a Paperclip runner agent, the server sends the harness
+that `agentHarnessType()` resolves from the agent configuration. The receiving
+layer does not get that configuration, so it cannot derive the harness from
+`paperclip_runner`. The emitter sends the resolved value raw. It does not fall
+back to `other`.
+
 If a dimension is privacy-protected before emission, emit only the protected
 value and its matching public marker as defined by the typed helper or generated
 contract. Do not emit private source material in telemetry dimensions.
@@ -129,6 +136,17 @@ category decides the code only for the generic `adapter_failed` and
 `provider_failed` codes, or when there is no error code. The mapping reuses the
 run failure code sets in `server/src/services/continuation-cause.ts`, and a
 test fails when a code in those sets has no telemetry code.
+
+The `adapter_type` dimension on `agent.task_run` and `agent.task_completed`
+reports the harness the agent runs, as `agentHarnessType()` resolves it. A
+Paperclip runner agent therefore reports its underlying harness (for example
+`claude_local` or `codex_local`), not `paperclip_runner`. Some runner harnesses
+are not in the generated `adapter_type` enum yet: `acpx:copilot`,
+`antigravity_runtime`, `aws_agentcore`, `claude_managed`, `grok_bot`, `muse`,
+and `openai_dot`. The receiving layer reports them as `other` until the
+contract lists them. A test in
+`server/src/__tests__/agent-task-run-telemetry.test.ts` fails when a runner
+harness that is not in this list is missing from the contract.
 
 ## Product Lifecycle Events
 

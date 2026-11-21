@@ -1507,7 +1507,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       });
       expect(selectedCopilot.grant.id).toBe(copilot.grantId);
     } finally {
-      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0499_marvelous_black_bolt.sql", import.meta.url), "utf8");
+      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0500_marvelous_black_bolt.sql", import.meta.url), "utf8");
       await db.transaction(async (tx) => {
         for (const statement of restoreMigration.split("--> statement-breakpoint")) {
           if (statement.trim()) await tx.execute(sql.raw(statement));
@@ -1684,6 +1684,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       if (inherited === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
       else process.env.ANTHROPIC_CUSTOM_HEADERS = inherited;
     }
+  });
+
+  it("files Copilot accounts under the GitHub Copilot connector, not GitHub", async () => {
+    const saved = await service.save(companyId, "alice", { provider: "github", method: "api_key", ownership: "personal", name: "Copilot catalog", apiKey: "github_pat_fixture_catalog", agentIds: [], allAgents: false }, "github_pat_fixture_catalog");
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    expect(stored!.config.sourceTemplateKey).toBe("github-copilot");
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, stored!.applicationId));
+    expect(application).toMatchObject({ applicationKey: "app-gallery:github-copilot", name: "GitHub Copilot", metadata: { sourceTemplateKey: "github-copilot" } });
   });
 
   it("reconnects JSONB routing without changing its identity or access", async () => {

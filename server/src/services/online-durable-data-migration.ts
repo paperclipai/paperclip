@@ -17,6 +17,7 @@ import { prestageNativeControllers } from "./native-runtime/native-controller-mi
 import { listLocalWorkspaceCompanies, listLocalWorkspaces } from "./local-workspace-dependencies.js";
 import { reconcileOnlineWorkspaceOperations } from "./offline-workspace-operation-reconciliation.js";
 import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
+import { migrateRunEvidencePage } from "./run-evidence-migration-page.js";
 
 export type OnlineDurableDataMigrationResult = {
   state: "completed" | "budget_exhausted" | "unsupported";
@@ -47,6 +48,7 @@ type Owners = {
     signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[] }>;
   nativeHarnessBackups: typeof prestageNativeHarnessBackups;
   nativeControllers: typeof prestageNativeControllers;
+  runEvidencePage: typeof migrateRunEvidencePage;
   eligibility: (db: Db) => Promise<{ eligible: boolean; blockers: string[] }>;
   record: (db: Db, result: PassRecord) => Promise<void>;
 };
@@ -75,12 +77,13 @@ const defaultOwners: Owners = {
   migrateWorkspace: migrateRemoteWorkspace,
   nativeHarnessBackups: prestageNativeHarnessBackups,
   nativeControllers: prestageNativeControllers,
+  runEvidencePage: migrateRunEvidencePage,
   eligibility: readOnlineEphemeralEnrollmentEligibility,
   record: recordPass,
 };
 
 const PHASES = ["agent_files", "skill_objects", "skill_snapshots", "skill_versions", "skill_installations",
-  "runtime_skill_assets", "workspace_operations", "workspaces", "native_harness_backups", "native_controllers"] as const;
+  "runtime_skill_assets", "run_logs", "provider_traces", "workspace_operations", "workspaces", "native_harness_backups", "native_controllers"] as const;
 type Phase = typeof PHASES[number];
 
 let running: Promise<OnlineDurableDataMigrationResult> | null = null;
@@ -175,7 +178,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           const result = await skills.installations({ apply: true, writersStopped: false, after, limit, signal });
           for (const row of result.results) {
             if (row.status === "converted") add(counts, "skillInstallations");
-            else if (row.status !== "unchanged") add(deferred, `skills:${row.status}`);
+            else if (row.status !== "unchanged") add(deferred, `skills:${row.status === "blocked" ? row.code ?? "blocked" : row.status}`);
           }
           return result.inspected < limit || !result.after ? null : result.after;
         }
@@ -183,6 +186,23 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           const result = await owners.runtimeSkillAssets(db, { apply: true, after, limit, signal }, storage);
           add(counts, "runtimeSkillRuns", result.results.filter(row => row.status === "preserved").length);
           return result.inspected < limit || !result.after ? null : result.after;
+        }
+        case "run_logs":
+        case "provider_traces": {
+          const logs = phase === "run_logs";
+          const result = await untilAborted(owners.runEvidencePage(db, {
+            kinds: [logs ? "log" : "trace"], limit, signal,
+            ...(logs ? { afterRunId: after } : { afterTraceId: after }),
+          }), signal);
+          if (result.busy) { add(deferred, `${phase}:owner_busy`); return null; }
+          for (const item of result.items) {
+            if (item.state === "migrated") add(counts, logs ? "runLogs" : "providerTraces");
+            else if (item.state === "blocked") {
+              const reason = item.reason && /^[a-z_]{1,60}$/.test(item.reason) ? item.reason : "migration_failed";
+              add(deferred, `${phase}:${reason}`);
+            }
+          }
+          return (logs ? result.nextRunId : result.nextTraceId) ?? null;
         }
         case "workspace_operations": {
           const companies = await owners.workspaceCompanies(db, { after, limit });
