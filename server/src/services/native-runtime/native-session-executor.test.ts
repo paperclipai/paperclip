@@ -15074,10 +15074,12 @@ describe("native warm session supervision", () => {
     async ({ name, firstEnvironment = {}, secondEnvironment = {}, refreshTools, unsupportedRefresh = false,
       managedGitHub = false, reuse, adoptionReuse = reuse }) => {
       const decisions: Record<string, boolean> = {};
-      for (const path of ["warm", "adoption", ...(refreshTools ? ["portable", "portable-bootstrap", "legacy-plugin"] as const : [])] as const) {
+      for (const path of ["warm", "adoption", ...(refreshTools ? ["portable", "portable-bootstrap", "legacy-plugin"] as const : []),
+        ...(refreshTools && !unsupportedRefresh ? ["released-unavailable"] as const : [])] as const) {
         const portable = path === "portable" || path === "portable-bootstrap";
         const bootstrap = path === "portable-bootstrap";
-        const pluginRecovery = portable || path === "legacy-plugin";
+        const releasedUnavailable = path === "released-unavailable";
+        const pluginRecovery = portable || path === "legacy-plugin" || releasedUnavailable;
         githubAccess.create.mockReset().mockImplementation(async () => ({ env: {}, ready: true, duplexRequested: false,
           activate: githubAccess.activate.mockReset().mockImplementation(() => vi.fn()), stop: githubAccess.stop.mockReset().mockResolvedValue(undefined) }));
         const stateBase = await mkdtemp(join(tmpdir(), "paperclip-runnerd-reuse-key-"));
@@ -15155,7 +15157,7 @@ describe("native warm session supervision", () => {
         const projection = vi.spyOn(controllerRecovery, "resolveNativeControllerRecovery").mockResolvedValue({ kind: "no_prior_execution" });
         const restore = path === "legacy-plugin" ? vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint")
           .mockImplementation(async (_db, binding) => binding.runId === first.binding.runId && recoveredSession.close.mock.calls.length ? {} as never : null) : undefined;
-        const issueProjection = path === "legacy-plugin" ? vi.spyOn(issueServiceModule, "issueService")
+        const issueProjection = path === "legacy-plugin" || releasedUnavailable ? vi.spyOn(issueServiceModule, "issueService")
           .mockReturnValue({ update: vi.fn(async () => null) } as never) : undefined;
         try {
           await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: "runner-reuse-key",
@@ -15188,14 +15190,22 @@ describe("native warm session supervision", () => {
             });
           }
           if (pluginRecovery) state.createBackend.mockReturnValueOnce({
-            kind: "test", recoverSession: async () => ({ recovered: true, session: recoveredSession }),
+            kind: "test", recoverSession: async () => {
+              if (releasedUnavailable) throw new Error("native_runner_reuse_unavailable");
+              return { recovered: true, session: recoveredSession };
+            },
           } as never);
+          const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
+          const owners = releasedUnavailable ? vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner")
+            .mockImplementation(ownerInput => Object.assign(createOwner(ownerInput), { retiredBeforeClaim: () => true })) : undefined;
+          const resumeFrom = releasedUnavailable ? vi.spyOn(environmentTaskRuntime, "resolvePluginTaskResume").mockResolvedValue("target-task") : undefined;
           const pluginTaskDescription = { kind: "description", taskId: "target-task", warmTaskVersion: 1,
             launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1,
             runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } } as const;
           const portableTarget = { ...target, runner: undefined, leaseId: "target-lease",
-            sandboxLeaseAcquisition: { outcome: path === "legacy-plugin" ? "resumed" : "created", providerLeaseId: "target-task" },
+            sandboxLeaseAcquisition: { outcome: path === "legacy-plugin" || releasedUnavailable ? "resumed" : "created", providerLeaseId: "target-task" },
             runnerTask: vi.fn(async (operation: { kind: string }) => {
+              if (releasedUnavailable && operation.kind === "describe") return { ...pluginTaskDescription, taskId: "fresh-task" };
               if (path === "legacy-plugin") {
                 expect(recoveredSession.close).toHaveBeenCalledOnce();
                 expect(operation.kind).toBe("describe");
@@ -15238,6 +15248,16 @@ describe("native warm session supervision", () => {
           if (path === "legacy-plugin") {
             await expect(continuation).rejects.toThrow("fixture replacement inspection reached");
             expect(portableTarget.runnerTask).toHaveBeenCalledOnce();
+            continue;
+          }
+          if (releasedUnavailable) {
+            try {
+              await continuation;
+              delete decisions[path];
+              expect(portableTarget.runnerTask.mock.calls.map(([operation]) => operation.kind)).toContain("describe");
+              expect(state.execute).toHaveBeenCalledTimes(2);
+              expect(recoveredSession.close).not.toHaveBeenCalled();
+            } finally { owners?.mockRestore(); resumeFrom?.mockRestore(); }
             continue;
           }
           if (path === "adoption") await expect(continuation).rejects.toThrow("fixture adoption decision recorded");

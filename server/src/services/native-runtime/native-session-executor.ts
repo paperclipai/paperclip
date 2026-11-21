@@ -12652,6 +12652,7 @@ async function executePaperclipNativeSessionAttempt(
         remoteWarmRecovery = undefined;
         remoteWarmRecoveryPending = false;
         releasedRecoveryOwner = undefined;
+        await finishStartupContextForFallback();
       }
       const inspect = () => target.runnerTask!({ kind: "describe" }, executionContext ? { executionContext } : undefined);
       const description = environmentTaskResultSchema.parse(await (executionContext ? executionContext.wait(inspect) : inspect()));
