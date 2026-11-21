@@ -39,8 +39,8 @@ importers:
   ../../packages/plugins/sandbox-providers/cloudflare/bridge-template:
     dependencies:
       '@cloudflare/sandbox':
-        specifier: ^0.7.0
-        version: 0.7.21
+        specifier: ^1.0.3
+        version: 1.0.3
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^5.20261117.1
@@ -192,26 +192,12 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@cloudflare/containers@0.1.1':
-    resolution: {integrity: sha512-YTdobRTnTlUOUPMFemufH367A9Z8pDfZ+UboYMLbGpO0VlvEXZDiioSmXPQMHld2vRtkL31mcRii3bcbQU6fdw==}
-
   '@cloudflare/kv-asset-handler@0.5.0':
     resolution: {integrity: sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg==}
     engines: {node: '>=22.0.0'}
 
-  '@cloudflare/sandbox@0.7.21':
-    resolution: {integrity: sha512-BlfbhIWF83NkmixxGVpE9zrcR0Ix5fVgV+zzfJByxyRnXUS+g2aUeIXK2opBcnX8WWlk6v5+RYTKkSz1XKQ4eg==}
-    peerDependencies:
-      '@openai/agents': ^0.3.3
-      '@opencode-ai/sdk': ^1.1.40
-      '@xterm/xterm': '>=5.0.0'
-    peerDependenciesMeta:
-      '@openai/agents':
-        optional: true
-      '@opencode-ai/sdk':
-        optional: true
-      '@xterm/xterm':
-        optional: true
+  '@cloudflare/sandbox@1.0.3':
+    resolution: {integrity: sha512-QbpiKDVztiRSG3CETxsocYc16CviM0tV2DzPU9MIcAX09Ee+j7MDS5ec6gJfMCv+rDd1hOGvOJOQ4ztCTuZj2Q==}
 
   '@cloudflare/unenv-preset@2.16.2':
     resolution: {integrity: sha512-JBP1+Z7ZSNG/d4mRP+y8VC5dka3tZVMLEZRvS+rzQ4DGV1EoxRFQckcJTTkXbHSQiTj0DtNI01Zwb/V2fX0mvQ==}
@@ -1755,14 +1741,12 @@ snapshots:
   '@cbor-extract/cbor-extract-win32-x64@2.2.3':
     optional: true
 
-  '@cloudflare/containers@0.1.1': {}
-
   '@cloudflare/kv-asset-handler@0.5.0': {}
 
-  '@cloudflare/sandbox@0.7.21':
+  '@cloudflare/sandbox@1.0.3':
     dependencies:
-      '@cloudflare/containers': 0.1.1
       aws4fetch: 1.0.20
+      zod: 4.6.7
 
   '@cloudflare/unenv-preset@2.16.2(unenv@2.0.0-rc.24)(workerd@1.20261117.1)':
     dependencies:
