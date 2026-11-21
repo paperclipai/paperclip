@@ -187,6 +187,10 @@ older attestation. Only a value that differs from the stored one counts as a
 change: resending the same value neither advances the revision nor invalidates
 an existing attestation.
 
+Company export and import do not carry a workspace's
+`defaultCompletionRequirement` yet, so an imported workspace has no default
+until one is set on it.
+
 **Create.** Omit the field, or send `null`, to inherit the target project
 workspace's `defaultCompletionRequirement`. A concrete value overrides the
 inherit for that issue only.
