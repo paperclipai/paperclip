@@ -18,7 +18,6 @@ type PortfolioCacheEntry = {
   payload: unknown;
 };
 
-/** Cloud's Retry-After as bounded whole seconds, or null when absent or malformed. */
 function retryAfterSeconds(value: string | null, currentTime: number): number | null {
   const trimmed = value?.trim();
   if (!trimmed) return null;
@@ -126,9 +125,6 @@ export function cloudRoutes(opts: {
       phase = "http_response";
       upstreamStatus = upstream.status;
       if (upstream.status === 429) {
-        // Cloud is throttling portfolio reads. That is the control plane's
-        // backpressure, not a fault here: pass it on with Cloud's retry hint
-        // instead of answering 502 and reporting a crash.
         logger.warn(
           { cloudPortfolio: portfolioError("upstream").diagnostics },
           "Paperclip Cloud portfolio request rate limited",

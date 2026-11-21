@@ -87,7 +87,6 @@ describe("GET /api/cloud/stacks", () => {
       "Paperclip Cloud portfolio request rate limited",
     );
     expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
-    // The throttled answer is not cached: the next read asks Cloud again.
     fetchImpl.mockResolvedValueOnce(jsonResponse({ stacks: [] }));
     expect((await request(app).get("/api/cloud/stacks")).body).toEqual({ stacks: [] });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
