@@ -87,6 +87,41 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     return parent;
   }
 
+  it("persists create-time blocker links and returns them in the created issue", async () => {
+    const companyId = await seedCompany();
+    const blocker = await seedParent(companyId);
+    const app = createApp();
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Blocked launch work",
+        status: "blocked",
+        blockedByIssueIds: [blocker.id],
+      })
+      .expect(201);
+
+    expect(created.body.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blocker.id,
+        identifier: blocker.identifier,
+        title: blocker.title,
+      }),
+    ]);
+
+    const fetched = await request(app)
+      .get(`/api/issues/${created.body.id}`)
+      .expect(200);
+
+    expect(fetched.body.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blocker.id,
+        identifier: blocker.identifier,
+        title: blocker.title,
+      }),
+    ]);
+  });
+
   it("replays the existing issue for the same company idempotency key", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);
