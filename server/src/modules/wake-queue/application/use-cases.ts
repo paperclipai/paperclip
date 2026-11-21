@@ -66,9 +66,10 @@ function isExecutionReviewParticipantRecoveryEligibleRun(run: Pick<RunSnapshot, 
 }
 
 function didAutomaticRecoveryFail(
-  run: Pick<RunSnapshot, "status" | "contextSnapshot">,
+  run: Pick<RunSnapshot, "status" | "contextSnapshot" | "reassignmentStopConfirmed">,
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ): boolean {
+  if (run.reassignmentStopConfirmed === true) return false;
   const latestRetryReason = readNonEmptyString(run.contextSnapshot.retryReason);
   return (latestRetryReason === expectedRetryReason || latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)
     && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
@@ -589,13 +590,25 @@ async function runReleaseRecoveryTail(
   });
 
   const currentParticipant = currentAgentParticipant(issue);
-  const reviewParticipantApplies =
+  const reviewParticipantCandidate =
     issue.status === "in_review" &&
     !issue.assigneeUserId &&
     currentParticipant !== null &&
     currentParticipant.agentId === run.agentId &&
     isExecutionReviewParticipantRecoveryEligibleRun(run) &&
     HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
+  const currentReviewDecisionId = readNonEmptyString(issue.executionState?.lastDecisionId);
+  
+  
+  
+  
+  const reviewParticipantApplies = reviewParticipantCandidate &&
+    (!currentReviewDecisionId || await transaction.isRunInCurrentExecutionReviewAttempt({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      runId: run.id,
+      decisionId: currentReviewDecisionId,
+    }));
 
   const immediateApplies =
     (issue.status === "todo" || issue.status === "in_progress") &&
@@ -668,7 +681,7 @@ async function runReleaseRecoveryTail(
     reviewParticipant: {
       applies: reviewParticipantApplies,
       isExecutionReviewParticipantRecoveryRun:
-        isExecutionReviewParticipantRecoveryRun(run),
+        isExecutionReviewParticipantRecoveryRun(run) && run.reassignmentStopConfirmed !== true,
     },
     immediate: {
       applies: immediateApplies,

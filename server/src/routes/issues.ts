@@ -10299,6 +10299,7 @@ export function issueRoutes(
       }
 
       const {
+        evidenceOnly,
         actionId,
         outcome,
         sourceIssueStatus,
@@ -10338,6 +10339,70 @@ export function issueRoutes(
           .for("update")
           .then((rows) => rows[0] ?? null);
         if (!lockedIssue) throw notFound("Issue not found");
+
+        if (evidenceOnly) {
+          
+          
+          if (lockedIssue.updatedAt.toISOString() !== evidenceOnly.expectedIssueUpdatedAt
+            || lockedIssue.status !== sourceIssueStatus
+            || [lockedIssue.checkoutRunId, lockedIssue.executionRunId].some(runId => runId && runId !== actor.runId)) {
+            throw conflict("The task generation or current execution changed. Refresh before recording evidence.");
+          }
+          const transition = evidenceOnly.nativeOwnerTransition;
+          if (transition && (lockedIssue.assigneeAgentId !== transition.currentOwnerAgentId
+            || (req.actor.type === "agent" && req.actor.agentId !== transition.currentOwnerAgentId))) {
+            throw conflict("Only the exact current owner can settle this native owner transition.");
+          }
+          const [source] = await tx.select().from(issueRecoveryActions).where(and(
+            eq(issueRecoveryActions.companyId, lockedIssue.companyId),
+            eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
+            eq(issueRecoveryActions.id, actionId!),
+            eq(issueRecoveryActions.status, "resolved"),
+            eq(issueRecoveryActions.cause, transition
+              ? "provider_effect_inventory_unavailable" : "legacy_execution_requires_reconciliation"),
+          )).for("update");
+          if (!source || hasRequiredWorkspaceRecovery(source.evidence)) {
+            throw conflict("Evidence-only reconciliation requires the exact settled legacy hold without retained workspace repair.");
+          }
+          await requireRecoveryActionAuthority(req, lockedIssue, issueRecoveryActionReadModel(source),
+            { source: "recovery_action_resolution" });
+          const active = await recoveryActionsSvc.getActiveForIssue(lockedIssue.companyId, lockedIssue.id, tx);
+          if (active) throw conflict("Preserve the current active recovery action before reconciling retained evidence.");
+          const run = await validateExecutionReconciliation({ db: tx as unknown as Db,
+            companyId: lockedIssue.companyId, issueId: lockedIssue.id, agentId: lockedIssue.assigneeAgentId,
+            sourceRunId: source.evidence.runId, decision: executionReconciliation, evidenceOnly: true,
+            nativeOwnerTransition: transition });
+          if ((!transition && run.runtimeMode !== "legacy") || run.resultJson?.workspaceRestoreFailure
+            || executionReconciliation?.workspaceRepairEvidence) {
+            throw conflict("Native execution and retained workspace repair require their existing recovery operations.");
+          }
+          if (source.evidence.executionReconciliation) {
+            if (source.evidence.continuationDelivery !== "not_requested"
+              || Object.entries(executionReconciliation!).some(([key, value]) =>
+                (source.evidence.executionReconciliation as unknown as Record<string, unknown>)[key] !== value)) {
+              throw conflict("The exact recovery evidence is already recorded with a different disposition.");
+            }
+            return { issue: lockedIssue, recoveryAction: source, chatRetry: null, replayed: true };
+          }
+          const automatic = source.evidence.automaticRecovery as { replay?: string } | undefined;
+          if (automatic?.replay !== "blocked") throw conflict("The source is not a retained no-replay hold.");
+          if (transition) {
+            
+            
+            await markExecutionReconciliation(tx as unknown as Db, source,
+              executionReconciliation!, actor.actorId, undefined, { evidenceOnly: true });
+          }
+          const [recoveryAction] = await tx.update(issueRecoveryActions).set({
+            outcome: "restored", resolutionNote: resolutionNote ?? null, updatedAt: new Date(),
+            evidence: { ...source.evidence, automaticRecovery: undefined,
+              executionReconciliation: { ...executionReconciliation!, actorId: actor.actorId, recordedAt: new Date().toISOString() },
+              continuationDelivery: "not_requested",
+              ...(transition ? { ownerTransitionSettlement: { ...transition,
+                sourceRunId: run.id, actorId: actor.actorId,
+                expectedIssueUpdatedAt: evidenceOnly.expectedIssueUpdatedAt } } : {}) },
+          }).where(eq(issueRecoveryActions.id, source.id)).returning();
+          return { issue: lockedIssue, recoveryAction, chatRetry: null };
+        }
 
         // Retained files are a source-scoped obligation, independent of the
         // current task owner/generation and any newer active recovery incident.
@@ -15245,9 +15310,15 @@ export function issueRoutes(
             req.actor.type === "agent" &&
             req.actor.agentId !== owner.agentId
           ) {
-            throw forbidden(
-              "Agents may only name themselves as an unblock owner",
-            );
+            
+            
+            await assertCanAssignTasks(req, existing.companyId, {
+              issueId: existing.id,
+              projectId: existing.projectId,
+              parentIssueId: existing.parentId,
+              assigneeAgentId: owner.agentId,
+              assigneeUserId: null,
+            });
           }
         } else if (owner !== "board" && "userId" in owner) {
           const member = await db

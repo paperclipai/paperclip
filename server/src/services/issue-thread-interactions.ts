@@ -6479,14 +6479,17 @@ export function issueThreadInteractionService(
       return expired;
     },
 
-    expireConnectionIntentsForOwnershipChange: async (issue: { id: string; companyId: string }) => {
+    expireConnectionIntentsForOwnershipChange: async (
+      issue: { id: string; companyId: string },
+      options: { retainedRequesterAgentId?: string | null } = {},
+    ) => {
       // A pending connection_intent asks for either an AI account or a tool
       // account, and the two leave different things broken. One bulk write gave
       // every row the AI wording, so an expired Notion request told the reader
       // the AI account was missing. Read the pending rows first and name the
       // subject each row actually asked for.
       const pending = await db
-        .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload })
+        .select({ id: issueThreadInteractions.id, payload: issueThreadInteractions.payload, createdByAgentId: issueThreadInteractions.createdByAgentId })
         .from(issueThreadInteractions)
         .where(and(
           eq(issueThreadInteractions.companyId, issue.companyId),
@@ -6496,7 +6499,11 @@ export function issueThreadInteractionService(
         ));
       const expired: typeof issueThreadInteractions.$inferSelect[] = [];
       for (const row of pending) {
-        const payload = row.payload as { purpose?: string; serviceName?: string } | null;
+        const payload = row.payload as { purpose?: string; serviceName?: string; requestingAgentId?: string } | null;
+        
+        
+        if (options.retainedRequesterAgentId && row.createdByAgentId === options.retainedRequesterAgentId
+          && payload?.requestingAgentId === options.retainedRequesterAgentId) continue;
         const subject = payload?.purpose === "ai"
           ? "the AI account"
           : `the ${payload?.serviceName?.trim() || "requested"} connection`;

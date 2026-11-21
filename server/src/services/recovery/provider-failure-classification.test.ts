@@ -167,12 +167,12 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
-  it("classifies the qualifier-less limit wording and parses the 'resets' clock", () => {
+  it.each(["'", "\u2019"])("classifies the qualifier-less limit wording with apostrophe %s", (apostrophe) => {
     // Current Claude CLI phrasing, as recorded on the run by the adapter.
     const now = new Date("2026-08-28T22:30:00.000Z");
     const classification = classifyAdapterFailureForRecovery({
       errorCode: "adapter_failed",
-      error: "Claude run failed: subtype=success: You've hit your limit · resets 2:30am (UTC)",
+      error: `Claude run failed: subtype=success: You${apostrophe}ve hit your limit · resets 2:30am (UTC)`,
       resultJson: null,
     }, now);
 

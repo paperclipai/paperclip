@@ -1851,6 +1851,47 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it.each(["allowed", "denied", "foreign_target", "foreign_actor"] as const)(
+    "qualifies assigned unblock owner through task authority: %s", async kind => {
+      const existing = makeIssue({ status: "in_progress" });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...existing, ...patch }));
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed: input.action !== "tasks:assign" || kind !== "denied",
+        action: input.action, reason: kind === "denied" ? "deny_missing_grant" : "allow_explicit_grant",
+        explanation: "Assignment requires the existing task grant",
+      }));
+      const base = createRunContextDb();
+      const select = base.select.bind(base);
+      base.select = vi.fn((selection: Record<string, unknown> = {}) => ({
+        from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+          if (getTableName(table) === "agents" && Object.keys(selection).join() === "id") {
+            return { where: vi.fn((condition: SQL) => ({ limit: vi.fn(() => ({
+              then: async (resolve: (rows: unknown[]) => unknown) => {
+                const params = new PgDialect().sqlToQuery(condition).params;
+                expect(params).toContain(companyId);
+                expect(params).toContain(peerAgentId);
+                return resolve(kind === "foreign_target" ? [] : [{ id: peerAgentId }]);
+              },
+            })) })) };
+          }
+          return select(selection).from(table);
+        }),
+      })) as typeof base.select;
+      const actor = kind === "foreign_actor" ? { ...ownerActor(), companyId: peerAgentId } : ownerActor();
+      const res = await request(await createApp(actor, base)).patch(`/api/issues/${issueId}`).send({
+        status: "blocked", unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Existing assigned executor repairs the blocker" },
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(kind === "allowed" ? 200 : kind === "foreign_target" ? 422 : kind === "foreign_actor" ? 404 : 403);
+      if (kind === "allowed") {
+        expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "tasks:assign",
+          resource: expect.objectContaining({ companyId, issueId, assigneeAgentId: peerAgentId }) }));
+        expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({
+          unblockDescriptor: { owner: { agentId: peerAgentId }, action: "Existing assigned executor repairs the blocker" } }));
+        expect(res.body.assigneeAgentId).toBe(ownerAgentId);
+      } else expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
   it("allows a board actor to name the board as unblock owner", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
