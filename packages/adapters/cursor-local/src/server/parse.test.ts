@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstCursorDiagnosticLine } from "./parse.js";
+import { firstCursorDiagnosticLine, isCursorUnknownSessionError } from "./parse.js";
 
 describe("Cursor diagnostic selection", () => {
   it("skips trace announcements with CRLF, whitespace and ANSI color", () => {
@@ -18,5 +18,18 @@ describe("Cursor diagnostic selection", () => {
   it("leaves no diagnostic when only a trace location was printed", () => {
     expect(firstCursorDiagnosticLine("cursor-retrieval: tracing to '/tmp/fixture.log'\n")).toBe("");
     expect(firstCursorDiagnosticLine("\n\r\n")).toBe("");
+  });
+});
+
+describe("Cursor unknown session detection", () => {
+  it("matches Cursor's own error text and stderr", () => {
+    expect(isCursorUnknownSessionError("Unknown session", "")).toBe(true);
+    expect(isCursorUnknownSessionError(null, "Error: unknown session id abc")).toBe(true);
+    expect(isCursorUnknownSessionError(null, "chat abc not found")).toBe(true);
+  });
+
+  it("does not match unrelated errors or an empty error", () => {
+    expect(isCursorUnknownSessionError("Authentication failed", "")).toBe(false);
+    expect(isCursorUnknownSessionError(null, "")).toBe(false);
   });
 });

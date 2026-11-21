@@ -197,8 +197,8 @@ export function createCursorJsonlParser() {
   };
 }
 
-export function isCursorUnknownSessionError(stdout: string, stderr: string): boolean {
-  const haystack = `${stdout}\n${stderr}`
+export function isCursorUnknownSessionError(errorMessage: string | null, stderr: string): boolean {
+  const haystack = `${errorMessage ?? ""}\n${stderr}`
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
