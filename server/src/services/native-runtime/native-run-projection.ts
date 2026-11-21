@@ -20,6 +20,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
 import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
+import { ownRunErrorSql } from "../scheduled-retry-error.js";
 import { readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
 
 
@@ -198,8 +199,10 @@ export async function projectCommittedRun(input: {
           : {
               // A failed accepted result keeps any recorded cause, then names a
               // recorded runner turn failure, and otherwise the unexplained failure.
+              // A scheduled retry's inherited reason describes its predecessor.
               ...(terminalState === "failed" ? explainFailedRun(explainNativeTurnFailure(readNativeTurnFailureDiagnostic(
-                before.resultJson?.nativeTurnFailure)) ?? NATIVE_RUN_FAILED_UNEXPLAINED, { preserveCancelled: false }) : {}),
+                before.resultJson?.nativeTurnFailure)) ?? NATIVE_RUN_FAILED_UNEXPLAINED, { ...ownRunErrorSql(), preserveCancelled: false })
+                : ownRunErrorSql()),
               resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
             }),
         updatedAt: now,

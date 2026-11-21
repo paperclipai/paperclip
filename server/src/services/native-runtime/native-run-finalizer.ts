@@ -32,7 +32,9 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
-import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE, cancelStoppedRunContinuation,
+  nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
+import { RUN_STOP_CAUSE_KEY, ownRunErrorSql, runStopCauseResult } from "../scheduled-retry-error.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
 import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE } from "./native-agent-blocker.js";
@@ -123,6 +125,15 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "./native-runner-ownership.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+
+/** Saves a stop cause this run proved; the first saved cause stays. */
+async function saveRunStopCause(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+  cause: { errorCode: string; error: string }) {
+  await db.update(heartbeatRuns)
+    .set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(runStopCauseResult(cause))}::jsonb` })
+    .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+      sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? ${RUN_STOP_CAUSE_KEY})`));
+}
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -1829,6 +1840,11 @@ export async function finalizeNativeRun(input: {
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
     };
+    // Save a proven receipt-limit stop as this run's own cause before the
+    // status decision commits. Live completion and restart repair then name
+    // the same cause as this projection.
+    if (statusInput.toolReceiptLimitStopped) await saveRunStopCause(input.db, run, {
+      errorCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE, error: NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE });
     let proposedDecision = resolveNativeFinalizerStatus(statusInput);
     // Already accepted results still require the server-owned first-task decision.
     // Keep the task open without inventing an interaction or rerunning the work.
@@ -2047,21 +2063,27 @@ export async function finalizeNativeRun(input: {
         || ${JSON.stringify(finalizationMetadata)}::jsonb
         || ${clearExecutionFailure ? sql`case when ${heartbeatRuns.status} = 'cancelled' then '{}'::jsonb
           else ${recoveredExecutionFailureMetadata()} end` : sql`'{}'::jsonb`}`;
-      const nextError = providerFailure ? sql`coalesce(${heartbeatRuns.error}, ${providerFailure.errorMessage})`
-        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.error}`;
-      const nextErrorCode = providerFailure ? sql`coalesce(${heartbeatRuns.errorCode}, ${providerFailure.errorCode})`
-        : clearExecutionFailure ? sql`null` : sql`${heartbeatRuns.errorCode}`;
+      // A scheduled retry still carries the reason it was scheduled. That
+      // describes its predecessor, so it never stands for this run's outcome.
+      // A saved stop cause (above) names this run's own stop.
+      const ownError = ownRunErrorSql();
+      const nextError = providerFailure ? sql`coalesce(${ownError.error}, ${providerFailure.errorMessage})`
+        : clearExecutionFailure ? sql`null` : ownError.error;
+      const nextErrorCode = providerFailure ? sql`coalesce(${ownError.errorCode}, ${providerFailure.errorCode})`
+        : clearExecutionFailure ? sql`null` : ownError.errorCode;
       // A run projected to failed always records why, even when the provider
       // reported a failed terminal without a classified failure. A recorded
       // runner turn failure names that cause.
       const projectsFailedStatus = input.projectRunStatus && projectedStatus === "failed";
       const explained = projectsFailedStatus
-        ? explainFailedRun(explainNativeTurnFailure(turnFailure) ?? NATIVE_RUN_FAILED_UNEXPLAINED, { error: nextError, errorCode: nextErrorCode })
+        ? explainFailedRun(explainNativeTurnFailure(turnFailure) ?? NATIVE_RUN_FAILED_UNEXPLAINED,
+          { error: nextError, errorCode: nextErrorCode, preserveCancelled: false })
         : null;
-      const projectedError = explained?.error ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
-        else ${nextError} end`;
-      const projectedErrorCode = explained?.errorCode ?? sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
-        else ${nextErrorCode} end`;
+      // A cancellation that won concurrently keeps its own fields.
+      const projectedError = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${ownError.error}
+        else ${explained?.error ?? nextError} end`;
+      const projectedErrorCode = sql`case when ${heartbeatRuns.status} = 'cancelled' then ${ownError.errorCode}
+        else ${explained?.errorCode ?? nextErrorCode} end`;
       const projectionChanged = or(
         sql`${heartbeatRuns.nativePhase} is distinct from ${finalizationPhase}`,
         sql`${heartbeatRuns.resultJson} is distinct from ${projectedResult}`,
@@ -2086,7 +2108,7 @@ export async function finalizeNativeRun(input: {
             : {}),
           nativePhase: finalizationPhase,
           nativePhaseUpdatedAt: now,
-          ...(clearExecutionFailure || providerFailure || projectsFailedStatus ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+          ...(input.projectRunStatus || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
           resultJson: projectedResult,
           updatedAt: now,
         })
