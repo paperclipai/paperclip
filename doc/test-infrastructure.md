@@ -566,3 +566,29 @@ It checks the actual manifest generation, refusal of work under the owned hold,
 and a second useful write after release. This boundary does not exercise the
 production plugin database loader or plugin jobs. Unsupported manifests, active
 manual resources, and missing completion receipts remain sleep blockers.
+
+## Agent Chat fixture restore
+
+The Agent Chat shared fixture restores its original instance experimental settings
+even when live-run cleanup fails. A failed cancellation still fails the test; it
+is not retried or ignored. Run
+`pnpm test:e2e tests/e2e/agent-chat-projects.spec.ts --grep "fixture restore"`
+to check both successful cancellation and an HTTP 500 response without leaking
+experimental settings into the following tests.
+The HTTP fixture uses Node's event and callback adapters for server listen/close,
+so it also typechecks under the E2E project's existing ES2023 library target.
+
+## Plugin scheduling and heartbeat environment tests
+
+Plugin scheduling tests advance settlement to the coordinator's registered wake.
+They do not add a virtual second on every assertion retry while PostgreSQL reads
+are in flight. The cron-change regression also holds a real `plugin_jobs` table
+lock for three seconds and checks that the job runs only at its recomputed
+deadline. Run it with
+`pnpm --filter @paperclipai/server exec vitest run src/__tests__/plugin-scheduled-work.test.ts`.
+The idle-work assertion and its five-second wait remain unchanged.
+
+Heartbeat environment-inheritance tests await `drainActiveRunExecutions()` before
+asserting terminal state instead of treating a five-second poll as completion.
+Instance-wide environment names include the fixture UUID so a failed attempt
+cannot collide with the next attempt's unique-name constraint.
