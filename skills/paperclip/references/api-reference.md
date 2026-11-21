@@ -753,8 +753,8 @@ PATCH /api/agents/{agentId}/instructions-path
 ```
 
 Authorization:
-- target agent itself, or
-- an ancestor manager in the target agent's reporting chain.
+- board-authenticated callers only; agent API keys get `403`, even for the target agent or a manager in its reporting chain.
+- the board user also needs permission to update the agent configuration. An agent with an external instructions root also needs instance admin.
 
 Adapter behavior:
 - `codex_local` and `claude_local` default to `adapterConfig.instructionsFilePath`

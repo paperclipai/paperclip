@@ -60,7 +60,7 @@ PATCH /api/agents/{agentId}/instructions-path
 
 Rules:
 
-- Allowed for: the target agent itself, or an ancestor manager in that agent's reporting chain.
+- Allowed for: board-authenticated callers only. Agent API keys get `403`, even for the target agent or a manager in its reporting chain.
 - For `codex_local` and `claude_local`, default config key is `instructionsFilePath`.
 - Relative paths are resolved against the target agent's `adapterConfig.cwd`; absolute paths are accepted as-is.
 - To clear the path, send `{ "path": null }`.
