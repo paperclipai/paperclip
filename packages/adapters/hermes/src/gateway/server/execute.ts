@@ -16,9 +16,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
+  CREATE_REQUEST_TIMEOUT_MS,
   DEFAULT_EVENT_RECONNECT_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TIMEOUT_SEC,
+  RATE_LIMIT_RETRY_AFTER_MAX_MS,
+  RATE_LIMIT_RETRY_DELAYS_MS,
+  RATE_LIMIT_RETRY_JITTER_MS,
   STOP_GRACE_MS,
 } from "../shared/constants.js";
 import {
@@ -439,6 +443,25 @@ function fetchFailureMessage(err: unknown): string {
   return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
 }
 
+// The platform's transient-retry scheduler reads retryNotBefore as an absolute
+// timestamp (new Date(value)), so a delta-seconds Retry-After must be converted
+// before the value leaves the adapter: the raw "45" would be parsed as a date
+// in 2045 and the run would not be retried for years.
+export function normalizeRetryNotBeforeForTest(
+  raw: string | null | undefined,
+  nowMs: () => number = Date.now,
+): string | null {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value) return null;
+  if (/^\d+$/.test(value)) {
+    const deltaMs = Number.parseInt(value, 10) * 1_000;
+    return new Date(nowMs() + deltaMs).toISOString();
+  }
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return null;
+  return new Date(at).toISOString();
+}
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
@@ -462,7 +485,7 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
     const err = new Error(`Hermes gateway HTTP ${response.status}`) as HermesHttpError;
     err.status = response.status;
     err.code = classified.code;
-    err.retryNotBefore = response.headers.get("retry-after");
+    err.retryNotBefore = normalizeRetryNotBeforeForTest(response.headers.get("retry-after"));
     err.body = body;
     const reason = httpFailureReason(response.status);
     if (reason) requestConnectionFailures.set(err, {
@@ -471,6 +494,49 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
     throw err;
   }
   return body;
+}
+
+function parseRetryAfterMs(raw: string | null | undefined): number | null {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Number.parseInt(value, 10) * 1_000;
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, at - Date.now());
+}
+
+// The Hermes gateway rejects create requests with HTTP 429 and this error code
+// BEFORE it creates any run: the concurrency limiter sits in front of run
+// creation. A 429 without this code comes from something else on the path (for
+// example a reverse proxy) and may mean the request was already forwarded, so
+// it must not be retried blindly.
+const GATEWAY_CREATE_RATE_LIMIT_ERROR_CODE = "rate_limit_exceeded";
+
+function isGatewayCreateRateLimit(err: HermesHttpError): boolean {
+  if (err.status !== 429) return false;
+  const body = asRecord(err.body);
+  const error = asRecord(body?.error);
+  const code = error?.code ?? body?.code;
+  return code === GATEWAY_CREATE_RATE_LIMIT_ERROR_CODE;
+}
+
+/**
+ * Wait before the next run-create attempt after an HTTP 429, or null when the
+ * attempt budget is exhausted or the gateway's Retry-After asks for more wait
+ * than the invocation should hold. Callers then surface the 429 untouched so
+ * the platform's transient retry scheduling can honor the Retry-After.
+ */
+export function rateLimitRetryDelayForTest(
+  attempt: number,
+  retryAfterRaw: string | null | undefined,
+  random: () => number = Math.random,
+): number | null {
+  const scheduled = RATE_LIMIT_RETRY_DELAYS_MS[attempt];
+  if (scheduled === undefined) return null;
+  const retryAfter = parseRetryAfterMs(retryAfterRaw);
+  if (retryAfter !== null && retryAfter > RATE_LIMIT_RETRY_AFTER_MAX_MS) return null;
+  const base = retryAfter !== null ? Math.max(scheduled, retryAfter) : scheduled;
+  return base + Math.floor(random() * RATE_LIMIT_RETRY_JITTER_MS);
 }
 
 function extractRunId(value: unknown): string | null {
@@ -592,11 +658,11 @@ async function handleEvent(
   }
 }
 
-async function delay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return;
+async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
+    signal?.addEventListener(
       "abort",
       () => {
         clearTimeout(timer);
@@ -800,16 +866,24 @@ async function stopRun(input: {
   runId: string;
   redactText?: TextRedactor;
 }): Promise<Record<string, unknown> | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STOP_GRACE_MS);
+  // unref so the timer does not keep the event loop alive after the fetch
+  // settles — the timer is cleared in the finally block below.
+  if (typeof timer.unref === "function") timer.unref();
   try {
     const stopped = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`), {
       method: "POST",
       headers: input.headers,
+      signal: controller.signal,
     });
     await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
   } catch (err) {
     await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -994,11 +1068,111 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // remote create request is its dispatch boundary. Report it before the
     // request can block so continuation gates may release their issue lock.
     ctx.onDispatch?.();
-    const created = await fetchJson(createRunUrl, {
-      method: "POST",
-      headers: runHeaders,
-      body: JSON.stringify(body),
-    });
+    // Join the host's cancellation lifecycle before the create request so an
+    // operator Stop during rate-limit backoff aborts the retry loop instead
+    // of creating a remote run after Paperclip marks the run cancelled.
+    await ctx.onCancellationReady?.();
+    if (ctx.signal?.aborted) {
+      return {
+        exitCode: null, signal: null, timedOut: false,
+        errorCode: "cancelled",
+        errorMessage: "Stopped before provider startup",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      };
+    }
+    let created: unknown;
+    let rateLimitAttempt = 0;
+    // Gateway rate-limit bursts (many seat wakes landing in the same minute)
+    // surface as HTTP 429 on the create call and used to fail the run at
+    // invocation. The gateway emits that 429 before it creates any run, so
+    // retrying a gateway-attributable 429 cannot start a duplicate run. Retry
+    // with jittered backoff, honoring a bounded server Retry-After, before
+    // surfacing the 429 for the platform's own transient retry scheduling.
+    while (true) {
+      // Bound this create attempt and tie it to the operator Stop. Once
+      // onCancellationReady has registered this adapter as the Stop owner, a
+      // gateway that accepts the create connection but stalls on the response
+      // (or its body) would otherwise wait out the host's stop-grace window
+      // and return adapter_stop_pending — and with no Stop it would hang the
+      // invocation forever, because timeoutSec only starts after create
+      // succeeds. Aborting createAbort rejects both the request and its body
+      // read, from either the host signal or the deadline timer below.
+      const createAbort = new AbortController();
+      const abortCreateOnHostStop = () => createAbort.abort();
+      ctx.signal?.addEventListener("abort", abortCreateOnHostStop, { once: true });
+      const createTimer = setTimeout(() => createAbort.abort(), CREATE_REQUEST_TIMEOUT_MS);
+      // unref so the timer does not keep the event loop alive after the
+      // create attempt settles — it is cleared in the finally block below.
+      if (typeof createTimer.unref === "function") createTimer.unref();
+      try {
+        created = await fetchJson(createRunUrl, {
+          method: "POST",
+          headers: runHeaders,
+          body: JSON.stringify(body),
+          signal: createAbort.signal,
+        });
+        break;
+      } catch (err) {
+        const hermesErr = err as HermesHttpError;
+        if (ctx.signal?.aborted && typeof hermesErr.status !== "number") {
+          // Operator Stop fired while the create request or its body read was
+          // in flight, so no HTTP response was received. The request may have
+          // reached the gateway and a remote run may exist, so do NOT claim a
+          // bootstrap recovery: executionRecovery is omitted (absent evidence
+          // never authorizes replay) and the host reconciles the uncertain
+          // dispatch before any re-dispatch.
+          return {
+            exitCode: null, signal: null, timedOut: false,
+            errorCode: "cancelled",
+            errorMessage: "Stopped while the run create request was in flight; remote run state unknown",
+          };
+        }
+        if (createAbort.signal.aborted && typeof hermesErr.status !== "number") {
+          // No operator Stop: the deadline above aborted a stalled create. The
+          // request may still have been processed by the gateway, so keep the
+          // transient-upstream connect-failure class (uncertain dispatch is
+          // the platform's to reconcile) but say what actually happened.
+          // Build a fresh error instead of mutating hermesErr: when the
+          // response body stalls, readResponseJson throws a raw DOMException
+          // AbortError whose message is read-only. Assigning to it throws a
+          // TypeError that swallows the gateway failure and its
+          // transient_upstream family, leaving errorResult to report a
+          // protocol error with no retry family.
+          const stalledErr = new Error(
+            `Hermes gateway create request stalled for over ${Math.round(CREATE_REQUEST_TIMEOUT_MS / 1000)}s ` +
+            "without a response and was aborted; the gateway may have created the run.",
+          ) as HermesHttpError;
+          stalledErr.code = "hermes_gateway_connect_failed";
+          throw stalledErr;
+        }
+        const delayMs = isGatewayCreateRateLimit(hermesErr)
+          ? rateLimitRetryDelayForTest(rateLimitAttempt, hermesErr.retryNotBefore)
+          : null;
+        if (delayMs === null) throw err;
+        try {
+          await ctx.onLog(
+            "stderr",
+            `[hermes-gateway] run create rate limited (HTTP 429); retrying in ${Math.round(delayMs / 100) / 10}s (retry ${rateLimitAttempt + 1}/${RATE_LIMIT_RETRY_DELAYS_MS.length})\n`,
+          );
+        } catch {
+          // A failed run-log write must not cancel the retry or replace the
+          // 429: swallow the sink error and keep the backoff schedule.
+        }
+        await delay(delayMs, ctx.signal);
+        if (ctx.signal?.aborted) {
+          return {
+            exitCode: null, signal: null, timedOut: false,
+            errorCode: "cancelled",
+            errorMessage: "Stopped during rate-limit backoff before run create",
+            executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          };
+        }
+        rateLimitAttempt += 1;
+      } finally {
+        clearTimeout(createTimer);
+        ctx.signal?.removeEventListener("abort", abortCreateOnHostStop);
+      }
+    }
     runId = extractRunId(created);
     if (!runId) {
       return {
@@ -1043,7 +1217,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
-  const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
+  // onCancellationReady joined the host's cancellation lifecycle before the
+  // create request, so an operator Stop aborts ctx.signal. Honor that signal
+  // through the active-run path too: when it aborts, stop local
+  // streaming/polling, request the remote stop, confirm the remote run
+  // reached a terminal status within the stop grace window, and return a
+  // cancelled result the host can verify. Without this, an operator Stop waits
+  // out the whole remote run (up to adapter_stop_pending) while the agent
+  // keeps working past the Stop, and the server's immediate-cancellation
+  // fallback can no longer fire because the adapter registered ownership.
+  const cancelPromise: Promise<"cancelled"> | null = ctx.signal
+    ? new Promise<"cancelled">((resolve) => {
+      const signal = ctx.signal!;
+      if (signal.aborted) {
+        resolve("cancelled");
+        return;
+      }
+      // { once: true } removes the listener when the signal aborts; if a
+      // different racer wins instead, the listener lives only as long as the
+      // run-scoped ctx.signal and is reclaimed with it.
+      signal.addEventListener("abort", () => resolve("cancelled"), { once: true });
+    })
+    : null;
+
+  const racers: Array<Promise<TerminalState | "timeout" | "cancelled">> = [state.terminalPromise, timeoutPromise];
+  if (cancelPromise) racers.push(cancelPromise);
+  const outcome = await Promise.race(racers);
   if (timeoutTimer) clearTimeout(timeoutTimer);
   controller.abort();
 
@@ -1062,6 +1261,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+      },
+      sessionParams: {
+        hermesRunId: runId,
+        strategy,
+      },
+      sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+    };
+  }
+
+  if (outcome === "cancelled") {
+    // Stop the remote run and confirm it reached a terminal status before
+    // claiming an acknowledged cancellation. A confirmed stop proves the
+    // provider terminated; an unconfirmed one leaves the server's requested
+    // marker so the host honestly reports that provider termination could not
+    // be verified instead of claiming a Stop the adapter cannot prove.
+    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const finalState = extractStatus(finalStatus);
+    const acknowledged = finalState !== null && TERMINAL_STATUSES.has(finalState);
+    const cancelledUsage = finalStatus ? parseUsage(finalStatus) : undefined;
+    const cancelledCostUsd = finalStatus ? parseCostUsd(finalStatus) : null;
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorCode: "cancelled",
+      errorMessage: "Stopped during active Hermes gateway run",
+      provider: "hermes_gateway",
+      ...(cancelledUsage ? { usage: cancelledUsage } : {}),
+      ...(cancelledCostUsd !== null ? { costUsd: cancelledCostUsd } : {}),
+      resultJson: {
+        run_id: runId,
+        status: finalState ?? "cancelling",
+        last_event: state.lastEventName,
+        final_status: finalStatus ? redactForLog(finalStatus, [], 0, redactText) : null,
+        usage: cancelledUsage ?? null,
+        cost_usd: cancelledCostUsd,
+        ...(acknowledged
+          ? { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false } }
+          : {}),
       },
       sessionParams: {
         hermesRunId: runId,

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
-import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { execute, mapFinalResultForTest, normalizeRetryNotBeforeForTest, parseSseFramesForTest, rateLimitRetryDelayForTest, resolveSessionKey } from "./execute.js";
+import { CREATE_REQUEST_TIMEOUT_MS, STOP_GRACE_MS } from "../shared/constants.js";
 import { testEnvironment } from "./test.js";
 import { parseHermesGatewayStdoutLine } from "../ui/parse-stdout.js";
 
@@ -623,6 +624,505 @@ describe("execute", () => {
     expect(result.errorMessage).toContain("Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY");
   });
 
+  it("retries run create on gateway 429 before succeeding", async () => {
+    vi.useFakeTimers();
+    try {
+      let createCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          createCalls += 1;
+          if (createCalls === 1) {
+            return new Response(
+              JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+              { status: 429, headers: { "retry-after": "1" } },
+            );
+          }
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          return new Response(
+            sseStream(["event: run.completed", "data: {\"status\":\"completed\",\"output\":\"done\"}", ""].join("\n")),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(0);
+      expect(result.summary).toBe("done");
+      expect(createCalls).toBe(2);
+      expect(ctx.onDispatch).toHaveBeenCalledTimes(1);
+      const logText = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n");
+      expect(logText).toContain("run create rate limited (HTTP 429)");
+      expect(logText).toContain("retry 1/3");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces the 429 for transient retry scheduling after exhausting create retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+            { status: 429, headers: { "retry-after": "1" } },
+          );
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(120_000);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+      expect(result.errorFamily).toBe("transient_upstream");
+      // retryNotBefore must reach the platform as an absolute timestamp: the
+      // scheduler parses it with new Date(value), so a raw "45" would schedule
+      // the retry in 2045.
+      const retryAt = Date.parse(String(result.retryNotBefore));
+      expect(Number.isFinite(retryAt)).toBe(true);
+      expect(Math.abs(retryAt - Date.now())).toBeLessThanOrEqual(180_000);
+      const createCalls = fetchMock.mock.calls.filter(
+        ([input, init]) => String(input).endsWith("/v1/runs") && init?.method === "POST",
+      );
+      expect(createCalls).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry when the gateway Retry-After exceeds the in-process budget", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+        { status: 429, headers: { "retry-after": "45" } },
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 60,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    // The delta-seconds header must be converted to an absolute timestamp for
+    // the platform scheduler (new Date(value) would parse "45" as 2045).
+    expect(result.retryNotBefore).not.toBe("45");
+    const retryAt = Date.parse(String(result.retryNotBefore));
+    expect(Number.isFinite(retryAt)).toBe(true);
+    expect(retryAt - Date.now()).toBeGreaterThanOrEqual(44_000);
+    expect(retryAt - Date.now()).toBeLessThanOrEqual(46_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the retry schedule when the run-log sink fails on the retry line", async () => {
+    vi.useFakeTimers();
+    try {
+      let createCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          createCalls += 1;
+          if (createCalls === 1) {
+            return new Response(
+              JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+              { status: 429, headers: { "retry-after": "1" } },
+            );
+          }
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          return new Response(
+            sseStream(["event: run.completed", "data: {\"status\":\"completed\",\"output\":\"done\"}", ""].join("\n")),
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onLog = vi.fn(async (_stream: "stdout" | "stderr", chunk: string) => {
+        if (String(chunk).includes("retrying")) throw new Error("log sink down");
+        return undefined;
+      });
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(0);
+      expect(createCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a 429 that does not come from the gateway's create limiter", async () => {
+    const fetchMock = vi.fn(async () => new Response("Rate limit exceeded", { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 60,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_rate_limited");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry non-429 run create failures", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "bad key" }), { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 60,
+    }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_auth_failed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts the retry loop when cancelled during rate-limit backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      let createCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          createCalls += 1;
+          return new Response(
+            JSON.stringify({ error: { message: "Too many concurrent runs (max 10)", type: "rate_limit_error", code: "rate_limit_exceeded" } }),
+            { status: 429, headers: { "retry-after": "1" } },
+          );
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = controller.signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      // Let the first create request fire and get the 429.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(createCalls).toBe(1);
+      // The retry loop is now in the backoff delay. Abort the run.
+      controller.abort();
+      // Let the abort listener resolve the delay promise.
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(null);
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      // Only the initial 429'd attempt — no retry after cancellation.
+      expect(createCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the active run and acknowledges the provider stop when cancelled after create succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      let stopCalled = false;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          // The event stream stays open without a terminal event so the
+          // active run keeps running until the operator Stop aborts it.
+          return new Promise<Response>(() => {});
+        }
+        if (url.endsWith("/stop")) {
+          stopCalled = true;
+          return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+        }
+        // GET /v1/runs/{id}: the remote run reports cancelled once the stop
+        // request has been accepted, matching the gateway's stop lifecycle.
+        // Include usage/cost so the cancelled path can preserve reported spend.
+        return new Response(JSON.stringify(
+          stopCalled
+            ? { status: "cancelled", usage: { input_tokens: 120, output_tokens: 30 }, cost_usd: 0.0021 }
+            : { status: "running" },
+        ), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = controller.signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      // Let the create request fire, onCancellationReady register the signal,
+      // and the active-run race start awaiting (the event stream hangs).
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      // Operator Stop aborts the run while it is still active.
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(null);
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.timedOut).toBe(false);
+      // Active-run cancellation did provider work, so it is not a bootstrap
+      // recovery (providerWorkStarted stays true by omission).
+      expect(result.executionRecovery).toBeUndefined();
+      expect(result.resultJson?.run_id).toBe("run-hermes-1");
+      expect(result.resultJson?.status).toBe("cancelled");
+      expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+      // Usage and cost from the cancelled run's final status are preserved.
+      expect(result.usage).toEqual({ inputTokens: 120, outputTokens: 30 });
+      expect(result.costUsd).toBe(0.0021);
+      expect(result.resultJson?.usage).toEqual({ inputTokens: 120, outputTokens: 30 });
+      expect(result.resultJson?.cost_usd).toBe(0.0021);
+      expect(result.sessionParams).toEqual({ hermesRunId: "run-hermes-1", strategy: "issue" });
+      // The stop request was sent and the final status was fetched.
+      expect(stopCalled).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/run-hermes-1"))).toBe(true);
+      // No second create — the run was already created before the Stop.
+      const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/v1/runs") && init?.method === "POST");
+      expect(createCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the stop request with a timeout so a hanging gateway cannot stall cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          return new Promise<Response>(() => {});
+        }
+        if (url.endsWith("/stop")) {
+          // Simulate a gateway that accepts the connection but never responds.
+          // The AbortController in stopRun fires after STOP_GRACE_MS and
+          // rejects this promise so the cancellation path is not stalled.
+          return new Promise<Response>((_, reject) => {
+            const signal = init?.signal;
+            if (signal?.aborted) {
+              reject(new Error("The operation was aborted"));
+              return;
+            }
+            signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+          });
+        }
+        return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "***", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = controller.signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      // The stop request is in-flight with AbortSignal.timeout(STOP_GRACE_MS).
+      // Advance past STOP_GRACE_MS so the signal aborts and stopRun returns
+      // null, then past fetchFinalStatus's own STOP_GRACE_MS deadline so it
+      // completes without finding a terminal status (the run stays "running").
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS * 2 + 1);
+      const result = await runPromise;
+
+      // Even with a hanging stop, cancellation completes — the stop timed
+      // out (stopRun returned null), fetchFinalStatus ran its own deadline,
+      // and the cancelled result is returned without acknowledged.
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.resultJson?.run_id).toBe("run-hermes-1");
+      expect(result.resultJson?.status).toBe("cancelling");
+      // No acknowledged cancellation — the stop did not confirm.
+      expect(result.resultJson?.executionCancellation).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns cancelled without a bootstrap claim when stopped during a stalled create", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          // The gateway accepts the create connection but never responds;
+          // only the create request's abort signal can unblock it.
+          return new Promise<Response>((_, reject) => {
+            const signal = init?.signal;
+            if (signal?.aborted) {
+              reject(new Error("The operation was aborted"));
+              return;
+            }
+            signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+          });
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "***", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = controller.signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      // The create request is in flight and stalled. Operator Stop.
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(null);
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.timedOut).toBe(false);
+      // The create outcome is unknown, so no executionRecovery claim is
+      // made: absent evidence never authorizes replay, and the host must
+      // reconcile the uncertain dispatch instead of trusting "never started".
+      expect(result.executionRecovery).toBeUndefined();
+      // Exactly one create attempt - no retry after Stop.
+      const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/v1/runs") && init?.method === "POST");
+      expect(createCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a stalled create request with a deadline so the invocation cannot hang", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          // The gateway accepts the create connection but never responds;
+          // only the create request's abort signal can unblock it.
+          return new Promise<Response>((_, reject) => {
+            const signal = init?.signal;
+            if (signal?.aborted) {
+              reject(new Error("The operation was aborted"));
+              return;
+            }
+            signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+          });
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "***", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = new AbortController().signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      // No operator Stop: advance past the per-attempt create deadline
+      // and the stalled request is aborted and surfaced as transient.
+      await vi.advanceTimersByTimeAsync(CREATE_REQUEST_TIMEOUT_MS + 1);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(String(result.errorMessage)).toContain("stalled");
+      const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/v1/runs") && init?.method === "POST");
+      expect(createCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces a transient error when the create response body stalls past the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          // Headers arrive (fetch resolves) but the response body stalls.
+          // The deadline aborts the body stream, which rejects with a
+          // DOMException AbortError whose message is read-only, so the
+          // create-stall handler must build a fresh error instead of
+          // mutating it.
+          const signal = init?.signal;
+          const textPromise = new Promise<string>((_, reject) => {
+            if (signal?.aborted) {
+              reject(new DOMException("The operation was aborted", "AbortError"));
+              return;
+            }
+            signal?.addEventListener("abort", () =>
+              reject(new DOMException("The operation was aborted", "AbortError")));
+          });
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            text: () => textPromise,
+          } as unknown as Response;
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = new AbortController().signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      // No operator Stop: advance past the per-attempt create deadline.
+      // The stalled body read is aborted and must surface as transient.
+      await vi.advanceTimersByTimeAsync(CREATE_REQUEST_TIMEOUT_MS + 1);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(String(result.errorMessage)).toContain("stalled");
+      const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/v1/runs") && init?.method === "POST");
+      expect(createCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("includes network causes in connection failure messages", async () => {
     const cause = Object.assign(new Error("getaddrinfo ENOTFOUND host.docker.internal"), { code: "ENOTFOUND" });
     vi.stubGlobal("fetch", vi.fn(async () => {
@@ -816,9 +1316,13 @@ describe("gateway connection failure reporting", () => {
     ctx.onDispatch = vi.fn();
     const result = await execute(ctx);
     expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
-      errorCode: `hermes_gateway_${code}`, errorFamily, retryNotBefore: "7",
+      errorCode: `hermes_gateway_${code}`, errorFamily, retryNotBefore: expect.any(String),
       errorMeta: { status, body: { detail: "remote failure" } },
       resultJson: { connectionFailure: marker("create_run", reason) } });
+    // normalizeRetryNotBeforeForTest converts the delta-seconds Retry-After
+    // ("7") into an absolute ISO timestamp for the platform scheduler.
+    expect(result.retryNotBefore).not.toBe("7");
+    expect(Number.isFinite(Date.parse(String(result.retryNotBefore)))).toBe(true);
     expect(result.errorMessage).toContain(`Hermes gateway HTTP ${status}`);
     expect(result.executionRecovery).toBeUndefined();
     expect(ctx.onDispatch).toHaveBeenCalledOnce();
@@ -1139,5 +1643,57 @@ describe("mapFinalResultForTest", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
+  });
+});
+
+describe("normalizeRetryNotBeforeForTest", () => {
+  it("converts delta-seconds Retry-After into an absolute timestamp", () => {
+    const at = Date.parse(String(normalizeRetryNotBeforeForTest("45")));
+    expect(Number.isFinite(at)).toBe(true);
+    expect(at - Date.now()).toBeGreaterThanOrEqual(44_000);
+    expect(at - Date.now()).toBeLessThanOrEqual(46_000);
+  });
+
+  it("passes HTTP-date Retry-After values through as absolute timestamps", () => {
+    const header = new Date(Date.now() + 30_000).toUTCString();
+    const at = Date.parse(String(normalizeRetryNotBeforeForTest(header)));
+    expect(Number.isFinite(at)).toBe(true);
+    expect(Math.abs(at - (Date.now() + 30_000))).toBeLessThanOrEqual(1_500);
+  });
+
+  it("returns null for absent or unparseable values", () => {
+    expect(normalizeRetryNotBeforeForTest(null)).toBeNull();
+    expect(normalizeRetryNotBeforeForTest("")).toBeNull();
+    expect(normalizeRetryNotBeforeForTest("not-a-date")).toBeNull();
+  });
+});
+
+describe("rateLimitRetryDelayForTest", () => {
+  it("schedules jittered exponential backoff when no Retry-After is present", () => {
+    expect(rateLimitRetryDelayForTest(0, null, () => 0)).toBe(2_000);
+    expect(rateLimitRetryDelayForTest(0, null, () => 0.999)).toBeLessThan(3_000);
+    expect(rateLimitRetryDelayForTest(1, undefined, () => 0)).toBe(8_000);
+    expect(rateLimitRetryDelayForTest(1, "", () => 0.999)).toBeLessThan(9_000);
+    expect(rateLimitRetryDelayForTest(2, "not-a-date", () => 0)).toBe(30_000);
+  });
+
+  it("floors the wait at a bounded server Retry-After", () => {
+    expect(rateLimitRetryDelayForTest(0, "5", () => 0)).toBe(5_000);
+    expect(rateLimitRetryDelayForTest(1, "1", () => 0)).toBe(8_000);
+    expect(rateLimitRetryDelayForTest(2, "0", () => 0)).toBe(30_000);
+    expect(rateLimitRetryDelayForTest(0, "30", () => 0)).toBe(30_000);
+  });
+
+  it("parses HTTP-date Retry-After values as deltas from now", () => {
+    const at = new Date(Date.now() + 10_000).toUTCString();
+    const delay = rateLimitRetryDelayForTest(0, at, () => 0);
+    // toUTCString truncates to whole seconds, so the delta loses up to 1s.
+    expect(delay).toBeGreaterThanOrEqual(9_000);
+    expect(delay).toBeLessThanOrEqual(10_000);
+  });
+
+  it("returns null when retries are exhausted or Retry-After exceeds the budget", () => {
+    expect(rateLimitRetryDelayForTest(3, null, () => 0)).toBeNull();
+    expect(rateLimitRetryDelayForTest(0, "45", () => 0)).toBeNull();
   });
 });
