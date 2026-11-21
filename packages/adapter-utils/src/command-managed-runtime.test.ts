@@ -7,10 +7,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createCommandManagedRuntimeClient,
-  prepareCommandManagedRuntime,
+  prepareCommandManagedRuntime as prepareCommandManagedRuntimeUntracked,
   type CommandManagedDuplexChannel,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
+
+const preparedRuntimes: Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }> = [];
+function releaseAfterEach<Args extends unknown[], Prepared extends { cleanupWorkspaceSnapshot?(): Promise<void> }>(
+  prepare: (...args: Args) => Promise<Prepared>,
+): (...args: Args) => Promise<Prepared> {
+  return async (...args) => {
+    const prepared = await prepare(...args);
+    preparedRuntimes.push(prepared);
+    return prepared;
+  };
+}
+const prepareCommandManagedRuntime = releaseAfterEach(prepareCommandManagedRuntimeUntracked);
+afterEach(async () => {
+  for (const prepared of preparedRuntimes.splice(0)) await prepared.cleanupWorkspaceSnapshot?.();
+});
 import type { SandboxSyncOperation } from "./sandbox-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
 

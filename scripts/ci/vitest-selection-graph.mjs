@@ -28,7 +28,7 @@ const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "
 // following local imports even for these files; helper changes affect all tests.
 const reviewedSetup = new Map([
   ["server/src/__tests__/setup-supertest.ts", {
-    hash: "15a53631d5015910d4a3e9506158f9e4bd8269ac340afb52d94089da77fc3ced",
+    hash: "0de82844a84693afeffb3a823b84382df691511b67e2b37fb1f97b3a957f4c12",
     external: ["supertest/lib/test.js"],
   }],
   ["server/src/services/instance-settings-cache.ts", {
@@ -36,7 +36,7 @@ const reviewedSetup = new Map([
     external: ["drizzle-orm", "drizzle-orm/pg-core", "@paperclipai/db/work-signals"],
   }],
   ["server/src/__tests__/helpers/isolated-test-home.ts", {
-    hash: "bd5645dc590087f26b473beab06d5c3ddd7956a79949f0b3e9713f11897a0c1b",
+    hash: "a294b9be3502b32ceca8b7364b033630bf75d9b39895a4deb6df72a5efc09d7c",
     external: [],
   }],
 ]);

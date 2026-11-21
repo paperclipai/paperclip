@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -411,6 +411,57 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
+function findRetainedPostgresDir(directory) {
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  if (entries.some((entry) => entry.isFile() && entry.name === "postmaster.pid")) return directory;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findRetainedPostgresDir(path.join(directory, entry.name));
+    if (found) return found;
+  }
+  return null;
+}
+
+function removeTestRoot(testRoot) {
+  const retained = findRetainedPostgresDir(testRoot);
+  if (retained) {
+    console.warn(`[test:run] keeping ${testRoot}: it contains a retained PostgreSQL data directory at ${retained}`);
+    return;
+  }
+  const makeWritable = (directory) => {
+    chmodSync(directory, 0o700);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) makeWritable(path.join(directory, entry.name));
+    }
+  };
+  try {
+    makeWritable(testRoot);
+    rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    if (error?.code !== "ENOENT") console.warn(`[test:run] could not remove ${testRoot}: ${error.message}`);
+  }
+}
+
+let stopSignal = null;
+const activeRuns = new Set();
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.once(signal, () => {
+    stopSignal = signal;
+    const children = [...activeRuns].filter((run) => run.child);
+    if (children.length > 0) {
+      for (const run of children) run.child.kill(signal);
+      return;
+    }
+    for (const run of activeRuns) removeTestRoot(run.testRoot);
+    process.kill(process.pid, signal);
+  });
+}
+
 function isolatedTestEnv() {
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
@@ -439,15 +490,17 @@ function isolatedTestEnv() {
   return { testRoot, env };
 }
 
-async function collectVitestList(filters, { testRoot, env }, name) {
+async function collectVitestList(filters, { testRoot, env }, name, run) {
   const output = path.join(testRoot, `${name}.json`);
   await new Promise((resolve, reject) => {
     const child = spawn("pnpm", ["exec", "vitest", "list", ...sourceOnlyVitestArgs,
       ...filters, "--allowOnly=false", "--includeTaskLocation", `--json=${output}`], {
       cwd: repoRoot, env, stdio: "inherit",
     });
+    run.child = child;
     child.once("error", (error) => reject(new Error(`Vitest collection failed: ${error.message}`)));
     child.once("close", (code, signal) => {
+      run.child = null;
       if (code === 0) resolve();
       else reject(new Error(`Vitest collection failed: ${signal ?? code}`));
     });
@@ -456,13 +509,25 @@ async function collectVitestList(filters, { testRoot, env }, name) {
 }
 
 async function runVitest(args, label, testShard = null, exactFiles = false) {
+  if (stopSignal) throw new Error(`stopped by ${stopSignal}`);
   console.log(`\n[test:run] ${label}`);
   const isolated = isolatedTestEnv();
+  const run = { testRoot: isolated.testRoot, child: null };
+  activeRuns.add(run);
+  try {
+    await runVitestInRoot(run, isolated, args, label, testShard, exactFiles);
+  } finally {
+    activeRuns.delete(run);
+    removeTestRoot(run.testRoot);
+  }
+}
+
+async function runVitestInRoot(run, isolated, args, label, testShard, exactFiles) {
   const { env } = isolated;
   if (testShard) {
     const file = path.resolve(repoRoot, chatSuite);
     const sourceLines = readFileSync(file, "utf8").split("\n");
-    const allCollected = testShard.collected ?? await collectVitestList(args, isolated, "all");
+    const allCollected = testShard.collected ?? await collectVitestList(args, isolated, "all", run);
     const collected = [];
     const bogusCollected = [];
     for (const test of allCollected) {
@@ -480,7 +545,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     // chatSuiteRunLine).
     const validationFilters = selected.lines.map((line) => `${chatSuite}:${line}`);
     const validationArgs = [...args.filter((arg) => arg !== chatSuite), ...validationFilters];
-    assertSelectedTests(selected.tests, await collectVitestList(validationArgs, isolated, "selected"), file);
+    assertSelectedTests(selected.tests, await collectVitestList(validationArgs, isolated, "selected", run), file);
     console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines, ${Math.round(selected.weight / 1000)}s recorded; exact filter coverage verified`);
     const runFilters = selected.lines.map((line) => `${chatSuite}:${chatSuiteRunLine(sourceLines, line)}`);
     args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
@@ -494,6 +559,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
       env: invocationEnv("vitest", env),
       stdio: "inherit",
     });
+    run.child = child;
     child.once("error", reject);
     child.once("close", (code, signal) => {
       if (code === 0) resolve();
@@ -539,7 +605,16 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     // Wait for both children even on failure so no sibling is abandoned.
     const args = ["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite];
     const workers = chatShardWorkers(shardIndex, shardCount);
-    const collected = await collectVitestList(args, isolatedTestEnv(), "all");
+    const collection = isolatedTestEnv();
+    const collectionRun = { testRoot: collection.testRoot, child: null };
+    activeRuns.add(collectionRun);
+    let collected;
+    try {
+      collected = await collectVitestList(args, collection, "all", collectionRun);
+    } finally {
+      activeRuns.delete(collectionRun);
+      removeTestRoot(collection.testRoot);
+    }
     const results = await Promise.allSettled(workers.map((shard) =>
       runVitest(args, "chat integration test shard", { ...shard, collected }),
     ));
@@ -781,3 +856,5 @@ try {
   console.error(`[test:run] ${error.message}`);
   process.exitCode = 1;
 }
+
+if (stopSignal) process.kill(process.pid, stopSignal);
