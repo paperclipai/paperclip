@@ -254,6 +254,7 @@ export function detectClaudeLoginRequired(input: {
     .join("\n")
     .split(/\r?\n/)
     .filter((line) => {
+      if (line.trim().startsWith("{")) return false;
       try {
         JSON.parse(line);
         return false;
