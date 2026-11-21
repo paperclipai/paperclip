@@ -143,6 +143,35 @@ describe("enrichPromotedWakeContext", () => {
     });
     expect(queued.contextSnapshot).toMatchObject({ issueId: "issue-1", taskId: "task-1", taskKey: "TASK-1" });
   });
+
+  it("keeps the issue scope of a receipt that carries only the task key", () => {
+    const taskKeyOnly = enrichPromotedWakeContext({
+      contextSnapshot: {},
+      reason: "task_retry",
+      source: "on_demand",
+      triggerDetail: "manual",
+      payload: { taskKey: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", taskRetry: { schema: "paperclip.task-retry.v1" } },
+    });
+    expect(taskKeyOnly.contextSnapshot).toMatchObject({
+      issueId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      taskId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      taskKey: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      wakeReason: "task_retry",
+    });
+  });
+
+  it("does not read a task key that is not an issue id as an issue scope", () => {
+    const sessionKeyOnly = enrichPromotedWakeContext({
+      contextSnapshot: {},
+      reason: "task_retry",
+      source: "on_demand",
+      triggerDetail: "manual",
+      payload: { taskKey: "TASK-1" },
+    });
+    expect(sessionKeyOnly.contextSnapshot.issueId).toBeUndefined();
+    expect(sessionKeyOnly.contextSnapshot.taskId).toBeUndefined();
+    expect(sessionKeyOnly.contextSnapshot.taskKey).toBe("TASK-1");
+  });
 });
 
 describe("context compaction wakes", () => {
