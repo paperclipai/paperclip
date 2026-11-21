@@ -8,6 +8,10 @@ import type { LiveEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
+import {
+  DESKTOP_NOTIFICATION_LEVEL_CHANGED,
+  DESKTOP_NOTIFICATION_STORAGE_KEY,
+} from "../lib/desktop-notifications";
 
 const { pushToast, companySelection } = vi.hoisted(() => ({
   pushToast: vi.fn(() => "toast-id"),
@@ -133,10 +137,14 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
   let queryClient: QueryClient;
   let container: HTMLDivElement;
   let root: Root | null;
-  let sockets: Array<{ onmessage: ((event: MessageEvent) => void) | null }>;
+  let sockets: Array<{
+    onmessage: ((event: MessageEvent) => void) | null;
+    onclose: ((event?: Event) => void) | null;
+  }>;
 
   beforeEach(() => {
     pushToast.mockClear();
+    window.localStorage.removeItem(DESKTOP_NOTIFICATION_STORAGE_KEY);
     companySelection.id = "company-1";
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
     queryClient.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { id: "session", userId: "viewer" } });
@@ -171,9 +179,15 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     root = null;
     queryClient.clear();
     container.remove();
+    window.localStorage.removeItem(DESKTOP_NOTIFICATION_STORAGE_KEY);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
+
+  function enableHiddenNotifications() {
+    window.localStorage.setItem(DESKTOP_NOTIFICATION_STORAGE_KEY, "attention");
+    window.dispatchEvent(new Event(DESKTOP_NOTIFICATION_LEVEL_CHANGED));
+  }
 
   async function receiveStatus(payload: Record<string, unknown>, createdAt = "2026-09-09T18:00:00.000Z", toastEligible: boolean | undefined = true) {
     await reactAct(async () => {
@@ -309,6 +323,33 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     expect(pushToast).toHaveBeenCalledTimes(1);
   });
 
+  it("announces a failed run while the tab is hidden", async () => {
+    enableHiddenNotifications();
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].onmessage).toBeTypeOf("function");
+    await reactAct(async () => sockets[0]!.onmessage!(new MessageEvent("message", {
+      data: JSON.stringify({
+        id: 3,
+        companyId: "company-1",
+        toastEligible: true,
+        type: "heartbeat.run.status",
+        createdAt: "2026-09-09T18:02:00.000Z",
+        payload: { runId: "background-run", agentId: "other-agent", status: "failed" },
+      }),
+    })));
+    expect(pushToast).toHaveBeenCalledTimes(1);
+    expect(pushToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Agent run failed",
+      dedupeKey: "run-status:background-run:failed",
+    }));
+  });
+
   it("disconnects while hidden and reconciles active queries once on return", async () => {
     await receiveStatus({ runId: "child-run", agentId: "child-agent", status: "running" });
     const invalidate = vi.spyOn(queryClient, "invalidateQueries");
@@ -325,6 +366,121 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     });
     await vi.waitFor(() => expect(sockets).toHaveLength(2));
     expect(invalidate).toHaveBeenCalledExactlyOnceWith({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
+  });
+
+  it("keeps the live socket while hidden when desktop notifications are enabled", async () => {
+    enableHiddenNotifications();
+    await receiveStatus({ runId: "child-run", agentId: "child-agent", status: "running" });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].onmessage).toBeTypeOf("function");
+    invalidate.mockClear();
+    await reactAct(async () => {
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(sockets).toHaveLength(1);
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
+  });
+
+  it("closes a hidden socket when desktop notifications are turned off", async () => {
+    enableHiddenNotifications();
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(sockets[0].onmessage).toBeTypeOf("function");
+    await reactAct(async () => {
+      window.localStorage.setItem(DESKTOP_NOTIFICATION_STORAGE_KEY, "off");
+      window.dispatchEvent(new Event(DESKTOP_NOTIFICATION_LEVEL_CHANGED));
+    });
+    expect(sockets[0].onmessage).toBeNull();
+  });
+
+  it("opens a hidden socket when desktop notifications are turned on", async () => {
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(sockets[0].onmessage).toBeNull();
+    await reactAct(async () => {
+      enableHiddenNotifications();
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    expect(sockets[1].onmessage).toBeTypeOf("function");
+  });
+
+  it("reconnects a hidden opted-in socket without starting HTTP polling", async () => {
+    enableHiddenNotifications();
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].onclose).toBeTypeOf("function");
+    setIntervalSpy.mockClear();
+    await reactAct(async () => {
+      sockets[0]!.onclose?.();
+    });
+    expect(setIntervalSpy.mock.calls.filter(([, ms]) => ms === 15_000)).toHaveLength(0);
+    await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 3000 });
+    expect(sockets[1].onmessage).toBeTypeOf("function");
+    expect(setIntervalSpy.mock.calls.filter(([, ms]) => ms === 15_000)).toHaveLength(0);
+  });
+
+  it("keeps a pending reconnect after an opted-in tab is hidden", async () => {
+    enableHiddenNotifications();
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      sockets[0]!.onclose?.();
+    });
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(2), { timeout: 3000 });
+    expect(sockets[1].onmessage).toBeTypeOf("function");
+  });
+
+  it("opens one socket when an opted-in tab is hidden before the first connect", async () => {
+    enableHiddenNotifications();
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      flushSync(() => {
+        root!.render(<QueryClientProvider client={queryClient}><LiveUpdatesProvider><span>Visible task</span></LiveUpdatesProvider></QueryClientProvider>);
+      });
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].onmessage).toBeTypeOf("function");
+  });
+
+  it("does not reconnect a hidden socket when desktop notifications are off", async () => {
+    await receiveStatus({ runId: "setup", agentId: "other-agent", status: "running" });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(sockets[0].onmessage).toBeNull();
+    expect(sockets[0].onclose).toBeNull();
+    expect(sockets).toHaveLength(1);
   });
 
   it.each(["parent-agent", "child-agent"])("shows an unrelated retryable failure without issueId for %s", async (agentId) => {

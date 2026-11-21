@@ -48,7 +48,10 @@ Intentional operator interruptions and workspace contention do not announce run
 failures. Duplicate terminal outcomes and failures older than five minutes (when
 timestamps are available) remain quiet. Reconnect suppression, per-category rate
 limits, content deduplication, and toast lifetime limits remain in effect. Hidden
-pages reconcile their data on return without replaying a notification backlog.
+pages close the live socket and drop events unless desktop notifications are
+enabled. With Needs attention or All, the socket stays open so newly eligible
+toasts can still fire. They reconcile query data on return without replaying a
+notification backlog.
 Archiving a task is not a notification unsubscribe.
 
 ## Delivery contract
@@ -103,6 +106,18 @@ Closed sockets cannot deliver stale notifications after account/company changes.
 No client-side task-list cache or new database migration is required. During a
 mixed-version rollout, a new client receiving events from an older server stays
 quiet until the server provides eligibility.
+
+## Desktop notifications
+
+Profile settings include an opt-in **Desktop notifications** control. Off is
+the default. **Needs attention** mirrors error and warning toasts plus join
+requests and requests that need you. **All** mirrors every in-app
+toast that already passed the live-update gates above. Paperclip uses the
+browser Notification API only while this tab is hidden, and only after this
+browser grants permission. Enabling Needs attention or All also keeps the live
+socket open while this tab is hidden so those toasts can fire. Off keeps the
+existing close-on-hidden behavior. The choice stays in this browser. This is
+not Web Push: a closed tab cannot notify.
 
 ## Verification
 

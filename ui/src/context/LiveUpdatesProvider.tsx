@@ -1,6 +1,12 @@
 import { LiveTranscriptInterests, DISCONNECTED_TRANSCRIPT_STREAM } from "../lib/live-transcript-interests";
 import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChangesTaskIdentity } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
+import {
+  keepsLiveSocketWhileHidden,
+  readDesktopNotificationLevel,
+  subscribeDesktopNotificationLevel,
+  type DesktopNotificationLevel,
+} from "../lib/desktop-notifications";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
 import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
@@ -2391,6 +2397,13 @@ function canUseLiveSession(sessionStatus: string, hasSession: boolean, deploymen
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { visible } = usePageVisibility();
+  const notificationLevel = useSyncExternalStore(
+    subscribeDesktopNotificationLevel,
+    readDesktopNotificationLevel,
+    (): DesktopNotificationLevel => "off",
+  );
+  const keepHiddenSocket = keepsLiveSocketWhileHidden(notificationLevel);
+  const socketStayAlive = keepHiddenSocket || visible;
   const wasHidden = useRef(!visible);
   const hasOpenedSocket = useRef(false);
   const hasNeededSocketRecovery = useRef(!visible);
@@ -2466,7 +2479,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   }, [currentUserId]);
 
   useEffect(() => {
-    if (!visible) {
+    if (!socketStayAlive) {
       wasHidden.current = true;
       hasNeededSocketRecovery.current = true;
       invalidationBatcher.dispose();
@@ -2475,7 +2488,6 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     if (!canConnectSocket || !liveCompanyId) return;
     if (wasHidden.current) {
       wasHidden.current = false;
-      // Reconcile events missed while hidden, including completed runs/issues.
       void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
     }
 
@@ -2501,7 +2513,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
     const startPolling = () => {
       if (closed || pollTimer !== null) return;
-      // Visible queries still need fresh state when realtime is unavailable.
+      if (!getPageVisibility().visible) return;
       pollTimer = window.setInterval(() => {
         void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
       }, DISCONNECTED_POLL_INTERVAL_MS);
@@ -2509,6 +2521,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
     const scheduleReconnect = () => {
       if (closed || reconnectTimer !== null) return;
+      if (!keepHiddenSocket && !getPageVisibility().visible) return;
       reconnectAttempt += 1;
       hasNeededSocketRecovery.current = true;
       const delayMs = Math.min(
@@ -2522,7 +2535,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     };
 
     const connect = () => {
-      if (closed) return;
+      clearReconnect();
+      if (closed || socket) return;
       const url = buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`,
       );
@@ -2583,7 +2597,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
             }
             return;
           }
-          if (!getPageVisibility().visible) return;
+          if (!keepHiddenSocket && !getPageVisibility().visible) return;
           handleLiveEvent(
             coalescingClient,
             liveCompanyId,
@@ -2634,10 +2648,35 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     // Delay initial connect slightly so React StrictMode's double-invoke
     // cleanup fires before the WebSocket is created, avoiding the
     // "WebSocket closed before connection established" dev-mode error.
+    const onVisibilityChange = () => {
+      if (!keepHiddenSocket) return;
+      if (!getPageVisibility().visible) {
+        wasHidden.current = true;
+        hasNeededSocketRecovery.current = true;
+        stopPolling();
+        if (!socket) scheduleReconnect();
+        return;
+      }
+      if (wasHidden.current) {
+        wasHidden.current = false;
+        void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
+      }
+      if (!socket) {
+        startPolling();
+        scheduleReconnect();
+      }
+    };
+    if (keepHiddenSocket) {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
+
     const connectTimer = window.setTimeout(connect, 0);
 
     return () => {
       closed = true;
+      if (keepHiddenSocket) {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
       setConnectedScopeKey((current) => current === socketScopeKey ? null : current);
       window.clearTimeout(connectTimer);
       clearReconnect();
@@ -2648,7 +2687,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       closeSocketQuietly(activeSocket, "provider_unmount");
     };
   }, [
-    visible,
+    socketStayAlive,
+    keepHiddenSocket,
     invalidationBatcher,
     queryClient,
     coalescingClient,
