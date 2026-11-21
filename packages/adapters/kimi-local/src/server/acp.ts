@@ -1,3 +1,4 @@
+import { resolveExecutionEngineDefault } from "@paperclipai/adapter-utils/execution-engine-defaults";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,7 +55,7 @@ function normalizeEngine(value: unknown): KimiEngineSelection {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (raw === "acp") return { engine: "acp", explicit: true };
   if (raw === "cli") return { engine: "cli", explicit: true };
-  return { engine: "acp", explicit: false };
+  return { engine: resolveExecutionEngineDefault("kimi_local"), explicit: false };
 }
 
 export function resolveKimiExecutionEngine(config: Record<string, unknown>): KimiEngineSelection {
