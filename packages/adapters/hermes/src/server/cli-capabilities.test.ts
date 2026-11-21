@@ -2,6 +2,7 @@
  * Unit coverage for `hermes chat --help` capability probing.
  */
 
+import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import {
   buildProbeEnv,
+  buildWindowsCmdProbeTarget,
+  buildWindowsTaskkillSpec,
   hasQueryFileFlagInHelp,
   hermesSupportsQueryFile,
 } from "./cli-capabilities.js";
@@ -41,6 +44,28 @@ describe("buildProbeEnv", () => {
     expect(probeEnv.PAPERCLIP_API_KEY).toBeUndefined();
     expect(probeEnv.KEEP_ME).toBe("yes");
     expect(probeEnv.PATH).toBe("/usr/bin");
+  });
+});
+
+describe("Windows cmd/taskkill helpers", () => {
+  test("wraps .cmd/.bat targets through cmd.exe /d /s /c", () => {
+    const target = buildWindowsCmdProbeTarget(
+      "C:\\Program Files\\Hermes\\hermes.cmd",
+      ["chat", "--help"],
+      { SystemRoot: "C:\\Windows" },
+    );
+
+    expect(target).toEqual({
+      command: "C:\\Windows\\System32\\cmd.exe",
+      args: ["/d", "/s", "/c", '"C:\\Program Files\\Hermes\\hermes.cmd" chat --help'],
+    });
+  });
+
+  test("builds a process-tree taskkill command with /T /F", () => {
+    expect(buildWindowsTaskkillSpec(4321, { SystemRoot: "D:\\Win" })).toEqual({
+      command: "D:\\Win\\System32\\taskkill.exe",
+      args: ["/PID", "4321", "/T", "/F"],
+    });
   });
 });
 
@@ -166,4 +191,77 @@ process.stdout.write("usage: hermes chat [-h] [-q QUERY | --query-file PATH]\\n"
       }),
     ).resolves.toBeNull();
   });
+
+  test.skipIf(process.platform === "win32")(
+    "stops a spawned descendant tree before resolving null on cancellation",
+    async () => {
+      const childPidFile = path.join(tempDir, "descendant.pid");
+      const launcher = await writeProbeScript(
+        "spawner.mjs",
+        `
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  stdio: "inherit",
+});
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+setInterval(() => {}, 1000);
+`,
+      );
+
+      const isPidAlive = async (pid: number): Promise<boolean> => {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          return false;
+        }
+        try {
+          const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+          const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+          return state !== "Z" && state !== "X";
+        } catch {
+          try {
+            const state = execFileSync("ps", ["-o", "stat=", "-p", String(pid)], {
+              encoding: "utf8",
+            }).trim();
+            return state.length > 0 && !state.startsWith("Z");
+          } catch {
+            return false;
+          }
+        }
+      };
+
+      const controller = new AbortController();
+      const probePromise = hermesSupportsQueryFile({
+        command: launcher,
+        cwd: tempDir,
+        env: { PATH: process.env.PATH ?? "" },
+        timeoutMs: 10_000,
+        signal: controller.signal,
+      });
+
+      // Wait until the wrapper actually spawns its grandchild before aborting.
+      let childPid = 0;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        try {
+          const raw = await readFile(childPidFile, "utf8");
+          const parsed = Number(raw.trim());
+          if (Number.isInteger(parsed) && parsed > 0) {
+            childPid = parsed;
+            break;
+          }
+        } catch {
+          // Not written yet.
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(childPid).toBeGreaterThan(0);
+
+      controller.abort();
+      await expect(probePromise).resolves.toBeNull();
+
+      // Descendant process must already be terminated (gone or defunct) when the probe resolves.
+      await expect(isPidAlive(childPid)).resolves.toBe(false);
+    },
+  );
 });
