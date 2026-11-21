@@ -11,6 +11,7 @@ function compilerInputs(args) {
   const result = spawnSync(process.execPath, ["../scripts/run-tsc.mjs", ...args, "--listFilesOnly"], {
     cwd: serverRoot,
     encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
     timeout: 30_000,
   });
   if (result.error) throw result.error;

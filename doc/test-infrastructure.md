@@ -149,8 +149,11 @@ cores. It also takes about twice as long.
 It checks one package at a time and uses one thread for the server layers and the
 UI. Do not add `GOMEMLIMIT` to this path. It saves at most 300 MiB here, and it
 slows `tsc` by up to 20 times when the live heap goes above the limit.
-`pnpm build` still checks the whole server program and needs more than 8 GiB. The
-Docker image sets `PAPERCLIP_TSC_EMIT_ONLY=1` for that build, which emits
+`pnpm build` uses `server/tsconfig.build.json` for the production server compile.
+It excludes colocated test modules and the top-level test helper tree. The source
+typecheck still includes the tests. Compiler memory use depends on the runtime
+source graph and checker count; excluding tests does not set a memory limit.
+The Docker image sets `PAPERCLIP_TSC_EMIT_ONLY=1` for that build, which emits
 JavaScript without checks or declarations.
 
 Test projects outside `pnpm -r` import server source through relative paths. Each
