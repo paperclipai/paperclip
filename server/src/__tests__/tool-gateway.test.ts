@@ -2658,7 +2658,10 @@ rl.on("line", (line) => {
       expect(new Headers(init.headers).get("Authorization")).toBe(`Bearer ${alternateCredential}`);
       return Response.json({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: "alternate ok" }] } });
     });
-    const gateway = createTestToolGatewayService(db, { oauthGrantRefresher: refresh, remoteHttpRequest });
+    const recorded = recordingDb(db);
+    const catalogReads = () => recorded.statements.filter((query) => query.includes('"input_schema"') &&
+      query.includes('order by "tool_connections"."name", "tool_catalog_entries"."name"'));
+    const gateway = createTestToolGatewayService(recorded.db, { oauthGrantRefresher: refresh, remoteHttpRequest });
     const session = await gateway.createSession({ companyId, agentId, runId, issueId });
     const result = await gateway.executeTool({ sessionToken: session.token, tool: requestedName, parameters: {} });
 
@@ -2667,6 +2670,15 @@ rl.on("line", (line) => {
     expect(remoteHttpRequest.mock.calls.map(([url]) => url)).toEqual([olderUrl]);
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, result.invocationId));
     expect(invocation?.connectionId).toBe(older.connectionId);
+    expect(catalogReads()).toHaveLength(2);
+    expect(catalogReads().every((query) => query.includes("regexp_replace"))).toBe(true);
+
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, newer.id));
+    recorded.statements.length = 0;
+    recorded.statementParams.length = 0;
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: invocation.toolName, parameters: {} }))
+      .resolves.toMatchObject({ status: "completed" });
+    expect(catalogReads()).toHaveLength(1);
   });
 
   it("dispatches a bounded alias to the original long upstream tool name", async () => {

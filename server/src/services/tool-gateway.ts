@@ -2081,11 +2081,15 @@ export function createToolGatewayService(
   async function connectedMcpToolsForConnection(
     companyId: string,
     connectionId: string,
+    upstreamToolName?: string | null,
   ): Promise<ToolGatewayDescriptor[]> {
+    const exact = typeof upstreamToolName === "string"
+      ? { prefix: shortStableId(connectionId), slugs: [slugSegment(upstreamToolName, CONNECTED_TOOL_SLUG_FALLBACK)] }
+      : undefined;
     return connectedMcpToolsForCompany(companyId, {
       connectionIds: new Set([connectionId]),
       preserveToolNames: true,
-    });
+    }, exact);
   }
 
   async function assertAgentInCompany(
@@ -3480,12 +3484,14 @@ export function createToolGatewayService(
         // gets its own catalog descriptor and policy checks; never replay a call.
         for (let attempt = 0; attempt < 2; attempt += 1) {
           const grant = selected.grant!;
-          const target = (await connectedMcpToolsForConnection(session.companyId, grant.connectionId)).find(
-            (candidate) =>
-              isModelVisibleTool(candidate) &&
-              candidate.upstreamToolName === tool.upstreamToolName &&
-              candidate.providerType === tool.providerType,
-          );
+          const matchesTarget = (candidate: ToolGatewayDescriptor) =>
+            candidate.connectionId === grant.connectionId &&
+            candidate.upstreamToolName === tool.upstreamToolName &&
+            candidate.providerType === tool.providerType &&
+            isModelVisibleTool(candidate);
+          const target = connectedTools.find(matchesTarget) ?? (exact
+            ? (await connectedMcpToolsForConnection(session.companyId, grant.connectionId, tool.upstreamToolName)).find(matchesTarget)
+            : undefined);
           if (!target)
             throw new ToolGatewayHttpError(
               404,
