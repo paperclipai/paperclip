@@ -76,6 +76,18 @@ export function readTaskRetryIntent(payload: Record<string, unknown> | null | un
   return result.success ? result.data : null;
 }
 
+/** A Retry the connected conversation refused to replay continues the task
+ * from saved work instead; it is not a retry of the source run, so it must
+ * never carry that run's retry lineage. Admission writes the marker when it
+ * swallows an exact-replay refusal; settlement writes it when a bound chat
+ * action fails and the receipt converts to a continuation. */
+export function readRefusedTaskChatRetry(payload: Record<string, unknown> | null | undefined) {
+  const refused = payload?.refusedChatRetry;
+  return refused && typeof refused === "object" && !Array.isArray(refused)
+    ? refused as { chatActionId: string | null; code: string | null }
+    : null;
+}
+
 /** A board message has its own accepted user identity, not an external inbound
  * receipt. Certify its exact unchanged source and retained pre-provider evidence;
  * this selects the canonical Retry owner and never substitutes chat authority.
@@ -470,15 +482,25 @@ function admitTaskRetry(input: TaskRetryRequest) {
         { code: "chat_failed_run_retry_not_authorized" }); });
       const scope = { companyId: issue.companyId, issueId: issue.id, agentId: issue.assigneeAgentId,
         failedRunId: latest.id, initiatedByUserId: input.actorId, retryIntentId: id };
+      let refusedChatRetryCode: string | null = null;
       const prepared = await tx.transaction(savepoint => prepareChatRetry(savepoint as unknown as Db, scope))
         .catch(async error => {
           if (input.initiatedBy || !isExactChatReplayRefusal(error)) throw error;
           if (await hasUnadmittedChatInput()) throw error;
+          const code = (error.details as Record<string, unknown> | undefined)?.code;
+          refusedChatRetryCode = typeof code === "string" ? code : "chat_failed_run_retry_not_authorized";
           return null;
         });
       if (prepared) {
         intent.chatActionId = prepared.actionId;
         await tx.update(agentWakeupRequests).set({ payload: { issueId: issue.id, taskRetry: intent } })
+          .where(eq(agentWakeupRequests.id, id));
+      } else if (refusedChatRetryCode) {
+        // The connected conversation refused to replay this source; admission
+        // continues the task from saved work instead of retrying that run.
+        // The marker keeps dispatch from linking the continuation as a retry.
+        await tx.update(agentWakeupRequests).set({ payload: { issueId: issue.id, taskRetry: intent,
+          refusedChatRetry: { chatActionId: null, code: refusedChatRetryCode } } })
           .where(eq(agentWakeupRequests.id, id));
       }
     }

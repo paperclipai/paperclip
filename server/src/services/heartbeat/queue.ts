@@ -33,7 +33,7 @@ import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellatio
 import { notifyChatResponseAvailability } from "../chat-response-availability.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
-import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
+import { assertTaskRetryConversationAllowed, readRefusedTaskChatRetry, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
@@ -2808,6 +2808,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       triggerDetail,
       payload,
     });
+    delete enrichedContextSnapshot.explicitRetryOfRunId;
     const isManualContextCompactionWake = () => Boolean(
       reason === CONTEXT_COMPACTION_WAKE_REASON && source === "on_demand" && triggerDetail === "manual"
       && opts.manualUserWake === true && opts.requestedByActorType === "user"
@@ -2854,6 +2855,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       enrichedContextSnapshot.forceFreshSession = true;
       enrichedContextSnapshot.previousRunId = retry.sourceRunId;
       enrichedContextSnapshot.taskRetryRequestId = receipt.id;
+      // A refused chat Retry continues the task from saved work; it is not a
+      // retry of the source run and must not carry its retry lineage.
+      if (!readRefusedTaskChatRetry(receipt.payload))
+        enrichedContextSnapshot.explicitRetryOfRunId = retry.sourceRunId;
       if (retry.boardMessageOrigin) enrichedContextSnapshot.boardMessageRetry = true;
     }
 
@@ -2929,6 +2934,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           companyId: failed.companyId, runId: failed.id, actorId: opts.requestedByActorId,
         } });
       }
+      enrichedContextSnapshot.explicitRetryOfRunId = failed.id;
       if (isConversationAdapter(agent.adapterType) || agent.adapterType === "paperclip_runner") {
         enrichedContextSnapshot.previousRunId = failed.id;
         enrichedContextSnapshot.forceFreshSession = true;
@@ -3861,7 +3867,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const [previousRetry] = await tx.select().from(heartbeatRuns).where(and(
               eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.agentId, agentId),
               eq(heartbeatRuns.retryOfRunId, opts.failedRunId),
-              sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'retry_failed_run'`,
+              sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' in ('retry_failed_run', 'task_retry')`,
             )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
             if (previousRetry) return { kind: "replayed" as const, run: previousRetry };
           }
@@ -4956,6 +4962,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+            // A fresh-workspace Retry starts a new isolated attempt from the
+            // recorded work; it is not a retry of the source run.
+            if (explicitContinuation.readiness?.mode === "fresh_isolated_workspace")
+              delete enrichedContextSnapshot.explicitRetryOfRunId;
           }
 
           if (opts.queuedCommentInterruptId && issue.status === "done") {
@@ -4993,7 +5003,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             explicitContinuationRunId: explicitContinuation ? explicitContinuationRunId : null,
             retryOfRunId: failedChatRetry
               ? durableRequest!.failedRunRetry!.failedRunId
-              : opts.failedRunId ?? automaticParentRunId,
+              : readNonEmptyString(enrichedContextSnapshot.explicitRetryOfRunId) ?? opts.failedRunId ?? automaticParentRunId,
             contextSnapshot: enrichedContextSnapshot,
             resolveSessionIdBefore: () => resolveSessionBefore(tx),
             continuationAttempt,
