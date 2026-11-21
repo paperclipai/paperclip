@@ -80,4 +80,10 @@ describe('skillSecurityOverrideRequest', () => {
     expect(skillSecurityOverrideRequest({ ...trust, reason: 'x'.repeat(2001) }, 'a'.repeat(40), files)).toBeUndefined();
     expect(skillSecurityOverrideRequest({ ...trust, reason: 'x'.repeat(2000) }, 'a'.repeat(40), files)).toMatchObject({ reason: 'x'.repeat(2000) });
   });
+
+  it('carries the branch discovery reviewed so future trust stays on that branch', () => {
+    const files = [{ path: 'hooks/install.sh', code: 'remote_fetch_exec', message: 'Flagged.', sha256: 'd'.repeat(64), overridable: true }];
+    const trust = { ...emptySkillSecurityTrust, trusted: true, trustFutureUpdates: true, reason: 'Maintained by our platform team.' };
+    expect(skillSecurityOverrideRequest(trust, 'a'.repeat(40), files, 'main')).toMatchObject({ trustFutureUpdates: true, reviewedRef: 'main' });
+  });
 });

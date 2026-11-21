@@ -54,6 +54,7 @@ changing its selection (`PATCH`):
 | `files` | array | `{ path, sha256 }` for each approved file, from the scan; 1 to 10,000 unique paths |
 | `reason` | string | Why the repository is trusted; 10 to 2,000 characters |
 | `trustFutureUpdates` | boolean | Keep including the same paths in later commits of the reviewed branch; default `false` |
+| `reviewedRef` | string | The branch the scan resolved for the reviewed commit (the scan's `trackingRef`); required when `trustFutureUpdates` is `true` |
 
 The paths together may take at most 4 MiB as JSON sends them, so one approval
 fits inside the request body limit.
@@ -67,7 +68,9 @@ code `skill_security_override_denied`.
 The server scans the reviewed commit again before saving. It returns:
 
 - `409` with code `skill_security_override_stale` when the commit or a file's
-  bytes changed after the review.
+  bytes changed after the review, or when `trustFutureUpdates` is set and the
+  source now resolves to a branch other than `reviewedRef` (for example, a
+  source that tracks `HEAD` after the repository changed its default branch).
 - `422` with code `skill_security_override_stale` when a listed file is not
   flagged at that commit.
 - `422` with code `skill_security_override_forbidden` when a listed file also has

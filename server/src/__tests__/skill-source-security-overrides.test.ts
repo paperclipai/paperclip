@@ -68,7 +68,7 @@ describe.skipIf(!support.supported)('skill source security overrides', () => {
     const service = skillSourceService(db);
     const result = await service.create(companyId, {
       repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'repository', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
-      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates, files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] },
+      securityOverride: { commitSha: first, reviewedRef: 'main', reason: 'Maintained by our platform team.', trustFutureUpdates, files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] },
     }, context);
     return { companyId, result, audits, context, service,
       setFiles: (next: Record<string, string>, nextCommit: string) => { files = next; commit = nextCommit; } };
@@ -373,7 +373,7 @@ echo updated`;
     const service = skillSourceService(db);
     const created = await service.create(companyId, {
       repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
-      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: true, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] },
+      securityOverride: { commitSha: first, reviewedRef: 'main', reason: 'Maintained by our platform team.', trustFutureUpdates: true, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] },
     }, context);
     const skillId = created.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')!.skillId!;
     // Future-update trust installs the changed hook at the second commit.
@@ -464,6 +464,34 @@ echo develop` }, second);
     expect(refreshed.source.securityOverride).toMatchObject({ commitSha: first, trustFutureUpdates: false });
     expect(audits.find(entry => entry.action === 'company.skill_source_security_override_revoked')?.details)
       .toMatchObject({ cause: 'default_branch_changed', futureUpdatesOnly: true, reviewedRef: 'main', trackingRef: 'develop' });
+  });
+
+  it('refuses to trust future updates from a branch other than the one discovery reviewed', async () => {
+    const { companyId, result, service, context, audits } = await setup(false);
+    // Discovery reviewed commit first on main; the repository then makes develop its default branch.
+    await db.update(companySkillSources).set({ trackingRef: 'HEAD' }).where(eq(companySkillSources.id, result.source.id));
+    const moved: SkillSourceContext = { ...context, read: connectionId => {
+      const read = context.read(connectionId);
+      return Object.assign(async (url: string, signal?: AbortSignal) => url === '/repos/acme/skills'
+        ? { id: 42, full_name: 'acme/skills', default_branch: 'develop' } : read(url, signal), read) as typeof read;
+    } };
+    const { revision } = await service.detail(companyId, result.source.id);
+    const approvals = audits.filter(entry => entry.action === 'company.skill_source_security_override_approved').length;
+    await expect(service.refresh(companyId, result.source.id, moved, { revision, selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
+      securityOverride: { commitSha: first, reviewedRef: 'main', reason: 'Maintained by our platform team.', trustFutureUpdates: true,
+        files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] } }))
+      .rejects.toMatchObject({ status: 409, details: { code: 'skill_security_override_stale' } });
+    const [stored] = await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources)
+      .where(eq(companySkillSources.id, result.source.id));
+    expect(stored?.securityOverride).toMatchObject({ reviewedRef: 'main', trustFutureUpdates: false });
+    expect(audits.filter(entry => entry.action === 'company.skill_source_security_override_approved')).toHaveLength(approvals);
+
+    // A new source that keeps the HEAD alias is checked the same way.
+    await expect(service.create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'HEAD', packageMode: 'repository', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reviewedRef: 'main', reason: 'Maintained by our platform team.', trustFutureUpdates: true,
+        files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] },
+    }, moved)).rejects.toMatchObject({ status: 409, details: { code: 'skill_security_override_stale' } });
   });
 
   it('clears the approval from a project source row it keeps after disconnecting', async () => {
@@ -634,7 +662,7 @@ echo updated`;
     setFiles({ 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': hook, 'hooks/other.sh': otherHook }, second);
     const { revision } = await service.detail(companyId, result.source.id);
     const approved = await service.refresh(companyId, result.source.id, context, { revision, selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
-      securityOverride: { commitSha: second, reason: 'Reviewed the new hook by hand.', trustFutureUpdates: true, files: [{ path: 'hooks/other.sh', sha256: hash(otherHook) }] } });
+      securityOverride: { commitSha: second, reviewedRef: 'main', reason: 'Reviewed the new hook by hand.', trustFutureUpdates: true, files: [{ path: 'hooks/other.sh', sha256: hash(otherHook) }] } });
     const published = approved.source.repositoryPackage?.files.map(file => file.path).sort();
     expect(published).toEqual(['hooks/other.sh', 'skills/one/SKILL.md']);
     const [stored] = await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources).where(eq(companySkillSources.id, result.source.id));
@@ -761,7 +789,7 @@ echo release`;
     const service = skillSourceService(db);
     const created = await service.create(companyId, {
       repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md', 'skills/two/SKILL.md'],
-      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: true, files: [{ path: 'skills/two/install.sh', sha256: hash(hook) }] },
+      securityOverride: { commitSha: first, reviewedRef: 'main', reason: 'Maintained by our platform team.', trustFutureUpdates: true, files: [{ path: 'skills/two/install.sh', sha256: hash(hook) }] },
     }, context);
     files = { ...files, 'skills/two/install.sh': `${hook}
 echo updated` }; commit = second;

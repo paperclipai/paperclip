@@ -35,6 +35,11 @@ export interface SkillSecurityOverrideRequest {
   reason: string;
   /** Opt-in: keep trusting these paths in later commits, even when their content changes. */
   trustFutureUpdates: boolean;
+  /**
+   * The branch discovery scanned the reviewed commit from. Required to trust future updates: the
+   * server refuses the approval when the source now resolves to another branch.
+   */
+  reviewedRef?: string;
 }
 
 /** The recorded override a source applies on refresh. Grants file inclusion only, never execution. */

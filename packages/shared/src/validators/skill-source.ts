@@ -39,6 +39,9 @@ export const skillSecurityOverrideSchema = z.object({
     .refine(files => skillSecurityOverridePathBytes(files) <= SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES, 'Too many flagged files to approve in one request.'),
   reason: z.string().trim().min(10, 'Explain why this repository is trusted.').max(SKILL_SECURITY_OVERRIDE_REASON_MAX_LENGTH),
   trustFutureUpdates: z.boolean().default(false),
+  reviewedRef: z.string().trim().min(1).max(255).refine(value => !/[\x00-\x1f\x7f]/.test(value), 'Enter a valid branch.').optional(),
+}).refine(override => !override.trustFutureUpdates || Boolean(override.reviewedRef), {
+  message: 'Trusting future updates requires the reviewed branch. Scan the repository again.', path: ['reviewedRef'],
 });
 export const skillSourceCreateSchema = skillSourceLocationSchema.extend({
   commitSha: z.string().regex(/^[a-f0-9]{40}$/i),

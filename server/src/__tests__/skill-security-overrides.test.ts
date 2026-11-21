@@ -19,7 +19,7 @@ const files = {
   'scripts/leak.sh': leak,
 };
 const override = (commitSha: string, approved: Record<string, string>, trustFutureUpdates = false): SkillSecurityOverrideRequest => ({
-  commitSha, reason: 'Reviewed the upstream repository by hand.', trustFutureUpdates,
+  commitSha, reviewedRef: 'main', reason: 'Reviewed the upstream repository by hand.', trustFutureUpdates,
   files: Object.entries(approved).map(([path, content]) => ({ path, sha256: hash(content) })),
 });
 
@@ -93,6 +93,11 @@ describe('skill security overrides', () => {
     expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: [] }).success).toBe(false);
     expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: [{ path: '../etc/passwd', sha256: hash(hook) }] }).success).toBe(false);
     expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: [...valid.files, ...valid.files] }).success).toBe(false);
+    // Trusting future updates names the branch that was reviewed.
+    const { reviewedRef: _reviewedRef, ...withoutBranch } = valid;
+    expect(skillSecurityOverrideSchema.safeParse({ ...withoutBranch, trustFutureUpdates: true }).success).toBe(false);
+    expect(skillSecurityOverrideSchema.safeParse({ ...withoutBranch, trustFutureUpdates: false }).success).toBe(true);
+    expect(skillSecurityOverrideSchema.safeParse({ ...valid, trustFutureUpdates: true }).success).toBe(true);
   });
 
   it('keeps a maximum-sized approval within the JSON body limit', () => {

@@ -380,7 +380,7 @@ describe('GitHub skill source import', () => {
     expect(button('Import repository').disabled).toBe(false);
     await act(async () => button('Import repository').click());
     expect(skillSourcesApi.create).toHaveBeenCalledWith('company-1', expect.objectContaining({ securityOverride: {
-      commitSha, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: flagged.path, sha256: flagged.sha256 }],
+      commitSha, reason: 'Maintained by our platform team.', trustFutureUpdates: false, reviewedRef: 'feature/new-skills', files: [{ path: flagged.path, sha256: flagged.sha256 }],
     } }));
   });
   it('lets an administrator scan a saved source again to renew trust in flagged files', async () => {
@@ -390,7 +390,7 @@ describe('GitHub skill source import', () => {
     const saved = { ...connectedSource, packageMode: 'repository' as const, entries: [], securityOverride: { commitSha: 'a'.repeat(40), reason: 'Reviewed earlier.',
       trustFutureUpdates: false, approvedByUserId: 'admin', approvedAt: '2026-11-01T00:00:00.000Z', fileCount: 1 } };
     vi.mocked(skillSourcesApi.list).mockResolvedValue([saved]);
-    vi.mocked(skillSourcesApi.discoverStream).mockResolvedValue({ ...discovery, trackingRef: 'HEAD', commitSha, packageMode: 'repository', canOverrideSecurity: true,
+    vi.mocked(skillSourcesApi.discoverStream).mockResolvedValue({ ...discovery, trackingRef: 'main', commitSha, packageMode: 'repository', canOverrideSecurity: true,
       securityFindings: [flagged], repositoryPackage: { files: [], requirements: null, error: null, warnings: [] },
       candidates: [{ path: 'skills/main/SKILL.md', name: 'Main', description: null, fileCount: 1, error: null, warnings: [] }] });
     vi.mocked(skillSourcesApi.select).mockImplementation(() => new Promise(() => {}));
@@ -407,7 +407,7 @@ describe('GitHub skill source import', () => {
     });
     await act(async () => button('Save selection').click());
     expect(skillSourcesApi.select).toHaveBeenCalledWith('company-1', saved.id, expect.objectContaining({ securityOverride: {
-      commitSha, reason: 'Reviewed the new commit by hand.', trustFutureUpdates: false, files: [{ path: flagged.path, sha256: flagged.sha256 }],
+      commitSha, reason: 'Reviewed the new commit by hand.', trustFutureUpdates: false, reviewedRef: 'main', files: [{ path: flagged.path, sha256: flagged.sha256 }],
     } }));
   });
   it('withdraws a saved approval so future updates leave the flagged files out', async () => {

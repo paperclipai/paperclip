@@ -304,7 +304,7 @@ function SourceDialog({ companyId, source, onClose, onSaved }: {
   } });
   const securityFindings = discovery?.securityFindings;
   const overridableFiles = useMemo(() => overridableSecurityFiles(securityFindings), [securityFindings]);
-  const securityOverride = discovery?.canOverrideSecurity ? skillSecurityOverrideRequest(securityTrust, discovery.commitSha, overridableFiles) : null;
+  const securityOverride = discovery?.canOverrideSecurity ? skillSecurityOverrideRequest(securityTrust, discovery.commitSha, overridableFiles, discovery.trackingRef) : null;
   const revokeSecurityOverride = Boolean(source?.securityOverride) && securityTrust.revoke === true && !securityOverride;
   const save = useMutation({ mutationFn: () => source
     ? skillSourcesApi.select(companyId, source.id, { revision: selectionRevision!, packageMode, selectedPaths: [...selected], excludedFolders, connectionId: sourceConnectionId, ...(securityOverride ? { securityOverride } : revokeSecurityOverride ? { securityOverride: null } : {}) })

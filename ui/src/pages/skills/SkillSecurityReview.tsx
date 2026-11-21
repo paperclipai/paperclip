@@ -35,11 +35,12 @@ export function fitsSkillSecurityOverride(files: SkillSecurityFinding[]) {
  * The request for the server, or null when nothing is trusted. Undefined while the reason is incomplete.
  * Takes the result of `overridableSecurityFiles`, so callers can compute it once per scan instead of per keystroke.
  */
-export function skillSecurityOverrideRequest(trust: SkillSecurityTrust, commitSha: string | undefined, files: SkillSecurityFinding[]): SkillSecurityOverrideRequest | null | undefined {
+export function skillSecurityOverrideRequest(trust: SkillSecurityTrust, commitSha: string | undefined, files: SkillSecurityFinding[], reviewedRef?: string): SkillSecurityOverrideRequest | null | undefined {
   if (!trust.trusted || !files.length || !commitSha) return null;
   const reasonLength = trust.reason.trim().length;
   if (reasonLength < MIN_REASON_LENGTH || reasonLength > SKILL_SECURITY_OVERRIDE_REASON_MAX_LENGTH) return undefined;
   return { commitSha, reason: trust.reason.trim(), trustFutureUpdates: trust.trustFutureUpdates,
+    ...(reviewedRef ? { reviewedRef } : {}),
     files: files.map(file => ({ path: file.path, sha256: file.sha256 })) };
 }
 

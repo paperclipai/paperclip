@@ -102,9 +102,14 @@ export function mergeSecurityFindings(findings: SkillSecurityFinding[]) {
  * finding at the reviewed commit and that the approval now covers it. A
  * mismatch means the repository or the audit changed after review.
  */
-export function verifySecurityOverride(request: SkillSecurityOverrideRequest, scan: { commitSha: string; securityFindings?: SkillSecurityFinding[] }) {
+export function verifySecurityOverride(request: SkillSecurityOverrideRequest, scan: { commitSha: string; trackingRef?: string; securityFindings?: SkillSecurityFinding[] }) {
   if (scan.commitSha.toLowerCase() !== request.commitSha.toLowerCase()) {
     throw conflict('The repository changed after the security review. Scan it again and review the flagged files.', { code: 'skill_security_override_stale' });
+  }
+  // The scan is pinned to the reviewed commit, but a source that tracks HEAD resolves the branch again.
+  // Trust in future updates covers only the branch the administrator reviewed.
+  if (request.trustFutureUpdates && (!request.reviewedRef || request.reviewedRef !== scan.trackingRef)) {
+    throw conflict('The repository\'s branch changed after the security review. Scan it again before trusting future updates.', { code: 'skill_security_override_stale' });
   }
   const findingsByPath = new Map<string, SkillSecurityFinding[]>();
   for (const finding of scan.securityFindings ?? []) findingsByPath.set(finding.path, [...(findingsByPath.get(finding.path) ?? []), finding]);
