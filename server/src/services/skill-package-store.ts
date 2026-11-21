@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { constants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { companySkillRepositorySnapshots as snapshots, companySkillVersions, companySkillSources, withDedicatedDbConnection, type Db, type SkillPackageFileMapping, type SkillPackageStorageReceipt, type SkillPackageRestoreRecipe } from "@paperclipai/db";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
@@ -461,7 +462,8 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           migrationAt: null, maintenanceAt: new Date(Date.now() + 24 * 60 * 60_000) }).onConflictDoNothing().returning(descriptorColumns);
       });
       let existing = created ?? (await db.select(descriptorColumns).from(snapshots).where(and(eq(snapshots.companyId, companyId), eq(snapshots.contentHash, manifest.contentHash))))[0]!;
-      if (!created) {
+      while (!created) {
+        signal.throwIfAborted();
         if (existing.storage || (!existing.upload && !migrateLegacy && !existing.restorable)) {
           // Content deduplication must not attach a recipe with different kind or
           // encoding metadata to an already published manifest.
@@ -476,8 +478,12 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         const [claimed] = await db.update(snapshots).set({ upload }).where(and(scope(companyId, existing.id),
           sql`${snapshots.storage} is null`,
           sql`(${snapshots.upload} is null or (${snapshots.upload}->>'expiresAt')::timestamptz <= now())`)).returning(descriptorColumns);
-        if (!claimed) throw conflict("This skill package is being saved. Retry after its upload settles.");
-        existing = claimed;
+        if (claimed) { existing = claimed; break; }
+        try { await delay(250, undefined, { signal }); }
+        catch (error) { signal.throwIfAborted(); throw error; }
+        const [current] = await db.select(descriptorColumns).from(snapshots).where(scope(companyId, existing.id));
+        if (!current) throw notFound("Skill package was removed during preparation");
+        existing = current;
       }
       return withPackageIo(async () => {
         const root = skillPackagePaths(companyId, existing.id).parent;
@@ -517,11 +523,14 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           if (!saved) throw conflict("Skill package upload ownership changed");
           return saved.id;
         } finally {
-          // Failed/ambiguous uploads retain their durable claim. Maintenance reconciles
-          // exact owned keys; never delete a successful object on an uncertain SQL result.
           await fs.rm(staging, { recursive: true, force: true });
         }
-      }, signal);
+      }, signal).catch(async error => {
+        await db.update(snapshots).set({ upload: sql`jsonb_set(${snapshots.upload}, '{expiresAt}', to_jsonb(now()))` })
+          .where(and(scope(companyId, existing.id), sql`${snapshots.storage} is null`,
+            sql`${snapshots.upload}->>'token' = ${token}`)).catch(() => {});
+        throw error;
+      });
     });
     {
       const [retained] = await db.update(snapshots).set({ maintenanceAt: new Date(Date.now() + 24 * 60 * 60_000),
