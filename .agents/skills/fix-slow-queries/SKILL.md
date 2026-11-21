@@ -172,9 +172,9 @@ permission to comment, close, merge, deploy, resize, or mutate a hosted database
 
 ## Constraints
 
-- your solution should not require a migration script to be run unless there is a serious reason - in almost all cases a migration script is a non starter
-- similarly you should not add some new boot script - e.g. dont' work around migration scripts by running the migration on every boot
-- if you add migrations, you should also have a sense on the time it will take on a large paperclip instance with thousands of tasks. the best option is to test on a clone of a production-size database and time it. if you don't have that you should make one. migrations that take an unacceptably large time to run (e.g. more than 1 or 2 minutes) must be flagged - first try to optimize the migration and then flag for a human if that's impossible
+- your solution should not require a migration script to be run unless there is a serious reason - in almost all cases a migration script is a non-starter
+- similarly you should not add some new boot script - e.g. don't work around migration scripts by running the migration on every boot
+- if you add migrations, you should also have a sense of the time it will take on a large paperclip instance with thousands of tasks. the best option is to test on a clone of a production-size database and time it. if you don't have that you should make one. migrations that take an unacceptably large time to run (e.g. more than 1 or 2 minutes) must be flagged - first try to optimize the migration and then flag for a human if that's impossible
 
 ## 8. Hand off the evidence
 
