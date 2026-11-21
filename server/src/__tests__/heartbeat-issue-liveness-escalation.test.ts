@@ -1043,6 +1043,72 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(wakes.some((wake) => ["queued", "claimed", "completed"].includes(wake.status))).toBe(true);
   });
 
+  it.each(["paused", "terminated", "pending_approval"] as const)(
+    "skips resolved-dependency backstop candidates whose assignee is %s",
+    async (assigneeStatus) => {
+      const { companyId, agentId, blockedIssueId } =
+        await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+      await db.update(agents).set({ status: assigneeStatus }).where(eq(agents.id, agentId));
+
+      const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+      expect(result.checked).toBe(0);
+      expect(result.healed).toBe(0);
+      expect(result.issueIds).not.toContain(blockedIssueId);
+
+      const wakes = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+          ),
+        );
+      expect(wakes).toHaveLength(0);
+    },
+  );
+
+  it("wakes the dependent exactly once after a paused assignee is resumed", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const heartbeat = heartbeatService(db);
+
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    for (let pass = 0; pass < 2; pass += 1) {
+      const pausedPass = await heartbeat.reconcileResolvedDependencyWakes();
+      expect(pausedPass.checked).toBe(0);
+      expect(pausedPass.healed).toBe(0);
+    }
+
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+    const resumedPass = await heartbeat.reconcileResolvedDependencyWakes();
+    expect(resumedPass.healed).toBe(1);
+    expect(resumedPass.issueIds).toEqual([blockedIssueId]);
+
+    const repeatPass = await heartbeat.reconcileResolvedDependencyWakes();
+    expect(repeatPass.healed).toBe(0);
+    await heartbeat.drainActiveRunExecutions();
+
+    const wakes = await db
+      .select({ idempotencyKey: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+        ),
+      );
+    expect(wakes).toEqual([
+      {
+        idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: blockedIssueId,
+          blockerIssueIds: [blockerIssueId],
+        }),
+      },
+    ]);
+  });
+
   it("waits for workspace finalize before healing a resolved blocked dependent", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "not_finalized" });
