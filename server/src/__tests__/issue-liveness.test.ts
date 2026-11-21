@@ -628,3 +628,59 @@ describe("issue graph liveness classifier", () => {
     });
   });
 });
+
+
+describe("shared blocker traversal", () => {
+  it("bounds work on a layered DAG with shared blockers", () => {
+    let statusReads = 0;
+    const issues = [];
+    const relations = [];
+    for (let level = 0; level <= 16; level++) {
+      for (let branch = 0; branch < (level === 0 ? 1 : 2); branch++) {
+        const id = `level-${level}-${branch}`;
+        const node = issue({ id, identifier: id, assigneeAgentId: null, assigneeUserId: "user-1" });
+        Object.defineProperty(node, "status", {
+          get() {
+            statusReads++;
+            return level === 16 ? "todo" : "blocked";
+          },
+        });
+        issues.push(node);
+        if (level < 16) {
+          for (let next = 0; next < 2; next++) {
+            relations.push({ companyId, blockedIssueId: id, blockerIssueId: `level-${level + 1}-${next}` });
+          }
+        }
+      }
+    }
+
+    expect(classifyIssueGraphLiveness({ issues, relations, agents: [] })).toEqual([]);
+    expect(statusReads).toBeLessThan(2000);
+  });
+
+  it("handles cycles and retains the first finding path for each source", () => {
+    const issues = ["root-a", "root-b", "a", "b", "z"].map((id) => issue({
+      id,
+      identifier: id,
+      assigneeAgentId: null,
+      assigneeUserId: "user-1",
+      status: id === "z" ? "cancelled" : "blocked",
+    }));
+    const relations = [
+      ["root-a", "a"], ["root-a", "b"], ["root-b", "a"],
+      ["a", "b"], ["b", "a"], ["a", "z"],
+    ].map(([blockedIssueId, blockerIssueId]) => ({ companyId, blockedIssueId, blockerIssueId }));
+
+    const findings = classifyIssueGraphLiveness({ issues, relations, agents: [] });
+    expect(findings).toHaveLength(2);
+    for (const [index, root] of ["root-a", "root-b"].entries()) {
+      expect(findings[index]).toMatchObject({
+        issueId: root,
+        state: "blocked_by_cancelled_issue",
+        recoveryIssueId: "z",
+        incidentKey: `harness_liveness:${companyId}:${root}:blocked_by_cancelled_issue:z`,
+        dependencyPath: [root, "a", "z"].map((issueId) => expect.objectContaining({ issueId })),
+      });
+    }
+  });
+});
