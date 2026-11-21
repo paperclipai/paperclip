@@ -105,8 +105,6 @@ const createActivitySchema = z.object({
 });
 
 const companyActivityQuerySchema = z.object({
-  // activity_log.agent_id is a uuid column; reject malformed ids before they reach Postgres.
-  // An empty value means "no filter", matching the service's truthiness check.
   agentId: z.preprocess((value) => (value === "" ? undefined : value), z.string().guid().optional()),
 });
 
