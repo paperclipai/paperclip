@@ -1,3 +1,4 @@
+import { restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
@@ -667,14 +668,19 @@ export function approvalRoutes(
       return;
     }
 
-    const normalizedPayload = req.body.payload
+    const requestedPayload = req.body.payload && existing.type === "hire_agent"
+      ? restoreAgentConfigurationRedactions(
+          req.body.payload, existing.payload, redactApprovalPayload(existing).payload,
+        ) as Record<string, unknown>
+      : req.body.payload;
+    const normalizedPayload = requestedPayload
       ? existing.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             existing.companyId,
-            req.body.payload,
+            requestedPayload,
             { strictMode: strictSecretsMode },
           )
-        : req.body.payload
+        : requestedPayload
       : undefined;
     const approval = await svc.resubmit(id, normalizedPayload);
     const actor = getActorInfo(req);
