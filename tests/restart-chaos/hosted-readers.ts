@@ -1,3 +1,4 @@
+import { wakeInputCommentIds } from "./follow-up-delivery.js";
 import type { HostedApi } from "./hosted-api.js";
 import { isAutoNotice, type GradeRun, type GradeTaskInput } from "./release-swap-grade.js";
 
@@ -24,6 +25,9 @@ export interface HostedRunRow {
   finishedAt: number | null;
   lastActivityAt: number | null;
   ownerPid: null;
+  invocationSource: string | null;
+  retryOfRunId: string | null;
+  wakeCommentIds: string[];
 }
 
 export interface HostedIssueRow {
@@ -50,6 +54,7 @@ export function runRow(run: Json): HostedRunRow {
     errorCode: text(run.errorCode), error: run.error ? String(run.error).slice(0, 400) : null,
     createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
     lastActivityAt: activity.length ? Math.max(...activity) : null, ownerPid: null,
+    invocationSource: text(run.invocationSource), retryOfRunId: text(run.retryOfRunId), wakeCommentIds: wakeInputCommentIds(run, undefined),
   };
 }
 
