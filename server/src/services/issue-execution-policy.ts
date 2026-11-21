@@ -993,6 +993,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
+  if (requestedStatus === "done" && input.issue.status === "done") {
+    return { patch };
+  }
+
   let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage

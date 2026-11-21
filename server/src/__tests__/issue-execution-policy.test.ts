@@ -1466,6 +1466,26 @@ describe("issue execution policy transitions", () => {
       // No rewind to the first stage — the caller's done is allowed through.
       expect(result.patch).toEqual({});
     });
+
+    it("a done issue set to done again does not start the workflow", () => {
+      const policy = threeStagePolicy();
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "done",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Merged",
+      });
+
+      expect(result.patch).toEqual({});
+    });
   });
 
   describe("changes requested with no return assignee", () => {
