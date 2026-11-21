@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import os from "node:os";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readClaudeToken, readIsolatedClaudeKeychainToken } from "./quota.js";
 
 const suffixedService = (dir: string) => `Claude Code-credentials-${createHash("sha256").update(dir).digest("hex").slice(0, 8)}`;
 const mocks = vi.hoisted(() => ({ read: vi.fn(), exec: vi.fn() }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.read } }));
 vi.mock("node:child_process", () => ({ execFile: Object.assign(vi.fn(), { [Symbol.for("nodejs.util.promisify.custom")]: mocks.exec }) }));
+beforeEach(() => { vi.spyOn(os, "userInfo").mockReturnValue({ username: "operator" } as ReturnType<typeof os.userInfo>); });
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 describe("explicit Claude Keychain import", () => {
   it("does not consult Keychain during passive reads", async () => {
@@ -19,7 +21,39 @@ describe("explicit Claude Keychain import", () => {
     mocks.read.mockRejectedValue(new Error("missing"));
     mocks.exec.mockResolvedValue({ stdout: JSON.stringify({ claudeAiOauth: { accessToken: "fixture" } }) });
     await expect(readClaudeToken({ allowKeychain: true })).resolves.toBe("fixture");
-    expect(mocks.exec).toHaveBeenCalledWith("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], expect.any(Object));
+    expect(mocks.exec).toHaveBeenCalledWith("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-a", "operator", "-w"], expect.any(Object));
+  });
+  it("prefers the user's own account when other items share the service name", async () => {
+    // An "unknown"-account item holding only MCP OAuth state can shadow the
+    // login in an unscoped lookup.
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "");
+    mocks.read.mockRejectedValue(new Error("missing"));
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => ({
+      stdout: args.includes("-a")
+        ? JSON.stringify({ claudeAiOauth: { accessToken: "login" } })
+        : JSON.stringify({ mcpOAuth: {} }),
+    }));
+    await expect(readClaudeToken({ allowKeychain: true })).resolves.toBe("login");
+    expect(mocks.exec).toHaveBeenCalledTimes(1);
+  });
+  it("falls back to an unscoped lookup when the account-scoped item has no login", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "");
+    mocks.read.mockRejectedValue(new Error("missing"));
+    mocks.exec
+      .mockRejectedValueOnce(new Error("The specified item could not be found in the keychain."))
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ claudeAiOauth: { accessToken: "legacy" } }) });
+    await expect(readClaudeToken({ allowKeychain: true })).resolves.toBe("legacy");
+    expect(mocks.exec).toHaveBeenLastCalledWith("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], expect.any(Object));
+  });
+  it("does not fall back when the account-scoped lookup times out", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "");
+    mocks.read.mockRejectedValue(new Error("missing"));
+    mocks.exec.mockRejectedValueOnce(Object.assign(new Error("timed out"), { killed: true }));
+    await expect(readClaudeToken({ allowKeychain: true })).resolves.toBeNull();
+    expect(mocks.exec).toHaveBeenCalledTimes(1);
   });
   it("reads only the custom auth home's own suffixed Keychain item", async () => {
     // Claude Code stores a custom CLAUDE_CONFIG_DIR login in a per-directory
@@ -31,7 +65,7 @@ describe("explicit Claude Keychain import", () => {
     mocks.exec.mockResolvedValue({ stdout: JSON.stringify({ claudeAiOauth: { accessToken: "isolated" } }) });
     await expect(readClaudeToken({ allowKeychain: true })).resolves.toBe("isolated");
     expect(mocks.exec).toHaveBeenCalledTimes(1);
-    expect(mocks.exec).toHaveBeenCalledWith("/usr/bin/security", ["find-generic-password", "-s", suffixedService("/isolated/auth"), "-w"], expect.any(Object));
+    expect(mocks.exec).toHaveBeenCalledWith("/usr/bin/security", ["find-generic-password", "-s", suffixedService("/isolated/auth"), "-a", "operator", "-w"], expect.any(Object));
   });
   it("returns null for a custom auth home whose suffixed item is absent, without touching the unsuffixed item", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
@@ -39,14 +73,14 @@ describe("explicit Claude Keychain import", () => {
     mocks.read.mockRejectedValue(new Error("missing"));
     mocks.exec.mockRejectedValue(new Error("The specified item could not be found in the keychain."));
     await expect(readClaudeToken({ allowKeychain: true })).resolves.toBeNull();
-    expect(mocks.exec).toHaveBeenCalledTimes(1);
-    expect(mocks.exec).toHaveBeenCalledWith("/usr/bin/security", ["find-generic-password", "-s", suffixedService("/isolated/auth"), "-w"], expect.any(Object));
+    expect(mocks.exec).toHaveBeenCalledTimes(2);
+    for (const [, args] of mocks.exec.mock.calls) expect(args).toEqual(expect.arrayContaining(["-s", suffixedService("/isolated/auth")]));
   });
   it("readIsolatedClaudeKeychainToken reads the login home's suffixed item on macOS", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     mocks.exec.mockResolvedValue({ stdout: JSON.stringify({ claudeAiOauth: { accessToken: "isolated-keychain" } }) });
     await expect(readIsolatedClaudeKeychainToken("/data/ai-local-logins/abc")).resolves.toBe("isolated-keychain");
-    expect(mocks.exec).toHaveBeenCalledWith("/usr/bin/security", ["find-generic-password", "-s", suffixedService("/data/ai-local-logins/abc"), "-w"], expect.any(Object));
+    expect(mocks.exec).toHaveBeenCalledWith("/usr/bin/security", ["find-generic-password", "-s", suffixedService("/data/ai-local-logins/abc"), "-a", "operator", "-w"], expect.any(Object));
   });
   it("readIsolatedClaudeKeychainToken returns null off macOS", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
