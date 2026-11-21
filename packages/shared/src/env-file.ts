@@ -15,10 +15,15 @@ type EnvLine = {
 
 const ENV_ASSIGNMENT_PATTERN = /^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$/;
 const MINIMAL_ENV_VALUE_PATTERN = /^[A-Za-z0-9_./:@-]+$/;
+const DOTENV_UNESCAPED_PATTERN = /["\\]/;
+const SINGLE_QUOTE_UNSAFE_PATTERN = /['\r\n]/;
 
 export function encodeEnvValue(value: string, encoding: EnvValueEncoding = "json"): string {
   if (encoding === "minimal" && MINIMAL_ENV_VALUE_PATTERN.test(value)) {
     return value;
+  }
+  if (DOTENV_UNESCAPED_PATTERN.test(value) && !SINGLE_QUOTE_UNSAFE_PATTERN.test(value)) {
+    return `'${value}'`;
   }
   return JSON.stringify(value);
 }
