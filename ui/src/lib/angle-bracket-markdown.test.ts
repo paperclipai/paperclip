@@ -200,6 +200,15 @@ describe("escapeUnsupportedAngleBrackets", () => {
     expect(escapeUnsupportedAngleBrackets("1. first\n2.\n   ```\n   <inside>\n<after>")).toBe(
       "1. first\n2.\n   ```\n   <inside>\n\\<after>",
     );
+    expect(escapeUnsupportedAngleBrackets("- item\n2. text\n  ```\n  <inside>\n<after>")).toBe(
+      "- item\n2. text\n  ```\n  <inside>\n<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- item\n2. text\n   ```\n   <inside>\n<after>")).toBe(
+      "- item\n2. text\n   ```\n   <inside>\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- item\n  2. text\n  ```\n  <inside>\n<after>")).toBe(
+      "- item\n  2. text\n  ```\n  <inside>\n\\<after>",
+    );
   });
 
   it("does not treat 5+ spaces after a list marker or 4+ spaces after a blockquote as a fence", () => {
@@ -234,6 +243,9 @@ describe("escapeUnsupportedAngleBrackets", () => {
       "- item\n\n  ```\n  code\n<name>",
       "10. item\n    ```\n    code\n  <name>",
       "- outer\n  - inner\n    ```\n    code\n  <name>",
+      "- item\n2. text\n  ```\n  <inside>\n<after>",
+      "- item\n2. text\n   ```\n   <inside>\n<after>",
+      "- item\n  2. text\n  ```\n  <inside>\n<after>",
       "> - item\n>   ```\n>   code\n> <name>",
       "- > ```\n  > code\n\n  <name>",
       "```ts\r\n<inside>\r\n```\r\n<after>\r\n",
