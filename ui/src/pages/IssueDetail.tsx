@@ -7746,6 +7746,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     />
   );
 
+  const pinTaskChatHeader = taskChatShellEnabled && !isMobile && !issue.conversationAgentId;
+  const showSubTasksTreeInChatHeader = taskChatShellEnabled && !streamlinedTaskDetailEnabled;
   const issueHeaderBlock = issue.conversationAgentId ? null : (
     <div
       data-testid="issue-detail-header"
@@ -8204,7 +8206,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         />
       ) : null}
 
-      {taskChatShellEnabled && !streamlinedTaskDetailEnabled
+      {showSubTasksTreeInChatHeader && !pinTaskChatHeader
         ? subTasksTree
         : null}
 
@@ -8297,7 +8299,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     <>
       {ancestorsNav}
       {createdFromNote}
-      {issueHeaderBlock}
+      {pinTaskChatHeader ? null : issueHeaderBlock}
+      {pinTaskChatHeader && showSubTasksTreeInChatHeader ? subTasksTree : null}
       <TaskDecisionRecord companyId={issue.companyId} issueId={issue.id} viewerId={currentUserId} agentMap={agentMap} />
       {pluginOutletsBlock}
     </>
@@ -8635,6 +8638,17 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   : undefined
               }
             >
+              {resolvedDetailTab === "chat" && pinTaskChatHeader ? (
+                <div
+                  data-testid="task-chat-pinned-header"
+                  className={cn(
+                    "sticky top-0 z-10 shrink-0 border-b border-border bg-background py-3 md:px-4",
+                    streamlinedTaskDetailEnabled && "md:px-0",
+                  )}
+                >
+                  {issueHeaderBlock}
+                </div>
+              ) : null}
               {resolvedDetailTab === "chat" ? (
                 <WorkspaceBaseRefRecoveryProvider issue={issue} agentMap={agentMap} onRepaired={() => { invalidateIssueDetail(); invalidateIssueCollections(); }}
                   baseRefUnavailableReason={!canManageBoardRuntime ? "You don’t have permission to repair this task’s workspace." : null}
