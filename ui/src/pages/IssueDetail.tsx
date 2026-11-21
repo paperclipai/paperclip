@@ -32,7 +32,7 @@ import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 import { trackRecentProject } from "@/lib/recent-projects";
-import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
+import { ExecutionBlockerNotice, showsFailedAttempt } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { IssueCreatedFromNote } from "@/components/task-detail/IssueCreatedFromNote";
@@ -3464,6 +3464,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     setLoadingTitleIssueId((current) => editing ? loadingTitleOwner : current === loadingTitleOwner ? null : current);
   }, [loadingTitleOwner]);
   const taskRetry = useTaskRetry(issue ?? undefined);
+  const failedAttemptShown = showsFailedAttempt({ presentation: issue?.interruption,
+    optimistic: taskRetry.optimistic, takingLonger: taskRetry.takingLonger, error: taskRetry.error });
   const resolveWritableIssueId = async () => {
     if (!conversation) return issueId!;
     const resolved = await conversation.ensureIssue();
@@ -8211,7 +8213,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         issue={issue}
         workProducts={workProducts}
         checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
-        onCheckNow={() => checkIssueMonitorNow.mutate()}
+        // While a failed attempt is shown, Retry (beside the composer) is the recovery action.
+        onCheckNow={failedAttemptShown ? null : () => checkIssueMonitorNow.mutate()}
         checkingNow={checkIssueMonitorNow.isPending}
       />
 
@@ -8344,13 +8347,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               showStatus={!issue.interruption && !issue.executionBlocker?.workspaceRecovery}
               onRecoveryControlChange={setRetainedRecoveryOwnsRetry}
               action={issue.activeRecoveryAction ?? null} />
-          )}
-          {resolvedDetailTab === "chat" && (
-            <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption} blockers={issue.blockedBy}
-              issueId={issue.id} companyId={issue.companyId} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
-              canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
-                && isRetainedWorkspaceExportCause(issue.executionBlocker.cause) && retainedRecoveryOwnsRetry)} onRetry={taskRetry.retry}
-              optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
           )}
 
           {issue.status === "in_review" && issue.externalConversationState === "waiting" && (
@@ -8794,16 +8790,26 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onRefreshLatestComments={refetchLatestComments}
                   composerRef={commentComposerRef}
                   composerAccessory={
-                    hasVisibleMonitorSurface(issue) ? (
-                      <IssueMonitorComposerStrip
-                        issue={issue}
-                        hasActiveRun={hasLiveRuns}
-                        workProducts={workProducts}
-                        checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
-                        onCheckNow={() => checkIssueMonitorNow.mutate()}
-                        checkingNow={checkIssueMonitorNow.isPending}
-                      />
-                    ) : null
+                    <>
+                      {/* Interruptions sit with the composer, so Retry is beside where the user
+                          continues. A failed attempt supersedes a waiting monitor: Retry, not
+                          Check now, is the action that can recover it. */}
+                      <ExecutionBlockerNotice presentation={issue.interruption} blockers={issue.blockedBy}
+                        issueId={issue.id} companyId={issue.companyId} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
+                        canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
+                          && isRetainedWorkspaceExportCause(issue.executionBlocker.cause) && retainedRecoveryOwnsRetry)} onRetry={taskRetry.retry}
+                        optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
+                      {!failedAttemptShown && hasVisibleMonitorSurface(issue) ? (
+                        <IssueMonitorComposerStrip
+                          issue={issue}
+                          hasActiveRun={hasLiveRuns}
+                          workProducts={workProducts}
+                          checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
+                          onCheckNow={() => checkIssueMonitorNow.mutate()}
+                          checkingNow={checkIssueMonitorNow.isPending}
+                        />
+                      ) : null}
+                    </>
                   }
                   footer={
                     !taskChatShellEnabled && siblingNavigation ? (
