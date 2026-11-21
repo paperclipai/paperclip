@@ -23,6 +23,14 @@ vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div>{children}</div>,
 }));
 
+vi.mock("@/api/departments", () => ({
+  departmentsApi: {
+    list: () => new Promise(() => {}),
+    setForAgent: vi.fn(),
+    create: vi.fn(),
+  },
+}));
+
 describe("AgentOverview", () => {
   it("leads with audit cards, then Profile, Skills and Recent tasks", () => {
     const agent = {
@@ -78,6 +86,9 @@ describe("AgentOverview", () => {
     }
     expect(markup).toContain("2 enabled");
     expect(markup).toContain("Explore skills");
+    expect(markup).toContain("Departments");
+    const departmentInput = markup.match(/<input\b[^>]*>/g)?.find((tag) => tag.includes('aria-label="Add a department"')) ?? "";
+    expect(departmentInput).toContain('disabled=""');
     expect(markup).toContain('href="/agents/codexcoder/skills"');
     expect(markup).toContain("Design Guide");
     expect(markup).toContain("Simplify agent information architecture");

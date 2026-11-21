@@ -1630,6 +1630,10 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
   }
 
+  if (action === "agent.departments_set" || entityType === "department" || action?.startsWith("department.")) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.departments.list(companyId) });
+  }
+
   if (action?.startsWith("primary_agent.") || action?.startsWith("agent.") || action?.startsWith("resource_membership.")) {
     queryClient.invalidateQueries({ queryKey: ["primary-agent", companyId] });
   }

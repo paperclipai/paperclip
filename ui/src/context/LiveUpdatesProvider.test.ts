@@ -16,6 +16,20 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes the shared department list after membership and catalog changes", () => {
+    const client = new QueryClient();
+    const key = queryKeys.departments.list("company-1");
+    for (const action of ["agent.departments_set", "department.created", "department.renamed", "department.deleted"]) {
+      client.setQueryData(key, []);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: action.startsWith("department.") ? "department" : "agent",
+        entityId: "id-1",
+        action,
+      }, { userId: "user-1", agentId: null });
+      expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+    client.clear();
+  });
   it("discovers first proactive deliveries without invalidating another human's chat list", () => {
     const client = new QueryClient();
     const mine = queryKeys.agentChats.list("company-1", "user-1");

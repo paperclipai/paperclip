@@ -78,6 +78,8 @@ vi.mock("../context/SidebarContext", () => ({
 }));
 
 vi.mock("../api/ai-connections", () => ({ aiConnectionsApi: { list: vi.fn(async () => ({ currentUserId: "board", canManageConnections: true, connections: [] })) } }));
+const mockDepartmentsApi = vi.hoisted(() => ({ list: vi.fn(async () => [] as { id: string; companyId: string; name: string; agentIds: string[] }[]) }));
+vi.mock("@/api/departments", () => ({ departmentsApi: mockDepartmentsApi }));
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
@@ -345,6 +347,7 @@ describe("Agents", () => {
       defaultOptions: { queries: { retry: false } },
     });
 
+    mockDepartmentsApi.list.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({
         adapterConfig: { model: "gpt-5.4" },
@@ -556,6 +559,30 @@ describe("Agents", () => {
     expect(container.textContent).toContain("No agents match these filters.");
     await act(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Clear filters")!.click());
     expect(input.value).toBe("beta");
+    expect(container.querySelector("tbody")?.textContent).toContain("Beta");
+    expect(container.querySelector("tbody")?.textContent).not.toContain("Alpha");
+  });
+
+  it("filters the roster from a department select outside the other filters", async () => {
+    mockDepartmentsApi.list.mockResolvedValue([
+      { id: "dept-design", companyId: "company-1", name: "Design", agentIds: ["alpha"] },
+    ]);
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "alpha", name: "Alpha" }),
+      makeAgent({ id: "beta", name: "Beta" }),
+    ]);
+    root = createRoot(container);
+    await act(async () => renderAgentsView(root, queryClient));
+    await flushReact();
+    await flushReact();
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Department"]')!;
+    expect(select).not.toBeNull();
+    expect(select.closest('[aria-label="Agent filter choices"]')).toBeNull();
+    expect(select.closest('[aria-label="Agents controls"]')).not.toBeNull();
+    await act(() => { select.value = "dept-design"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(container.querySelector("tbody")?.textContent).toContain("Alpha");
+    expect(container.querySelector("tbody")?.textContent).not.toContain("Beta");
+    await act(() => { select.value = "__unassigned__"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     expect(container.querySelector("tbody")?.textContent).toContain("Beta");
     expect(container.querySelector("tbody")?.textContent).not.toContain("Alpha");
   });

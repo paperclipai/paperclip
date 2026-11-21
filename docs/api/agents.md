@@ -23,6 +23,8 @@ GET /api/agents/{agentId}
 
 Returns agent details including chain of command.
 
+Department labels are separate from the reporting chain. See [Departments](departments.md).
+
 ## Read execution environment identity
 
 Board users with organization access can list environments with

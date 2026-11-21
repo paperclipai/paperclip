@@ -3082,8 +3082,26 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     return [...ids];
   }
 
+  async function decideMany(
+    inputs: Array<Parameters<typeof decide>[0]>,
+  ): Promise<AuthorizationDecision[]> {
+    if (inputs.length === 0) return [];
+    // batchRead only memoizes when a snapshot exists. One snapshot shares the
+    // caller's agent and membership reads, then the checks run eight at a time.
+    const decideOne = readSnapshot
+      ? decide
+      : createAuthorizationService(db, {
+          issues: new Map(),
+          projects: new Map(),
+          runs: new Map(),
+          memo: new Map(),
+        }).decide;
+    return mapWithConcurrency(inputs, READ_DECISION_CONCURRENCY, (input) => decideOne(input));
+  }
+
   return {
     decide,
+    decideMany,
     decideReads,
     decideReadsForActors,
     projectDiscoveryCandidateIds,
