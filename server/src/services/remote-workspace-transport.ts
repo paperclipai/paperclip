@@ -65,6 +65,15 @@ export async function syncRemoteWorkspaceRecoveryDirectory(input: {
 export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE = "remote_workspace_sandbox_disk_full";
 export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL =
   `${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}: the sandbox disk is full; free space in the sandbox before saving the workspace`;
+
+export function isRemoteWorkspaceSandboxDiskFullError(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    if (current.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL) return true;
+    current = current.cause;
+  }
+  return false;
+}
 // Node reports ENOSPC or EDQUOT. Git and tar child processes report the text.
 const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].includes(e?.code)||/No space left on device|Disk quota exceeded/i.test(String(e?.stderr??'')+String(e?.message??''));`;
 const CAPTURE_FAILURE_CHECK = `const captureFailure=${remoteWorkspaceCaptureFailureMessage.toString()};const failureDetail=${remoteWorkspaceFailureDetail.toString()};`;
