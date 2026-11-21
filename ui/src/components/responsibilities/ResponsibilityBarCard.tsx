@@ -61,7 +61,7 @@ function useUpdateResponsibility(id: string) {
   return useMutation({
     mutationFn: (patch: UpdateResponsibility) => responsibilitiesApi.update(id, patch),
     onSuccess: (updated) => {
-      queryClient.setQueryData<ResponsibilityDetail>(queryKeys.responsibilities.detail(id), (old) =>
+      queryClient.setQueriesData<ResponsibilityDetail>({ queryKey: queryKeys.responsibilities.detail(id) }, (old) =>
         old ? { ...old, ...updated } : old);
       void queryClient.invalidateQueries({ queryKey: queryKeys.responsibilities.all });
     },

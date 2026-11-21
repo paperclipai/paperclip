@@ -1,5 +1,5 @@
 {
-  "id": "5f8bd5ac-5384-4fad-8ba5-da734b60ed16",
+  "id": "51525362-c4bc-44be-b4a7-95cb4aae7748",
   "prevId": "a80ac568-accd-4c40-b63a-82b870052e0a",
   "version": "7",
   "dialect": "postgresql",
@@ -25897,170 +25897,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.delivery_attestations": {
-      "name": "delivery_attestations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "declaration_revision": {
-          "name": "declaration_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_fingerprint": {
-          "name": "target_fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "delivered_revision": {
-          "name": "delivered_revision",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "notes": {
-          "name": "notes",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "delivery_attestations_run_idx": {
-          "name": "delivery_attestations_run_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "delivery_attestations_issue_outcome_idx": {
-          "name": "delivery_attestations_issue_outcome_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "outcome",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "delivery_attestations_company_id_companies_id_fk": {
-          "name": "delivery_attestations_company_id_companies_id_fk",
-          "tableFrom": "delivery_attestations",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "delivery_attestations_issue_id_issues_id_fk": {
-          "name": "delivery_attestations_issue_id_issues_id_fk",
-          "tableFrom": "delivery_attestations",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "delivery_attestations_run_id_heartbeat_runs_id_fk": {
-          "name": "delivery_attestations_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "delivery_attestations",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.document_annotation_anchor_snapshots": {
       "name": "document_annotation_anchor_snapshots",
       "schema": "",
@@ -44024,19 +43860,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "completion_requirement": {
-          "name": "completion_requirement",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "completion_requirement_revision": {
-          "name": "completion_requirement_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
         "started_at": {
           "name": "started_at",
           "type": "timestamp with time zone",
@@ -51688,12 +51511,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "default_completion_requirement": {
-          "name": "default_completion_requirement",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "is_primary": {
           "name": "is_primary",
           "type": "boolean",
@@ -52944,6 +52761,23 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "responsibilities_owned_area_fk": {
+          "name": "responsibilities_owned_area_fk",
+          "tableFrom": "responsibilities",
+          "tableTo": "responsibility_areas",
+          "columnsFrom": [
+            "company_id",
+            "owner_user_id",
+            "area_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "owner_user_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -52985,6 +52819,12 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "title": {
           "name": "title",
@@ -53062,11 +52902,44 @@
           "method": "btree",
           "with": {}
         },
-        "responsibility_areas_company_title_uq": {
-          "name": "responsibility_areas_company_title_uq",
+        "responsibility_areas_identity_uq": {
+          "name": "responsibility_areas_identity_uq",
           "columns": [
             {
               "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "responsibility_areas_owner_title_uq": {
+          "name": "responsibility_areas_owner_title_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

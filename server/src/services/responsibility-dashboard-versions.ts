@@ -34,7 +34,6 @@ type VersionRow = typeof responsibilityDashboardVersions.$inferSelect;
 type AreaRow = typeof responsibilityAreas.$inferSelect;
 type ResponsibilityRow = typeof responsibilities.$inferSelect;
 
-const LIVE = ["proposed", "active"] as const;
 
 /** One activity entry a restore or an applied change set writes after commit. */
 export interface DashboardActivityEvent {
@@ -121,7 +120,7 @@ export function responsibilityDashboardVersionService(db: Db) {
     createdNow: readonly string[] = [],
     touched: readonly string[] = [],
   ): Promise<ResponsibilityDashboardSnapshot> {
-    const [rows, linkRows, created] = await Promise.all([
+    const [rows, linkRows] = await Promise.all([
       database.select({
         id: responsibilities.id,
         title: responsibilities.title,
@@ -152,12 +151,6 @@ export function responsibilityDashboardVersionService(db: Db) {
           eq(responsibilities.ownerUserId, ownerUserId),
           eq(responsibilities.status, "active"),
         )),
-      database.selectDistinct({ id: sql<string>`jsonb_array_elements_text(${responsibilityDashboardVersions.snapshot} -> 'createdAreaIds')` })
-        .from(responsibilityDashboardVersions)
-        .where(and(
-          eq(responsibilityDashboardVersions.companyId, companyId),
-          eq(responsibilityDashboardVersions.ownerUserId, ownerUserId),
-        )),
     ]);
     const linksBy = new Map<string, ResponsibilityDashboardSnapshotLinks>();
     for (const link of linkRows) {
@@ -179,20 +172,19 @@ export function responsibilityDashboardVersionService(db: Db) {
       ...item, links: sortedLinks(item.id), description, runByAgentId, evidence, healthOverride, healthNote,
     }));
     const referenced = [...new Set(items.map((item) => item.areaId).filter((value): value is string => value !== null))];
-    const createdIds = [...new Set([...created.map((row) => row.id), ...createdNow])].filter((value) => !referenced.includes(value));
     // An area a change is about to touch is held whatever its status, so undoing a restore archives it again.
     const touchedIds = touched.filter((value) => !referenced.includes(value));
-    const areas = referenced.length + createdIds.length + touchedIds.length === 0 ? [] : await database.select({
+    const areas = await database.select({
       id: responsibilityAreas.id,
       title: responsibilityAreas.title,
       status: responsibilityAreas.status,
       sortOrder: responsibilityAreas.sortOrder,
       description: responsibilityAreas.description,
     }).from(responsibilityAreas).where(and(
-      eq(responsibilityAreas.companyId, companyId),
+      eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId),
       or(
         referenced.length > 0 ? inArray(responsibilityAreas.id, referenced) : undefined,
-        createdIds.length > 0 ? and(inArray(responsibilityAreas.id, createdIds), ne(responsibilityAreas.status, "archived")) : undefined,
+        ne(responsibilityAreas.status, "archived"),
         touchedIds.length > 0 ? inArray(responsibilityAreas.id, touchedIds) : undefined,
       ),
     ));
@@ -247,7 +239,9 @@ export function responsibilityDashboardVersionService(db: Db) {
     // A version saved before snapshots held filed items is compared on what it holds.
     const legacy = previousSnapshot ? isLegacySnapshot(previousSnapshot) : false;
     const comparable = legacy ? dashboardSnapshotHash(input.snapshot, { legacy: true }) : hash;
-    if (previous && previous.snapshotHash === comparable) {
+    const previousHash = previous?.snapshotHash === "remapped" && previousSnapshot
+      ? dashboardSnapshotHash(previousSnapshot, { legacy }) : previous?.snapshotHash;
+    if (previous && previousHash === comparable) {
       // One saved before skills could be filed hashes the same (no filed skills) but must hold the empty list too.
       if (!legacy && !lacksFiledSkills(previousSnapshot!)) return { row: previous, created: false };
       // The same dashboard as an older version that held no filed items,
@@ -307,8 +301,7 @@ export function responsibilityDashboardVersionService(db: Db) {
    * agent that runs it puts those back too (see restoreDetailsInTx); an older
    * version leaves them as they are.
    *
-   * Areas other people have responsibilities in keep their name and order
-   * (they see them too); a responsibility deleted since is created again with
+   * A responsibility deleted since is created again with
    * its sentence; an area deleted since is created again (or the live area now
    * holding its name is used); when an area's old name is now another area's,
    * that area is used instead.
@@ -326,20 +319,11 @@ export function responsibilityDashboardVersionService(db: Db) {
     const now = new Date();
     const areaIds = [...new Set([...target.areas.map((area) => area.id), ...current.areas.map((area) => area.id)])];
     const targetItemIds = target.responsibilities.map((item) => item.id);
-    const [areaRows, liveAreas, othersByArea, ownRows] = await Promise.all([
+    const [areaRows, liveAreas, ownRows] = await Promise.all([
       areaIds.length === 0 ? Promise.resolve([] as AreaRow[]) : tx.select().from(responsibilityAreas)
-        .where(and(eq(responsibilityAreas.companyId, companyId), inArray(responsibilityAreas.id, areaIds))),
+        .where(and(eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId), inArray(responsibilityAreas.id, areaIds))),
       tx.select({ id: responsibilityAreas.id, title: responsibilityAreas.title }).from(responsibilityAreas)
-        .where(and(eq(responsibilityAreas.companyId, companyId), ne(responsibilityAreas.status, "archived"))),
-      areaIds.length === 0 ? Promise.resolve([] as Array<{ areaId: string | null; count: number }>) : tx.select({
-        areaId: responsibilities.areaId,
-        count: sql<number>`count(*)::int`,
-      }).from(responsibilities).where(and(
-        eq(responsibilities.companyId, companyId),
-        inArray(responsibilities.areaId, areaIds),
-        ne(responsibilities.ownerUserId, ownerUserId),
-        inArray(responsibilities.status, [...LIVE]),
-      )).groupBy(responsibilities.areaId),
+        .where(and(eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId), ne(responsibilityAreas.status, "archived"))),
       targetItemIds.length === 0 ? Promise.resolve([] as ResponsibilityRow[]) : tx.select().from(responsibilities).where(and(
         eq(responsibilities.companyId, companyId),
         eq(responsibilities.ownerUserId, ownerUserId),
@@ -347,7 +331,6 @@ export function responsibilityDashboardVersionService(db: Db) {
       )),
     ]);
     const areasById = new Map(areaRows.map((row) => [row.id, row]));
-    const shared = new Set(othersByArea.filter((row) => row.areaId && row.count > 0).map((row) => row.areaId!));
     // Live titles, kept current as this restore renames and archives, for the one-live-name-per-area rule.
     const liveTitle = new Map(liveAreas.map((row) => [lower(row.title), row.id]));
     const setLive = (row: { id: string; title: string; status: string }) => {
@@ -368,7 +351,7 @@ export function responsibilityDashboardVersionService(db: Db) {
           return true;
         }
         const [created] = await tx.insert(responsibilityAreas).values({
-          companyId,
+          companyId, ownerUserId,
           title: want.title,
           description: want.description ?? null,
           status: want.status === "archived" ? "archived" : "active",
@@ -380,13 +363,8 @@ export function responsibilityDashboardVersionService(db: Db) {
         events.push({ action: "responsibility_area.created", entityType: "responsibility_area", entityId: created!.id, details: { title: created!.title, status: created!.status, ...source } });
         return true;
       }
-      const isShared = shared.has(row.id);
-      // Other people see a shared area: only bring it back if it was archived, never rename or reorder it.
-      const nextTitle = isShared ? row.title : want.title;
-      const nextStatus = isShared ? (row.status === "archived" && want.status !== "archived" ? "active" : row.status) : want.status;
-      const nextOrder = isShared ? row.sortOrder : want.sortOrder;
-      // A version that holds the description puts it back, except on an area others share.
-      const nextDescription = isShared || want.description === undefined ? row.description : want.description;
+      const { title: nextTitle, status: nextStatus, sortOrder: nextOrder } = want;
+      const nextDescription = want.description === undefined ? row.description : want.description;
       if (nextTitle === row.title && nextStatus === row.status && nextOrder === row.sortOrder && nextDescription === row.description) {
         areaFor.set(want.id, row.id);
         return true;
@@ -402,7 +380,7 @@ export function responsibilityDashboardVersionService(db: Db) {
       }
       const [updated] = await tx.update(responsibilityAreas)
         .set({ title: nextTitle, status: nextStatus, sortOrder: nextOrder, description: nextDescription, updatedAt: now })
-        .where(and(eq(responsibilityAreas.id, row.id), eq(responsibilityAreas.companyId, companyId)))
+        .where(and(eq(responsibilityAreas.id, row.id), eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId)))
         .returning();
       areasById.set(row.id, updated!);
       setLive(updated!);
@@ -505,7 +483,7 @@ export function responsibilityDashboardVersionService(db: Db) {
     // Areas the snapshot does not hold that are now empty of anyone's live responsibilities: archived.
     const kept = new Set(areaFor.values());
     const candidates = [...new Set([...current.areas.map((area) => area.id), ...touchedAreas])].filter((areaId) => !kept.has(areaId));
-    events.push(...await archiveIfEmpty(tx, companyId, candidates, source));
+    events.push(...await archiveIfEmpty(tx, companyId, ownerUserId, candidates, source));
     return { events, createdAreaIds };
   }
 
@@ -611,10 +589,10 @@ export function responsibilityDashboardVersionService(db: Db) {
   }
 
   /** Inside `tx`: archive each listed area that is not archived and holds no proposed or active responsibility of anyone. */
-  async function archiveIfEmpty(tx: DashboardTransaction, companyId: string, areaIds: readonly string[], source: Record<string, unknown>) {
+  async function archiveIfEmpty(tx: DashboardTransaction, companyId: string, ownerUserId: string, areaIds: readonly string[], source: Record<string, unknown>) {
     if (areaIds.length === 0) return [];
     const archived = await tx.update(responsibilityAreas).set({ status: "archived", updatedAt: new Date() }).where(and(
-      eq(responsibilityAreas.companyId, companyId),
+      eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId),
       inArray(responsibilityAreas.id, [...areaIds]),
       ne(responsibilityAreas.status, "archived"),
       sql`not exists (select 1 from ${responsibilities} r where r.area_id = ${responsibilityAreas.id} and r.status in ('proposed', 'active'))`,

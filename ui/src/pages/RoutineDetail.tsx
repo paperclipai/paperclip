@@ -46,6 +46,7 @@ import { useToastActions } from "@/context/ToastContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { configurationWarningMessages } from "@/lib/configuration-warnings";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
+import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
 import { queryKeys } from "@/lib/queryKeys";
 import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
 
@@ -141,10 +142,11 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     [historyQuery.data],
   );
 
+  const { userId } = useResolvedViewerId({ enabled: options.responsibilitiesOn });
   const linksQuery = useQuery({
-    queryKey: queryKeys.responsibilities.routineLinks(companyId, routineId),
+    queryKey: [...queryKeys.responsibilities.routineLinks(companyId, routineId), userId],
     queryFn: () => responsibilitiesApi.lookupRoutineLinks(companyId, routineId),
-    enabled: options.responsibilitiesOn,
+    enabled: options.responsibilitiesOn && !!userId,
   });
   const linkEntries = linksQuery.data?.responsibilities;
   const linksView = useQueryView(linksQuery);
@@ -308,11 +310,11 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   const loadDirectResponsibility = useCallback(async () => {
     if (!options.responsibilitiesOn) return "";
     const links = await queryClient.fetchQuery({
-      queryKey: queryKeys.responsibilities.routineLinks(companyId, routineId),
+      queryKey: [...queryKeys.responsibilities.routineLinks(companyId, routineId), userId],
       queryFn: () => responsibilitiesApi.lookupRoutineLinks(companyId, routineId),
     });
     return links.responsibilities.find((entry) => entry.via === "direct")?.id ?? "";
-  }, [companyId, options.responsibilitiesOn, queryClient, routineId]);
+  }, [companyId, options.responsibilitiesOn, queryClient, routineId, userId]);
 
   const openEdit = useCallback(async () => {
     const current = routineRef.current;
