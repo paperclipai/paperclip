@@ -302,6 +302,7 @@ export function documentService(db: Db) {
             .from(issueDocuments)
             .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
             .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key)))
+            .for("update", { of: documents })
             .then((rows) => rows[0] ?? null);
 
           await assertAgentInteraction(tx, {
@@ -676,6 +677,7 @@ export function documentService(db: Db) {
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(and(eq(issueDocuments.issueId, input.issueId), eq(issueDocuments.key, key)))
+          .for("update", { of: documents })
           .then((rows) => rows[0] ?? null);
 
         if (!existing) throw notFound("Document not found");
