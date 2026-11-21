@@ -110,8 +110,9 @@ bot's comment and infer that “3/5” should prevent merging. The score belongs
 Paperclip's assessment format and rating policy.
 
 To make the result usable by GitHub's merge rules, Paperclip translates the
-assessment into a **check run** named **Paperclip Review**. This is the same
-kind of GitHub object you see for a build or a test result.
+assessment into a **check run** named after the bot's GitHub App, for example
+**Paperclip Review**. This is the same kind of GitHub object you see for a build
+or a test result.
 
 The agent submits a structured assessment containing the reviewed commit,
 score, findings, rationale, and coverage. Paperclip validates the result and
@@ -174,11 +175,11 @@ that means: **“PRs into `main` need a passing Paperclip Review check.”**
 
 A typical setup is:
 
-1. Install and configure the bot, then let it publish its first **Paperclip Review** check.
+1. Install and configure the bot, then let it publish its first check. The check carries the App name, **Paperclip Review** in this example.
 2. Open the repository's **Settings → Rules → Rulesets**.
 3. Create or edit a branch ruleset targeting the branch you merge into, such as `main`.
 4. Enable **Require status checks to pass** and add **Paperclip Review**.
-5. Select the bot App as the expected source where available, so a result from a different integration does not satisfy the requirement.
+5. Select the bot App as the expected source where available, so a result from a different integration does not satisfy the requirement. Each Paperclip bot App publishes a check under its own name, so two bots on one repository never share a required check.
 6. Set the ruleset's enforcement to **Active** and choose bypass permissions deliberately.
 
 A classic branch-protection rule can also require the check. Organization rules
