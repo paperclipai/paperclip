@@ -13,6 +13,7 @@ import { abandonGitRestorePoint, activateGitRestorePoints, readRestorePointObjec
 import { allocatedBytes, describeGitExpirationFailure, expirationScope, isGitWorkspaceExpirationEligible, type GitExpirationFailure } from "./git-workspace-expiration.js";
 import { IsolatedRepositorySourceBusy, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
 import { logActivity } from "./activity-log.js";
+import { WORKSPACE_COMPACTION_TRASH_DIR } from "./workspace-compaction.js";
 import {
   captureTaskDirectorySnapshot,
   createEmptyTaskDirectorySnapshot,
@@ -597,6 +598,7 @@ export async function sweepIsolatedTaskDirectories(db: Db, options: FolderSweepO
     for (const name of await listDirectory(companyDir)) {
       options.signal?.throwIfAborted();
       if (afterCompany !== undefined && (companyId < afterCompany || (companyId === afterCompany && name <= afterIssue!))) continue;
+      if (name === WORKSPACE_COMPACTION_TRASH_DIR) continue;
       if (inspected >= limit) return { results, next: lastPosition, retryAt };
       inspected += 1;
       lastPosition = `${companyId}/${name}`;
