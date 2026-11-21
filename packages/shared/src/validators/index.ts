@@ -463,6 +463,7 @@ export {
   issueCommentMetadataRowSchema,
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
+  issueCommentCrossAssigneeContextSchema,
   addIssueCommentSchema,
   sendChatMessageSchema,
   markIssueReadSchema,
