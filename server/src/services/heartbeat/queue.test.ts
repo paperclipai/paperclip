@@ -10,7 +10,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { createFreshIssueRunStore, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
-import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, notifyOtherAgentsQueuedOnSettledIssue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, notifyOtherAgentsQueuedOnSettledIssue, settleResumedReceiptOnGuardMismatch, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
 import { withQueuedCommentIdsInWakePayload, withQueuedCommentIdsInRunContext } from "../issue-queued-comment-queue.js";
@@ -1633,5 +1633,51 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(cancelled, { suppressImmediateRecovery: true });
     expect(deps.treeControlSvc.getActivePauseHoldGate).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  describe("settleResumedReceiptOnGuardMismatch", () => {
+    const seedReceipt = async (status = "deferred_issue_execution") => {
+      const [company] = await db.insert(companies).values({ name: "Guard refusal", issuePrefix: "GR" }).returning();
+      const [agent] = await db.insert(agents).values({
+        companyId: company.id, name: "Guard agent", status: "idle",
+        adapterType: "paperclip_runner", adapterConfig: {},
+        runtimeConfig: { heartbeat: { enabled: true, intervalSec: 60 } },
+      }).returning();
+      const [receipt] = await db.insert(agentWakeupRequests).values({
+        companyId: company.id,
+        agentId: agent.id,
+        source: "assignment",
+        triggerDetail: "manual",
+        reason: "issue_assigned",
+        payload: { issueId: randomUUID(), executionWait: { reason: "prior_hold", message: "kept" } },
+        status,
+        requestedByActorType: "user",
+      }).returning();
+      return { company, agent, receipt };
+    };
+
+    it("records the wait on the receipt instead of inserting a refusal row", async () => {
+      const { company, receipt } = await seedReceipt();
+      await settleResumedReceiptOnGuardMismatch(db, {
+        requestId: receipt.id, companyId: company.id,
+      });
+      const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
+      expect(after.status).toBe("deferred_issue_execution");
+      expect(after.runId).toBeNull();
+      expect((after.payload as { executionWait?: Record<string, unknown> }).executionWait)
+        .toMatchObject({ reason: "issue_state_guard_mismatch", message: "Waiting for task execution to be enabled. Your message is saved." });
+      const refusals = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.reason, "issue_state_guard_mismatch"));
+      expect(refusals).toHaveLength(0);
+    });
+
+    it("leaves an already-settled receipt alone", async () => {
+      const { company, receipt } = await seedReceipt("finished");
+      await settleResumedReceiptOnGuardMismatch(db, {
+        requestId: receipt.id, companyId: company.id,
+      });
+      const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
+      expect(after.status).toBe("finished");
+    });
   });
 });

@@ -2531,4 +2531,30 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(successor.status).toBe("queued");
     expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
   });
+
+  it("leaves a cancelled task's saved message unre-driven instead of writing a refusal row", async () => {
+    const seeded = await seedQueue();
+    const [wake] = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agentWakeupRequests).set({
+      payload: {
+        ...wake.payload,
+        queuedCommentInterrupt: { actorId: "queue-owner", requestedAt: new Date().toISOString() },
+      },
+      requestedAt: new Date(Date.now() - 300_000),
+      updatedAt: new Date(Date.now() - 300_000),
+    }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(issues).set({ status: "cancelled", executionRunId: null })
+      .where(eq(issues.id, seeded.issueId));
+
+    await heartbeatService(db).resumeQueuedRuns();
+
+    const settled = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, seeded.wakeId)).then((rows) => rows[0]);
+    expect(settled?.status).toBe("deferred_issue_execution");
+    expect(settled?.runId).toBeNull();
+    const refusals = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "issue_state_guard_mismatch"));
+    expect(refusals).toHaveLength(0);
+  });
 });
