@@ -48,6 +48,11 @@ function metadataPath(text: string): string {
   return value;
 }
 
+async function emptyDirectory(directory: string): Promise<boolean> {
+  const handle = await fs.opendir(directory);
+  try { return await handle.read() === null; } finally { await handle.close(); }
+}
+
 async function onlyEntry(directory: string, name: string): Promise<boolean> {
   let found = false;
   for await (const child of await fs.opendir(directory)) {
@@ -74,6 +79,7 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
   const metadata: Metadata[] = [];
   let gitDirectory: Identity;
   if (markerEntry.isDirectory() && !markerEntry.isSymbolicLink()) {
+    if (await emptyDirectory(marker)) return null;
     if (!await entry(path.join(marker, "objects")) && await onlyEntry(marker, "info")) {
       const info = path.join(marker, "info"), infoEntry = await entry(info);
       if (infoEntry?.isDirectory() && !infoEntry.isSymbolicLink() && await onlyEntry(info, "exclude")) {
