@@ -7,7 +7,7 @@ import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../dri
 import { PRP_COMPLETION_TOOL_NAME, PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA } from "../contracts/completion-result.js";
 import { RunnerLaunchPreparationStore } from "./runner-launch-preparation-store.js";
 import type { PreparedRunnerProviderLaunch, RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
-import { preparedRunnerLaunchWorkingDirectory, validatePreparedRunnerLaunch, runnerLaunchSettingsMatch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
+import { preparedRunnerLaunchWorkingDirectory, validatePreparedRunnerLaunch, runnerLaunchSettingsMatch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, codexSkillReadRoot, codexSkillReadRoots, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
 export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trustedRuntimeReadOnlyRoots, withCodexCollaborationRuntimeInstructions } from "./runner-provider-launch.js";
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
@@ -68,7 +68,7 @@ import type {
 } from "../contracts/durable-recovery.js";
 import type { NativeRunIdentity, NativeTurnControlCapabilities } from "../contracts/types.js";
 import type { PrpEvent } from "../protocol/replay-contract.js";
-import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
+import { NativeProviderStateIncompatibleError, NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 import type {
   HarnessSession,
   HarnessRuntimeRequestResolution,
@@ -107,6 +107,14 @@ import {
   prepareIsolatedCodexRecoveryHome,
   releaseMaterializedNativeRuntimeSkills,
 } from "../drivers/runtime-context-materializer.js";
+import {
+  codexSkillHomeDigest,
+  readCodexSkillHomeMarker,
+  resolveRecordedCodexSkillHome,
+  resolveLegacyCodexSkillHome,
+  recordRecoveredCodexSkillHome,
+  usesCodexSkillHome,
+} from "../drivers/codex-skill-home.js";
 import { resolvePackagedRunnerBinary, resolvePackagedRunnerBinaryAsync } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUN_TERMINAL, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
@@ -1741,6 +1749,8 @@ export interface CapabilityRunnerdProcessEvidence {
 export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionDriver {
   observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
   homeMode?: "isolated" | "preconfigured";
+  /** Store of sealed skill homes shared by local Codex sessions (Mac/Linux). */
+  codexSkillHomeStoreRoot?: string;
   provider?: "cursor_cloud" | "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   observeCredentials?: boolean;
   onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
@@ -3915,6 +3925,8 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
   options: CapabilityRunnerdCodexTransportOptions;
   identity: DurableRecoveryIdentity;
   codexHome: string;
+  /** Shared skill home passed to Codex as HOME instead of the session home. */
+  skillHome?: string | null;
   runtimeContextPath: string;
   hasRuntimeContext: boolean;
   acpxSidecarPath?: string;
@@ -3945,6 +3957,9 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
         input.options.opencodeRuntimeDirectory ??
         resolve(input.options.stateDirectory ?? tmpdir(), "opencode"),
+      // OpenCode lists the shared skill home in skills.paths (opencode-server-driver.ts).
+      ...(usesCodexSkillHome({ ...input.options, provider: "codex" })
+        ? { PAPERCLIP_SKILL_HOME_STORE_ROOT: input.options.codexSkillHomeStoreRoot! } : {}),
       ...commonIdentity,
     };
   }
@@ -3965,6 +3980,10 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
         input.options.acpxAgent ?? "codex",
       ).env,
       ...(credentialBinding === undefined ? {} : { [ACPX_CREDENTIAL_BINDING_ENV]: credentialBinding }),
+      // Claude loads the shared skill home as a local plugin (runtime-host.ts).
+      ...(input.options.acpxAgent === "claude"
+        && usesCodexSkillHome({ ...input.options, provider: "codex" })
+        ? { PAPERCLIP_SKILL_HOME_STORE_ROOT: input.options.codexSkillHomeStoreRoot! } : {}),
       ...(input.options.acpxAgent === "grok" && input.options.environment?.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET
         ? { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET } : {}),
       ...(input.options.acpxAgent === "antigravity" && input.options.environment?.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET
@@ -4003,7 +4022,7 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
   }
   const environment = createSanitizedCodexEnvironment({
     ...input.options.environment,
-    HOME: input.options.homeMode === "preconfigured" ? input.options.environment?.HOME : input.codexHome,
+    HOME: input.options.homeMode === "preconfigured" ? input.options.environment?.HOME : input.skillHome ?? input.codexHome,
     CODEX_HOME: input.codexHome,
   });
   if (input.options.homeMode === "preconfigured") environment.PAPERCLIP_RUNNER_HOME_MODE = "preconfigured";
@@ -4014,8 +4033,16 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
   return environment;
 }
 
+/** Set by the runner from the server-provided store only, never from configured environment. */
+const RUNNER_SKILL_HOME_ENVIRONMENT_KEYS = ["PAPERCLIP_SKILL_HOME_STORE_ROOT", "PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR"] as const;
+
 export function createCapabilityRunnerdProviderEnvironment(input: Parameters<typeof createCapabilityRunnerdProviderEnvironmentBase>[0]): NodeJS.ProcessEnv {
-  return applyProviderObservabilityEnvironment(createCapabilityRunnerdProviderEnvironmentBase(input), input.options.observability, input.provider === "acpx");
+  const environment = input.options.environment ? { ...input.options.environment } : undefined;
+  for (const name of RUNNER_SKILL_HOME_ENVIRONMENT_KEYS) delete environment?.[name];
+  return applyProviderObservabilityEnvironment(
+    createCapabilityRunnerdProviderEnvironmentBase({ ...input, options: { ...input.options, environment } }),
+    input.options.observability, input.provider === "acpx",
+  );
 }
 
 export const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
@@ -4278,6 +4305,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
   #runAttachTemplate: Record<string, unknown> | null = null;
+  /** Shared skill home this session's Codex receives as HOME, when it uses one. */
+  #skillHome: string | null = null;
   #preparedWorkingDirectory: string | null = null;
   #closed = false;
   readonly #closedSignal: Promise<void>;
@@ -6359,7 +6388,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (this.#core?.unclaimedBootstrapCheckpoint()) {
         await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
       }
-      await prepareIsolatedCodexHome({
+      ({ skillHome: this.#skillHome } = await prepareIsolatedCodexHome({
+        ...(usesCodexSkillHome({ ...this.options, provider }) ? { skillHomeStoreRoot: this.options.codexSkillHomeStoreRoot } : {}),
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
         observability: this.options.observability,
@@ -6369,7 +6399,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         apiKey:
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
-      });
+      }));
     }
     this.#assertStartupOpen();
     const opencodeProxyPath =
@@ -6484,7 +6514,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.options, identity, params, runtimeContext, baseInstructions,
       ), {
         options: this.options, root: this.#root, cwd: String(params.cwd ?? tmpdir()),
-        codexHome, providerNodeCommand, codexCommand: effectiveCodexCommand,
+        codexHome, skillHome: this.#skillHome, providerNodeCommand, codexCommand: effectiveCodexCommand,
         opencodeProxyPath, acpxSidecarPath, cursorCloudProxyPath,
       }),
     };
@@ -6499,6 +6529,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           },
           identity,
           codexHome,
+          skillHome: this.#skillHome,
           runtimeContextPath,
           hasRuntimeContext: runtimeContext !== null,
           acpxSidecarPath,
@@ -7120,6 +7151,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       : this.options.runnerFilesystemRoot
         ? resolve(this.options.runnerFilesystemRoot, "codex-home")
         : localCodexHome;
+    const skillHomeStoreRoot = usesCodexSkillHome({ ...this.options, provider }) ? this.options.codexSkillHomeStoreRoot! : null;
+    const freshSkillPreparation = preparesProviderLaunch && !exactAuthority && this.#sourceRecoveryIdentity === null && sourceRuntimeContext !== null;
+    const canMigrateLegacySkills = skillHomeStoreRoot && localStateOwner && preparesProviderLaunch
+      && !freshSkillPreparation && warmRecovery === null && sourceRuntimeContext
+      && !this.options.codexArgs && this.options.recoveryPurpose !== "stop_cleanup"
+      && skillHomeStoreRoot === resolve(dirname(dirname(this.#root)), "skill-homes");
+    let migratedSkillHome: string | null = null;
+    if (skillHomeStoreRoot && freshSkillPreparation) {
+      // The home is content-addressed, so its path is known before it is
+      // published below; launch arguments built earlier already point at it.
+      this.#skillHome = resolve(skillHomeStoreRoot, codexSkillHomeDigest(sourceRuntimeContext));
+    } else if (skillHomeStoreRoot && await readCodexSkillHomeMarker(localCodexHome)) {
+      this.#skillHome = await resolveRecordedCodexSkillHome({
+        codexHome: localCodexHome, storeRoot: skillHomeStoreRoot, context: sourceRuntimeContext,
+      });
+    } else if (canMigrateLegacySkills && skillHomeStoreRoot && sourceRuntimeContext) {
+      const preparationStartedAt = Date.now();
+      migratedSkillHome = await resolveLegacyCodexSkillHome({
+        codexHome: localCodexHome, storeRoot: skillHomeStoreRoot, context: sourceRuntimeContext,
+      });
+      this.#assertStartupOpen();
+      if (this.#sourceAttachmentDeadline !== null) {
+        this.#sourceAttachmentDeadline += Date.now() - preparationStartedAt;
+      }
+      this.#skillHome = migratedSkillHome;
+    }
     const opencodeProxyPath =
       (preparesProviderLaunch ? undefined : "") ?? this.options.opencodeProxyPath ??
       (provider === "opencode" && !this.options.runnerFilesystemRoot
@@ -7299,6 +7356,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             disableWebSearch: this.options.disableCodexWebSearch,
             environment: this.options.environment,
             codexHome,
+            skillHome: this.#skillHome,
             workingDirectory: this.options.resumeWorkingDirectory,
             runtimeStateRoot: this.options.runnerFilesystemRoot ?? this.#root,
             codexCommand: typeof recordedCommand === "string" ? recordedCommand : this.options.codexCommand,
@@ -7308,7 +7366,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               ...trustedRuntimeReadOnlyRoots(this.options.environment),
               ...(runtimeContext
                 ? [
-                    resolve(codexHome, "skills"),
+                    ...codexSkillReadRoots(codexHome, this.#skillHome),
                     runtimeContext.instructions.bundle.rootPath,
                     ...runtimeContext.skills.map(
                       (skill) => skill.bundle.rootPath,
@@ -7496,19 +7554,34 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         sourceCodexHome: this.options.sourceCodexHome ?? resolveSourceCodexHome(this.options.environment),
         apiKey: this.options.environment?.CODEX_API_KEY ?? this.options.environment?.OPENAI_API_KEY,
       };
-      if (this.#sourceRecoveryIdentity !== null) {
+      if (this.#sourceRecoveryIdentity !== null || (exactAuthority && skillHomeStoreRoot !== null)) {
         await prepareIsolatedCodexRecoveryHome({
           ...auth,
           observability: this.options.observability,
         });
+        if (canMigrateLegacySkills && !migratedSkillHome && this.#skillHome && skillHomeStoreRoot && sourceRuntimeContext) {
+          this.#assertStartupOpen();
+          const preparationStartedAt = Date.now();
+          await resolveLegacyCodexSkillHome({
+            codexHome: localCodexHome, storeRoot: skillHomeStoreRoot, context: sourceRuntimeContext,
+            retire: true, expectedHome: this.#skillHome,
+          });
+          if (this.#sourceAttachmentDeadline !== null) {
+            this.#sourceAttachmentDeadline += Date.now() - preparationStartedAt;
+          }
+        }
       } else {
         await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
         this.#assertStartupOpen();
-        await prepareIsolatedCodexHome({
+        const prepared = await prepareIsolatedCodexHome({
           ...auth,
+          ...(skillHomeStoreRoot && freshSkillPreparation ? { skillHomeStoreRoot } : {}),
           context: sourceRuntimeContext,
           observability: this.options.observability,
         });
+        if (prepared.skillHome !== null && prepared.skillHome !== this.#skillHome) {
+          throw new NativeProviderStateIncompatibleError("codex_skill_home_unavailable");
+        }
       }
     }
     const adoptedRunner = this.options.adoptExistingRunner;
@@ -7579,6 +7652,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               },
               identity,
               codexHome,
+              skillHome: this.#skillHome,
               runtimeContextPath,
               hasRuntimeContext: runtimeContext !== null,
               acpxSidecarPath,
@@ -7762,6 +7836,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#attachRunWork(sourceAttachmentTarget);
       this.#sourceRecoveryIdentity = null;
       this.#sourceAttachmentDeadline = null;
+    }
+    if (migratedSkillHome && skillHomeStoreRoot && sourceRuntimeContext) {
+      // Keep the old paths for this process. Its next cold launch can retire
+      // them before any provider discovers the skills.
+      await recordRecoveredCodexSkillHome({ codexHome: localCodexHome, storeRoot: skillHomeStoreRoot, home: migratedSkillHome })
+        .catch(() => this.#diagnostic("retained legacy Codex skills after shared-home recovery"));
     }
     this.#diagnostic(
       rotatedAuthority || sourceAttachmentTarget
@@ -8060,6 +8140,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.options.prepareLaunch
         ? record((this.#runAttachTemplate ?? this.#core?.store.state.runAttachTemplate)?.provider).runtimeContext as NativeRuntimeContextSnapshot | undefined
         : undefined,
+      this.#skillHome,
     );
     if (skills.length && (this.options.provider ?? "codex") !== "codex") {
       throw new Error("Explicit skill inputs are supported only by Codex");
@@ -9980,6 +10061,7 @@ export function resolveRunnerdCodexSkillInputs(
   context: NativeRuntimeContextSnapshot | null,
   codexHome: string,
   preparedContext?: NativeRuntimeContextSnapshot,
+  skillHome?: string | null,
 ): Array<{ type: "skill"; name: string; path: string }> {
   if (inputs.length > 64) throw new Error("Too many explicit skill inputs");
   const seen = new Set<string>();
@@ -9999,7 +10081,7 @@ export function resolveRunnerdCodexSkillInputs(
       type: "skill",
       name: assigned.runtimeName,
       path: preparedSkill ? resolve(preparedSkill.bundle.rootPath, "SKILL.md")
-        : resolve(codexHome, "skills", assigned.runtimeName, "SKILL.md"),
+        : resolve(codexSkillReadRoot(codexHome, skillHome), assigned.runtimeName, "SKILL.md"),
     };
   });
 }

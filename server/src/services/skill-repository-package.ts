@@ -51,3 +51,26 @@ export function repositorySkillProjection(files: CompanySkillVersionFileInventor
     ...files.filter(file => file.path === policyPath).map(file => ({ ...file, path: 'agents/openai.yaml' })),
     ...files.map(file => ({ ...file, path: `${REPOSITORY_CONTENT_DIR}/${assertSkillSnapshotPath(file.path)}` }))];
 }
+
+/** Repository path prefix of a skill's folder: "" when its SKILL.md is at the root. */
+export function repositorySkillFolderPrefix(skillPath: string): string {
+  const folder = path.posix.dirname(assertSkillSnapshotPath(skillPath));
+  return folder === '.' ? '' : `${folder}/`;
+}
+
+/** What an agent gets for a repository skill: only the skill's own folder
+ * (Agent Skills standard), re-rooted at that folder with the original bytes and
+ * the entrypoint as SKILL.md. The skill library keeps the whole repository
+ * (`repositorySkillProjection`); a skill that needs another skill's files must
+ * carry them itself.
+ */
+export function repositorySkillFolderFiles<T extends { path: string }>(files: readonly T[], skillPath: string): Array<T & { sourcePath: string }> {
+  const prefix = repositorySkillFolderPrefix(skillPath);
+  const entryName = path.posix.basename(skillPath);
+  const selected = files.filter(file => file.path.startsWith(prefix)).map(file => {
+    const relative = assertSkillSnapshotPath(file.path).slice(prefix.length);
+    return { ...file, sourcePath: file.path, path: relative === entryName ? 'SKILL.md' : relative };
+  });
+  if (!selected.some(file => file.path === 'SKILL.md')) throw new Error('Repository skill entrypoint is missing.');
+  return selected;
+}

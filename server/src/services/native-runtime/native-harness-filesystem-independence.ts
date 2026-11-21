@@ -15,7 +15,7 @@ import { verifyFileManifest, type FileManifestEntry } from "../file-manifest-cac
 import { skillPackageStore } from "../skill-package-store.js";
 import { skillPackageManifest } from "../skill-package-files.js";
 import { assertSkillSnapshotPath, skillFileBytes } from "../skill-snapshot.js";
-import { REPOSITORY_CONTENT_DIR, repositorySkillProjection } from "../skill-repository-package.js";
+import { repositorySkillFolderFiles } from "../skill-repository-package.js";
 import { captureLegacyDurablePrpCheckpoint, inspectDurablePrpCheckpointHeader, parseNativeExecutionInput,
   type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./canonical.js";
@@ -694,18 +694,8 @@ async function localFacts(facts: Awaited<ReturnType<typeof databaseFacts>>, asse
         let projectedFiles = manifest.files;
         if (version.repositorySnapshotId) {
           if (!version.repositorySkillPath) fail();
-          const wanted = new Set([version.repositorySkillPath, posix.join(posix.dirname(version.repositorySkillPath), "agents/openai.yaml")]);
-          const authored = [];
-          for (const file of manifest.files.filter(file => wanted.has(file.path))) {
-            const handle = await open(join(projected, REPOSITORY_CONTENT_DIR, file.path), constants.O_RDONLY | constants.O_NOFOLLOW);
-            try { const s = await handle.stat(); if (!s.isFile() || s.size !== file.size || s.size > 4 * 1024 * 1024) fail();
-              const bytes = await handle.readFile(); if (sha(bytes) !== file.sha256) fail();
-              authored.push({ ...file, content: bytes.toString(file.encoding) });
-            } finally { await handle.close(); }
-          }
-          projectedFiles = [...manifest.files.map(file => ({ ...file, path: `${REPOSITORY_CONTENT_DIR}/${file.path}` })),
-            ...repositorySkillProjection(authored, version.repositorySkillPath).filter(file => !file.path.startsWith(`${REPOSITORY_CONTENT_DIR}/`))
-              .map(file => { const bytes = skillFileBytes(file); return { ...file, size: bytes.length, sha256: sha(bytes), executable: Boolean(file.executable), encoding: file.encoding ?? "utf8" as const }; })];
+          // A repository skill is its own folder: files below its SKILL.md directory.
+          projectedFiles = repositorySkillFolderFiles(manifest.files, version.repositorySkillPath);
         } else if (version.packageFileMap) projectedFiles = version.packageFileMap.map(mapping => {
           const file = manifest.files.find(file => file.path === mapping.sourcePath); if (!file) fail(); return { ...file, path: mapping.path };
         });

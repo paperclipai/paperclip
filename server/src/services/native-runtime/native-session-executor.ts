@@ -2663,6 +2663,11 @@ function runnerdStateBase(): string {
   );
 }
 
+/** Sealed Codex skill homes shared by local sessions; a sibling of the session roots. */
+export function codexSkillHomeStoreRoot(): string {
+  return resolve(runnerdStateBase(), "..", "skill-homes");
+}
+
 /**
  * A runner launch requested without a recorded process identity leaves no PID
  * to verify. On this host it is proven absent when no process carries the
@@ -18831,6 +18836,11 @@ async function createRunnerdBackendWithinSessionClaim(
         onSpawn: input.onSpawn,
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
+        // The runner decides per platform and agent (Codex, ACPX Claude, OpenCode);
+        // Windows and other ACPX agents keep copying skills.
+        ...((input.execution.provider.kind === "codex" || input.execution.provider.kind === "acpx"
+          || input.execution.provider.kind === "opencode") && !preconfiguredHome && !remoteTarget
+          ? { codexSkillHomeStoreRoot: codexSkillHomeStoreRoot() } : {}),
         ...accountingTransportOptions,
         onCredentialsUpdated: credentialUpdates?.onCredentialsUpdated,
         provider:

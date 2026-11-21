@@ -24,7 +24,7 @@ import { originalHarnessVolumeAnchorPath, verifyOriginalHarnessVolumeSource, typ
   type ReviewedOriginalHarnessVolumeWitness } from "./native-harness-original-volume.js";
 import { removeRuntimeAssetTree } from "./runtime-asset-retention.js";
 import { skillPackageStore } from "../skill-package-store.js";
-import { repositorySkillProjection } from "../skill-repository-package.js";
+import { repositorySkillFolderFiles } from "../skill-repository-package.js";
 import { skillFileBytes } from "../skill-snapshot.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
@@ -107,7 +107,8 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
       let projected = files;
       if (kind === "repository") {
         files[0]!.content = "---\nname: retained\ndescription: retained\n---\n# original immutable skill\n";
-        projected = repositorySkillProjection(files, "SKILL.md");
+        // Agents get the skill folder itself (here the repository root).
+        projected = repositorySkillFolderFiles(files, "SKILL.md");
       }
       if (kind === "repository" || kind === "package" || kind === "deleted") {
         const packageId = await skillPackageStore(db, storage).prepare(companyId, files, true);

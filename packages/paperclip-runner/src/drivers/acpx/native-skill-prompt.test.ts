@@ -12,6 +12,10 @@ describe("Claude native task skill invocation", () => {
     const text = envelope(description);
     expect(claudeNativeSkillPrompt(text, ["first-task", "paperclip"])).toBe(`/first-task ${text}`);
   });
+  it("invokes a skill under its plugin namespace when skills come from a shared plugin", () => {
+    const text = envelope("Use the `first-task` skill (/first-task).");
+    expect(claudeNativeSkillPrompt(text, ["first-task"], "paperclip")).toBe(`/paperclip:first-task ${text}`);
+  });
   it.each([
     envelope("Ordinary task", "Please mention /first-task in the output."),
     envelope("/not-assigned"), envelope(null), envelope("/first-task-extra"),

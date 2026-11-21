@@ -20,6 +20,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
+import { removeCodexSkillHomeTree } from "../codex-skill-home.js";
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
@@ -640,6 +641,62 @@ describe("ACPX runtime host", () => {
       expect(await readFile(transcript, "utf8")).toContain("saved by the previous release");
     } finally {
       await resumed.close({ reason: "previous-release session resumed" });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("gives Claude the shared skill home as a plugin instead of copying skills", async () => {
+    const fixture = await hostFixture();
+    const skillRoot = join(fixture.root, "assigned-source");
+    await mkdir(join(skillRoot, "references"), { recursive: true });
+    await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Read the reference.\n---\nRead references/answer.txt.");
+    await writeFile(join(skillRoot, "references", "answer.txt"), "ASSIGNED_SKILL_MARKER");
+    const digest = "0".repeat(64);
+    const bundle = { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: skillRoot, fileCount: 2, totalBytes: 100 };
+    const snapshot = {
+      prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+      instructions: { entryPath: "AGENTS.md", bundle },
+      skills: [{ key: "assigned", runtimeName: "assigned", versionId: "v1", bundle }],
+      mcp: { assignmentSetId: "none", digest, bindingId: null },
+    } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
+    const context = { ...snapshot, aggregateDigest: canonicalNativeRuntimeContextDigest(snapshot) };
+    const storeRoot = join(fixture.root, "skill-homes");
+    let pluginDirectory = "";
+    let configDirectory = "";
+    const providerStartTurn = vi.fn(() => runtimeTurn());
+    const dependencies = fixture.dependencies({
+      openRuntime: async (options) => {
+        pluginDirectory = options.launchEnvironment.PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR ?? "";
+        configDirectory = options.launchEnvironment.CLAUDE_CONFIG_DIR!;
+        return runtimePort({
+          startTurn: providerStartTurn,
+          getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }),
+        });
+      },
+    });
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options,
+      agent: "claude" as const,
+      model: "claude-sonnet-5",
+      permissionMode: "deny-all" as const,
+      environment: { PAPERCLIP_SKILL_HOME_STORE_ROOT: storeRoot },
+      runtimeContext: context,
+    }, dependencies);
+    try {
+      expect(pluginDirectory.startsWith(`${storeRoot}/`)).toBe(true);
+      expect(pluginDirectory.endsWith("/.agents")).toBe(true);
+      expect(await readFile(join(pluginDirectory, "skills", "assigned", "references", "answer.txt"), "utf8"))
+        .toBe("ASSIGNED_SKILL_MARKER");
+      expect(await readdir(join(configDirectory, "skills")).catch(() => [])).toEqual([]);
+      const message = JSON.stringify({
+        schema: "paperclip.native-model-envelope.v2",
+        task: { description: "Use /assigned", prompt: "A new direct user request" },
+        interactionResponses: [],
+      });
+      host.startTurn({ text: message, requestId: "shared-skill-turn" });
+      expect(providerStartTurn).toHaveBeenLastCalledWith({ text: `/paperclip:assigned ${message}`, requestId: "shared-skill-turn" });
+    } finally {
+      await host.close({ reason: "shared skill test" });
+      await removeCodexSkillHomeTree(storeRoot);
     }
   });
 

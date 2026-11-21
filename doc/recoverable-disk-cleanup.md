@@ -120,6 +120,52 @@ The rest of the session directory, including its control-plane state, is kept.
 Each batch that finds candidates logs them with candidate and reclaimed allocated
 bytes, cleared task sessions, and skip reasons.
 
+### Shared Codex skill homes
+
+On Mac and Linux, a local Codex session with an isolated home does not copy its
+assigned skills into `codex-home/skills`. Its Codex app-server gets a shared,
+read-only skill home as `HOME` instead:
+`<instance>/runtime/paperclip-runner/skill-homes/<digest>/.agents/skills/`. The
+digest covers the assigned skill names and bundle digests, so sessions with the
+same skills use one copy. A home is sealed once it is published and never edited;
+a skill change produces a new home. Next to each home, `<digest>.last-used` records
+its last launch and `<digest>.stat.json` records each file's inode, size and ctime
+after sealing. A launch reuses a home when those still match; otherwise it checks
+every file against `manifest.json` and moves a damaged home to
+`skill-homes/quarantine/`. Each session names its home in
+`codex-home/paperclip-skill-home.json`. Windows, preconfigured homes and remote
+Runner hosts keep the per-session copy, because Codex reads `HOME` only on Mac and
+Linux.
+
+ACPX Claude and OpenCode sessions use the same skill homes. Each home also contains
+`.agents/.claude-plugin/plugin.json`, and Claude loads `.agents` as a local plugin, so
+its assigned skills appear as `paperclip:<skill>`. OpenCode lists
+`<home>/.agents/skills` in `skills.paths` of its generated `opencode.json`. Their
+markers are `runtime/paperclip-runner/acpx/acpx/<session>/claude-home/paperclip-skill-home.json`
+and `durable-sessions/<scope>/opencode/<session>/paperclip-skill-home.json`. ACPX
+Grok and Kimi keep copying skills into their home.
+
+The same sweep removes a skill home when no session's
+`codex-home/paperclip-skill-home.json` names it and it was not launched for a day.
+Removing a session's provider home (for example when it expires) therefore releases
+its skill home too. The sweep runs in the native runner evidence pass and looks
+again a day later. A home is
+renamed to `.retiring-<digest>.<UUID>` first and restored when a launch references
+it before the removal. Leftover `.staging-*` and `.retiring-*` directories older than
+a day and quarantined homes older than seven days are removed. The dry-run setting
+above applies.
+
+### Abandoned skill staging
+
+A launch copies assigned skills into `.paperclip-skills-staging-<UUID>` next to the
+provider's skills directory and renames it when the copy is complete. A launch that
+is cancelled or killed during the copy leaves that partly sealed directory behind.
+The next launch of the same provider home removes staging older than an hour before
+it copies skills. The same sweep removes staging older than a day in every provider
+home of `durable-sessions/<scope>/` (Codex) and `runtime/paperclip-runner/acpx/acpx/<session>/`
+(ACPX, for example `claude-home`), so homes that never launch again are cleaned too.
+The dry-run setting above applies.
+
 ### Continuity-break archives and quarantined session state
 
 The same sweep also removes two kinds of evidence that native sessions leave behind

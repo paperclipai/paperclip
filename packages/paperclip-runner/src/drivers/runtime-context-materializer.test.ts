@@ -8,8 +8,10 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "smol-toml";
@@ -26,6 +28,7 @@ import {
 } from "../contracts/runtime-context.js";
 import {
   materializeNativeRuntimeSkills,
+  removeAbandonedSkillStaging,
   prepareIsolatedCodexRecoveryHome,
   prepareIsolatedCodexHome,
 } from "./runtime-context-materializer.js";
@@ -145,6 +148,89 @@ describe("runtime context materialization", () => {
     expect(parse(config).mcp_servers).toBeUndefined();
     expect(config).not.toContain("Bearer ");
     expect(config).not.toContain("unassigned");
+  });
+
+  it.each(["copy", "skill home"] as const)("removes skill staging an interrupted launch left behind (%s)", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-abandoned-staging-"));
+    roots.push(root);
+    const assigned = join(root, "assigned");
+    await mkdir(assigned);
+    await writeFile(join(assigned, "SKILL.md"), "# Assigned\n");
+    const codexHome = join(root, "codex-home");
+    const old = join(codexHome, ".paperclip-skills-staging-old");
+    const fresh = join(codexHome, ".paperclip-skills-staging-fresh");
+    await mkdir(join(old, "half-copied"), { recursive: true });
+    await writeFile(join(old, "half-copied", "SKILL.md"), "partial");
+    await chmod(join(old, "half-copied", "SKILL.md"), 0o444);
+    await chmod(join(old, "half-copied"), 0o555);
+    await mkdir(fresh);
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(old, twoHoursAgo, twoHoursAgo);
+    await prepareIsolatedCodexHome({
+      context: context(assigned, root),
+      codexHome,
+      ...(mode === "skill home" ? { skillHomeStoreRoot: join(root, "skill-homes") } : {}),
+    });
+    await expect(stat(old)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(fresh)).isDirectory()).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("removes old staging holding a planted FIFO and link without opening or following them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-poisoned-staging-"));
+    roots.push(root);
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "keep.txt"), "keep");
+    await chmod(outside, 0o555);
+    const home = join(root, "claude-home");
+    const poisoned = join(home, ".paperclip-skills-staging-poisoned");
+    await mkdir(join(poisoned, "sealed"), { recursive: true });
+    execFileSync("mkfifo", [join(poisoned, "sealed", "pipe")]);
+    await symlink(outside, join(poisoned, "sealed", "link"));
+    await chmod(join(poisoned, "sealed"), 0o555);
+    const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await utimes(poisoned, old, old);
+    await expect(removeAbandonedSkillStaging(home, { olderThanMs: 24 * 60 * 60 * 1000 }))
+      .resolves.toMatchObject({ removed: 1 });
+    await expect(lstat(poisoned)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(outside)).mode & 0o777).toBe(0o555);
+    await expect(readFile(join(outside, "keep.txt"), "utf8")).resolves.toBe("keep");
+    await chmod(outside, 0o755);
+  }, 10_000);
+
+  it("skips a staging tree larger than its entry bound and still removes the next one", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-large-staging-"));
+    roots.push(root);
+    const large = join(root, ".paperclip-skills-staging-a-large");
+    const small = join(root, ".paperclip-skills-staging-b-small");
+    await mkdir(large);
+    for (let index = 0; index < 5; index++) await writeFile(join(large, `f${index}`), "x");
+    await mkdir(small);
+    await writeFile(join(small, "f"), "x");
+    const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await utimes(large, old, old);
+    await utimes(small, old, old);
+    await expect(removeAbandonedSkillStaging(root, { olderThanMs: 24 * 60 * 60 * 1000, maxEntries: 3 }))
+      .resolves.toMatchObject({ removed: 1, skipped: 1 });
+    expect((await stat(large)).isDirectory()).toBe(true);
+    await expect(lstat(small)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports and removes only staging older than the threshold", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-abandoned-staging-"));
+    roots.push(root);
+    await mkdir(join(root, ".paperclip-skills-staging-a", "x"), { recursive: true });
+    await writeFile(join(root, ".paperclip-skills-staging-a", "x", "f"), "1234");
+    await mkdir(join(root, "skills"));
+    const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await utimes(join(root, ".paperclip-skills-staging-a"), old, old);
+    await expect(removeAbandonedSkillStaging(root, { olderThanMs: 24 * 60 * 60 * 1000, dryRun: true }))
+      .resolves.toEqual({ removed: 0, candidates: 1, bytes: 4, nextDueAt: null, truncated: false, skipped: 0 });
+    await expect(removeAbandonedSkillStaging(root, { olderThanMs: 24 * 60 * 60 * 1000 }))
+      .resolves.toEqual({ removed: 1, candidates: 1, bytes: 4, nextDueAt: null, truncated: false, skipped: 0 });
+    expect(await readdir(root)).toEqual(["skills"]);
+    await expect(removeAbandonedSkillStaging(join(root, "missing"), { olderThanMs: 0 }))
+      .resolves.toEqual({ removed: 0, candidates: 0, bytes: 0, nextDueAt: null, truncated: false, skipped: 0 });
   });
 
   it("preserves a managed provider while excluding ambient auth, hooks, and tool configuration", async () => {

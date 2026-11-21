@@ -58,9 +58,9 @@ describePostgres("immutable skill version cache", () => {
     for (const revision of [1, 2]) {
       const [snapshot] = await db.insert(companySkillRepositorySnapshots).values({ companyId, contentHash: `revision-${revision}`,
         fileInventory: [
-          { path: "skills/example/SKILL.md", kind: "skill", content: `---\nname: saved-repository\ndescription: Saved revision ${revision}\n---\nRun ../../scripts/example.sh.\n` },
-          { path: "scripts/example.sh", kind: "script", content: `#!/bin/sh\necho revision-${revision}\n`, executable: true },
-          { path: "marker.bin", kind: "reference", content: Buffer.from([0, revision, 255]).toString("base64"), encoding: "base64" },
+          { path: "skills/example/SKILL.md", kind: "skill", content: `---\nname: saved-repository\ndescription: Saved revision ${revision}\n---\nRun scripts/example.sh.\n` },
+          { path: "skills/example/scripts/example.sh", kind: "script", content: `#!/bin/sh\necho revision-${revision}\n`, executable: true },
+          { path: "skills/example/marker.bin", kind: "reference", content: Buffer.from([0, revision, 255]).toString("base64"), encoding: "base64" },
         ] }).returning();
       const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skillId, revisionNumber: revision,
         repositorySnapshotId: snapshot!.id, repositorySkillPath: "skills/example/SKILL.md" }).returning();
@@ -86,11 +86,12 @@ describePostgres("immutable skill version cache", () => {
     await fs.rm(old.source, { recursive: true });
     const restored = await resolve(versions[0]!.id);
     expect(restored.source).toBe(old.source);
-    const repository = path.join(restored.source, ".paperclip-repository");
+    // Agents get the skill folder itself (Agent Skills standard).
+    const repository = restored.source;
     expect(await fs.readFile(path.join(repository, "marker.bin"))).toEqual(Buffer.from([0, 1, 255]));
     expect(await fs.readFile(path.join(repository, "scripts/example.sh"), "utf8")).toBe("#!/bin/sh\necho revision-1\n");
     expect((await fs.stat(path.join(repository, "scripts/example.sh"))).mode & 0o111).toBe(0o111);
-    expect(await fs.readFile(path.join(current.source, ".paperclip-repository/marker.bin"))).toEqual(Buffer.from([0, 2, 255]));
+    expect(await fs.readFile(path.join(current.source, "marker.bin"))).toEqual(Buffer.from([0, 2, 255]));
     expect(upstream).not.toHaveBeenCalled();
   });
 
@@ -128,7 +129,7 @@ describePostgres("immutable skill version cache", () => {
     expect(await fs.readFile(paths.access, "utf8")).toBe(accessed);
 
     // Full validation remains at the execution boundary, including repair.
-    const marker = path.join(prepared.source, ".paperclip-repository/marker.bin");
+    const marker = path.join(prepared.source, "marker.bin");
     await fs.chmod(marker, 0o644);
     await fs.writeFile(marker, "corrupt");
     await prepare();
@@ -142,7 +143,7 @@ describePostgres("immutable skill version cache", () => {
     const prepared = await f.resolve(version.id);
     const entrypoint = path.join(prepared.source, "SKILL.md");
     await fs.unlink(entrypoint);
-    await fs.symlink(path.join(prepared.source, ".paperclip-repository/scripts/example.sh"), entrypoint);
+    await fs.symlink(path.join(prepared.source, "scripts/example.sh"), entrypoint);
     const entries = await companySkillService(db).listRuntimeSkillEntries(f.companyId, {
       onlyKeys: new Set([f.key]), materializeMissing: false,
     });
@@ -434,7 +435,7 @@ describePostgres("immutable skill version cache", () => {
     const lstat = fs.lstat.bind(fs);
     let held = false;
     vi.spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {
-      if (!held && String(args[0]) === path.join(old.source, ".paperclip-repository", "marker.bin")) {
+      if (!held && String(args[0]) === path.join(old.source, "marker.bin")) {
         held = true;
         inspecting.resolve();
         await release.promise;

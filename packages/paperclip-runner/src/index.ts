@@ -2,6 +2,8 @@ export * from "./configured-environment.js";
 export * from "./catalog/index.js";
 export { taskDocumentKeySchema } from "./protocol-actions/task-document-key-schema.js";
 export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
+export { readCodexSkillHomeMarker, removeCodexSkillHomeTree } from "./drivers/codex-skill-home.js";
+export { removeAbandonedSkillStaging } from "./drivers/runtime-context-materializer.js";
 export { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./drivers/acpx/kimi-closure-pins.js";
 export * from "./contracts/control-plane-port.js";
 export * from "./contracts/completion-result.js";

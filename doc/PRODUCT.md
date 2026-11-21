@@ -295,6 +295,12 @@ Missing references are advisory: a valid selected skill can still be imported.
 Unavailable files are listed, and existing installed dependencies are retained
 when a bounded refresh cannot preserve them. File limits and content validation
 still apply; importing never executes repository code.
+The skill library keeps the whole pinned repository for reading, versioning and
+copies, but an agent receives only an imported skill's own folder: its original
+`SKILL.md` and the files below that directory, as the Agent Skills standard
+describes. A skill that uses another skill's or the repository's shared files must
+carry them in its own folder; assigning the other skill does not make relative
+paths such as `../other-skill/` resolve.
 Authored and unproven legacy versions retain an independent recovery copy. Unused Git
 packages with an exact restore recipe may expire; later use requires access to that
 original repository and commit.

@@ -321,6 +321,8 @@ impl AcpxSidecarTransport {
                 ]);
             }
             keys.extend_from_slice(&[
+                // Store of sealed skill homes Claude loads as a local plugin.
+                "PAPERCLIP_SKILL_HOME_STORE_ROOT",
                 // Launcher/controller-owned helper paths; credentials stay behind the broker.
                 "BASH_ENV",
                 "ZDOTDIR",
