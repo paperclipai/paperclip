@@ -298,7 +298,6 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     try {
       await locked.promise;
       start(owner!.run.id);
-      // Let the profile INSERT run, then block its entry INSERT until we inspect a second session.
       await vi.waitFor(async () => {
         const waits = await db.execute(sql`select 1 from pg_stat_activity where datname = current_database()
           and wait_event_type = 'Lock' and query like 'insert into "tool_profile_entries"%'`);
