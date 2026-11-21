@@ -135,7 +135,7 @@ export async function doctor(opts: {
   }
 
   // 11. Background service checks
-  for (const result of await serviceHealthChecks(config)) {
+  for (const result of await serviceHealthChecks(config, { configPath })) {
     results.push(result);
     printResult(result);
   }

@@ -42,6 +42,10 @@ import {
   removeHotRestartIntent,
   writeHotRestartIntent,
 } from "../services/hot-restart.js";
+import {
+  HEALTH_PROBE_TOKEN_HEADER,
+  resolveInstanceHealthToken,
+} from "../home-paths.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -76,6 +80,10 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
  */
 function hasWorkspaceReadinessToken(providedToken: string | undefined) {
   return matchesSharedToken(resolveWorkspaceReadinessLocalToken(), providedToken);
+}
+
+function hasHealthProbeToken(providedToken: string | undefined) {
+  return matchesSharedToken(resolveInstanceHealthToken(), providedToken);
 }
 
 function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
@@ -235,10 +243,13 @@ export function healthRoutes(
 
   router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
-    const exposeFullDetails = shouldExposeFullHealthDetails(
-      actorType,
-      opts.deploymentMode,
-    );
+    const hasHealthProbeAuth = hasHealthProbeToken(req.get(HEALTH_PROBE_TOKEN_HEADER));
+    const exposeFullDetails =
+      hasHealthProbeAuth ||
+      shouldExposeFullHealthDetails(
+        actorType,
+        opts.deploymentMode,
+      );
     const runtimeEnv = opts.runtimeEnv ?? process.env;
     const startupRecovery = getStartupRecoveryState();
     const healthStatus =
