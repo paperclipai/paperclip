@@ -27,8 +27,9 @@ import { expireReconstructableGitWorkspace } from "./git-workspace-expiration.js
 import { remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 
 const support = await getEmbeddedPostgresTestSupport(), execute = promisify(execFile);
-const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
-  env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0",
+const gitNull = process.platform === "win32" ? "NUL" : os.devNull;
+const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c", `core.hooksPath=${gitNull}`, "-C", cwd, ...args], {
+  env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: gitNull, GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Cohort", GIT_AUTHOR_EMAIL: "cohort@example.test", GIT_COMMITTER_NAME: "Cohort", GIT_COMMITTER_EMAIL: "cohort@example.test" },
 })).stdout.trim();
 

@@ -75,7 +75,9 @@ export async function setIssueTitle(
     }
     return result;
   };
-  if ((onlyIfProvisional && !issue.titleNeedsGeneration)
+  // An agent names its chat only while the title is provisional: a person's rename always stands.
+  const provisionalOnly = onlyIfProvisional || (actor.actorType === "agent" && Boolean(issue.conversationAgentId));
+  if ((provisionalOnly && !issue.titleNeedsGeneration)
     || (issue.title === title && !issue.titleNeedsGeneration)) {
     return { result: await saveReceipt({ id: issue.id, title: issue.title, titleNeedsGeneration: issue.titleNeedsGeneration, changed: false }), publication: null };
   }

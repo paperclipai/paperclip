@@ -517,6 +517,7 @@ export function TaskChatComposer({
   });
   function changeBody(value: string) {
     bodyRef.current = value;
+    setActionError(null);
     if (creation) {
       creation.onChange(value);
       return;
@@ -1034,6 +1035,7 @@ export function TaskChatComposer({
     // text from the composer at the same time. The editor remains writable for
     // the next draft while the request is pending.
     bodyRef.current = "";
+    setActionError(null);
     if (draftTimer.current) {
       clearTimeout(draftTimer.current);
       draftTimer.current = null;
@@ -1135,7 +1137,8 @@ export function TaskChatComposer({
       const nextDraft = bodyRef.current;
       // Not delivered, or not known to be: keep it and resend with the same
       // ID when the connection allows. The server dedupes by that ID.
-      if (attemptId && request && classifySendFailure(error) === "pending") {
+      const failure = classifySendFailure(error);
+      if (attemptId && request && failure === "pending") {
         const uncertain = {
           attemptId, reviewed: false,
           nextDraftOffset: submittedBody.length + (nextDraft ? 2 : 0),
@@ -1146,8 +1149,10 @@ export function TaskChatComposer({
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
           saveDraftSubmission(draftKey, uncertain);
-      } else if (draftKey && attemptId)
-        clearDraftSubmission(draftKey, attemptId);
+      } else {
+        if (draftKey && attemptId) clearDraftSubmission(draftKey, attemptId);
+        setActionError(describeError(error, { action: "send this message" }).body);
+      }
       // Restore the failed message for retry without discarding a next draft
       // that was entered while the request was pending.
       const restoredBody = nextDraft
@@ -1459,7 +1464,7 @@ export function TaskChatComposer({
             <p
               className="px-1 text-xs text-destructive"
               role="alert"
-              data-testid={creation ? "task-chat-create-error" : queuedEdit ? "task-chat-queued-edit-error" : "task-chat-goal-error"}
+              data-testid={creation ? "task-chat-create-error" : queuedEdit ? "task-chat-queued-edit-error" : "task-chat-composer-error"}
             >
               {actionError}
             </p>

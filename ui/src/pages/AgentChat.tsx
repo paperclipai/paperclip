@@ -16,7 +16,7 @@ import { afterVisibleConversationPaint } from "@/lib/onboarding-chat";
 import { Button } from "@/components/ui/button";
 
 export function AgentChat() {
-  const { agentRef = "" } = useParams<{ agentRef: string }>();
+  const { agentRef = "", chatId } = useParams<{ agentRef: string; chatId?: string }>();
   const { selectedCompanyId } = useCompany();
   const { enabled, loaded } = useAgentChatEnabled();
   const client = useQueryClient();
@@ -42,13 +42,13 @@ export function AgentChat() {
       && !rosterAgent && isUuidLike(agentRef),
   });
   const agent = rosterAgent ?? (historyAgent.data?.companyId === selectedCompanyId ? historyAgent.data : undefined);
-  const chatKey = queryKeys.agentChats.detail(selectedCompanyId, userId, agent?.id);
+  const chatKey = chatId ? [...queryKeys.agentChats.detail(selectedCompanyId, userId, agent?.id), chatId] : queryKeys.agentChats.detail(selectedCompanyId, userId, agent?.id);
   const chat = useQuery({
     queryKey: chatKey,
-    queryFn: () => agentChatsApi.get(selectedCompanyId!, agent!.id),
+    queryFn: async () => chatId ? (await agentChatsApi.list(selectedCompanyId!)).find(item => item.id === chatId && item.conversationAgentId === agent!.id) ?? null : agentChatsApi.get(selectedCompanyId!, agent!.id),
     initialData: () => enabled && agent && session.isSuccess
       ? client.getQueryData<Issue[]>(queryKeys.agentChats.list(selectedCompanyId, userId))
-        ?.find(issue => issue.companyId === selectedCompanyId && issue.conversationAgentId === agent?.id)
+        ?.find(issue => issue.companyId === selectedCompanyId && issue.conversationAgentId === agent?.id && (chatId ? issue.id === chatId : issue.conversationDefault === true))
       : undefined,
     initialDataUpdatedAt: () => {
       const state = client.getQueryState(queryKeys.agentChats.list(selectedCompanyId, userId));
@@ -80,11 +80,13 @@ export function AgentChat() {
   }, [enabled, agent?.id, selectedCompanyId, userId, session.isSuccess, readyIssueId, chat.data?.id, chat.data?.originKind, greetingAttempt, client]);
   useEffect(() => {
     creating.current = null;
-  }, [selectedCompanyId, userId, agent?.id]);
+  }, [selectedCompanyId, userId, agent?.id, chatId]);
   useEffect(() => {
-    if (enabled && agent && session.isSuccess && chat.isSuccess)
+    // A named chat that no longer exists must not replace the last chat this person opened with the agent.
+    if (enabled && agent && session.isSuccess && chat.isSuccess && !(chatId && !chat.data))
       recordAgentChatVisit(agent.companyId, userId, agent.id, chat.data?.id ?? null);
-  }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id]);
+  }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id, chatId]);
+  // The route decides which cached chat a new conversation fills, even when both routes show no chat yet.
   const ensureIssue = useCallback(async () => {
     if (!agent || !selectedCompanyId) throw new Error("Agent not found");
     if (chat.data) return chat.data;
@@ -102,7 +104,7 @@ export function AgentChat() {
       creating.current = null;
       throw error;
     }
-  }, [agent, selectedCompanyId, chat.data, client, userId]);
+  }, [agent, selectedCompanyId, chat.data, client, userId, chatId]);
   // An outage before anything loaded keeps the quiet loading copy; loaded
   // data renders through it.
   const reconnecting = agentsView.kind === "reconnecting" || sessionView.kind === "reconnecting"
@@ -132,6 +134,8 @@ export function AgentChat() {
     );
   if (!agent)
     return <p className="text-sm text-destructive">Agent not found.</p>;
+  if (chatId && chat.isSuccess && !chat.data)
+    return <p className="text-sm text-destructive">Conversation not found.</p>;
   if (chat.isPending)
     return (
       <p className="text-sm text-muted-foreground">Loading conversation…</p>
@@ -143,7 +147,7 @@ export function AgentChat() {
         <Button variant="outline" size="sm" onClick={() => setGreetingAttempt(attempt => attempt + 1)}>Retry welcome</Button>
       </div>}
       <TaskDetailSurface
-        key={`${agent.id}:${userId}`}
+        key={`${agent.id}:${userId}:${chatId ?? "default"}`}
         conversation={{ agent, issue: chat.data ?? null, ensureIssue, onReady }}
       />
     </>

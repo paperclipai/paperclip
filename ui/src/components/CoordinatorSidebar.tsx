@@ -4,7 +4,10 @@ import { Inbox, Boxes, CircleCheck, Compass, FolderOpen, History, LayoutDashboar
 import type { Agent, IssueSummary, Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { instanceSettingsApi } from "@/api/instanceSettings";
-import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
+import { useAgentChatNavigation, useOpenAgentChat } from "@/hooks/useAgentChatNavigation";
+import { AgentChatPicker } from "./AgentChatPicker";
+import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
@@ -14,7 +17,7 @@ import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import type { RecentTaskEntry } from "@/lib/recent-tasks";
 import { Link, useLocation } from "@/lib/router";
-import { agentRouteRef, cn, projectRouteRef } from "@/lib/utils";
+import { agentRouteRef, cn, formatDateTime, projectRouteRef } from "@/lib/utils";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { RecentTaskNavItem, recentTaskPathRef } from "./RecentTaskNavItem";
@@ -131,7 +134,10 @@ function RecentNavigationList({ children }: { children: ReactNode }) {
 /** The navigation is a view of the existing records; it never creates a chat
  * or task just because someone visits or switches agents. */
 export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
-  const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
+  const { companyId, userId, enabled: agentChatEnabled, agents, chats, session } = useAgentChatNavigation();
+  const openNewChat = useOpenAgentChat(companyId, userId, true);
+  const [chatPickerOpen, setChatPickerOpen] = useState(false);
+  const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
   const pinKeys = useMemo(() => new Set(pinnedNavigation.pins), [pinnedNavigation.pins]);
@@ -186,7 +192,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     const taskRows = recentTasks.map(task => ({ kind: "task" as const, id: task.id, time: task.recordedAt, task }));
     const chatRows = (chats.data ?? []).flatMap(chat => {
       const agent = chat.conversationAgentId ? roster.get(chat.conversationAgentId) : null;
-      return agent ? [{ kind: "chat" as const, id: chat.id, time: new Date(chat.updatedAt).getTime(), agent }] : [];
+      return agent ? [{ kind: "chat" as const, id: chat.id, time: new Date(chat.updatedAt).getTime(), agent, chat }] : [];
     });
     const projectRows = (projects ?? []).flatMap(project => projectVisits.scope === scope && projectVisits.entries[project.id]
       ? [{ kind: "project" as const, id: project.id, time: projectVisits.entries[project.id]!, project }] : []);
@@ -206,7 +212,13 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         {newTaskButton}
         <div className="design-sidebar-primary my-2">
           {responsibilitiesHome && <SidebarNavItem className="design-sidebar-item" to="/responsibilities" label="Dashboard" icon={Compass} />}
-          <SidebarNavItem className="design-sidebar-item" to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+          <div className="group/coordinator-new relative">
+            <SidebarNavItem className="design-sidebar-item pr-16" to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+            {agentChatEnabled && <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+              <button type="button" aria-label="All conversations" title="All conversations" onClick={() => setChatHistoryOpen(true)} className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><History className="size-4" /></button>
+              <button type="button" aria-label="New chat" title="New chat" onClick={() => setChatPickerOpen(true)} className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>
+            </div>}
+          </div>
           <div className="group/coordinator-new relative">
             <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} className="design-sidebar-item pr-9" />
             <button type="button" aria-label="New task" title="New task" onClick={() => openNewIssue()}
@@ -237,7 +249,8 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           ? <RecentTaskPinRow key={`${scope}:${item.id}`} task={item.task} pins={pins} />
           : item.kind === "chat"
             ? <RecentPinRow key={item.id} pinKey={agentChatPinKey(item.agent.companyId, item.agent.id)} label={item.agent.name} pins={pins}>
-                <SidebarNavItem className="design-sidebar-item" to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} iconNode={<AgentAvatar agent={item.agent} size={16} />} />
+                <SidebarNavItem className="design-sidebar-item" to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}/${item.id}`} label={`${item.chat.title} · ${item.agent.name}`} iconNode={<AgentAvatar agent={item.agent} size={16} />}
+                  trailing={<span data-slot="chat-recent-date" className="shrink-0 font-mono text-xs text-muted-foreground">{formatDateTime(item.chat.createdAt ?? item.chat.updatedAt)}</span>} />
               </RecentPinRow>
             : <SidebarProjectTasks key={`${scope}:${item.id}`} project={item.project} userId={userId}
                 renderTask={task => <RecentTaskPinRow task={task} pins={pins} />}>
@@ -249,5 +262,12 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       </SidebarSection></div>}
       {children}
     </nav>
+    <AgentChatPicker open={chatPickerOpen} onOpenChange={setChatPickerOpen} agents={(agents.data ?? []).filter(agent => agent.status !== "terminated" && agent.status !== "pending_approval")} loading={agents.isPending || session.isPending} error={agents.error ?? session.error} onRetry={() => { void agents.refetch(); void session.refetch(); }} onSelect={openNewChat} />
+    <Dialog open={chatHistoryOpen} onOpenChange={setChatHistoryOpen}>
+      <DialogContent aria-describedby={undefined} className="h-full max-h-screen overflow-hidden p-0 sm:max-w-md">
+        <DialogTitle className="sr-only">All conversations</DialogTitle>
+        <div className="min-h-0" onClickCapture={event => { if ((event.target as Element).closest("a")) setChatHistoryOpen(false); }}><AgentConversationsSidebar onConversationOpened={() => setChatHistoryOpen(false)} /></div>
+      </DialogContent>
+    </Dialog>
   </aside></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
 }

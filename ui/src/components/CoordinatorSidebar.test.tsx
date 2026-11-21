@@ -8,14 +8,17 @@ import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSid
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey, coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
+import { formatDateTime } from "@/lib/utils";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", search: "", userId: "reviewer" as string | null, chats: [] as Array<{ id?: string; conversationAgentId?: string; updatedAt?: string; isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, taskSummaries: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, enableResponsibilities: false, agents: [] as Agent[] }));
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), openNewChat: vi.fn(), pathname: "/COO/issues", search: "", userId: "reviewer" as string | null, agents: [] as any[], chats: [] as any[],
+  recentTasks: [] as Array<Record<string, unknown>>, taskSummaries: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, enableResponsibilities: false }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: fixture.userId }) }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
-}) }));
+  companyId: "company", userId: fixture.userId, enabled: true, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
+}), useOpenAgentChat: () => fixture.openNewChat }));
+vi.mock("./AgentChatPicker", () => ({ AgentChatPicker: ({ open, onSelect, agents }: any) => open ? <button onClick={() => onSelect(agents[0])}>Choose agent</button> : null }));
+vi.mock("./AgentConversationsSidebar", () => ({ AgentConversationsSidebar: ({ onConversationOpened }: { onConversationOpened?: () => void }) => <><a href="/chats/alex/old">Old conversation</a><button onClick={onConversationOpened}>Create from history</button></> }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: ({ pinnedTaskIds }: { pinnedTaskIds: string[] }) => ({
   entries: fixture.recentTasks, pinnedTasks: fixture.taskSummaries.filter(task => pinnedTaskIds.includes(String(task.id))),
 }) }));
@@ -56,6 +59,24 @@ beforeEach(() => {
 });
 
 describe("Coordinator task creation", () => {
+  it("starts a new chat and links recent conversations by their own id", async () => {
+    fixture.agents = [{ id: "agent", companyId: "company", name: "Alex", urlKey: "alex", status: "idle" }];
+    fixture.chats = [{ id: "chat-one", title: "First chat", conversationAgentId: "agent", updatedAt: "2026-10-20T12:00:00Z" }, { id: "chat-two", title: "Second chat", conversationAgentId: "agent", updatedAt: "2026-10-21T12:00:00Z" }];
+    await renderSidebar();
+    expect(container.querySelector('a[href="/chats/alex/chat-one"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/chats/alex/chat-two"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/chats/alex/chat-one"]')?.textContent).toContain("First chat");
+    const date = container.querySelector('a[href="/chats/alex/chat-one"] [data-slot="chat-recent-date"]');
+    expect(date?.className).toContain("font-mono");
+    expect(date?.textContent).toBe(formatDateTime("2026-10-20T12:00:00Z"));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="All conversations"]')!.click());
+    expect(document.querySelector('a[href="/chats/alex/old"]')).not.toBeNull();
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent === "Create from history")!.click());
+    expect(document.querySelector('a[href="/chats/alex/old"]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click());
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Choose agent")!.click());
+    expect(fixture.openNewChat).toHaveBeenCalledWith(fixture.agents[0]);
+  });
   it("shows opened parent and child tasks as independent rows in recent order", async () => {
     fixture.recentTasks = [
       { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 2 },
@@ -123,7 +144,8 @@ describe("Coordinator task creation", () => {
     const region = container.querySelector('[role="region"][aria-label="Recents"]')!;
     const links = Array.from(region.querySelectorAll("a"), link => link.getAttribute("href"));
     expect(links).toHaveLength(tasks.length + chats.length + 2);
-    expect(links.slice(0, 4)).toEqual(["/projects/project-1/issues", "/projects/project-0/issues", "/issues/TASK-299", "/chats/agent-99"]);
+    // A recent chat row opens its own conversation.
+    expect(links.slice(0, 4)).toEqual(["/projects/project-1/issues", "/projects/project-0/issues", "/issues/TASK-299", "/chats/agent-99/chat-99"]);
     expect(links.at(-1)).toBe("/issues/TASK-0");
     expect(new Set(links).size).toBe(links.length);
     expect(fixture.projectTasks).not.toHaveBeenCalled();
@@ -202,14 +224,14 @@ describe("Coordinator pinned pages", () => {
   });
   it("matches pinned and recent agent avatar dimensions to task status icons", async () => {
     fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
-    const chat = { id: "chat-cto", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", isUnreadForMe: false };
+    const chat = { id: "chat-cto", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", title: "CTO chat", createdAt: "2026-11-11T12:00:00Z", isUnreadForMe: false };
     fixture.chats = [chat];
     fixture.recentTasks = [{ id: "task", companyId: "company", identifier: "TASK-1", title: "Recent task", status: "todo", recordedAt: 1 }];
     localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["agent-chat:company:cto"]));
 
     await renderSidebar();
 
-    const avatars = [...container.querySelectorAll<HTMLImageElement>('a[href="/chats/cto"] [data-slot="agent-avatar"] img')];
+    const avatars = [...container.querySelectorAll<HTMLImageElement>('a[href="/chats/cto"] [data-slot="agent-avatar"] img, a[href="/chats/cto/chat-cto"] [data-slot="agent-avatar"] img')];
     const taskIcon = container.querySelector('a[href="/issues/TASK-1"] [data-slot="sidebar-nav-icon"] svg');
     expect(avatars).toHaveLength(2);
     expect(taskIcon).not.toBeNull();

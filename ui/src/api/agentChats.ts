@@ -1,4 +1,4 @@
-import type { Issue } from "@paperclipai/shared";
+import type { CreateAgentConversation, Issue } from "@paperclipai/shared";
 import { api } from "./client";
 export const agentChatsApi = {
   startOnboarding: (companyId: string, agentRef: string) => api.post<Issue>(
@@ -17,4 +17,6 @@ export const agentChatsApi = {
       `/companies/${companyId}/chats/${encodeURIComponent(agentRef)}`,
       {},
     ),
+  create: (companyId: string, agentRef: string, clientRequestId: CreateAgentConversation["clientRequestId"]) =>
+    api.post<Issue>(`/companies/${companyId}/chats/${encodeURIComponent(agentRef)}?new=true`, { clientRequestId } satisfies CreateAgentConversation),
 };

@@ -11,7 +11,7 @@ import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -24,6 +24,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueCreateIdempotencyKeys,
   issueTreeHolds,
   issueThreadInteractions,
   issueRecoveryActions,
@@ -119,6 +120,107 @@ import {
         status: "in_review",
         conversationState: "waiting",
       });
+    async function secondaryChatActor() {
+      const userId = randomUUID();
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId,
+        status: "active", membershipRole: "operator" });
+      await ensureHumanRoleDefaultGrants(db, { companyId, principalId: userId, membershipRole: "operator", grantedByUserId: null });
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", source: "session", userId, companyIds: [companyId] };
+        next();
+      });
+      app.use("/api", issueRoutes(db, { wakeup: async () => null } as never));
+      app.use(errorHandler);
+      return { app, userId, path: `/api/companies/${companyId}/chats/${agentId}?new=true` };
+    }
+    const secondaryChatKey = (userId: string, requestId: string) =>
+      `agent-conversation:create:${JSON.stringify([companyId, userId, agentId, requestId.toLowerCase()])}`;
+    it.each([false, true])("deduplicates secondary-chat creation retries with one creation activity (concurrent %s)", async concurrent => {
+      const { app, userId, path } = await secondaryChatActor();
+      const clientRequestId = randomUUID();
+      const send = () => request(app).post(path).send({ clientRequestId });
+      const responses = concurrent ? await Promise.all(Array.from({ length: 5 }, send)) : [await send(), await send()];
+      expect(responses.map(response => response.status)).toEqual(responses.map(() => 200));
+      expect(new Set(responses.map(response => response.body.id)).size).toBe(1);
+      const chatId = responses[0].body.id;
+      const uppercase = await request(app).post(path).send({ clientRequestId: clientRequestId.toUpperCase() });
+      expect(uppercase.status).toBe(200);
+      expect(uppercase.body.id).toBe(chatId);
+      expect(await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId),
+        eq(issues.conversationUserId, userId), eq(issues.conversationDefault, false)))).toEqual([{ id: chatId }]);
+      expect(await db.select({ id: activityLog.id }).from(activityLog).where(and(eq(activityLog.entityId, chatId),
+        eq(activityLog.action, "issue.conversation_opened")))).toHaveLength(1);
+      const another = await request(app).post(path).send({ clientRequestId: randomUUID() });
+      expect(another.status).toBe(200);
+      expect(another.body.id).not.toBe(chatId);
+      expect((await request(app).get(path.replace("?new=true", ""))).body).toBeNull();
+    });
+    it("keeps a secondary-chat request UUID scoped to its user and agent", async () => {
+      const first = await secondaryChatActor(), second = await secondaryChatActor();
+      const clientRequestId = randomUUID(), otherAgentId = randomUUID();
+      await db.insert(agents).values({ id: otherAgentId, companyId, name: "Independent planner", role: "engineer", adapterType: "process" });
+      const responses = await Promise.all([
+        request(first.app).post(first.path).send({ clientRequestId }),
+        request(second.app).post(second.path).send({ clientRequestId }),
+        request(first.app).post(first.path.replace(agentId, otherAgentId)).send({ clientRequestId }),
+      ]);
+      expect(responses.map(response => response.status)).toEqual([200, 200, 200]);
+      expect(new Set(responses.map(response => response.body.id)).size).toBe(3);
+    });
+    it("rolls back secondary-chat creation and its receipt when the activity write fails", async () => {
+      const { app, userId, path } = await secondaryChatActor();
+      const clientRequestId = randomUUID(), constraint = `chat_activity_fault_${randomUUID().replaceAll("-", "")}`;
+      await db.execute(sql.raw(`ALTER TABLE activity_log ADD CONSTRAINT "${constraint}" CHECK (actor_id <> '${userId}' OR action <> 'issue.conversation_opened')`));
+      try {
+        expect((await request(app).post(path).send({ clientRequestId })).status).toBe(500);
+      } finally {
+        await db.execute(sql.raw(`ALTER TABLE activity_log DROP CONSTRAINT "${constraint}"`));
+      }
+      expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.conversationUserId, userId))).toEqual([]);
+      expect(await db.select({ id: issueCreateIdempotencyKeys.id }).from(issueCreateIdempotencyKeys)
+        .where(and(eq(issueCreateIdempotencyKeys.companyId, companyId), eq(issueCreateIdempotencyKeys.idempotencyKey, secondaryChatKey(userId, clientRequestId))))).toEqual([]);
+      const retried = await request(app).post(path).send({ clientRequestId });
+      expect(retried.status).toBe(200);
+      expect(await db.select({ id: activityLog.id }).from(activityLog).where(and(eq(activityLog.entityId, retried.body.id),
+        eq(activityLog.action, "issue.conversation_opened")))).toHaveLength(1);
+    });
+    it.each([undefined, null, "not-a-uuid", 42, {}])("requires a valid request UUID for secondary-chat creation (%j)", async clientRequestId => {
+      const { app, userId, path } = await secondaryChatActor();
+      expect((await request(app).post(path).send({ clientRequestId })).status).toBe(422);
+      expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.conversationUserId, userId))).toEqual([]);
+    });
+    it.each(["company", "agent", "owner", "default"] as const)("refuses a secondary-chat idempotency receipt bound to a different %s", async mismatch => {
+      const { app, userId, path } = await secondaryChatActor();
+      const clientRequestId = randomUUID();
+      let targetCompanyId = companyId, targetAgentId = agentId;
+      if (mismatch === "company") {
+        targetCompanyId = randomUUID();
+        await db.insert(companies).values({ id: targetCompanyId, name: "Other chats", issuePrefix: `X${randomUUID().slice(0, 6)}` });
+      }
+      if (mismatch === "company" || mismatch === "agent") {
+        targetAgentId = randomUUID();
+        await db.insert(agents).values({ id: targetAgentId, companyId: targetCompanyId, name: "Another planner", role: "engineer", adapterType: "process" });
+      }
+      const target = await issueService(db).create(targetCompanyId, { title: "Collision fixture", status: "in_review",
+        assigneeAgentId: targetAgentId, conversationAgentId: targetAgentId,
+        conversationUserId: mismatch === "owner" ? randomUUID() : userId, conversationDefault: mismatch === "default", conversationState: "waiting" });
+      await db.insert(issueCreateIdempotencyKeys).values({ companyId, idempotencyKey: secondaryChatKey(userId, clientRequestId), issueId: target.id });
+      expect((await request(app).post(path).send({ clientRequestId })).status).toBe(409);
+      expect(await db.select({ id: activityLog.id }).from(activityLog).where(and(eq(activityLog.entityId, target.id),
+        eq(activityLog.action, "issue.conversation_opened")))).toEqual([]);
+    });
+    it("rechecks normal read access before returning a secondary-chat retry", async () => {
+      const { app, userId, path } = await secondaryChatActor();
+      const clientRequestId = randomUUID(), privateOwner = randomUUID();
+      const target = await issueService(db).create(companyId, { title: "Private retry fixture", status: "in_review",
+        assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: userId, conversationDefault: false,
+        conversationState: "waiting", visibility: "private", createdByUserId: privateOwner, responsibleUserId: privateOwner });
+      expect((await request(app).get(`/api/issues/${target.id}`)).status).toBe(404);
+      await db.insert(issueCreateIdempotencyKeys).values({ companyId, idempotencyKey: secondaryChatKey(userId, clientRequestId), issueId: target.id });
+      expect((await request(app).post(path).send({ clientRequestId })).status).toBe(404);
+    });
     async function runFor(issueId: string, commentId: string, overrides = {}) {
       return (
         await db
@@ -224,6 +326,13 @@ import {
       const owned = await request(app).get(listPath);
       expect(owned.status).toBe(200);
       expect(owned.body.map((chat: { id: string }) => chat.id)).toEqual([resolved[0].body.id]);
+      const fresh = await request(app).post(`${path}?new=true`).send({ clientRequestId: randomUUID() });
+      expect(fresh.status).toBe(200);
+      expect(fresh.body.id).not.toBe(resolved[0].body.id);
+      const history = await request(app).get(listPath);
+      expect(history.body.map((chat: { id: string }) => chat.id)).toEqual(
+        expect.arrayContaining([resolved[0].body.id, fresh.body.id]),
+      );
       expect((await request(appFor(colleague)).get(listPath)).body).toEqual([]);
       expect((await request(appFor(randomUUID(), false)).get(listPath)).status).toBe(403);
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });

@@ -39,7 +39,7 @@ const captureRemoteWorkspaceDirectory = (input: Omit<Parameters<typeof workspace
 const restoreRemoteWorkspaceArchive = (input: Omit<Parameters<typeof workspaceArchive>[0], "kind">) => workspaceArchive({ ...input, kind: "restore" });
 
 const execute = promisify(execFile);
-const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull,
+const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : os.devNull,
   GIT_AUTHOR_NAME: "Snapshot", GIT_COMMITTER_NAME: "Snapshot", GIT_AUTHOR_EMAIL: "snapshot@example.test", GIT_COMMITTER_EMAIL: "snapshot@example.test" };
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C", cwd, ...args], { env })).stdout.trim();
 describe("portable remote workspace archives", () => {
