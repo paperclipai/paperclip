@@ -1361,4 +1361,224 @@ describe("issue execution policy routes", () => {
       }),
     );
   });
+  it("keeps a stored review stage when a board monitor write rebuilds the policy from a stale issue", async () => {
+    const reviewStage = {
+      id: "11111111-1111-4111-8111-111111111111",
+      type: "review" as const,
+      approvalsNeeded: 1 as const,
+      participants: [
+        { id: "22222222-2222-4222-8222-222222222222", type: "agent" as const, agentId: "66666666-6666-4666-8666-666666666666", userId: null },
+      ],
+    };
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1099",
+      title: "Monitor form rebuilt from a stale issue object",
+      executionPolicy: {
+        mode: "normal" as const,
+        commentRequired: true,
+        stages: [reviewStage],
+        monitor: {
+          nextCheckAt: "2026-11-01T12:00:00.000Z",
+          maxAttempts: 3,
+          scheduledBy: "assignee" as const,
+        },
+        maxReviewRounds: 50,
+      },
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: new Date("2026-11-01T12:00:00.000Z"),
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: "assignee",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          monitor: {
+            nextCheckAt: "2026-11-05T09:00:00.000Z",
+            notes: null,
+            scheduledBy: "board",
+            kind: null,
+            serviceName: null,
+            externalRef: null,
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as {
+      executionPolicy: { stages: unknown[]; monitor: { scheduledBy: string } };
+    };
+    expect(updatePatch.executionPolicy.stages).toHaveLength(1);
+    expect(updatePatch.executionPolicy.stages[0]).toMatchObject({ id: reviewStage.id, type: "review" });
+    expect(updatePatch.executionPolicy.monitor.scheduledBy).toBe("board");
+  });
+
+  it("still lets a board user clear every reviewer when the monitor is unchanged", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1098",
+      title: "Reviewer removed on purpose",
+      executionPolicy: {
+        mode: "normal" as const,
+        commentRequired: true,
+        stages: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            type: "review" as const,
+            approvalsNeeded: 1 as const,
+            participants: [
+              { id: "22222222-2222-4222-8222-222222222222", type: "agent" as const, agentId: "66666666-6666-4666-8666-666666666666", userId: null },
+            ],
+          },
+        ],
+        monitor: {
+          nextCheckAt: "2026-11-01T12:00:00.000Z",
+          maxAttempts: 3,
+          scheduledBy: "board" as const,
+        },
+        maxReviewRounds: 50,
+      },
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: new Date("2026-11-01T12:00:00.000Z"),
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: "board",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          monitor: {
+            nextCheckAt: "2026-11-01T12:00:00.000Z",
+            maxAttempts: 3,
+            scheduledBy: "board",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as {
+      executionPolicy: { stages: unknown[] } | null;
+    };
+    expect(updatePatch.executionPolicy?.stages ?? []).toHaveLength(0);
+  });
+
+  function storedReviewIssue(monitorScheduledBy: "assignee" | "board") {
+    return {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1097",
+      title: "Monitor write on a reviewed issue",
+      executionPolicy: {
+        mode: "normal" as const,
+        commentRequired: true,
+        stages: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            type: "review" as const,
+            approvalsNeeded: 1 as const,
+            participants: [
+              { id: "22222222-2222-4222-8222-222222222222", type: "agent" as const, agentId: "66666666-6666-4666-8666-666666666666", userId: null },
+            ],
+          },
+        ],
+        monitor: {
+          nextCheckAt: "2026-11-01T12:00:00.000Z",
+          maxAttempts: 3,
+          scheduledBy: monitorScheduledBy,
+        },
+      },
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: new Date("2026-11-01T12:00:00.000Z"),
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy,
+    };
+  }
+
+  async function patchStoredReviewIssue(monitorScheduledBy: "assignee" | "board", executionPolicy: unknown) {
+    const issue = storedReviewIssue(monitorScheduledBy);
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ executionPolicy });
+    expect(res.status).toBe(200);
+    return mockIssueService.update.mock.calls[0]?.[1] as {
+      executionPolicy: { stages: Array<{ id: string }>; monitor?: unknown } | null;
+    };
+  }
+
+  it("keeps the stored review stage when a monitor write omits stages", async () => {
+    const updatePatch = await patchStoredReviewIssue("board", {
+      monitor: { nextCheckAt: "2026-11-01T12:00:00.000Z", maxAttempts: 3, scheduledBy: "board" },
+    });
+    expect(updatePatch.executionPolicy?.stages.map((stage) => stage.id)).toEqual([
+      "11111111-1111-4111-8111-111111111111",
+    ]);
+  });
+
+  it("keeps the stored review stage when the monitor is removed", async () => {
+    const updatePatch = await patchStoredReviewIssue("board", { monitor: null });
+    expect(updatePatch.executionPolicy?.stages.map((stage) => stage.id)).toEqual([
+      "11111111-1111-4111-8111-111111111111",
+    ]);
+    expect(updatePatch.executionPolicy?.monitor).toBeUndefined();
+  });
+
+  it("clears every reviewer when a board user repeats the monitor without scheduledBy", async () => {
+    const updatePatch = await patchStoredReviewIssue("board", {
+      stages: [],
+      monitor: { nextCheckAt: "2026-11-01T12:00:00.000Z", maxAttempts: 3 },
+    });
+    expect(updatePatch.executionPolicy?.stages ?? []).toHaveLength(0);
+  });
+
+  it("still clears the whole policy on an explicit null", async () => {
+    const updatePatch = await patchStoredReviewIssue("board", null);
+    expect(updatePatch.executionPolicy).toBeNull();
+  });
 });
