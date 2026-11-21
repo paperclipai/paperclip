@@ -4847,6 +4847,7 @@ export async function runChildProcess(
     for (const key of CLAUDE_CODE_NESTING_VARS) {
       delete rawMerged[key];
     }
+    if (opts.env?.CLAUDE_CODE_ENTRYPOINT) rawMerged.CLAUDE_CODE_ENTRYPOINT = opts.env.CLAUDE_CODE_ENTRYPOINT;
 
     // Strip systemd service-manager vars so the spawned agent process can't
     // reach the Paperclip server's own readiness/socket-activation channel.
