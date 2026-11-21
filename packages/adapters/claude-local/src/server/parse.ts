@@ -8,8 +8,6 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 // The legacy login-prompt markers. The Claude CLI prints these words when it
-// asks the user to log in. The detector matches them against any probe output
-// line, which includes the raw stdout and stderr. This scope is pre-existing.
 const CLAUDE_LOGIN_PROMPT_RE =
   /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
 
@@ -239,19 +237,134 @@ function claudeResultIndicatesAuthFailure(parsed: Record<string, unknown>): bool
   return extractClaudeErrorMessages(parsed).length > 0;
 }
 
+const CLAUDE_EDGE_MARKER_RE =
+  /(?:<!doctype\s+html|<html[\s>]|<\/html>|<head[\s>]|<body[\s>]|<title[\s>]|\bcloudflare\b|attention\s+required!?|just\s+a\s+moment\.\.\.|\bcf-ray\b|\bcf[-_]chl\w*|challenge-platform|\bray\s+id\b)/i;
+const CLAUDE_EDGE_CHALLENGE_RE =
+  /(?:attention\s+required|just\s+a\s+moment|\bcf[-_]chl\w*|challenge-platform|enable\s+javascript\s+and\s+cookies|checking\s+your\s+browser)/i;
+const CLAUDE_STRUCTURED_AUTH_BODY_RE =
+  /(?:"type"\s*:\s*"authentication_error"|\bauthentication_error\b|invalid\s+(?:x-)?api[\s_-]?key|invalid\s+bearer\s+token|(?:invalid|expired|revoked)[\s\S]{0,40}(?:bearer|oauth|access|refresh)\s+token|(?:bearer|oauth|access|refresh)\s+token[\s\S]{0,40}(?:is\s+|has\s+)?(?:been\s+)?(?:invalid|expired|revoked)|oauth\s+session\s+(?:has\s+)?expired)/i;
+const CLAUDE_LOGIN_HINT_RE = /(?:not\s+logged\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login))/i;
+const CLAUDE_API_ERROR_STATUS_RE = /\bAPI\s+Error:?\s*(\d{3})\b/i;
+const CLAUDE_EDGE_RAY_ID_RE =
+  /(?:\bcf-ray\s*[:=]\s*|\bray\s+id\s*[:#]?\s*(?:<[^>]{0,80}>\s*)*)([0-9a-f]{16}(?:-[a-z]{3})?)\b/i;
+const CLAUDE_EDGE_TITLE_RE = /<title[^>]*>([^<]{0,200})<\/title>/i;
+
+export interface ClaudeEdgeFailureEvidence {
+  status: number | null;
+  contentType: "text/html" | null;
+  challenge: boolean;
+  requestId: string | null;
+  excerpt: string;
+}
+
+function readClaudeApiErrorStatus(parsed: Record<string, unknown> | null, text: string): number | null {
+  const structured = parsed
+    ? asNumber(parsed.api_error_status, 0) || asNumber(parsed.error_status, 0)
+    : 0;
+  if (structured) return structured;
+  const match = text.match(CLAUDE_API_ERROR_STATUS_RE);
+  return match ? Number.parseInt(match[1] ?? "", 10) || null : null;
+}
+
+function collectClaudeErrorSurface(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+}): string {
+  const stdoutPlain = input.stdout
+    .split(/\r?\n/)
+    .filter((line) => !parseJson(line.trim()))
+    .join("\n");
+  return [input.parsed ? collectClaudeTerminalText(input.parsed) : "", input.stderr, stdoutPlain]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function sanitizeClaudeEdgeExcerpt(text: string, maxLength = 160): string {
+  const title = text.match(CLAUDE_EDGE_TITLE_RE)?.[1];
+  const base = title ?? text;
+  return base
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]*>?/g, " ")
+    .replace(/&[a-z#0-9]+;/gi, " ")
+    .replace(/\b(?:sk-ant-[\w-]+|Bearer\s+\S+|[A-Za-z0-9_-]{32,})/g, "[redacted]")
+    .replace(/\b(?:cookie|set-cookie|authorization|x-api-key)\s*[:=]\s*\S+/gi, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+export function detectClaudeEdgeFailure(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+}): ClaudeEdgeFailureEvidence | null {
+  const parsed = input.parsed ?? null;
+  const surface = collectClaudeErrorSurface({ parsed, stdout: input.stdout, stderr: input.stderr });
+  if (!surface) return null;
+  const status = readClaudeApiErrorStatus(parsed, surface);
+  if (status === 401) return null;
+  const html = /<!doctype\s+html|<html[\s>]|<\/html>|<head[\s>]|<body[\s>]|<title[\s>]/i.test(surface);
+  const edgeMarker = CLAUDE_EDGE_MARKER_RE.test(surface);
+  const structuredAuth = CLAUDE_STRUCTURED_AUTH_BODY_RE.test(surface);
+  const genuineAuth = structuredAuth || CLAUDE_LOGIN_HINT_RE.test(surface);
+  if (!html && structuredAuth) return null;
+  if (!edgeMarker && (status !== 403 || genuineAuth)) return null;
+  return {
+    status,
+    contentType: html ? "text/html" : null,
+    challenge: CLAUDE_EDGE_CHALLENGE_RE.test(surface),
+    requestId: surface.match(CLAUDE_EDGE_RAY_ID_RE)?.[1]?.toLowerCase() ?? null,
+    excerpt: sanitizeClaudeEdgeExcerpt(surface),
+  };
+}
+
+export const CLAUDE_EDGE_REJECTED_ERROR_CODE = "claude_edge_rejected";
+
+export function describeClaudeEdgeFailure(evidence: ClaudeEdgeFailureEvidence): string {
+  const status = evidence.status ? `HTTP ${evidence.status}` : "an HTML response";
+  const kind = evidence.challenge ? "an edge challenge page" : evidence.contentType ? "an HTML page" : "a non-authentication rejection";
+  const detail = evidence.excerpt ? ` (${evidence.excerpt})` : "";
+  return `Claude API request was rejected before authentication with ${status}, ${kind}${detail}. `
+    + "This is a transient network or edge failure, not invalid credentials; the connection was not changed.";
+}
+
+export function extractClaudeRetryAfter(
+  input: { parsed?: Record<string, unknown> | null; stdout?: string | null; stderr?: string | null },
+  now = new Date(),
+  maxDelayMs = 60 * 60_000,
+): Date | null {
+  const surface = collectClaudeErrorSurface({
+    parsed: input.parsed ?? null,
+    stdout: input.stdout ?? "",
+    stderr: input.stderr ?? "",
+  });
+  const match = surface.match(/\bretry[-_\s]after["']?\s*[:=]\s*["']?([A-Za-z]{3},\s*\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT|[^\n"',;]+)/i);
+  if (!match) return null;
+  const raw = (match[1] ?? "").trim();
+  let delayMs: number | null = null;
+  if (/^\d+(?:\.\d+)?$/.test(raw)) delayMs = Math.round(Number.parseFloat(raw) * 1000);
+  else {
+    const at = Date.parse(raw);
+    if (Number.isFinite(at)) delayMs = at - now.getTime();
+  }
+  if (delayMs === null || !Number.isFinite(delayMs) || delayMs <= 0) return null;
+  return new Date(now.getTime() + Math.min(delayMs, maxDelayMs));
+}
+
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const parsed = input.parsed ?? null;
-  const resultText = asString(parsed?.result, "").trim();
 
-  // The legacy login-prompt markers keep their broad scope. They match against
-  // every output line, which includes the parsed result, the parsed errors, and
-  // the raw stdout and stderr.
-  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
-    .join("\n")
+  const promptSurface = parsed && !claudeResultIndicatesAuthFailure(parsed)
+    ? collectClaudeErrorSurface({ parsed: null, stdout: input.stdout, stderr: input.stderr })
+    : collectClaudeErrorSurface({ parsed, stdout: input.stdout, stderr: input.stderr });
+  const promptLines = promptSurface
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -265,8 +378,11 @@ export function detectClaudeLoginRequired(input: {
     claudeResultIndicatesAuthFailure(parsed) &&
     CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
 
+  const edgeFailure = (loginPrompt || tokenFailure)
+    && detectClaudeEdgeFailure({ parsed, stdout: input.stdout, stderr: input.stderr }) !== null;
+
   return {
-    requiresLogin: loginPrompt || tokenFailure,
+    requiresLogin: (loginPrompt || tokenFailure) && !edgeFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
   };
 }

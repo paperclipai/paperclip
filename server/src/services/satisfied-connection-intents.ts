@@ -3,7 +3,7 @@ import { notifyChatConfirmationResolution } from "./chat-confirmation-notificati
 import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interaction-publications.js";
 import { connectionManagementService } from "./connection-management.js";
 import { chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
-import { and, asc, eq, gt, inArray, isNull, notInArray, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -65,8 +65,7 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     });
     return capability.allowed ? connection : null;
   }
-  // Additional permissions, provider authentication and inbox setup still need
-  // their governed completion paths. Aggregator cards also name an upstream app.
+  if (payload.purpose === "ai") return findRestoredAiConnection(db, task, intent, payload);
   if (payload.purpose || payload.accessRequest || payload.upstreamService
     || payload.requestingAgentId !== task.assigneeAgentId || !intent.addresseeUserId) return null;
   if (intent.addresseeUserId !== "local-board") {
@@ -89,9 +88,65 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
   return access.allowedCount + access.askFirstCount > 0 ? connection : null;
 }
 
+async function findRestoredAiConnection(db: Db, task: Task, intent: Intent,
+  payload: ReturnType<typeof connectionIntentPayloadSchema.parse>) {
+  if (payload.requestingAgentId !== task.assigneeAgentId) return null;
+  return restoredAiConnectionFor(db, task.companyId, intent, payload, payload.requestingAgentId, intent.sourceRunId ?? null);
+}
+
+async function restoredAiConnectionFor(db: Db, companyId: string, intent: Intent,
+  payload: ReturnType<typeof connectionIntentPayloadSchema.parse>, agentId: string | undefined, sourceRunId: string | null) {
+  if (payload.purpose !== "ai" || payload.agentSetup || payload.accessRequest || payload.upstreamService || payload.savedSetup
+    || !agentId || !intent.addresseeUserId) return null;
+  if (intent.addresseeUserId !== "local-board") {
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, intent.addresseeUserId),
+    ));
+    if (membership?.status !== "active" || !membership.membershipRole || membership.membershipRole === "viewer") return null;
+  }
+  const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId,
+    agentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug,
+    purpose: "ai", sourceRunId });
+  if (!connection || (payload.repairConnectionId && connection.id !== payload.repairConnectionId)) return null;
+  return connection;
+}
+
+const AI_REPAIR_OPEN_STATUSES = ["in_progress", "in_review", "blocked"];
+
+export async function findSatisfiedConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+  const payload = connectionIntentPayloadSchema.safeParse(intent.payload).data;
+  if (payload?.purpose !== "ai") return findSatisfiedToolConnection(db, task, intent, policyRunId);
+  if (AI_REPAIR_OPEN_STATUSES.includes(task.status) && !task.assigneeUserId) {
+    const connection = await findAvailableToolConnection(db, task, intent, policyRunId);
+    if (connection) return connection;
+  }
+  if (!payload.repairConnectionId || !payload.linkedIssues?.length) return null;
+  for (const linked of payload.linkedIssues) {
+    const [linkedTask] = await db.select().from(issues).where(and(
+      eq(issues.id, linked.issueId), eq(issues.companyId, task.companyId)));
+    if (!linkedTask || !AI_REPAIR_OPEN_STATUSES.includes(linkedTask.status) || linkedTask.assigneeUserId
+      || linkedTask.assigneeAgentId !== linked.agentId) continue;
+    const connection = await restoredAiConnectionFor(db, task.companyId, intent, payload, linked.agentId, linked.sourceRunId);
+    if (connection) return connection;
+  }
+  return null;
+}
+
 export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
   if (!["in_progress", "in_review"].includes(task.status)) return null;
   return findAvailableToolConnection(db, task, intent, policyRunId);
+}
+
+async function obsoleteAiRepairCard(db: Db, task: Task, interaction: Intent, policyRunId?: string | null) {
+  if (interaction.status !== "pending" || !interaction.addresseeUserId) return false;
+  const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
+  if (payload?.purpose !== "ai" || !payload.repairConnectionId || payload.agentSetup || payload.accessRequest
+    || payload.upstreamService || payload.savedSetup || payload.requestingAgentId !== task.assigneeAgentId) return false;
+  const usable = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
+    agentId: payload.requestingAgentId, responsibleUserId: interaction.addresseeUserId, serviceSlug: payload.serviceSlug,
+    purpose: "ai", sourceRunId: policyRunId ?? interaction.sourceRunId ?? null });
+  return Boolean(usable && usable.id !== payload.repairConnectionId);
 }
 
 /** Recheck both live requests and system-retired cards against the next run. */
@@ -106,12 +161,14 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
       && "connectionId" in interaction.result && typeof interaction.result.connectionId === "string";
     if (interaction.status !== "pending" && !retired) continue;
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
+    if (retired && interaction.addresseeUserId !== responsibleUserId
+      && connectionIntentPayloadSchema.safeParse(interaction.payload).data?.repairConnectionId) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
     const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
     // Historical system retirements describe a service need, not a permanent
     // binding to an account the user may later replace. Delivery and native
     // response projection still validate their own exact recorded connection.
-    if (!connection) return "interaction";
+    if (!connection && !await obsoleteAiRepairCard(db, task, interaction, policyRunId)) return "interaction";
   }
   const [approval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
     eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId),
@@ -123,12 +180,17 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
 export function satisfiedConnectionIntentService(db: Db) {
   let afterId: string | null = null;
   return {
+    /** True while the rotating sweep still has later candidate pages to read. */
+    hasLaterPages: () => afterId !== null,
     async sweepPending() {
       const candidates = await db.select({ id: issueThreadInteractions.id, issueId: issues.id, companyId: issues.companyId })
         .from(issueThreadInteractions).innerJoin(issues, and(
           eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, issueThreadInteractions.companyId),
         )).where(and(eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
-          notInArray(issues.status, ["done", "cancelled"]), isNull(issues.assigneeUserId),
+          or(
+            and(notInArray(issues.status, ["done", "cancelled"]), isNull(issues.assigneeUserId)),
+            sql`jsonb_array_length(coalesce(${issueThreadInteractions.payload}->'linkedIssues', '[]'::jsonb)) > 0`,
+          ),
           ...(afterId ? [gt(issueThreadInteractions.id, afterId)] : [])))
         .orderBy(asc(issueThreadInteractions.id)).limit(50);
       // Rotate past unavailable cards so they cannot starve a later ready one.
@@ -154,17 +216,24 @@ export function satisfiedConnectionIntentService(db: Db) {
                 eq(companyMemberships.principalId, intent.addresseeUserId),
               )).for("share");
             }
-            const continues = ["in_progress", "in_review"].includes(task.status);
-            const connection = continues ? await findSatisfiedToolConnection(txDb, task, intent)
-              : ["done", "cancelled"].includes(task.status) ? null : await findAvailableToolConnection(txDb, task, intent);
+            const aiRepair = connectionIntentPayloadSchema.safeParse(intent.payload).data?.purpose === "ai";
+            const reviewed = aiRepair || ["in_progress", "in_review"].includes(task.status);
+            const retireOnly = aiRepair ? ["backlog", "todo"].includes(task.status) && !task.assigneeUserId
+              : !reviewed && !["done", "cancelled"].includes(task.status);
+            const reviewedConnection = reviewed ? await findSatisfiedConnection(txDb, task, intent) : null;
+            const continues = Boolean(reviewedConnection);
+            const connection = reviewedConnection ?? (retireOnly ? await findAvailableToolConnection(txDb, task, intent) : null);
             if (!connection) return false;
+            const restoredAi = connectionIntentPayloadSchema.safeParse(intent.payload).data?.purpose === "ai";
             await notifyIssueReviewState(tx, candidate);
             const now = new Date();
             // Retire the obsolete request without inventing a human approval.
             await notifyChatConfirmationResolution(tx, intent);
             const [retired] = await tx.update(issueThreadInteractions).set({ status: "expired", resolvedAt: now, updatedAt: now,
               result: { version: 1, outcome: "expired", connectionId: connection.id,
-                reason: "An already authorized connection is available to the requesting agent." },
+                reason: restoredAi
+                  ? "The AI connection is healthy again. Paperclip completed this request automatically."
+                  : "An already authorized connection is available to the requesting agent." },
             }).where(and(eq(issueThreadInteractions.id, intent.id), eq(issueThreadInteractions.status, "pending"))).returning();
             if (!retired) return false;
             const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
@@ -178,7 +247,7 @@ export function satisfiedConnectionIntentService(db: Db) {
             await logActivity(txDb, { companyId: task.companyId, actorType: "system", actorId: "connection-reconciliation",
               action: "issue.thread_interaction_resolved", entityType: "issue", entityId: task.id,
               details: { interactionId: intent.id, interactionKind: "connection_intent", status: "expired",
-                connectionId: connection.id, resolutionSource: "existing_connection" },
+                connectionId: connection.id, resolutionSource: restoredAi ? "restored_ai_connection" : "existing_connection" },
             }, publications);
             return true;
           });

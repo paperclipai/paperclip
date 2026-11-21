@@ -16,6 +16,7 @@ import { AI_CONNECTION_BUSY_RETRY_REASON, extractWakeCommentIds, isNonAssigneeWo
 import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "../agent-identity.js";
 import { readAiConnectionConfigurationFailure, readAiCredentialAccessFailure } from "../ai-connection-configuration-failure.js";
+import { HttpError } from "../../errors.js";
 import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiAuthBindings } from "../ai-connection-runtime.js";
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
@@ -242,8 +243,14 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         await finalizeAiConnectionBusyDeferral(run, error, !authorizedNonAssigneeWake);
         return { prepared: false as const };
       }
+      const unavailableDetail = readAiConnectionConfigurationFailure(error) === "ai_connection_unavailable"
+        && error instanceof HttpError ? parseObject(error.details).connectionId : undefined;
+      const unavailableConnectionId = typeof unavailableDetail === "string" ? unavailableDetail : undefined;
       if (responsibleUserId && issueId) {
-        await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
+        const claims = { sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId };
+        await (unavailableConnectionId
+          ? connectionIntentService(db).requestForUnavailableAiConnection(claims, aiBinding.provider, unavailableConnectionId)
+          : connectionIntentService(db).request(claims, aiBinding.provider, { purpose: "ai" })).catch(() => {
           logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
         });
       }
@@ -253,6 +260,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
             ? { selectionFailure: readAiConnectionConfigurationFailure(error) } : {}),
           ...(readAiCredentialAccessFailure(error)
             ? { credentialAccess: readAiCredentialAccessFailure(error) } : {}),
+          ...(unavailableConnectionId ? { connectionId: unavailableConnectionId } : {}),
           provider: aiBinding.provider, method: aiBinding.method, actionUrl: `/agents/${agent.id}/runtime`,
           fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` },
       });

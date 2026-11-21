@@ -229,6 +229,13 @@ describe("connection usage probes", () => {
     expect(result).toMatchObject({ status: expected, errorCode: code, limits: [], overage: null });
     expect(JSON.stringify(result)).not.toContain("echoed-credential-secret");
   });
+  it("reports an HTML edge 403 as temporarily unavailable, not as a permission or credential failure", async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response("<!DOCTYPE html><title>Attention Required! | Cloudflare</title>",
+      { status: 403, headers: { "content-type": "text/html; charset=UTF-8" } }));
+    const result = await probeAiConnectionUsage({ provider: "anthropic", method: "subscription" }, "token", { request });
+    expect(result).toMatchObject({ status: "error", errorCode: "provider_unavailable", limits: [], overage: null });
+    expect(JSON.stringify(result)).not.toContain("Cloudflare");
+  });
   it.each([{}, [], { five_hour: { utilization: -1 } }, { five_hour: { utilization: "100" } }])("fails closed on missing or malformed limits: %j", async body => {
     expect(await probeAiConnectionUsage({ provider: "anthropic", method: "subscription" }, "token", { request: fixture(body) })).toMatchObject({ status: "error", errorCode: "invalid_response" });
   });

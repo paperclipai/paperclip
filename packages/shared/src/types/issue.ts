@@ -1624,6 +1624,8 @@ export interface ConnectionIntentPayload {
   upstreamService?: { slug: string; name: string; selectionInteractionId?: string };
   /** AI authentication and inbox setup cannot be satisfied by tool credentials. */
   purpose?: "ai" | "channel";
+  repairConnectionId?: string;
+  linkedIssues?: Array<{ issueId: string; agentId: string; sourceRunId: string }>;
   serviceSlug: string;
   serviceName: string;
   serviceLogoUrl?: string | null;
