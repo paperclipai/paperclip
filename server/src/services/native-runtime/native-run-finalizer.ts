@@ -32,9 +32,9 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
-import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE, NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE, cancelStoppedRunContinuation,
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE, cancelStoppedRunContinuation,
   nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
-import { ownRunErrorSql } from "../scheduled-retry-error.js";
+import { RUN_STOP_CAUSE_KEY, ownRunErrorSql, runStopCauseResult } from "../scheduled-retry-error.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
 import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE } from "./native-agent-blocker.js";
@@ -125,6 +125,15 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "./native-runner-ownership.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+
+/** Saves a stop cause this run proved; the first saved cause stays. */
+async function saveRunStopCause(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+  cause: { errorCode: string; error: string }) {
+  await db.update(heartbeatRuns)
+    .set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(runStopCauseResult(cause))}::jsonb` })
+    .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+      sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ? ${RUN_STOP_CAUSE_KEY})`));
+}
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -1826,6 +1835,11 @@ export async function finalizeNativeRun(input: {
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
     };
+    // Save a proven receipt-limit stop as this run's own cause before the
+    // status decision commits. Live completion and restart repair then name
+    // the same cause as this projection.
+    if (statusInput.toolReceiptLimitStopped) await saveRunStopCause(input.db, run, {
+      errorCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE, error: NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE });
     let proposedDecision = resolveNativeFinalizerStatus(statusInput);
     // Already accepted results still require the server-owned first-task decision.
     // Keep the task open without inventing an interaction or rerunning the work.
@@ -2046,22 +2060,12 @@ export async function finalizeNativeRun(input: {
           else ${recoveredExecutionFailureMetadata()} end` : sql`'{}'::jsonb`}`;
       // A scheduled retry still carries the reason it was scheduled. That
       // describes its predecessor, so it never stands for this run's outcome.
+      // A saved stop cause (above) names this run's own stop.
       const ownError = ownRunErrorSql();
-      // A proven runner stop at the receipt limit is this run's cause when no
-      // writer recorded another one.
-      const receiptLimitCause = input.projectRunStatus && projectedStatus !== "succeeded" && statusInput.toolReceiptLimitStopped
-        ? { errorCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE, error: decision.reasonCode === NATIVE_TOOL_RECEIPT_LIMIT_CODE
-          ? NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE : NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE }
-        : null;
-      const hasOwnError = sql`(${ownError.error} is not null or ${ownError.errorCode} is not null)`;
-      const recordedError = receiptLimitCause
-        ? sql`case when ${hasOwnError} then ${ownError.error} else ${receiptLimitCause.error} end` : ownError.error;
-      const recordedErrorCode = receiptLimitCause
-        ? sql`case when ${hasOwnError} then ${ownError.errorCode} else ${receiptLimitCause.errorCode} end` : ownError.errorCode;
-      const nextError = providerFailure ? sql`coalesce(${recordedError}, ${providerFailure.errorMessage})`
-        : clearExecutionFailure ? sql`null` : recordedError;
-      const nextErrorCode = providerFailure ? sql`coalesce(${recordedErrorCode}, ${providerFailure.errorCode})`
-        : clearExecutionFailure ? sql`null` : recordedErrorCode;
+      const nextError = providerFailure ? sql`coalesce(${ownError.error}, ${providerFailure.errorMessage})`
+        : clearExecutionFailure ? sql`null` : ownError.error;
+      const nextErrorCode = providerFailure ? sql`coalesce(${ownError.errorCode}, ${providerFailure.errorCode})`
+        : clearExecutionFailure ? sql`null` : ownError.errorCode;
       // A run projected to failed always records why, even when the provider
       // reported a failed terminal without a classified failure. A recorded
       // runner turn failure names that cause.
