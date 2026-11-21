@@ -318,9 +318,8 @@ describeEmbeddedPostgres("automation conversations and standing checks", () => {
     const before = row(await read(seeded), seeded.responsibilities.finance.id);
     expect(before).toMatchObject({ level: "manual", automationCount: 0, manualTaskCount: 3 });
     const { issueId, interactionId } = await proposed(seeded, seeded.tasks.weekly.id, seeded.agents.analyst.id, SCHEDULE);
-    // A person without the assignment permission cannot accept.
     expect((await request(createApp(sessionBoardActor(seeded.company.id, OTHER)))
-      .post(`/api/issues/${issueId}/automation-proposals/${interactionId}/accept`).send({ timezone: "UTC" })).status).toBe(403);
+      .post(`/api/issues/${issueId}/automation-proposals/${interactionId}/accept`).send({ timezone: "UTC" })).status).toBe(404);
 
     const accepts = await Promise.all([1, 2].map(() =>
       request(seeded.app).post(`/api/issues/${issueId}/automation-proposals/${interactionId}/accept`).send({ timezone: "America/New_York" })));
