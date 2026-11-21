@@ -31,19 +31,37 @@ describe("shouldNavigateFileViewerSearch", () => {
   it("uses the browser URL search when router state is stale", () => {
     Object.defineProperty(globalThis, "window", {
       configurable: true,
-      value: { location: { search: "?browse=1" } },
+      value: { location: { pathname: "/issues/PAP-1", search: "?browse=1" } },
     });
 
-    expect(shouldNavigateFileViewerSearch("", "")).toBe(true);
+    expect(shouldNavigateFileViewerSearch("", "", "/issues/PAP-1")).toBe(true);
   });
 
   it("keeps no-op navigation suppressed when the browser URL already matches", () => {
     Object.defineProperty(globalThis, "window", {
       configurable: true,
-      value: { location: { search: "" } },
+      value: { location: { pathname: "/issues/PAP-1", search: "" } },
     });
 
-    expect(shouldNavigateFileViewerSearch("", "?browse=1")).toBe(false);
+    expect(shouldNavigateFileViewerSearch("", "?browse=1", "/issues/PAP-1")).toBe(false);
+  });
+
+  it("rejects stale task search updates after sidebar navigation changes the pathname", () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { pathname: "/dashboard", search: "" } },
+    });
+
+    expect(shouldNavigateFileViewerSearch("?browse=1&folder=ui", "?browse=1", "/issues/PAP-1")).toBe(false);
+  });
+
+  it("allows a real folder change on the current task", () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { pathname: "/issues/PAP-1", search: "?browse=1&folder=ui" } },
+    });
+
+    expect(shouldNavigateFileViewerSearch("?browse=1&folder=ui%2Fsrc", "?browse=1&folder=ui", "/issues/PAP-1")).toBe(true);
   });
 });
 

@@ -566,3 +566,10 @@ It checks the actual manifest generation, refusal of work under the owned hold,
 and a second useful write after release. This boundary does not exercise the
 production plugin database loader or plugin jobs. Unsupported manifests, active
 manual resources, and missing completion receipts remain sleep blockers.
+
+## Board attachment pending-save fixture
+
+The Board attachment pending-save fixture releases its response hold and waits
+for active route handlers before teardown. Observing the saved comment through
+a separate API request proves persistence, not completion of the intercepted
+POST response. Keep route errors visible instead of ignoring unfinished callbacks.
