@@ -100,6 +100,7 @@ import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
+import { containsPrivateKeyMaterial, isPrivateKeyFieldName, omitPrivateKeyMaterial, omitRedactedPrivateKeyPlaceholders } from "../redaction.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import {
   PORTABLE_CATALOG_PROVENANCE_STRING_KEYS,
@@ -597,6 +598,10 @@ function isSensitiveEnvKey(key: string) {
   );
 }
 
+function isPortableSecretEnv(key: string, value: unknown) {
+  return isSensitiveEnvKey(key) || isPrivateKeyFieldName(key) || containsPrivateKeyMaterial(value);
+}
+
 function normalizePortableProjectEnv(value: unknown): AgentEnvConfig | null {
   const parsed = envConfigSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
@@ -642,7 +647,7 @@ function extractPortableScopedEnvInputs(
 
     if (isPlainRecord(binding) && binding.type === "plain") {
       const defaultValue = asString(binding.value);
-      const isSensitive = isSensitiveEnvKey(key);
+      const isSensitive = isPortableSecretEnv(key, binding.value);
       const portability = defaultValue && isAbsoluteCommand(defaultValue)
         ? "system_dependent"
         : "portable";
@@ -672,9 +677,9 @@ function extractPortableScopedEnvInputs(
         description: `Optional default for ${key} on ${scope.label}`,
         agentSlug: scope.agentSlug,
         projectSlug: scope.projectSlug,
-        kind: isSensitiveEnvKey(key) ? "secret" : "plain",
+        kind: isPortableSecretEnv(key, binding) ? "secret" : "plain",
         requirement: "optional",
-        defaultValue: isSensitiveEnvKey(key) ? "" : binding,
+        defaultValue: isPortableSecretEnv(key, binding) ? "" : binding,
         portability,
       });
     }
@@ -2292,7 +2297,7 @@ function normalizePortableConfig(
     next[key] = entry;
   }
 
-  return next;
+  return omitPrivateKeyMaterial(next) as Record<string, unknown>;
 }
 
 function isAbsoluteCommand(value: string) {
@@ -5713,9 +5718,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
           // Apply adapter overrides from request if present
           const adapterOverride = input.adapterOverrides?.[planAgent.slug];
-          const baseAdapterConfig = adapterOverride?.adapterConfig
+          const baseAdapterConfig = omitRedactedPrivateKeyPlaceholders(adapterOverride?.adapterConfig
             ? { ...adapterOverride.adapterConfig }
-            : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
+            : { ...manifestAgent.adapterConfig }) as Record<string, unknown>;
 
           const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
           const existingImportAgent = planAgent.action === "update" && planAgent.existingAgentId

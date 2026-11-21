@@ -18,6 +18,8 @@ import {
   PRP_V2_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  omitPrivateKeyMaterial,
+  omitRedactedPrivateKeyPlaceholders,
   redactEventPayload,
   redactSensitiveText,
   sanitizeRecord,
@@ -900,6 +902,99 @@ second-line\" status=401`,
       command: "pnpm agent:run",
       apiKey: REDACTED_EVENT_VALUE,
     });
+  });
+
+  it.each(["devicePrivateKeyPem", "PRIVATE_KEY_PEM", "device-private-key-pem", "signingPrivateKeyDer", "privateKey", "private_key", "private-key", "privateKeyPem", "DEVICE_PRIVATEKEY_DER", "PAPERCLIP_AGENT_PRIVATE_KEY"])("redacts private material in %s recursively", (key) => {
+    const config = { command: "agent", nested: [{ [key]: "synthetic-private-material", enabled: true }] };
+    expect(redactAgentAdapterConfig(config)).toEqual({
+      command: "agent", nested: [{ [key]: REDACTED_EVENT_VALUE, enabled: true }],
+    });
+    expect(config.nested[0][key]).toBe("synthetic-private-material");
+  });
+
+  it.each(["publicKeyPem", "public_key_pem", "pem", "clientPem", "scopeMode", "signingKeyPem"])("keeps non-private value under %s", (key) => {
+    const publicPem = "-----BEGIN PUBLIC KEY-----\nsynthetic-public-body\n-----END PUBLIC KEY-----";
+    const config = { command: "agent", nested: [{ [key]: publicPem, enabled: true }] };
+    expect(redactAgentAdapterConfig(config)).toEqual(config);
+    expect(sanitizeRecord({ [key]: publicPem, scopeMode: "explicit" })).toEqual({ [key]: publicPem, scopeMode: "explicit" });
+  });
+
+  it("masks private key names in sanitizeRecord but keeps public key fields", () => {
+    const publicPem = "-----BEGIN PUBLIC KEY-----\nsynthetic-public-body\n-----END PUBLIC KEY-----";
+    expect(sanitizeRecord({ privateKeyPem: "synthetic-private-material", publicKeyPem: publicPem, scopeMode: "omitted_initial" })).toEqual({
+      privateKeyPem: REDACTED_EVENT_VALUE, publicKeyPem: publicPem, scopeMode: "omitted_initial",
+    });
+  });
+
+  it("redacts private PEM content under a name that does not say private key", () => {
+    const pem = "-----BEGIN PRIVATE KEY-----\nsynthetic-only\n-----END PRIVATE KEY-----";
+    expect(sanitizeRecord({ signingKeyPem: pem })).toEqual({ signingKeyPem: REDACTED_EVENT_VALUE });
+  });
+
+  it("preserves validated secret references and redacts PEM content under arbitrary names", () => {
+    const reference = { type: "secret_ref", secretId: "55555555-5555-4555-8555-555555555555", version: "latest" };
+    const config = {
+      devicePrivateKeyPem: reference,
+      nested: [{ content: "-----BEGIN ED25519 PRIVATE KEY-----\nsynthetic-only\n-----END ED25519 PRIVATE KEY-----" }],
+      enabled: true,
+    };
+    expect(redactAgentAdapterConfig(config)).toEqual({ devicePrivateKeyPem: reference, nested: [{ content: REDACTED_EVENT_VALUE }], enabled: true });
+    expect(omitPrivateKeyMaterial(config)).toEqual({ devicePrivateKeyPem: reference, nested: [{}], enabled: true });
+  });
+
+  it("omits private key fields and PEM values from portable configuration", () => {
+    const pem = "-----BEGIN PRIVATE KEY-----\nsynthetic-only\n-----END PRIVATE KEY-----";
+    const config = { devicePrivateKeyPem: "synthetic-private-material", url: "wss://gateway.example.test", list: [pem, "kept"], nested: { signingPrivateKeyDer: "x", blob: pem, enabled: true } };
+    const omitted = omitPrivateKeyMaterial(config);
+    expect(omitted).toEqual({ url: "wss://gateway.example.test", list: ["kept"], nested: { enabled: true } });
+    expect(JSON.stringify(omitted)).not.toContain(REDACTED_EVENT_VALUE);
+    expect(config.devicePrivateKeyPem).toBe("synthetic-private-material");
+  });
+
+  it("drops redaction placeholders stored under private key names", () => {
+    const config = { devicePrivateKeyPem: REDACTED_EVENT_VALUE, apiKey: REDACTED_EVENT_VALUE, nested: [{ signingPrivateKeyDer: REDACTED_EVENT_VALUE, enabled: true }], url: "wss://gateway.example.test" };
+    expect(omitRedactedPrivateKeyPlaceholders(config)).toEqual({ apiKey: REDACTED_EVENT_VALUE, nested: [{ enabled: true }], url: "wss://gateway.example.test" });
+  });
+
+  it("redacts PEM private key blocks in place and keeps the surrounding text", () => {
+    const input = [
+      "status: deploy finished",
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "synthetic-private-body",
+      "-----END OPENSSH PRIVATE KEY-----",
+      "next step: rotate the gateway",
+      "-----BEGIN PRIVATE KEY-----",
+      "second-synthetic-body",
+      "-----END PRIVATE KEY-----",
+      "done",
+    ].join("\n");
+    expect(redactSensitiveText(input)).toBe([
+      "status: deploy finished",
+      REDACTED_EVENT_VALUE,
+      "next step: rotate the gateway",
+      REDACTED_EVENT_VALUE,
+      "done",
+    ].join("\n"));
+  });
+
+  it("redacts a truncated PEM private key block through the end of the text", () => {
+    const result = redactSensitiveText("stderr tail:\n-----BEGIN RSA PRIVATE KEY-----\nsynthetic-truncated-body");
+    expect(result).toBe(`stderr tail:\n${REDACTED_EVENT_VALUE}`);
+  });
+
+  it("redacts PEM private key blocks alongside other credentials without dropping text", () => {
+    const input = [
+      "database postgresql://paperclip:synthetic-db-password@example.com/db",
+      "-----BEGIN PRIVATE KEY-----",
+      "synthetic-private-body",
+      "-----END PRIVATE KEY-----",
+      "public summary line",
+    ].join("\n");
+    const result = redactSensitiveText(input);
+    expect(result).not.toContain("synthetic-private-body");
+    expect(result).not.toContain("BEGIN PRIVATE KEY");
+    expect(result).toContain("database postgresql://");
+    expect(result).toContain("public summary line");
   });
 });
 
