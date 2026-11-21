@@ -19,7 +19,7 @@ import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
 import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
-import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError, isRemoteWorkspaceSandboxDiskFullError } from "../remote-workspace-transport.js";
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
@@ -1676,7 +1676,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ? outerErr : null;
     const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
-    const sandboxDiskFull = !storageUnavailable && isSandboxProviderDiskFullError(outerErr);
+    const sandboxDiskFull = !storageUnavailable
+      && (isSandboxProviderDiskFullError(outerErr) || isRemoteWorkspaceSandboxDiskFullError(outerErr));
     // A lease lost while AI selection rejected the account does not make the
     // run retryable: every host repeats that rejection until its owner acts.
     const ownedAiSelectionRejection = isOwnedAiConnectionSelectionRejection(
