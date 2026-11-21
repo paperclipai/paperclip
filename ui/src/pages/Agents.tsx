@@ -399,6 +399,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         )}
       </>
     ) : null;
+    const departmentLabel = rosterFilters.departmentLabel(agent.id);
     return (
       <div key={agent.id} className="agent-pin-row agent-roster-pin-row group/agent-pin relative">
       <EntityRow
@@ -407,7 +408,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         titleClassName="agent-pin-text flex-1"
         titleTextClassName="truncate"
         subtitleClassName="truncate"
-        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}${departmentLabel ? ` · ${departmentLabel}` : ""}`}
         to={agentUrl(agent)}
         className="agent-roster-identity group py-3 group-hover/agent-pin:bg-accent/50 group-focus-within/agent-pin:bg-accent/50"
         leading={hasInvalidOrgChain ? (

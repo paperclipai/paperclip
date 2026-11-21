@@ -41,6 +41,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AgentDepartmentsField } from "@/components/agents/AgentDepartmentsField";
 import { agentDisplayAdapterType, getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -1471,6 +1472,9 @@ export function AgentOverview({
           </span>}>
           <div className="flex flex-col pb-3">
             <AgentReportingManager key={agent.id} agent={agent} />
+            <div className="px-(--agent-detail-module-inset) py-1.5">
+              <AgentDepartmentsField companyId={agent.companyId} agentId={agent.id} />
+            </div>
             {directReports.length > 0 && <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
               <span className="text-muted-foreground">Direct reports:</span>
               <AgentDirectReports reports={directReports} />

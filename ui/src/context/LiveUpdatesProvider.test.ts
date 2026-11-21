@@ -2321,3 +2321,45 @@ describe("activity toast attribution", () => {
     expect(toast?.actor).toBeUndefined();
   });
 });
+
+describe("department list invalidation", () => {
+  it("refreshes departments after a department event and after membership replacement", () => {
+    const client = new QueryClient();
+    const departments = queryKeys.departments.list("company-1");
+    const roster = queryKeys.agents.list("company-1");
+    const actor = { userId: "user-1", agentId: null };
+
+    client.setQueryData(departments, []);
+    client.setQueryData(roster, []);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "department",
+      entityId: "desk",
+      action: "department.created",
+    }, actor);
+    expect(client.getQueryState(departments)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(roster)?.isInvalidated).toBe(false);
+
+    client.clear();
+    client.setQueryData(departments, []);
+    client.setQueryData(roster, []);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "agent",
+      entityId: "agent-1",
+      action: "agent.departments_set",
+    }, actor);
+    expect(client.getQueryState(departments)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(roster)?.isInvalidated).toBe(true);
+
+    client.clear();
+    client.setQueryData(departments, []);
+    client.setQueryData(roster, []);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "agent",
+      entityId: "agent-1",
+      action: "agent.updated",
+    }, actor);
+    expect(client.getQueryState(departments)?.isInvalidated).toBe(false);
+    expect(client.getQueryState(roster)?.isInvalidated).toBe(true);
+    client.clear();
+  });
+});
