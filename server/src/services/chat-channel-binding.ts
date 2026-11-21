@@ -7,6 +7,35 @@ import {
 } from "@paperclipai/db";
 import type { ExternalChannelBindingSummary } from "@paperclipai/shared";
 import { chatProviderConversationUrl } from "./chat-provider-links.js";
+import { conflict } from "../errors.js";
+
+export async function assertExternalChannelAssigneeChangeAllowed(
+  db: Db,
+  issue: { id: string; companyId: string; assigneeAgentId: string | null },
+  nextAssigneeAgentId: string | null | undefined,
+): Promise<void> {
+  if (
+    nextAssigneeAgentId === undefined ||
+    nextAssigneeAgentId === issue.assigneeAgentId
+  )
+    return;
+  const [binding] = await db
+    .select({ id: chatConversations.id })
+    .from(chatConversations)
+    .where(
+      and(
+        eq(chatConversations.companyId, issue.companyId),
+        eq(chatConversations.issueId, issue.id),
+      ),
+    )
+    .limit(1);
+  if (binding) {
+    throw conflict(
+      "Agent assignment cannot change while this task is bound to an external channel. Keep the current agent assigned. Delegate work with a child task instead. For human review, save a pending human-only interaction and set the task to in_review without changing its assignees, then finish the channel update.",
+      { code: "chat_binding_agent_locked", conversationId: binding.id },
+    );
+  }
+}
 
 /**
  * Derive the task-facing chat binding from durable Paperclip records. The
