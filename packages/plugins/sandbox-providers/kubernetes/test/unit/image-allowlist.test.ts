@@ -60,3 +60,31 @@ describe("resolveImage", () => {
     ).toThrow(/not in allowlist/);
   });
 });
+
+describe("resolveImage with runtimeImage", () => {
+  const defaults = { runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1" };
+  it("uses the configured full reference over imageRegistry", () => {
+    expect(
+      resolveImage({ imageOverride: null }, defaults, {
+        imageAllowList: [],
+        imageRegistry: "https://registry.example.com/team",
+        runtimeImage: "registry.example.com/team/agent-runtime:1.4.2",
+      }),
+    ).toBe("registry.example.com/team/agent-runtime:1.4.2");
+  });
+  it("accepts a digest reference", () => {
+    const ref = "registry.example.com/team/agent-runtime@sha256:" + "a".repeat(64);
+    expect(resolveImage({ imageOverride: null }, defaults, { imageAllowList: [], runtimeImage: ref })).toBe(ref);
+  });
+  it("ignores a blank runtimeImage", () => {
+    expect(resolveImage({ imageOverride: null }, defaults, { imageAllowList: [], runtimeImage: "  " })).toBe(defaults.runtimeImage);
+  });
+  it("keeps an allow-listed per-target override above runtimeImage", () => {
+    expect(
+      resolveImage({ imageOverride: "registry.example.com/x:2" }, defaults, {
+        imageAllowList: ["registry.example.com/*"],
+        runtimeImage: "registry.example.com/team/agent-runtime:1.4.2",
+      }),
+    ).toBe("registry.example.com/x:2");
+  });
+});
