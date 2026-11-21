@@ -1,24 +1,12 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 678a3412..48c18aed 100644
+index ced60385..b925688a 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -515,6 +515,9 @@ importers:
-       '@agentclientprotocol/codex-acp':
-         specifier: 1.6.2
-         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
-+      '@agentclientprotocol/sdk':
-+        specifier: 1.9.0
-+        version: 1.9.0(zod@4.6.7)
-       '@openai/codex':
-         specifier: 0.160.0
-         version: 0.160.0
-@@ -905,6 +908,9 @@ importers:
-       '@agentclientprotocol/codex-acp':
-         specifier: 1.6.2
-         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
-+      '@agentclientprotocol/sdk':
-+        specifier: 1.9.0
-+        version: 1.9.0(zod@4.6.7)
-       '@ai-sdk/amazon-bedrock':
-         specifier: 5.0.113
-         version: 5.0.113(zod@4.6.7)
+@@ -5145,6 +5145,7 @@ packages:
+   '@sapphire/shapeshift@4.0.0':
+     resolution: {integrity: sha512-d9dUmWVA7MMiKobL3VpLF8P2aeanRTu6ypG2OIaEv/ZHH/SUQ2iHOVyi5wAPjQ+HmnMuL0whK9ez8I/raWbtIg==}
+     engines: {node: '>=v16'}
++    deprecated: Shapeshift was created when other validation libraries had significant limitations in performance and error reporting. Those advantages have diminished as libraries such as Zod have become faster and improved their error messages, while also gaining broader environment support, a larger community, and custom error printers.
+ 
+   '@sapphire/snowflake@3.5.5':
+     resolution: {integrity: sha512-xzvBr1Q1c4lCe7i6sRnrofxeO1QTP/LKQ6A6qy0iB4x5yfiSfARMEQEghojzTNALDTcv8En04qYNIco9/K9eZQ==}

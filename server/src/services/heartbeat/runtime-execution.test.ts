@@ -24,6 +24,7 @@ import { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { createRunOutputSecretStore, createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { executePaperclipNativeSession, NativeCancellationPendingRecoveryError, NativeControllerDetachedForRestartError, nativeSessionFailureSourceCode, nativeSessionFailureDisposition } from "../native-runtime/native-session-executor.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../native-runtime/native-runner-ownership.js";
 import { NativeWorkspaceFinalizationBusyError, NativeWorkspaceFinalizationOwnershipLostError } from "../native-runtime/native-workspace-finalization-ownership.js";
@@ -35,6 +36,9 @@ import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
+import { liveNativeFinalizationReserved } from "../native-runtime/live-native-finalization.js";
+import { onNativeWorkspaceFinalizationRelease } from "../native-workspace-finalization-notifications.js";
+import { withNativeWorkspaceFinalizationOwnership } from "../native-runtime/native-workspace-finalization-ownership.js";
 
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
@@ -411,6 +415,36 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
 
+  it.each(["returns", "throws"] as const)("keeps recovery workers off the run until the live heartbeat ends (runner %s)", async outcome => {
+    const { input } = await fixture(true);
+    let reservedDuringDispatch = false;
+    let workerOwnership: unknown;
+    vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async () => {
+      // A runner posts its accepted result here, before it returns.
+      reservedDuringDispatch = liveNativeFinalizationReserved(input.run.id);
+      workerOwnership = await withNativeWorkspaceFinalizationOwnership({ db, companyId: input.run.companyId, runId: input.run.id },
+        async () => "taken");
+      if (outcome === "throws") throw new Error("runner failed after dispatch");
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    const execution = executeHeartbeatRuntime(db, input);
+    if (outcome === "throws") await expect(execution).rejects.toThrow(); else await execution;
+    expect(reservedDuringDispatch).toBe(true);
+    expect(workerOwnership).toEqual({ acquired: false, reason: "owner_active" });
+    expect(liveNativeFinalizationReserved(input.run.id)).toBe(false);
+    expectCleanup(input);
+  });
+
+  it("still cleans up when waking the workers after the live heartbeat throws", async () => {
+    const { input } = await fixture(true);
+    const stop = onNativeWorkspaceFinalizationRelease(db, () => { throw new Error("release listener failed"); });
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).resolves.toMatchObject({ dispatched: true });
+    } finally { stop(); }
+    expect(liveNativeFinalizationReserved(input.run.id)).toBe(false);
+    expectCleanup(input);
+  });
+
   it("passes preparation renewal ownership to native dispatch", async () => {
     const { input } = await fixture(true);
     const acquired = vi.fn(async () => undefined);
@@ -419,6 +453,26 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({ onExecutionLeaseAcquired: acquired }));
     // Preparation is still protected until the native executor claims its lease.
     expect(acquired).not.toHaveBeenCalled();
+  });
+
+  it("passes current and earlier attempts' secrets and observability values to native dispatch", async () => {
+    const { input } = await fixture(true);
+    const store = createRunOutputSecretStore(db);
+    await store.registerAll(input.run.companyId, input.run.id, ["sk_test_synthetic_before_rotation"]);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_after_rotation", "1", "completed"]);
+    input.config.observability = { environment: { OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=synthetic-observability-token" } } as never;
+    await executeHeartbeatRuntime(db, input);
+    expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({
+      outputSecrets: expect.arrayContaining(["sk_test_synthetic_before_rotation", "sk_test_synthetic_after_rotation",
+        "synthetic-observability-token"]),
+    }));
+    expect((await store.valuesForRun(input.run.companyId, input.run.id)).sort())
+      .toEqual(["completed", "sk_test_synthetic_after_rotation", "sk_test_synthetic_before_rotation"]);
+    expect(await createRunSecretRedactionRegistry(db).redactionValuesForRun(input.run.companyId, input.run.id)).toEqual([]);
+    const response = { id: input.run.id, eventType: "turn.completed", contextSnapshot: (await read(input.run.id)).contextSnapshot };
+    expect(await createRunSecretRedactionRegistry(db).redactForRun(input.run.companyId, input.run.id, response))
+      .toEqual({ ...response, contextSnapshot: expect.not.objectContaining({ paperclipOutputSecretRedactions: expect.anything() }) });
+    expect(input.output.identityRedactor.redact("old sk_test_synthetic_before_rotation")).toBe("old ***REDACTED***");
   });
 
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
@@ -479,6 +533,17 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed" } }]);
     expect(input.effects.onLegacyAdapterEntered).toHaveBeenCalledOnce();
     expectCleanup(input);
+  });
+
+  it.each([false, true])("masks a bound secret in the failed workspace record and keeps the original error (native: %s)", async native => {
+    const { input, adapter } = await fixture(native);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_failure_value"]);
+    const error = new Error("provider failed near sk_test_synthetic_failure_value");
+    if (native) vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    else adapter.execute.mockRejectedValueOnce(error);
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+    expect(error.message).toBe("provider failed near sk_test_synthetic_failure_value");
+    expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed near ***REDACTED***" } }]);
   });
 
   it.each([
@@ -684,14 +749,14 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
-  it("logs a pointer to the docs when a same-run retry follows a failed attachment", async () => {
+  it("logs an explanation when a same-run retry follows a failed attachment", async () => {
     const { input, run } = await fixture(true);
     await db.update(heartbeatRuns).set({ nativeIssueId: input.task.issueId }).where(eq(heartbeatRuns.id, run.id));
     await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: input.task.issueId!, runId: run.id, phase: "retryable_failure" });
     const error = new Error('native_session_recovery_failed: Error: PRP command run.attach failed: {"result":{"message":"run.attach requires a settled Codex provider session: active_turn"}}');
     vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
     await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ name: "NativeSessionResumeScheduledError", original: error });
-    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("doc/execution-semantics.md#session-settlement-after-a-run"));
+    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("A later run may start a new provider thread."));
     expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("run.attach requires a settled Codex provider session: active_turn"));
     expectCleanup(input);
   });

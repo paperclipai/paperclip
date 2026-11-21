@@ -7,6 +7,7 @@ import { INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-atte
 import { PREDECESSOR_RETIREMENT_FALLBACK_KEY, readPredecessorRetirementFallback, type PredecessorRetirementFallback } from "../native-runtime/predecessor-retirement.js";
 import { releaseUnchangedFallbackWorkspace } from "./predecessor-retirement-fallback.js";
 import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
+import { isSandboxProviderDiskFullError, NATIVE_SANDBOX_DISK_FULL } from "../native-runtime/native-sandbox-disk-full.js";
 import { withoutSqlStatementText } from "@paperclipai/shared";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
@@ -18,7 +19,7 @@ import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
 import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
-import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError, isRemoteWorkspaceSandboxDiskFullError } from "../remote-workspace-transport.js";
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
@@ -34,6 +35,7 @@ import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPap
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
+import { isOwnedAiConnectionSelectionRejection } from "../ai-connection-configuration-failure.js";
 import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { reportRunFailure } from "../run-failure-report.js";
 import { accountRunCost } from "../run-cost-accounting.js";
@@ -57,7 +59,8 @@ import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitrat
 import { conversationTurnPresentsAnswer } from "../native-runtime/native-governance.js";
 import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
-import { MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
+import { MAX_TURN_CONTINUATION_RETRY_REASON, allowsIssueInteractionWake, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
+import { ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS } from "../issue-tree-control.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -112,6 +115,7 @@ interface RunCompletionOutput {
   handle: RunLogHandle | null;
   outputProgressState: { pending: { bytes: number } | null };
   flushOutputProgress: (options?: { force?: boolean }) => Promise<void>;
+  settleDeferredLogRecovery?: () => Promise<void>;
   // Getters in the executor retain output that arrives while finalization awaits I/O.
   readonly stdoutExcerpt: string;
   readonly stderrExcerpt: string;
@@ -573,6 +577,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       compressed: boolean;
     } | null = null;
     if (handle) {
+      await output.settleDeferredLogRecovery?.();
       logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
     }
     const finalLogBytes = logSummary?.bytes;
@@ -1203,6 +1208,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
    */
   async function schedulePredecessorRetirementFallbackRetry(run: Run, agent: Agent, fallback: PredecessorRetirementFallback | null | undefined) {
     if (!fallback || run.status !== "failed") return null;
+    const scheduled = await schedulePredecessorRetirementContinuation(run, agent, fallback);
+    if (scheduled?.outcome !== "scheduled") {
+      await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || '{"continuationScheduling":"refused"}'::jsonb` })
+        .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "failed")))
+        .catch(error => logger.warn({ err: error, runId: run.id }, "could not record that a run's continuation was not scheduled"));
+    }
+    return scheduled;
+  }
+
+  async function schedulePredecessorRetirementContinuation(run: Run, agent: Agent, fallback: PredecessorRetirementFallback) {
     // Files this run's setup may have written are never dropped: without the
     // shared unchanged-files proof the workspace stays dirty and preserved.
     const released = await releaseUnchangedFallbackWorkspace(db, run).catch((error) => {
@@ -1213,7 +1228,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     try {
       // Recorded only once the workspace is settled: it makes the run eligible for retry.
       if (!readPredecessorRetirementFallback(run.resultJson)) {
-        const record = { [PREDECESSOR_RETIREMENT_FALLBACK_KEY]: fallback, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+        const [task] = run.issueId ? await db.select({ status: issues.status }).from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.id, run.issueId))) : [];
+        const record = { [PREDECESSOR_RETIREMENT_FALLBACK_KEY]: { ...fallback, ...(task ? { issueStatusAtFailure: task.status } : {}) },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
         await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(record)}::jsonb` })
           .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "failed")));
         run = { ...run, resultJson: { ...parseObject(run.resultJson), ...record } };
@@ -1229,6 +1247,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // An answered interaction keeps its own wake, so the retry still carries
     // the answer as a resolved-interaction continuation, in the uncharged lane.
     const wakeReason = isResolvedInteractionContinuationWakeContext(run.contextSnapshot)
+      || allowsIssueInteractionWake(parseObject(run.contextSnapshot), ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS)
       ? readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) : null;
     return scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON,
       ...(wakeReason ? { wakeReason } : {}) }).catch((retryError) => {
@@ -1306,6 +1325,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ? { ...exactResumeCause, originalMessage: redactFailureText(exactResumeCause.originalMessage) }
       : null;
     const storageUnavailable = isStorageUnavailableError(err);
+    const remoteWorkspacePreparationTimeout = !legacyAdapterEntered && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && err instanceof RemoteWorkspacePreparationTimeoutError
+      ? err : null;
     const failureErrorCode =
       workspaceValidationFailure?.code ??
       configurationIncompleteFailure?.code ??
@@ -1313,6 +1335,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       recordedResponsibleUserDenialCode ??
       nativeTerminalFailureCode ??
       (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
+      remoteWorkspacePreparationTimeout?.code ??
       "adapter_failed";
     // Only a `storage_unavailable` run gets a storage wait. Under any other code
     // (for example a native recovery hold that keeps the files without
@@ -1332,6 +1355,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     } | null = null;
     if (handle) {
       try {
+        await output.settleDeferredLogRecovery?.();
         logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
       } catch (finalizeErr) {
         logger.warn(
@@ -1652,8 +1676,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ? outerErr : null;
     const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
+    const sandboxDiskFull = !storageUnavailable
+      && (isSandboxProviderDiskFullError(outerErr) || isRemoteWorkspaceSandboxDiskFullError(outerErr));
+    // A lease lost while AI selection rejected the account does not make the
+    // run retryable: every host repeats that rejection until its owner acts.
+    const ownedAiSelectionRejection = isOwnedAiConnectionSelectionRejection(
+      configurationIncompleteSetupFailure?.resultJson.configurationIncomplete);
     const setupFailureErrorCode =
-      (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
+      (controllerLeaseLost && !ownedAiSelectionRejection ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??
       reusableSandboxResumeFailure?.code ??
@@ -1672,8 +1702,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         : null) ??
       recordedResponsibleUserDenialCode ??
       nonRetryablePreflightCode ??
+      (sandboxDiskFull ? NATIVE_SANDBOX_DISK_FULL : null) ??
       "setup_failed";
     const failureCause = GENERIC_RUN_FAILURE_CODES.has(setupFailureErrorCode) ? thrownFailureCause : null;
+    // The bounded retry resumes the same lease once the provider recovers, so
+    // a provider outage is reported only after that retry decision.
+    const sandboxResumeOutage = setupFailureErrorCode === reusableSandboxResumeFailure?.code
+      && reusableSandboxResumeFailure.providerOutage;
     // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
     const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
     // A wrapped query error hides its driver cause (for example
@@ -1724,6 +1759,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ...(providerFailure ? { providerFailure: { ...providerFailure,
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
+      ...(environmentProviderUnavailable?.environmentId ? { environmentProvider: {
+        environmentId: environmentProviderUnavailable.environmentId,
+        environmentName: environmentProviderUnavailable.environmentName } } : {}),
       ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
       // Names the configured setup command that exited non-zero, for the task page.
       ...setupCommandFailureResultJson(outerErr, readFailureReportSecrets()),
@@ -1762,8 +1800,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets(),
       // The Sentry report waits for the bounded retry decision below.
       ...(reviewedChatBindingNotReady ? { reviewedChatRetry: "pending" as const } : {}),
+      ...(sandboxResumeOutage ? { sandboxResumeRetry: "pending" as const } : {}),
     }, { setupFailure: true }).catch(() => ({ run: null, updated: false as const }));
-    let reviewedChatRetryScheduled = false;
+    let setupRetryScheduled = false;
     if (!setupFailureWrite.updated) {
       logger.info(
         {
@@ -1867,7 +1906,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             );
             return null;
           });
-          reviewedChatRetryScheduled = retry?.outcome === "scheduled";
+          setupRetryScheduled = retry?.outcome === "scheduled";
           storageWait = retry;
           storageWaitScheduled = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE
             && (retry?.outcome === "scheduled" || retry?.outcome === "retry_exhausted");
@@ -1899,11 +1938,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       );
     }
     // This path owned the failed-status write, which deferred the report.
-    const reviewedChatReportRun = reviewedChatBindingNotReady && setupFailureWrite.updated
+    const deferredReportRun = (reviewedChatBindingNotReady || sandboxResumeOutage) && setupFailureWrite.updated
       ? failedRun ?? setupFailureWrite.run : null;
-    if (reviewedChatReportRun) {
-      void reportRunFailure(db, reviewedChatReportRun, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets(),
-        reviewedChatRetry: reviewedChatRetryScheduled ? "scheduled" : "not_scheduled" });
+    if (deferredReportRun) {
+      const retryDecision = setupRetryScheduled ? "scheduled" as const : "not_scheduled" as const;
+      void reportRunFailure(db, deferredReportRun, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets(),
+        ...(reviewedChatBindingNotReady ? { reviewedChatRetry: retryDecision } : { sandboxResumeRetry: retryDecision }) });
     }
     // Ensure the agent is not left stuck in "running" if the setup-failure
     // path owned the terminal transition. If another path already finalized

@@ -93,10 +93,30 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+Canceling a task with active subtasks opens a modal headed “Cancel N active subtasks?”
+The modal lists each readable active descendant's status icon and title, without task IDs or links.
+Done and canceled tasks are excluded. The person can cancel only the parent,
+cancel the parent and listed subtasks, or dismiss the modal to leave them unchanged.
+
 When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list and shows each task once. Project
 groups omit tasks already shown in the other sections and disappear when empty.
+
+Sidebar Recents and Classic Recent Tasks show tasks from the viewer’s own
+recent activity as a flat list. A subtask has its own row and its own unread
+marker. Tasks archived from the viewer’s inbox leave Recents. Canceled and
+completed tasks remain eligible. Opening a recent task moves its row to the top
+of Recents.
+
+Standard Recents also shows recent chats and projects as individual links.
+Coordinator Recents lets you pin tasks, agent chats, and projects above More.
+The pin button appears on the current row or when a row is hovered or focused
+with the keyboard. Shortcuts share the saved order with pinned pages and stay
+available as Recents changes.
+Project links in Recents and pinned navigation open the project's Tasks tab.
+Both locations have a chevron that shows up to 12 recently updated project tasks.
+The task list loads when expanded and keeps the task status and unread markers.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery
@@ -167,6 +187,15 @@ The change creates a routine revision and applies to future automatic tasks.
 Existing tasks keep their responsibility. Manual runs use the person who starts
 them. Agents cannot transfer routine responsibility.
 
+The Routines list shows the agent and responsible user in adjacent columns.
+People can choose project, agent, responsible user, last run, and enabled columns.
+Search, sort, group, and project, agent, enabled, responsible user, and source
+filters are saved in the URL when changed. A shared filter URL takes precedence
+over locally saved filters. Each signed-in person keeps their latest filters,
+column choices, grouping, sorting, and collapsed groups in local storage for
+each company. An explicit empty filter URL clears saved filters.
+A trusted local installation without accounts uses a local board preference key.
+
 
 ### Task collection creation filters
 
@@ -206,6 +235,8 @@ and read markers do not establish participation in automatic work. Direct board 
 human API comments, human assignment, and deliberate user mutations do establish
 participation. Open requests addressed to the person also admit the task until
 resolution. Ordinary human-created tasks keep their creator's participation.
+Responsibility-repair audit entries do not establish personal participation,
+even when the repair is attributed to a human operator.
 These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
 Approvals retain their existing recipient and permission rules.
 
@@ -417,6 +448,12 @@ in-app only.
 
 Coordinator is the standard workspace for everyone. Settings → Experimental offers a personal **Classic workspace** opt-in, off by default. Historical Coordinator experiment settings do not enable Classic. Agent Chat is available to everyone on new and existing instances. The retired `enableAgentChat` key remains accepted for compatibility; stored and managed off values are ignored. Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
 
+Document links labeled to open in the sidebar keep the conversation on screen
+and show the requested document revision. **Open source task** in the sidebar
+takes the reader to the owning task's detail page with its task breadcrumb.
+The breadcrumb uses the short UUID for conversation-backed tasks without a
+task number.
+
 ### Slack task progress
 
 Slack threads reuse one editable progress message for each active run. Native
@@ -453,6 +490,12 @@ or returning to Paperclip. Dismissals persist per user across companies and
 browsers within an instance. Operators can disable fetching independently of
 telemetry. See [Announcements](ANNOUNCEMENTS.md).
 
+The self-hosted GitHub star prompt only enrolls companies first observed with
+fewer than five completed tasks. Companies already at five or more are skipped.
+The browser saves eligibility per company across visits. Eligible companies see
+the prompt at most once when they reach five completed tasks. Cloud instances
+and unfinished onboarding remain excluded.
+
 ### Agent chat discovery
 
 With Agent Chat enabled, Chat is the first row of the Work section and opens a
@@ -466,6 +509,10 @@ Terminated agents and agents you have left are omitted unless you have history w
 filters by name, title, or role; **+** starts or reopens a conversation.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.
+
+When an artifact in the side panel leaves too little room for the conversation,
+the chat list collapses and **Browse chats** opens the chat picker from the
+header. The list returns when you leave the artifact or make more room.
 
 Beside a conversation, the side panel opens on the agent's tasks: one card per
 task the agent created, was assigned, commented on, or acted on, newest first,
@@ -502,6 +549,12 @@ swipe-to-archive, grouping, and saved columns. Its existing preferences carry
 over. Unread, Recent, Blocked, and Everything are also task views. Organization
 views retain the task table and board. The table saves column selection and
 order per person and company. Old `/inbox/*` links redirect to their Tasks view.
+
+Archive is personal. Use it from Mine, Unread, or a task-table row to
+remove a task from your Mine and Unread views. All tasks and its status views
+still include archived tasks. Use Undo after archiving, or open **Archived**
+from the Views menu and restore a task. New replies from other people, mentions,
+and other inbox activity such as a new decision request can bring a task back.
 
 ### Combined Inbox + Task List
 
@@ -544,7 +597,7 @@ The agent performs authorized setup, reuses saved accounts and drafts, and hands
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
 
-Ordinary tool approvals remain reviewable without an implicit one-hour deadline. Authenticated OAuth refresh preserves a pending approval for the same saved action and authorization. Sign-in repair retains an accepted decision and resumes through connection-change events after revalidation; changed consent, permissions, credentials or action targets require a new review. Current access, explicit deadlines, task closure and execution receipts remain enforced. See [Delayed tool approvals](execution-semantics.md#delayed-tool-approvals).
+Ordinary tool approvals remain reviewable without an implicit one-hour deadline. Authenticated OAuth refresh preserves a pending approval for the same saved action and authorization. Sign-in repair retains an accepted decision and resumes through connection-change events after revalidation; changed consent, permissions, credentials or action targets require a new review. Current access, explicit deadlines, task closure and execution receipts remain enforced.
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.
 

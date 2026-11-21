@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { parseTailscaleLoginStatus, type TailscaleLoginStatus } from "./device-login-status.js";
 
 const exec = promisify(execFile);
 const STATE_PREFIX = "paperclip-tailscale-state-v1:";
@@ -12,7 +13,10 @@ export function isTailscaleNodeState(value: string): boolean {
   return value.startsWith(STATE_PREFIX);
 }
 
-type Connection = { credential: string; savedCredential?: string; child?: ChildProcess; closed: boolean; discardState: AbortController; closing?: Promise<void>; ready: Promise<string>; close: () => Promise<void> };
+type DeviceLogin = { expiresAt: number; onAuthorized: () => Promise<void>; onFailure: () => Promise<void> };
+type Connection = { credential: string; savedCredential?: string; child?: ChildProcess; loginChild?: ChildProcess;
+  loginStatus?: () => Promise<TailscaleLoginStatus>; closed: boolean; discardState: AbortController;
+  closing?: Promise<void>; ready: Promise<string>; close: () => Promise<void> };
 
 export function createTailscaleNetworkManager(commands: { cli?: string; daemon?: string } = {}) {
   const connections = new Map<string, Connection>();
@@ -23,6 +27,7 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
     credential: string;
     persist: (credential: string) => Promise<void>;
     reload?: () => Promise<string>;
+    login?: DeviceLogin;
   }, expectedGeneration = generation): Promise<string> {
     if (expectedGeneration !== generation) throw new Error("Tailscale stopped");
     const existing = connections.get(input.identity);
@@ -64,7 +69,7 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
     return connection.ready;
   }
 
-  async function start(input: { identity: string; credential: string; persist: (credential: string) => Promise<void> }, connection: Connection) {
+  async function start(input: { identity: string; credential: string; persist: (credential: string) => Promise<void>; login?: DeviceLogin }, connection: Connection) {
     const restored = isTailscaleNodeState(input.credential);
     const state = restored ? Buffer.from(input.credential.slice(STATE_PREFIX.length), "base64") : null;
     if (state && (state.length > MAX_STATE_BYTES || !state.length)) throw new Error("Invalid state");
@@ -73,8 +78,34 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
 
     let dir: string | undefined;
     let statePath: string | undefined;
+    let saving = Promise.resolve();
+    const persist = async (value: string) => {
+      const signal = connection.discardState.signal;
+      if (signal.aborted) return;
+      let discard!: () => void;
+      const discarded = new Promise<void>(resolve => { discard = resolve; });
+      signal.addEventListener("abort", discard, { once: true });
+      try {
+        await Promise.race([input.persist(value), discarded]);
+        if (!signal.aborted) connection.savedCredential = value;
+      } finally { signal.removeEventListener("abort", discard); }
+    };
+    const save = () => {
+      const pending = saving.then(async () => {
+        if (connection.discardState.signal.aborted || !statePath) return;
+        const bytes = await fs.readFile(statePath);
+        if (!bytes.length || bytes.length > MAX_STATE_BYTES) throw new Error("Invalid state");
+        const next = STATE_PREFIX + bytes.toString("base64");
+        if (next !== connection.savedCredential) {
+          await persist(next);
+        }
+      });
+      saving = pending.catch(() => undefined);
+      return pending;
+    };
     connection.close = () => connection.closing ??= (async () => {
       connection.closed = true;
+      connection.loginChild?.kill("SIGKILL");
       const child = connection.child;
       if (child?.pid && child.exitCode === null && child.signalCode === null) {
         await new Promise<void>((resolve) => {
@@ -84,20 +115,13 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
         });
       }
       try {
+        await saving;
         if (!connection.discardState.signal.aborted && connection.savedCredential && statePath) {
           const bytes = await fs.readFile(statePath);
           if (bytes.length && bytes.length <= MAX_STATE_BYTES) {
             const latest = STATE_PREFIX + bytes.toString("base64");
             if (latest !== connection.savedCredential) {
-              const signal = connection.discardState.signal;
-              let discard!: () => void;
-              const discarded = new Promise<void>(resolve => { discard = resolve; });
-              signal.addEventListener("abort", discard, { once: true });
-              try {
-                // Deletion can hold the vault lock needed by a pending state flush.
-                if (!signal.aborted) await Promise.race([input.persist(latest), discarded]);
-                if (!signal.aborted) connection.savedCredential = latest;
-              } finally { signal.removeEventListener("abort", discard); }
+              await persist(latest);
             }
           }
         }
@@ -134,6 +158,48 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     }
+    if (input.login) {
+      const login = input.login;
+      const remaining = login.expiresAt - Date.now();
+      if (remaining <= 0 || remaining > 10 * 60_000) throw new Error("Tailscale sign-in expired");
+      const up = exec(cliCommand, [`--socket=${socket}`, "up", "--accept-dns=false", "--accept-routes=false", "--shields-up",
+        `--timeout=${remaining}ms`, `--hostname=paperclip-${input.identity.replace(/[^a-z0-9]/gi, "").slice(-16)}`],
+      { timeout: remaining + 1000, maxBuffer: MAX_STATE_BYTES });
+      connection.loginChild = up.child;
+      let loginFailed = false;
+      const completion = up.then(async () => {
+        if (connection.closed) return;
+        if (Date.now() >= login.expiresAt) throw new Error("Tailscale sign-in expired");
+        const status = parseTailscaleLoginStatus(JSON.parse((await cli(["status", "--json"])).stdout));
+        if (status.status !== "connected") throw new Error("Tailscale sign-in did not complete");
+        await save();
+        if (!connection.closed) await login.onAuthorized();
+      }).catch(async () => {
+        loginFailed = true;
+        if (connection.closed) return;
+        try { await login.onFailure(); } finally { await connection.close(); }
+      });
+      // The active CLI watches Tailscale events until consent, cancellation, or expiry.
+      void completion.catch(() => undefined);
+      connection.loginStatus = async () => {
+        if (loginFailed || connection.closed) throw new Error("Tailscale sign-in did not complete");
+        const status = parseTailscaleLoginStatus(JSON.parse((await cli(["status", "--json"])).stdout));
+        if (status.status === "connected") await completion;
+        if (loginFailed || connection.closed) throw new Error("Tailscale sign-in did not complete");
+        return status;
+      };
+      const loginDeadline = Math.min(login.expiresAt, Date.now() + 10_000);
+      for (;;) {
+        const status = await connection.loginStatus();
+        if (status.status !== "authorizing" || status.authorizationUrl) {
+          await save();
+          if (failed || connection.closed) throw new Error("Tailscale stopped");
+          return socket;
+        }
+        if (Date.now() >= loginDeadline) throw new Error("Tailscale sign-in timed out");
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
     if (!restored) await fs.writeFile(keyPath, input.credential, { mode: 0o600 });
     try {
       await cli(["up", "--accept-dns=false", "--accept-routes=false", "--shields-up", "--timeout=30s",
@@ -144,17 +210,20 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
     }
     const status = JSON.parse((await cli(["status", "--json"])).stdout);
     if (status.BackendState !== "Running") throw new Error("Tailscale requires authorization");
-    const nextState = await fs.readFile(statePath);
-    if (!nextState.length || nextState.length > MAX_STATE_BYTES) throw new Error("Invalid state");
-    const saved = STATE_PREFIX + nextState.toString("base64");
-    if (saved !== input.credential) await input.persist(saved);
-    connection.savedCredential = saved;
+    connection.savedCredential = input.credential;
+    await save();
     if (failed || connection.closed) throw new Error("Tailscale stopped");
     return socket;
   }
 
   return {
     connect: (input: Parameters<typeof connect>[0]) => connect(input),
+    async loginStatus(identity: string) {
+      const connection = connections.get(identity);
+      if (!connection) return null;
+      await connection.ready;
+      return connection.loginStatus ? connection.loginStatus() : { status: "connected" as const };
+    },
     async disconnect(identity: string, options: { discardState?: boolean } = {}) {
       const connection = connections.get(identity);
       if (!connection) return;

@@ -120,6 +120,20 @@ describe("TaskChatLiveRunPill", () => {
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/agents/codie/advanced");
   });
 
+  it("says a queued run with no named hold is waiting to start once the startup grace passes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-13T17:46:13Z"));
+    const queuedAt = Date.now() - 5_000;
+    const queued = { phase: "queued", label: "Queued", cause: null } as ExecutionProjection;
+    act(() => root.render(<TaskChatLiveRunPill status="queued" execution={queued} startedAtMs={queuedAt} toolSummary={null} />));
+    expect(container.textContent).toContain("Working");
+    act(() => vi.advanceTimersByTime(26_000));
+    expect(container.textContent).toContain("Waiting to start");
+    expect(container.textContent).not.toContain("Working");
+    expect(container.querySelector(".animate-spin")).toBeNull();
+    expect(container.querySelector(".shimmer-text")).toBeNull();
+  });
+
   it("names another server hold on a queued run instead of Working", () => {
     const execution = { phase: "queued", label: "Waiting for maintenance", cause: "task_drain" } as ExecutionProjection;
     act(() => root.render(<TaskChatLiveRunPill status="queued" execution={execution} startedAtMs={Date.now()} toolSummary={null} />));

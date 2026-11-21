@@ -165,11 +165,11 @@ export interface TaskInterruptionPresentation {
   nextRetryAt: string | null;
   canRetry: boolean;
   retryAction?: "move_forward";
-  userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access"
+  userAction: "approval" | "question" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access"
     /** Board confirms that a previous server, which can no longer report, stopped its workspace copyback. */
     | "confirm_owner_stop"
     /** Board confirms that a run whose server restarted before it recorded the agent's process has stopped. */
-    | "confirm_run_stopped" | null;
+    | "confirm_run_stopped" | "unblock" | null;
   /** Only the task's own project id is exposed. Other source projects stay unnamed. */
   projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
   sourceRunIds: string[];

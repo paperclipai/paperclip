@@ -148,21 +148,21 @@ describe("Claude provider-started turns", () => {
 
   it("lets callbacks of a started cycle wait for the consumer's decision", async () => {
     const cycles = new ClaudeProviderCycles({ sessionId: () => SESSION, promptActive: () => false }).subscribe();
-    expect(cycles.undecided()).toBeNull();
+    expect(cycles.decisionFor(undefined)).toBeNull();
     cycles.observe("inbound", toolCall("toolu_1"));
-    const first = cycles.undecided();
+    const first = cycles.decisionFor(undefined);
     expect(first).not.toBeNull();
     expect(await cycles.next()).toMatchObject({ type: "started" });
     cycles.adopt(() => false);
     expect(await first).toBe(true);
-    expect(cycles.undecided()).toBeNull();
+    expect(cycles.decisionFor(undefined)).toBeNull();
     cycles.observe("inbound", endMarker());
     cycles.observe("inbound", toolCall("toolu_2"));
-    const second = cycles.undecided();
+    const second = cycles.decisionFor(undefined);
     for (let item = await cycles.next(); item?.type !== "started"; item = await cycles.next()) void item;
     cycles.drop();
     expect(await second).toBe(false);
-    expect(cycles.undecided()).toBeNull();
+    expect(cycles.decisionFor(undefined)).toBeNull();
   });
 
   it("binds a tool call or permission request to the decision of the cycle that sent it", async () => {

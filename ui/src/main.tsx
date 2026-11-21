@@ -8,6 +8,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
+import { ProductAnalyticsGate } from "./components/ProductAnalyticsGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LinkPreviewProvider } from "./context/LinkPreviewContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
@@ -15,6 +16,7 @@ import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
+import { TaskCancellationProvider } from "./context/TaskCancellationContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { applyLiveEventFreeQueryDefaults } from "./lib/live-reconcile";
 import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
@@ -33,6 +35,7 @@ import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
 import { captureQueryException } from "./lib/sentry";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
+import { adoptHardLoadChatBootstrap } from "./lib/issue-chat-bootstrap";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
@@ -92,6 +95,8 @@ bindConnectivity(queryClient, connectivity);
 startPersistedQueryCache(queryClient, {
   buildId: typeof __PAPERCLIP_BUILD_COMMIT__ === "string" ? __PAPERCLIP_BUILD_COMMIT__ : null,
 });
+// Readers that start before the task page mounts share a hard load's bootstrap.
+adoptHardLoadChatBootstrap(queryClient);
 window.addEventListener("load", () => {
   startServiceWorkerUpdates({
     canReload: () => connectivity.getSnapshot().status === "online"
@@ -128,6 +133,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <SentryGate />
+        <ProductAnalyticsGate />
         <ThemeProvider>
           <BrowserRouter>
             <CompanyProvider>
@@ -142,7 +148,9 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
+                                <TaskCancellationProvider>
                                 <DesignSandboxProvider><CompanyVoiceCalls><CompanyLinkPreviews><App /></CompanyLinkPreviews></CompanyVoiceCalls></DesignSandboxProvider>
+                                </TaskCancellationProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

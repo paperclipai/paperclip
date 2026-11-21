@@ -50,6 +50,33 @@ const states = [
   { status: "running", eligibility: undefined, label: "Cancel", driverKind: "grok_bot_mcp" },
   { status: "queued", eligibility: undefined, label: "Cancel", driverKind: "grok_bot_mcp" },
 ];
+
+it.each([RunsTab, ProductionRunsTab].flatMap(Tab => [null, "The previous turn is no longer active."].map(error => ({ Tab, error }))))(
+  "shows the confirmed full disk for historical run details (%#)", async ({ Tab, error }) => {
+    const run = { id: "disk-full-run", companyId: "company-1", agentId: "agent-1", status: "failed",
+      errorCode: "sandbox_disk_full", error, resultJson: null, contextSnapshot: null, usageJson: null,
+      createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", invocationSource: "manual",
+      startedAt: null, finishedAt: null, logRef: null, exitCode: 1,
+      execution: { canStop: false, phase: "completed", label: "Continued in another run" },
+    } as unknown as HeartbeatRun;
+    get.mockResolvedValue(run);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const element = document.createElement("div"); document.body.append(element);
+    const root = createRoot(element);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter><PanelProvider><ToastProvider>
+        <Tab runs={[]} companyId="company-1" agentId="agent-1" agentRouteId="agent-1" selectedRunId={run.id} adapterType="paperclip_runner" adapterConfig={{}} />
+      </ToastProvider></PanelProvider></MemoryRouter></QueryClientProvider>));
+      await vi.waitFor(async () => {
+        await act(async () => {});
+        expect(element.textContent).toContain("computer ran out of disk space");
+      });
+      expect(element.textContent).not.toContain("previous turn is no longer active");
+      expect(cancel).not.toHaveBeenCalled();
+    } finally { await act(async () => root.unmount()); client.clear(); element.remove(); }
+  },
+);
+
 it.each([RunsTab, ProductionRunsTab].flatMap(Tab => states.map(state => ({ Tab, ...state }))))("renders and submits only eligible run cancellation (%#)", async ({ Tab, status, eligibility, label, ...state }) => {
   if (state.local) { actor.id = "local-board"; actor.source = "local_implicit"; }
   const run = { id: state.priorSession ? `persisted-run-${Tab === RunsTab ? "main" : "production"}` : "failed-native-run", companyId: "company-1", agentId: "agent-1", issueId: "issue-1", status, driverKind: state.driverKind, invocationSource: "manual",

@@ -16,11 +16,12 @@ with the normal Tailscale application, enable macOS Remote Login. Tailscale SSH
 server support on macOS requires the open-source tailscaled variant; ordinary
 OpenSSH over Tailscale works with the standard Mac application.
 
-Cloud reauthentication saves the pending OAuth handoff in the current browser
-tab before redirecting. If consent is canceled or completion fails after the
-state and company checks, the browser returns to the saved connection with a
-fixed explanation and a retry. The return URL contains only the connection ID
-and a known outcome, without provider error text, claims, or OAuth state.
+Device sign-in opens Tailscale in a separate tab and keeps the connector page
+open. A normal sign-in link remains available if the browser blocks the tab.
+Approve the Paperclip device in your own tailnet; no OAuth app, API key, Cloud
+broker credential, or per-instance pilot admission is needed. If your tailnet
+requires device approval, the connector shows that separate pending state.
+Sign-in expires after ten minutes and can be cancelled from the connector.
 
 SSH setup hides the Network selector when Direct connection is the only
 available option. A sole connected tailnet is selected automatically and its
@@ -60,36 +61,105 @@ SSH environments display it as on; opening or upgrading an installation does
 not rewrite their saved configuration. The same option applies to direct SSH
 and Tailscale connections.
 
+## SSH on a volume-free Cloud stack
+
+Cloud SSH execution uses the same durable task workspace storage as Cloud
+sandboxes. All built-in SSH-capable harnesses use their existing adapters:
+Claude Code, Codex, Cursor, Gemini, Grok, Kimi, OpenCode, and Pi. The native
+Paperclip Runner also retains its SSH execution path. Cloud API and gateway
+adapters keep their provider-managed execution rather than selecting an SSH host.
+
+With a compatible agent-selected Paperclip AI account, ACP can run directly in
+the remote task directory and stage only private runtime assets. Claude Code,
+Codex, Gemini, and Kimi expose this ACP path. The CLI engines support the same
+remote directory. ACP requires its server command, such as `claude-agent-acp`,
+on the SSH login PATH. Selecting SSH does not change the agent's engine,
+account compatibility, or permission settings.
+
+An in-place SSH workspace exists on the SSH computer. Neither engine creates
+that workspace path on the controller. ACP keeps its local relay and state files
+in the controller's state directory and leaves remote project settings in place.
+Existing local Claude settings still contribute to the saved ACP conversation
+identity for upgrade compatibility. SSH startup can read that file when present,
+but does not create or rewrite it.
+
+The SSH account supplies the installed harness; the agent's Paperclip AI account
+supplies authentication unless the remote authentication option is enabled.
+Host authentication remains supported by the CLI engine.
+
+Saved CLI sessions retain the SSH connection identity through persistence, so a
+follow-up cannot attach to a different host. Disposable managed account-home
+paths do not reset new ACP conversations. A configuration identity change is
+reported as `acpx_session_identity_changed`; older Codex or Gemini ACP sessions
+that used the former home identity can reset once at upgrade. Task files remain
+in their durable SSH workspace. Older CLI sessions without a saved SSH identity
+remain unresumable; Core does not guess their source host.
+
+Pi keeps its JSONL conversation file under `.paperclip/pi/sessions` in the
+durable SSH task workspace. Its temporary credential home is removed after
+each turn. A follow-up uses the saved session file only when the SSH identity
+and the file's workspace header match. Existing readable session paths keep
+working; files already removed by an older release cannot be recovered.
+
+
+Each task receives a private directory below the configured SSH workspace path,
+inside `.paperclip-workspaces`. The task runs in that remote directory. Core
+keeps the workspace binding and saved file versions in its database and object
+storage. A Cloud restart reconnects to the same remote files. Restoring a saved
+workspace to another allocation uses the existing snapshot verification and
+single-writer rules. It does not restore private provider credentials from a
+task snapshot.
+
+The SSH machine needs Node.js and Git on its login PATH in addition to its agent
+harness. The workspace owner uses Node.js for preparation and verified file
+archives. SSH access alone does not qualify these dependencies or the selected
+AI account.
+
+An existing server-local workspace is not automatically imported. Cloud still
+rejects local filesystem authority and unsupported adapters. An uncertain SSH
+exit or failed save retains the remote files and the writer hold; it does not
+authorize another run to overwrite them. Paperclip does not stop or delete the
+SSH computer. This change does not add automatic reconciliation of an unknown
+remote provider process after an SSH connection is lost.
+
 The environment keeps the `ssh` driver. Machine selection stores the connector
 ID and Tailscale’s stable device ID, and runtime
 resolution looks up its current address through that connection’s private
 socket. Offline, removed, disconnected, and wrong-company machines fail closed.
 The host’s existing Tailscale connection is never a fallback.
 
-## OAuth and credential custody
+## Device sign-in and credential custody
 
-The connection uses the Cloud OAuth broker profile `tailscale.tailnet`, with
-`auth_keys:create:once`. It is a network connector on the Connectors surface;
-it does not publish agent tools or enter MCP discovery. Management requires an
-instance administrator with access to the company. The catalog and setup page
-check that access before requesting network data; other company members are
-directed to an instance administrator. Existing SSH environment access governs
-which agents can execute there. Self-hosted local
-instances first complete the existing Paperclip Cloud enrollment and return to
-their company's Tailscale connector page to continue network consent. Cloud
-stacks use their existing broker identity and handoff.
+It is a network connector on the Connectors surface; it does not publish agent
+tools or enter MCP discovery. Management requires an instance administrator with
+access to the company. Only the person who started a pending sign-in can retrieve
+its sign-in link. Existing SSH environment access governs which agents execute
+there. Cloud and self-hosted instances use the same Tailscale device sign-in.
+For Cloud owners, the board access summary reports the effective instance-admin
+rights computed by Cloud authentication while `enableOwnerInstanceAdmin` is
+enabled. Disabling that setting removes those rights on the next request.
 
-Tailscale returns a single-use device enrollment token without a refresh token.
-The broker seals it to the originating instance. The instance validates the
-user, company, state expiry and single-use callback, stores the token through the
-configured company secret provider, and immediately replaces its current value
-with the enrolled node state before permitting execution. The connection records
+The instance starts a private userspace Tailscale device and returns its generated
+`https://login.tailscale.com/a/...` sign-in address. Pending device state is stored
+in the configured company vault before the address is returned. The active
+`tailscale up` command watches Tailscale state until consent and any required
+device approval complete, or the ten-minute deadline expires. It saves the
+registered device state before marking the connection connected. Pending sign-ins
+can resume from the saved state after a server restart without extending their
+deadline. There is no background database scan: browser progress requests exist
+only during the bounded sign-in, and the CLI waits for Tailscale state events.
+
+The previous OAuth callback remains available for already-started pilot flows;
+existing enrolled devices continue to use their saved state. New connections
+use device sign-in and do not call the Cloud OAuth broker.
+
+The connection records
 the exact trusted vault version and a SHA-256 digest of the server-written value.
 Runtime reads that version and verifies its digest. A generic company secret
 rotation cannot change the authorized network. Trusted node-state saves advance
 both fields together, with a compare-and-set guard so an older save cannot
 replace a newer state. Reads keep using the previous trusted version until the
-new version is committed. Tokens, private node state, digests and client secrets
+new version is committed. Private node state, digests and enrollment credentials
 never appear in connection or environment responses.
 
 Enrollment tokens and node state are server-owned secrets with a durable
@@ -150,7 +220,6 @@ all Tailscale environments use the connector's lifecycle.
 This implementation currently supports one serving process per instance.
 Concurrent replicas need a durable connection ownership lease before rollout.
 
-The enrollment token is consumed once; it is not the runtime credential.
 Tailscale identity belongs to the persisted machine key in the saved node state,
 not the container ID or hostname. A redeploy must retain both the database's
 encrypted node state and the same vault master key. Cloud already materializes
@@ -161,31 +230,10 @@ fresh consent. The app-owned device has the consenting user's tailnet rights.
 
 ## Local development
 
-Run the Paperclip instance at `http://localhost:3100` and the local Cloud broker
-at `http://localhost:3000`. Register the OAuth app callback as
-`http://localhost:3000/v1/connector/oauth/tailscale/callback` with scope
-`auth_keys:create:once`. The OAuth app must be registered in the authorizing
-user’s tailnet under Tailscale’s currently documented restriction.
-
-Configure the local broker with:
-
-- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_ENABLED=1`
-- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_CLIENT_ID`
-- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_CLIENT_SECRET_REF=secret://local/tailscale`
-- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_LOCAL_CLIENT_SECRET_FILE`, an owner-only
-  regular file outside the checkout containing the OAuth app client secret
-- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_PILOT_INSTANCE_IDS`, the exact enrolled local
-  instance ID
-
-The file credential path is accepted only for a loopback HTTP development broker
-using the local fake provider. Hosted credentials continue to use the configured
-provider secret store. Never regenerate an existing Cloud `.env` or identity
-salt to configure this test.
-
-The instance needs `tailscale` and `tailscaled`. Its OAuth return path is
-`/api/tools/oauth/tailscale/callback`, and completion returns to the Tailscale
-connector page. For a separate local userspace
-client, install the pinned programs outside the checkout:
+Run the Paperclip instance at `http://localhost:3100`. No local Cloud broker or
+Tailscale OAuth app is required. The instance needs `tailscale` and `tailscaled`.
+For a separate local userspace client, install the pinned programs outside the
+checkout:
 
 ```sh
 GOBIN="$HOME/.local/share/paperclip-tailscale/bin" go install tailscale.com/cmd/tailscale@v1.104.5
@@ -195,19 +243,18 @@ GOBIN="$HOME/.local/share/paperclip-tailscale/bin" go install tailscale.com/cmd/
 Set `PAPERCLIP_TAILSCALE_CLI` and `PAPERCLIP_TAILSCALED` to their absolute paths.
 These settings can be set in the supported `.env` files. Each new client reads
 them at startup, after environment loading.
-Set `PAPERCLIP_CLOUD_CONNECTOR_BASE_URL=http://localhost:3000` and
-`PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT=development` for local enrollment.
 
 ## Verification and rollout gates
 
-Offline tests cover broker handoff and sealed claims, company and user binding,
-expired and competing callbacks, disconnect during claim exchange, secret
-creation, credential reload and daemon startup, superseding authorizations,
-failed-enrollment cleanup, denied authorization, device discovery, driver
-selection, private subprocess state, shutdown, and restart. These do not prove
-live consent or remote execution.
+Offline tests cover device sign-in without an auth key, saved state and restart,
+separate company identities, initiator binding, cancellation and expiry, stale
+completion, trusted credential versions, device approval, popup fallback, and
+route authorization/CSRF. Existing tests retain legacy broker callback, SSH,
+pairing, and network lifecycle coverage. These do not prove live consent or
+remote execution.
 
-Before rollout, qualify real consent, machine discovery, a Claude task that
+Before rollout, qualify two unrelated customer tailnets through ordinary device
+sign-in, machine discovery, and an agent task using its selected AI account that
 writes a file on the selected computer, result streaming, cancellation, server
 restart, machine sleep/reboot, and revocation. A local instance whose public URL
 is localhost also needs an API path reachable by the remote agent for tasks that
@@ -218,14 +265,15 @@ The connector's bundled artwork comes from the vendor's
 `https://tailscale.com/favicon.png`, copied without modification (SHA-256
 `680570c9090b604450792f68ceed10beeb33a69c9bccc2a92e398564c7075a5c`).
 
-The GA announcement describes third-party integrations, but the published OAuth
-setup guide still restricts each app to its own tailnet. This profile remains
-behind explicit instance pilot admission. A local personal-tailnet test does not
-establish that one Paperclip-owned OAuth app can authorize every customer’s
-personal tailnet. Verify that provider registration path before general rollout.
+The old managed OAuth profile remains disabled unless explicitly configured for
+its existing pilot. Its same-tailnet registration restriction does not apply to
+the new device sign-in path. Do not configure a customer-specific OAuth app or
+admit a pilot instance to make device sign-in work.
 
 Provider references:
 
+- [Device authentication](https://tailscale.com/docs/features/tsnet#device-creation-and-authentication)
+- [Tailscale CLI](https://tailscale.com/docs/reference/tailscale-cli/up)
 - [OAuth apps](https://tailscale.com/docs/features/oauth-apps)
 - [Device provisioning](https://tailscale.com/docs/features/oauth-apps/device-provisioning)
 - [Tailscale SSH](https://tailscale.com/docs/features/tailscale-ssh)

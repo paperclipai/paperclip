@@ -142,6 +142,7 @@ export function userParticipationActivityCondition(companyId: string, userId: st
     AND ${activityLog.actorType} = 'user'
     AND ${activityLog.actorId} = ${userId}
     AND NOT ${automaticReadRecoveryCleanupCondition()}
+    AND COALESCE(${activityLog.details}->>'source', '') <> 'needs_you_responsibility_repair'
     AND NOT (
       ${activityLog.action} = 'issue.inbox_touched'
       AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'
@@ -153,7 +154,7 @@ export function userParticipationActivityCondition(companyId: string, userId: st
   )`;
 }
 
-export function touchedByUserCondition(companyId: string, userId: string) {
+export function touchedByUserCondition(companyId: string, userId: string, directCommentExists?: SQL<boolean>) {
   return sql<boolean>`
     (
       (${issues.createdByUserId} = ${userId} AND ${humanCreatedIssueCondition()})
@@ -165,14 +166,14 @@ export function touchedByUserCondition(companyId: string, userId: string) {
         WHERE ${activityLog.entityId} = ${issues.id}::text
           AND ${userParticipationActivityCondition(companyId, userId)}
       )
-      OR EXISTS (
+      OR ${directCommentExists ?? sql<boolean>`EXISTS (
         SELECT 1
         FROM ${issueComments}
         WHERE ${issueComments.issueId} = ${issues.id}
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
           AND ${directHumanCommentCondition()}
-      )
+      )`}
     )
   `;
 }

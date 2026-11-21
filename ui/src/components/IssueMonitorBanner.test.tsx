@@ -40,6 +40,14 @@ describe("buildMonitorSurfaceCopy", () => {
     expect(copy!.workspaceWait).toBe(true);
     expect(copy!.bannerMeta.join(" ")).not.toMatch(/Attempt|overdue|retry/i);
   });
+  it.each(["retrying", "due-now", "overdue"] as const)("shows a steady provider wait with no countdown when %s", (state) => {
+    const copy = buildMonitorSurfaceCopy(derived({
+      state, source: "scheduled-retry", nextCheckAt: NOW.toISOString(), attemptCount: 3,
+    }), NOW, "environment_provider_wait", 0, "in_progress", true);
+    expect(copy!.bannerTitle).toBe("Waiting for the sandbox provider");
+    expect(copy!.workspaceWait).toBe(true);
+    expect(copy!.bannerMeta.join(" ")).not.toMatch(/Attempt|overdue|retry|resumes/i);
+  });
   it("leads with two-unit relative time while scheduled", () => {
     const copy = buildMonitorSurfaceCopy(
       derived({

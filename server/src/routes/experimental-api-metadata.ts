@@ -251,5 +251,361 @@ export const experimentalApiMetadata: Record<string, { successStatuses: number[]
     ],
     "boardOnly": true,
     "source": "server/src/routes/smoke-lab.ts"
+  },
+  "GET /api/companies/{companyId}/responsibilities": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "POST /api/companies/{companyId}/responsibilities": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "GET /api/responsibilities/{id}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "PATCH /api/responsibilities/{id}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "DELETE /api/responsibilities/{id}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "POST /api/responsibilities/{id}/links": {
+    "successStatuses": [
+      200,
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "DELETE /api/responsibilities/{id}/links/{linkId}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "POST /api/responsibilities/{id}/file": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "POST /api/responsibilities/{id}/unfile": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "POST /api/responsibilities/{id}/delegate": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "GET /api/companies/{companyId}/responsibility-links/lookup": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "GET /api/companies/{companyId}/responsibility-areas": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-areas.ts"
+  },
+  "POST /api/companies/{companyId}/responsibility-areas": {
+    "successStatuses": [
+      200,
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-areas.ts"
+  },
+  "PATCH /api/responsibility-areas/{id}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-areas.ts"
+  },
+  "DELETE /api/responsibility-areas/{id}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-areas.ts"
+  },
+  "GET /api/companies/{companyId}/responsibilities/summary": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-summaries.ts"
+  },
+  "GET /api/responsibilities/{id}/summary": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-summaries.ts"
+  },
+  "GET /api/companies/{companyId}/responsibilities/automation": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-automation.ts"
+  },
+  "GET /api/issues/{id}/automation-conversation": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-automation.ts"
+  },
+  "POST /api/issues/{id}/automation-conversation": {
+    "successStatuses": [
+      200,
+      201
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-automation.ts"
+  },
+  "POST /api/issues/{id}/automation-proposals": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-automation.ts"
+  },
+  "POST /api/issues/{id}/automation-proposals/{interactionId}/accept": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-automation.ts"
+  },
+  "POST /api/issues/{id}/automation-proposals/{interactionId}/decline": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-automation.ts"
+  },
+  "POST /api/routines/{id}/standing-check-results": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-automation.ts"
+  },
+  "POST /api/issues/{id}/routine-suggestions": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/routine-suggestions.ts"
+  },
+  "POST /api/issues/{id}/routine-suggestions/{interactionId}/accept": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/routine-suggestions.ts"
+  },
+  "POST /api/issues/{id}/repeat-as-routine": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/routine-suggestions.ts"
+  },
+  "POST /api/issues/{id}/routine-suggestions/{interactionId}/decline": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/routine-suggestions.ts"
+  },
+  "GET /api/responsibilities/{id}/bar-conversation": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-bars.ts"
+  },
+  "POST /api/responsibilities/{id}/bar-conversation": {
+    "successStatuses": [
+      200,
+      201
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-bars.ts"
+  },
+  "POST /api/issues/{id}/bar-proposals": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-bars.ts"
+  },
+  "POST /api/issues/{id}/bar-proposals/{interactionId}/accept": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-bars.ts"
+  },
+  "POST /api/issues/{id}/bar-proposals/{interactionId}/decline": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-bars.ts"
+  },
+  "GET /api/companies/{companyId}/responsibility-dashboard": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-dashboard.ts"
+  },
+  "GET /api/companies/{companyId}/responsibility-dashboard/versions": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-dashboard.ts"
+  },
+  "POST /api/companies/{companyId}/responsibility-dashboard/conversation": {
+    "successStatuses": [
+      200,
+      201
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-dashboard.ts"
+  },
+  "POST /api/issues/{id}/dashboard-changes": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-dashboard.ts"
+  },
+  "POST /api/issues/{id}/dashboard-changes/{interactionId}/accept": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-dashboard.ts"
+  },
+  "POST /api/issues/{id}/dashboard-changes/{interactionId}/decline": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-dashboard.ts"
+  },
+  "POST /api/responsibility-dashboard-versions/{id}/restore": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-dashboard.ts"
+  },
+  "GET /api/companies/{companyId}/responsibilities/status-reports": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-status-reports.ts"
+  },
+  "GET /api/responsibilities/{id}/status-report": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-status-reports.ts"
+  },
+  "POST /api/responsibilities/{id}/status-report": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-status-reports.ts"
+  },
+  "POST /api/responsibilities/{id}/status-report/request": {
+    "successStatuses": [
+      200,
+      201
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-status-reports.ts"
+  },
+  "GET /api/responsibilities/{id}/metrics": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-metrics.ts"
+  },
+  "PUT /api/responsibilities/{id}/metrics": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-metrics.ts"
+  },
+  "PATCH /api/responsibilities/{id}/metrics/{metricId}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-metrics.ts"
+  },
+  "DELETE /api/responsibilities/{id}/metrics/{metricId}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": true,
+    "source": "server/src/routes/responsibility-metrics.ts"
+  },
+  "POST /api/responsibilities/{id}/metrics/{metricId}/readings": {
+    "successStatuses": [
+      201
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-metrics.ts"
+  },
+  "GET /api/responsibilities/{id}/runs": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibility-runs.ts"
   }
 };

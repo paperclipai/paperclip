@@ -284,8 +284,11 @@ export async function prepareManagedAiRuntime(
         .from(connectionGrants).where(and(eq(connectionGrants.companyId, input.companyId), eq(connectionGrants.id, selection.grant.id)));
       const currentRef = currentGrant?.refs.find(ref => ref.configPath === "ai.credential");
       if (currentGrant?.status !== "active" || currentRef?.secretId !== credentialRef.secretId || currentRef.versionSelector !== credentialRef.versionSelector) return undefined;
+      // The share lock waits behind a rotating writer, so the read after
+      // resolution sees a concurrent rotation instead of the pre-rotation
+      // version. A lock takes no new row version and aborts no admission.
       return (await db.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
-        .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).limit(1))[0];
+        .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).for("share"))[0];
     };
     const { value, freshness } = await (async () => {
       if (noAuth) return { value: "", freshness: undefined };

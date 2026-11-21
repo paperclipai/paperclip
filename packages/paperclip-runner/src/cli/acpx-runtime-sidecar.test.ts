@@ -2204,6 +2204,7 @@ function loadWaitForTool(input: {
     "boundedIdentity", "tools", "turnId", "emit", "PRP_COMPLETION_TOOL_NAME",
     "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS", "stringifyAcpxSidecarFrame",
     "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID", "callIdNamespace", "toolUseAdmission", "MAX_EVENT_PAYLOAD_BYTES",
+    "providerCycles",
     `return (${functionSource});`,
   );
   return factory(
@@ -2228,6 +2229,7 @@ function loadWaitForTool(input: {
     input.callIdNamespace ?? null,
     input.toolUseAdmission ?? null,
     256 * 1024,
+    null,
   );
 }
 

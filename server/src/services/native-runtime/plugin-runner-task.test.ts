@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
-import type { RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
+import { runnerLaunchPreparationDigest, runnerLaunchRunDigest, type RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
 import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 
@@ -598,6 +598,36 @@ describe("plugin Runner release/resume facade", () => {
     }, { expectedTaskId: "task" });
   });
 
+  it.each([
+    ["reports a relaunched build when the provider supports it", 1 as const, true],
+    ["ignores a reported build when the provider never advertised support", undefined, false],
+  ])("%s", async (_label, resumeRelaunchedRunnerVersion, reported) => {
+    const runner = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
+    const task = vi.fn(async (): Promise<unknown> => ({ kind: "resume", taskId: "task", outcome: "resumed", runner }));
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, resumeRelaunchedRunnerVersion });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toEqual(reported ? { outcome: "resumed", runner } : "resumed");
+    expect(task).toHaveBeenCalledExactlyOnceWith({
+      kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket",
+      ...(reported ? { relaunchedRunnerVersion: 1 } : {}),
+    }, { expectedTaskId: "task" });
+  });
+
+  it.each([
+    ["the parked build", undefined],
+    ["a relaunched build", { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` }],
+  ])("clears the released Runner proof after a resume on %s, once Core saved a relaunched build", async (_label, runner) => {
+    const task = vi.fn(async (): Promise<unknown> => ({ kind: "resume", taskId: "task", outcome: "resumed", ...(runner ? { runner } : {}) }));
+    const onResumed = vi.fn(async () => {});
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, onResumed, resumeRelaunchedRunnerVersion: 1 });
+    const outcome = await owner.driver.releaseResume!.resume(requirements.identity, "transient-ticket");
+    if (runner) {
+      expect(outcome).toEqual({ outcome: "resumed", runner, settled: expect.any(Function) });
+      expect(onResumed).not.toHaveBeenCalled();
+      if (typeof outcome === "object") await outcome.settled?.();
+    } else expect(outcome).toBe("resumed");
+    expect(onResumed).toHaveBeenCalledExactlyOnceWith(requirements.identity);
+  });
+
   it("resumes with the credential resolved for the rebound claimant run", async () => {
     const task = lifecycleTask();
     const owner = createPluginRunnerTaskOwner({ ...input("claude"), task, resumeLaunchInputsVersion: 1,
@@ -770,6 +800,138 @@ describe("plugin Runner release/resume facade", () => {
   });
 });
 
+describe("plugin Runner relaunch as the claimant run", () => {
+  const source = requirements.identity;
+  const next = { ...source, runId: "next-run", turnId: "turn-next-run", itemId: "item-next-run" };
+  const parked = { version: "0.4.0", digest: `sha256:${"c".repeat(64)}` };
+  const build = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
+  const settledCut = { schema: "paperclip.runner.durable.state.v1", ...source, lifecycle: "ready", nextSourceSeq: 4, ackedSourceSeq: 3,
+    outbox: [], pendingTerminalDelivery: null, processedCommands: {} };
+  const base = { taskId: "task", projectIds: ["00000000-0000-4000-8000-000000000001"], projectAuthCheckVersion: 1 as const, harness: "codex", warmTaskVersion: 1 as const, releaseResumeVersion: 1 as const,
+    accountIdentity: "selected-account", credentialIdentity: "selected-credential" };
+  const relaunchSpec = (): RunnerProcessLaunchSpec => {
+    const spec = launchSpec();
+    return { ...spec, nativeRunner: { ...spec.nativeRunner!, identity: next, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } };
+  };
+  async function relaunchOwner(resume: (operation: any) => unknown,
+    options: { resumeIdentityVersion?: 1; onResumed?: () => Promise<void>; fresh?: true } = { resumeIdentityVersion: 1 }) {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    task.mockImplementation(async operation => operation.kind === "resume" ? resume(operation) : perform(operation));
+    const close = vi.fn(async () => {});
+    ingress.connect.mockReset().mockReturnValue({ ready: Promise.resolve(), quiesce: vi.fn(), close });
+    const relaunchInput = { ...base, task, authorityRunId: next.runId, resumeRelaunchedRunnerVersion: 1 as const,
+      resumeIdentityVersion: options.resumeIdentityVersion, relaunch: { source, runner: parked }, onResumed: options.onResumed };
+    const owner = createPluginRunnerTaskOwner(options.fresh ? relaunchInput : { ...base, task, adoptIdentity: source, authorityRunId: source.runId });
+    if (!options.fresh) owner.rebind(relaunchInput);
+    await prepare(owner, { ...requirements, identity: next });
+    const authority = { acceptRelaunchedRunner: vi.fn() };
+    const registration = await owner.registration(authority as never, next.runId, undefined, next);
+    return { owner, task, authority, registration };
+  }
+
+  it("starts the stopped Runner again as the claimant run and accepts the reported build", async () => {
+    const onResumed = vi.fn(async () => {});
+    const { owner, task, authority, registration } = await relaunchOwner(
+      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut }),
+      { resumeIdentityVersion: 1, onResumed });
+    expect(owner.driver.relaunchReleasedRunner).toEqual(source);
+    expect(owner.driver.adoptExistingRunner).toBeUndefined();
+    expect(owner.relaunchMayHaveStarted()).toBe(false);
+    owner.launcher(relaunchSpec());
+    registration.activate();
+    try {
+      await registration.ready();
+      expect(task.mock.calls.filter(([operation]) => operation.kind === "resume").map(([operation]) => operation)).toEqual([{
+        kind: "resume", identity: source, bootstrapTicket: "synthetic-ticket", relaunchedRunnerVersion: 1,
+        runner: { runId: next.runId, turnId: next.turnId, itemId: next.itemId },
+      }]);
+      expect(task.mock.calls.some(([operation]) => operation.kind === "submit")).toBe(false);
+      expect(authority.acceptRelaunchedRunner).toHaveBeenCalledExactlyOnceWith("synthetic-ticket", build, parked);
+      expect(onResumed).toHaveBeenCalledExactlyOnceWith(source);
+      expect(ingress.connect).toHaveBeenCalledOnce();
+      expect(owner.relaunchMayHaveStarted()).toBe(true);
+      owner.rebind({ ...base, task, authorityRunId: "later-run", resumeRelaunchedRunnerVersion: 1, resumeIdentityVersion: 1,
+        relaunch: { source: next, runner: build } });
+      expect(owner.relaunchMayHaveStarted()).toBe(false);
+    } finally { await registration.release("detach"); }
+  });
+
+  it("relaunches through a new owner, as after a Core restart, without submitting or adopting", async () => {
+    const { owner, task, authority, registration } = await relaunchOwner(
+      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut }),
+      { resumeIdentityVersion: 1, fresh: true });
+    expect(task.mock.calls.find(([operation]) => operation.kind === "prepare")?.[0]).toMatchObject({ priorIdentity: source });
+    expect(owner.driver.relaunchReleasedRunner).toEqual(source);
+    expect(owner.driver.adoptExistingRunner).toBeUndefined();
+    owner.launcher(relaunchSpec());
+    registration.activate();
+    try {
+      await registration.ready();
+      expect(task.mock.calls.filter(([operation]) => operation.kind === "resume").map(([operation]) => operation.runner))
+        .toEqual([{ runId: next.runId, turnId: next.turnId, itemId: next.itemId }]);
+      expect(task.mock.calls.some(([operation]) => operation.kind === "submit")).toBe(false);
+      expect(authority.acceptRelaunchedRunner).toHaveBeenCalledExactlyOnceWith("synthetic-ticket", build, parked);
+    } finally { await registration.release("detach"); }
+  });
+
+  it("treats a new owner as a new task when the provider does not advertise relaunch", async () => {
+    const { owner, task } = await relaunchOwner(() => { throw new Error("unexpected resume"); }, { fresh: true });
+    expect(owner.driver.relaunchReleasedRunner).toBeUndefined();
+    expect(task.mock.calls.find(([operation]) => operation.kind === "prepare")?.[0]).not.toHaveProperty("priorIdentity");
+  });
+
+  it("retries a lost reply with the same ticket and identity", async () => {
+    let attempts = 0;
+    const { task, registration, owner } = await relaunchOwner(() => {
+      if (attempts++ === 0) throw new Error("fixture resume reply lost");
+      return { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState: settledCut };
+    });
+    owner.launcher(relaunchSpec());
+    registration.activate();
+    try {
+      await registration.ready();
+      const resumes = task.mock.calls.filter(([operation]) => operation.kind === "resume").map(([operation]) => operation);
+      expect(resumes).toHaveLength(2);
+      expect(resumes[1]).toEqual(resumes[0]);
+    } finally { await registration.release("detach"); }
+  });
+
+  it.each([
+    ["an unsettled cut", { ...settledCut, outbox: [{ sourceSeq: 4 }] }],
+    ["another source's cut", { ...settledCut, runId: "other-run" }],
+  ])("refuses %s before the Runner can connect", async (_label, archivedState) => {
+    const { authority, registration, owner } = await relaunchOwner(
+      () => ({ kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState }));
+    owner.launcher(relaunchSpec());
+    registration.activate();
+    try {
+      await expect(registration.ready()).rejects.toThrow("native_runner_released_state_unsettled");
+      expect(authority.acceptRelaunchedRunner).not.toHaveBeenCalled();
+      expect(owner.relaunchMayHaveStarted()).toBe(true);
+      expect(ingress.connect).not.toHaveBeenCalled();
+    } finally { await registration.release("detach"); }
+  });
+
+  it("reports an unavailable relaunch for ordinary recovery", async () => {
+    const { registration, owner } = await relaunchOwner(() => ({ kind: "resume", taskId: "task", outcome: "unavailable" }));
+    owner.launcher(relaunchSpec());
+    registration.activate();
+    try {
+      await expect(registration.ready()).rejects.toThrow("native_runner_reuse_unavailable");
+      expect(ingress.connect).not.toHaveBeenCalled();
+      expect(owner.relaunchMayHaveStarted()).toBe(false);
+    } finally { await registration.release("detach"); }
+  });
+
+  it("keeps the claimant handover when the provider does not advertise relaunch", async () => {
+    const { owner, task } = await relaunchOwner(() => { throw new Error("unexpected resume"); }, {});
+    expect(owner.driver.relaunchReleasedRunner).toBeUndefined();
+    expect(() => owner.launcher(relaunchSpec())).toThrow("Plugin Runner replacement requires a new task lease");
+    expect(task.mock.calls.some(([operation]) => operation.kind === "resume")).toBe(false);
+  });
+});
+
 describe("plugin task workspace file transfer", () => {
   it("reads only a submitted task, validates bytes, and rejects late responses after release", async () => {
     const {task}=provider(); const perform=task.getMockImplementation()!;
@@ -829,6 +991,66 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
   await nextRegistration.release(); await nextRegistration.checkpoint("settled"); await handle.completion;
   expect(retained).toHaveBeenCalledWith(expect.objectContaining(nextIdentity));
   expect(nextTask.mock.calls.filter(([op])=>op.kind==="stop")).toHaveLength(1);
+});
+
+it.each([
+  ["advertised", 1 as const],
+  ["not advertised", undefined],
+] as const)("launch digests are sent on prepare only when the plugin has %s them", async (_label, version) => {
+  const {task} = provider();
+  ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
+  const input = {taskId:"task",task,projectIds:[],harness:"codex",projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
+    accountIdentity:"account",credentialIdentity:"revision",pollMs:1,launchDigestVersion:version};
+  const owner = createPluginRunnerTaskOwner(input);
+  await prepare(owner, launchRequirements("codex"));
+  const registration = await owner.registration({} as never,"run");
+  const spec = launchSpec(); spec.nativeRunner!.lifecyclePolicy = {mode:"warm",idleTimeoutMs:300000};
+  const handle = owner.launcher(spec); registration.activate(); await registration.ready();
+  const nextIdentity={...requirements.identity,runId:"next-run",turnId:"next-turn",itemId:"next-item"};
+  const nextRegistration=await owner.registration({} as never,"next-run");
+  await owner.driver.prepareLaunch!({...launchRequirements("codex"),identity:nextIdentity});
+  const prepares=task.mock.calls.map(([op])=>op).filter(op=>op.kind==="prepare");
+  expect(prepares).toHaveLength(2);
+  if (version === 1) {
+    const [first, next] = prepares as Array<{preparationDigest?:string;runDigest?:string}>;
+    expect(first.preparationDigest).toBe(runnerLaunchPreparationDigest(launchRequirements("codex")));
+    expect(next.preparationDigest).toBe(first.preparationDigest);
+    expect(first.runDigest).toBe(runnerLaunchRunDigest(first.preparationDigest!, launchRequirements("codex")));
+    expect(next.runDigest).toBe(runnerLaunchRunDigest(first.preparationDigest!, {...launchRequirements("codex"),identity:nextIdentity}));
+    expect(next.runDigest).not.toBe(first.runDigest);
+  } else {
+    for (const op of prepares) expect(op).not.toHaveProperty("preparationDigest");
+    for (const op of prepares) expect(op).not.toHaveProperty("runDigest");
+  }
+  await registration.release(); nextRegistration.activate(); await nextRegistration.ready();
+  await nextRegistration.release(); await nextRegistration.checkpoint("settled"); await handle.completion;
+});
+
+it.each([
+  ["checked inside prepare", true, ["prepare"]],
+  ["left to Core", false, ["prepare", "check_project_auth"]],
+] as const)("a warm attach whose project authentication is %s makes only the round trips it needs", async (_label, checked, kinds) => {
+  const {task} = provider();
+  ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
+  const input = {taskId:"task",task,projectIds:[],harness:"codex",projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
+    accountIdentity:"account",credentialIdentity:"revision",pollMs:1};
+  const owner = createPluginRunnerTaskOwner(input);
+  await prepare(owner, launchRequirements("codex"));
+  const registration = await owner.registration({} as never,"run");
+  const spec = launchSpec(); spec.nativeRunner!.lifecyclePolicy = {mode:"warm",idleTimeoutMs:300000};
+  const handle = owner.launcher(spec); registration.activate(); await registration.ready();
+  const originalTask=task.getMockImplementation()!;
+  const nextTask=vi.fn(async op=>{
+    const result=await originalTask(op) as Record<string,unknown>;
+    return op.kind === "prepare" && checked ? {...result,projectAuthChecked:true} : result;
+  });
+  owner.rebind({...input,task:nextTask});
+  const nextRegistration=await owner.registration({} as never,"next-run");
+  const nextIdentity={...requirements.identity,runId:"next-run",turnId:"next-turn",itemId:"next-item"};
+  await owner.driver.prepareLaunch!({...launchRequirements("codex"),identity:nextIdentity});
+  expect(nextTask.mock.calls.map(([op])=>op.kind)).toEqual(kinds);
+  await registration.release(); nextRegistration.activate(); await nextRegistration.ready();
+  await nextRegistration.release(); await nextRegistration.checkpoint("settled"); await handle.completion;
 });
 
 it.each(["codex", "claude"])("adopts a verified retained %s task without submitting a replacement", async harness => {

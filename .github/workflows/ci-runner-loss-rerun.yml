@@ -5,7 +5,7 @@ name: CI runner-loss rerun
 # jobs once. A spot reclaim often concludes the run `cancelled`. This is
 # what a maintainer's "Re-run failed jobs" click does; github-actions[bot]
 # becomes attempt 2's triggering actor. See "Trusted PR Workflow" in
-# doc/DEVELOPING.md.
+# doc/ci-workflows.md.
 on:
   workflow_run:
     workflows: [PR]
