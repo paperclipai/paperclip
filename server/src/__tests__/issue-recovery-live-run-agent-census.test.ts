@@ -28,6 +28,37 @@ function bounded<T>(work: Promise<T>, waitingFor: () => string): Promise<T> {
   return Promise.race([work, expired]).finally(() => realClearTimeout(timer));
 }
 
+async function settlePasses(passes: ReadonlySet<Promise<unknown>>, waitingFor: () => string) {
+  await bounded(Promise.allSettled([...passes]), waitingFor);
+}
+
+function useCensusClock() {
+  // Database I/O can schedule nested timers after an explicit clock advance.
+  // Let time pass at real-time pace during the wait, without jumping to the
+  // next maintenance deadline. bounded() still enforces its real-clock limit.
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+}
+
+it.each([false, true])("settles delivery callbacks scheduled after I/O without jumping to recovery deadlines (nested: %s)", async nested => {
+  useCensusClock();
+  await vi.advanceTimersByTimeAsync(1000);
+  const now = Date.now();
+  const future = vi.fn();
+  setTimeout(future, MINUTE);
+  const pass = immediate().then(() => new Promise<void>(resolve => setTimeout(() => {
+    if (nested) setTimeout(resolve, 0);
+    else resolve();
+  }, 0)));
+  try {
+    await settlePasses(new Set([pass]), () => "a delivery callback scheduled after I/O");
+    expect(Date.now() - now).toBeLessThan(STEP_TIMEOUT_MS);
+    expect(future).not.toHaveBeenCalled();
+  } finally {
+    await vi.runOnlyPendingTimersAsync();
+    vi.useRealTimers();
+  }
+}, 30_000);
+
 /**
  * Staging shape: about 860 settled assigned tasks, most of them held by the
  * same few agents, and one agent whose native run stays live for the whole
@@ -46,8 +77,8 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
         await bounded(onTick(), () => `the run event at simulated ${at} to commit`);
         nextTick = Date.now() + 10_000;
       }
-      await bounded(vi.advanceTimersByTimeAsync(Math.min(1000, until - Date.now())), () => `simulated time to advance past ${at}`);
-      await bounded(Promise.allSettled([...state.passes]), () => `${state.passes.size} delivery passes started by simulated ${at} to settle`);
+      await bounded(vi.advanceTimersByTimeAsync(Math.max(0, Math.min(1000, until - Date.now()))), () => `simulated time to advance past ${at}`);
+      await settlePasses(state.passes, () => `${state.passes.size} delivery passes (${state.pendingPassQueues().join(", ")}) started by simulated ${at} to settle`);
       await immediate();
     }
   }
@@ -107,7 +138,7 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
   async function boot() {
     const f = await bounded(seed(), () => "the fixture to be seeded");
     const events = record();
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    useCensusClock();
     await bounded(state.start({}), () => "the recovery workers to start");
     await advance(10 * MINUTE);
     events.length = 0;
