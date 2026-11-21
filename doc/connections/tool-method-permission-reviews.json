@@ -1804,6 +1804,45 @@
       "keyPermissions": "Analytics objects, feature flags, experiments, error triage and other enabled product actions. readonly/feature/tool filters remain enforced. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
     },
     {
+      "app": "postiz",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp:read",
+        "mcp:write"
+      ],
+      "capability": "write",
+      "supportedActions": "List connected social channels and customer groups; read each platform's posting rules; schedule, draft or immediately publish posts to connected channels; list posts; change the settings and media of a post that is not published yet; delete posts; read channel and post analytics; upload media from a URL and list the media library; generate images and videos and clip long videos, which use the organization's Postiz AI credits; create a link for connecting another channel. Access is limited to the organization that is active during consent.",
+      "evidence": [
+        "https://docs.postiz.com/mcp/introduction",
+        "https://docs.postiz.com/mcp/tools",
+        "https://mcp.postiz.com/.well-known/oauth-protected-resource/mcp-oauth-dynamic",
+        "https://mcp.postiz.com/.well-known/oauth-authorization-server/mcp-oauth-dynamic"
+      ],
+      "reviewedAt": "2026-11-22",
+      "liveProof": "2026-11-22, local instance with a loopback callback and a real Postiz organization. Dynamic client registration and browser sign-in connected; the grant holds mcp:read and mcp:write. Discovery returned 26 actions: 11 read, 8 write, 7 destructive. The board Test call for groupList returned in 1.1s and integrationConnectTool created a one-hour connect link; result values omitted. Catalog refresh retained all 26 action versions. An agent from another company got HTTP 403. After removal the call returned tool_not_found. No token appeared in API responses or server logs.",
+      "evidenceLimit": "Board Test calls only; no agent run. No post was scheduled, published or deleted, and no media was generated. Postiz issues no refresh token, so refresh was not exercised. Reconnect after removal and revocation in Postiz were not run. An HTTPS callback was not exercised."
+    },
+    {
+      "app": "postiz",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "List connected social channels and customer groups; read each platform's posting rules; schedule, draft or immediately publish posts to connected channels; list posts; change the settings and media of a post that is not published yet; delete posts; read channel and post analytics; upload media from a URL and list the media library; generate images and videos and clip long videos, which use the organization's Postiz AI credits; create a link for connecting another channel.",
+      "evidence": [
+        "https://docs.postiz.com/mcp/introduction",
+        "https://docs.postiz.com/mcp/setup",
+        "https://docs.postiz.com/mcp/tools"
+      ],
+      "reviewedAt": "2026-11-22",
+      "liveProof": "not-run",
+      "evidenceLimit": "2026-11-22: a synthetic invalid key reached https://mcp.postiz.com/mcp, Postiz answered HTTP 401, setup failed, the draft connection was removed, and the key value was absent from the API response and server logs. No valid key was used, so connect, discovery and calls remain unqualified.",
+      "keyPermissions": "Postiz API keys are not scoped: the key reaches every Postiz action for the organization that owns it, including immediate publishing to connected social channels and tools that use AI credits. Each organization has one key, so rotating it in Postiz disconnects every client that uses it. Set publish and delete actions to Ask first before agents run unattended. Paperclip cannot narrow an existing key."
+    },
+    {
       "app": "postman",
       "method": "mcp-oauth-minimal",
       "auth": "oauth",

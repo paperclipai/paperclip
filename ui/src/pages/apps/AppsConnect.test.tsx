@@ -76,6 +76,7 @@ const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "super
 const GAUGE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
 const CIRCLEBACK = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "circleback")!;
 const DITTO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "ditto")!;
+const POSTIZ = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postiz")!;
 const BRAINTRUST = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "braintrust")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
@@ -2490,6 +2491,45 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       galleryKey: "ditto",
       connectionMethodKey: "mcp-api-key",
       credentialValues: { "credentials.authorization": "ditto-test-key" },
+    }));
+  });
+
+  it("defaults Postiz to browser sign-in and connects the organization API key once entered", async () => {
+    mockParams.appKey = "postiz";
+    listGalleryMock.mockResolvedValueOnce({ apps: [POSTIZ] });
+    await render();
+    expect(container.textContent).toContain("publish to your connected social channels immediately");
+    expect(container.textContent).toContain("On another address, use an API key");
+    expect(container.textContent).not.toContain("Postiz API keys are not scoped");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+    await openAccessAdvanced();
+
+    expect(radioContaining("Sign in with Postiz")?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      radioContaining("Use an API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Postiz API keys are not scoped");
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "postiz-test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "postiz",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "postiz-test-key" },
     }));
   });
 

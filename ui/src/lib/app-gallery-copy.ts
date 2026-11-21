@@ -82,6 +82,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Search meeting notes, transcripts, and action items.",
     short: "Sign in with Circleback. Meetings appear as cards in chat.",
   },
+  postiz: {
+    tagline: "Schedule and publish social media posts across your channels.",
+    short: "Sign in with Postiz, or connect with an API key.",
+  },
   gauge: {
     tagline: "Track your brand in AI answers and run content workflows.",
     short: "Sign in with Gauge and pick an organization. API keys are optional.",

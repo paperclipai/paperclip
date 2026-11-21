@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "slug": "postiz",
+  "name": "Postiz",
+  "description": "Schedule and publish social media posts, manage media, and read channel analytics in Postiz.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/postiz.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.postiz.com/*"
+  ],
+  "docsUrl": "https://docs.postiz.com/mcp/introduction",
+  "redirectConstraints": "https-or-loopback-http",
+  "reviewedTools": {
+    "reviewedAt": "2026-11-22",
+    "sourceUrl": "https://docs.postiz.com/mcp/tools",
+    "read": [
+      "integrationList",
+      "groupList",
+      "integrationSchema",
+      "postsListTool",
+      "mediaListTool",
+      "mediaStatusTool",
+      "uploadWidgetStatusTool",
+      "generateVideoOptions",
+      "videoFunctionTool",
+      "videoStatusTool",
+      "clippingStatusTool"
+    ],
+    "destructive": [
+      "integrationSchedulePostTool",
+      "postSettingsTool",
+      "postAttachmentsTool",
+      "deletePostTool",
+      "triggerTool",
+      "integrationAnalyticsTool",
+      "postAnalyticsTool",
+      "ask_postiz"
+    ],
+    "unlisted": "write",
+    "quarantineNewEntries": false
+  },
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with Postiz",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Read channels, posts and analytics, and create, schedule and publish posts. Postiz can publish to your connected social channels immediately. Set publish and delete actions to Ask first before agents run unattended. Image, video and clipping tools use your Postiz AI credits. Browser sign-in works on Paperclip Cloud and on a localhost address. On another address, use an API key."
+      },
+      "whenToUse": "Use browser sign-in on Paperclip Cloud or on a localhost instance.",
+      "defaults": {
+        "serverUrl": "https://mcp.postiz.com/mcp-oauth-dynamic",
+        "scopesHint": [
+          "mcp:read",
+          "mcp:write"
+        ]
+      },
+      "guidanceMd": "Sign in to Postiz and approve access for the organization agents should use. No developer app registration is needed. Review publish, delete and media generation actions on Permissions after connecting.",
+      "consoleLinks": {
+        "docs": "https://docs.postiz.com/mcp/introduction"
+      },
+      "warnings": [
+        "A Postiz account with at least one connected social channel. Each connection reaches one Postiz organization: sign-in uses the organization that is active during consent, and an API key uses the organization that owns it.",
+        "Postiz can publish to your connected social channels immediately, and a published post stays live when its Postiz record is deleted. Set publish and delete actions to Ask first before agents run unattended.",
+        "Image generation, video generation and video clipping use the AI credits of your Postiz plan.",
+        "Postiz accepts browser sign-in from Paperclip Cloud and from a localhost address. A self-hosted instance on its own HTTPS domain must use an API key."
+      ],
+      "riskTier": "S4"
+    },
+    {
+      "key": "mcp-api-key",
+      "label": "Use an API key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Read channels, posts and analytics, and create, schedule and publish posts. Postiz can publish to your connected social channels immediately. Set publish and delete actions to Ask first before agents run unattended. Image, video and clipping tools use your Postiz AI credits. Browser sign-in works on Paperclip Cloud and on a localhost address. On another address, use an API key."
+      },
+      "whenToUse": "Use the organization API key on a self-hosted HTTPS address, or when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.postiz.com/mcp"
+      },
+      "guidanceMd": "In Postiz, open Settings → Agents / Dev, reveal the API key in the API Key section, and paste it below.",
+      "consoleLinks": {
+        "keys": "https://platform.postiz.com/settings",
+        "docs": "https://docs.postiz.com/mcp/setup"
+      },
+      "warnings": [
+        "A Postiz account with at least one connected social channel. Each connection reaches one Postiz organization: sign-in uses the organization that is active during consent, and an API key uses the organization that owns it.",
+        "Postiz can publish to your connected social channels immediately, and a published post stays live when its Postiz record is deleted. Set publish and delete actions to Ask first before agents run unattended.",
+        "Image generation, video generation and video clipping use the AI credits of your Postiz plan.",
+        "Postiz accepts browser sign-in from Paperclip Cloud and from a localhost address. A self-hosted instance on its own HTTPS domain must use an API key."
+      ],
+      "riskTier": "S4",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Postiz API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Postiz API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      }
+    }
+  ]
+}

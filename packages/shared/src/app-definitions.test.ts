@@ -296,7 +296,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(66);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(67);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -479,15 +479,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 70 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 71 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(70);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(71);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 70);
+    ).toHaveProperty("size", 71);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -924,7 +924,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(91);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(92);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1439,6 +1439,67 @@ describe("AppDefinition catalog", () => {
         expect.stringContaining("publish to your connected CMS"),
       ]);
     }
+  });
+  it("connects Postiz's hosted server with browser sign-in or the organization API key", () => {
+    const postiz = APP_DEFINITIONS.find((app) => app.slug === "postiz")!;
+    expect(postiz).toMatchObject({
+      name: "Postiz",
+      categories: ["content"],
+      urlPatterns: ["https://mcp.postiz.com/*"],
+      docsUrl: "https://docs.postiz.com/mcp/introduction",
+      branding: { logoUrl: "/brands/apps/postiz.svg" },
+      redirectConstraints: "https-or-loopback-http",
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "postiz")).toBe(true);
+    expect(postiz.methods.map((method) => method.key)).toEqual(["mcp-oauth", "mcp-api-key"]);
+    const [oauth, apiKey] = postiz.methods;
+    expect(oauth).toMatchObject({
+      label: "Sign in with Postiz",
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      defaults: {
+        serverUrl: "https://mcp.postiz.com/mcp-oauth-dynamic",
+        scopesHint: ["mcp:read", "mcp:write"],
+      },
+    });
+    expect(apiKey).toMatchObject({
+      label: "Use an API key",
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://mcp.postiz.com/mcp" },
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(apiKey!.defaults?.scopesHint).toBeUndefined();
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({ key: "authorization", type: "password", secret: true, required: true }),
+    ]);
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("Set publish and delete actions to Ask first");
+    for (const method of postiz.methods) {
+      expect(method.capabilityProfile).toMatchObject({
+        key: "write",
+        description: expect.stringContaining("publish to your connected social channels immediately"),
+      });
+      expect(method.tenantFields ?? []).toEqual([]);
+      expect(method.capabilityProfile?.description).toContain("AI credits");
+      expect(method.capabilityProfile?.description).toContain("On another address, use an API key");
+      expect(method.warnings).toEqual([
+        expect.stringContaining("one Postiz organization"),
+        expect.stringContaining("publish to your connected social channels immediately"),
+        expect.stringContaining("AI credits"),
+        expect.stringContaining("its own HTTPS domain must use an API key"),
+      ]);
+    }
+    expect(postiz.reviewedTools).toMatchObject({
+      unlisted: "write",
+      quarantineNewEntries: false,
+      destructive: expect.arrayContaining(["integrationSchedulePostTool", "deletePostTool", "ask_postiz"]),
+    });
+    expect(postiz.reviewedTools?.read).toHaveLength(11);
+    expect(postiz.reviewedTools?.read).toEqual(expect.arrayContaining(["integrationList", "postsListTool"]));
   });
   it("connects Superagent's hosted server with an organization API key only", () => {
     const superagent = APP_DEFINITIONS.find((app) => app.slug === "superagent")!;

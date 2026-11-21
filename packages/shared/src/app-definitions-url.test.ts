@@ -18,6 +18,8 @@ describe("tool app gallery URL matching", () => {
     expect(getAppDefinitionForUrl("https://app.circleback.ai/api/mcp")?.slug).toBe("circleback");
     expect(getAppDefinitionForUrl("https://api.dittowords.com/v2/mcp")?.slug).toBe("ditto");
     expect(getAppDefinitionForUrl("https://www.superagent.sh/mcp")?.slug).toBe("superagent");
+    expect(getAppDefinitionForUrl("https://mcp.postiz.com/mcp-oauth-dynamic")?.slug).toBe("postiz");
+    expect(getAppDefinitionForUrl("https://mcp.postiz.com/mcp")?.slug).toBe("postiz");
   });
 
   it("returns null for invalid or unknown links", () => {
