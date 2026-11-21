@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { DISPOSITION_REPAIR_MAX_ATTEMPTS } from "./disposition-repair.js";
 
 /** This contract deliberately has no narrative, liveness label or progress count. */
 export interface LegacyContinuationInput {
@@ -43,13 +44,31 @@ export function legacyDispositionEpisode(run: {
   const context = record(run.contextSnapshot);
   const episode = record(context.legacyDispositionEpisode);
   if (typeof episode.id === "string" && episode.id) {
-    return { id: episode.id, attempt: count(episode.attempt), maxAttempts: Math.max(1, Math.min(LEGACY_DISPOSITION_REPAIR_MAX_ATTEMPTS, count(episode.maxAttempts) || LEGACY_DISPOSITION_REPAIR_MAX_ATTEMPTS)) };
+    // The persisted record is authoritative for its own budget. Records
+    // written under the legacy scheme carry its cap and keep it, so a
+    // pre-upgrade episode is never granted a fresh budget. Records
+    // written under the documented scheme carry that budget and keep it
+    // too; clamping them here would silently re-cap new episodes at the
+    // legacy allowance from their second attempt on.
+    return { id: episode.id, attempt: count(episode.attempt), maxAttempts: Math.max(1, count(episode.maxAttempts) || LEGACY_DISPOSITION_REPAIR_MAX_ATTEMPTS) };
   }
   // Pre-upgrade repairs have already consumed their old (possibly tighter)
   // allowance. A classifier/key migration must not grant them a fresh budget.
   const handoff = context.wakeReason === "finish_successful_run_handoff" || context.handoffRequired === true;
   const oldRecovery = context.source === "issue.productive_terminal_continuation_recovery";
   const attempt = Math.max(count(run.continuationAttempt), count(context.livenessContinuationAttempt), count(context.dispositionRepairAttempt), handoff ? count(context.handoffAttempt) || 1 : 0, oldRecovery ? 1 : 0);
+  // A run with no legacy markers and no consumed attempts has spent
+  // nothing under any older scheme, so it is a new episode and gets the
+  // documented disposition-repair budget, not the legacy cap. The episode
+  // object still exists: repair dispatch relies on it for the persisted
+  // binding, the issue state guard, and source-identity checks, and those
+  // semantics must not depend on which budget a run falls under.
+  const hasLegacyMarker = handoff || oldRecovery
+    || typeof context.dispositionRepairFingerprint === "string"
+    || typeof context.livenessContinuationSourceRunId === "string";
+  if (!hasLegacyMarker && attempt === 0) {
+    return { id: run.id, attempt: 0, maxAttempts: DISPOSITION_REPAIR_MAX_ATTEMPTS };
+  }
   return {
     id: typeof context.dispositionRepairFingerprint === "string" ? context.dispositionRepairFingerprint : typeof context.livenessContinuationSourceRunId === "string" ? context.livenessContinuationSourceRunId : run.id,
     attempt,
