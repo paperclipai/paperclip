@@ -78,7 +78,10 @@ export function linkSdkInto(packageDir) {
   try {
     const stat = lstatSync(linkTarget);
     if (stat.isSymbolicLink()) {
-      if (readlinkSync(linkTarget) === relativeSdkDir) {
+      const existingTarget = readlinkSync(linkTarget);
+      // On Windows, junctions store an absolute path; on Unix, we use a
+      // relative path. Accept either form pointing at the same SDK dir.
+      if (existingTarget === relativeSdkDir || resolve(existingTarget) === resolve(sdkDir)) {
         // Already linked to the in-repo SDK; nothing to do.
         return false;
       }
@@ -93,6 +96,12 @@ export function linkSdkInto(packageDir) {
     if (error?.code !== "ENOENT") throw error;
   }
 
-  symlinkSync(relativeSdkDir, linkTarget, "dir");
+  // On Windows, creating a symbolic link to a directory requires either
+  // Administrator rights or Developer Mode. Use a junction instead — junctions
+  // work for any user and are transparent to Node.js module resolution.
+  const symlinkType = process.platform === "win32" ? "junction" : "dir";
+  // Junctions require an absolute target path (relative paths are not supported).
+  const symlinkPath = symlinkType === "junction" ? resolve(sdkDir) : relativeSdkDir;
+  symlinkSync(symlinkPath, linkTarget, symlinkType);
   return true;
 }
