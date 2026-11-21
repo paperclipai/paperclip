@@ -206,11 +206,11 @@ export function describeIssueWriteDenial(
         boundary: "Run checkout lock",
         title: "Another agent's run owns this task",
         description:
-          `${assignee} has ${issue} checked out and a run is live. Checkout and run ` +
-          `ownership stay assignee-scoped even though writes are open, so field edits ` +
+          `${assignee} has ${issue} checked out with a run holding the lock. Checkout and ` +
+          `run ownership stay assignee-scoped even though writes are open, so field edits ` +
           `belong to the run that holds the lock until it finishes.`,
         whoCanAct:
-          `${assignee}'s live run, or an agent holding the manage-active-checkouts permission.`,
+          `${assignee}'s run holding the lock, or an agent holding the manage-active-checkouts permission.`,
         sanctionedPath:
           `Comment instead of patching — comments stay open and wake ${assignee} — or ` +
           `wait for the run to release the lock and retry.`,
