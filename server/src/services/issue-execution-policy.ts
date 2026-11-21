@@ -429,6 +429,25 @@ export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrinc
   return null;
 }
 
+
+
+export function deliveryAssigneePrincipal(issue: IssueLike): IssueExecutionStagePrincipal | null {
+  const assignee = assigneePrincipal(issue);
+  const state = parseIssueExecutionState(issue.executionState);
+  const policy = issueExecutionPolicySchema.safeParse(issue.executionPolicy);
+  if (issue.status === "in_review" && state?.status === "pending" && state.returnAssignee
+    && principalsEqual(assignee, state.currentParticipant) && policy.success
+    && policy.data.stages.some(stage => stage.id === state.currentStageId && stage.type === state.currentStageType)) {
+    return state.returnAssignee;
+  }
+  return assignee;
+}
+
+export function issueDeliveryOwnerChanged(previous: IssueLike, next: IssueLike): boolean {
+  const before = deliveryAssigneePrincipal(previous), after = deliveryAssigneePrincipal(next);
+  return before === null ? after !== null : !principalsEqual(before, after);
+}
+
 function actorPrincipal(actor: ActorLike): IssueExecutionStagePrincipal | null {
   if (actor.agentId) return { type: "agent", agentId: actor.agentId, userId: null };
   if (actor.userId) return { type: "user", userId: actor.userId, agentId: null };

@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 const recoveryResultKeys = [
   "errorFamily", "workspaceValidation", "configurationIncomplete",
   "cancelledByActorType", "retryNotBefore", "transientRetryNotBefore",
-  "providerQuotaRetryNotBefore", "finalizationReasonCode",
+  "providerQuotaRetryNotBefore", "finalizationReasonCode", "reassignmentStopConfirmed",
 ] as const;
 
 export const recoveryRunResultColumn = sql<Record<string, unknown> | null>`

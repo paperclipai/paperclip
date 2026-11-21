@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { issueDeliveryOwnerChanged, deliveryAssigneePrincipal, applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { buildExecutionPolicy } from "../../../ui/src/lib/issue-execution-policy.ts";
 
@@ -2320,5 +2320,42 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 1,
     });
+  });
+});
+
+
+describe("connection-intent delivery ownership", () => {
+  function reviewing() {
+    const policy = reviewOnlyPolicy();
+    const issue = { status: "in_progress", assigneeAgentId: coderAgentId, assigneeUserId: null, executionPolicy: policy };
+    const transition = applyIssueExecutionPolicyTransition({ issue, policy, requestedStatus: "in_review",
+      requestedAssigneePatch: {}, actor: { agentId: coderAgentId } });
+    return { issue, review: { ...issue, ...transition.patch } as typeof issue & { executionState: IssueExecutionState } };
+  }
+  it("preserves the owner on review entry and return without transferring the connection to QA", () => {
+    const { issue, review } = reviewing();
+    expect(deliveryAssigneePrincipal(review)).toEqual({ type: "agent", agentId: coderAgentId, userId: null });
+    expect(issueDeliveryOwnerChanged(issue, review)).toBe(false);
+    expect(issueDeliveryOwnerChanged(review, issue)).toBe(false);
+    expect(issueDeliveryOwnerChanged(review, { ...issue, assigneeAgentId: ctoAgentId })).toBe(true);
+  });
+  it.each(["malformed", "wrong_stage", "assignee_drift", "not_pending", "not_reviewing", "missing_policy"])(
+    "does not trust a retained return owner in %s state", (kind) => {
+      const { issue, review } = reviewing();
+      const changed = structuredClone(review);
+      if (kind === "malformed") changed.executionState = { status: "pending" } as IssueExecutionState;
+      if (kind === "wrong_stage") changed.executionState.currentStageId = "missing";
+      if (kind === "assignee_drift") changed.assigneeAgentId = ctoAgentId;
+      if (kind === "not_pending") changed.executionState.status = "completed";
+      if (kind === "not_reviewing") changed.status = "in_progress";
+      if (kind === "missing_policy") changed.executionPolicy = null as never;
+      expect(issueDeliveryOwnerChanged(issue, changed)).toBe(true);
+    });
+  it("expires on assignment or unassignment without a native review", () => {
+    const { issue } = reviewing();
+    expect(issueDeliveryOwnerChanged(issue, { ...issue, assigneeAgentId: null })).toBe(true);
+    expect(issueDeliveryOwnerChanged({ ...issue, assigneeAgentId: null }, issue)).toBe(true);
+    expect(issueDeliveryOwnerChanged({ ...issue, assigneeAgentId: null }, { ...issue, assigneeAgentId: null })).toBe(false);
+    expect(issueDeliveryOwnerChanged(issue, { ...issue, assigneeAgentId: null, assigneeUserId: boardUserId })).toBe(true);
   });
 });

@@ -57,6 +57,10 @@ export const legacyReconciliationRunFields = {
     else ${heartbeatRuns.runnerProfileJson} end`,
 };
 
+function hasUnrestoredFiles(run: Pick<Run, "resultJson">): boolean {
+  return run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson);
+}
+
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
   run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson">
@@ -68,7 +72,7 @@ export function legacyExecutionNeedsReconciliation(
   )
     return false;
   // A fresh model turn cannot repair or verify unrestored files.
-  if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return true;
+  if (hasUnrestoredFiles(run)) return true;
   // A fresh conversation turn lets the agent decide what remains. The retry
   // scheduler, not an action-outcome hold, owns the automatic attempt limit.
   if (hasConversationContinuationPolicy(run.resultJson)) return false;
@@ -162,6 +166,11 @@ function decisionOwner(task: typeof issues.$inferSelect, run: Run, retainedLease
     (!["done", "cancelled"].includes(task.status) || retainedLeaseCount > 0);
   return { owns, isCurrentReviewer };
 }
+export async function legacyExecutionNeedsWorkspaceRepair(db: Db, run: Run): Promise<boolean> {
+  return (run.runtimeMode !== "native" && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+    && hasUnrestoredFiles(run)) || await hasUnrestoredRemoteWorkspace(db, run);
+}
+
 
 /** Persist the failed legacy run, owned lock release and operator decision together. */
 export async function terminalizeLegacyExecution(input: {

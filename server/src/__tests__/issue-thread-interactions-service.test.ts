@@ -45,6 +45,7 @@ import {
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import * as productTelemetry from "../services/product-telemetry.js";
+import { applyIssueExecutionPolicyTransition } from "../services/issue-execution-policy.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { agentService } from "../services/agents.js";
 
@@ -840,6 +841,68 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         await commentPromise;
       }
     });
+  });
+
+  it.each(["changes_requested", "replacement", "reviewer_replacement", "reviewer_request"])(
+    "preserves connection intent delivery ownership across native review: %s", async (disposition) => {
+    const { companyId, issueId } = await seedConfirmationIssue("Review connection intent");
+    const ownerId = randomUUID(), reviewerId = randomUUID(), replacementId = randomUUID();
+    await db.insert(agents).values([
+      activeCodexAgentRow(ownerId, companyId, "Owner", "engineer"),
+      activeCodexAgentRow(reviewerId, companyId, "QA", "qa"),
+      activeCodexAgentRow(replacementId, companyId, "Replacement", "engineer"),
+    ]);
+    const policy = { mode: "normal" as const, commentRequired: true as const, stages: [{
+      id: randomUUID(), type: "review" as const, approvalsNeeded: 1 as const,
+      participants: [{ id: randomUUID(), type: "agent" as const, agentId: reviewerId, userId: null }],
+    }] };
+    await db.update(issues).set({ assigneeAgentId: ownerId, executionPolicy: policy }).where(eq(issues.id, issueId));
+    const sourceRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId: ownerId,
+      status: "running", responsibleUserId: "user-board", contextSnapshot: { issueId } });
+    const intent = await interactionsSvc.createConnectionIntent({ id: issueId, companyId }, { sourceRunId,
+      payload: { version: 1, serviceSlug: "github", serviceName: "GitHub", serviceLogoUrl: null,
+        requestingAgentId: ownerId, requestingAgentName: "Owner", phase: "requested" },
+      addresseeUserId: "user-board", idempotencyKey: `review-intent:${issueId}`,
+    });
+    const initial = (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
+    const enter = applyIssueExecutionPolicyTransition({ issue: initial, policy,
+      requestedStatus: "in_review", requestedAssigneePatch: {}, actor: { agentId: ownerId } });
+    const reviewing = await issuesSvc.update(issueId, { ...enter.patch, actorAgentId: ownerId });
+    expect(reviewing).toMatchObject({ assigneeAgentId: reviewerId, executionState: {
+      status: "pending", returnAssignee: { type: "agent", agentId: ownerId } } });
+    expect(await interactionsSvc.getById(intent.id)).toMatchObject({ status: "pending",
+      addresseeUserId: "user-board", effectiveResolverPolicy: "human_only", payload: intent.payload });
+    let reviewerIntentId: string | null = null;
+    if (disposition === "reviewer_request") {
+      const reviewerRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: reviewerRunId, companyId, agentId: reviewerId,
+        status: "running", responsibleUserId: "user-board", contextSnapshot: { issueId } });
+      const reviewerIntent = await interactionsSvc.createConnectionIntent({ id: issueId, companyId }, {
+        sourceRunId: reviewerRunId,
+        payload: { version: 1, serviceSlug: "notion", serviceName: "Notion", serviceLogoUrl: null,
+          requestingAgentId: reviewerId, requestingAgentName: "QA", phase: "requested" },
+        addresseeUserId: "user-board", idempotencyKey: `reviewer-intent:${issueId}`,
+      });
+      reviewerIntentId = reviewerIntent.id;
+    }
+    if (disposition === "reviewer_replacement") {
+      
+      await issuesSvc.update(issueId, { assigneeAgentId: replacementId, executionState: null, status: "in_progress" });
+    } else {
+      const leave = applyIssueExecutionPolicyTransition({ issue: reviewing!, policy,
+        requestedStatus: "in_progress", requestedAssigneePatch: {}, actor: { agentId: reviewerId },
+        commentBody: "Changes requested: retain the connection request while delivery resumes." });
+      await issuesSvc.update(issueId, { ...leave.patch, actorAgentId: reviewerId });
+      expect(await interactionsSvc.getById(intent.id)).toMatchObject({ status: "pending",
+        addresseeUserId: "user-board", effectiveResolverPolicy: "human_only", payload: intent.payload });
+      if (disposition === "replacement") await issuesSvc.update(issueId, { assigneeAgentId: replacementId });
+    }
+    expect(await interactionsSvc.getById(intent.id)).toMatchObject({
+      status: ["changes_requested", "reviewer_request"].includes(disposition) ? "pending" : "expired",
+      payload: intent.payload, addresseeUserId: "user-board", effectiveResolverPolicy: "human_only",
+    });
+    if (reviewerIntentId) expect(await interactionsSvc.getById(reviewerIntentId)).toMatchObject({ status: "expired" });
   });
 
   it("reuses human-addressed connection intents across runs and ordinary comments", async () => {

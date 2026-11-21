@@ -2766,6 +2766,75 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments.map((comment) => comment.id)).toEqual([latestCommentId]);
   });
 
+  it("keeps PostgreSQL microseconds when paging comments from an anchor", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    const ids = Array.from({ length: 6 }, () => randomUUID()).sort();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false });
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Microsecond cursor", status: "todo", priority: "medium" },
+      { id: otherIssueId, companyId, title: "Other issue", status: "todo", priority: "medium" },
+    ]);
+    const times = [".123100", ".123400", ".123900", ".124000", ".124000", ".123400"];
+    for (let i = 0; i < ids.length; i++) {
+      await db.insert(issueComments).values({ id: ids[i], companyId,
+        issueId: i === 5 ? otherIssueId : issueId, body: "Synthetic cursor fixture",
+        createdAt: sql`${`2026-11-19T22:00:00${times[i]}Z`}::timestamptz` });
+    }
+    const cases = [
+      { afterCommentId: ids[1], order: "asc", limit: 1, expected: [ids[2]] },
+      { afterCommentId: ids[1], order: "asc", limit: 20, expected: [ids[2], ids[3], ids[4]] },
+      { afterCommentId: ids[2], order: "desc", limit: 20, expected: [ids[1], ids[0]] },
+      { afterCommentId: ids[3], order: "asc", limit: 20, expected: [ids[4]] },
+      { afterCommentId: ids[4], order: "desc", limit: 1, expected: [ids[3]] },
+      { afterCommentId: ids[5], order: "asc", limit: 20, expected: [] },
+      { afterCommentId: randomUUID(), order: "asc", limit: 20, expected: [] },
+      { afterCommentId: "invalid", order: "asc", limit: 20, expected: [] },
+      { order: "asc", expected: ids.slice(0, 5) },
+      { order: "desc", expected: ids.slice(0, 5).reverse() },
+    ] as const;
+    for (const { expected, ...opts } of cases) {
+      const comments = await svc.listComments(issueId, opts);
+      expect(comments.map((comment) => comment.id)).toEqual(expected);
+    }
+  });
+
+  it("traverses all comment pages exactly once in both directions", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const ids = Array.from({ length: 7 }, () => randomUUID()).sort();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Cursor traversal", status: "todo", priority: "medium" });
+    const times = [".123100", ".123400", ".123900", ".124000", ".124000", ".999999", ".999999"];
+    for (let i = 0; i < ids.length; i++) {
+      await db.insert(issueComments).values({ id: ids[i], companyId, issueId,
+        body: "Synthetic traversal fixture",
+        createdAt: sql`${`2026-11-19T22:00:00${times[i]}Z`}::timestamptz` });
+    }
+    for (const order of ["asc", "desc"] as const) {
+      for (const limit of [1, 2, 3]) {
+        const seen: string[] = [];
+        let afterCommentId: string | undefined;
+        for (let page = 0; page <= ids.length; page++) {
+          const rows = await svc.listComments(issueId, { order, limit, afterCommentId });
+          if (rows.length === 0) break;
+          const batch = rows.map((row) => row.id);
+          expect(batch.some((id) => seen.includes(id))).toBe(false);
+          expect(batch.length).toBeLessThanOrEqual(limit);
+          seen.push(...batch);
+          afterCommentId = batch.at(-1);
+        }
+        expect(seen).toEqual(order === "asc" ? ids : [...ids].reverse());
+        expect(await svc.listComments(issueId, { order, limit, afterCommentId })).toEqual([]);
+      }
+    }
+  });
+
   it("returns no comments for an anchor cursor that is not a UUID", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

@@ -1,5 +1,8 @@
+import { resolveIssueRecoveryActionSchema } from "@paperclipai/shared";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { registerServerAdapter, unregisterServerAdapter, type ServerAdapterModule } from "../adapters/index.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,20 +12,16 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import {
-  costEvents,
   agents,
-  agentRuntimeState,
   authUsers,
   agentWakeupRequests,
   activityLog,
   caseHandoffs,
   cases,
   companies,
+  companyMemberships,
   createDb,
-  documentRevisions,
-  documents,
   environmentLeases,
-  environments,
   heartbeatRuns,
   issueComments,
   issueInboxArchives,
@@ -31,6 +30,7 @@ import {
   issueThreadInteractions,
   workspaceOperations,
   issues,
+  nativeRunFinalizations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -190,25 +190,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   afterEach(async () => {
     await heartbeatService(db).drainActiveRunExecutions();
-    await db.delete(caseHandoffs);
-    await db.delete(cases);
-    await db.delete(documentRevisions);
-    await db.delete(documents);
-    await db.delete(workspaceOperations);
-    await db.delete(issueThreadInteractions);
-    await db.delete(issueRecoveryActions);
-    await db.delete(issueComments);
-    await db.delete(environmentLeases);
-    await db.delete(activityLog);
-    await db.delete(costEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(environments);
-    await db.delete(issueInboxArchives);
-    await db.delete(issues);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companies);
+    
+    
+    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
     await db.delete(authUsers);
   });
 
@@ -220,10 +204,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await fs.rm(operationLogRoot, { recursive: true, force: true });
   });
 
-  async function seedCompany() {
+  async function seedCompany(ownerId?: string) {
     const companyId = randomUUID();
     const managerId = randomUUID();
-    const coderId = randomUUID();
+    const coderId = ownerId ?? randomUUID();
     const sourceIssueId = randomUUID();
     const prefix = `RA${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
     await db.insert(companies).values({
@@ -2058,6 +2042,230 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     ]);
   });
 
+  async function seedEvidenceOnlyLegacy(ownerId?: string) {
+    const fixture = await seedCompany(ownerId);
+    const { companyId, coderId, sourceIssueId } = fixture;
+    const runId = randomUUID(), callerRunId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "failed" });
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: callerRunId, issueId: sourceIssueId, status: "running" });
+    await db.update(issues).set({ status: "in_review",
+      executionPolicy: { version: 1, stages: [{ id: "qa", type: "review", participants: [{ type: "agent", agentId: fixture.managerId }], onExhausted: "return_to_owner" }] },
+      executionState: { version: 1, status: "pending", currentStageId: "qa", currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: fixture.managerId }, currentParticipantIndex: 0,
+        returnAssigneeAgentId: coderId, lastDecisionId: randomUUID() },
+    }).where(eq(issues.id, sourceIssueId));
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId, kind: "active_run_watchdog", status: "resolved", outcome: "blocked",
+      ownerType: "board", returnOwnerAgentId: coderId, cause: "legacy_execution_requires_reconciliation",
+      fingerprint: runId, nextAction: "Preserve recorded work without replay.",
+      evidence: { runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    }).returning();
+    const [before] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const app = createApp({ type: "agent", agentId: coderId, companyId, runId: callerRunId, source: "agent_jwt" });
+    const body = { actionId: action!.id, outcome: "restored", sourceIssueStatus: "in_review",
+      evidenceOnly: { expectedIssueUpdatedAt: before!.updatedAt.toISOString() },
+      executionReconciliation: { runId, providerStopped: true, actionOutcome: "not_performed",
+        outcomeEvidence: "Exact provider receipts establish stopped execution with no submitted external effects." } };
+    return { ...fixture, runId, callerRunId, app, body, before, action: action! };
+  }
+
+  it("records own-owner legacy evidence without changing review or enqueuing a replay, idempotently", async () => {
+    const f = await seedEvidenceOnlyLegacy();
+    const url = `/api/issues/${f.sourceIssueId}/recovery-actions/resolve`;
+    await request(f.app).post(url).set("X-Paperclip-Run-Id", f.callerRunId).send(f.body).expect(200);
+    const [recorded] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id));
+    expect(recorded!.evidence).toMatchObject({ executionReconciliation: { runId: f.runId }, continuationDelivery: "not_requested" });
+    expect(recorded!.evidence).not.toHaveProperty("automaticRecovery");
+    await deliverReconciledExecutions(db, vi.fn());
+    await request(f.app).post(url).set("X-Paperclip-Run-Id", f.callerRunId).send(f.body).expect(200);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id)))[0]).toEqual(recorded);
+    expect((await db.select().from(issues).where(eq(issues.id, f.sourceIssueId)))[0]).toEqual(f.before);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+  });
+
+  it.each(["stale", "status", "wrong_run", "unknown", "running", "lease", "active", "workspace", "native", "foreign", "execution", "owner", "decision", "action", "uncertain_lease"])(
+    "refuses evidence-only legacy reconciliation for %s without changing either record", async (scenario) => {
+      const f = await seedEvidenceOnlyLegacy();
+      const body: any = structuredClone(f.body);
+      if (scenario === "stale") body.evidenceOnly.expectedIssueUpdatedAt = "2000-01-01T00:00:00.000Z";
+      if (scenario === "status") body.sourceIssueStatus = "todo";
+      if (scenario === "wrong_run") body.executionReconciliation.runId = randomUUID();
+      if (scenario === "unknown") body.executionReconciliation.actionOutcome = "unknown";
+      if (scenario === "running") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "lease") {
+        await db.insert(environmentLeases).values({ companyId: f.companyId,
+          heartbeatRunId: f.runId, provider: "local", status: "active" });
+      }
+      if (scenario === "uncertain_lease") await db.insert(environmentLeases).values({ companyId: f.companyId,
+        heartbeatRunId: f.runId, provider: "local", status: "pending_cleanup", cleanupStatus: "failed", releasedAt: new Date() });
+      if (scenario === "active") await db.insert(issueRecoveryActions).values({ companyId: f.companyId,
+        sourceIssueId: f.sourceIssueId, kind: "missing_disposition", status: "active", ownerType: "board",
+        cause: "unrelated_active_action", fingerprint: randomUUID(), nextAction: "Preserve current recovery." });
+      if (scenario === "workspace") await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "restore_failed" } }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "native") await db.update(heartbeatRuns).set({ runtimeMode: "native" }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "action") body.actionId = randomUUID();
+      if (scenario === "execution") await db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.sourceIssueId));
+      if (scenario === "owner") await db.update(issues).set({ assigneeAgentId: f.managerId }).where(eq(issues.id, f.sourceIssueId));
+      if (scenario === "decision") await db.update(issues).set({ updatedAt: new Date(Date.now() + 1000),
+        executionState: { ...f.before!.executionState as object, lastDecisionId: randomUUID() } }).where(eq(issues.id, f.sourceIssueId));
+      const [expectedIssue] = await db.select().from(issues).where(eq(issues.id, f.sourceIssueId));
+      const foreign = scenario === "foreign" ? await seedCompany() : null;
+      const url = `/api/issues/${foreign?.sourceIssueId ?? f.sourceIssueId}/recovery-actions/resolve`;
+      const response = await request(f.app).post(url).set("X-Paperclip-Run-Id", f.callerRunId).send(body);
+      expect(response.status).toBe(scenario === "foreign" ? 404 : scenario === "owner" ? 403 : scenario === "unknown" ? 400 : 409);
+      expect((await db.select().from(issues).where(eq(issues.id, f.sourceIssueId)))[0]).toEqual(expectedIssue);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id)))[0]).toEqual(f.action);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+    });
+
+  async function seedNativeOwnerSettlement() {
+    const f = await seedEvidenceOnlyLegacy("10000000-0000-4000-8000-000000000001");
+    const sourceAgentId = "10000000-0000-4000-8000-000000000002";
+    await db.insert(agents).values({ id: sourceAgentId, companyId: f.companyId,
+      name: "Researcher source", role: "researcher", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.update(heartbeatRuns).set({ agentId: sourceAgentId, runtimeMode: "native",
+      nativeIssueId: f.sourceIssueId, finishedAt: new Date(),
+      resultJson: { retainedDocument: "10000000-0000-4000-8000-000000000003",
+        retainedRevision: "10000000-0000-4000-8000-000000000004", openProjectDispatch: false },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issueRecoveryActions).set({ cause: "provider_effect_inventory_unavailable",
+      returnOwnerAgentId: sourceAgentId }).where(eq(issueRecoveryActions.id, f.action.id));
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id));
+    const body: any = structuredClone(f.body);
+    body.evidenceOnly.nativeOwnerTransition = { sourceAgentId, currentOwnerAgentId: f.coderId };
+    body.executionReconciliation.actionOutcome = "mixed";
+    body.executionReconciliation.outcomeEvidence = "Applied access document and native receipt preserved; reads and block completed; no OpenProject dispatch submitted.";
+    return { ...f, action: action!, body, sourceAgentId };
+  }
+
+  it("settles native changed-owner evidence once without retry, task/review or source-lineage mutation", async () => {
+    const f = await seedNativeOwnerSettlement();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, runId: f.runId,
+      issueId: f.sourceIssueId, phase: "terminal_failure", failureDetail: { originalCause: "provider_effect_inventory_unavailable" } });
+    const url = `/api/issues/${f.sourceIssueId}/recovery-actions/resolve`;
+    await request(f.app).post(url).set("X-Paperclip-Run-Id", f.callerRunId).send(f.body).expect(200);
+    const [recorded] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id));
+    expect(recorded!.evidence).toMatchObject({ continuationDelivery: "not_requested",
+      executionReconciliation: { runId: f.runId, actionOutcome: "mixed" },
+      ownerTransitionSettlement: { sourceAgentId: f.sourceAgentId, currentOwnerAgentId: f.coderId, sourceRunId: f.runId } });
+    expect(recorded!.returnOwnerAgentId).toBe(f.sourceAgentId);
+    const [finalization] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(finalization!.failureDetail).toEqual({ originalCause: "provider_effect_inventory_unavailable", replacementDenied: "operator_reconciled" });
+    expect(recorded!.evidence).not.toHaveProperty("automaticRecovery");
+    const wake = vi.fn(); await deliverReconciledExecutions(db, wake); expect(wake).not.toHaveBeenCalled();
+    await request(f.app).post(url).set("X-Paperclip-Run-Id", f.callerRunId).send(f.body).expect(200);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id)))[0]).toEqual(recorded);
+    expect((await db.select().from(issues).where(eq(issues.id, f.sourceIssueId)))[0]).toEqual(f.before);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(source);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+    const changed = structuredClone(f.body); changed.executionReconciliation.actionOutcome = "completed";
+    await request(f.app).post(url).set("X-Paperclip-Run-Id", f.callerRunId).send(changed).expect(409);
+  });
+
+  it("permits a separate ordinary current-owner task update after native evidence settlement without source retry lineage", async () => {
+    const f = await seedNativeOwnerSettlement();
+    
+    await db.update(issues).set({ status: "blocked", executionPolicy: null, executionState: null }).where(eq(issues.id, f.sourceIssueId));
+    const [before] = await db.select().from(issues).where(eq(issues.id, f.sourceIssueId));
+    const body = structuredClone(f.body); body.sourceIssueStatus = "blocked";
+    body.evidenceOnly.expectedIssueUpdatedAt = before!.updatedAt.toISOString();
+    await request(f.app).post(`/api/issues/${f.sourceIssueId}/recovery-actions/resolve`).set("X-Paperclip-Run-Id", f.callerRunId).send(body).expect(200);
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "owner-settlement-git-"));
+    execFileSync("git", ["init", cwd], { stdio: "pipe" });
+    const execute = vi.fn<ServerAdapterModule["execute"]>(async input => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, String(input.context.issueId)));
+      return { exitCode: 0, signal: null, timedOut: false,
+        summary: "Inert current-owner continuation completed; no external operation" };
+    });
+    registerServerAdapter({ type: "native_owner_settlement_test", execute,
+      testEnvironment: async () => ({ adapterType: "native_owner_settlement_test", status: "pass", checks: [], testedAt: new Date().toISOString() }) });
+    const userId = "owner-settlement-board";
+    await db.insert(authUsers).values({ id: userId, name: "Fixture Board", email: "owner-settlement@example.test", createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    await db.update(companies).set({ defaultResponsibleUserId: userId }).where(eq(companies.id, f.companyId));
+    await db.update(issues).set({ responsibleUserId: userId }).where(eq(issues.id, f.sourceIssueId));
+    await db.update(agents).set({ adapterType: "native_owner_settlement_test", adapterConfig: { cwd },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.coderId));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.callerRunId));
+    const hb = heartbeatService(db);
+    try {
+    await request(f.app).patch(`/api/issues/${f.sourceIssueId}`).set("X-Paperclip-Run-Id", f.callerRunId).send({ status: "in_progress" }).expect(200);
+    const [continued] = await db.select().from(issues).where(eq(issues.id, f.sourceIssueId));
+    expect(continued!.status).toBe("in_progress"); expect(continued!.assigneeAgentId).toBe(f.coderId);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId))).toEqual([]);
+    const wake = vi.fn(); await deliverReconciledExecutions(db, wake); expect(wake).not.toHaveBeenCalled();
+      await hb.drainActiveRunExecutions();
+      const runs = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.coderId))).filter(r => r.id !== f.callerRunId);
+      
+      
+      expect(runs).toHaveLength(0);
+      const dispatched = await hb.wakeup(f.coderId, { source: "on_demand", triggerDetail: "system", reason: "issue_continuation",
+        requestedByActorType: "user", requestedByActorId: userId,
+        contextSnapshot: { issueId: f.sourceIssueId, taskId: f.sourceIssueId } });
+      expect(dispatched?.id).toBeTruthy();
+      await hb.drainActiveRunExecutions();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, dispatched!.id));
+      expect(run).toMatchObject({ agentId: f.coderId, status: "succeeded", retryOfRunId: null });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId))).toEqual([]);
+    } finally {
+      await hb.drainActiveRunExecutions(); unregisterServerAdapter("native_owner_settlement_test");
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["source_agent", "current_owner", "generation", "status", "action", "run", "task", "tenant",
+    "running", "cancelled_stop", "unfinished", "legacy", "live_process", "coordinator", "successor",
+    "lease", "uncertain_lease", "active_stop", "workspace", "foreign_actor", "missing_transition", "wrong_cause"])(
+    "refuses native changed-owner settlement for %s preserving records and dispatch", async scenario => {
+      const f = await seedNativeOwnerSettlement(); const body = structuredClone(f.body);
+      let app = f.app;
+      if (scenario === "source_agent") body.evidenceOnly.nativeOwnerTransition.sourceAgentId = randomUUID();
+      if (scenario === "current_owner") body.evidenceOnly.nativeOwnerTransition.currentOwnerAgentId = f.managerId;
+      if (scenario === "generation") body.evidenceOnly.expectedIssueUpdatedAt = "2000-01-01T00:00:00.000Z";
+      if (scenario === "status") body.sourceIssueStatus = "todo";
+      if (scenario === "action") body.actionId = randomUUID();
+      if (scenario === "run") body.executionReconciliation.runId = randomUUID();
+      if (scenario === "task") {
+        const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated source", status: "blocked" }).returning();
+        const wrongRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: wrongRunId, companyId: f.companyId, agentId: f.sourceAgentId,
+          runtimeMode: "native", status: "failed", finishedAt: new Date(), nativeIssueId: other!.id,
+          contextSnapshot: { issueId: other!.id } });
+        body.executionReconciliation.runId = wrongRunId;
+        await db.update(issueRecoveryActions).set({ evidence: { ...f.action.evidence, runId: wrongRunId } }).where(eq(issueRecoveryActions.id, f.action.id));
+      }
+      if (scenario === "tenant") {
+        const foreign = await seedCompany();
+        await db.update(heartbeatRuns).set({ companyId: foreign.companyId }).where(eq(heartbeatRuns.id, f.runId));
+      }
+      if (scenario === "running" || scenario === "cancelled_stop") await db.update(heartbeatRuns).set({ status: scenario === "running" ? "running" : "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "unfinished") await db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "legacy") await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "live_process") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "coordinator" || scenario === "successor") await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, runId: f.runId, issueId: f.sourceIssueId, phase: "terminal_failure",
+        ...(scenario === "coordinator" ? { leaseOwner: "test-active-owner" } : { failureDetail: { successorRunId: randomUUID() } }) });
+      if (scenario === "lease" || scenario === "uncertain_lease") await db.insert(environmentLeases).values({ companyId: f.companyId,
+        heartbeatRunId: f.runId, provider: "local", status: scenario === "lease" ? "active" : "pending_cleanup",
+        ...(scenario === "uncertain_lease" ? { releasedAt: new Date(), cleanupStatus: "failed" } : {}) });
+      if (scenario === "active_stop") await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.sourceIssueId,
+        kind: "active_run_watchdog", status: "active", ownerType: "board", cause: "operator_stop", fingerprint: randomUUID(), nextAction: "Preserve Stop." });
+      if (scenario === "workspace") await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "failed" } }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "foreign_actor") app = createApp({ type: "agent", agentId: f.sourceAgentId, companyId: f.companyId, runId: f.callerRunId, source: "agent_jwt" });
+      if (scenario === "missing_transition") delete body.evidenceOnly.nativeOwnerTransition;
+      if (scenario === "wrong_cause") await db.update(issueRecoveryActions).set({ cause: "operator_stop" }).where(eq(issueRecoveryActions.id, f.action.id));
+      const [expectedAction] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id));
+      const [expectedSource] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const response = await request(app).post(`/api/issues/${f.sourceIssueId}/recovery-actions/resolve`).set("X-Paperclip-Run-Id", f.callerRunId).send(body);
+      expect([403,409]).toContain(response.status);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id)))[0]).toEqual(expectedAction);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(expectedSource);
+      expect((await db.select().from(issues).where(eq(issues.id, f.sourceIssueId)))[0]).toEqual(f.before);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+    });
+
   it("projects recovery action metadata into the structured wake payload", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const action = await issueRecoveryActionService(db).upsertSourceScoped({
@@ -3683,5 +3891,50 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+});
+
+describe("evidence-only controller containment separation", () => {
+  function settlement() {
+    return {
+      actionId: randomUUID(), outcome: "restored", sourceIssueStatus: "in_review",
+      evidenceOnly: { expectedIssueUpdatedAt: new Date().toISOString() },
+      executionReconciliation: { runId: randomUUID(), providerStopped: true,
+        actionOutcome: "not_performed", outcomeEvidence: "Exact native source is stopped; external work was not performed." },
+    };
+  }
+
+  it("accepts ordinary evidence settlement and the distinct complete native containment route", () => {
+    expect(resolveIssueRecoveryActionSchema.safeParse(settlement()).success).toBe(true);
+    const { evidenceOnly: _evidenceOnly, ...body } = settlement();
+    expect(resolveIssueRecoveryActionSchema.safeParse({ ...body,
+      executionReconciliation: { ...body.executionReconciliation,
+        controllerStopped: true, controllerAuthorityDigest: "a".repeat(64) },
+    }).success).toBe(true);
+  });
+
+  it.each([
+    { controllerStopped: true },
+    { controllerAuthorityDigest: "a".repeat(64) },
+    { controllerStopped: true, controllerAuthorityDigest: "a".repeat(64) },
+  ])("rejects containment fields on an evidence-only request: %s", fields => {
+    const body = settlement();
+    expect(resolveIssueRecoveryActionSchema.safeParse({ ...body,
+      executionReconciliation: { ...body.executionReconciliation, ...fields },
+    }).success).toBe(false);
+  });
+});
+
+describe("evidence settlement marker separation", () => {
+  it("refuses a combined containment/evidence marker before any transaction", async () => {
+    const db = { transaction: vi.fn() };
+    await expect(markExecutionReconciliation(db as never,
+      { id: randomUUID(), companyId: randomUUID(), sourceIssueId: randomUUID(), evidence: {} },
+      { runId: randomUUID(), providerStopped: true, controllerStopped: true,
+        controllerAuthorityDigest: "a".repeat(64), actionOutcome: "not_performed",
+        outcomeEvidence: "Exact source is stopped with no external operation performed." },
+      "fixture-actor", undefined, { evidenceOnly: true, controllerContainmentOnly: true },
+    )).rejects.toThrow("Evidence settlement cannot authorize");
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 });
