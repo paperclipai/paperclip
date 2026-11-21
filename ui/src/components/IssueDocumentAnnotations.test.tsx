@@ -381,6 +381,33 @@ describe("IssueDocumentAnnotations", () => {
     expect(anchor?.querySelector(".sticky")).not.toBeNull();
   });
 
+  it("opens detached review comments from the document count without a saved link", async () => {
+    const open = makeThread({ id: "lost", anchorState: "orphaned", selectedText: "Removed paragraph" });
+    const resolved = makeThread({ id: "closed", anchorState: "orphaned", status: "resolved" });
+    mockAnnotationsApi.list.mockResolvedValue([open, resolved]);
+    const root = createRoot(container);
+    await act(async () => root.render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <Harness doc={makeDoc()} panelPlacement="popover" />
+      </QueryClientProvider>,
+    ));
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="document-annotation-count-plan"]')!;
+    await waitFor(() => expect(chip.textContent).toContain("1"));
+    await act(async () => chip.click());
+    const toggle = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Include detached comments (2)"));
+    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => toggle!.click());
+    const card = container.querySelector<HTMLElement>('[data-thread-id="lost"]')!;
+    expect(card.textContent).toContain("Removed paragraph");
+    expect(container.querySelector('[data-thread-id="closed"]')).not.toBeNull();
+    await act(async () => card.click());
+    expect(card.textContent).toContain(open.comments[0].body);
+    await act(async () => toggle!.click());
+    expect(container.querySelector('[data-thread-id="lost"]')).toBeNull();
+    expect(mockAnnotationsApi.updateStatus).not.toHaveBeenCalled();
+  });
+
   it("stacks an inline panel below the document instead of floating over its host", async () => {
     mockAnnotationsApi.list.mockResolvedValue([makeThread()]);
     const root = createRoot(container);

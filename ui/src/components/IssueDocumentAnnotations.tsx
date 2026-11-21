@@ -409,7 +409,7 @@ export function DocumentAnnotationsCountChip({
   });
   const threads = annotationsQuery.data ?? [];
   const openCount = useMemo(
-    () => threads.filter((thread) => thread.status === "open" && thread.anchorState !== "orphaned").length,
+    () => threads.filter((thread) => thread.status === "open").length,
     [threads],
   );
 
