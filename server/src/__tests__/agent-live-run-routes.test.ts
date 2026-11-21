@@ -1116,6 +1116,45 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ manualUserWake: true }));
   });
 
+  it("keeps the task scope when the caller sends issueId at the top level of the body", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup`)
+        .send({ issueId: failedChatIssueId }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      payload: { issueId: failedChatIssueId },
+    }));
+  });
+
+  it("keeps the task scope when the caller sends taskId at the top level of the body", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup`)
+        .send({ taskId: failedChatIssueId }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      payload: { taskId: failedChatIssueId },
+    }));
+  });
+
+  it("does not let a top-level task alias override the task scope in the payload", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${routeAgentId}/wakeup`)
+        .send({ issueId: routeAgentId, payload: { issueId: failedChatIssueId } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      payload: { issueId: failedChatIssueId },
+    }));
+  });
+
   describe("exact native model-rejected review retry", () => {
     const reviewContext = {
       nativeReviewInteractionId: "55555555-5555-4555-8555-555555555555",
