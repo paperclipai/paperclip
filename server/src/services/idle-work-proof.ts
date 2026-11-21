@@ -1,20 +1,37 @@
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 
+export type FinishedIdleRunOptions = {
+  ignoreCostAccounting?: boolean;
+  settledCancelledRetry?: boolean;
+  settledOrphanedAccounting?: boolean;
+};
+
 /** Fixed SQL aliases only. These predicates do not accept request input. */
-export function finishedIdleRun(alias: string): string {
+export function finishedIdleRun(alias: string, options: FinishedIdleRunOptions = {}): string {
+  const retrySettled = options.settledCancelledRetry
+    ? ` OR (${alias}.status = 'cancelled' AND ${alias}.started_at IS NULL)`
+    : "";
+  const accounting = options.ignoreCostAccounting
+    ? ""
+    : options.settledOrphanedAccounting
+      ? `\n    AND (${alias}.cost_accounting_pending = false
+        OR ${alias}.error_code LIKE 'orphaned_running_run%'
+        OR (${alias}.usage_json->>'accountingReceiptReady' = 'false'
+            AND (${alias}.usage_json->>'accountingProviderWorkStarted') IS DISTINCT FROM 'false'
+            AND (${alias}.result_json->'executionRecovery'->>'providerWorkStarted') IS DISTINCT FROM 'false'))`
+      : `\n    AND ${alias}.cost_accounting_pending = false`;
   return `${alias}.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
     AND ${alias}.finished_at IS NOT NULL
-    AND (${alias}.scheduled_retry_at IS NULL OR ${alias}.scheduled_retry_at <= ${alias}.finished_at)
-    AND ${alias}.cost_accounting_pending = false`;
+    AND (${alias}.scheduled_retry_at IS NULL OR ${alias}.scheduled_retry_at <= ${alias}.finished_at${retrySettled})${accounting}`;
 }
 
-export function finishedIdleWake(alias: string): string {
+export function finishedIdleWake(alias: string, options: FinishedIdleRunOptions = {}): string {
   return `${alias}.finished_at IS NOT NULL AND (
     ${alias}.status IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out')
     OR (${alias}.status = 'coalesced' AND EXISTS (
       SELECT 1 FROM heartbeat_runs wake_target WHERE wake_target.id = ${alias}.run_id
         AND wake_target.company_id = ${alias}.company_id AND wake_target.agent_id = ${alias}.agent_id
-        AND ${finishedIdleRun('wake_target')})))`;
+        AND ${finishedIdleRun('wake_target', options)})))`;
 }
 
 export function completedAgentUnblockRequest(issue: string): string {
