@@ -4240,13 +4240,15 @@ export function accessRoutes(
       });
 
       if (createdAgentId) {
-        void notifyHireApproved(db, {
+        await notifyHireApproved(db, {
           companyId,
           agentId: createdAgentId,
           source: "join_request",
           sourceId: requestId,
-          approvedAt: new Date()
-        }).catch(() => {});
+          approvedAt: new Date(),
+          responsibleUserId: approved.approvedByUserId ?? req.actor.userId ?? existing.requestingUserId ?? null,
+          awaitAdapterHook: false
+        });
       }
 
       res.json(toJoinRequestResponse(approved));
