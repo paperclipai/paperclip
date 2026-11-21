@@ -566,3 +566,10 @@ It checks the actual manifest generation, refusal of work under the owned hold,
 and a second useful write after release. This boundary does not exercise the
 production plugin database loader or plugin jobs. Unsupported manifests, active
 manual resources, and missing completion receipts remain sleep blockers.
+
+## Legacy recovery Retry fixture
+
+The queued legacy-recovery browser fixture starts the Retry request before
+releasing its simulated live-process hold, then verifies HTTP 202 admission.
+Its saved comment can otherwise complete automatically and remove Retry before
+the click reaches the server.
