@@ -10,7 +10,7 @@ import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus }
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { readVerifiedLocalAiCredentialDetails } from "./local-ai-credentials.js";
+import { LocalAiVerificationError, readVerifiedLocalAiCredentialDetails } from "./local-ai-credentials.js";
 import { logActivity } from "./activity-log.js";
 import { startLocalBrowserLogin, type LocalBrowserLoginState } from "./local-ai-browser-login.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
@@ -296,10 +296,10 @@ export function localAiLoginService(db: Db) {
       if (intent.provider === "google" && browserLogins.get(id!)?.outcome !== "success") throw new Error("Google sign-in is incomplete");
       const verified = await readVerifiedLocalAiCredentialDetails(intent.provider, directory);
       return { status: "ready", ...(verified.accountLabel ? { accountLabel: verified.accountLabel } : {}) };
-    } catch {
+    } catch (error) {
       const login = id ? browserLogins.get(id) : undefined;
       return { status: "sign_in_required", authorizationUrl: login?.authorizationUrl, code: login?.code,
-        ...(!login && intent.provider !== "xai"
+        ...(error instanceof LocalAiVerificationError ? { error: error.message } : !login && intent.provider !== "xai"
           ? { error: "The server restarted during sign-in. Start sign-in again." }
           : login?.outcome === "failure"
             ? { error: login.error ?? "Sign-in ended before the account was connected. Start sign-in again." }

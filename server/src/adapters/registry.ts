@@ -5,6 +5,7 @@ import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { validateAiApiKey } from "../services/ai-api-key-test.js";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
+import { executeWithLocalCodexCommand as codexExecute, testWithLocalCodexCommand as codexTestEnvironment } from "./codex-local-command.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -32,10 +33,8 @@ import {
   models as claudeModels,
 } from "@paperclipai/adapter-claude-local";
 import {
-  execute as codexExecute,
   listCodexSkills,
   syncCodexSkills,
-  testEnvironment as codexTestEnvironment,
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
   getConfigSchema as getCodexConfigSchema,

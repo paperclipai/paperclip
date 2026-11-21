@@ -960,7 +960,9 @@ describe("managed AI connections", () => {
     const request = vi.spyOn(globalThis, "fetch");
     const unavailableUrl = new URL(database.connectionString);
     unavailableUrl.port = "1";
-    const unavailable = createDb(unavailableUrl.toString());
+    // Fail the connection attempt before the test deadline so cleanup cannot
+    // leave a fetch spy installed while the next credential test starts.
+    const unavailable = createDb(unavailableUrl.toString(), { connectTimeoutSeconds: 1 });
     try {
       await expect(aiConnectionService(unavailable).refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow();
       expect(request).not.toHaveBeenCalled();
@@ -2675,6 +2677,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         expect((await request(app).post(codeUrl).send({ browserCode: "fixture-code" })).status).toBe(422);
       }
       expect(reader).not.toHaveBeenCalled();
+      if (provider === "openai") {
+        reader.mockRejectedValue(new localCredentials.LocalAiVerificationError("network"));
+        const failedCheck = await request(app).post(`${base}/check`).send(input);
+        expect(failedCheck.body).toMatchObject({ status: "sign_in_required", error: expect.stringContaining("network or proxy") });
+        expect((await request(app).post(base).send(input)).status).toBe(422);
+        expect((await service.list(companyId, owner)).filter(c => c.name === intent.name)).toHaveLength(0);
+        reader.mockResolvedValue({ credential: "isolated-fixture-token", accountLabel: undefined });
+      }
       const checked = await request(app).post(`${base}/check`).send(input);
       expect(checked.body).toEqual({ status: "ready" });
       expect(reader).toHaveBeenLastCalledWith(provider, path.join(home, "instances/ai-connection-fixture/ai-local-logins", started.body.sessionId));
@@ -3008,3 +3018,7 @@ function deferredSignal() {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
+vi.mock("../../../packages/adapters/codex-local/src/server/quota-http.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../packages/adapters/codex-local/src/server/quota-http.js")>(),
+  fetchQuotaResponse: (url: string, headers: Record<string, string>, signal?: AbortSignal) => fetch(url, { headers, signal }),
+}));
