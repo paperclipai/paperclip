@@ -15,6 +15,7 @@ describe("skills navigation", () => {
       installed: "/skills",
       discover: "/skills?tab=discover",
       authored: "/skills/studio",
+      coverage: "/skills?tab=coverage",
     });
   });
 
@@ -30,6 +31,12 @@ describe("skills navigation", () => {
     expect(resolveSkillsNavigationView("/PAP/skills", "?catalog=skill-1")).toBe("discover");
     expect(resolveSkillsNavigationView("/PAP/skills", "?view=catalog")).toBe("discover");
     expect(resolveSkillsNavigationView("/PAP/skills/studio/skill-1", "?tab=files")).toBe("authored");
+  });
+
+  it("resolves tab=coverage to coverage without changing Installed or Discover", () => {
+    expect(resolveSkillsNavigationView("/PAP/skills", "?tab=coverage")).toBe("coverage");
+    expect(resolveSkillsDiscoveryView("coverage")).toBe("installed");
+    expect(resolveSkillsDiscoveryView("discover")).toBe("discover");
   });
 
   it("canonicalizes view changes without carrying incompatible filters", () => {

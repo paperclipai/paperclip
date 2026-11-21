@@ -81,6 +81,7 @@ import {
   resolveSkillRouteToken,
   type CompanySkillRouteSubject,
 } from "../lib/company-skill-routes";
+import { SkillCoverageMatrix } from "./skills/SkillCoverageMatrix";
 import {
   SKILL_CREATE_ACCENTS,
   buildBlankSkillDraft,
@@ -1071,11 +1072,13 @@ export function DiscoveryGrid({
   onCreateFolderIn,
   onEnsureMyFolder,
   onOpenMoveCard,
+  onOpenCoverage,
   folderNudgeStorageKey,
 }: {
   tab: DiscoveryTab;
   tabCounts: Record<DiscoveryTab, number>;
   onTabChange: (tab: DiscoveryTab) => void;
+  onOpenCoverage?: () => void;
   categories: DiscoveryCategory[];
   categoryTotal: number;
   activeCategory: string | null;
@@ -1354,7 +1357,13 @@ export function DiscoveryGrid({
 
         {/* Tab strip — Bundled/required lives at the end */}
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4">
-          <Tabs value={tab} onValueChange={(value) => onTabChange(value as DiscoveryTab)}>
+          <Tabs
+            value={tab}
+            onValueChange={(value) => {
+              if (value === "coverage") onOpenCoverage?.();
+              else onTabChange(value as DiscoveryTab);
+            }}
+          >
             <TabsList variant="line" className="p-0">
               <TabsTrigger value="all" className="px-3">
                 <span>All</span>
@@ -1372,6 +1381,11 @@ export function DiscoveryGrid({
                 <span>Bundled</span>
                 <span className="ml-1.5 text-(length:--text-micro) text-muted-foreground">{tabCounts.bundled}</span>
               </TabsTrigger>
+              {onOpenCoverage ? (
+                <TabsTrigger value="coverage" className="px-3">
+                  <span>Coverage</span>
+                </TabsTrigger>
+              ) : null}
             </TabsList>
           </Tabs>
           <Button variant="ghost" size="sm" asChild><Link to="/skills/sources">Sources</Link></Button>
@@ -4116,10 +4130,23 @@ export function CompanySkills() {
   // Discovery grid owns `/skills` whenever no specific skill or catalog entry is
   // selected; selecting either drops into the existing master/detail surfaces.
   const isDiscovery = !isStudioNew && !routeSkillToken && !selectedCatalogRef;
+  const isCoverage = isDiscovery && searchParams.get("tab") === "coverage";
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
 
   function setDiscoveryTab(tab: DiscoveryTab) {
     setSearchParams((current) => withDiscoveryTab(current, tab));
+  }
+
+  function setCoverageTab() {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      params.set("tab", "coverage");
+      params.delete("view");
+      params.delete("category");
+      params.delete("folder");
+      params.delete("catalog");
+      return params;
+    });
   }
 
   function setFolderSelection(selection: FolderSelection) {
@@ -4206,7 +4233,7 @@ export function CompanySkills() {
   const skillFoldersQuery = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId ?? "", "skill"),
     queryFn: () => foldersApi.list(selectedCompanyId!, "skill"),
-    enabled: Boolean(selectedCompanyId && ((isDiscovery && discoveryTab === "installed") || routeSkillToken)),
+    enabled: Boolean(selectedCompanyId && ((isDiscovery && !isCoverage && discoveryTab === "installed") || routeSkillToken)),
   });
 
   const skillsView = useQueryView(skillsQuery);
@@ -4340,13 +4367,15 @@ export function CompanySkills() {
       { label: "Skills", href: "/skills" },
       ...(isStudioNew
         ? [{ label: studioForkFromId ? "Fork skill" : "New skill" }]
-        : activeDetail
-          ? skillDetailBreadcrumbs(activeDetail, skillFoldersQuery.data).slice(1)
-          : routeSkillToken
-            ? [{ label: "Detail" }]
-            : []),
+        : isCoverage
+          ? [{ label: "Coverage" }]
+          : activeDetail
+            ? skillDetailBreadcrumbs(activeDetail, skillFoldersQuery.data).slice(1)
+            : routeSkillToken
+              ? [{ label: "Detail" }]
+              : []),
     ]);
-  }, [activeDetail, isStudioNew, routeSkillToken, setBreadcrumbs, skillFoldersQuery.data, studioForkFromId]);
+  }, [activeDetail, isCoverage, isStudioNew, routeSkillToken, setBreadcrumbs, skillFoldersQuery.data, studioForkFromId]);
   const activeFile = fileQuery.data ?? displayedFile;
 
   function routeForSkill(skill: CompanySkillRouteSubject, path?: string | null) {
@@ -5105,7 +5134,7 @@ export function CompanySkills() {
   });
 
   const skillFolderResult = skillFoldersQuery.data ?? null;
-  const showInstalledFolders = isDiscovery && discoveryTab === "installed";
+  const showInstalledFolders = isDiscovery && !isCoverage && discoveryTab === "installed";
   // Rail counts reflect the current category/search scope, never the folder
   // filter itself (ux-spec §5.3).
   const railSkillFolderResult = useMemo(() => {
@@ -5443,12 +5472,35 @@ export function CompanySkills() {
           </div>
         </div>
       ) : isDiscovery ? (
-        <>
-        <ConnectedAppSkills companyId={selectedCompanyId} />
+        isCoverage ? (
+          <>
+            <div className="border-b border-border px-4">
+              <Tabs
+                value="coverage"
+                onValueChange={(value) => {
+                  if (value === "coverage") return;
+                  setDiscoveryTab(value as DiscoveryTab);
+                }}
+              >
+                <TabsList variant="line" className="p-0" aria-label="Skills view">
+                  <TabsTrigger value="all" className="px-3">All</TabsTrigger>
+                  <TabsTrigger value="installed" className="px-3">Installed</TabsTrigger>
+                  <TabsTrigger value="catalog" className="px-3">Catalog</TabsTrigger>
+                  <TabsTrigger value="bundled" className="px-3">Bundled</TabsTrigger>
+                  <TabsTrigger value="coverage" className="px-3">Coverage</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            {selectedCompanyId ? <SkillCoverageMatrix companyId={selectedCompanyId} /> : null}
+          </>
+        ) : (
+          <>
+          <ConnectedAppSkills companyId={selectedCompanyId} />
         <DiscoveryGrid
           tab={discoveryTab}
           tabCounts={discoveryTabCounts}
           onTabChange={setDiscoveryTab}
+          onOpenCoverage={setCoverageTab}
           categories={discoveryCategoryCounts}
           categoryTotal={discoveryTabCards.length}
           activeCategory={discoveryCategory}
@@ -5535,6 +5587,7 @@ export function CompanySkills() {
           folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
         />
         </>
+        )
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage
           detail={activeDetail}

@@ -36,6 +36,7 @@ const mockCompanySkillsApi = vi.hoisted(() => ({
   catalogFile: vi.fn(),
   browseProject: vi.fn(),
   updateFile: vi.fn(),
+  categories: vi.fn(async () => []),
 }));
 const mockFoldersApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
@@ -52,12 +53,21 @@ vi.mock("../context/BreadcrumbContext", () => ({
 vi.mock("../context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn() }),
   useToastActions: () => ({ pushToast: vi.fn() }),
+  useOptionalToastActions: () => ({ pushToast: vi.fn() }),
 }));
 vi.mock("../hooks/useStreamlinedUiEnabled", () => ({
   useStreamlinedUiEnabled: () => ({ enabled: true, loaded: true }),
 }));
 vi.mock("../adapters/use-adapter-capabilities", () => ({
   useAdapterCapabilities: () => () => ({}),
+}));
+vi.mock("./skills/SkillCoverageMatrix", () => ({
+  SkillCoverageMatrix: ({ companyId }: { companyId: string }) => (
+    <div data-testid="skill-coverage-matrix">{companyId}</div>
+  ),
+  CompanySkillsCoverageTab: ({ companyId }: { companyId: string }) => (
+    <div data-testid="skill-coverage-matrix">{companyId}</div>
+  ),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -1193,6 +1203,59 @@ describe("install-time agent enablement", () => {
     await click(buttonsNamed(node, "Install update")[0] as HTMLButtonElement);
 
     expect(onConfirm).toHaveBeenCalledWith({ slug: "wireframe", force: false, agentIds: [] });
+  });
+});
+
+describe("CompanySkills coverage tab", () => {
+  beforeEach(() => {
+    mockCompanySkillsApi.list.mockReset().mockResolvedValue([]);
+    mockCompanySkillsApi.catalogList.mockReset().mockResolvedValue([]);
+    mockFoldersApi.list.mockReset().mockResolvedValue({ kind: "skill", folders: [], allCount: 0, unfiledCount: 0 });
+    mockAgentsApi.list.mockReset().mockResolvedValue([]);
+  });
+
+  it("keeps the shared tabs on the coverage page in streamlined mode", async () => {
+    editorRoute.search = "tab=coverage";
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySkills />
+        </QueryClientProvider>,
+      );
+    });
+
+    const tab = container.querySelector('nav[aria-label="Skills views"] a[aria-current="page"]');
+    expect(tab?.textContent).toBe("Coverage");
+    expect(tab?.getAttribute("href")).toBe("/skills?tab=coverage");
+    expect(container.querySelector('[data-testid="skill-coverage-matrix"]')).not.toBeNull();
+  });
+
+  it("is reachable and mounts the coverage matrix", async () => {
+    editorRoute.search = "tab=coverage";
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySkills />
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Coverage");
+    expect(container.querySelector('[data-testid="skill-coverage-matrix"]')?.textContent).toBe("company-1");
   });
 });
 

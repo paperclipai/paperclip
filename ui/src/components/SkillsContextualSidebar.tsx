@@ -1,5 +1,5 @@
 import { GithubIcon } from "@/components/icons/github-icon";
-import { Compass, Library, PencilRuler } from "lucide-react";
+import { Compass, Grid2x2, Library, PencilRuler } from "lucide-react";
 import { useLocation } from "@/lib/router";
 import {
   resolveSkillsNavigationView,
@@ -51,6 +51,13 @@ export function SkillsContextualSidebar() {
             end
           />
           <SidebarNavItem to={SKILLS_NAVIGATION_HREFS.sources} label="Sources" icon={GithubIcon} active={activeView === "sources"} />
+          <SidebarNavItem
+            to={SKILLS_NAVIGATION_HREFS.coverage}
+            label="Coverage"
+            icon={Grid2x2}
+            active={activeView === "coverage"}
+            end
+          />
         </div>
 
         <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>

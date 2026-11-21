@@ -87,8 +87,10 @@ import {
 } from "../lib/company-skill-routes";
 import {
   resolveSkillsDiscoveryView,
+  resolveSkillsNavigationView,
   withSkillsDiscoveryView,
 } from "./skills/skills-navigation";
+import { SkillCoverageMatrix } from "./skills/SkillCoverageMatrix";
 import {
   SKILL_CREATE_ACCENTS,
   buildBlankSkillDraft,
@@ -4049,6 +4051,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   // Discovery grid owns `/skills` whenever no specific skill or catalog entry is
   // selected; selecting either drops into the existing master/detail surfaces.
   const isDiscovery = !isStudioNew && !routeSkillToken && !selectedCatalogRef;
+  const isCoverage = isDiscovery && resolveSkillsNavigationView("/skills", searchParams) === "coverage";
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
   const browseRailsEnabled = !streamlinedUiEnabled;
   const visibleDiscoveryCategory = browseRailsEnabled ? discoveryCategory : null;
@@ -4065,6 +4068,18 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       else params.set("tab", tab);
       params.delete("category");
       if (tab !== "installed") params.delete("folder");
+      return params;
+    });
+  }
+
+  function setCoverageTab() {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      params.set("tab", "coverage");
+      params.delete("view");
+      params.delete("category");
+      params.delete("folder");
+      params.delete("catalog");
       return params;
     });
   }
@@ -4169,7 +4184,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   const skillFoldersQuery = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId ?? "", "skill"),
     queryFn: () => foldersApi.list(selectedCompanyId!, "skill"),
-    enabled: Boolean(selectedCompanyId && ((isDiscovery && effectiveDiscoveryTab === "installed") || routeSkillToken)),
+    enabled: Boolean(selectedCompanyId && ((isDiscovery && !isCoverage && effectiveDiscoveryTab === "installed") || routeSkillToken)),
   });
 
   const skillsView = useQueryView(skillsQuery);
@@ -4303,13 +4318,15 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       { label: "Skills", href: "/skills" },
       ...(collectionView === "authored" ? [{ label: "My Skills" }] : isStudioNew
         ? [{ label: studioForkFromId ? "Fork skill" : "New skill" }]
-        : activeDetail
-          ? skillDetailBreadcrumbs(activeDetail, skillFoldersQuery.data).slice(1)
-          : routeSkillToken
-            ? [{ label: "Detail" }]
-            : []),
+        : isCoverage
+          ? [{ label: "Coverage" }]
+          : activeDetail
+            ? skillDetailBreadcrumbs(activeDetail, skillFoldersQuery.data).slice(1)
+            : routeSkillToken
+              ? [{ label: "Detail" }]
+              : []),
     ]);
-  }, [activeDetail, collectionView, isStudioNew, routeSkillToken, setBreadcrumbs, skillFoldersQuery.data, studioForkFromId]);
+  }, [activeDetail, collectionView, isCoverage, isStudioNew, routeSkillToken, setBreadcrumbs, skillFoldersQuery.data, studioForkFromId]);
   const activeFile = fileQuery.data ?? displayedFile;
 
   function routeForSkill(skill: CompanySkillRouteSubject, path?: string | null) {
@@ -5069,7 +5086,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   });
 
   const skillFolderResult = skillFoldersQuery.data ?? null;
-  const showInstalledFolders = isDiscovery && effectiveDiscoveryTab === "installed";
+  const showInstalledFolders = isDiscovery && !isCoverage && effectiveDiscoveryTab === "installed";
   const showInstalledBulkSelection = showInstalledFolders && !streamlinedUiEnabled;
   // Rail counts reflect the current category/search scope, never the folder
   // filter itself (ux-spec §5.3).
@@ -5411,17 +5428,33 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
         <>
         {!streamlinedUiEnabled ? (
           <div className="px-4 pt-4">
-            <Tabs value={legacyDiscoveryTab} onValueChange={(value) => setLegacyDiscoveryTab(value as "all" | "installed" | "catalog" | "bundled")}>
+            <Tabs
+              value={isCoverage ? "coverage" : legacyDiscoveryTab}
+              onValueChange={(value) => {
+                if (value === "coverage") setCoverageTab();
+                else setLegacyDiscoveryTab(value as "all" | "installed" | "catalog" | "bundled");
+              }}
+            >
               <TabsList variant="line" aria-label="Skills view">
                 <TabsTrigger value="all">All</TabsTrigger>
                 <TabsTrigger value="installed">Installed</TabsTrigger>
                 <TabsTrigger value="catalog">Catalog</TabsTrigger>
                 <TabsTrigger value="bundled">Bundled</TabsTrigger>
+                <TabsTrigger value="coverage">Coverage</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
         ) : null}
-        {collectionView !== "authored" ? <ConnectedAppSkills companyId={selectedCompanyId} /> : null}
+        {isCoverage ? (
+          <>
+            {streamlinedUiEnabled ? (
+              <div className="px-4 pt-4"><SkillsNavigationTabs activeView="coverage" /></div>
+            ) : null}
+            <SkillCoverageMatrix companyId={selectedCompanyId ?? ""} />
+          </>
+        ) : (
+          <>
+          {collectionView !== "authored" ? <ConnectedAppSkills companyId={selectedCompanyId} /> : null}
         <DiscoveryGrid
           collectionView={collectionView}
           navigation={streamlinedUiEnabled ? <SkillsNavigationTabs activeView={collectionView ?? effectiveDiscoveryTab} /> : undefined}
@@ -5512,6 +5545,8 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
           showBrowseRails={browseRailsEnabled}
         />
+          </>
+        )}
         </>
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage
