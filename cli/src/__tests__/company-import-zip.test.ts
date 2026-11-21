@@ -48,4 +48,36 @@ describe("resolveInlineSourceFromPath", () => {
       },
     });
   });
+
+  it("keeps every file under a skills/ folder, including non-markdown references and scripts", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-company-import-zip-"));
+    tempDirs.push(tempDir);
+
+    const archivePath = path.join(tempDir, "paperclip-demo.zip");
+    const archive = createStoredZipArchive(
+      {
+        "COMPANY.md": "# Company\n",
+        "skills/demo/SKILL.md": "---\nname: demo\ndescription: demo\n---\nUses references/schema.json\n",
+        "skills/demo/references/schema.json": "{\"a\":1}\n",
+        "skills/demo/references/data.yaml": "k: v\n",
+        "skills/demo/scripts/run.sh": "echo hi\n",
+        "notes/todo.txt": "ignore me\n",
+      },
+      "paperclip-demo",
+    );
+    await writeFile(archivePath, archive);
+
+    const resolved = await resolveInlineSourceFromPath(archivePath);
+
+    expect(resolved).toEqual({
+      rootPath: "paperclip-demo",
+      files: {
+        "COMPANY.md": "# Company\n",
+        "skills/demo/SKILL.md": "---\nname: demo\ndescription: demo\n---\nUses references/schema.json\n",
+        "skills/demo/references/schema.json": "{\"a\":1}\n",
+        "skills/demo/references/data.yaml": "k: v\n",
+        "skills/demo/scripts/run.sh": "echo hi\n",
+      },
+    });
+  });
 });
