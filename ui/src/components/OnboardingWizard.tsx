@@ -909,10 +909,10 @@ function OnboardingWizardInner({
   // not leave it. Nothing reached that state until the dashboard started
   // opening agentless companies there.
   useEffect(() => {
-    if (!effectiveOnboardingOpen || !createdCompanyId || companyName) return;
+    if (!effectiveOnboardingOpen || !createdCompanyId || companyName || step === 1) return;
     const company = companies.find((c) => c.id === createdCompanyId);
     if (company) setCompanyName(company.name);
-  }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies]);
+  }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies, step]);
 
   // Persist wizard state to localStorage on every change
   useEffect(() => {
