@@ -1,4 +1,5 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { formatRunLogError } from "./run-log.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { GENERIC_RUN_FAILURE_CODES, NATIVE_PRE_DISPATCH_FAILURE_CODE, NATIVE_PRE_DISPATCH_FAILURE_KEY, NATIVE_PRE_DISPATCH_FAILURE_RECORD, failureCauseFromAdapterResult, failureCauseFromError,
@@ -831,7 +832,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         );
         await onLog(
           "stderr",
-          `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
+          `[paperclip] Failed to complete skill test run: ${formatRunLogError(err)}\n`,
         );
       }
       const livenessRun = finalizedRun;
@@ -981,7 +982,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       } catch (err) {
         await onLog(
           "stderr",
-          `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
+          `[paperclip] Failed to resolve run presentation: ${formatRunLogError(err)}\n`,
         );
       }
       if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
