@@ -406,7 +406,28 @@ part of U3 is checked only in waves run with this harness.
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
   A task that never rested within its deadline fails R1 as `no_rest_within_budget`,
-  whatever its last status.
+  whatever its last status. R1 also allows fair queue waits of runs that new
+  input started, chosen by these rules in order:
+  1. If any run on the task has no `createdAt`, nothing is credited.
+  2. The first run (earliest `createdAt`) is a candidate unless it is a retry.
+  3. For each harness follow-up comment: without a send time, nothing is
+     credited for it. Otherwise the candidate is the earliest run that carries
+     the comment, was created at or after the send time, and was not cancelled
+     before it executed.
+  4. That run counts only if it is not a retry, the previous executed run
+     succeeded and finished before it was created, and
+     `wake-evidence/<task>.json` shows a comment wake reason and no continued
+     run (no wake evidence: nothing is credited).
+  5. Each candidate's wait, from `createdAt` to `startedAt` inside the task's
+     own lifetime and minus outage time, is credited only when
+     `wake-evidence/agent-slots.json` proves it fair: no newer fresh assignment
+     run of that agent started during the wait (newer follow-ups and retries
+     rank higher by design), and the agent had no idle slot for more than 2 s
+     outside a server outage. A provably unfair wait fails as
+     `unfair_queue_wait`; one that cannot be proven is not credited, and the R1
+     detail says why.
+  The observer holds the deadline while a candidate run is queued (up to one
+  more budget) and extends it by that run's wait once it starts.
 - Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
   smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
   over its p95 budget, and every restart recovery whose Paperclip share exceeds

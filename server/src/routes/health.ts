@@ -20,6 +20,7 @@ import {
 } from "../services/cloud-instance.js";
 import { getCloudRuntimeIdentity } from "../services/cloud-runtime-identity.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { getAvailableHarnesses } from "../services/harness-availability.js";
 import {
   inspectDatabaseBackupHealth,
   type DatabaseBackupHealthStatus,
@@ -102,12 +103,14 @@ function getCloudHealthStatus(env: CloudInstanceEnv) {
   const context = getCloudStackContext(env);
   if (!context) return undefined;
   const runtimeIdentity = env === process.env ? getCloudRuntimeIdentity() : null;
+  const availableHarnesses = getAvailableHarnesses(env);
 
   return {
     managed: true as const,
     managedBy: "paperclip-cloud" as const,
     stackSlug: context.stackSlug,
     cloudBaseUrl: context.cloudOrigin,
+    ...(availableHarnesses !== undefined ? { availableHarnesses } : {}),
     ...(runtimeIdentity ? {
       runtimeIdentity: {
         canonicalOrigin: runtimeIdentity.canonicalOrigin,

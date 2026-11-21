@@ -415,6 +415,24 @@ describe("portable remote workspace archives", () => {
     expect(await fs.readFile(outside, "utf8")).toBe("must stay outside\n");
     for (const directory of archiveIo.captures) await expect(fs.access(directory)).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it("cancels a single-pass archive write without leaking a stream abort", async () => {
+    const cwd = await fs.realpath(await source()), archivePath = path.join(root, "snapshot.pcws"), file = path.join(cwd, "saved.txt");
+    await fs.writeFile(file, "saved\n");
+    const controller = new AbortController(), reason = new Error("capture cancelled");
+    let archiveOpened = false;
+    archiveIo.afterOpen = async target => {
+      if (target === archivePath) archiveOpened = true;
+      else if (archiveOpened && target === file) controller.abort(reason);
+    };
+    const uncaught: unknown[] = [], record = (error: unknown) => { uncaught.push(error); };
+    process.on("uncaughtException", record);
+    try {
+      await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath, singlePass: true, signal: controller.signal })).rejects.toBe(reason);
+      await new Promise<void>(resolve => setTimeout(resolve, 20));
+    } finally { process.off("uncaughtException", record); }
+    expect(uncaught).toEqual([]);
+    await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("cleans a cancelled capture without deleting a pre-existing archive", async () => {
     const cwd = await source(), archivePath = path.join(root, "snapshot.pcws");
     await fs.writeFile(path.join(cwd, "file"), "retained\n");
