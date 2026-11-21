@@ -147,8 +147,17 @@ async function runGitHubCurl(
   // Anonymous GitHub requests are rate-limited per source IP (CI runners and
   // corporate NAT exhaust the shared quota); honor an ambient token when present.
   // The token travels via a curl --config file so it never appears in process args.
-  const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
-  if (!token) return runCommand("curl", args, options);
+  const token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
+  if (!token) {
+    try {
+      return await runCommand("curl", args, options);
+    } catch (cause) {
+      throw new Error(
+        "GitHub request failed without authentication. Set GH_TOKEN or GITHUB_TOKEN for private repositories or higher rate limits.",
+        { cause },
+      );
+    }
+  }
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclipai-gh-"));
   const configFile = path.join(configDir, "headers");
   try {
