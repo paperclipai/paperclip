@@ -154,7 +154,7 @@ function matchListMarker(
   return null;
 }
 
-function interruptsParagraph(text: string, startCol: number): boolean {
+function interruptsListContainer(text: string, startCol: number): boolean {
   const leading = leadingSpaceWidth(text, startCol);
   if (leading.columns > 3) return false;
   const afterSpaces = text.slice(leading.index);
@@ -162,15 +162,7 @@ function interruptsParagraph(text: string, startCol: number): boolean {
   if (THEMATIC_BREAK_RE.test(afterSpaces)) return true;
   if (ATX_HEADING_RE.test(afterSpaces)) return true;
   if (matchFenceRun(afterSpaces)) return true;
-  const listMatch = LIST_MARKER_RE.exec(afterSpaces);
-  if (listMatch) {
-    const marker = listMatch[1];
-    const afterMarker = afterSpaces.slice(marker.length).trim();
-    if (afterMarker.length > 0 && (!/^\d/.test(marker) || marker === "1." || marker === "1)")) {
-      return true;
-    }
-  }
-  return false;
+  return LIST_MARKER_RE.test(afterSpaces);
 }
 
 function advanceOpenFence(fence: OpenFence, line: string): FenceLineTransition {
@@ -254,7 +246,7 @@ export function createMarkdownFenceTracker() {
           }
           const stripped = stripContainerIndent(rest, container.indent, col);
           if (!stripped) {
-            if (!container.sawBlank && paragraphOpen && !interruptsParagraph(rest, col)) {
+            if (!container.sawBlank && paragraphOpen && !interruptsListContainer(rest, col)) {
               nextContainers.push(container);
               activeContainers = nextContainers;
               return false;

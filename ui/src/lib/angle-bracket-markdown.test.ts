@@ -191,6 +191,15 @@ describe("escapeUnsupportedAngleBrackets", () => {
     expect(escapeUnsupportedAngleBrackets("para\n2. not-a-list\n  ```\n  <inside>\n<after>")).toBe(
       "para\n2. not-a-list\n  ```\n  <inside>\n<after>",
     );
+    expect(escapeUnsupportedAngleBrackets("1. first\n2. ```\n   <inside>\n   ```\n<after>")).toBe(
+      "1. first\n2. ```\n   <inside>\n   ```\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("1. first\n2. second\n   ```\n   <inside>\n<after>")).toBe(
+      "1. first\n2. second\n   ```\n   <inside>\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("1. first\n2.\n   ```\n   <inside>\n<after>")).toBe(
+      "1. first\n2.\n   ```\n   <inside>\n\\<after>",
+    );
   });
 
   it("does not treat 5+ spaces after a list marker or 4+ spaces after a blockquote as a fence", () => {

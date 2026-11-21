@@ -140,6 +140,9 @@ describe("unescapeBlockquoteMarkers", () => {
     expect(unescapeBlockquoteMarkers("- item\n\n  ```\n  \\> literal\n\\> real quote")).toBe(
       "- item\n\n  ```\n  \\> literal\n> real quote",
     );
+    expect(unescapeBlockquoteMarkers("1. first\n2. ```\n   \\> literal\n   ```\n\\> real quote")).toBe(
+      "1. first\n2. ```\n   \\> literal\n   ```\n> real quote",
+    );
   });
 
   it("tracks fenced code blocks with CRLF line endings", () => {
