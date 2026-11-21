@@ -13,6 +13,8 @@ import type {
   FinanceByKind,
   FinanceEvent,
   ProviderQuotaResult,
+  RunAccountingSettlementPreview,
+  SettleRunAccounting,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -30,6 +32,11 @@ export const costsApi = {
     api.get<CostDataQualityReport>(`/companies/${companyId}/costs/data-quality${dateParams(from, to)}`),
   retryAccounting: (companyId: string, runId: string) =>
     api.post<{ accounted: boolean }>(`/companies/${companyId}/costs/retry-accounting`, { runId }),
+  runSettlement: (companyId: string, runId: string) =>
+    api.get<RunAccountingSettlementPreview>(`/companies/${companyId}/costs/runs/${runId}/settlement`),
+  settleRun: (companyId: string, runId: string, input: SettleRunAccounting) =>
+    api.post<{ accounted: boolean; settledBy: "owner_estimate" | "recovered_receipt" }>(
+      `/companies/${companyId}/costs/runs/${runId}/settlement`, input),
   summary: (companyId: string, from?: string, to?: string) =>
     api.get<CostSummary>(`/companies/${companyId}/costs/summary${dateParams(from, to)}`),
   byUser: (companyId: string, from?: string, to?: string) =>

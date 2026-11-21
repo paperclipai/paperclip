@@ -141,7 +141,7 @@ describe("actionable cost data quality", () => {
     expect((await costDataQualityReport(db, owner.companyId, true, undefined, now)).runs[0].reason).toBe("waiting_for_receipt");
     const report = await costDataQualityReport(db, owner.companyId, true, undefined, new Date(now.getTime() + RECEIPT_WAIT_MS));
     expect(report.runs[0].reason).toBe("receipt_unavailable");
-    expect(Object.keys(report.runs[0]).sort()).toEqual(["agentId", "agentName", "agentAppearance", "id", "model", "occurredAt", "provider", "reason", "runId"].sort());
+    expect(Object.keys(report.runs[0]).sort()).toEqual(["agentId", "agentName", "agentAppearance", "id", "model", "occurredAt", "provider", "reason", "runId", "settleable"].sort());
     expect(JSON.stringify(report)).not.toContain("SECRET");
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, pending.id));
     expect(saved.costAccountingPending).toBe(true);
