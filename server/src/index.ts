@@ -22,6 +22,8 @@ import { registerToolConnectionContentDeletionWork } from "./services/tool-conne
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
 import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
+import { registerRunScratchSweepWork } from "./services/run-scratch-sweep-work.js";
+import { sweepOrphanedRunScratchDirectories } from "./services/heartbeat/recovery.js";
 import { registerToolConnectionHealthWork } from "./services/tool-connection-health-work.js";
 import { approvalQueueSeedingService, registerApprovalQueueSeedingWork } from "./services/approval-queue-seeding-work.js";
 import { joinRequestRetentionService, registerJoinRequestRetentionWork } from "./services/join-request-retention.js";
@@ -1506,6 +1508,19 @@ async function startServerWithDatabaseTeardown(
       }, next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
+
+  // Orphaned run scratch directories (crashed or restarted runs) are only
+  // reclaimed by an instance-wide sweep: the per-run executor cleanup never
+  // runs for them. One pass at startup, bounded continuations while scans
+  // stay truncated, interval retries while a known cleanup stays unfinished,
+  // and no scheduled scan at all once the sweep settles (run lifecycle
+  // changes wake it again). The sweep is never readiness- or drain-relevant,
+  // so it is not tracked as startup work.
+  registerRunScratchSweepWork(deliveryWork, {
+    intervalMs: config.heartbeatSchedulerIntervalMs,
+    canRun: () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+    sweep: () => sweepOrphanedRunScratchDirectories(db as any),
+  });
 
   const budgetEnforcementWorker = registerBudgetEnforcementWork(db, deliveryWork, {
     cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,

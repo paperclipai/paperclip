@@ -506,6 +506,7 @@ import {
   sweepOrphanedRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
+import { pokeRunScratchSweep } from "./run-scratch-sweep-work.js";
 import {
   applyDefaultIsolatedExecutionWorkspacePolicy,
   buildExecutionWorkspaceAdapterConfig,
@@ -882,6 +883,24 @@ export function resolveHeartbeatSchedulingSuppression(
     return { suppressed: true, reason: "task_drain" };
   }
   return { suppressed: false, reason: null };
+}
+
+/**
+ * Gate consulted before the managed AI home is physically removed at run
+ * teardown. A failed run read must never become removal consent: the error
+ * propagates and the runtime keeps the home, so the run scratch cleanup or
+ * the orphan sweep can retry the removal after the group provably exited.
+ */
+export function createManagedAiHomeRemovalGate(input: {
+  runId: string;
+  getRun: (runId: string) => Promise<{ processGroupId: number | null } | null>;
+  isProcessGroupAlive: (processGroupId: number | null | undefined) => boolean;
+}): () => Promise<boolean> {
+  const { runId, getRun, isProcessGroupAlive } = input;
+  return async () => {
+    const current = await getRun(runId);
+    return !isProcessGroupAlive(current?.processGroupId ?? null);
+  };
 }
 
 export function heartbeatService(
@@ -2912,17 +2931,51 @@ export function heartbeatService(
         return { ...selection, sourceWorkspaceConfig };
       };
       let workspaceSelection = await selectWorkspace();
+      // The per-run scratch directory must exist before execution
+      // configuration: the managed AI credential home is created inside it,
+      // and its removal is owned by the same terminal-run cleanup below.
+      try {
+        runScratch = await prepareHeartbeatRunScratch({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          issueId: issueRef?.id ?? null,
+          issueIdentifier: issueRef?.identifier ?? null,
+        });
+        // The sweep idles once cleanup settles: a fresh scratch directory is
+        // a new future obligation, so its lifecycle change must wake it.
+        pokeRunScratchSweep();
+      } catch (scratchPrepareError) {
+        runScratch = null;
+        logger.warn(
+          {
+            err: scratchPrepareError,
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+          },
+          "failed to prepare heartbeat run scratch directory; continuing without scratch env",
+        );
+      }
       const executionConfiguration = await timePreparation("execution_configuration", () => prepareHeartbeatExecutionConfiguration(db, {
         run, agent,
         task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest,
           adoptingLiveRunner: adoptsLiveRemoteRunner({ run, restartRecovery: runOptions.nativeRestartRecovery, leaseOwner: runOptions.nativeLeaseOwner }) },
-        config: { sourceWorkspaceConfig: workspaceSelection.sourceWorkspaceConfig, aiBinding },
+        config: { sourceWorkspaceConfig: workspaceSelection.sourceWorkspaceConfig, aiBinding, runScratchDir: runScratch?.dir ?? null },
         policy: { trustPreset, useIsolatedTaskDirectory: workspaceSelection.useIsolatedTaskDirectory,
           explicitTaskDirectory: workspaceSelection.explicitTaskDirectory, requestedExecutionWorkspaceMode },
         environment: workspaceSelection,
         services: { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral },
         onFailureSecretsResolved: (readSecrets) => { readFailureReportSecrets = () => [...readSecrets(), ...identityRedactor.values]; },
-        onManagedAiRuntimeAcquired: (runtime) => { managedAiRuntime = runtime; },
+        onManagedAiRuntimeAcquired: (runtime) => {
+          managedAiRuntime = runtime;
+          // The managed AI home now lives inside the per-run scratch directory:
+          // its physical removal must wait until the run's process group (including
+          // detached descendants) has exited. The scratch cleanup and the orphan
+          // sweep retry the removal once the group is gone. A run read that
+          // cannot be verified defers the removal instead of allowing it.
+          runtime.setHomeRemovalGate(createManagedAiHomeRemovalGate({ runId: run.id, getRun, isProcessGroupAlive }));
+        },
         onIdentityRedactorPrepared: (redactor) => { identityRedactor = redactor; },
       }));
       if (!executionConfiguration.prepared) return;
@@ -3202,47 +3255,23 @@ export function heartbeatService(
           }
         }
       };
-      if (!executionTarget || executionTarget.kind === "local") {
-        try {
-          runScratch = await prepareHeartbeatRunScratch({
-            companyId: agent.companyId,
-            agentId: agent.id,
-            runId: run.id,
-            issueId: issueRef?.id ?? null,
-            issueIdentifier: issueRef?.identifier ?? null,
-          });
-          const existingRuntimeEnv = parseObject(runtimeConfig.env);
-          const scratchEnv = buildHeartbeatRunScratchEnv(
-            existingRuntimeEnv,
-            runScratch,
-          );
-          runtimeConfig = {
-            ...runtimeConfig,
-            env: {
-              ...existingRuntimeEnv,
-              ...scratchEnv.env,
-            },
-          };
-          context.paperclipScratch = {
-            type: "heartbeat_run",
-            dir: runScratch.dir,
-            cleanupPolicy: "terminal_run",
-            marker: HEARTBEAT_RUN_SCRATCH_MARKER,
-            tempKeysApplied: scratchEnv.tempKeysApplied,
-          };
-        } catch (scratchPrepareError) {
-          runScratch = null;
-          delete context.paperclipScratch;
-          logger.warn(
-            {
-              err: scratchPrepareError,
-              runId: run.id,
-              issueId,
-              agentId: agent.id,
-            },
-            "failed to prepare heartbeat run scratch directory; continuing without scratch env",
-          );
-        }
+      if ((!executionTarget || executionTarget.kind === "local") && runScratch) {
+        const existingRuntimeEnv = parseObject(runtimeConfig.env);
+        const scratchEnv = buildHeartbeatRunScratchEnv(runScratch);
+        runtimeConfig = {
+          ...runtimeConfig,
+          env: {
+            ...existingRuntimeEnv,
+            ...scratchEnv.env,
+          },
+        };
+        context.paperclipScratch = {
+          type: "heartbeat_run",
+          dir: runScratch.dir,
+          cleanupPolicy: "terminal_run",
+          marker: HEARTBEAT_RUN_SCRATCH_MARKER,
+          tempKeysApplied: scratchEnv.tempKeysApplied,
+        };
       } else {
         delete context.paperclipScratch;
       }
@@ -4236,6 +4265,30 @@ export function heartbeatService(
           isHeartbeatRunTerminalStatus(latestRun.status)
         ) {
           const scratchForCleanup = runScratch;
+          // A run that never dispatched a process keeps an exactly-closed
+          // preparation settlement event set (readFailedPreparationSettlement
+          // rejects any extra event before a retry can reuse the outcome), so
+          // its scratch outcome is recorded logger-only.
+          const runDispatchedProcess = legacyAdapterEntered || nativeDispatchStarted ||
+            nativeOwnershipHeld || dispatchGateEntered;
+          const recordScratchOutcome = async (event: {
+            eventType: string;
+            stream: "system";
+            level: "info" | "warn";
+            message: string;
+            payload: unknown;
+          }) => {
+            if (!runDispatchedProcess) return;
+            await appendRunEvent(latestRun!, event as Parameters<typeof appendRunEvent>[1]).catch((error) => {
+              logger.warn(
+                { err: error, runId: run.id, scratchDir: scratchForCleanup.dir },
+                "failed to record heartbeat run scratch cleanup event",
+              );
+            });
+          };
+          // A retained managed AI home still holds a credential this run could
+          // not write back: the cleanup itself reports `ai_home_retained` and
+          // keeps the directory until the retained cleanup retires the home.
           let scratchCleanup: Awaited<
             ReturnType<typeof cleanupHeartbeatRunScratch>
           > | null = null;
@@ -4258,7 +4311,7 @@ export function heartbeatService(
               },
               "failed to clean heartbeat run scratch directory",
             );
-            await appendRunEvent(latestRun, {
+            await recordScratchOutcome({
               eventType: "error",
               stream: "system",
               level: "warn",
@@ -4270,13 +4323,13 @@ export function heartbeatService(
                     ? scratchCleanupError.message
                     : String(scratchCleanupError),
               },
-            }).catch(() => undefined);
+            });
           }
           if (scratchCleanup) {
             // Scratch cleanup verifies the owned process group, including
             // grandchildren. The main adapter's exit is not this proof.
             if (!scratchCleanup.removed) caseHandoffCleanupSettled = false;
-            await appendRunEvent(latestRun, {
+            await recordScratchOutcome({
               eventType: "lifecycle",
               stream: "system",
               level: scratchCleanup.removed ? "info" : "warn",
@@ -4284,27 +4337,27 @@ export function heartbeatService(
                 ? "run scratch cleaned"
                 : `run scratch cleanup skipped: ${scratchCleanup.reason}`,
               payload: scratchCleanup,
-            }).catch((scratchCleanupEventError) => {
-              logger.warn(
-                {
-                  err: scratchCleanupEventError,
-                  runId: run.id,
-                  scratchDir: scratchForCleanup.dir,
-                },
-                "failed to record heartbeat run scratch cleanup event",
-              );
             });
             // Earlier process attempts of this run (before a restart) left their
             // own scratch directories; the run is terminal, so remove them too.
+            // The sweep re-verifies the process group and retained homes before
+            // every removal.
             if (scratchCleanup.removed) {
               await sweepOrphanedRunScratch({
                 runId: run.id,
                 resolveRunStates: async (ids) => new Map(ids.map((id) => [id, "terminal" as const])),
+                isRunProcessGroupAlive: () => {
+                  const processGroupId = latestRun?.processGroupId;
+                  return processGroupId != null ? isProcessGroupAlive(processGroupId) : false;
+                },
               }).catch((sweepError) => {
                 logger.warn({ err: sweepError, runId: run.id }, "failed to sweep earlier run scratch attempts");
               });
             }
           }
+          // The run settled: any kept directory is unfinished cleanup the
+          // sweep should retry, and a removed one may let it idle again.
+          pokeRunScratchSweep();
         }
         if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&
             !latestRun.runtimeModeResolvedAt && latestRun.executionStage === "preparing") {

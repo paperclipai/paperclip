@@ -68,6 +68,7 @@ export const DELIVERY_QUEUES = {
   executionStatus: "execution-status",
   executionDisposition: "execution-disposition",
   environmentCleanup: "environment-cleanup",
+  runScratchSweep: "run-scratch-sweep",
   approvalQueueSeeding: "approval-queue-seeding",
   attentionRetention: "attention-retention",
   approvalRetention: "approval-retention",

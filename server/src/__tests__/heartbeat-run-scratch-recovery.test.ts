@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -22,7 +23,9 @@ vi.mock("../middleware/logger.js", () => ({
   httpLogger: vi.fn(),
 }));
 
-import { heartbeatService } from "../services/heartbeat.ts";
+import { createManagedAiHomeRemovalGate, heartbeatService } from "../services/heartbeat.ts";
+import { sweepOrphanedRunScratchDirectories } from "../services/heartbeat/recovery.js";
+import { isProcessGroupAlive } from "../services/local-service-supervisor.js";
 import { HEARTBEAT_RUN_SCRATCH_MARKER } from "../services/run-scratch.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -125,5 +128,50 @@ describeEmbeddedPostgres("heartbeat recovery sweeps orphaned run scratch", () =>
     expect(await exists(malformedDir)).toBe(true);
     expect(await exists(unknownRunDir)).toBe(true);
     expect(await exists(unmarkedDir)).toBe(true);
+  });
+
+  it("reclaims orphaned scratch when the periodic sweep worker calls the extracted sweep directly", async () => {
+    const terminal = await seedRun("failed");
+    const queued = await seedRun("queued");
+    const terminalDir = await leaveScratch(terminal);
+    const queuedDir = await leaveScratch(queued);
+
+    // The production worker invokes this standalone function on its schedule;
+    // it must resolve run states and liveness from the database on its own.
+    await sweepOrphanedRunScratchDirectories(db);
+
+    expect(await exists(terminalDir)).toBe(false);
+    expect(await exists(queuedDir)).toBe(true);
+  });
+});
+
+describe("managed AI home removal gate", () => {
+  const gateFor = (getRun: () => Promise<{ processGroupId: number | null } | null>) =>
+    createManagedAiHomeRemovalGate({ runId: randomUUID(), getRun, isProcessGroupAlive });
+
+  it("never turns a failed run read into removal consent while the process group is alive", async () => {
+    // Real detached process group with a natural exit, like a run descendant.
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1500)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    const processGroupId = child.pid!;
+    expect(isProcessGroupAlive(processGroupId)).toBe(true);
+
+    // A failed run read rejects instead of allowing the removal.
+    await expect(gateFor(() => Promise.reject(new Error("db read failed")))()).rejects.toThrow("db read failed");
+    // A verified live process group keeps the home.
+    await expect(gateFor(() => Promise.resolve({ processGroupId }))()).resolves.toBe(false);
+
+    // After the natural exit, a successful read allows the removal.
+    const deadline = Date.now() + 15_000;
+    while (isProcessGroupAlive(processGroupId)) {
+      if (Date.now() > deadline) throw new Error("process group did not exit naturally");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await expect(gateFor(() => Promise.resolve({ processGroupId }))()).resolves.toBe(true);
+    // A successful read of a deleted run row has no group to protect.
+    await expect(gateFor(() => Promise.resolve(null))()).resolves.toBe(true);
   });
 });
