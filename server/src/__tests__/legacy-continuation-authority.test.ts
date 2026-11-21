@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, connectionIntentDeliveries, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -143,6 +143,29 @@ describe("legacy continuation persisted authority", () => {
     expect(await f.runs()).toHaveLength(2);
     const repair = (await f.runs()).find(r => r.id !== f.runId)!;
     expect(repair.contextSnapshot).toMatchObject({ legacyDispositionEpisode: { id: f.runId, attempt: 1, maxAttempts: 2 } });
+  });
+  it("does not repair while an accepted connection intent awaits its continuation delivery", async () => {
+    const f = await fixture();
+    const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "connection_intent", status: "accepted", resolvedAt: new Date(),
+      payload: { version: 1, requestingAgentId: f.agentId, requestingAgentName: "Agent", serviceSlug: "github", serviceName: "GitHub", phase: "requested" } }).returning();
+    await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId });
+    expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).not.toBe("queued");
+    expect(await f.runs()).toHaveLength(1);
+    await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() })
+      .where(eq(connectionIntentDeliveries.interactionId, card.id));
+    expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("queued");
+    expect(await f.runs()).toHaveLength(2);
+  });
+  it("repairs when a connection-intent delivery stays unsettled past its bound", async () => {
+    const f = await fixture();
+    const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "connection_intent", status: "accepted", resolvedAt: new Date(),
+      payload: { version: 1, requestingAgentId: f.agentId, requestingAgentName: "Agent", serviceSlug: "github", serviceName: "GitHub", phase: "requested" } }).returning();
+    await db.insert(connectionIntentDeliveries).values({ interactionId: card.id, companyId: f.companyId,
+      createdAt: new Date(Date.now() - 6 * 60_000) });
+    expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("queued");
+    expect(await f.runs()).toHaveLength(2);
   });
   it("does not roll back the ledger when a fast repair finishes before enqueue returns", async () => {
     const f = await fixture();
