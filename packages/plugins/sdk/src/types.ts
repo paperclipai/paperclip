@@ -84,6 +84,7 @@ export type {
   Routine,
   RoutineRun,
   PluginLocalFolderDeclaration,
+  PluginPrivateNetworkHostDeclaration,
   PluginCompanySettings,
   PluginManagedResourceKind,
   PluginManagedResourceRef,
@@ -712,7 +713,6 @@ export interface PluginHttpClient {
   /**
    * Perform an outbound HTTP request.
    *
-   * The host enforces `http.outbound` capability before allowing the call.
    * Plugins may also use standard Node `fetch` or other libraries directly —
    * this client exists for host-managed tracing and audit logging.
    *
@@ -720,7 +720,7 @@ export interface PluginHttpClient {
    * @param init - Standard `RequestInit` options
    * @returns The response
    */
-  fetch(url: string, init?: RequestInit): Promise<Response>;
+  fetch(url: string, init?: RequestInit, options?: { companyId?: string }): Promise<Response>;
 }
 
 /**
