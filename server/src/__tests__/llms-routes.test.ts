@@ -27,10 +27,10 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ llmRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/llms.js")>("../routes/llms.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+  const [{ llmRoutes }, { errorHandler }] = [
+    await vi.importActual<typeof import("../routes/llms.js")>("../routes/llms.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

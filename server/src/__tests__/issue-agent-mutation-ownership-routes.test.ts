@@ -501,10 +501,10 @@ function boardActor() {
 
 describe("agent issue mutation checkout ownership", () => {
   const routeModules = hoistModuleGraph(registerRouteMocks, async () => {
-    const [{ errorHandler }, { issueRoutes, __clearIssueListResponseCacheForTests }] = await Promise.all([
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    ]);
+    const [{ errorHandler }, { issueRoutes, __clearIssueListResponseCacheForTests }] = [
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ];
     return { errorHandler, issueRoutes, __clearIssueListResponseCacheForTests };
   });
 

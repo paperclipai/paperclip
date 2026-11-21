@@ -45,11 +45,11 @@ function createDbStub(...selectResponses: unknown[][]) {
   };
 }
 
-function loadAppModules() {
-  return Promise.all([
-    vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
+async function loadAppModules() {
+  return [
+    await vi.importActual<typeof import("../routes/access.js")>("../routes/access.js"),
+    await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ] as const;
 }
 
 async function createApp(
