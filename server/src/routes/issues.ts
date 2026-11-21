@@ -10527,6 +10527,17 @@ export function issueRoutes(
           (activeRecoveryAction.kind === "deliberate_wait_without_target" || workspaceBaseRef || workspaceRetry)
         ) {
           if (
+            req.actor.type === "agent" &&
+            activeRecoveryAction.kind === "deliberate_wait_without_target" &&
+            activeRecoveryAction.ownerType === "agent" &&
+            activeRecoveryAction.ownerAgentId === req.actor.agentId
+          ) {
+            throw conflict(
+              "This is your own disposition repair; resolving it does not complete it. Update the task itself instead: finish it, block it on the issue you are waiting for, hand it to whoever must act next, or record a typed wait.",
+              { code: "disposition_repair_owner_must_set_state", nextAction: activeRecoveryAction.nextAction ?? null },
+            );
+          }
+          if (
             lockedIssue.status !== "blocked" ||
             activeRecoveryAction.ownerType !== "board" ||
             (!workspaceBaseRef && !workspaceRetry && activeRecoveryAction.wakePolicy?.type !== "board_escalation") ||
