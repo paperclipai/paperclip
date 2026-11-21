@@ -253,6 +253,42 @@ describe("codex remote environment diagnostics", () => {
     expect(probeCall?.[3]).toContain("--skip-git-repo-check");
   });
 
+  it("probes in a throwaway workspace when the local agent has no configured cwd", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex" },
+    });
+
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_workspace")).toBe(true);
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+    const probeCall = runAdapterExecutionTargetProcess.mock.calls.at(-1) as unknown as
+      | [string, AdapterExecutionTarget | null, string, string[], { cwd: string; env: Record<string, string> }]
+      | undefined;
+    const probeCwd = probeCall?.[4].cwd ?? "";
+    expect(probeCwd).toContain("paperclip-codex-envtest-");
+    expect(probeCwd).not.toBe(process.cwd());
+    expect(probeCall?.[3]).toContain("--skip-git-repo-check");
+    await expect(fs.stat(probeCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes the throwaway workspace when the probe process rejects", async () => {
+    runAdapterExecutionTargetProcess.mockRejectedValueOnce(new Error("spawn failed"));
+    await expect(
+      testEnvironment({
+        companyId: "company-1",
+        adapterType: "codex_local",
+        config: { engine: "cli", command: "codex" },
+      }),
+    ).rejects.toThrow("spawn failed");
+    const probeCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, AdapterExecutionTarget | null, string, string[], { cwd: string }]
+      | undefined;
+    const probeCwd = probeCall?.[4].cwd ?? "";
+    expect(probeCwd).toContain("paperclip-codex-envtest-");
+    await expect(fs.stat(probeCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   // `sandboxTarget()` is declared later in this describe block; function
   // declarations hoist, so the version-floor cases below reuse it.
   function versionProbeResult(stdout: string) {
