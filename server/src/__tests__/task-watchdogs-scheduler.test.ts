@@ -237,9 +237,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.watchdogIssueId).toBe(watchdogIssues[0]?.id);
     expect(watchdog?.lastObservedFingerprint).toMatch(/^task_watchdog_stop:/);
     expect(watchdog?.lastObservedStopSnapshot).toMatchObject({
-      version: 2,
+      version: 3,
       fingerprint: watchdog?.lastObservedFingerprint,
       materialLeaves: [],
+      materialParents: [],
       waitsByIssueId: {},
     });
     expect(watchdog?.triggerCount).toBe(1);
@@ -283,6 +284,44 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     ]);
     expect(prompt).toContain("Terminal / stopped leaves to verify:");
     expect(prompt).toContain("WDOG-INSTR-LEAF");
+  });
+
+  it("names stopped parents in the review comment, the wake context, and the rendered mandate", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-PARENT", status: "blocked" });
+    const leafId = await seedIssue(companyId, {
+      parentId: sourceId,
+      identifier: "WDOG-PARENT-LEAF",
+      status: "blocked",
+    });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    expect(wakes).toHaveLength(1);
+
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdog!.watchdogIssueId!));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Stopped leaves:\n- WDOG-PARENT-LEAF: blocked");
+    expect(comments[0]?.body).toContain("Stopped parents:\n- WDOG-PARENT: blocked");
+
+    const snapshot = wakes[0]?.opts?.contextSnapshot;
+    expect(snapshot).toMatchObject({
+      stoppedParents: [expect.objectContaining({ issueId: sourceId, status: "blocked" })],
+    });
+    const normalized = normalizePaperclipWakePayload(snapshot);
+    expect(normalized?.taskWatchdog?.terminalLeafSummaries).toEqual([
+      expect.objectContaining({ id: sourceId, identifier: "WDOG-PARENT", status: "blocked", role: "parent" }),
+      expect.objectContaining({ id: leafId, identifier: "WDOG-PARENT-LEAF", status: "blocked", role: null }),
+    ]);
+    const prompt = renderPaperclipWakePrompt(normalized);
+    expect(prompt).toContain("- WDOG-PARENT Watched issue (blocked) [parent]");
+    expect(prompt).toContain("- WDOG-PARENT-LEAF Watched issue (blocked)\n");
   });
 
   it("does not append duplicate review comments for an already-open same-fingerprint review", async () => {

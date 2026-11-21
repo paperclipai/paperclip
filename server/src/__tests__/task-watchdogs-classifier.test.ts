@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { classifyTaskWatchdogSubtree, type TaskWatchdogClassifierIssue } from "../services/task-watchdogs.ts";
+import {
+  classifyTaskWatchdogSubtree,
+  parseStopSnapshot,
+  type TaskWatchdogClassifierIssue,
+} from "../services/task-watchdogs.ts";
 
 const companyId = "company-1";
 const sourceId = "source-1";
@@ -116,6 +120,25 @@ describe("task watchdog subtree classifier", () => {
     if (initial.state !== "stopped" || ticked.state !== "stopped") return;
     expect(ticked.stopFingerprint).toBe(initial.stopFingerprint);
     expect(ticked.stoppedLeaves[0]?.updatedAt).not.toBe(initial.stoppedLeaves[0]?.updatedAt);
+
+    const child = issue({ id: childId, parentId: sourceId, status: "blocked" });
+    const withParent = classify({
+      issues: [issue({ status: "in_review", latestCommentAt: "2026-06-17T20:01:00.000Z" }), child],
+    });
+    const parentTicked = classify({
+      issues: [issue({
+        status: "in_review",
+        updatedAt: new Date("2026-06-18T20:00:00.000Z"),
+        latestCommentAt: "2026-06-18T20:01:00.000Z",
+        latestDocumentAt: "2026-06-18T20:02:00.000Z",
+        latestWorkProductAt: "2026-06-18T20:03:00.000Z",
+      }), child],
+    });
+    expect(withParent.state).toBe("stopped");
+    expect(parentTicked.state).toBe("stopped");
+    if (withParent.state !== "stopped" || parentTicked.state !== "stopped") return;
+    expect(parentTicked.stopFingerprint).toBe(withParent.stopFingerprint);
+    expect(withParent.stopSnapshot.materialParents).toEqual([expect.objectContaining({ issueId: sourceId })]);
   });
 
   it("suppresses a shrink-only stopped state after a sibling completes", () => {
@@ -230,6 +253,21 @@ describe("task watchdog subtree classifier", () => {
     }],
     ["leaf blocker", {
       blockers: [{ companyId, blockedIssueId: childId, blockerIssueId: "blocker-2" }],
+    }],
+    ["parent status", {
+      issues: [issue({ status: "blocked" }), issue({ id: childId, parentId: sourceId, status: "blocked" })],
+    }],
+    ["parent assignee", {
+      issues: [
+        issue({ status: "in_progress", assigneeAgentId: "agent-2" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
+      ],
+    }],
+    ["parent blocker", {
+      blockers: [
+        { companyId, blockedIssueId: childId, blockerIssueId: "blocker-1" },
+        { companyId, blockedIssueId: sourceId, blockerIssueId: "blocker-3" },
+      ],
     }],
     ["new stopped leaf", {
       issues: [
@@ -392,5 +430,135 @@ describe("task watchdog subtree classifier", () => {
     });
 
     expect(result.state).toBe("not_applicable");
+  });
+});
+
+describe("task watchdog stop state of non-terminal parents (upstream #15778)", () => {
+  const intermediateId = "intermediate-1";
+  const leafId = "leaf-1";
+
+  function reviewedWatchdog(stopped: ReturnType<typeof classify>) {
+    if (stopped.state !== "stopped") throw new Error(`expected stopped, got ${stopped.state}`);
+    return {
+      companyId,
+      issueId: sourceId,
+      lastReviewedFingerprint: stopped.stopFingerprint,
+      lastReviewedStopSnapshot: stopped.stopSnapshot,
+    };
+  }
+
+  it("re-fires when an intermediate node changes and the leaves do not", () => {
+    const baseIssues = [
+      issue({ id: sourceId, status: "todo" }),
+      issue({ id: intermediateId, identifier: "PAP-2", parentId: sourceId, status: "todo" }),
+      issue({ id: leafId, identifier: "PAP-3", parentId: intermediateId, status: "blocked" }),
+    ];
+    const reviewed = classify({ issues: baseIssues });
+    expect(reviewed.state).toBe("stopped");
+    if (reviewed.state !== "stopped") return;
+
+    const afterIntermediateActivity = [
+      baseIssues[0]!,
+      {
+        ...baseIssues[1]!,
+        status: "in_progress",
+        updatedAt: new Date("2026-06-18T09:00:00.000Z"),
+        latestCommentAt: new Date("2026-06-18T09:00:00.000Z"),
+      },
+      baseIssues[2]!,
+    ];
+    const after = classify({ watchdog: reviewedWatchdog(reviewed), issues: afterIntermediateActivity });
+
+    expect(after.state).toBe("stopped");
+    if (after.state !== "stopped") return;
+    expect(after.stopSnapshot.materialLeaves).toEqual(reviewed.stopSnapshot.materialLeaves);
+    expect(after.stopFingerprint).not.toBe(reviewed.stopFingerprint);
+    expect(after.stoppedLeaves.map((leaf) => leaf.issueId)).toEqual([leafId]);
+    expect(after.stoppedParents).toEqual([
+      expect.objectContaining({ issueId: intermediateId, identifier: "PAP-2", status: "in_progress" }),
+      expect.objectContaining({ issueId: sourceId, status: "todo" }),
+    ]);
+  });
+
+  it.each([
+    ["turns blocked", "in_progress", "blocked"],
+    ["sits in review with no run", "blocked", "in_review"],
+  ])("re-fires when a root with one reviewed blocked child %s itself", (_label, before, after) => {
+    const child = issue({ id: childId, identifier: "PAP-2", parentId: sourceId, status: "blocked" });
+    const blockers = [{ companyId, blockedIssueId: childId, blockerIssueId: "blocker-1" }];
+    const reviewed = classify({ issues: [issue({ status: before }), child], blockers });
+
+    const stoppedRoot = classify({
+      watchdog: reviewedWatchdog(reviewed),
+      issues: [issue({ status: after }), child],
+      blockers,
+    });
+
+    expect(stoppedRoot.state).toBe("stopped");
+  });
+
+  it("keeps a parent reviewed when its last child closes and its own projection is unchanged", () => {
+    const reviewed = classify({
+      issues: [issue({ status: "in_review" }), issue({ id: childId, parentId: sourceId, status: "blocked" })],
+    });
+
+    const childClosed = classify({
+      watchdog: reviewedWatchdog(reviewed),
+      issues: [issue({ status: "in_review" }), issue({ id: childId, parentId: sourceId, status: "done" })],
+    });
+
+    expect(childClosed.state).toBe("already_reviewed");
+  });
+
+  it("compares a node that moves from parent to leaf by issue id", () => {
+    const reviewed = classify({
+      issues: [issue({ status: "in_review" }), issue({ id: childId, parentId: sourceId, status: "done" })],
+    });
+    if (reviewed.state !== "stopped") throw new Error(`expected stopped, got ${reviewed.state}`);
+    expect(reviewed.stopSnapshot.materialLeaves).toEqual([]);
+
+    const unchanged = classify({ watchdog: reviewedWatchdog(reviewed), issues: [issue({ status: "in_review" })] });
+    const changed = classify({ watchdog: reviewedWatchdog(reviewed), issues: [issue({ status: "blocked" })] });
+
+    expect(unchanged.state).toBe("already_reviewed");
+    if (unchanged.state !== "already_reviewed") return;
+    expect(unchanged.stopSnapshot.materialLeaves).toEqual([expect.objectContaining({ issueId: sourceId })]);
+    expect(unchanged.stopSnapshot.materialParents).toEqual([]);
+    expect(changed.state).toBe("stopped");
+  });
+
+  it("re-fires once over a reviewed v2 snapshot only when the tree has a non-terminal parent", () => {
+    const leafOnly = classify({ issues: [issue({ status: "blocked" })] });
+    const withParent = classify({
+      issues: [issue({ status: "in_review" }), issue({ id: childId, parentId: sourceId, status: "blocked" })],
+    });
+    if (leafOnly.state !== "stopped" || withParent.state !== "stopped") throw new Error("expected stopped");
+    const asV2 = (stopped: typeof leafOnly) => ({
+      companyId,
+      issueId: sourceId,
+      lastReviewedFingerprint: "task_watchdog_stop:legacy-v2",
+      lastReviewedStopSnapshot: {
+        version: 2 as const,
+        fingerprint: "task_watchdog_stop:legacy-v2",
+        materialLeaves: stopped.stopSnapshot.materialLeaves,
+        waitsByIssueId: stopped.stopSnapshot.waitsByIssueId,
+      },
+    });
+
+    expect(classify({ watchdog: asV2(leafOnly), issues: [issue({ status: "blocked" })] }).state)
+      .toBe("already_reviewed");
+    expect(classify({
+      watchdog: asV2(withParent),
+      issues: [issue({ status: "in_review" }), issue({ id: childId, parentId: sourceId, status: "blocked" })],
+    }).state).toBe("stopped");
+  });
+
+  it("reads stored v2 and v3 snapshots and rejects a v3 snapshot without parents", () => {
+    const base = { fingerprint: "task_watchdog_stop:x", materialLeaves: [], waitsByIssueId: {} };
+
+    expect(parseStopSnapshot({ ...base, version: 2 })).toMatchObject({ version: 2 });
+    expect(parseStopSnapshot({ ...base, version: 3, materialParents: [] })).toMatchObject({ version: 3 });
+    expect(parseStopSnapshot({ ...base, version: 3 })).toBeNull();
+    expect(parseStopSnapshot({ ...base, version: 1 })).toBeNull();
   });
 });
