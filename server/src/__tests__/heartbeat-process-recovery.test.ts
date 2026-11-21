@@ -1,3 +1,4 @@
+import * as controllerIdentity from "../services/controller-process-identity.js";
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS } from "../services/heartbeat/retries.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "../services/execution-recovery-attempt.js";
@@ -3832,6 +3833,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       return successor!;
     }
 
+    it("continues a local child from a rebooted kernel exactly once when two servers reconcile it", async () => {
+      const previous = "c".repeat(32), current = "d".repeat(32);
+      const evidence = (processSpace: string, kernelBootId: string) => ({ schema: "paperclip.local_kernel.v1" as const,
+        machineHash: "a".repeat(32), kernelBootId, processSpace });
+      vi.spyOn(controllerIdentity, "currentProcessSpaceHash").mockReturnValue(current);
+      vi.spyOn(controllerIdentity, "currentLocalKernelBoot").mockReturnValue(
+        evidence(current, "22222222-2222-4222-8222-222222222222"));
+      const owner = { bootId: randomUUID(), pid: process.pid, hostHash: previous,
+        processStartedAt: new Date(Date.now() - 600_000).toISOString(),
+        localKernelBoot: evidence(previous, "11111111-1111-4111-8111-111111111111") };
+      const fixture = await seedInterruptibleRun({ alreadyRetried: false, owner: "replaced_server",
+        controllerBootId: owner.bootId, controllerProcess: owner });
+      await db.update(heartbeatRuns).set({ processPid: process.pid, processHostHash: previous,
+        processStartedAt: new Date(owner.processStartedAt), errorCode: "process_detached" })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      await Promise.all([heartbeatService(db).reapOrphanedRuns(), heartbeatService(db).reapOrphanedRuns()]);
+      expect(await heartbeatService(db).getRun(fixture.runId)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+      await expectOneRestartContinuation(fixture, 0);
+      await heartbeatService(db).reapOrphanedRuns();
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toHaveLength(1);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+    });
     it.each([
       { name: "a first attempt", alreadyRetried: false },
       { name: "a run that was already the last automatic retry", alreadyRetried: true },
