@@ -125,7 +125,12 @@ export function AuditHub({ section }: { section: AuditSection }) {
           navigate(auditSectionHref(next, scope));
         }}
       >
-        <PageTabBar items={AUDIT_SECTIONS} value={section} align="start" />
+        <PageTabBar
+          items={AUDIT_SECTIONS}
+          value={section}
+          onValueChange={(value) => navigate(auditSectionHref(value as AuditSection, scope))}
+          align="start"
+        />
       </Tabs>
 
       {section === "commentary" ? (
