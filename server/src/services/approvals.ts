@@ -184,8 +184,15 @@ export function approvalService(db: Db) {
     const result = await (status === "approved" ? lifecycle.approveHire : lifecycle.rejectHire)(target, userId, note);
     if (result?.hireApprovedAgentId && result.approval) {
       await reconcileApprovedBuiltInAgent(result.approval.companyId, result.approval.payload, db);
-      void notifyHireApproved(db, { companyId: result.approval.companyId, agentId: result.hireApprovedAgentId,
-        source: "approval", sourceId: result.approval.id, approvedAt: result.approval.decidedAt ?? new Date() }).catch(() => {});
+      await notifyHireApproved(db, {
+        companyId: result.approval.companyId,
+        agentId: result.hireApprovedAgentId,
+        source: "approval",
+        sourceId: result.approval.id,
+        approvedAt: result.approval.decidedAt ?? new Date(),
+        responsibleUserId: result.approval.decidedByUserId ?? userId,
+        awaitAdapterHook: false,
+      });
     }
     return result;
   }

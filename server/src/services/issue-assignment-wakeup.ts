@@ -19,6 +19,10 @@ export interface IssueAssignmentWakeupDeps {
       requestedByActorCompanyId?: string;
       contextSnapshot?: Record<string, unknown>;
       durableChatRequest?: DurableChatWakeupRequest;
+      issueStateGuard?: {
+        statuses: string[];
+        assigneeAgentId: string;
+      };
     },
   ) => Promise<unknown>;
 }
@@ -34,6 +38,11 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorCompanyId?: string;
   responsibleUserId?: string | null;
   taskKey?: string | null;
+  idempotencyKey?: string | null;
+  issueStateGuard?: {
+    statuses: string[];
+    assigneeAgentId: string;
+  };
   /** Latest issue comment that caused this wakeup. Included in both payload
    * and context so the heartbeat can build the exact turn that was requested. */
   wakeCommentId?: string | null;
@@ -61,6 +70,7 @@ export function queueIssueAssignmentWakeup(input: {
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
       },
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       ...(input.allowRunCoalescing !== undefined ? { allowRunCoalescing: input.allowRunCoalescing } : {}),
@@ -68,6 +78,7 @@ export function queueIssueAssignmentWakeup(input: {
       ...(input.durableChatRequest
         ? { durableChatRequest: input.durableChatRequest }
         : {}),
+      ...(input.issueStateGuard ? { issueStateGuard: input.issueStateGuard } : {}),
       contextSnapshot: {
         issueId: input.issue.id,
         source: input.contextSource,

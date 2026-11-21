@@ -10,6 +10,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
+  agentRuntimeState,
+  heartbeatRunEvents,
   heartbeatRuns,
   agentWakeupRequests,
   routineRuns,
@@ -23,6 +25,7 @@ import {
   companySkillVersions,
   companySkills,
   createDb,
+  issueComments,
   issueThreadInteractions,
   issues,
   principalPermissionGrants,
@@ -34,10 +37,12 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionsService } from "../services/agent-instructions.ts";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
+import { heartbeatService } from "../services/heartbeat.js";
 import {
   builtInAgentService as createBuiltInAgentService,
   deriveBuiltInAgentStatus,
@@ -170,9 +175,16 @@ describeEmbeddedPostgres("built-in agents", () => {
   afterEach(async () => {
     runnerSelectionSpy?.mockRestore();
     await lifecycleWorker.sweep();
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
     await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(issues);
     await db.delete(builtInManagedResources);
     await db.delete(companySkillVersions);
