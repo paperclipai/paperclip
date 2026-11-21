@@ -95,7 +95,7 @@ export const TOKEN_USAGE_REGEX =
   /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
 
 /** Regex to extract cost from Hermes output. */
-export const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
+export const COST_REGEX = /(?:cost|spent)[:\s]*\$?(\d+(?:\.\d+)?|\.\d+)/i;
 
 /** Prefix used by Hermes for tool output lines. */
 export const TOOL_OUTPUT_PREFIX = "┊";
