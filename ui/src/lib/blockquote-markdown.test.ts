@@ -111,4 +111,37 @@ describe("unescapeBlockquoteMarkers", () => {
     const input = "```ts\n\\> code\n```\n\\> real";
     expect(unescapeBlockquoteMarkers(input)).toBe("```ts\n\\> code\n```\n> real");
   });
+
+  it("recovers escaped blockquotes after a blockquote-nested fence ends with its blockquote", () => {
+    expect(unescapeBlockquoteMarkers("> ```\n> \\> literal\n\n\\> real quote")).toBe(
+      "> ```\n> \\> literal\n\n> real quote",
+    );
+    expect(unescapeBlockquoteMarkers("> ```\n> \\> literal\n\\> real quote")).toBe(
+      "> ```\n> \\> literal\n> real quote",
+    );
+  });
+
+  it("recovers escaped blockquotes after a list-nested fence ends with its list item", () => {
+    expect(unescapeBlockquoteMarkers("- ```\n  \\> literal\n\\> real quote")).toBe(
+      "- ```\n  \\> literal\n> real quote",
+    );
+    expect(unescapeBlockquoteMarkers("- ```\n  \\> literal\n\n\\> real quote")).toBe(
+      "- ```\n  \\> literal\n\n> real quote",
+    );
+    expect(unescapeBlockquoteMarkers("- ```\n  \\> first\n\n  \\> second\n  ```\n\\> real quote")).toBe(
+      "- ```\n  \\> first\n\n  \\> second\n  ```\n> real quote",
+    );
+    expect(unescapeBlockquoteMarkers("- > ```\n  > \\> literal\n\n\\> real quote")).toBe(
+      "- > ```\n  > \\> literal\n\n> real quote",
+    );
+  });
+
+  it("tracks fenced code blocks with CRLF line endings", () => {
+    expect(unescapeBlockquoteMarkers("```ts\r\n\\> literal\r\n```\r\n\\> real quote\r\n")).toBe(
+      "```ts\r\n\\> literal\r\n```\r\n> real quote\r\n",
+    );
+    expect(unescapeBlockquoteMarkers("> ```\r\n> \\> literal\r\n> ```\r\n\\> real quote\r\n")).toBe(
+      "> ```\r\n> \\> literal\r\n> ```\r\n> real quote\r\n",
+    );
+  });
 });

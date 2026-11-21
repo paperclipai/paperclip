@@ -1,8 +1,14 @@
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { describe, expect, it } from "vitest";
 import {
   escapeUnsupportedAngleBrackets,
   unescapeAngleBracketEscapes,
 } from "./angle-bracket-markdown";
+
+function hasHtmlNode(node: { type: string; children?: Array<{ type: string; children?: unknown[] }> }): boolean {
+  if (node.type === "html") return true;
+  return (node.children ?? []).some((child) => hasHtmlNode(child as typeof node));
+}
 
 describe("escapeUnsupportedAngleBrackets", () => {
   it("leaves markdown without angle brackets untouched", () => {
@@ -104,6 +110,91 @@ describe("escapeUnsupportedAngleBrackets", () => {
     expect(escapeUnsupportedAngleBrackets("````\n<a>\n```\n<b>\n````\n<c>")).toBe(
       "````\n<a>\n```\n<b>\n````\n\\<c>",
     );
+  });
+
+  it("closes a blockquote-nested fence when the blockquote ends", () => {
+    expect(escapeUnsupportedAngleBrackets("> ```\n> <inside>\n\n<after>")).toBe(
+      "> ```\n> <inside>\n\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("> ```\n> <inside>\n<after>")).toBe(
+      "> ```\n> <inside>\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("> > ```\n> > <inside>\n> <after>")).toBe(
+      "> > ```\n> > <inside>\n> \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("> ```\n> <inside>\n```\n<still-code>\n```\n<after>")).toBe(
+      "> ```\n> <inside>\n```\n<still-code>\n```\n\\<after>",
+    );
+  });
+
+  it("closes a list-nested fence when the list item ends", () => {
+    expect(escapeUnsupportedAngleBrackets("- ```\n  <inside>\n<after>")).toBe(
+      "- ```\n  <inside>\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- ```\n  <inside>\n\n<after>")).toBe(
+      "- ```\n  <inside>\n\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- ```\n  <inside>\n\n  <still-inside>\n  ```\n<after>")).toBe(
+      "- ```\n  <inside>\n\n  <still-inside>\n  ```\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("  - ```\n    <inside>\n   <after>")).toBe(
+      "  - ```\n    <inside>\n   \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("1. ```\n   <inside>\n  <after>")).toBe(
+      "1. ```\n   <inside>\n  \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- - ```\n    <inside>\n  <after>")).toBe(
+      "- - ```\n    <inside>\n  \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- > ```\n  > <inside>\n  <after>")).toBe(
+      "- > ```\n  > <inside>\n  \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- > ```\n  > <inside>\n\n  <after>")).toBe(
+      "- > ```\n  > <inside>\n\n  \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- ```\n\t<inside>\n\t```\n<after>")).toBe(
+      "- ```\n\t<inside>\n\t```\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("> - ```\n>   <inside>\n>\n>   <still-inside>\n>   ```\n<after>")).toBe(
+      "> - ```\n>   <inside>\n>\n>   <still-inside>\n>   ```\n\\<after>",
+    );
+  });
+
+  it("does not treat 5+ spaces after a list marker or 4+ spaces after a blockquote as a fence", () => {
+    expect(escapeUnsupportedAngleBrackets("-     ```\n  <after>")).toBe(
+      "-     ```\n  \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets(">     ```\n> <after>")).toBe(
+      ">     ```\n> \\<after>",
+    );
+  });
+
+  it("tracks fenced code blocks with CRLF line endings", () => {
+    expect(escapeUnsupportedAngleBrackets("```ts\r\n<first>\r\n\r\n<second>\r\n```\r\n<after>\r\n")).toBe(
+      "```ts\r\n<first>\r\n\r\n<second>\r\n```\r\n\\<after>\r\n",
+    );
+    expect(escapeUnsupportedAngleBrackets("~~~ts\r\n<inside>\r\n~~~\r\n<after>\r\n")).toBe(
+      "~~~ts\r\n<inside>\r\n~~~\r\n\\<after>\r\n",
+    );
+    expect(escapeUnsupportedAngleBrackets("> ```\r\n> <inside>\r\n> ```\r\n<after>\r\n")).toBe(
+      "> ```\r\n> <inside>\r\n> ```\r\n\\<after>\r\n",
+    );
+  });
+
+  it("eliminates raw html nodes in CommonMark parsing after container-terminated and CRLF fences", () => {
+    const inputs = [
+      "> ```\n> code\n\n<name>",
+      "> ```\n> code\n<name>",
+      "> > ```\n> > code\n> <name>",
+      "- ```\n  code\n<name>",
+      "- ```\n  code\n\n<name>",
+      "- > ```\n  > code\n\n  <name>",
+      "```ts\r\n<inside>\r\n```\r\n<after>\r\n",
+    ];
+    for (const input of inputs) {
+      const escaped = escapeUnsupportedAngleBrackets(input);
+      expect(hasHtmlNode(fromMarkdown(escaped) as { type: string; children?: Array<{ type: string; children?: unknown[] }> })).toBe(false);
+    }
   });
 
   it("skips indented code blocks", () => {
@@ -230,6 +321,18 @@ describe("unescapeAngleBracketEscapes", () => {
     );
   });
 
+  it("unescapes after container-terminated and CRLF fenced code blocks", () => {
+    expect(unescapeAngleBracketEscapes("> ```\n> \\<inside>\n\n\\<after>")).toBe(
+      "> ```\n> \\<inside>\n\n<after>",
+    );
+    expect(unescapeAngleBracketEscapes("- ```\n  \\<inside>\n\\<after>")).toBe(
+      "- ```\n  \\<inside>\n<after>",
+    );
+    expect(unescapeAngleBracketEscapes("```ts\r\n\\<inside>\r\n```\r\n\\<after>\r\n")).toBe(
+      "```ts\r\n\\<inside>\r\n```\r\n<after>\r\n",
+    );
+  });
+
   it("is idempotent", () => {
     const inputs = [
       "Rename \\<name> here",
@@ -252,6 +355,9 @@ describe("angle bracket escape round trip", () => {
     "a </close> and <!-- note --> and <?php",
     "Use `<name>` but not <other>",
     "```\n<name>\n```\n<after>",
+    "```ts\r\n<name>\r\n```\r\n<after>\r\n",
+    "> ```\n> <name>\n\n<after>",
+    "- ```\n  <name>\n<after>",
     "intro\n\n    <name>\n\nafter <x>",
     "See <https://example.com> and mail <a@b.com>, then <name>",
     "[a](<my file.md>) then <name>",
