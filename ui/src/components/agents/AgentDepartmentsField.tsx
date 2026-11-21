@@ -10,6 +10,10 @@ import { Input } from "@/components/ui/input";
 // department list is not adapter config and must not take a configuration
 // revision or block Save of the agent's name and title.
 export function AgentDepartmentsField({ companyId, agentId }: { companyId: string; agentId: string }) {
+  return <AgentDepartmentsEditor key={`${companyId}:${agentId}`} companyId={companyId} agentId={agentId} />;
+}
+
+function AgentDepartmentsEditor({ companyId, agentId }: { companyId: string; agentId: string }) {
   const client = useQueryClient();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +25,7 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
   const mine = rows.filter((department) => department.agentIds.includes(agentId));
   const invalidate = () => client.invalidateQueries({ queryKey: queryKeys.departments.list(companyId) });
   const replace = useMutation({
-    mutationFn: (departmentIds: string[]) => departmentsApi.setForAgent(agentId, departmentIds),
+    mutationFn: (input: { agentId: string; departmentIds: string[] }) => departmentsApi.setForAgent(input.agentId, input.departmentIds),
     onSuccess: async () => {
       setError(null);
       await invalidate();
@@ -29,12 +33,16 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
     onError: (cause: Error) => setError(cause.message || "Couldn’t save departments"),
   });
   const create = useMutation({
-    mutationFn: (name: string) => departmentsApi.create(companyId, name),
-    onSuccess: async (department) => {
-      setDraft("");
-      const ids = new Set(mine.map((row) => row.id));
+    mutationFn: async (input: { companyId: string; agentId: string; name: string; memberIds: string[] }) => {
+      const department = await departmentsApi.create(input.companyId, input.name);
+      const ids = new Set(input.memberIds);
       ids.add(department.id);
-      await replace.mutateAsync([...ids]);
+      await departmentsApi.setForAgent(input.agentId, [...ids]);
+    },
+    onSuccess: async () => {
+      setDraft("");
+      setError(null);
+      await invalidate();
     },
     onError: (cause: Error) => setError(cause.message || "Couldn’t add department"),
   });
@@ -46,17 +54,18 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
       setError("Enter a department name of 1 to 80 characters");
       return;
     }
+    const memberIds = mine.map((row) => row.id);
     const existing = rows.find((row) => row.name.toLowerCase() === name.toLowerCase());
     if (existing) {
-      if (mine.some((row) => row.id === existing.id)) {
+      if (memberIds.includes(existing.id)) {
         setDraft("");
         return;
       }
       setDraft("");
-      replace.mutate([...mine.map((row) => row.id), existing.id]);
+      replace.mutate({ agentId, departmentIds: [...memberIds, existing.id] });
       return;
     }
-    create.mutate(name);
+    create.mutate({ companyId, agentId, name, memberIds });
   };
 
   const busy = replace.isPending || create.isPending || !departments.isSuccess;
@@ -72,7 +81,10 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
             className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs"
             disabled={busy}
             aria-label={`Remove ${department.name}`}
-            onClick={() => replace.mutate(mine.filter((row) => row.id !== department.id).map((row) => row.id))}
+            onClick={() => replace.mutate({
+              agentId,
+              departmentIds: mine.filter((row) => row.id !== department.id).map((row) => row.id),
+            })}
           >
             {department.name}
             <span aria-hidden>×</span>

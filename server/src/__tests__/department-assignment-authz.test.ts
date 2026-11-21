@@ -11,6 +11,8 @@ const departmentId = "33333333-3333-4333-8333-333333333333";
 const mocks = vi.hoisted(() => ({
   decide: vi.fn(),
   setForAgent: vi.fn(),
+  list: vi.fn(),
+  remove: vi.fn(),
   logActivity: vi.fn(),
 }));
 
@@ -19,7 +21,11 @@ vi.mock("../services/access.js", () => ({
 }));
 
 vi.mock("../services/departments.js", () => ({
-  departmentService: () => ({ setForAgent: mocks.setForAgent }),
+  departmentService: () => ({
+    setForAgent: mocks.setForAgent,
+    list: mocks.list,
+    remove: mocks.remove,
+  }),
 }));
 
 vi.mock("../services/activity-log.js", () => ({
@@ -91,6 +97,8 @@ describe("PUT /agents/:id/departments", () => {
   beforeEach(() => {
     mocks.decide.mockReset();
     mocks.setForAgent.mockReset();
+    mocks.list.mockReset();
+    mocks.remove.mockReset();
     mocks.logActivity.mockReset();
   });
 
@@ -114,5 +122,61 @@ describe("PUT /agents/:id/departments", () => {
     });
     expect(mocks.setForAgent).not.toHaveBeenCalled();
     expect(mocks.logActivity).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /departments/:id", () => {
+  beforeEach(() => {
+    mocks.decide.mockReset();
+    mocks.list.mockReset();
+    mocks.remove.mockReset();
+    mocks.logActivity.mockReset();
+  });
+
+  it("rejects the delete when a member agent cannot be configured", async () => {
+    mocks.list.mockResolvedValue([{
+      id: departmentId,
+      companyId,
+      name: "Ops",
+      agentIds: [agentId],
+    }]);
+    mocks.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_no_grant",
+      explanation: "Missing permission: agents:configure or agents:suggest-changes.",
+    });
+
+    const res = await request(app(operator)).delete(`/departments/${departmentId}`);
+
+    expect(res.status).toBe(403);
+    expect(mocks.decide).toHaveBeenCalledWith({
+      actor: operator,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId, agentId },
+    });
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(mocks.logActivity).not.toHaveBeenCalled();
+  });
+
+  it("deletes when every member agent can be configured", async () => {
+    mocks.list.mockResolvedValue([{
+      id: departmentId,
+      companyId,
+      name: "Ops",
+      agentIds: [agentId],
+    }]);
+    mocks.decide.mockResolvedValue({ allowed: true });
+    mocks.remove.mockResolvedValue({
+      id: departmentId,
+      companyId,
+      name: "Ops",
+      agentIds: [],
+    });
+
+    const res = await request(app(operator)).delete(`/departments/${departmentId}`);
+
+    expect(res.status).toBe(200);
+    expect(mocks.remove).toHaveBeenCalledWith(companyId, departmentId);
+    expect(mocks.logActivity).toHaveBeenCalled();
   });
 });

@@ -115,6 +115,19 @@ export function departmentRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, companyId);
+    const current = (await svc.list(companyId)).find((row) => row.id === id);
+    if (!current) {
+      res.status(404).json({ error: "Department not found" });
+      return;
+    }
+    for (const memberId of current.agentIds) {
+      const decision = await accessService(db).decide({
+        actor: req.actor,
+        action: "agent_config:update",
+        resource: { type: "agent", companyId, agentId: memberId },
+      });
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    }
     const removed = await svc.remove(companyId, id);
     const actor = getActorInfo(req);
     await logActivity(db, {
