@@ -5,6 +5,34 @@ import {
   formatTaskChatTimestamp,
 } from "./task-chat-adapter";
 
+describe("formatTaskChatTimestamp", () => {
+  it("returns undefined for falsy values", () => {
+    expect(formatTaskChatTimestamp(undefined)).toBeUndefined();
+    expect(formatTaskChatTimestamp(null)).toBeUndefined();
+    expect(formatTaskChatTimestamp("")).toBeUndefined();
+  });
+
+  it("includes both date and time — not time only", () => {
+    const result = formatTaskChatTimestamp("2026-01-15T10:30:00Z");
+    expect(result).toBeDefined();
+    // Must contain a year (date present)
+    expect(result).toMatch(/\d{4}/);
+    // Must contain AM/PM (time present)
+    expect(result).toMatch(/AM|PM/);
+  });
+
+  it("accepts a Date object", () => {
+    const result = formatTaskChatTimestamp(new Date("2026-06-01T14:00:00Z"));
+    expect(result).toBeDefined();
+    expect(result).toMatch(/\d{4}/);
+    expect(result).toMatch(/AM|PM/);
+  });
+
+  it("returns undefined for an invalid date string", () => {
+    expect(formatTaskChatTimestamp("not-a-date")).toBeUndefined();
+  });
+});
+
 describe("commentsToTaskChatItems", () => {
   it("preserves distinct human IDs, photos and viewer ownership, including after a profile refresh", () => {
     const comments = ["alex", "sam"].map(authorUserId => ({
