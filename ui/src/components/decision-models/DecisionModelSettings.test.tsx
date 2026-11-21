@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError } from "@/api/client";
 import { decisionModelsApi } from "@/api/decision-models";
 import { DecisionModelSettingsSection, DecisionModelSettingsView } from "./DecisionModelSettings";
-import { choices, configured, result } from "../../../storybook/support/decision-models/fixtures";
+import { choices, configured, gatewayChoice, models, result } from "../../../storybook/support/decision-models/fixtures";
 
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-storybook" }) }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -108,4 +108,32 @@ it("shows readable copy and Retry when decision settings fail to load", async ()
     expect(container.textContent).toContain("Enable decisions");
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   } finally { act(() => root.unmount()); client.clear(); settings.mockRestore(); container.remove(); }
+});
+
+it("offers listed models, accepts a typed model and requires one for a gateway connection", async () => {
+  const container = document.createElement("div"); document.body.appendChild(container);
+  const root = createRoot(container), onSave = vi.fn(), onDraftConnection = vi.fn();
+  const setInput = (input: HTMLInputElement, value: string) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  try {
+    await act(async () => root.render(<MemoryRouter><DecisionModelSettingsView settings={configured} choices={[...choices, gatewayChoice]} models={models}
+      onSave={onSave} onTest={vi.fn()} onAdd={vi.fn()} onDraftConnection={onDraftConnection} /></MemoryRouter>));
+    expect(onDraftConnection).toHaveBeenLastCalledWith(configured.connectionId);
+    expect([...container.querySelectorAll("datalist option")].map(option => option.getAttribute("value"))).toEqual(["gpt-6-luna", "gpt-6-sol"]);
+    const input = container.querySelector<HTMLInputElement>("#decision-model-id")!;
+    expect(input.value).toBe("gpt-6-luna");
+    await act(async () => setInput(input, "gpt-6-sol"));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Save decision model")!.click());
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ connectionId: configured.connectionId, model: "gpt-6-sol" }));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Company gateway"))!.click());
+    expect(onDraftConnection).toHaveBeenLastCalledWith(gatewayChoice.id);
+    expect(container.querySelector<HTMLInputElement>("#decision-model-id")!.value).toBe("");
+    expect(container.textContent).toContain("Select a model before enabling decisions.");
+    expect([...container.querySelectorAll("button")].find(button => button.textContent === "Save decision model")!.disabled).toBe(true);
+    await act(async () => setInput(container.querySelector<HTMLInputElement>("#decision-model-id")!, "combo/fast"));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Save decision model")!.click());
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ connectionId: gatewayChoice.id, grantId: gatewayChoice.grantId, model: "combo/fast" }));
+  } finally { act(() => root.unmount()); container.remove(); }
 });

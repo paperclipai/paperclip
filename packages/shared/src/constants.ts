@@ -1555,6 +1555,7 @@ export const PLUGIN_CAPABILITIES = [
   // web app's approval decision routes are board-only.
   "approvals.respond",
   "issue.documents.write",
+  "decisions.invoke",
   "projects.managed",
   "routines.managed",
   "skills.managed",

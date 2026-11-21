@@ -25,6 +25,8 @@ import type {
 import type {
   EventFilter,
   PluginContext,
+  PluginDecideInput,
+  PluginDecisionsClient,
   PluginEntityRecord,
   PluginEntityUpsert,
   PluginJobContext,
@@ -132,6 +134,8 @@ export interface TestHarness {
     principalGrants?: PrincipalPermissionGrant[];
   }): void;
   setConfig(config: Record<string, unknown>): void;
+  setDecisions(fake: Partial<PluginDecisionsClient>): void;
+  decisionCalls: PluginDecideInput[];
   /** Dispatch a host or plugin event to registered handlers. */
   emit(eventType: PluginEventType | `plugin.${string}`, payload: unknown, base?: Partial<PluginEvent>): Promise<void>;
   /** Execute a previously-registered scheduled job handler. */
@@ -512,6 +516,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const activity: TestHarness["activity"] = [];
   const metrics: TestHarness["metrics"] = [];
   const telemetry: TestHarness["telemetry"] = [];
+  const decisionCalls: PluginDecideInput[] = [];
+  let decisionsFake: Partial<PluginDecisionsClient> = {};
   const dbQueries: TestHarness["dbQueries"] = [];
   const dbExecutes: TestHarness["dbExecutes"] = [];
 
@@ -2352,6 +2358,24 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
       },
     },
+    decisions: {
+      async connections(input) {
+        requireCapability(manifest, capabilitySet, "decisions.invoke");
+        requireCompanyId(input?.companyId);
+        return decisionsFake.connections ? decisionsFake.connections(input) : { companyDefault: null, connections: [] };
+      },
+      async models(input) {
+        requireCapability(manifest, capabilitySet, "decisions.invoke");
+        requireCompanyId(input?.companyId);
+        return decisionsFake.models ? decisionsFake.models(input) : { models: [] };
+      },
+      async decide(input) {
+        requireCapability(manifest, capabilitySet, "decisions.invoke");
+        requireCompanyId(input?.companyId);
+        decisionCalls.push(structuredClone(input));
+        return decisionsFake.decide ? decisionsFake.decide(input) : { status: "unavailable", reason: "not_configured" };
+      },
+    },
     goals: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "goals.read");
@@ -2689,6 +2713,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     setConfig(config) {
       currentConfig = { ...config };
     },
+    setDecisions(fake) {
+      decisionsFake = { ...fake };
+    },
+    decisionCalls,
     async emit(eventType, payload, base) {
       const event: PluginEvent = {
         eventId: base?.eventId ?? randomUUID(),

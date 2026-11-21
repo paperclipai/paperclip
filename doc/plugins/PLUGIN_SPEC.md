@@ -968,6 +968,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `database.namespace.write`
 - `goals.create`
 - `goals.update`
+- `decisions.invoke`
 - `projects.managed`
 - `routines.managed`
 - `skills.managed`

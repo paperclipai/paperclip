@@ -12264,6 +12264,13 @@ registerCurrentRoute({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 registerCurrentRoute({
+  method: "get", path: "/api/companies/{companyId}/decision-model/models", tags: ["decision-models"],
+  description: companyModelServiceSettingsPage("Decision model"),
+  summary: "List models offered by a compatible decision connection as a connection manager",
+  query: z.object({ connectionId: z.string().uuid() }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/decision-model/availability", tags: ["decision-models"],
   description: companyModelServiceSettingsPage("Decision model"),
   summary: "Check local decision configuration and caller authorization without contacting a provider",

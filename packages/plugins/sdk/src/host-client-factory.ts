@@ -296,6 +296,12 @@ export interface HostServices {
   };
 
   /** Provides `goals.list`, `goals.get`, `goals.create`, `goals.update`. */
+  decisions: {
+    connections(params: WorkerToHostMethods["decisions.connections"][0]): Promise<WorkerToHostMethods["decisions.connections"][1]>;
+    models(params: WorkerToHostMethods["decisions.models"][0]): Promise<WorkerToHostMethods["decisions.models"][1]>;
+    decide(params: WorkerToHostMethods["decisions.decide"][0]): Promise<WorkerToHostMethods["decisions.decide"][1]>;
+  };
+
   goals: {
     list(params: WorkerToHostMethods["goals.list"][0]): Promise<WorkerToHostMethods["goals.list"][1]>;
     get(params: WorkerToHostMethods["goals.get"][0]): Promise<WorkerToHostMethods["goals.get"][1]>;
@@ -517,6 +523,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Goals
   "goals.list": "goals.read",
   "goals.get": "goals.read",
+  "decisions.connections": "decisions.invoke",
+  "decisions.models": "decisions.invoke",
+  "decisions.decide": "decisions.invoke",
   "goals.create": "goals.create",
   "goals.update": "goals.update",
 
@@ -1073,6 +1082,15 @@ export function createHostClientHandlers(
     }),
 
     // Goals
+    "decisions.connections": gated("decisions.connections", async (params) => {
+      return services.decisions.connections(params);
+    }),
+    "decisions.models": gated("decisions.models", async (params) => {
+      return services.decisions.models(params);
+    }),
+    "decisions.decide": gated("decisions.decide", async (params) => {
+      return services.decisions.decide(params);
+    }),
     "goals.list": gated("goals.list", async (params) => {
       return services.goals.list(params);
     }),
