@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import type { StorageProvider } from "../../storage/types.js";
 import { createHeartbeatRunOutput, isNewRunLog } from "./run-output.js";
-import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-identity-redaction.js";
+import { createAgentIdentityRedactor, secretEnvironmentValues, secretNamedEnvironmentValues } from "../agent-identity-redaction.js";
 import { formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import { generateKeyPairSync } from "node:crypto";
 import { reportStorageOutageWaitsTo, runInOwnStorageScope } from "../../storage/storage-unavailable.js";
@@ -520,5 +520,46 @@ describe("secret-bound environment values in local run output", () => {
     expect(persistedEvents).not.toContain(secret);
     expect(persistedEvents).toContain("***REDACTED***");
     expect(persistedEvents).toContain(plain);
+  });
+});
+
+describe("secret-named environment values in local run output", () => {
+  it("masks a plain configured value and an inherited value whose key names a credential", async () => {
+    const { publishLiveEvent } = await import("../live-events.js");
+    vi.mocked(publishLiveEvent).mockClear();
+    const configured = "graph-synthetic-secret-0123456789";
+    const inherited = "inherited-synthetic-token-9876543210";
+    const clientId = "11111111-2222-3333-4444-555555555555";
+    const env = { MS_GRAPH_CLIENT_SECRET: configured, MS_GRAPH_CLIENT_ID: clientId };
+    const inheritedEnv = { PLATFORM_AUTH_TOKEN: inherited };
+    const secretKeys = new Set<string>();
+    const row = { ...newRunRow };
+    const chunks: string[] = [];
+    const output = createHeartbeatRunOutput(createRunRowDb(row), {
+      run: row as Run,
+      runId: row.id!,
+      issueId: null,
+      runLogStore: {
+        begin: async () => ({ store: "local_file", logRef: "company/agent/run.ndjson" }),
+        append: async (_handle, event) => {
+          chunks.push(event.chunk);
+          return Buffer.byteLength(event.chunk);
+        },
+        enqueue: undefined,
+        flush: async () => undefined,
+      },
+      identityRedactor: createAgentIdentityRedactor(undefined, [...secretEnvironmentValues(env, secretKeys),
+        ...secretNamedEnvironmentValues(env, inheritedEnv)]),
+      secretKeys,
+      appendRunEvent: (async () => undefined) as never,
+      getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+    });
+    const handlers = await output.begin(row as Run);
+    await handlers.onLog("stdout", `${configured}\n`);
+    await handlers.onLog("stdout", `{\\"value\\": \\"${inherited}\\"} ${clientId}\n`);
+    const stored = chunks.join("");
+    expect(stored).toBe(`***REDACTED***\n{\\"value\\": \\"***REDACTED***\\"} ${clientId}\n`);
+    expect(output.stdoutExcerpt).not.toContain(configured);
+    expect(JSON.stringify(vi.mocked(publishLiveEvent).mock.calls)).not.toContain(configured);
   });
 });

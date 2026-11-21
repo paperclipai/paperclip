@@ -5,6 +5,7 @@ const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access
 const SECRET_FIELD_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN})(?:_plain|_ref)?$`, "i");
+export const SECRET_ENV_KEY_RE = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN}|[A-Za-z0-9_-]*[-_]pass)$`, "i");
 // Authorization reasons are policy decision codes, not credentials. They must
 // remain visible in audit receipts even though the field name contains
 // "authorization". JWT-shaped values are still caught by the value guard below.
