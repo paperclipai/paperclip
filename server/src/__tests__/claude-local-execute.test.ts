@@ -11,6 +11,7 @@ import {
   execute,
   resetClaudeCliCapabilitiesCacheForTests,
   sessionCodec,
+  STABLE_OPENING_PROMPT,
 } from "@paperclipai/adapter-claude-local/server";
 
 async function writeFailingClaudeCommand(
@@ -77,6 +78,9 @@ const payload = {
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
+  runPromptFile: process.env.PAPERCLIP_RUN_PROMPT_FILE || null,
+  runPromptContents: process.env.PAPERCLIP_RUN_PROMPT_FILE ? fs.readFileSync(process.env.PAPERCLIP_RUN_PROMPT_FILE, "utf8") : null,
+  runPromptMode: process.env.PAPERCLIP_RUN_PROMPT_FILE ? fs.statSync(process.env.PAPERCLIP_RUN_PROMPT_FILE).mode & 0o777 : null,
 };
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
@@ -183,6 +187,9 @@ type CapturePayload = {
   paperclipApiBridgeMode?: string | null;
   appendedSystemPromptFilePath?: string | null;
   appendedSystemPromptFileContents?: string | null;
+  runPromptFile?: string | null;
+  runPromptContents?: string | null;
+  runPromptMode?: number | null;
 };
 
 afterEach(() => {
@@ -413,6 +420,54 @@ describe("claude execute", () => {
       expect(capture.prompt.split("Same event body.")).toHaveLength(3);
       expect(capture.prompt.split("Repeat phrase Repeat phrase")).toHaveLength(4);
     } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("sends the same opening prompt to every fresh session and the run's prompt through a file", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-stable-opening-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "paperclip-home"));
+    const run = async (runId: string, sessionParams: Record<string, unknown> | null, stableOpeningPrompt?: boolean) => {
+      const result = await execute({
+        runId,
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams, sessionDisplayId: null, taskKey: "issue-1" },
+        config: {
+          engine: "cli", command: commandPath, cwd: workspace, stableOpeningPrompt,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Work on {{runId}}.",
+        },
+        context: { issueId: "issue-1" },
+        onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      return { result, capture: JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload };
+    };
+    try {
+      const first = await run("run-a", null, true);
+      const second = await run("run-b", null, true);
+      expect(first.capture.argv).not.toContain("--resume");
+      expect(first.capture.prompt).toBe(STABLE_OPENING_PROMPT);
+      expect(second.capture.prompt).toBe(first.capture.prompt);
+      expect(first.capture.runPromptContents).toContain("Work on run-a.");
+      expect(second.capture.runPromptContents).toContain("Work on run-b.");
+      expect(second.capture.runPromptFile).not.toBe(first.capture.runPromptFile);
+      expect(first.capture.runPromptMode).toBe(0o600);
+      await expect(fs.access(first.capture.runPromptFile!)).rejects.toThrow();
+
+      const sessionParams = sessionCodec.deserialize(sessionCodec.serialize(second.result.sessionParams ?? null));
+      const resumed = await run("run-c", sessionParams, true);
+      expect(resumed.capture.argv).toContain("--resume");
+      expect(resumed.capture.prompt).toContain("Work on run-c.");
+      expect(resumed.capture.runPromptFile).toBeNull();
+
+      const off = await run("run-d", null);
+      expect(off.capture.prompt).toContain("Work on run-d.");
+      expect(off.capture.runPromptFile).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
       restore();
       await fs.rm(root, { recursive: true, force: true });
     }
