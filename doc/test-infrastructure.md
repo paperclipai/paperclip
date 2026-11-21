@@ -96,6 +96,25 @@ falls back to the fresh path automatically, so the cache can make a suite
 slower but never fail it or skip it: a migration that cannot apply still fails
 the suite on the fresh path.
 
+## Seeded database statistics and teardown
+
+After seeding a large population, run `ANALYZE` on the populated tables before
+measuring or exercising it. The empty template has no statistics for those rows,
+and waiting for automatic analysis can cause slow query plans and test timeouts.
+The census and review-attention equivalence suites retain their full populations
+and original deadlines while analyzing their fixture tables before the checks.
+
+Tests that exercise route-triggered heartbeats must await
+`drainActiveRunExecutions()` before deleting fixture rows. A completed HTTP
+response can still have wake admission in flight; draining only run executions
+would leave that writer racing with deletion.
+
+Setup destination admission uses `NO KEY UPDATE` on the endpoint. It serializes
+competing admissions while permitting `KEY SHARE` from resource foreign-key
+checks. The concurrency regression uses the real `ensureResource` write and
+connector invalidation triggers, with barriers to force the endpoint/agent lock
+order. Restoring `FOR UPDATE` produces PostgreSQL deadlock code `40P01`.
+
 ## Typecheck memory
 
 TypeScript 7 is a native binary, so `NODE_OPTIONS=--max-old-space-size` does not
