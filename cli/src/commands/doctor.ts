@@ -15,6 +15,7 @@ import {
   secretsCheck,
   serviceHealthChecks,
   storageCheck,
+  toolActionSigningSecretCheck,
   type CheckResult,
 } from "../checks/index.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
@@ -74,6 +75,14 @@ export async function doctor(opts: {
   results.push(
     await runRepairableCheck({
       run: () => agentJwtSecretCheck(opts.config),
+      configPath,
+      opts,
+    }),
+  );
+
+  results.push(
+    await runRepairableCheck({
+      run: () => toolActionSigningSecretCheck(opts.config),
       configPath,
       opts,
     }),
