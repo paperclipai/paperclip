@@ -20,7 +20,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { executionStartedEventPredicate, isPreDispatchResourceWait } from "./pre-dispatch-execution-evidence.js";
+import { executionStartedEventPredicate, isNeverStartedGovernanceStopVerified, isPreDispatchResourceWait } from "./pre-dispatch-execution-evidence.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
@@ -108,7 +108,8 @@ export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run
   if (await isInterruptedNativePreparation(db, run)) return false;
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
-      && !(await isPreDispatchExecutionWaitVerified(db, run)));
+      && !(await isPreDispatchExecutionWaitVerified(db, run))
+      && !(await isNeverStartedGovernanceStopVerified(db, run)));
 }
 
 async function findRecordedLegacyDecision(db: Db, run: Run, taskId: string, resultJson: Run["resultJson"]) {
