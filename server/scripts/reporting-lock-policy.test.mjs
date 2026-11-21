@@ -22,9 +22,16 @@ it.skipIf(pendingDependabotLock)('admits the committed controller lock through t
       await copyFile(path.join(repository, relative, file), path.join(root, relative, file));
     }
     await writeFile(path.join(root, 'pnpm-lock.yaml'), execFileSync('git', ['show', 'HEAD:pnpm-lock.yaml'], { cwd: repository }));
+    const manifests = execFileSync('git', ['ls-files', '--', 'package.json', '**/package.json', 'pnpm-workspace.yaml', '.npmrc', 'patches/*'], { cwd: repository, encoding: 'utf8' }).trim().split('\n');
+    for (const file of manifests) {
+      await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await copyFile(path.join(repository, file), path.join(root, file));
+    }
     await prepareReportLock(root);
     const policy = JSON.parse(await readFile(path.join(root, relative, 'report-lock.json'), 'utf8'));
     expect(createHash('sha256').update(await readFile(path.join(root, 'pnpm-lock.yaml'))).digest('hex')).toBe(policy.outputSha256);
+    expect(execFileSync('pnpm', ['--version'], { cwd: root, encoding: 'utf8' }).trim()).toBe('9.15.4');
+    execFileSync('pnpm', ['install', '--lockfile-only', '--frozen-lockfile', '--ignore-scripts', '--offline'], { cwd: root, stdio: 'pipe', timeout: 10000 });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
