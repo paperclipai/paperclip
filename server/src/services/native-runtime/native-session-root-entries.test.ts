@@ -18,6 +18,7 @@ const WRITERS: Array<{ file: string; roots: string[]; dynamic?: string[] }> = [
   { file: "./cursor-cloud-runtime.ts", roots: ["input.root"] },
   { file: "./remote-provider-pack-authority.ts", roots: ["input.stateDirectory"] },
   { file: "./native-controller-migration.ts", roots: ["paths.root"] },
+  { file: "./native-harness-backup-expiration.ts", roots: ["root"] },
   { file: "../../../../packages/paperclip-runner/src/live/runnerd-codex-transport.ts", roots: ["this.#root", "root"],
     dynamic: ["file"] },
   { file: "../../../../packages/paperclip-runner/src/live/runner-launch-preparation-store.ts", roots: ["directory"] },
@@ -70,7 +71,8 @@ describe("native session root entry contract", () => {
     // Guard the scan itself: these writers exist today.
     for (const name of ["control-plane", "runner", "runtime-context.json", "authority-epochs", "launch-preparation.json",
       "provider-pack-authority.json", "provider-artifacts", "cleanup-activation.json", "plugin-runner-state.json", "codex-home", "opencode",
-      "acpx", "cursor-cloud", "diagnostics", "failover-backups", "continuity-breaks"]) {
+      "acpx", "cursor-cloud", "diagnostics", "failover-backups", "continuity-breaks", "provider-home-retiring",
+      "provider-home-expired"]) {
       expect(written).toContain(name);
     }
     const unclassified = [...written].filter(name => !isKnownNativeSessionRootEntry(name) &&

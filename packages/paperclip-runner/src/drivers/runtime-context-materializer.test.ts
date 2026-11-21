@@ -147,6 +147,16 @@ describe("runtime context materialization", () => {
     expect(config).not.toContain("unassigned");
   });
 
+  it.each(["launch", "recovery"] as const)("keeps Codex from downloading remote plugins into an isolated home (%s)", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-plugin-free-home-"));
+    roots.push(root);
+    const codexHome = join(root, "isolated");
+    if (mode === "launch") await prepareIsolatedCodexHome({ context: null, codexHome });
+    else await prepareIsolatedCodexRecoveryHome({ codexHome });
+    const features = parse(await readFile(join(codexHome, "config.toml"), "utf8")).features;
+    expect(features).toMatchObject({ plugins: false, remote_plugin: false, apps: false, shell_snapshot: false });
+  });
+
   it("preserves a managed provider while excluding ambient auth, hooks, and tool configuration", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-routing-home-"));
     roots.push(root);

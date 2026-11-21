@@ -85,12 +85,21 @@ When a controller is registered, the comparison uses its current live cursor.
 The local marker written for external checkpoint storage does not replace that
 authority.
 
+A local session keeps its provider home directly in the session root
+(`<instance>/runtime/paperclip-runner/durable-sessions/<scope>/codex-home`). It holds
+the same kind of state plus everything Codex downloads on startup and the session's
+copy of its assigned skills, typically more than 100 MB per session. Nothing reads it
+once the session's resume pointer is gone, so it expires under the same rules as a
+failover copy, in the same transaction. A session with both expires both together.
+
 An hourly background sweep expires the copy once the session can only resume by
 reopening closed work. It checks at most 200 sessions and expires at most 50 per
 batch, starting two minutes after readiness. A copy expires when all of these hold:
 
 - every issue the session ran on is `done` or `cancelled`, and closed before the window;
-- the copy itself was written before the window;
+- the copy itself was written before the window. Codex writes inside its home without
+  changing the home's own modification time, so a local provider home also needs every
+  run of the session to have finished before the window;
 - no run of the session is queued, running, or unfinished;
 - every native run finalization of the session is settled, with no recovery in progress;
 - no active, released, retained, or pending-cleanup environment lease references the copy;
@@ -107,8 +116,15 @@ native session instead of resuming the expired one. The copy is atomically renam
 If one appeared, or the check fails, the rename is undone. Only a confirmed copy is
 renamed to `.expired-<UUID>` and deleted asynchronously. A later sweep restores an
 unconfirmed `.retiring-*` copy when `current` is missing, drops it when a newer
-`current` exists, and finishes an interrupted deletion.
-The rest of the session directory, including its control-plane state, is kept.
+`current` exists, and finishes an interrupted deletion. A local provider home is
+renamed the same way, to `provider-home-retiring` and `provider-home-expired` in the
+session root. Both names are classified held entries
+(`native-session-root-entries.ts`), so recovery reports them as held state that the
+sweep restores or removes, not as unknown writer drift. When
+the session has both, a failure while moving either copy moves both back. The sweep
+counts the bytes of a copy only after it confirms that the copy can expire, so a
+retained copy is never walked. The rest of the session directory, including its
+control-plane state, is kept.
 
 | Environment variable | Default | Effect |
 | --- | --- | --- |
