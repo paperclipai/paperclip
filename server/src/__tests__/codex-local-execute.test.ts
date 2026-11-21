@@ -1762,6 +1762,54 @@ process.exit(1);
     }
   });
 
+  it("reuses one skill runtime home across managed AI connection runs with fresh provider homes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-managed-codex-"));
+    const workspace = path.join(root, "workspace");
+    const command = path.join(root, "codex");
+    const capture = path.join(root, "capture.json");
+    const skillSource = path.join(root, "skill-v1");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(skillSource, { recursive: true });
+    await fs.writeFile(path.join(skillSource, "SKILL.md"), "# AgentMail\nAssigned inbox one.");
+    await writeFakeCodexCommand(command);
+    const keys = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "CODEX_HOME"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip");
+    process.env.PAPERCLIP_INSTANCE_ID = "managed";
+    delete process.env.CODEX_HOME;
+    const invoke = async (sessionIdentity: string) => {
+      const providerHome = await fs.mkdtemp(path.join(root, "paperclip-ai-company-1-grant-1-"));
+      await fs.writeFile(path.join(providerHome, "config.toml"), 'cli_auth_credentials_store = "file"\n');
+      await fs.writeFile(path.join(providerHome, "auth.json"), fakeCodexAuthJson);
+      const config = {
+        engine: "cli", command, cwd: workspace,
+        env: { CODEX_HOME: providerHome, PAPERCLIP_TEST_CAPTURE_PATH: capture },
+        managedAiConnection: { method: "subscription", identity: `${sessionIdentity}:generation-1`, sessionIdentity },
+        paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/agentmail"] },
+        paperclipRuntimeSkills: [{ key: "paperclipai/paperclip/agentmail", runtimeName: "agentmail", source: skillSource }],
+      };
+      const result = await execute({ runId: `run-${sessionIdentity}`,
+        agent: { id: "agent-1", companyId: "company-1", name: "Email agent", adapterType: "codex_local", adapterConfig: config },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config, context: {}, authToken: "test-token", onLog: async () => {},
+      });
+      expect(result.errorMessage).toBeNull();
+      expect(result.exitCode).toBe(0);
+      return JSON.parse(await fs.readFile(capture, "utf8")) as CapturePayload;
+    };
+    try {
+      const first = await invoke("grant-1:shared:secret-1:epoch-1");
+      expect(first.codexHome).toContain("skill-runtimes/agent-1/");
+      const second = await invoke("grant-1:shared:secret-1:epoch-1");
+      expect(second.codexHome).toBe(first.codexHome);
+      const otherSession = await invoke("grant-2:shared:secret-2:epoch-1");
+      expect(otherSession.codexHome).not.toBe(first.codexHome);
+    } finally {
+      for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("respects an explicit CODEX_HOME config override even in worktree mode", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-explicit-"));
     const workspace = path.join(root, "workspace");
