@@ -408,7 +408,8 @@ part of U3 is checked only in waves run with this harness.
   A task that never rested within its deadline fails R1 as `no_rest_within_budget`,
   whatever its last status. R1 also allows the queue wait of each run started by
   new input: the first run, and the first run woken by a harness follow-up
-  comment after the previous run succeeded. A follow-up run counts only when
+  comment after the comment was posted and the previous run succeeded. A
+  follow-up run counts only when
   `wake-evidence/<task>.json` shows a comment wake reason and no continued run,
   and every run on the task has a `createdAt`. Each wait (minus outage time
   inside it, and only inside the task's own lifetime) is credited only when

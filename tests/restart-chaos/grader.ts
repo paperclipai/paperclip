@@ -66,9 +66,14 @@ export function expectedFinalStatus(record: TaskRecord): string {
 type TaskRun = NonNullable<TaskSample["runs"]>[number];
 export type CreditedRun = { run: TaskRun; kind: "first run" | "follow-up run" };
 
-function boardCommentIds(record: TaskRecord): Set<string> {
-  return new Set([record.followUp?.commentId, record.stagingMix?.followUp?.commentId, ...(record.stagingMix?.afterEndFollowUps ?? []).map(entry => entry.commentId)]
-    .filter((id): id is string => typeof id === "string" && id.length > 0));
+function boardComments(record: TaskRecord): Map<string, number | null> {
+  const posted = (at: number | undefined) => typeof at === "number" && Number.isFinite(at) ? at : null;
+  const entries: Array<[string | null | undefined, number | null]> = [
+    [record.followUp?.commentId, posted(record.followUp?.postedAt ?? record.followUp?.sentAt ?? record.followUp?.at)],
+    [record.stagingMix?.followUp?.commentId, posted(record.stagingMix?.followUp?.at)],
+    ...(record.stagingMix?.afterEndFollowUps ?? []).map((entry): [string, number | null] => [entry.commentId, posted(entry.at)]),
+  ];
+  return new Map(entries.filter((entry): entry is [string, number | null] => typeof entry[0] === "string" && entry[0].length > 0));
 }
 
 const COMMENT_WAKE_REASONS = new Set(["issue_commented", "issue_comment_mentioned", "issue_reopened_via_comment"]);
@@ -78,16 +83,17 @@ function runSelection(record: TaskRecord, requireWakeEvidence: boolean): { credi
   for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
   const runs = [...latest.values()].filter(run => Number.isFinite(ms(run.createdAt))).sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
   const credited: CreditedRun[] = runs[0] && !runs[0].retryOfRunId ? [{ run: runs[0], kind: "first run" }] : [];
-  const comments = boardCommentIds(record);
+  const comments = boardComments(record);
   const carried = [...latest.values()].some(run => (run.wakeCommentIds ?? []).some(id => comments.has(id)));
   const undated = [...latest.values()].filter(run => !Number.isFinite(ms(run.createdAt))).map(run => run.id);
   if (carried && undated.length) return { credited, refusals: [`no createdAt for ${undated.join(",")}, so follow-up runs cannot be ordered`] };
   const refusals: string[] = [];
-  for (const commentId of comments) {
+  for (const [commentId, postedAt] of comments) {
     const index = runs.findIndex(run => (run.wakeCommentIds ?? []).includes(commentId));
     const run = runs[index];
     const previous = runs[index - 1];
-    if (!run || !previous || run.retryOfRunId || previous.status !== "succeeded" || !(ms(previous.finishedAt) <= ms(run.createdAt))) continue;
+    if (run && postedAt === null) { refusals.push(`no posted time for follow-up comment ${commentId}`); continue; }
+    if (!run || !previous || postedAt === null || ms(run.createdAt) < postedAt || run.retryOfRunId || previous.status !== "succeeded" || !(ms(previous.finishedAt) <= ms(run.createdAt))) continue;
     if (credited.some(entry => entry.run.id === run.id)) continue;
     const wake = record.runWakes?.[run.id];
     if (requireWakeEvidence && !wake) { refusals.push(`no wake evidence for follow-up run ${run.id}`); continue; }

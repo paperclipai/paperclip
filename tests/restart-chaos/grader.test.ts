@@ -434,6 +434,16 @@ describe("R1 follow-up queue wait credit", () => {
     })).toEqual({ r2: { wakeReason: "issue_commented", continuesRunIds: [] }, r3: { wakeReason: "issue_continuation_needed", continuesRunIds: ["r2"] } });
   });
 
+  it("does not credit a run created before its follow-up comment was posted", () => {
+    const { queuedAt } = shape();
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    const early = (at: number | undefined) => followUpTask(2_310_000, 0, {}, {},
+      { stagingMix: { followUp: { at: at as number, commentId: "c1", duringRun: true, inOverlap: false, error: null } } });
+    expect(gradeR1(early(T0 + queuedAt + 200_000), BUDGET, [], fairness)).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+    expect(gradeR1(early(undefined), BUDGET, [], fairness))
+      .toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no posted time for follow-up comment c1)" });
+  });
+
   it("refuses follow-up credit without wake evidence", () => {
     const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, { runWakes: undefined }), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
     expect(graded).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no wake evidence for follow-up run r2)" });
