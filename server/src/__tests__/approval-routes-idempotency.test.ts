@@ -115,6 +115,52 @@ async function createAgentApp(options: { runId?: string; contextSnapshot?: Recor
 }
 
 describe("approval routes idempotent retries", () => {
+  it.each([false, true])("round-trips masked hire revisions and rejects moved values (moved=%s)", async moved => {
+    const config = { env: { TZ: { type: "plain", value: "Asia/Seoul" } } };
+    const approval = { id: "approval-revision", companyId: "company-1", type: "hire_agent",
+      status: "revision_requested", requestedByAgentId: "agent-1", payload: {
+        name: "Copy", adapterConfig: config, requestedConfigurationSnapshot: { adapterConfig: config },
+      },
+    };
+    mockApprovalService.getById.mockResolvedValue(approval);
+    mockSecretService.normalizeHireApprovalPayloadForPersistence.mockImplementation(async (_company, payload) => {
+      if (JSON.stringify(payload).includes("***REDACTED***")) throw new Error("Unrestored placeholder");
+      return payload;
+    });
+    mockApprovalService.resubmit.mockImplementation(async (_id, payload) => ({ ...approval, payload }));
+    const app = await createApp({ type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_key" });
+    const loaded = await request(app).get("/api/approvals/approval-revision");
+    expect(loaded.status).toBe(200);
+    const payload = loaded.body.payload;
+    payload.name = "Revised copy";
+    if (moved) payload.adapterConfig.env.UNRELATED = payload.adapterConfig.env.TZ;
+    const response = await request(app).post("/api/approvals/approval-revision/resubmit").send({ payload });
+    expect(response.status, JSON.stringify(response.body)).toBe(moved ? 422 : 200);
+    if (moved) {
+      expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+    } else {
+      expect(mockApprovalService.resubmit).toHaveBeenCalledWith("approval-revision", expect.objectContaining({
+        name: "Revised copy", adapterConfig: config, requestedConfigurationSnapshot: { adapterConfig: config },
+      }));
+      expect(JSON.stringify(response.body)).not.toContain("Asia/Seoul");
+    }
+  }, 60000);
+
+  it("hides duplicated adapter values from same-company approval readers", async () => {
+    const config = { env: { TZ: { type: "plain", value: "Asia/Seoul" } } };
+    const approval = { id: "approval-copy", companyId: "company-1", type: "hire_agent", payload: {
+      adapterConfig: config, requestedConfigurationSnapshot: { adapterConfig: config },
+    } };
+    mockApprovalService.getById.mockResolvedValue(approval);
+    const app = await createApp({ type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_key" });
+    const response = await request(app).get("/api/approvals/approval-copy");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.payload.adapterConfig.env.TZ.value).toBe("***REDACTED***");
+    expect(response.body.payload.requestedConfigurationSnapshot.adapterConfig.env.TZ.value).toBe("***REDACTED***");
+    expect(JSON.stringify(response.body)).not.toContain("Asia/Seoul");
+    expect(approval.payload.adapterConfig.env.TZ.value).toBe("Asia/Seoul");
+  }, 60000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockApprovalService.list.mockReset();

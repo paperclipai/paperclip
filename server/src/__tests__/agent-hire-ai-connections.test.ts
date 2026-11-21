@@ -158,7 +158,9 @@ describe("agent-created hires use managed AI connections", () => {
     await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Explicit auth teammate", role: "engineer", adapterType: f.adapterType, adapterConfig: { env: { [key]: "fixture-explicit-key" } } }));
     expect(agent.runtimeConfig.aiConnection).toEqual(key === "OPENAI_API_KEY" ? undefined : p.binding);
-    expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value: "fixture-explicit-key" });
+    expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value: "***REDACTED***" });
+    const [saved] = await db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, agent.id));
+    expect((saved!.adapterConfig as { env: Record<string, unknown> }).env[key]).toEqual({ type: "plain", value: "fixture-explicit-key" });
   });
 
   it.each([
@@ -185,7 +187,9 @@ describe("agent-created hires use managed AI connections", () => {
     }
     const agent = hired(response);
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
-    expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value });
+    expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value: "***REDACTED***" });
+    const [saved] = await db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, agent.id));
+    expect((saved!.adapterConfig as { env: Record<string, unknown> }).env[key]).toEqual({ type: "plain", value });
     expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, agent.id))).toEqual([]);
   });
 

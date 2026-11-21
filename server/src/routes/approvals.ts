@@ -1,3 +1,4 @@
+import { restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
@@ -24,18 +25,11 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactApprovalPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { approvalReadSqlCondition, canActorReadApproval } from "../services/authorization.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
-
-function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
-  return {
-    ...approval,
-    payload: redactEventPayload(approval.payload) ?? {},
-  };
-}
 
 function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
@@ -674,14 +668,19 @@ export function approvalRoutes(
       return;
     }
 
-    const normalizedPayload = req.body.payload
+    const requestedPayload = req.body.payload && existing.type === "hire_agent"
+      ? restoreAgentConfigurationRedactions(
+          req.body.payload, existing.payload, redactApprovalPayload(existing).payload,
+        ) as Record<string, unknown>
+      : req.body.payload;
+    const normalizedPayload = requestedPayload
       ? existing.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             existing.companyId,
-            req.body.payload,
+            requestedPayload,
             { strictMode: strictSecretsMode },
           )
-        : req.body.payload
+        : requestedPayload
       : undefined;
     const approval = await svc.resubmit(id, normalizedPayload);
     const actor = getActorInfo(req);

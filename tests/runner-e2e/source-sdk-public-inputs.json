@@ -471,7 +471,7 @@
     "packages/shared/src/validators/adapter-skills.ts": "ae43f7b180f632d5f54dfa821b8dc5ef6c6aa53d",
     "packages/shared/src/validators/agent-commentary.ts": "8242c5b28a77131aefdc00c873ad84c6c6736e4b",
     "packages/shared/src/validators/agent.test.ts": "d38767b0c1fc1439871855ed55dca3c8c7b645c6",
-    "packages/shared/src/validators/agent.ts": "13ba04317b11c4281b7a2133a34630b4ad446dfd",
+    "packages/shared/src/validators/agent.ts": "d87e2716829a8693fc571a304bb78fc0648850dc",
     "packages/shared/src/validators/app-definition.ts": "87a60e50f386c8f836d1c5a1576b75a50bc719a2",
     "packages/shared/src/validators/approval.test.ts": "051d29b27400fdd1e311466587b276264cf072e4",
     "packages/shared/src/validators/approval.ts": "b8fd4da39568e3b70b767266196ea5303efeef25",

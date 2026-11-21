@@ -188,6 +188,7 @@ import {
 import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  redactApprovalPayload,
   redactEventPayload,
 } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -3010,6 +3011,30 @@ export function agentRoutes(
     };
   }
 
+  async function restoreDuplicateConfiguration(
+    req: Request,
+    companyId: string,
+    sourceAgentId: string | undefined,
+    input: { adapterType: string; adapterConfig?: unknown },
+  ) {
+    if (!sourceAgentId) return;
+    assertBoard(req);
+    const source = await svc.getById(sourceAgentId);
+    if (!source || source.companyId !== companyId) throw notFound("Source agent not found");
+    await assertCanReadAgent(req, source);
+    // Copying hidden configuration requires authority over the source, not
+    // merely permission to create a new agent or read its redacted projection.
+    await assertCanUpdateAgent(req, source);
+    if (input.adapterType !== source.adapterType) {
+      throw unprocessable("Duplicate agent must use the source adapter type");
+    }
+    if (input.adapterConfig !== undefined) {
+      input.adapterConfig = restoreAgentConfigurationRedactions(
+        input.adapterConfig, source.adapterConfig, redactAgentAdapterConfig(source.adapterConfig),
+      );
+    }
+  }
+
   function restoreRedactedAgentEnv(
     requestedConfig: Record<string, unknown>,
     existingConfig: Record<string, unknown>,
@@ -4523,8 +4548,11 @@ export function agentRoutes(
       inheritRuntimeFrom,
       setupAgentId,
       runner: hireRunner,
+      duplicateFromAgentId,
       ...hireInput
     } = req.body;
+
+    await restoreDuplicateConfiguration(req, companyId, duplicateFromAgentId, hireInput);
 
     if (setupAgentId) {
       assertBoard(req);
@@ -4555,7 +4583,7 @@ export function agentRoutes(
             }, decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
           });
         }
-        res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval, idempotent: true });
+        res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval: approval ? redactApprovalPayload(approval) : null, idempotent: true });
         return;
       }
       if (hireInput.adapterConfig && agentHarnessType(hireInput.adapterType ?? "process", hireInput.adapterConfig)
@@ -4697,7 +4725,7 @@ export function agentRoutes(
             const priorApprovalId = (match.details as Record<string, unknown> | null)?.approvalId;
             const existingApproval =
               typeof priorApprovalId === "string" ? await approvalsSvc.getById(priorApprovalId) : null;
-            return { status: 200, body: { agent: existingAgent, approval: existingApproval, idempotent: true } };
+            return { status: 200, body: { agent: redactAgentRowForResponse(existingAgent), approval: existingApproval ? redactApprovalPayload(existingApproval) : null, idempotent: true } };
           }
         }
       }
@@ -4863,7 +4891,7 @@ export function agentRoutes(
         });
       }
 
-      return { status: 201, body: { agent: { ...agent, ...(configurationWarnings.length ? { configurationWarnings } : {}) }, approval } };
+      return { status: 201, body: { agent: { ...redactAgentRowForResponse(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) }, approval: approval ? redactApprovalPayload(approval) : null } };
     };
 
     const outcome = runId
@@ -4917,8 +4945,10 @@ export function agentRoutes(
       onboardingFirstAgent: createOnboardingFirstAgent,
       setupId,
       runner: createRunner,
+      duplicateFromAgentId,
       ...createInput
     } = req.body;
+    await restoreDuplicateConfiguration(req, companyId, duplicateFromAgentId, createInput);
     const agentId = setupId ?? randomUUID();
     const requestedCreateConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);

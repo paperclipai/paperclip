@@ -78,6 +78,23 @@ POST /api/companies/{companyId}/agents
 }
 ```
 
+### Duplicate an existing agent
+
+Create and hire requests accept optional `duplicateFromAgentId` (the source agent
+UUID). The UI sends this field with the copied configuration and instruction files.
+Use `POST /api/companies/{companyId}/agent-hires` when hire approval is required.
+The copy intent is not a field of the new agent and is not accepted as an update.
+
+This option requires a board actor, normal company agent-creation permission,
+source read access, and source configuration-update permission. The source must
+belong to the target company and have the same `adapterType` as the request.
+
+Core restores unchanged masked adapter values from the current saved source at
+their original paths. Moved placeholders are rejected. Normal secret validation,
+instruction rules, and hire approval still apply. Responses hide plain environment
+values in both the agent and the hire approval configuration snapshots.
+Runtime settings and metadata do not use this restoration path.
+
 ## Update Agent
 
 ```

@@ -25,6 +25,15 @@ GET /api/approvals/{approvalId}
 
 Returns approval details including type, status, payload, and decision notes.
 
+Hire approval responses hide plain environment values in both `adapterConfig`
+and `requestedConfigurationSnapshot.adapterConfig`. List, detail, and native
+approval-read tools, issue-linked approval lists, and plugin approval readers
+use the same presentation rules. The stored snapshot stays
+unchanged so approval activation can use the saved configuration.
+When an authorized requester resubmits a revised hire payload, unchanged masked
+values are restored from the saved approval. Moved or partially edited
+placeholders are rejected before persistence.
+
 ## Create Approval Request
 
 ```

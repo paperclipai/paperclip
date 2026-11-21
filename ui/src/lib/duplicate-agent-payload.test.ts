@@ -52,6 +52,16 @@ describe("duplicate agent payload", () => {
     expect(buildDuplicateAgentPayload(source)).not.toHaveProperty("appearance");
   });
 
+  it("identifies the source without inventing values for masked environment bindings", () => {
+    const source = { ...baseAgent, adapterConfig: { env: {
+      TZ: { type: "plain", value: "***REDACTED***" },
+    } } };
+    expect(buildDuplicateAgentPayload(source)).toMatchObject({
+      duplicateFromAgentId: source.id,
+      adapterConfig: source.adapterConfig,
+    });
+  });
+
   it("suffixes duplicate names", () => {
     expect(duplicateAgentName("Senior Product Engineer")).toBe("Senior Product Engineer Copy");
     expect(duplicateAgentName("   ")).toBe("Agent Copy");
@@ -66,6 +76,7 @@ describe("duplicate agent payload", () => {
     });
 
     expect(payload).toMatchObject({
+      duplicateFromAgentId: baseAgent.id,
       name: "Senior Product Engineer Copy",
       role: "engineer",
       title: "Senior Product Engineer",

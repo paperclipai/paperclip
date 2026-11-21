@@ -1014,6 +1014,23 @@ export function redactAgentAdapterConfig(
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
+/** Present approvals without exposing saved adapter values to approval readers. */
+export function redactApprovalPayload<T extends { payload?: Record<string, unknown> | null }>(approval: T): T {
+  if (!isPlainObject(approval.payload)) return approval;
+  const payload = redactEventPayload(approval.payload) ?? {};
+  const adapterConfig = approval.payload.adapterConfig;
+  if (isPlainObject(adapterConfig)) payload.adapterConfig = redactAgentAdapterConfig(adapterConfig);
+  const snapshot = approval.payload.requestedConfigurationSnapshot;
+  if (isPlainObject(snapshot) && isPlainObject(snapshot.adapterConfig)) {
+    payload.requestedConfigurationSnapshot = {
+      ...(isPlainObject(payload.requestedConfigurationSnapshot) ? payload.requestedConfigurationSnapshot : {}),
+      adapterConfig: redactAgentAdapterConfig(snapshot.adapterConfig),
+    };
+  }
+  // Approval activation still consumes the original stored object.
+  return { ...approval, payload };
+}
+
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(

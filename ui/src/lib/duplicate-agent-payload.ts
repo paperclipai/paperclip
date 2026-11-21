@@ -17,6 +17,7 @@ export type DuplicateInstructionsBundle = {
 
 type DuplicateAgentSource = Pick<
   AgentDetail,
+  | "id"
   | "name"
   | "role"
   | "title"
@@ -52,6 +53,7 @@ export function buildDuplicateAgentPayload(
   }
 
   const payload: Record<string, unknown> = {
+    duplicateFromAgentId: agent.id,
     name: duplicateAgentName(agent.name),
     role: agent.role,
     adapterType: agent.adapterType,

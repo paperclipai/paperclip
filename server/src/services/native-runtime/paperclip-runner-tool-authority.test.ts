@@ -1,3 +1,4 @@
+import { issueApprovalService } from "../issue-approvals.js";
 import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1013,6 +1014,35 @@ describe("PaperclipRunnerToolAuthority", () => {
       ),
     ).toHaveLength(1);
   });
+
+  it("hides duplicated adapter values across native approval reads", async () => {
+    const approvalId = "00000000-0000-4000-8000-000000000239";
+    const config = { env: { TZ: { type: "plain", value: "Asia/Seoul" } } };
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "hire_agent", status: "pending",
+      requestedByAgentId: agentId, payload: { adapterConfig: config, requestedConfigurationSnapshot: { adapterConfig: config } },
+    });
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    for (const tool of ["list_approvals", "get_approval", "get_approval_context"]) {
+      const response = await authority.execute({ tool, callId: `copy-privacy-${tool}`, arguments: { approvalId } });
+      expect(JSON.stringify(response)).not.toContain("Asia/Seoul");
+      const value = response as { approval?: { payload: unknown }; approvals?: { id: string; payload: unknown }[] };
+      const approval = value.approval ?? value.approvals?.find(row => row.id === approvalId);
+      expect(approval).toBeDefined();
+      expect(approval?.payload).toMatchObject({ adapterConfig: { env: { TZ: { value: "***REDACTED***" } } },
+        requestedConfigurationSnapshot: { adapterConfig: { env: { TZ: { value: "***REDACTED***" } } } },
+      });
+    }
+    await db.insert(issueApprovals).values({ companyId, issueId, approvalId, linkedByAgentId: agentId });
+    const linked = await issueApprovalService(db).listApprovalsForIssue(issueId);
+    const linkedApproval = linked.find(row => row.id === approvalId);
+    expect(linkedApproval).toBeDefined();
+    expect(JSON.stringify(linkedApproval)).not.toContain("Asia/Seoul");
+    expect(linkedApproval?.payload).toMatchObject({ adapterConfig: { env: { TZ: { value: "***REDACTED***" } } },
+      requestedConfigurationSnapshot: { adapterConfig: { env: { TZ: { value: "***REDACTED***" } } } },
+    });
+    const [stored] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(stored.payload).toMatchObject({ adapterConfig: config, requestedConfigurationSnapshot: { adapterConfig: config } });
+  }, 60000);
 
   it("does not project a foreign-company task through approval context", async () => {
     const foreignCompanyId = "00000000-0000-4000-8000-000000000211";

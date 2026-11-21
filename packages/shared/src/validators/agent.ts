@@ -88,6 +88,9 @@ export const agentRuntimeConfigSchema = z.object({
 });
 
 export const createAgentSchema = z.object({
+  // Board-only copy intent. The server restores display-only placeholders from
+  // an authorized source; this field is never persisted on the new agent.
+  duplicateFromAgentId: z.string().guid().optional(),
   setupId: z.string().guid().optional(),
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
@@ -171,7 +174,7 @@ export const agentRuntimeSettingsPatchSchema = z.object({
 export type AgentRuntimeSettingsPatch = z.infer<typeof agentRuntimeSettingsPatchSchema>;
 
 export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true }),
+  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true, duplicateFromAgentId: true }),
 )
   .partial()
   .extend({
