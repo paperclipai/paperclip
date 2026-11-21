@@ -51,3 +51,22 @@ Hermes gateway agents use this same generic agent invite flow with
 [HERMES_GATEWAY_ONBOARDING.md](./HERMES_GATEWAY_ONBOARDING.md) for the full
 operator path, including Hermes credentials, invite approval, key claim, and
 fresh-state Docker smoke setup.
+
+## Actionable attention projection
+
+The attention feed, summary and task-index APIs accept `actionableOnly=true`.
+That projection includes questions, decisions, approvals, access requests,
+stalled reviews and recovery requests with supported resolution controls.
+Technical recovery requests remain eligible when an operator can resolve them
+through those controls. Notifications that only link to an agent or describe an
+automatic recovery are left out. The coordinator Inbox does not request this
+projection: it also shows failed runs, budget alerts and blocked tasks, which
+have their own controls on the Inbox cards but are not part of the actionable
+set. Completed and cancelled dependencies are not presented as current blockers.
+
+A recovery card with supported choices resolves in place through the recovery
+resolver; other recovery cards keep their link to the recovery. Inbox controls
+use the existing domain APIs and retain their company, permission, governance
+and execution ownership checks. A rejected action remains visible with the
+server's reason; opening an agent page or dismissing a notice does not certify
+process cleanup or authorize replay of interrupted work.

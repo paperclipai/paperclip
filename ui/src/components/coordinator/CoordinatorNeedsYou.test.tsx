@@ -49,6 +49,7 @@ vi.mock("motion/react", () => ({
 }));
 vi.mock("@/components/PropertiesPanel", () => ({ PROPERTIES_PANE_HEADER_SLOT_ID: "test-sidebar" }));
 vi.mock("@/components/DecisionResolver", () => ({ DecisionResolver: () => null }));
+vi.mock("@/components/AttentionRecoveryResolver", () => ({ AttentionRecoveryResolver: ({ item }: { item: AttentionItem }) => <div data-recovery-resolver={item.subject.id}>Recovery choices</div> }));
 vi.mock("@/components/StalledReviewActions", () => ({ StalledReviewActions: ({ issueId, approveLabel, reviewPolicy, onResolved }: { issueId: string; approveLabel: string; reviewPolicy: string; onResolved: () => void }) => <button data-review-policy={reviewPolicy} onClick={() => {
   fixture.pending = fixture.pending.filter((item) => item.subject.id !== issueId);
   onResolved();
@@ -98,6 +99,28 @@ async function renderPage(url = fixture.url) {
   await flush(); await flush();
   return client;
 }
+describe("Coordinator Needs You — recovery cards", () => {
+  const recovery = (id: string, hasResolutionActions: boolean) => ({
+    id, sourceKind: "recovery_action", inlineResolvable: false, dismissalKey: `attention:${id}`, changeFingerprint: `${id}.v1`,
+    closeModes: ["archive"], obligationKey: null, obligationLeadId: null, audience: { kind: "user", userId: "reviewer", reason: "addressee" },
+    subject: { id: `${id}-action`, kind: "recovery_action", title: `Recover ${id}`, status: "active", href: `/PAP/issues/PAP-1#${id}`,
+      metadata: { hasResolutionActions, kind: "stranded_assigned_issue", sourceIssueId: "task" } },
+    relatedIssue: null, activityAt: new Date().toISOString(),
+  }) as unknown as AttentionItem;
+
+  it("answers a recovery with supported choices on the card and links the rest to the recovery control", async () => {
+    fixture.pending = [recovery("choices", true), recovery("owner", false)];
+    const client = await renderPage();
+    const supported = container.querySelector<HTMLElement>('[data-attention-card="choices"]')!;
+    expect(supported.querySelector('[data-recovery-resolver="choices-action"]')).not.toBeNull();
+    expect(supported.textContent).not.toContain("Open recovery");
+    const unsupported = container.querySelector<HTMLElement>('[data-attention-card="owner"]')!;
+    expect(unsupported.querySelector("[data-recovery-resolver]")).toBeNull();
+    expect(unsupported.textContent).toContain("Open recovery");
+    client.clear();
+  }, 15_000);
+});
+
 describe("Coordinator Needs You — Archived view and history filters (PAP-749 task 2e)", () => {
   const hidden = (id: string, kind: "dismiss" | "snooze", snoozedUntil: string | null = null) => ({
     id, sourceKind: "issue_thread_interaction", inlineResolvable: false, dismissalKey: `attention:${id}`, changeFingerprint: `${id}.me`,
