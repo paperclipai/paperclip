@@ -1,16 +1,27 @@
-export type FenceContainer =
-  | { kind: "blockquote" }
-  | { kind: "list"; indent: number };
-
-export interface OpenFence {
-  char: "`" | "~";
-  length: number;
-  containers: FenceContainer[];
+interface BlockquoteContainer {
+  kind: "blockquote";
 }
 
-export type FenceLineTransition = "inside" | "closed" | "ended_before_line";
+interface ListContainer {
+  kind: "list";
+  indent: number;
+  emptyAtStart: boolean;
+  sawBlank: boolean;
+}
 
-const LIST_MARKER_PREFIX_RE = /^([-+*]|\d{1,9}[.)])([ \t]+)/;
+type ActiveContainer = BlockquoteContainer | ListContainer;
+
+interface OpenFence {
+  char: "`" | "~";
+  length: number;
+  containers: ActiveContainer[];
+}
+
+type FenceLineTransition = "inside" | "closed" | "ended_before_line";
+
+const LIST_MARKER_RE = /^([-+*]|\d{1,9}[.)])(?:([ \t]+)|$)/;
+const THEMATIC_BREAK_RE = /^(?:-(?:[ \t]*-){2,}|\*(?:[ \t]*\*){2,}|_(?:[ \t]*_){2,})[ \t]*$/;
+const ATX_HEADING_RE = /^#{1,6}(?:[ \t]|$)/;
 const FENCE_RUN_RE = /^(`{3,}|~{3,})(.*)$/;
 const FENCE_CLOSE_RUN_RE = /^(`{3,}|~{3,})[ \t]*$/;
 
@@ -86,53 +97,84 @@ function stripContainerIndent(text: string, indent: number, startCol: number): {
   return { rest: text.slice(index), col };
 }
 
-export function parseFenceOpen(rawLine: string): OpenFence | null {
-  let rest = stripTrailingCr(rawLine);
-  let col = 0;
-  const containers: FenceContainer[] = [];
-
-  while (true) {
-    const blockquote = stripBlockquoteMarker(rest, col);
-    if (blockquote) {
-      containers.push({ kind: "blockquote" });
-      rest = blockquote.rest;
-      col = blockquote.col;
-      continue;
-    }
-
-    const leading = leadingSpaceWidth(rest, col);
-    if (leading.columns > 3) return null;
-
-    const afterSpaces = rest.slice(leading.index);
-    const markerCol = col + leading.columns;
-    const listMatch = LIST_MARKER_PREFIX_RE.exec(afterSpaces);
-    if (listMatch) {
-      const markerLen = listMatch[1].length;
-      const afterMarkerCol = markerCol + markerLen;
-      const ws = leadingSpaceWidth(afterSpaces.slice(markerLen), afterMarkerCol);
-      const afterWs = afterSpaces.slice(markerLen + ws.index);
-      if (ws.columns >= 1 && ws.columns <= 4 && afterWs.length > 0) {
-        containers.push({ kind: "list", indent: leading.columns + markerLen + ws.columns });
-        rest = afterWs;
-        col = afterMarkerCol + ws.columns;
-        continue;
-      }
-      if (ws.columns >= 5 && afterWs.length > 0) {
-        return null;
-      }
-    }
-
-    const fenceMatch = FENCE_RUN_RE.exec(afterSpaces);
-    if (!fenceMatch) return null;
-    const run = fenceMatch[1];
-    const char = run[0] as "`" | "~";
-    if (char === "`" && fenceMatch[2].includes("`")) return null;
-    return { char, length: run.length, containers };
-  }
+function matchFenceRun(text: string): { char: "`" | "~"; length: number } | null {
+  const fenceMatch = FENCE_RUN_RE.exec(text);
+  if (!fenceMatch) return null;
+  const run = fenceMatch[1];
+  const char = run[0] as "`" | "~";
+  if (char === "`" && fenceMatch[2].includes("`")) return null;
+  return { char, length: run.length };
 }
 
-export function advanceOpenFence(fence: OpenFence, rawLine: string): FenceLineTransition {
-  let rest = stripTrailingCr(rawLine);
+function matchListMarker(
+  afterSpaces: string,
+  leadingColumns: number,
+  markerCol: number,
+  interruptingParagraph: boolean,
+): { indent: number; rest: string; col: number; emptyAtStart: boolean; indentedCode: boolean } | null {
+  if (THEMATIC_BREAK_RE.test(afterSpaces)) return null;
+  const listMatch = LIST_MARKER_RE.exec(afterSpaces);
+  if (!listMatch) return null;
+  const marker = listMatch[1];
+  const markerLen = marker.length;
+  const afterMarkerCol = markerCol + markerLen;
+  const ws = leadingSpaceWidth(afterSpaces.slice(markerLen), afterMarkerCol);
+  const afterWs = afterSpaces.slice(markerLen + ws.index);
+  if (interruptingParagraph && /^\d/.test(marker) && marker !== "1." && marker !== "1)") {
+    return null;
+  }
+  if (afterWs.length === 0) {
+    if (interruptingParagraph) return null;
+    return {
+      indent: leadingColumns + markerLen + 1,
+      rest: "",
+      col: afterMarkerCol + 1,
+      emptyAtStart: true,
+      indentedCode: false,
+    };
+  }
+  if (ws.columns >= 5) {
+    return {
+      indent: leadingColumns + markerLen + 1,
+      rest: " ".repeat(ws.columns - 1) + afterWs,
+      col: afterMarkerCol + 1,
+      emptyAtStart: false,
+      indentedCode: true,
+    };
+  }
+  if (ws.columns >= 1) {
+    return {
+      indent: leadingColumns + markerLen + ws.columns,
+      rest: afterWs,
+      col: afterMarkerCol + ws.columns,
+      emptyAtStart: false,
+      indentedCode: false,
+    };
+  }
+  return null;
+}
+
+function interruptsParagraph(text: string, startCol: number): boolean {
+  const leading = leadingSpaceWidth(text, startCol);
+  if (leading.columns > 3) return false;
+  const afterSpaces = text.slice(leading.index);
+  if (afterSpaces.startsWith(">")) return true;
+  if (THEMATIC_BREAK_RE.test(afterSpaces)) return true;
+  if (ATX_HEADING_RE.test(afterSpaces)) return true;
+  if (matchFenceRun(afterSpaces)) return true;
+  const listMatch = LIST_MARKER_RE.exec(afterSpaces);
+  if (listMatch) {
+    const marker = listMatch[1];
+    const afterMarker = afterSpaces.slice(marker.length).trim();
+    if (afterMarker.length > 0 && (!/^\d/.test(marker) || marker === "1." || marker === "1)")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function advanceOpenFence(fence: OpenFence, line: string): FenceLineTransition {
+  let rest = line;
   let col = 0;
 
   for (let i = 0; i < fence.containers.length; i += 1) {
@@ -163,4 +205,136 @@ export function advanceOpenFence(fence: OpenFence, rawLine: string): FenceLineTr
   }
 
   return "inside";
+}
+
+export function createMarkdownFenceTracker() {
+  let openFence: OpenFence | null = null;
+  let activeContainers: ActiveContainer[] = [];
+  let paragraphOpen = false;
+
+  return {
+    step(rawLine: string): boolean {
+      const line = stripTrailingCr(rawLine);
+
+      if (openFence) {
+        const transition = advanceOpenFence(openFence, line);
+        if (transition !== "ended_before_line") {
+          if (transition === "closed") {
+            activeContainers = openFence.containers.map((container) =>
+              container.kind === "list"
+                ? { kind: "list", indent: container.indent, emptyAtStart: false, sawBlank: false }
+                : container,
+            );
+            openFence = null;
+          }
+          paragraphOpen = false;
+          return true;
+        }
+        openFence = null;
+        paragraphOpen = false;
+      }
+
+      let rest = line;
+      let col = 0;
+      const nextContainers: ActiveContainer[] = [];
+
+      for (let i = 0; i < activeContainers.length; i += 1) {
+        const container = activeContainers[i];
+        if (container.kind === "blockquote") {
+          const stripped = stripBlockquoteMarker(rest, col);
+          if (!stripped) break;
+          nextContainers.push(container);
+          rest = stripped.rest;
+          col = stripped.col;
+        } else {
+          if (rest.trim().length === 0) {
+            if (container.emptyAtStart) break;
+            nextContainers.push({ ...container, sawBlank: true });
+            continue;
+          }
+          const stripped = stripContainerIndent(rest, container.indent, col);
+          if (!stripped) {
+            if (!container.sawBlank && paragraphOpen && !interruptsParagraph(rest, col)) {
+              nextContainers.push(container);
+              activeContainers = nextContainers;
+              return false;
+            }
+            break;
+          }
+          nextContainers.push({ kind: "list", indent: container.indent, emptyAtStart: false, sawBlank: false });
+          rest = stripped.rest;
+          col = stripped.col;
+        }
+      }
+
+      if (rest.trim().length === 0) {
+        activeContainers = nextContainers;
+        paragraphOpen = false;
+        return false;
+      }
+
+      const matchedAllContainers = nextContainers.length === activeContainers.length;
+      let canInterruptParagraph = paragraphOpen && matchedAllContainers;
+      let indentedCode = false;
+      while (true) {
+        const blockquote = stripBlockquoteMarker(rest, col);
+        if (blockquote) {
+          nextContainers.push({ kind: "blockquote" });
+          rest = blockquote.rest;
+          col = blockquote.col;
+          canInterruptParagraph = false;
+          continue;
+        }
+
+        const leading = leadingSpaceWidth(rest, col);
+        if (leading.columns > 3) {
+          if (!canInterruptParagraph) indentedCode = true;
+          break;
+        }
+
+        const afterSpaces = rest.slice(leading.index);
+        const markerCol = col + leading.columns;
+        const listItem = matchListMarker(afterSpaces, leading.columns, markerCol, canInterruptParagraph);
+        if (listItem) {
+          nextContainers.push({
+            kind: "list",
+            indent: listItem.indent,
+            emptyAtStart: listItem.emptyAtStart,
+            sawBlank: false,
+          });
+          rest = listItem.rest;
+          col = listItem.col;
+          canInterruptParagraph = false;
+          if (listItem.indentedCode) {
+            indentedCode = true;
+            break;
+          }
+          continue;
+        }
+
+        const fence = matchFenceRun(afterSpaces);
+        if (fence) {
+          openFence = {
+            char: fence.char,
+            length: fence.length,
+            containers: nextContainers,
+          };
+          activeContainers = nextContainers;
+          paragraphOpen = false;
+          return true;
+        }
+
+        break;
+      }
+
+      activeContainers = nextContainers;
+      const trimmed = rest.trim();
+      if (trimmed.length === 0 || indentedCode || THEMATIC_BREAK_RE.test(trimmed) || ATX_HEADING_RE.test(trimmed)) {
+        paragraphOpen = false;
+      } else {
+        paragraphOpen = true;
+      }
+      return false;
+    },
+  };
 }

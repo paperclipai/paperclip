@@ -160,6 +160,39 @@ describe("escapeUnsupportedAngleBrackets", () => {
     );
   });
 
+  it("closes a fence opened on a list continuation line when the list item ends", () => {
+    expect(escapeUnsupportedAngleBrackets("- item\n  ```\n  <inside>\n<after>")).toBe(
+      "- item\n  ```\n  <inside>\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- item\n\n  ```\n  <inside>\n<after>")).toBe(
+      "- item\n\n  ```\n  <inside>\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- item\n\n    ```\n    <inside>\n    ```\n<after>")).toBe(
+      "- item\n\n    ```\n    <inside>\n    ```\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("10. item\n    ```\n    <inside>\n  <after>")).toBe(
+      "10. item\n    ```\n    <inside>\n  \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- outer\n  - inner\n    ```\n    <inside>\n  <after>")).toBe(
+      "- outer\n  - inner\n    ```\n    <inside>\n  \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- outer\n  - inner\n\n    ```\n    <inside>\n  <after>")).toBe(
+      "- outer\n  - inner\n\n    ```\n    <inside>\n  \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("> - item\n>   ```\n>   <inside>\n> <after>")).toBe(
+      "> - item\n>   ```\n>   <inside>\n> \\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("- item\nlazy\n  ```\n  <inside>\n<after>")).toBe(
+      "- item\nlazy\n  ```\n  <inside>\n\\<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("-\n\n  ```\n  <inside>\n<after>")).toBe(
+      "-\n\n  ```\n  <inside>\n<after>",
+    );
+    expect(escapeUnsupportedAngleBrackets("para\n2. not-a-list\n  ```\n  <inside>\n<after>")).toBe(
+      "para\n2. not-a-list\n  ```\n  <inside>\n<after>",
+    );
+  });
+
   it("does not treat 5+ spaces after a list marker or 4+ spaces after a blockquote as a fence", () => {
     expect(escapeUnsupportedAngleBrackets("-     ```\n  <after>")).toBe(
       "-     ```\n  \\<after>",
@@ -188,6 +221,11 @@ describe("escapeUnsupportedAngleBrackets", () => {
       "> > ```\n> > code\n> <name>",
       "- ```\n  code\n<name>",
       "- ```\n  code\n\n<name>",
+      "- item\n  ```\n  code\n<name>",
+      "- item\n\n  ```\n  code\n<name>",
+      "10. item\n    ```\n    code\n  <name>",
+      "- outer\n  - inner\n    ```\n    code\n  <name>",
+      "> - item\n>   ```\n>   code\n> <name>",
       "- > ```\n  > code\n\n  <name>",
       "```ts\r\n<inside>\r\n```\r\n<after>\r\n",
     ];
@@ -327,6 +365,9 @@ describe("unescapeAngleBracketEscapes", () => {
     );
     expect(unescapeAngleBracketEscapes("- ```\n  \\<inside>\n\\<after>")).toBe(
       "- ```\n  \\<inside>\n<after>",
+    );
+    expect(unescapeAngleBracketEscapes("- item\n  ```\n  \\<inside>\n\\<after>")).toBe(
+      "- item\n  ```\n  \\<inside>\n<after>",
     );
     expect(unescapeAngleBracketEscapes("```ts\r\n\\<inside>\r\n```\r\n\\<after>\r\n")).toBe(
       "```ts\r\n\\<inside>\r\n```\r\n<after>\r\n",

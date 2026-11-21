@@ -134,6 +134,12 @@ describe("unescapeBlockquoteMarkers", () => {
     expect(unescapeBlockquoteMarkers("- > ```\n  > \\> literal\n\n\\> real quote")).toBe(
       "- > ```\n  > \\> literal\n\n> real quote",
     );
+    expect(unescapeBlockquoteMarkers("- item\n  ```\n  \\> literal\n\\> real quote")).toBe(
+      "- item\n  ```\n  \\> literal\n> real quote",
+    );
+    expect(unescapeBlockquoteMarkers("- item\n\n  ```\n  \\> literal\n\\> real quote")).toBe(
+      "- item\n\n  ```\n  \\> literal\n> real quote",
+    );
   });
 
   it("tracks fenced code blocks with CRLF line endings", () => {

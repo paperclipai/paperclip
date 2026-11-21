@@ -40,7 +40,7 @@
  * walk the inline runs character by character.
  */
 
-import { advanceOpenFence, parseFenceOpen, stripTrailingCr, type OpenFence } from "./markdown-fence";
+import { createMarkdownFenceTracker, stripTrailingCr } from "./markdown-fence";
 
 /** Characters that make the markdown parser treat a `<` as opening HTML. */
 const HTML_OPENER_RE = /[A-Za-z!/?]/;
@@ -192,28 +192,13 @@ function transformAngleBrackets(markdown: string, mode: Mode): string {
     chunk = [];
   };
 
-  let openFence: OpenFence | null = null;
+  const fenceTracker = createMarkdownFenceTracker();
   let paragraphOpen = false;
 
   for (const line of lines) {
-    if (openFence) {
-      const transition = advanceOpenFence(openFence, line);
-      if (transition !== "ended_before_line") {
-        flushChunk();
-        out.push(line);
-        if (transition === "closed") {
-          openFence = null;
-        }
-        continue;
-      }
-      openFence = null;
-    }
-
-    const opened = parseFenceOpen(line);
-    if (opened) {
+    if (fenceTracker.step(line)) {
       flushChunk();
       out.push(line);
-      openFence = opened;
       paragraphOpen = false;
       continue;
     }

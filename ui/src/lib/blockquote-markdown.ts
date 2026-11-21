@@ -27,7 +27,7 @@
  * allowed on the opening fence).
  */
 
-import { advanceOpenFence, parseFenceOpen, type OpenFence } from "./markdown-fence";
+import { createMarkdownFenceTracker } from "./markdown-fence";
 
 // A block-level escaped blockquote marker: `\>` at column 0, allowing only the
 // 0–3 spaces of insignificant leading indent CommonMark permits before a block.
@@ -37,25 +37,12 @@ export function unescapeBlockquoteMarkers(markdown: string): string {
   if (!markdown.includes("\\>")) return markdown;
 
   const lines = markdown.split("\n");
-  let openFence: OpenFence | null = null;
+  const fenceTracker = createMarkdownFenceTracker();
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
 
-    if (openFence) {
-      const transition = advanceOpenFence(openFence, line);
-      if (transition !== "ended_before_line") {
-        if (transition === "closed") {
-          openFence = null;
-        }
-        continue;
-      }
-      openFence = null;
-    }
-
-    const opened = parseFenceOpen(line);
-    if (opened) {
-      openFence = opened;
+    if (fenceTracker.step(line)) {
       continue;
     }
 
