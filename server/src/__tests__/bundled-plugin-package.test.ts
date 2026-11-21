@@ -42,7 +42,9 @@ describe("bundled image package identity", () => {
 
   it("compares parsed optional fields in the JSON form that registrations store", () => {
     const { resolver, registration, manifest } = fixture();
-    const parsed = pluginManifestValidator().parseOrThrow({ ...manifest, capabilities: kubernetes.capabilities, environmentDrivers: kubernetes.environmentDrivers });
+    // Strip the login flag so the parser has to fill in the optional field as undefined.
+    const environmentDrivers = kubernetes.environmentDrivers!.map(({ supportsLoginPty: _omitted, ...driver }) => driver);
+    const parsed = pluginManifestValidator().parseOrThrow({ ...manifest, capabilities: kubernetes.capabilities, environmentDrivers });
     expect(Object.hasOwn(parsed.environmentDrivers![0]!, "supportsLoginPty")).toBe(true);
     const stored = JSON.parse(JSON.stringify(parsed));
     expect(Object.hasOwn(stored.environmentDrivers[0], "supportsLoginPty")).toBe(false);

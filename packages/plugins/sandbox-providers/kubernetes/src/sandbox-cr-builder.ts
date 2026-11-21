@@ -30,6 +30,10 @@ export interface BuildSandboxCrManifestInput {
   };
   runtimeClassName?: string;
   imagePullSecrets?: string[];
+  hardStop?: {
+    atEpochSec: number;
+    activeDeadlineSeconds: number;
+  };
 }
 
 export function buildSandboxCrManifest(
@@ -63,6 +67,9 @@ export function buildSandboxCrManifest(
           // Sandbox controller requires restartPolicy: Always so the pod
           // stays running between exec calls.
           restartPolicy: "Always",
+          ...(input.hardStop
+            ? { activeDeadlineSeconds: input.hardStop.activeDeadlineSeconds }
+            : {}),
           ...(input.runtimeClassName
             ? { runtimeClassName: input.runtimeClassName }
             : {}),
@@ -86,15 +93,12 @@ export function buildSandboxCrManifest(
               name: "agent",
               image: input.image,
               imagePullPolicy: "IfNotPresent",
-              // sleep infinity keeps the pod running; paperclip-server execs
-              // commands into it via Kubernetes exec API. Tini as PID 1 for
-              // proper signal forwarding and zombie reaping.
               command: [
                 "/usr/bin/tini",
                 "--",
                 "/bin/sh",
                 "-c",
-                "sleep infinity",
+                input.hardStop ? hardStopEntrypoint(input.hardStop.atEpochSec) : "sleep infinity",
               ],
               // HOME must point at a writable mount; the image's default
                // HOME=/home/node is inside the readOnly root filesystem.
@@ -138,4 +142,11 @@ export function buildSandboxCrManifest(
       },
     },
   };
+}
+
+function hardStopEntrypoint(atEpochSec: number): string {
+  if (!Number.isSafeInteger(atEpochSec) || atEpochSec <= 0) {
+    throw new Error(`Invalid sandbox hard-stop deadline: ${atEpochSec}`);
+  }
+  return `deadline=${atEpochSec}; now=$(date +%s); [ "$now" -lt "$deadline" ] || exit 0; exec sleep "$((deadline - now))"`;
 }
