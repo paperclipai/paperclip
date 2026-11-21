@@ -19,13 +19,18 @@ import {
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
-import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import type {
+  AcpxEngineExecutorOptions,
+  AcpxTerminalSessionFailure,
+  AcpxTerminalFailureClassification,
+} from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "../index.js";
+import { isKimiUsageExhausted } from "./parse.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -132,8 +137,22 @@ export function buildKimiAcpConfig(config: Record<string, unknown>): Record<stri
   return next;
 }
 
+export function classifyKimiTerminalSessionFailure(
+  failure: AcpxTerminalSessionFailure,
+): AcpxTerminalFailureClassification | null {
+  // Kimi reports plan exhaustion as `provider.auth_error: 403 ...usage limit`,
+  // so it can arrive as `access` as well as `limit`. Either needs the usage
+  // wording; other access failures keep the engine's default handling.
+  if (failure.category !== "limit" && failure.category !== "access") return null;
+  const text = [failure.title, failure.details].filter(Boolean).join("\n");
+  if (!isKimiUsageExhausted(text)) return null;
+  // Kimi prints no reset time, so recovery uses its default backoff.
+  return { errorCode: "provider_quota", errorFamily: "provider_quota" };
+}
+
 function withKimiAcpDefaults(options: KimiAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
+    classifyTerminalSessionFailure: classifyKimiTerminalSessionFailure,
     ...options,
     adapterType: "kimi_local",
     moduleDir,

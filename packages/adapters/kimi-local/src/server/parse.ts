@@ -205,6 +205,30 @@ export function isKimiTransientNetworkError(stdout: string, stderr: string): boo
   );
 }
 
+// Kimi reports plan exhaustion as `provider.auth_error: 403 You've reached your
+// 5-hour usage limit...`. The 403 alone is not a quota signal; only the
+// usage/rate-limit wording qualifies, so real auth failures keep their code.
+// Stdout carries assistant text, so only stderr and the parsed error are read.
+const KIMI_USAGE_EXHAUSTED_RE =
+  /(?:reached\s+your\s+(?:[\w-]+\s+)?usage\s+limit|usage\s+limit\s+(?:reached|exceeded)|quota\s+(?:will\s+reset|(?:limit\s+)?exceeded|exhausted)|insufficient[\s_]quota)/i;
+const KIMI_PROVIDER_QUOTA_RE = new RegExp(
+  `${KIMI_USAGE_EXHAUSTED_RE.source}|rate[\\s_-]?limit(?:ed|_error)?|too\\s+many\\s+requests|\\b429\\b`,
+  "i",
+);
+
+export function isKimiProviderQuotaError(input: {
+  errorMessage?: string | null;
+  stderr?: string;
+}): boolean {
+  return KIMI_PROVIDER_QUOTA_RE.test(normalizedHaystack(input.errorMessage ?? "", input.stderr ?? ""));
+}
+
+// Typed ACP failures need explicit plan exhaustion. Their `limit` category also
+// covers context, turn and rate limits, which must not wait for a quota reset.
+export function isKimiUsageExhausted(text: string): boolean {
+  return KIMI_USAGE_EXHAUSTED_RE.test(text);
+}
+
 export function describeKimiFailure(input: {
   errorMessage?: string | null;
   stderr?: string;
