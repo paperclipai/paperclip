@@ -65,31 +65,21 @@ function createFakeSandbox(overrides: FakeSandboxOverrides = {}) {
     execCalls.push({ argv, params });
     return overrides.execImpl ? overrides.execImpl(argv, params) : defaultExec(argv, params);
   });
-  const openedFiles: Array<{ path: string; mode: string; written: Uint8Array | null }> = [];
+  const writtenFiles: Array<{ path: string; text: string }> = [];
   const sandbox = {
     sandboxId: overrides.id ?? "sb-123",
     exec,
     execCalls,
-    openedFiles,
+    writtenFiles,
     setTags: vi.fn().mockResolvedValue(undefined),
     terminate: vi.fn().mockResolvedValue(undefined),
     detach: vi.fn(),
     poll: vi.fn().mockResolvedValue(null),
-    open: vi.fn().mockImplementation(async (path: string, mode: string) => {
-      const entry: { path: string; mode: string; written: Uint8Array | null } = {
-        path,
-        mode,
-        written: null,
-      };
-      openedFiles.push(entry);
-      return {
-        write: vi.fn().mockImplementation(async (data: Uint8Array) => {
-          entry.written = data;
-        }),
-        flush: vi.fn().mockResolvedValue(undefined),
-        close: vi.fn().mockResolvedValue(undefined),
-      };
-    }),
+    filesystem: {
+      writeText: vi.fn().mockImplementation(async (text: string, path: string) => {
+        writtenFiles.push({ path, text });
+      }),
+    },
   };
   return sandbox;
 }
@@ -347,6 +337,38 @@ describe("Modal sandbox provider plugin", () => {
       "paperclip-reuse-lease": "true",
     }));
     expect(sandbox.execCalls[0]?.argv).toEqual(["sh", "-lc", "mkdir -p '/srv/work'"]);
+  });
+
+  it("passes the CIDR allowlist to Modal as outboundCidrAllowlist", async () => {
+    const sandbox = createFakeSandbox({ id: "sb-cidr" });
+    mockAppFromName.mockResolvedValue({ appId: "ap-1" });
+    mockSandboxesCreate.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentAcquireLease?.({
+      ...baseAcquireParams,
+      config: { ...baseConfig, cidrAllowlist: ["10.0.0.0/8", "1.2.3.4/32"] },
+    });
+
+    expect(mockSandboxesCreate).toHaveBeenCalledTimes(1);
+    const createParams = mockSandboxesCreate.mock.calls[0]?.[2];
+    expect(createParams).toEqual(expect.objectContaining({
+      blockNetwork: false,
+      outboundCidrAllowlist: ["10.0.0.0/8", "1.2.3.4/32"],
+    }));
+    expect(createParams).not.toHaveProperty("cidrAllowlist");
+  });
+
+  it("omits outboundCidrAllowlist when no CIDR allowlist is configured", async () => {
+    const sandbox = createFakeSandbox({ id: "sb-no-cidr" });
+    mockAppFromName.mockResolvedValue({ appId: "ap-1" });
+    mockSandboxesCreate.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentAcquireLease?.({
+      ...baseAcquireParams,
+      config: { ...baseConfig },
+    });
+
+    expect(mockSandboxesCreate.mock.calls[0]?.[2]).not.toHaveProperty("outboundCidrAllowlist");
   });
 
   it("terminates the sandbox if acquire workspace setup throws", async () => {
@@ -607,11 +629,9 @@ describe("Modal sandbox provider plugin", () => {
       cwd: "/srv/work",
     });
 
-    expect(sandbox.openedFiles).toHaveLength(1);
-    expect(sandbox.openedFiles[0]?.path).toMatch(/^\/tmp\/paperclip-stdin-/);
-    expect(sandbox.openedFiles[0]?.mode).toBe("w");
-    expect(sandbox.openedFiles[0]?.written).not.toBeNull();
-    expect(new TextDecoder().decode(sandbox.openedFiles[0]!.written!)).toBe("input payload");
+    expect(sandbox.writtenFiles).toHaveLength(1);
+    expect(sandbox.writtenFiles[0]?.path).toMatch(/^\/tmp\/paperclip-stdin-/);
+    expect(sandbox.writtenFiles[0]?.text).toBe("input payload");
 
     // First exec is the user command; second is the rm cleanup.
     const userCall = sandbox.execCalls[0]!;
