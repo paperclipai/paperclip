@@ -22,7 +22,7 @@ export function UploadPreview({ state = "empty" }: { state?: PreviewState }) {
   const [activeTab, setActiveTab] = useState("artifacts");
   const [selectedDocuments, setSelectedDocuments] = useState<Record<string, IssueDocument>>({});
   const { isMobile: mobile } = useSidebar();
-  const docQuery = useQuery({ queryKey: [...queryKeys.issues.documents(issue.id), "list"], queryFn: async () => [] as IssueDocument[], initialData: client.getQueryData<IssueDocument[]>([...queryKeys.issues.documents(issue.id), "list"]), staleTime: Infinity }, client);
+  const docQuery = useQuery({ queryKey: queryKeys.issues.documentList(issue.id), queryFn: async () => [] as IssueDocument[], initialData: client.getQueryData<IssueDocument[]>(queryKeys.issues.documentList(issue.id)), staleTime: Infinity }, client);
   const productQuery = useQuery({ queryKey: queryKeys.issues.workProducts(issue.id), queryFn: async () => [], initialData: client.getQueryData(queryKeys.issues.workProducts(issue.id)), staleTime: Infinity }, client);
 
   useLayoutEffect(() => {

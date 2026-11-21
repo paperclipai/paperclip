@@ -72,7 +72,7 @@ export function showFileDrag(canvas: HTMLElement, scroll = false) {
 
 export function createPreviewClient(state: PreviewState) {
   const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
-  client.setQueryData([...queryKeys.issues.documents(issue.id), "list"], state === "empty" ? [] : state === "long" ? [...documents, makeDocument("long-reference", "Database transaction recovery and instance sleep: detailed engineering reference with verification evidence", Array.from({ length: 20 }, (_, index) => `## Investigation ${index + 1}\n\nCheck the transaction outcome before retrying uncertain writes. Preserve the durable receipt and current task state.`).join("\n\n"))] : documents);
+  client.setQueryData(queryKeys.issues.documentList(issue.id), state === "empty" ? [] : state === "long" ? [...documents, makeDocument("long-reference", "Database transaction recovery and instance sleep: detailed engineering reference with verification evidence", Array.from({ length: 20 }, (_, index) => `## Investigation ${index + 1}\n\nCheck the transaction outcome before retrying uncertain writes. Preserve the durable receipt and current task state.`).join("\n\n"))] : documents);
   client.setQueryData(queryKeys.issues.attachments(issue.id), []);
   client.setQueryData(queryKeys.issues.workProducts(issue.id), []);
   client.setQueryData(queryKeys.issues.runs(issue.id), []);
@@ -84,10 +84,10 @@ export function createPreviewClient(state: PreviewState) {
 export async function addPreviewFile(client: QueryClient, file: File, id: string) {
   if (/\.(md|markdown)$/i.test(file.name) || file.type === "text/markdown") {
     const body = await file.text();
-    const current = client.getQueryData<IssueDocument[]>([...queryKeys.issues.documents(issue.id), "list"]) ?? [];
+    const current = client.getQueryData<IssueDocument[]>(queryKeys.issues.documentList(issue.id)) ?? [];
     const title = file.name.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ");
     const key = uploadedDocumentKey(file.name, current.map(document => document.key));
-    client.setQueryData([...queryKeys.issues.documents(issue.id), "list"], [makeDocument(key, title, body), ...current]);
+    client.setQueryData(queryKeys.issues.documentList(issue.id), [makeDocument(key, title, body), ...current]);
     return;
   }
   client.setQueryData(["storybook-upload-file", id], file);
@@ -115,11 +115,11 @@ export function installPreviewApi(client: QueryClient) {
     }
     if (url.pathname === `${base}/work-products`) return Response.json(client.getQueryData(queryKeys.issues.workProducts(issue.id)) ?? []);
     if (url.pathname === `${base}/attachments`) return Response.json([]);
-    if (url.pathname === `${base}/documents`) return Response.json(client.getQueryData([...queryKeys.issues.documents(issue.id), "list"]) ?? []);
+    if (url.pathname === `${base}/documents`) return Response.json(client.getQueryData(queryKeys.issues.documentList(issue.id)) ?? []);
     if (url.pathname.startsWith(`${base}/documents/`)) {
       if (url.pathname.endsWith("/annotations")) return Response.json([]);
       const key = decodeURIComponent(url.pathname.split("/").at(-1)!);
-      const document = (client.getQueryData<IssueDocument[]>([...queryKeys.issues.documents(issue.id), "list"]) ?? []).find((doc) => doc.key === key);
+      const document = (client.getQueryData<IssueDocument[]>(queryKeys.issues.documentList(issue.id)) ?? []).find((doc) => doc.key === key);
       return document ? Response.json(document) : Response.json({ error: "Document not found" }, { status: 404 });
     }
     return originalFetch(input, init);
