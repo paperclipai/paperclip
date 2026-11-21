@@ -13943,7 +13943,7 @@ export function createToolGatewayService(
           : tool.providerType === "paperclip_plugin_connection"
             ? await executePluginConnectionTool(session, tool, effectiveParameters, input.timeoutMs)
           : tool.providerType === "paperclip_plugin"
-            ? await runWithTimeout(
+            ? (await runWithTimeout(
                 pluginToolDispatcher!.executeTool(
                   tool.name,
                   effectiveParameters,
@@ -13955,7 +13955,7 @@ export function createToolGatewayService(
                   },
                 ),
                 executionTimeoutMs,
-              )
+              )).result
             : await runWithTimeout(
                 executeBuiltinTool(session, tool, effectiveParameters, invocationId),
                 executionTimeoutMs,
