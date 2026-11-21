@@ -7,7 +7,12 @@
 // creates the runtime), the synchronous plan, and Amendment B — no run-scoped
 // contribution or bridge token escapes into the ledger or the reuse payload.
 
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { prepareAdapterExecutionTargetRuntime } from "../execution-target.js";
+import { runChildProcess } from "../server-utils.js";
 import {
   createSandboxRunSite,
   type ManagedHomeSeamResult,
@@ -349,5 +354,125 @@ describe("sandbox run site", () => {
       const payload: SandboxReuseCandidate = contribution;
       void payload;
     }
+  });
+});
+
+describe("sandbox run site host workspace baseline", () => {
+  async function withStagedWorkspace(
+    run: (input: {
+      stage: SandboxRunSiteOptions["stage"];
+      baselines: () => Promise<string[]>;
+    }) => Promise<void>,
+  ) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-site-baseline-"));
+    const previousTmpdir = process.env.TMPDIR;
+    const tmp = path.join(root, "tmp");
+    const workspace = path.join(root, "workspace");
+    const remote = path.join(root, "remote");
+    await mkdir(tmp);
+    await mkdir(workspace);
+    await mkdir(remote);
+    await writeFile(path.join(workspace, "file.txt"), "contents\n");
+    process.env.TMPDIR = tmp;
+    let counter = 0;
+    const stage: SandboxRunSiteOptions["stage"] = (assets) =>
+      prepareAdapterExecutionTargetRuntime({
+        runId: "run-baseline",
+        adapterKey: "acpx-test",
+        workspaceLocalDir: workspace,
+        workspaceRemoteDir: remote,
+        assets,
+        target: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "test",
+          remoteCwd: remote,
+          timeoutMs: 30_000,
+          runner: {
+            execute: (command) => {
+              counter += 1;
+              return runChildProcess(`site-baseline-${counter}`, command.command, command.args ?? [], {
+                cwd: command.cwd ?? root,
+                env: command.env ?? {},
+                stdin: command.stdin,
+                timeoutSec: 30,
+                graceSec: 1,
+                onLog: command.onLog ?? (async () => {}),
+              });
+            },
+          },
+        },
+      });
+    const baselines = async () =>
+      (await readdir(tmp, { recursive: true })).filter((entry) =>
+        path.basename(entry).startsWith("paperclip-workspace-baseline-"),
+      );
+    try {
+      await run({ stage, baselines });
+    } finally {
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("releases the baseline of a stage without a managed-home seam", async () => {
+    await withStagedWorkspace(async ({ stage, baselines }) => {
+      const { site } = makeSite({ stage, seedManagedHome: undefined });
+      await site.placeWorkspace(makeContext("no-seam"));
+      expect(site.staged?.teardown).toBeNull();
+      expect(await baselines()).toEqual([]);
+    });
+  });
+
+  it("releases the baseline when the seam stages without a teardown", async () => {
+    await withStagedWorkspace(async ({ stage, baselines }) => {
+      const { site } = makeSite({
+        stage,
+        seedManagedHome: async (seamStage) => ({ stagedRuntime: await seamStage([]), teardown: null, dispose: null }),
+      });
+      await site.placeWorkspace(makeContext("seam-without-teardown"));
+      expect(await baselines()).toEqual([]);
+    });
+  });
+
+  it("releases the baseline when the seam throws after it staged", async () => {
+    await withStagedWorkspace(async ({ stage, baselines }) => {
+      const disposeFreshStagedRuntime = vi.fn(async () => {});
+      const { site } = makeSite({
+        stage,
+        disposeFreshStagedRuntime,
+        seedManagedHome: async (seamStage) => {
+          await seamStage([]);
+          throw new Error("managed home seed failed");
+        },
+      });
+      await expect(site.placeWorkspace(makeContext("seam-throws"))).rejects.toThrow("managed home seed failed");
+      expect(disposeFreshStagedRuntime).toHaveBeenCalledTimes(1);
+      expect(await baselines()).toEqual([]);
+    });
+  });
+
+  it("keeps the baseline for a seam teardown, which releases it when it restores", async () => {
+    await withStagedWorkspace(async ({ stage, baselines }) => {
+      const { site } = makeSite({
+        stage,
+        seedManagedHome: async (seamStage) => {
+          const stagedRuntime = await seamStage([]);
+          return {
+            stagedRuntime,
+            teardown: async () => {
+              await stagedRuntime.restoreWorkspace();
+              return { ok: true };
+            },
+            dispose: null,
+          };
+        },
+      });
+      await site.placeWorkspace(makeContext("seam-with-teardown"));
+      expect(await baselines()).toHaveLength(1);
+      await site.staged?.teardown?.();
+      expect(await baselines()).toEqual([]);
+    });
   });
 });

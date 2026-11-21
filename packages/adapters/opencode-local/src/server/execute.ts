@@ -337,6 +337,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
+  let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   try {
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
@@ -421,8 +422,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               : []),
           ],
         });
+        let remoteWorkspaceRestore: Promise<void> | null = null;
         restoreRemoteWorkspace = () =>
-          preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+          (remoteWorkspaceRestore = preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line)));
+        releaseRemoteWorkspaceSnapshot = async () => {
+          await remoteWorkspaceRestore?.catch(() => {});
+          await preparedExecutionTargetRuntime.cleanupWorkspaceSnapshot?.();
+        };
         effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
         refreshPaperclipWorkspaceEnvForExecution({
           env: preparedRuntimeConfig.env,
@@ -830,6 +836,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
+    await releaseRemoteWorkspaceSnapshot?.().catch(() => {});
     await preparedRuntimeConfig.cleanup();
   }
 }
