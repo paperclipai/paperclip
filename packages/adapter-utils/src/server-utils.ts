@@ -3898,6 +3898,8 @@ export async function listPaperclipSkillEntries(
   }
 }
 
+const STALE_SKILL_COPIES_DIR = ".paperclip-stale-skill-copies";
+
 export async function readInstalledSkillTargets(
   skillsHome: string,
 ): Promise<Map<string, InstalledSkillTarget>> {
@@ -3906,6 +3908,7 @@ export async function readInstalledSkillTargets(
     .catch(() => []);
   const out = new Map<string, InstalledSkillTarget>();
   for (const entry of entries) {
+    if (entry.name === STALE_SKILL_COPIES_DIR) continue;
     const fullPath = path.join(skillsHome, entry.name);
     const linkedPath = entry.isSymbolicLink()
       ? await fs.readlink(fullPath).catch(() => null)
@@ -4452,6 +4455,60 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+async function realDirectory(dir: string): Promise<boolean> {
+  const stat = await fs.lstat(dir).catch(() => null);
+  return Boolean(stat?.isDirectory());
+}
+
+function staleSkillCopiesDir(target: string): string {
+  return path.join(path.dirname(target), STALE_SKILL_COPIES_DIR, path.basename(target));
+}
+
+async function listStaleSkillCopies(target: string): Promise<string[]> {
+  const root = path.join(path.dirname(target), STALE_SKILL_COPIES_DIR);
+  const dir = staleSkillCopiesDir(target);
+  if (!(await realDirectory(root)) || !(await realDirectory(dir))) return [];
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name));
+}
+
+async function pruneStaleSkillCopiesDir(target: string): Promise<void> {
+  const dir = staleSkillCopiesDir(target);
+  if (await realDirectory(dir)) await fs.rmdir(dir).catch(() => {});
+  const root = path.dirname(dir);
+  if (await realDirectory(root)) await fs.rmdir(root).catch(() => {});
+}
+
+async function removeStaleSkillCopies(target: string): Promise<void> {
+  for (const copy of await listStaleSkillCopies(target)) {
+    await fs.rm(copy, { recursive: true, force: true }).catch(() => {});
+  }
+  await pruneStaleSkillCopiesDir(target);
+}
+
+async function prepareStaleSkillCopiesDir(target: string): Promise<string | null> {
+  const root = path.join(path.dirname(target), STALE_SKILL_COPIES_DIR);
+  const dir = staleSkillCopiesDir(target);
+  await fs.mkdir(root).catch(() => {});
+  if (!(await realDirectory(root))) return null;
+  await fs.mkdir(dir).catch(() => {});
+  if (!(await realDirectory(dir))) return null;
+  return dir;
+}
+
+async function restoreStaleSkillCopy(copy: string, target: string): Promise<void> {
+  await fs.rename(copy, target);
+  await pruneStaleSkillCopiesDir(target);
+}
+
+async function isSymlinkTo(target: string, source: string): Promise<boolean> {
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  return (
+    linkedPath !== null &&
+    path.resolve(path.dirname(target), linkedPath) === path.resolve(source)
+  );
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
@@ -4462,12 +4519,64 @@ export async function ensurePaperclipSkillSymlink(
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
-    await linkSkill(source, target);
+    try {
+      await linkSkill(source, target);
+    } catch (err) {
+      const [copy] = await listStaleSkillCopies(target);
+      const occupied = await fs.lstat(target).then(() => true).catch(() => false);
+      if (copy && !occupied) await restoreStaleSkillCopy(copy, target).catch(() => {});
+      throw err;
+    }
+    await removeStaleSkillCopies(target);
     return "created";
   }
 
   if (!existing.isSymbolicLink()) {
-    return "skipped";
+    if (!existing.isDirectory()) return "skipped";
+    const sentinelExists = await fs
+      .stat(path.join(target, MATERIALIZED_SKILL_SENTINEL))
+      .then(() => true)
+      .catch(() => false);
+    if (!sentinelExists) return "skipped";
+    const sourceRoot = path.resolve(source);
+    const sourceStat = await fs.lstat(sourceRoot).catch(() => null);
+    if (!sourceStat || !sourceStat.isDirectory()) return "skipped";
+    const sourceFingerprint = await hashSkillDirectory(sourceRoot).catch(
+      () => null,
+    );
+    if (!sourceFingerprint) return "skipped";
+    if (await materializedSkillFingerprintMatches(target, sourceFingerprint)) {
+      return "skipped";
+    }
+    const copiesDir = await prepareStaleSkillCopiesDir(target);
+    if (!copiesDir) return "skipped";
+    const staleCopy = path.join(copiesDir, `${process.pid}-${Date.now()}`);
+    try {
+      await fs.rename(target, staleCopy);
+    } catch (err) {
+      await pruneStaleSkillCopiesDir(target);
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return "skipped";
+      throw err;
+    }
+    try {
+      await linkSkill(source, target);
+    } catch (err) {
+      if (await isSymlinkTo(target, source)) {
+        await fs.rm(staleCopy, { recursive: true, force: true }).catch(() => {});
+        await removeStaleSkillCopies(target);
+        return "skipped";
+      }
+      const occupied = await fs.lstat(target).then(() => true).catch(() => false);
+      if (!occupied) await restoreStaleSkillCopy(staleCopy, target);
+      else {
+        await fs.rm(staleCopy, { recursive: true, force: true }).catch(() => {});
+        await pruneStaleSkillCopiesDir(target);
+      }
+      throw err;
+    }
+    await fs.rm(staleCopy, { recursive: true, force: true }).catch(() => {});
+    await removeStaleSkillCopies(target);
+    return "repaired";
   }
 
   const linkedPath = await fs.readlink(target).catch(() => null);
@@ -4475,6 +4584,7 @@ export async function ensurePaperclipSkillSymlink(
 
   const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
   if (resolvedLinkedPath === source) {
+    await removeStaleSkillCopies(target);
     return "skipped";
   }
 
