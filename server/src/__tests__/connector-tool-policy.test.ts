@@ -56,6 +56,27 @@ describe("reviewed connector risk dispatch", () => {
     expect(connectorToolPolicy("circleback").quarantineNewEntries).toBe(false);
   });
 
+  it("classifies the Postiz agent tool as destructive and keeps unreviewed Postiz tools as writes", () => {
+    expect(classifyRisk({ name: "ask_postiz" }, "custom")).toBe("read");
+    expect(classifyRisk({ name: "ask_postiz" }, "postiz")).toBe("destructive");
+    for (const name of ["integrationSchedulePostTool", "postSettingsTool", "postAttachmentsTool", "deletePostTool",
+      "triggerTool", "integrationAnalyticsTool", "postAnalyticsTool"]) {
+      expect(classifyRisk({ name }, "postiz")).toBe("destructive");
+    }
+    for (const name of ["integrationList", "groupList", "integrationSchema", "postsListTool", "mediaListTool",
+      "mediaStatusTool", "uploadWidgetStatusTool", "generateVideoOptions", "videoFunctionTool", "videoStatusTool",
+      "clippingStatusTool"]) {
+      expect(classifyRisk({ name, annotations: { readOnlyHint: true } }, "postiz")).toBe("read");
+    }
+    for (const name of ["integrationConnectTool", "uploadFromUrlTool", "uploadWidgetTool", "uploadWidgetTicketTool",
+      "generateImageTool", "generateVideoTool", "clippingTool", "clippingWidgetTicketTool"]) {
+      expect(classifyRisk({ name, annotations: { readOnlyHint: false } }, "postiz")).toBe("write");
+    }
+    expect(classifyRisk({ name: "exportPostsTool", annotations: { readOnlyHint: true } }, "postiz")).toBe("write");
+    expect(classifyRisk({ name: "integrationList", annotations: { destructiveHint: true } }, "postiz")).toBe("destructive");
+    expect(connectorToolPolicy("postiz").quarantineNewEntries).toBe(false);
+  });
+
   it("retains generic risk behavior when the connector has no reviewed override", () => {
     expect(classifyRisk({ name: "get_object" }, "custom")).toBe("read");
     expect(classifyRisk({ name: "new_tool", annotations: { readOnlyHint: true } }, "custom")).toBe("read");
