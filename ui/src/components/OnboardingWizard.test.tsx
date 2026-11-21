@@ -2409,6 +2409,37 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       } finally { await act(async () => root.unmount()); }
     });
 
+    it("offers only stored secrets, never managed accounts, for hermes_local", async () => {
+      // Hermes cannot use managed OpenRouter accounts: isAiConnectionCompatible
+      // rejects them (the openrouter api_key capability lists only
+      // opencode_local and pi_local), while a typed key is carried as an env
+      // user secret. The first saved account is auto-selected, so listing the
+      // managed account would hand the environment test a binding it rejects.
+      managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [
+        { id: "openrouter-key", grantId: "openrouter-grant", companyId: "company-new", provider: "openrouter", method: "api_key",
+          ownership: "personal", ownerUserId: "user-1", isDefault: true, status: "connected", name: "My managed OpenRouter account" },
+      ] } as never);
+      mockSecretsApi.listMyUserSecrets.mockResolvedValue([{ definition: { id: "stored-key", companyId: "company-new", name: "My stored OpenRouter key", key: "OPENROUTER_API_KEY", status: "active" }, secret: { companyId: "company-new", status: "active" } }] as never);
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }, { type: "hermes_local" }];
+      mockAdaptersApi.list.mockResolvedValue(["claude_local", "codex_local", "hermes_local"].map((type) =>
+        setupAdapterInfo({ type, loaded: true, disabled: false, supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" }),
+      ));
+      const { root } = await openStep4({ adapterType: "hermes_local" });
+      try {
+        // The draft names hermes_local, so the wizard auto-expands "More
+        // harnesses" — the Hermes tile is already in the grid (clicking the
+        // toggle would collapse it again). With only API-key accounts
+        // mocked, the mode is already "api", so the picker shows directly.
+        await pickSource(/Hermes/);
+        const select = document.querySelector('select[aria-label="Saved API key"]') as HTMLSelectElement | null;
+        expect(select, "the saved-API-key picker should be showing").toBeTruthy();
+        const labels = [...(select?.querySelectorAll("option") ?? [])].map((option) => option.textContent ?? "");
+        expect(labels.some((text) => text.includes("My stored OpenRouter key"))).toBe(true);
+        expect(labels.some((text) => text.includes("My managed OpenRouter account"))).toBe(false);
+        expect(select?.value).not.toBe("ai:openrouter-grant");
+      } finally { await act(async () => root.unmount()); }
+    });
+
     // N-16: the gateway is an advanced route, not the next thing after the key.
     // It sat directly under the API key field, inside the key card; it belongs
     // in the step's Advanced disclosure, hidden until that is opened.

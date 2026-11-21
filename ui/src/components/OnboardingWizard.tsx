@@ -738,6 +738,15 @@ function OnboardingWizardInner({
     // still applies there).
     aiProviderForAdapter(adapterType),
   );
+  // Hermes cannot use managed OpenRouter accounts: isAiConnectionCompatible
+  // rejects them (the openrouter api_key capability lists only
+  // opencode_local and pi_local), while a typed key is carried as an env
+  // user secret. Offer only stored secrets for it, never managed accounts —
+  // the first saved account is auto-selected, so listing one would hand the
+  // environment test a binding it rejects.
+  const savedKeyOptions = adapterType === "hermes_local"
+    ? savedKeys.options.filter((option) => !option.aiConnection)
+    : savedKeys.options;
   // The chooser is absent in onboarding. Prefer the user's explicit default;
   // otherwise only reuse an unambiguous account, regardless of list ordering.
   const savedSubscription = savedKeys.subscriptions.find((option) => option.aiConnection?.mode === "responsible_user")
@@ -745,11 +754,11 @@ function OnboardingWizardInner({
   const [selectedSavedKey, setSelectedSavedKey] = useState<{ companyId: string; envKey: string; id: string } | null>(null);
   const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType)
     ? selectedSavedKey.id
-    : savedKeys.options[0]?.id;
-  const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
+    : savedKeyOptions[0]?.id;
+  const selectedApiKey = savedKeyOptions.find((option) => option.id === selectedApiKeyId);
   const credentialMode = credentialModeChoice ?? (
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
-      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" || adapterType === "hermes_local" ? "api" : "subscription"
+      ? "subscription" : savedKeyOptions.length || adapterType === "opencode_local" || adapterType === "hermes_local" ? "api" : "subscription"
   );
   const onboardingAnalytics = useOnboardingAnalytics({
     open: effectiveOnboardingOpen,
@@ -3240,7 +3249,7 @@ function OnboardingWizardInner({
                     >
                       <div className="-ml-3 mt-1">
                         <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
-                        {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
+                        {savedKeyOptions.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeyOptions.length} saved API {savedKeyOptions.length === 1 ? "key available" : "keys available"}.</p>}
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
 
@@ -3351,11 +3360,11 @@ function OnboardingWizardInner({
                       </p>
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
-                        instruction={hasGatewaySelection || connectionModels ? "Choose a model for your saved connection" : savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
+                        instruction={hasGatewaySelection || connectionModels ? "Choose a model for your saved connection" : savedKeyOptions.length ? "Choose a saved API key or enter a new one" : `Provide your ${
                           CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
                         } API key to connect`}
                       >
-                        {!hasGatewaySelection && <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                        {!hasGatewaySelection && <SavedProviderKeySelect {...savedKeys} options={savedKeyOptions} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
                           setGatewayConnection(undefined);
                           if (connectionModels) setModel("");
                           setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
