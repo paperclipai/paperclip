@@ -137,7 +137,9 @@ function buildSandboxCreateParams(input: {
     params.idleTimeoutMs = input.config.idleTimeoutMs;
   }
   if (input.config.cidrAllowlist && input.config.cidrAllowlist.length > 0) {
-    params.cidrAllowlist = input.config.cidrAllowlist;
+    // modal 0.11 renamed the create param from `cidrAllowlist` to
+    // `outboundCidrAllowlist`; the plugin config key stays `cidrAllowlist`.
+    params.outboundCidrAllowlist = input.config.cidrAllowlist;
   }
   // Modal sandboxes accept tag metadata via setTags after creation; the create
   // RPC does not take tags directly. We pass them through input so the caller
@@ -255,9 +257,8 @@ function buildLoginShellScript(input: {
 }
 
 async function ensureRemoteWorkspace(sandbox: Sandbox, remoteCwd: string): Promise<void> {
-  // Use a one-shot exec to mkdir -p; Modal does not expose a direct
-  // filesystem mkdir helper and creating a file via `open()` does not create
-  // intermediate directories.
+  // Use a one-shot exec to mkdir -p so the workspace is created with the
+  // sandbox's own shell and user, matching how commands later run in it.
   const proc = await sandbox.exec(["sh", "-lc", `mkdir -p ${shellQuote(remoteCwd)}`]);
   const exitCode = await proc.wait();
   if (exitCode !== 0) {
@@ -268,13 +269,9 @@ async function ensureRemoteWorkspace(sandbox: Sandbox, remoteCwd: string): Promi
 }
 
 async function stageStdin(sandbox: Sandbox, stdin: string, remotePath: string): Promise<void> {
-  const file = await sandbox.open(remotePath, "w");
-  try {
-    await file.write(new TextEncoder().encode(stdin));
-    await file.flush();
-  } finally {
-    await file.close().catch(() => undefined);
-  }
+  // modal 0.11 removed `sandbox.open()`; the filesystem API writes the whole
+  // file (overwriting any existing file) and rejects if the write fails.
+  await sandbox.filesystem.writeText(stdin, remotePath);
 }
 
 async function deleteStdinPath(sandbox: Sandbox, remotePath: string): Promise<void> {
