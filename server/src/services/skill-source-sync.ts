@@ -17,7 +17,7 @@ import { scanGitHubSkillsWithPackageFallback } from './github-skill-source.js';
 import { companySkillPolicyService } from './company-skill-policy.js';
 import { persistActivity, publishActivity } from './activity-log.js';
 import type { ActivityPublication } from './activity-log.js';
-import { currentSkillActor, skillAccessService } from './skill-access.js';
+import { currentSkillActor, skillAccessService, withSkillActor } from './skill-access.js';
 import { enqueueProjectSkillSource, projectSkillRepository, projectSkillSetupIdentity } from './project-skill-source-bindings.js';
 import { conflict, forbidden, notFound } from '../errors.js';
 import { loadConfig } from '../config.js';
@@ -263,7 +263,7 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
       or(isNull(projectSkillSources.leaseToken), lte(projectSkillSources.leaseExpiresAt, now))))
       .orderBy(asc(projectSkillSources.nextSyncAt)).limit(10);
     let imported = 0, checked = 0;
-    for (const binding of pending) { if (shutdown.signal.aborted) break; if (await importBinding(binding, now)) imported++; }
+    for (const binding of pending) { if (shutdown.signal.aborted) break; if (await withSkillActor(setupActor(binding), () => importBinding(binding, now))) imported++; }
     const due = await db.select().from(companySkillSources).where(and(inArray(companySkillSources.companyId, ids),
       eq(companySkillSources.enabled, true), eq(companySkillSources.automaticUpdates, true), lte(companySkillSources.nextSyncAt, now),
       or(isNull(companySkillSources.leaseToken), lte(companySkillSources.leaseExpiresAt, now)),
@@ -273,16 +273,18 @@ export function skillSourceSyncService(db: Db, options: { context?: (setup: Setu
       if (shutdown.signal.aborted) break;
       const source = await recoverSetup(entry);
       try {
-        const context = await contextFor(source);
-        if (!options.context) {
-          try { await skillAccessService(db, setupActor(source)).assertSource(source.companyId, source.id); }
-          catch (error) {
-            if (!(error instanceof Error && 'status' in error && error.status === 404)) throw error;
-            throw forbidden('The person who connected this source no longer has project access. Choose another GitHub connection.');
+        await withSkillActor(setupActor(source), async () => {
+          const context = await contextFor(source);
+          if (!options.context) {
+            try { await skillAccessService(db, setupActor(source)).assertSource(source.companyId, source.id); }
+            catch (error) {
+              if (!(error instanceof Error && 'status' in error && error.status === 404)) throw error;
+              throw forbidden('The person who connected this source no longer has project access. Choose another GitHub connection.');
+            }
           }
-        }
-        await sources.refresh(source.companyId, source.id, context, undefined, undefined, { checkCommit: true, automatic: true, now, signal: shutdown.signal });
-        checked++;
+          await sources.refresh(source.companyId, source.id, context, undefined, undefined, { checkCommit: true, automatic: true, now, signal: shutdown.signal });
+          checked++;
+        });
       } catch (error) {
         if (error instanceof Error && 'status' in error && error.status === 409) continue;
         // Failures in context or policy authorization precede the refresh lease.

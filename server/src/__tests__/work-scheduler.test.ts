@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkScheduler } from "../services/work-scheduler.js";
+import { currentSkillActor, withSkillActor } from "../services/skill-access.js";
+import type { AuthorizationActor } from "../services/authorization.js";
 afterEach(() => vi.useRealTimers());
 describe("work scheduler", () => {
   it("owns one timer, replaces named deadlines, and exposes the earliest wake", async () => {
@@ -43,5 +45,15 @@ describe("work scheduler", () => {
     s.stop(); s.schedule("late", Date.now(), run);
     expect(vi.getTimerCount()).toBe(0);
     expect(() => createWorkScheduler().schedule("bad", NaN, run)).toThrow("finite");
+  });
+  it("does not leak a request actor into timer callbacks", async () => {
+    const otherActor: AuthorizationActor = { type: "board", userId: "other-user", source: "session", companyIds: ["other-company"] };
+    const seen: Array<ReturnType<typeof currentSkillActor>> = [];
+    const s = createWorkScheduler();
+    s.schedule("first", Date.now() + 25, () => { seen.push(currentSkillActor()); });
+    withSkillActor(otherActor, () => { s.schedule("second", Date.now() + 100, () => {}); });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    s.stop();
+    expect(seen).toEqual([undefined]);
   });
 });
