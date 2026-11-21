@@ -606,6 +606,8 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(await service.nextTerminalWorkspaceSweepAt()).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
   });
 
+  // This fixture writes and verifies two 65 MiB files across Git worktrees.
+  // Allow bounded extra time for disk contention in the parallel CI shard.
   it("re-homes a workspace whose changes exceed the default restore point limits", async () => {
     const f = await fixture();
     await makeWork(f.cwd);
