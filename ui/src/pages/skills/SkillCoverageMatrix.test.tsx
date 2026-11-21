@@ -204,6 +204,19 @@ describe("SkillCoverageMatrix", () => {
     expect(node.textContent).toContain("3");
   });
 
+  it("labels each mobile cell with its skill name", async () => {
+    mockCoverage.mockResolvedValue(coveragePayload);
+    const node = await renderMatrix();
+    const mobileCells = Array.from(node.querySelectorAll("ul.md\\:hidden > li > ul > li"));
+
+    expect(mobileCells.map((cell) => cell.querySelector("span")?.textContent)).toEqual([
+      "Alpha",
+      "Beta",
+      "Alpha",
+      "Beta",
+    ]);
+  });
+
   it("hides desired cells when missing only is checked", async () => {
     mockCoverage.mockResolvedValue(coveragePayload);
     const node = await renderMatrix();

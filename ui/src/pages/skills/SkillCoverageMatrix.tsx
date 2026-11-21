@@ -261,13 +261,14 @@ export function SkillCoverageMatrix({ companyId }: { companyId: string }) {
                       <Badge variant="outline">Unsupported</Badge>
                     ) : null}
                   </div>
-                  <ul className="mt-3 flex flex-wrap gap-2">
+                  <ul className="mt-3 flex flex-col gap-2">
                     {visibleSkills.map((skill) => {
                       const cell = cellMap.get(cellKey(agent.id, skill.key));
                       const kind = cellKind(cell);
                       if (missingOnly && kind === "desired") return null;
                       return (
-                        <li key={skill.key}>
+                        <li key={skill.key} className="flex items-center justify-between gap-2 text-sm">
+                          <span className="min-w-0 truncate" title={skill.key}>{skill.name}</span>
                           <CoverageCell
                             kind={kind}
                             skillName={skill.name}
