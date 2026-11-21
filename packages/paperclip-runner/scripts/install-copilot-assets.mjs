@@ -2,7 +2,7 @@ import { access, lstat, mkdir, readFile, realpath, rmdir } from "node:fs/promise
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { COPILOT_DISTRIBUTIONS, materializePinnedCopilotBinary } from "./materialize-copilot-binary.mjs";
+import { COPILOT_DISTRIBUTIONS, dropGroupWorldWrite, materializePinnedCopilotBinary } from "./materialize-copilot-binary.mjs";
 
 const packageRoot = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const owner = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
@@ -62,6 +62,7 @@ export async function installCopilotAssets() {
       // Official native packages export their executable, not package.json.
       // Resolve that path without loading or executing the native module.
       const nativePackageRoot = dirname(createRequire(import.meta.url).resolve(COPILOT_DISTRIBUTIONS[target].packageName));
+      dropGroupWorldWrite(join(nativePackageRoot, "copilot"));
       const materialized = materializePinnedCopilotBinary({ packageRoot: nativePackageRoot, platform, architecture, targetDirectory: destination });
       if (materialized.closureSha256 !== COPILOT_CLOSURE_SHA256[target]) {
         throw new Error("Copilot installation differs from the runtime closure pin");
