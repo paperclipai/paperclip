@@ -31,8 +31,14 @@ function oracle(db: Db, scope: AttentionRetentionScope, cursor?: Cursor, sourceI
     review: sql`select 'review', i.id::text, i.company_id, i.updated_at, i.id::text
       from issues i where i.status = 'in_review' and i.hidden_at is null and i.harness_kind is null`,
     failed_run: sql`select 'failed_run', r.id::text, r.company_id, coalesce(r.finished_at, r.updated_at, r.created_at), coalesce(r.context_snapshot->>'issueId', r.context_snapshot->>'taskId')
-      from heartbeat_runs r where r.status in ('failed', 'timed_out') and exists (select 1 from heartbeat_run_events e where e.run_id = r.id
-        and e.company_id = r.company_id and e.event_type = 'lifecycle' and e.message like 'Bounded retry exhausted%')`,
+      from heartbeat_runs r where r.status in ('failed', 'timed_out') and (
+        exists (select 1 from heartbeat_run_events e where e.run_id = r.id
+          and e.company_id = r.company_id and e.event_type = 'lifecycle' and e.message like 'Bounded retry exhausted%')
+        or not exists (select 1 from heartbeat_runs n where n.company_id = r.company_id and n.agent_id = r.agent_id
+          and n.status in ('failed', 'timed_out')
+          and coalesce(n.context_snapshot ->> 'issueId', n.context_snapshot ->> 'taskId', '')
+            = coalesce(r.context_snapshot ->> 'issueId', r.context_snapshot ->> 'taskId', '')
+          and (n.created_at > r.created_at or (n.created_at = r.created_at and n.id > r.id))))`,
     budget_alert: sql`select 'budget_alert', b.id::text, b.company_id, b.updated_at, null::text from budget_incidents b where b.status = 'open'
       and (b.threshold_type = 'hard' or (b.amount_limit > 0 and round(b.amount_observed::numeric / b.amount_limit * 10000) / 100 >= 85))`,
     agent_error_alert: sql`select 'agent_error_alert', a.id::text, a.company_id, a.updated_at, null::text from agents a where a.status = 'error'`,
@@ -214,7 +220,7 @@ function oracle(db: Db, scope: AttentionRetentionScope, cursor?: Cursor, sourceI
     expect(await listAttentionRetentionCandidates(db as never, nullScope)).toEqual(await oracle(db, { companyId, sourceKind: "failed_run" }));
   });
 
-  it("excludes kept and archived sources and failed runs without a retry receipt", async () => {
+  it("excludes kept and archived sources and superseded failed runs without a retry receipt", async () => {
     const rows = (await pages(cursor => listAttentionRetentionCandidates(db as never, { companyId }, cursor as never))).flat();
     const retained = await db.execute<{ kind: string; id: string }>(sql`select source_kind as kind, source_id as id from decision_retention
       where company_id = ${companyId}::uuid and (keep or archived_at is not null) and source_kind <> 'blocker_attention'`);
@@ -225,10 +231,23 @@ function oracle(db: Db, scope: AttentionRetentionScope, cursor?: Cursor, sourceI
       where r.company_id = ${companyId}::uuid and r.source_kind = 'blocker_attention' and r.keep and i.hidden_at is null and i.harness_kind is null`);
     expect(keptBlocked.length).toBeGreaterThan(0);
     for (const row of keptBlocked) expect(returned.has(`blocker_attention:${row.id}`)).toBe(true);
-    const unreceipted = await db.execute<{ id: string }>(sql`select r.id::text from heartbeat_runs r where r.company_id = ${companyId}::uuid
-      and r.status in ('failed', 'timed_out') and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
-        and e.event_type = 'lifecycle' and e.message like 'Bounded retry exhausted%')`);
-    expect(unreceipted.length).toBeGreaterThan(0);
-    for (const row of unreceipted) expect(returned.has(`failed_run:${row.id}`)).toBe(false);
+    const unreceipted = sql`r.status in ('failed', 'timed_out') and not exists (select 1 from heartbeat_run_events e
+      where e.run_id = r.id and e.event_type = 'lifecycle' and e.message like 'Bounded retry exhausted%')`;
+    const newerFailed = sql`exists (select 1 from heartbeat_runs n where n.company_id = r.company_id and n.agent_id = r.agent_id
+      and n.status in ('failed', 'timed_out')
+      and coalesce(n.context_snapshot ->> 'issueId', n.context_snapshot ->> 'taskId', '')
+        = coalesce(r.context_snapshot ->> 'issueId', r.context_snapshot ->> 'taskId', '')
+      and (n.created_at > r.created_at or (n.created_at = r.created_at and n.id > r.id)))`;
+    const superseded = await db.execute<{ id: string }>(sql`select r.id::text from heartbeat_runs r
+      where r.company_id = ${companyId}::uuid and ${unreceipted} and ${newerFailed}`);
+    expect(superseded.length).toBeGreaterThan(0);
+    for (const row of superseded) expect(returned.has(`failed_run:${row.id}`)).toBe(false);
+    // The latest unreceipted crash for an issue/agent pair still ages out of the
+    // feed: it is a candidate on the same terms as a receipted exhaustion.
+    const latestUnreceipted = await db.execute<{ id: string }>(sql`select r.id::text from heartbeat_runs r
+      where r.company_id = ${companyId}::uuid and ${unreceipted} and not ${newerFailed}
+        and not exists (select 1 from decision_retention d where d.source_id = r.id::text and (d.keep or d.archived_at is not null))`);
+    expect(latestUnreceipted.length).toBeGreaterThan(0);
+    for (const row of latestUnreceipted) expect(returned.has(`failed_run:${row.id}`)).toBe(true);
   });
 });

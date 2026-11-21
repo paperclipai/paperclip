@@ -160,6 +160,7 @@ export type AttentionItemDetail =
       kind: "failed_run";
       agentName: string | null;
       failureReasonExcerpt: string | null;
+      failedAttemptCount?: number;
       images: AttentionDetailImage[];
     }
   | {

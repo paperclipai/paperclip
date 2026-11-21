@@ -22,8 +22,10 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
     .orderBy(asc(heartbeatRunEvents.runId), desc(heartbeatRunEvents.id))
     .as("latest_exhaustion");
 
+  const issueKey = sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId', '')`;
+
   return db
-    .select({
+    .selectDistinctOn([issueKey, heartbeatRuns.agentId], {
       id: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
       agentId: heartbeatRuns.agentId,
@@ -41,15 +43,16 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       updatedAt: heartbeatRuns.updatedAt,
       finishedAt: heartbeatRuns.finishedAt,
       exhaustionMessage: latestExhaustion.message,
+      failedAttemptCount: sql<number>`count(*) over (partition by ${issueKey}, ${heartbeatRuns.agentId})`.mapWith(Number),
     })
     .from(heartbeatRuns)
     .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-    .innerJoin(latestExhaustion, eq(latestExhaustion.runId, heartbeatRuns.id))
+    .leftJoin(latestExhaustion, eq(latestExhaustion.runId, heartbeatRuns.id))
     .where(and(
       eq(heartbeatRuns.companyId, companyId),
       eq(agents.companyId, companyId),
       notInArray(agents.status, ["terminated"]),
       inArray(heartbeatRuns.status, ["failed", "timed_out"]),
     ))
-    .orderBy(desc(heartbeatRuns.createdAt), desc(latestExhaustion.eventId));
+    .orderBy(asc(issueKey), asc(heartbeatRuns.agentId), desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
 }
