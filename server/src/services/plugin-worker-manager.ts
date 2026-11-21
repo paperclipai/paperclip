@@ -1002,6 +1002,13 @@ export function createPluginWorkerHandle(
   }
   let nextRequestId = 1;
   const activeInvocations = new Map<string, ActiveInvocation>();
+  const retainedBackgroundInvocations = new Set<string>();
+  // A released agent invocation must not come back as company-only scope.
+  // `background.retain` may open a fresh company scope for an unknown id, but
+  // an id that belonged to an agent keeps that restriction until this record expires.
+  const RELEASED_AGENT_INVOCATION_TTL_MS = 6 * 60 * 60 * 1000;
+  const RELEASED_AGENT_INVOCATION_CAP = 4096;
+  const releasedAgentInvocations = new Map<string, number>();
   // Host-owned execute routes, keyed by the host-issued invocation id. Only an
   // `environmentExecute` call with a log sink registers a route here. The
   // `execute.log` router delivers only through this map — never through the
@@ -1334,6 +1341,9 @@ export function createPluginWorkerHandle(
     const entry: ActiveInvocation = { scope, traceparent, providerSpanBudget:{remaining:256} };
     if (ttlMs !== undefined) {
       entry.timer = setTimeout(() => {
+        const current = activeInvocations.get(invocation.id);
+        if (!current) return;
+        rememberReleasedAgentInvocation(invocation.id, current.scope);
         activeInvocations.delete(invocation.id);
       }, ttlMs);
       if (entry.timer.unref) entry.timer.unref();
@@ -1342,10 +1352,36 @@ export function createPluginWorkerHandle(
     return invocation;
   }
 
+  function rememberReleasedAgentInvocation(id: string, scope: PluginInvocationScope): void {
+    if (!scope.agentOrigin) return;
+    const now = Date.now();
+    for (const [key, expiresAt] of releasedAgentInvocations) {
+      if (expiresAt <= now) releasedAgentInvocations.delete(key);
+    }
+    if (releasedAgentInvocations.has(id)) releasedAgentInvocations.delete(id);
+    while (releasedAgentInvocations.size >= RELEASED_AGENT_INVOCATION_CAP) {
+      const oldest = releasedAgentInvocations.keys().next().value;
+      if (oldest === undefined) break;
+      releasedAgentInvocations.delete(oldest);
+    }
+    releasedAgentInvocations.set(id, now + RELEASED_AGENT_INVOCATION_TTL_MS);
+  }
+
+  function releasedAgentInvocation(id: string): boolean {
+    const expiresAt = releasedAgentInvocations.get(id);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= Date.now()) {
+      releasedAgentInvocations.delete(id);
+      return false;
+    }
+    return true;
+  }
+
   function clearInvocation(invocation: PluginInvocationContext | null): void {
     if (!invocation) return;
     const entry = activeInvocations.get(invocation.id);
     if (entry?.timer) clearTimeout(entry.timer);
+    if (entry) rememberReleasedAgentInvocation(invocation.id, entry.scope);
     activeInvocations.delete(invocation.id);
   }
 
@@ -2878,7 +2914,25 @@ export function createPluginWorkerHandle(
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
     }
     const entry = activeInvocations.get(invocationId);
-    if (!entry) return { invalidInvocationScope: true };
+    if (!entry) {
+      // A released agent id stays denied, including background.retain.
+      // Opening a fresh company scope is only for an id that was never an
+      // agent invocation. The company still has to be one this worker may
+      // act on proactively, and the stale id itself grants nothing.
+      if (releasedAgentInvocation(invocationId)) {
+        return { invalidInvocationScope: true };
+      }
+      if (message.method === "background.retain") {
+        const companyId = referencedCompanyId(
+          message.method,
+          (message as { params?: unknown }).params,
+        );
+        if (companyId && proactiveCompanyScopes.has(companyId)) {
+          return { invocationScope: { companyId } };
+        }
+      }
+      return { invalidInvocationScope: true };
+    }
     return { invocationScope: entry.scope, traceparent: entry.traceparent, providerSpanBudget:entry.providerSpanBudget };
   }
 
@@ -2916,7 +2970,80 @@ export function createPluginWorkerHandle(
     }
   }
 
+  function retainBackgroundInvocation(request: JsonRpcRequest): { invocationId: string } {
+    const context = contextForWorkerMessage(request);
+    if (context.invalidInvocationScope) {
+      throw Object.assign(new Error("Missing or unknown invocation scope"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    const companyId = isRecord(request.params) ? readNonEmptyString(request.params.companyId) : null;
+    if (!companyId) {
+      throw Object.assign(new Error("companyId is required"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    if (context.invocationScope?.agentOrigin) {
+      throw Object.assign(new Error("Agent invocations cannot open background company access"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    if (context.invocationScope) {
+      if (context.invocationScope.companyId !== companyId) {
+        throw Object.assign(new Error("Missing or unknown invocation scope"), {
+          code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        });
+      }
+    } else if (!proactiveCompanyScopes.has(companyId)) {
+      throw Object.assign(new Error("Missing or unknown invocation scope"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    const invocation = registerInvocation({ companyId });
+    retainedBackgroundInvocations.add(invocation.id);
+    return { invocationId: invocation.id };
+  }
+
+  function releaseBackgroundInvocation(request: JsonRpcRequest): null {
+    const params = isRecord(request.params) ? request.params : {};
+    const invocationId = readNonEmptyString(params.invocationId);
+    const echoed = readNonEmptyString((request as { paperclipInvocationId?: unknown }).paperclipInvocationId);
+    if (!invocationId || echoed !== invocationId || !retainedBackgroundInvocations.has(invocationId)) {
+      throw Object.assign(new Error("Missing or unknown invocation scope"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    }
+    retainedBackgroundInvocations.delete(invocationId);
+    clearInvocation({ id: invocationId, scope: { companyId: "" } });
+    return null;
+  }
+
   async function dispatchWorkerRequest(request: JsonRpcRequest): Promise<void> {
+    if (request.method === "background.retain" || request.method === "background.release") {
+      try {
+        const result = request.method === "background.retain"
+          ? retainBackgroundInvocation(request)
+          : releaseBackgroundInvocation(request);
+        sendMessage({
+          jsonrpc: JSONRPC_VERSION,
+          id: request.id,
+          result: result ?? null,
+        });
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        try {
+          sendMessage(createErrorResponse(
+            request.id,
+            errorCodeForWorkerHostError(err),
+            errorMessage,
+          ));
+        } catch {
+          // Worker may have exited, ignore send error
+        }
+      }
+      return;
+    }
+
     const method = request.method as WorkerToHostMethodName;
     const handler = options.hostHandlers[method] as
       | ((params: unknown, context?: WorkerHostCallContext) => Promise<unknown>)
@@ -3326,6 +3453,7 @@ export function createPluginWorkerHandle(
       if (invocation.timer) clearTimeout(invocation.timer);
     }
     activeInvocations.clear();
+    retainedBackgroundInvocations.clear();
   }
 
   // -----------------------------------------------------------------------

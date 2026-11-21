@@ -1517,6 +1517,7 @@ export const PLUGIN_CAPABILITIES = [
   // Read issue attachment metadata and, via the capability-scoped host
   // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
   "issue.attachments.read",
+  "issue.attachments.write",
   // Read company approvals (list + get). The host redacts approval payloads to
   // match the web app's own approval read surface.
   "approvals.read",
@@ -1590,6 +1591,7 @@ export const PLUGIN_CAPABILITIES = [
   "api.routes.register",
   "http.outbound",
   "secrets.read-ref",
+  "secrets.write",
   "environment.drivers.register",
   "local.folders",
   // Agent Tools

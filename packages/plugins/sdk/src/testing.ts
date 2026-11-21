@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
@@ -516,6 +516,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const dbExecutes: TestHarness["dbExecutes"] = [];
 
   const state = new Map<string, unknown>();
+  const secretValues = new Map<string, string>();
   const entities = new Map<string, PluginEntityRecord>();
   const entityExternalIndex = new Map<string, string>();
   const companies = new Map<string, Company>();
@@ -970,9 +971,31 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     secrets: {
-      async resolve(secretRef) {
+      async resolve(secretRef, options) {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
+        if (
+          secretRef
+          && typeof secretRef === "object"
+          && "secretId" in secretRef
+          && typeof secretRef.secretId === "string"
+          && options?.companyId
+        ) {
+          const stored = secretValues.get(`${options.companyId}:${secretRef.secretId}`);
+          if (stored === undefined) throw new Error("Secret is not bound");
+          return stored;
+        }
         return `resolved:${secretRef}`;
+      },
+      async store(input) {
+        requireCapability(manifest, capabilitySet, "secrets.write");
+        if (!input.value) throw new Error("Refusing to store an empty secret");
+        const secretId = randomUUID();
+        secretValues.set(`${input.companyId}:${secretId}`, input.value);
+        return { secretId, configPath: `plugin-secret.${secretId}` };
+      },
+      async discard(input) {
+        requireCapability(manifest, capabilitySet, "secrets.write");
+        secretValues.delete(`${input.companyId}:${input.secretId}`);
       },
     },
     activity: {
@@ -1940,6 +1963,45 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           contentBase64,
         };
       },
+      async createAttachment(input) {
+        requireCapability(manifest, capabilitySet, "issue.attachments.write");
+        const parentIssue = issues.get(input.issueId);
+        if (!isInCompany(parentIssue, input.companyId)) throw new Error(`Issue not found: ${input.issueId}`);
+        const body = Buffer.from(input.contentBase64, "base64");
+        if (body.length === 0) throw new Error("Attachment is empty");
+        if (body.length > 4 * 1024 * 1024) throw new Error("Attachment exceeds 4 MiB");
+        const filename = (input.filename.split(/[/\\]/).pop() ?? "file").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 180) || "file";
+        const lowerName = filename.toLowerCase();
+        const lowerType = input.contentType.toLowerCase();
+        const contentType = lowerType.includes("svg") || lowerType.includes("html") || lowerName.endsWith(".svg") || lowerName.endsWith(".html") || lowerName.endsWith(".htm")
+          ? "application/octet-stream"
+          : (input.contentType.trim() || "application/octet-stream");
+        const id = randomUUID();
+        const now = new Date();
+        const attachment: IssueAttachment = {
+          id,
+          companyId: parentIssue.companyId,
+          issueId: input.issueId,
+          issueCommentId: null,
+          assetId: randomUUID(),
+          provider: "local",
+          objectKey: `issues/${input.issueId}/${id}`,
+          contentType,
+          byteSize: body.length,
+          sha256: createHash("sha256").update(body).digest("hex"),
+          originalFilename: filename,
+          createdByAgentId: null,
+          createdByUserId: null,
+          createdAt: now,
+          updatedAt: now,
+          contentPath: `/api/attachments/${id}/content`,
+        };
+        const list = issueAttachments.get(input.issueId) ?? [];
+        list.push(attachment);
+        issueAttachments.set(input.issueId, list);
+        attachmentContentById.set(id, body.toString("base64"));
+        return attachment;
+      },
       documents: {
         async list(issueId, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");
@@ -2638,6 +2700,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     tracer: NOOP_PLUGIN_TRACER,
+    async runInCompanyBackground(_companyId, fn) {
+      return fn();
+    },
   };
 
   const harness: TestHarness = {
