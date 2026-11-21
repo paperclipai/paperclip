@@ -73,6 +73,18 @@ describe("resolveBundledPluginInstalls", () => {
     }]);
     expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("boxd");
   });
+  it("resolves the optional kosa8 sandbox provider without making it a self-hosted default", () => {
+    expect(resolveBundledPluginInstalls(["kosa8"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {},
+      enforceCatalogRoot: true,
+    })).toEqual([{
+      key: "kosa8",
+      pluginKey: "paperclip.kosa8-sandbox-provider",
+      localPath: path.join(CATALOG_ROOT, "sandbox-providers/kosa8"),
+    }]);
+    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("kosa8");
+  });
   it("resolves known keys to paths inside the catalog root", () => {
     const resolved = resolveBundledPluginInstalls(["kubernetes", "daytona"], {
       catalogRoot: CATALOG_ROOT,

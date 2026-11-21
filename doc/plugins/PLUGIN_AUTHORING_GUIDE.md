@@ -261,6 +261,20 @@ advertise interactive login, template capture or native file sync. Install the
 built package by local path; its optional managed-image catalog key is `boxd`.
 The package README describes configuration and the opt-in live smoke.
 
+### kosa8 sandbox provider
+
+The in-repo [`@paperclipai/plugin-kosa8`](../../packages/plugins/sandbox-providers/kosa8/README.md)
+package implements the environment lifecycle hooks on kosa8 microVM sandboxes
+through the kosa8 Cloud REST API, with no runtime dependencies. It supports
+reusable leases: a released sandbox sleeps with its disk, memory and processes,
+and the next run wakes it. It also implements the stop and inspect hooks, and
+it bounds a lease with a provider-side `delete_after` time when the host
+requests an expiry. Commands longer than 85 s run as kosa8 background commands.
+It does not advertise interactive login, template capture or native file sync.
+Install the built package by local path; its optional managed-image catalog key
+is `kosa8`. The package README describes configuration and the opt-in live
+smoke.
+
 ### Worker APIs
 
 Worker:
