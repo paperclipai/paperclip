@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { buildNativeSessionHandoff, createNativeSessionHandoffLoader, NATIVE_HANDOFF_MAX_BYTES, renderNativeSessionHandoff } from "./native-session-handoff.js";
+import { agents, applyPendingMigrations, companies, createDb, documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { buildNativeSessionHandoff, createNativeSessionHandoffLoader, decodeNativeHandoffExcerpt, NATIVE_HANDOFF_MAX_BYTES, renderNativeSessionHandoff } from "./native-session-handoff.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { buildNativeModelEnvelope } from "@paperclipai/paperclip-runner";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -17,6 +17,35 @@ describe("bounded fresh-session handoff", () => {
     expect(rendered).toContain("content omitted");
     expect(rendered).toContain("get_task_history");
     expect(rendered).toContain("Legacy adapters can use the equivalent Paperclip");
+  });
+
+  it("drops only the partial characters a byte-bounded excerpt cuts", () => {
+    const head = Buffer.from(`HEAD ${"—".repeat(3_000)}`).subarray(0, 2_900 * 4);
+    const tail = Buffer.from(`${"—".repeat(1_000)} TAIL`);
+    const encoded = Buffer.concat([head, Buffer.from([0xff]), tail.subarray(1)]).toString("base64");
+    const decoded = decodeNativeHandoffExcerpt(encoded);
+    expect(decoded.truncated).toBe(true);
+    expect(decoded.body).not.toContain("\uFFFD");
+    expect(decoded.body.startsWith("HEAD —")).toBe(true);
+    expect(decoded.body.endsWith("— TAIL")).toBe(true);
+    expect(decoded.body).toContain("\n[content omitted]\n");
+    expect(decodeNativeHandoffExcerpt(Buffer.from("short — text").toString("base64"))).toEqual({ body: "short — text", truncated: false });
+    expect(decodeNativeHandoffExcerpt(null)).toEqual({ body: "", truncated: false });
+  });
+
+  it("never splits an emoji at the character bounds", () => {
+    // Each emoji sits across a cut that counts UTF-16 units.
+    const head = `${"a".repeat(2_899)}😀${"b".repeat(50)}`;
+    const tail = `${"y".repeat(50)}😀${"z".repeat(899)}`;
+    const wellFormed = (text: string) => Buffer.from(text, "utf8").toString("utf8") === text;
+    const decoded = decodeNativeHandoffExcerpt(Buffer.concat([Buffer.from(head), Buffer.from([0xff]), Buffer.from(tail)]).toString("base64")).body;
+    expect(wellFormed(decoded)).toBe(true);
+    expect(decoded).toBe(`${"a".repeat(2_899)}😀\n[content omitted]\n😀${"z".repeat(899)}`);
+    const rendered = renderNativeSessionHandoff({ issueId: "issue", generation: null, omittedEntriesAtLeast: 0,
+      entries: [{ kind: "comment", id: "c", body: `${head}${"m".repeat(2_000)}${tail}` }] });
+    const entry = (JSON.parse(rendered.split("\n").at(-1)!).entries as { body: string; truncated: boolean }[])[0]!;
+    expect(entry).toMatchObject({ body: decoded, truncated: true });
+    expect(wellFormed(entry.body)).toBe(true);
   });
 
   it("restores the handoff on fresh bootstrap and resume failure, without replaying it on resume", () => {
@@ -192,5 +221,73 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).not.toContain("QUARANTINED RUN SUMMARY");
     expect(result).toContain("Quarantined low-trust output omitted");
     expect(result).toContain(runId);
+  });
+});
+
+// Instances created before UTF8 initdb flags keep a SQL_ASCII database, where
+// SQL text functions count bytes. Excerpts must never split a UTF-8 character.
+(support.supported ? describe : describe.skip)("handoff excerpts on legacy SQL_ASCII databases", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  const dbs: Record<"UTF8" | "SQL_ASCII", ReturnType<typeof createDb>> = {} as never;
+  const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+  // A unique name lets runs share one Postgres server.
+  const asciiDatabase = `legacy_ascii_${randomUUID().replaceAll("-", "")}`;
+  // 22 prefix bytes plus 21-byte units put byte 2,900 inside an em dash, where
+  // the old SQL cut split it. Over 16,000 bytes exercises the byte-bounded
+  // SQL path; mostly ASCII keeps every clipped entry inside the packet budget.
+  const longBody = (label: string) => `${`${label} HEAD`.padEnd(22, ".")}${`—${"x".repeat(18)}`.repeat(800)} ${label} TAIL`;
+  beforeAll(async () => {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-native-handoff-ascii-");
+    dbs.UTF8 = createDb(database.connectionString);
+    const { sql } = await import("drizzle-orm");
+    await dbs.UTF8.execute(sql.raw(`CREATE DATABASE ${asciiDatabase} TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`));
+    const asciiUrl = new URL(database.connectionString);
+    asciiUrl.pathname = `/${asciiDatabase}`;
+    await applyPendingMigrations(asciiUrl.toString());
+    dbs.SQL_ASCII = createDb(asciiUrl.toString());
+    for (const db of Object.values(dbs)) {
+      await db.insert(companies).values({ id: companyId, name: "Handoff", issuePrefix: "HAND" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Welsh", role: "general", adapterType: "claude_local" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Calendar", status: "in_progress", assigneeAgentId: agentId });
+      await db.insert(issueComments).values({ companyId, issueId, body: longBody("COMMENT"), authorUserId: "user", createdAt: new Date(1_000) });
+      await db.insert(issueThreadInteractions).values({ companyId, issueId, kind: "ask_user_questions", status: "answered",
+        createdByAgentId: agentId, createdAt: new Date(2_000), resolvedAt: new Date(2_500),
+        payload: { version: 1, questions: [] }, result: { version: 1, summaryMarkdown: longBody("DECISION") } });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", nativeIssueId: issueId,
+        contextSnapshot: { issueId }, createdAt: new Date(3_000), finishedAt: new Date(4_000),
+        runnerProfileJson: { sessionCheckpoint: { semanticResult: { summary: longBody("SUMMARY") } } } });
+      await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId, seq: 1, eventType: "item.completed", createdAt: new Date(3_500),
+        payload: { prpEvent: { payload: { kind: "agentMessage", channel: "final", text: longBody("REPLY") } } } });
+      const documentId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId, latestBody: longBody("DOCUMENT"), updatedAt: new Date(5_000) });
+      await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "linkedin-calendar", createdAt: new Date(5_000) });
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+  afterAll(async () => {
+    // The fixture drops only its own database, so this test drops the second one.
+    const { sql } = await import("drizzle-orm");
+    try {
+      await dbs.SQL_ASCII?.$client.end();
+      await dbs.UTF8?.execute(sql.raw(`DROP DATABASE IF EXISTS ${asciiDatabase} WITH (FORCE)`));
+      await dbs.UTF8?.$client.end();
+    } finally {
+      await database?.cleanup();
+    }
+  });
+
+  it("builds the same character-bounded excerpts as a UTF8 database", async () => {
+    const build = (encoding: keyof typeof dbs) =>
+      buildNativeSessionHandoff({ db: dbs[encoding], companyId, issueId, agentId, before: new Date(20_000) });
+    const [utf8, ascii] = [await build("UTF8"), await build("SQL_ASCII")];
+    const bodies = (packet: string | null) => (JSON.parse(packet!.split("\n").at(-1)!).entries as { kind: string; body: string; truncated: boolean }[])
+      .map(({ kind, body, truncated }) => ({ kind, body, truncated }));
+    expect(bodies(ascii)).toEqual(bodies(utf8));
+    expect(bodies(ascii).every(entry => entry.truncated)).toBe(true);
+    for (const label of ["COMMENT", "DECISION", "SUMMARY", "REPLY", "DOCUMENT"]) {
+      expect(ascii).toContain(`${label} HEAD`);
+      expect(ascii).toContain(`${label} TAIL`);
+    }
+    expect(ascii).toContain("content omitted");
+    expect(ascii).not.toContain("�");
   });
 });
