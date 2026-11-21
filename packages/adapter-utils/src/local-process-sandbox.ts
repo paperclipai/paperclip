@@ -287,11 +287,13 @@ async function startNetworkAllowlistProxy(
       clientSocket.pipe(upstream);
     });
     upstream.on("error", () => clientSocket.destroy());
+    clientSocket.on("error", () => upstream.destroy());
     clientSocket.on("close", () => upstream.destroy());
   });
   const sockets = new Set<net.Socket>();
   server.on("connection", (socket) => {
     sockets.add(socket);
+    socket.on("error", () => socket.destroy());
     socket.on("close", () => sockets.delete(socket));
   });
   await new Promise<void>((resolve, reject) => {

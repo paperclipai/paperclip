@@ -235,6 +235,75 @@ describe("local process sandbox", () => {
     }
   });
 
+  it.runIf(process.platform === "linux")("survives client resets on CONNECT tunnels and denied connections", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-proxy-reset-"));
+    cleanup.push(workspace);
+    const payload = Buffer.alloc(1024 * 1024, "x");
+    const plainServer = http.createServer((_request, response) => response.end("allowed-response"));
+    await new Promise<void>((resolve) => plainServer.listen(0, "127.0.0.1", resolve));
+    const plainAddress = plainServer.address();
+    if (!plainAddress || typeof plainAddress === "string") throw new Error("Expected TCP test server address.");
+    const tunnelSockets = new Set<net.Socket>();
+    const tunnelServer = net.createServer((socket) => {
+      tunnelSockets.add(socket);
+      socket.on("error", () => {});
+      socket.on("close", () => tunnelSockets.delete(socket));
+      socket.write(payload);
+    });
+    await new Promise<void>((resolve) => tunnelServer.listen(0, "127.0.0.1", resolve));
+    const tunnelAddress = tunnelServer.address();
+    if (!tunnelAddress || typeof tunnelAddress === "string") throw new Error("Expected TCP test server address.");
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        networkScope: "allowlist",
+        networkAllowlist: [`127.0.0.1:${plainAddress.port}`, `127.0.0.1:${tunnelAddress.port}`],
+      },
+    });
+    const delimiterIndex = target.args.indexOf("--");
+    const socketPath = target.args[delimiterIndex + 3];
+
+    const resetAfterConnect = (requestLine: string) => new Promise<void>((resolve) => {
+      const socket = net.createConnection(socketPath, () => {
+        socket.write(requestLine);
+        setTimeout(() => {
+          socket.destroy();
+          resolve();
+        }, 300);
+      });
+      socket.on("error", () => {});
+    });
+
+    try {
+      await resetAfterConnect(`CONNECT 127.0.0.1:${tunnelAddress.port} HTTP/1.1\r\nHost: 127.0.0.1:${tunnelAddress.port}\r\n\r\n`);
+      await resetAfterConnect("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const outgoing = http.request({
+          socketPath,
+          path: `http://127.0.0.1:${plainAddress.port}/canary`,
+          headers: { host: `127.0.0.1:${plainAddress.port}` },
+        }, (incoming) => {
+          let body = "";
+          incoming.on("data", (chunk) => { body += chunk; });
+          incoming.on("end", () => resolve({ status: incoming.statusCode ?? 0, body }));
+        });
+        outgoing.on("error", reject);
+        outgoing.end();
+      });
+      expect(response).toEqual({ status: 200, body: "allowed-response" });
+    } finally {
+      await target.cleanup?.();
+      for (const socket of tunnelSockets) socket.destroy();
+      await new Promise<void>((resolve) => tunnelServer.close(() => resolve()));
+      await new Promise<void>((resolve) => plainServer.close(() => resolve()));
+    }
+  });
+
   it.runIf(process.platform === "linux")("always permits trusted Paperclip control-plane URLs", async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-trusted-"));
     cleanup.push(workspace);
