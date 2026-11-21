@@ -137,6 +137,7 @@ describeIssueRecovery("stranded-task checks beside one long live run (census)", 
 
   async function boot() {
     const f = await bounded(seed(), () => "the fixture to be seeded");
+    await state.db.execute(sql`ANALYZE`);
     const events = record();
     useCensusClock();
     await bounded(state.start({}), () => "the recovery workers to start");
