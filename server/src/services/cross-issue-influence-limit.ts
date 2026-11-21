@@ -34,6 +34,11 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
+function issueWriteRunContextUnavailableError() {
+  const { body } = issueWriteDenialResponse("issue_write_run_context_unavailable");
+  return forbidden(body.error, body.details);
+}
+
 function readRunSourceIssueId(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
@@ -106,7 +111,7 @@ export async function observeCrossIssueInfluence(
       run.companyId !== input.companyId ||
       run.agentId !== input.agentId
     ) {
-      throw crossIssueInfluenceRunContextError();
+      throw issueWriteRunContextUnavailableError();
     }
 
     // An unscoped run (timer heartbeat with no checked-out issue) has no source
