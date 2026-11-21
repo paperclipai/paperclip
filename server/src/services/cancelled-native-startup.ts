@@ -48,9 +48,6 @@ export async function isFailedNativePreparationRetryAncestor(db: Db, run: Run, c
 async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined, historicalRetryAncestor: boolean) {
   if (!historicalRetryAncestor && !coordinator && await isInterruptedNativePreparation(db, run)) return true;
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
-  // Older preparers used adapter_failed before provider dispatch. Apply the
-  // same full stop, host-log and saved-file proof whether that run is the
-  // latest Retry source or an ancestor behind a never-started recovery turn.
   const historicalEvidence = historicalRetryAncestor || run.errorCode === "adapter_failed";
   const preparationFailure = run.errorCode === "setup_failed" || run.errorCode === "adapter_failed";
   if (run.status !== "failed" || !run.finishedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt

@@ -277,7 +277,6 @@ describe("Retry of a task whose saved work recovery settled", () => {
 
   it("admits Retry when the latest run is the verified legacy adapter preparation itself", async () => {
     const f = await sourceUnavailable({ heldRun: false });
-    // Occupy the worker so this proves admission without starting a provider.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId,
       observedRunId: f.preparedId, idempotencyKey: randomUUID(), actorSource: "local_implicit" });
