@@ -8,6 +8,7 @@ import {
   mkdir,
   open,
   readdir,
+  readFile,
   rename,
   rm,
   writeFile,
@@ -81,6 +82,50 @@ function isWin32ReservedPathSegment(segment: string): boolean {
   return /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/u.test(
     basename,
   );
+}
+
+function yamlNameValue(name: string): string {
+  return /^[A-Za-z0-9._-]+$/u.test(name) ? name : JSON.stringify(name);
+}
+
+async function alignSkillRuntimeName(
+  skillRoot: string,
+  runtimeName: string,
+): Promise<void> {
+  const skillFile = join(skillRoot, "SKILL.md");
+  const markdown = await readFile(skillFile, "utf8").catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "EISDIR") return null;
+      throw error;
+    },
+  );
+  if (markdown === null) return;
+  const opening = /^---\r?\n/u.exec(markdown);
+  if (!opening) return;
+  const rest = markdown.slice(opening[0].length);
+  const closing = /^---(?:\r?\n|$)/mu.exec(rest);
+  if (!closing) return;
+  const lines = rest.slice(0, closing.index).match(/[^\n]*\n|[^\n]+$/gu) ?? [];
+  const firstField = lines.find((line) => line.trim() && !line.trimStart().startsWith("#"));
+  if (!firstField) return;
+  const indent = firstField.match(/^ */u)![0];
+  const nameIndex = lines.findIndex((line) =>
+    line.startsWith(indent) && /^name[ \t]*:/u.test(line.slice(indent.length)),
+  );
+  if (nameIndex < 0) return;
+  let nameEnd = nameIndex + 1;
+  for (let index = nameEnd; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    if (line.match(/^ */u)![0].length <= indent.length) break;
+    nameEnd = index + 1;
+  }
+  const eol = lines[nameIndex]!.endsWith("\r\n") ? "\r\n" : "\n";
+  lines.splice(nameIndex, nameEnd - nameIndex, `${indent}name: ${yamlNameValue(runtimeName)}${eol}`);
+  const aligned = opening[0] + lines.join("") + rest.slice(closing.index);
+  if (aligned === markdown) return;
+  await chmod(skillFile, 0o644);
+  await writeFile(skillFile, aligned, { mode: 0o644 });
 }
 
 function portableRuntimeNameKey(runtimeName: string): string {
@@ -271,6 +316,7 @@ export async function materializeNativeRuntimeSkills(
         verbatimSymlinks: true,
       });
       await assertSafeTree(target);
+      await alignSkillRuntimeName(target, skill.runtimeName);
       await protectStagedTree(target);
     }
 

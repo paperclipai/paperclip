@@ -241,7 +241,10 @@ describe("remote launch asset staging", () => {
     await prepareIsolatedCodexHome({ context: f.source, codexHome: join(f.root, "codex-home") });
     await stageRemoteLaunchAssets(f.input);
     expect(readFileSync(join(f.remote, "skills", "test", "SKILL.md"), "utf8")).toContain("Use a native confirmation.");
-    expect(readFileSync(join(f.remote, "skills", "group", "nested", "SKILL.md"), "utf8")).toBe(body);
+    expect(readFileSync(join(f.remote, "skills", "group", "nested", "SKILL.md"), "utf8")).toBe(
+      '---\nname: "group/nested"\ndescription: Nested selected skill\n---\nKeep the nested package.\n',
+    );
+    expect(readFileSync(join(nestedRoot, "SKILL.md"), "utf8")).toBe(body);
     expect(statSync(join(f.remote, "skills", "group", "nested", "SKILL.md")).mode & 0o222).toBe(0);
   });
 
