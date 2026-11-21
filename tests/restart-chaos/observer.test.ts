@@ -142,6 +142,48 @@ describe("TaskObserver", () => {
     expect(observer.record.timedOut).toBe(true);
   });
 
+  it("waits while a follow-up run is queued and extends the deadline by its queue wait once it starts", async () => {
+    let queuedAt = 0;
+    let startedAt: number | null = null;
+    const first = () => ({ runId: "r1", status: "succeeded", createdAt: new Date(queuedAt - 60_000).toISOString(),
+      startedAt: new Date(queuedAt - 60_000).toISOString(), finishedAt: new Date(queuedAt - 1).toISOString() });
+    const { api } = fakeApi({ "/runs": () => [first(), { runId: "r2", status: startedAt === null ? "queued" : "running", wakeCommentIds: ["comment-1"],
+      createdAt: new Date(queuedAt).toISOString(), startedAt: startedAt === null ? null : new Date(startedAt).toISOString() }] }, "in_progress");
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    const deadline = observer.record.deadlineAt!;
+    const budget = deadline - start;
+    queuedAt = start + 60_000;
+    observer.record.followUp = { at: start + 30_000, commentId: "comment-1", error: null };
+    await observer.poll(deadline + 1_000);
+    expect(observer.record.timedOut).toBe(false);
+    expect(observer.record.deadlineAt).toBe(deadline);
+    startedAt = deadline + 120_000;
+    await observer.poll(deadline + 121_000);
+    expect(observer.record.timedOut).toBe(false);
+    expect(observer.record.deadlineAt).toBe(deadline + startedAt - queuedAt);
+    await observer.poll(deadline + 122_000);
+    expect(observer.record.deadlineAt).toBe(deadline + startedAt - queuedAt);
+    expect(startedAt - queuedAt).toBeLessThan(2 * budget);
+  });
+
+  it("does not hold the deadline for a queued run that a recovery created", async () => {
+    let queuedAt = 0;
+    const { api } = fakeApi({ "/runs": () => [
+      { runId: "r1", status: "failed", createdAt: new Date(queuedAt - 60_000).toISOString(), startedAt: new Date(queuedAt - 60_000).toISOString(),
+        finishedAt: new Date(queuedAt - 1).toISOString() },
+      { runId: "r2", status: "queued", wakeCommentIds: ["comment-1"], createdAt: new Date(queuedAt).toISOString(), startedAt: null }] }, "in_progress");
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    const deadline = observer.record.deadlineAt!;
+    queuedAt = start + 60_000;
+    observer.record.followUp = { at: start + 30_000, commentId: "comment-1", error: null };
+    await observer.poll(deadline + 1_000);
+    expect(observer.record.timedOut).toBe(true);
+  });
+
   it("keeps watching unexplained idle work until the stall limit, then records the stall", async () => {
     const { api } = fakeApi({}, "in_progress");
     const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);

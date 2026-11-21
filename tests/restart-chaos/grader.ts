@@ -63,25 +63,61 @@ export function expectedFinalStatus(record: TaskRecord): string {
   return record.plan.workload === "G1" && g1Decision(record.plan.nonce) === "reject" ? "cancelled" : "done";
 }
 
-export function firstRun(record: TaskRecord): NonNullable<TaskSample["runs"]>[number] | null {
-  const latest = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
+type TaskRun = NonNullable<TaskSample["runs"]>[number];
+export type CreditedRun = { run: TaskRun; kind: "first run" | "follow-up run" };
+
+function boardComments(record: TaskRecord): Map<string, number | null> {
+  const posted = (at: number | undefined) => typeof at === "number" && Number.isFinite(at) ? at : null;
+  const entries: Array<[string | null | undefined, number | null]> = [
+    [record.followUp?.commentId, posted(record.followUp?.sentAt ?? record.followUp?.at)],
+    [record.stagingMix?.followUp?.commentId, posted(record.stagingMix?.followUp?.at)],
+    ...(record.stagingMix?.afterEndFollowUps ?? []).map((entry): [string, number | null] => [entry.commentId, posted(entry.at)]),
+  ];
+  return new Map(entries.filter((entry): entry is [string, number | null] => typeof entry[0] === "string" && entry[0].length > 0));
+}
+
+const COMMENT_WAKE_REASONS = new Set(["issue_commented", "issue_comment_mentioned", "issue_reopened_via_comment"]);
+
+function runSelection(record: TaskRecord, requireWakeEvidence: boolean): { credited: CreditedRun[]; refusals: string[] } {
+  const latest = new Map<string, TaskRun>();
   for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
-  const first = [...latest.values()].filter(run => Number.isFinite(ms(run.createdAt)))
-    .sort((a, b) => ms(a.createdAt) - ms(b.createdAt))[0];
-  return first && !first.retryOfRunId ? first : null;
+  const undated = [...latest.values()].filter(run => !Number.isFinite(ms(run.createdAt))).map(run => run.id);
+  if (undated.length) return { credited: [], refusals: [`no createdAt for ${undated.join(",")}, so runs cannot be ordered`] };
+  const runs = [...latest.values()].sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
+  const credited: CreditedRun[] = runs[0] && !runs[0].retryOfRunId ? [{ run: runs[0], kind: "first run" }] : [];
+  const refusals: string[] = [];
+  const unexecuted = (run: TaskRun) => run.status === "cancelled" && (!run.startedAt || PRE_DISPATCH_CANCELLATIONS.has(run.errorCode ?? ""));
+  for (const [commentId, sentAt] of boardComments(record)) {
+    const carriers = runs.filter(run => (run.wakeCommentIds ?? []).includes(commentId));
+    if (!carriers.length) continue;
+    if (sentAt === null) { refusals.push(`no send time for follow-up comment ${commentId}`); continue; }
+    const run = carriers.find(candidate => ms(candidate.createdAt) >= sentAt && !unexecuted(candidate));
+    const previous = run && runs.filter(other => ms(other.createdAt) < ms(run.createdAt) && !unexecuted(other)).at(-1);
+    if (!run || !previous || run.retryOfRunId || previous.status !== "succeeded" || !(ms(previous.finishedAt) <= ms(run.createdAt))) continue;
+    if (credited.some(entry => entry.run.id === run.id)) continue;
+    const wake = record.runWakes?.[run.id];
+    if (requireWakeEvidence && !wake) { refusals.push(`no wake evidence for follow-up run ${run.id}`); continue; }
+    if (wake && (wake.continuesRunIds.length || !COMMENT_WAKE_REASONS.has(wake.wakeReason ?? ""))) continue;
+    credited.push({ run, kind: "follow-up run" });
+  }
+  return { credited, refusals };
 }
 
-export function firstRunQueuedMs(record: TaskRecord, now: number): number {
-  const first = firstRun(record);
-  return first && first.status === "queued" && !first.startedAt ? Math.max(0, now - ms(first.createdAt)) : 0;
+export function creditedRuns(record: TaskRecord): CreditedRun[] {
+  return runSelection(record, true).credited;
 }
 
-export function firstRunQueueWait(record: TaskRecord): { runId: string; createdAt: number; startedAt: number } | null {
-  const first = firstRun(record);
-  if (!first || !Number.isFinite(ms(first.startedAt))) return null;
-  const createdAt = ms(first.createdAt);
-  const startedAt = ms(first.startedAt);
-  return startedAt > createdAt ? { runId: first.id, createdAt, startedAt } : null;
+function queueWaitsOf(credited: readonly CreditedRun[]): Array<{ runId: string; createdAt: number; startedAt: number }> {
+  return credited.map(({ run }) => ({ runId: run.id, createdAt: ms(run.createdAt), startedAt: ms(run.startedAt) }))
+    .filter(wait => Number.isFinite(wait.startedAt) && wait.startedAt > wait.createdAt);
+}
+
+export function creditedRunQueuedMs(record: TaskRecord, now: number): number {
+  return Math.max(0, ...runSelection(record, false).credited.filter(({ run }) => run.status === "queued" && !run.startedAt).map(({ run }) => now - ms(run.createdAt)));
+}
+
+export function creditedQueueWaits(record: TaskRecord): Array<{ runId: string; createdAt: number; startedAt: number }> {
+  return queueWaitsOf(runSelection(record, false).credited);
 }
 
 function faultOverlapMs(faults: readonly FaultReceipt[], from: number, to: number): number {
@@ -105,16 +141,26 @@ export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly F
   const took = (record.restAt ?? Number.POSITIVE_INFINITY) - record.createdAt!;
   const seconds = (value: number) => Math.round(value / 1000);
   if (took <= base) return { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(base)}s)` };
-  const first = firstRun(record);
-  const wait = firstRunQueueWait(record);
-  const fairness: QueueFairness | null = wait ? queueWait(wait.runId, wait.createdAt, wait.startedAt, faults.map(faultWindow))
-    : first && !first.startedAt ? { verdict: "unproven", reason: `first run ${first.id} never started` } : null;
-  if (fairness?.verdict === "unfair") {
-    return { verdict: "fail", detail: `unfair_queue_wait ${fairness.reason}; done ${seconds(took)}s > ${seconds(base)}s without queue credit` };
+  const { credited, refusals } = runSelection(record, true);
+  const waits = new Map(queueWaitsOf(credited).map(wait => [wait.runId, wait]));
+  const proofs = credited.flatMap(({ run, kind }): Array<{ fairness: QueueFairness; credit: number }> => {
+    const wait = waits.get(run.id);
+    if (wait) {
+      const from = Math.max(wait.createdAt, record.createdAt!);
+      const to = Math.min(wait.startedAt, record.restAt ?? wait.startedAt);
+      return [{ fairness: queueWait(wait.runId, wait.createdAt, wait.startedAt, faults.map(faultWindow)),
+        credit: Math.max(0, to - from - faultOverlapMs(faults, from, to)) }];
+    }
+    return run.startedAt ? [] : [{ fairness: { verdict: "unproven", reason: `${kind} ${run.id} never started` }, credit: 0 }];
+  });
+  const unfair = proofs.map(proof => proof.fairness).find(fairness => fairness.verdict === "unfair");
+  if (unfair && unfair.verdict === "unfair") {
+    return { verdict: "fail", detail: `unfair_queue_wait ${unfair.reason}; done ${seconds(took)}s > ${seconds(base)}s without queue credit` };
   }
-  const credit = wait && fairness?.verdict === "fair" ? Math.max(0, wait.startedAt - wait.createdAt - faultOverlapMs(faults, wait.createdAt, wait.startedAt)) : 0;
+  const credit = proofs.reduce((total, proof) => total + (proof.fairness.verdict === "fair" ? proof.credit : 0), 0);
+  const unproven = [...proofs.flatMap(({ fairness }) => fairness.verdict === "unproven" ? [fairness.reason] : []), ...refusals];
   const allowed = base + credit;
-  const note = credit ? ` incl. ${seconds(credit)}s fair queue wait` : fairness?.verdict === "unproven" ? ` (queue wait not credited: ${fairness.reason})` : "";
+  const note = `${credit ? ` incl. ${seconds(credit)}s fair queue wait` : ""}${unproven.length ? ` (queue wait not credited: ${unproven.join("; ")})` : ""}`;
   return took <= allowed
     ? { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(allowed)}s${note})` }
     : { verdict: "fail", detail: `done_too_late ${seconds(took)}s > ${seconds(allowed)}s${note}` };

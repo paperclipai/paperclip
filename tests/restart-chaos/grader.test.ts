@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { QUEUE_HANDOFF_TOLERANCE_MS, queueWaitFairnessFrom, type AgentSlots } from "./agent-slots.js";
 import { crossingFaults, gradeR1, gradeR2, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
+import { runWakesFrom } from "./wave-grade-inputs.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
 import { BENCH_EXPECTED, parseBenchRecord, r1TestChecksSlug, stallWakeChecks, workloadDefinitions } from "./workloads.js";
 
@@ -312,6 +313,185 @@ describe("R1 fair queue wait credit", () => {
     expect(retriedGrade.verdict).toBe("fail");
     expect(retriedGrade.detail).toMatch(/^done_too_late 2287s > 2200s/);
     expect(retriedGrade.detail).not.toContain("fair queue wait");
+  });
+});
+
+describe("R1 follow-up queue wait credit", () => {
+  const BUDGET = 2_010_000;
+  const WAIT = 1_558_000;
+  type SlotRun = AgentSlots["runs"][number];
+  const slotRun = (runId: string, created: number, started: number, finished: number | null, extra: Partial<SlotRun> = {}): SlotRun =>
+    ({ runId, agentId: "agent-oc", createdAt: T0 + created, invocationSource: "assignment", retryOfRunId: null, startedAt: T0 + started,
+      finishedAt: finished === null ? null : T0 + finished, ...extra });
+  const shape = (firstWait = 0) => {
+    const firstStart = 50 + firstWait;
+    const firstEnd = firstStart + 666_000;
+    const queuedAt = firstEnd + 50;
+    const startedAt = queuedAt + WAIT;
+    return { firstStart, firstEnd, queuedAt, startedAt };
+  };
+  const agent = (firstWait = 0, followUp: Partial<SlotRun> = {}): SlotRun[] => {
+    const { firstStart, firstEnd, queuedAt, startedAt } = shape(firstWait);
+    return [
+      slotRun("r1", 50, firstStart, firstEnd),
+      slotRun("r2", queuedAt, startedAt, null, { invocationSource: "automation", ...followUp }),
+      slotRun("o1", -900_000, -800_000, firstStart),
+      slotRun("o2", -900_000, -700_000, 1_400_000 + firstWait),
+      slotRun("o3", -900_000, -600_000, startedAt),
+      slotRun("o4", -900_000, -500_000, 600_000 + firstWait),
+      slotRun("o5", 10, 600_000 + firstWait, 2_400_000 + firstWait),
+      slotRun("o6", 20, firstEnd, 2_500_000 + firstWait),
+      slotRun("o7", 30, 1_400_000 + firstWait, 2_600_000 + firstWait),
+    ];
+  };
+  const slots = (runs: SlotRun[]): AgentSlots => ({ agents: [{ agentId: "agent-oc", maxConcurrentRuns: 4 }], runs });
+  const followUpTask = (tookMs: number, firstWait = 0, follow: Partial<RunSample> = {}, first: Partial<RunSample> = {},
+    extra: Partial<TaskRecord> = {}, others: RunSample[] = []) => {
+    const { firstStart, firstEnd, queuedAt, startedAt } = shape(firstWait);
+    const r1 = run("r1", "succeeded", 50, firstEnd, { startedAt: iso(firstStart), ...first });
+    const r2 = (status: string, started: number | null, finished: number | null) =>
+      run("r2", status, queuedAt, finished, { startedAt: started === null ? null : iso(started), wakeCommentIds: ["c1"], ...follow });
+    return record([
+      sample(queuedAt + 5_000, "in_progress", [r1, r2("queued", null, null), ...others]),
+      sample(startedAt + 5_000, "in_progress", [r1, r2("running", startedAt, null), ...others]),
+      sample(tookMs, "done", [r1, r2("succeeded", startedAt, tookMs - 1_000), ...others]),
+    ], { restAt: T0 + tookMs, faultIds: [], plan: { ...record([]).plan, workload: "SM" },
+      stagingMix: { followUp: { at: T0 + 200_000, commentId: "c1", duringRun: true, inOverlap: false, error: null } },
+      runWakes: { r1: { wakeReason: "issue_assigned", continuesRunIds: [] }, r2: { wakeReason: "issue_commented", continuesRunIds: [] } }, ...extra });
+  };
+  const t007 = () => followUpTask(2_310_000);
+
+  it("credits a fair 1,558 s follow-up queue wait behind the agent's older assignments", () => {
+    expect(gradeR1(t007(), BUDGET, [])).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no agent slot evidence for r2)" });
+    expect(gradeR1(t007(), BUDGET, [], queueWaitFairnessFrom(slots(agent()))))
+      .toEqual({ verdict: "pass", detail: "done after 2310s (allowed 3568s incl. 1558s fair queue wait)" });
+  });
+
+  it("fails as unfair when a newer fresh assignment started ahead of the follow-up", () => {
+    const runs = agent().map(entry => entry.runId === "o7" ? { ...entry, createdAt: T0 + 700_000 } : entry);
+    const graded = gradeR1(t007(), BUDGET, [], queueWaitFairnessFrom(slots(runs)));
+    expect(graded.verdict).toBe("fail");
+    expect(graded.detail).toMatch(/^unfair_queue_wait assignment run o7 created .* ahead of r2; done 2310s > 2010s without queue credit$/);
+    const task = gradeTask(t007(), [], BUDGET, oracle(), undefined, { queueWait: queueWaitFairnessFrom(slots(runs)) });
+    expect(task.signature).toMatch(/^R1:unfair_queue_wait/);
+  });
+
+  it("fails as unfair when a slot sat idle while the follow-up was queued", () => {
+    const runs = agent().map(entry => entry.runId === "o7" ? { ...entry, startedAt: T0 + 1_431_000 } : entry);
+    const graded = gradeR1(t007(), BUDGET, [], queueWaitFairnessFrom(slots(runs)));
+    expect(graded.verdict).toBe("fail");
+    expect(graded.detail).toContain(`idle slot from ${iso(1_400_000)} to ${iso(1_431_000)} while r2 was queued`);
+  });
+
+  it("does not credit the wait of a retry or a recovery run", () => {
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    const retry = gradeR1(followUpTask(2_310_000, 0, { retryOfRunId: "r1" }), BUDGET, [], fairness);
+    expect(retry).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+    const afterInterruption = gradeR1(followUpTask(2_310_000, 0, {}, { status: "failed", errorCode: "process_lost" }), BUDGET, [], fairness);
+    expect(afterInterruption).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+    const continuation = gradeR1(followUpTask(2_310_000, 0, { wakeCommentIds: [] }), BUDGET, [], fairness);
+    expect(continuation).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+  });
+
+  it("does not credit a follow-up run created while the previous run was still running", () => {
+    const { queuedAt } = shape();
+    const overlapping = followUpTask(2_310_000, 0, {}, { finishedAt: iso(queuedAt + 10_000) });
+    expect(gradeR1(overlapping, BUDGET, [], queueWaitFairnessFrom(slots(agent())))).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+  });
+
+  it("credits a fair wait of a run woken by an after-end follow-up, but not after a recovery", () => {
+    const { firstEnd } = shape();
+    const afterEnd = { stagingMix: { afterEndFollowUps: [{ afterRunEndAt: T0 + firstEnd, at: T0 + firstEnd + 10, delayMs: 10, commentId: "c1" }] } };
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    expect(gradeR1(followUpTask(2_310_000, 0, {}, {}, afterEnd), BUDGET, [], fairness))
+      .toEqual({ verdict: "pass", detail: "done after 2310s (allowed 3568s incl. 1558s fair queue wait)" });
+    expect(gradeR1(followUpTask(2_310_000, 0, {}, { status: "failed", errorCode: "process_lost" }, afterEnd), BUDGET, [], fairness))
+      .toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+  });
+
+  it("refuses follow-up credit when an earlier run has no createdAt", () => {
+    const undated = run("rx", "failed", 100_000, 600_000, { createdAt: null, errorCode: "process_lost" });
+    const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, {}, [undated]), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
+    expect(graded).toEqual({ verdict: "fail",
+      detail: "done_too_late 2310s > 2010s (queue wait not credited: no createdAt for rx, so runs cannot be ordered)" });
+  });
+
+  it("does not credit a recovery run that carries the comment after a success", () => {
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    for (const r2 of [{ wakeReason: "issue_continuation_needed", continuesRunIds: [] }, { wakeReason: "issue_commented", continuesRunIds: ["r1"] }]) {
+      const recovery = followUpTask(2_310_000, 0, {}, {}, { runWakes: { r2 } });
+      expect(gradeR1(recovery, BUDGET, [], fairness)).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+    }
+  });
+
+  it("reads each run's wake reason and continued runs from the wake evidence", () => {
+    const run = (runId: string, wakeupRequestId: string | null, contextSnapshot: unknown) =>
+      ({ runId, createdAt: 1, invocationSource: "automation", triggerDetail: "system", wakeupRequestId, contextSnapshot });
+    expect(runWakesFrom({
+      runs: [run("r2", "w2", { wakeReason: "issue_commented" }), run("r3", "w3", { executionContinuation: { interruptedRunId: "r2" } })],
+      wakes: [{ id: "w2", reason: "issue_execution_promoted", source: "automation", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "u" },
+        { id: "w3", reason: "issue_continuation_needed", source: "automation", triggerDetail: "system", requestedByActorType: null, requestedByActorId: null }],
+    })).toEqual({ r2: { wakeReason: "issue_commented", continuesRunIds: [] }, r3: { wakeReason: "issue_continuation_needed", continuesRunIds: ["r2"] } });
+  });
+
+  it("does not credit a run created before its follow-up comment was posted", () => {
+    const { queuedAt } = shape();
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    const early = (at: number | undefined) => followUpTask(2_310_000, 0, {}, {},
+      { stagingMix: { followUp: { at: at as number, commentId: "c1", duringRun: true, inOverlap: false, error: null } } });
+    expect(gradeR1(early(T0 + queuedAt + 200_000), BUDGET, [], fairness)).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s" });
+    expect(gradeR1(early(undefined), BUDGET, [], fairness))
+      .toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no send time for follow-up comment c1)" });
+  });
+
+  it("credits a run created after the comment request was sent but before it returned", () => {
+    const { queuedAt } = shape();
+    const followUp = { at: T0 + queuedAt - 1_000, sentAt: T0 + queuedAt - 500, postedAt: T0 + queuedAt + 400, commentId: "c1", error: null };
+    expect(gradeR1(followUpTask(2_310_000, 0, {}, {}, { stagingMix: {}, followUp }), BUDGET, [], queueWaitFairnessFrom(slots(agent()))))
+      .toEqual({ verdict: "pass", detail: "done after 2310s (allowed 3568s incl. 1558s fair queue wait)" });
+  });
+
+  it("credits nothing when the earliest run has no createdAt", () => {
+    const undated = run("r0", "failed", -10_000, 40, { createdAt: null, errorCode: "process_lost" });
+    const graded = gradeR1(followUpTask(2_610_000, 300_000, {}, {}, {}, [undated]), BUDGET, [], queueWaitFairnessFrom(slots(agent(300_000))));
+    expect(graded).toEqual({ verdict: "fail", detail: "done_too_late 2610s > 2010s (queue wait not credited: no createdAt for r0, so runs cannot be ordered)" });
+  });
+
+  it("credits the first executed carrier, never a run cancelled before it executed", () => {
+    const { queuedAt } = shape();
+    const fairness = queueWaitFairnessFrom(slots(agent()));
+    const cancelled = (errorCode: string, started: boolean) => run("rc", "cancelled", queuedAt - 20, queuedAt - 10,
+      { wakeCommentIds: ["c1"], errorCode, startedAt: started ? iso(queuedAt - 15) : null });
+    const followUp = { at: T0 + queuedAt - 1_000, sentAt: T0 + queuedAt - 500, commentId: "c1", error: null };
+    const runWakes = { r2: { wakeReason: "issue_commented", continuesRunIds: [] }, rc: { wakeReason: "issue_commented", continuesRunIds: [] } };
+    for (const [errorCode, started] of [["continuation_task_ownership_changed", true], ["cancelled", false]] as const) {
+      const task = followUpTask(2_310_000, 0, {}, {}, { stagingMix: {}, followUp, runWakes }, [cancelled(errorCode, started)]);
+      expect(gradeR1(task, BUDGET, [], fairness)).toEqual({ verdict: "pass", detail: "done after 2310s (allowed 3568s incl. 1558s fair queue wait)" });
+    }
+  });
+
+  it("refuses follow-up credit without wake evidence", () => {
+    const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, { runWakes: undefined }), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
+    expect(graded).toEqual({ verdict: "fail", detail: "done_too_late 2310s > 2010s (queue wait not credited: no wake evidence for follow-up run r2)" });
+  });
+
+  it("credits only the part of a wait inside the task's own lifetime", () => {
+    const graded = gradeR1(followUpTask(2_310_000, 0, {}, {}, { restAt: T0 + 2_100_000 }), BUDGET, [], queueWaitFairnessFrom(slots(agent())));
+    expect(graded).toEqual({ verdict: "pass", detail: "done after 2100s (allowed 3444s incl. 1434s fair queue wait)" });
+  });
+
+  it("does not credit outage time inside the follow-up's wait", () => {
+    const { queuedAt } = shape();
+    const outage: FaultReceipt = { ...fault, startedAt: T0 + queuedAt + 100_000, readyAt: T0 + queuedAt + 200_000 };
+    expect(gradeR1(followUpTask(2_500_000), BUDGET, [outage], queueWaitFairnessFrom(slots(agent()))))
+      .toEqual({ verdict: "pass", detail: "done after 2500s (allowed 3568s incl. 1458s fair queue wait)" });
+  });
+
+  it("sums the fair waits of the first run and a follow-up", () => {
+    const graded = gradeR1(followUpTask(2_610_000, 300_000), BUDGET, [], queueWaitFairnessFrom(slots(agent(300_000))));
+    expect(graded).toEqual({ verdict: "pass", detail: "done after 2610s (allowed 3868s incl. 1858s fair queue wait)" });
+    const tooLate = gradeR1(followUpTask(3_900_000, 300_000), BUDGET, [], queueWaitFairnessFrom(slots(agent(300_000))));
+    expect(tooLate).toEqual({ verdict: "fail", detail: "done_too_late 3900s > 3868s incl. 1858s fair queue wait" });
   });
 });
 
