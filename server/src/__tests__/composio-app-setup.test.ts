@@ -96,6 +96,7 @@ const support = await getEmbeddedPostgresTestSupport();
     let accounts = [{ id: accountId, alias: "Work", status: "initiated", is_default: true, access_token: "never-store-this-token" }];
     let onList = async () => {};
     let listResult: unknown = undefined;
+    const toolkitResults: Record<string, unknown> = {};
     let failedToolkit: string | undefined;
     let mutationStatus = 200;
     let applyMutation = true;
@@ -117,7 +118,7 @@ const support = await getEmbeddedPostgresTestSupport();
         }
         results[toolkit.name] = toolkit.name === failedToolkit ? { toolkit: toolkit.name, accounts: [{ status: "ACTIVE" }] }
           : toolkit.action === "add" ? { redirect_url: "https://connect.composio.dev/link/test" }
-          : listResult ?? { toolkit: toolkit.name, accounts: toolkit.name === "circleback_mcp" ? accounts : [] };
+          : toolkitResults[toolkit.name] ?? listResult ?? { toolkit: toolkit.name, accounts: toolkit.name === "circleback_mcp" ? accounts : [] };
       }
       return Response.json({ jsonrpc: "2.0", id: request.id, result: { structuredContent: { data: { results } } } });
     } });
@@ -125,6 +126,7 @@ const support = await getEmbeddedPostgresTestSupport();
       activate: () => { accounts = accounts.map(account => ({ ...account, status: "active" })); },
       disconnect: () => { accounts = []; },
       setListResult: (result: unknown) => { listResult = result; },
+      setToolkitResult: (toolkit: string, result: unknown) => { toolkitResults[toolkit] = result; },
       failToolkit: (toolkit: string) => { failedToolkit = toolkit; },
       setMutationStatus: (status: number) => { mutationStatus = status; },
       refuseMutation: () => { applyMutation = false; },
@@ -303,6 +305,21 @@ const support = await getEmbeddedPostgresTestSupport();
     f.setListResult(undefined);
     await f.access.syncComposioApps(f.connection.id, true, f.actor);
     expect((await finishSync(f)).apps.find(app => app.toolkit === "circleback_mcp")?.errorAt).toBeNull();
+  });
+
+  it("finishes the sync and keeps every app verified when a TikTok account profile carries error: { code: \"ok\" } (#22467)", async () => {
+    const f = await fixture(["circleback_mcp", "tiktok", "hubspot"]); f.activate();
+    f.setToolkitResult("tiktok", { toolkit: "tiktok", status: "active", accounts: [{ id: "ca_tiktok", alias: "Brand", status: "active", is_default: true,
+      user_info: { data: { user: { display_name: "Brand profile" } }, error: { code: "ok", message: "", log_id: "202611210319450000" } } }] });
+    await f.access.syncComposioApps(f.connection.id, true, f.actor);
+    const result = await finishSync(f);
+    expect(result.sync).toMatchObject({ status: "ready", checked: 3, total: 3, failed: 0, error: null });
+    expect(result.apps.find(app => app.toolkit === "tiktok")).toMatchObject({ status: "connected", errorAt: null,
+      accounts: [{ id: "ca_tiktok", alias: "Brand", status: "ACTIVE", isDefault: true }] });
+    expect(result.apps.find(app => app.toolkit === "circleback_mcp")).toMatchObject({ status: "connected", errorAt: null });
+    const stored = JSON.stringify(await db.select().from(toolConnectionAppSnapshots).where(eq(toolConnectionAppSnapshots.connectionId, f.connection.id)));
+    expect(stored).not.toContain("Brand profile");
+    expect(stored).not.toContain("202611210319450000");
   });
 
   it("reports an incomplete sync when a toolkit without prior accounts fails", async () => {
