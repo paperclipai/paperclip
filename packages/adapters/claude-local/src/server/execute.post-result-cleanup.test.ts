@@ -286,6 +286,8 @@ describe("claude_local post-result terminalResultCleanup classification", () => 
   it.each([
     { label: "untrapped SIGKILL", exitCode: null, signal: "SIGKILL" as const },
     { label: "exit code 137", exitCode: 137, signal: null },
+    { label: "parent exited 143 on SIGTERM before child SIGKILL escalation", exitCode: 143, signal: null },
+    { label: "parent died on SIGTERM before child SIGKILL escalation", exitCode: null, signal: "SIGTERM" as const },
   ])("classifies force-killed SIGKILL escalation ($label) as unmanaged_background_task_stopped", async ({ exitCode, signal }) => {
     const cleanup = buildCleanup({ signal: "SIGKILL", forceKilled: true });
     mockExecutionResult(buildProc({ exitCode, signal, terminalResultCleanup: cleanup }));
@@ -297,12 +299,17 @@ describe("claude_local post-result terminalResultCleanup classification", () => 
     expect(result.resultJson?.unmanagedBackgroundTask).toEqual(cleanup);
   });
 
-  it("fails closed when SIGKILL cleanup evidence does not have forceKilled true", async () => {
+  it.each([
+    { label: "SIGKILL without forceKilled", exitCode: null, signal: "SIGKILL" as const, forceKilled: false },
+    { label: "exit 143 with SIGKILL without forceKilled", exitCode: 143, signal: null, forceKilled: false },
+    { label: "crash exit 1 with forceKilled SIGKILL", exitCode: 1, signal: null, forceKilled: true },
+    { label: "crash exit 139 with forceKilled SIGKILL", exitCode: 139, signal: null, forceKilled: true },
+  ])("fails closed on invalid SIGKILL escalation combination ($label)", async ({ exitCode, signal, forceKilled }) => {
     mockExecutionResult(
       buildProc({
-        exitCode: null,
-        signal: "SIGKILL",
-        terminalResultCleanup: buildCleanup({ signal: "SIGKILL", forceKilled: false }),
+        exitCode,
+        signal,
+        terminalResultCleanup: buildCleanup({ signal: "SIGKILL", forceKilled }),
       }),
     );
 

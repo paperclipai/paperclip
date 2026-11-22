@@ -1216,16 +1216,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const postResultCleanup = proc.terminalResultCleanup;
       const postResultStopReason = asString(parsed.stop_reason ?? parsed.stopReason, "").trim().toLowerCase();
       const postResultCleanEndTurn = postResultStopReason === "" || postResultStopReason === "end_turn";
+      const postResultSigtermExit =
+        (proc.exitCode === 143 && proc.signal === null) || proc.signal === "SIGTERM";
+      const postResultSigkillExit =
+        (proc.exitCode === 137 && proc.signal === null) || proc.signal === "SIGKILL";
       const postResultExitMatchesSignal = Boolean(
         postResultCleanup &&
         postResultCleanup.kind === "terminal_result_cleanup" &&
         postResultCleanup.stopped === true &&
         postResultCleanup.terminalResultSeen === true &&
-        ((postResultCleanup.signal === "SIGTERM" &&
-          ((proc.exitCode === 143 && proc.signal === null) || proc.signal === "SIGTERM")) ||
+        ((postResultCleanup.signal === "SIGTERM" && postResultSigtermExit) ||
           (postResultCleanup.signal === "SIGKILL" &&
             postResultCleanup.forceKilled === true &&
-            ((proc.exitCode === 137 && proc.signal === null) || proc.signal === "SIGKILL"))),
+            (postResultSigkillExit || postResultSigtermExit))),
       );
       const isPostResultCleanupReap =
         parsedSucceeded &&
