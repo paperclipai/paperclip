@@ -56,9 +56,18 @@ export function profileIdsInBindingOrder<T extends Pick<BindingLike, "profileId"
   return ordered;
 }
 
-function isWizardAppProfile(profile: ProfileLike, connectionId?: string | null): boolean {
+/**
+ * A profile that a connection's own access settings own: the app wizard's
+ * `app:<connectionId>` profile or an agent's `connection-intent` profile.
+ * With a connection id, only that connection's profiles match.
+ */
+export function isConnectionAccessProfile(profile: ProfileLike, connectionId?: string | null): boolean {
   if (!profile.metadata || typeof profile.metadata !== "object" || Array.isArray(profile.metadata)) return false;
   const metadata = profile.metadata as Record<string, unknown>;
+  if (metadata.source === "connection_intent" && typeof metadata.connectionId === "string" && typeof metadata.agentId === "string") {
+    return profile.profileKey === `connection-intent:${metadata.connectionId}:${metadata.agentId}`
+      && (connectionId == null || metadata.connectionId === connectionId);
+  }
   if (metadata.source !== "app_gallery_finish" || typeof metadata.connectionId !== "string") return false;
   if (profile.profileKey !== `app:${metadata.connectionId}`) return false;
   return connectionId === undefined || connectionId === null || metadata.connectionId === connectionId;
@@ -81,10 +90,14 @@ export function effectiveToolProfileBindings<T extends BindingLike>(
     return narrowestScopeBindings(bindings);
   }
   const appProfileIds = new Set(
-    profiles.filter((profile) => isWizardAppProfile(profile, connectionId)).map((profile) => profile.id),
+    profiles.filter((profile) => isConnectionAccessProfile(profile, connectionId)).map((profile) => profile.id),
   );
+  const accessProfileIds = new Set(profiles.filter(profile => {
+    const metadata = profile.metadata as Record<string, unknown> | null;
+    return metadata?.source === "connection_intent";
+  }).map(profile => profile.id));
   const selected = [
-    ...narrowestScopeBindings(bindings),
+    ...narrowestScopeBindings(bindings.filter(binding => !accessProfileIds.has(binding.profileId))),
     ...bindings.filter((binding) => appProfileIds.has(binding.profileId)),
   ];
   const seen = new Set<string>();

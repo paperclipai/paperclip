@@ -13,7 +13,8 @@
   },
   "type": "module",
   "bin": {
-    "paperclip-kv-demo-mcp-server": "./dist/main.js"
+    "paperclip-kv-demo-mcp-server": "./dist/main.js",
+    "paperclip-tasks-demo-mcp-server": "./dist/tasks/main.js"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -21,7 +22,8 @@
   "publishConfig": {
     "access": "public",
     "bin": {
-      "paperclip-kv-demo-mcp-server": "./dist/main.js"
+      "paperclip-kv-demo-mcp-server": "./dist/main.js",
+      "paperclip-tasks-demo-mcp-server": "./dist/tasks/main.js"
     },
     "exports": {
       ".": {
@@ -44,13 +46,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^4.4.3"
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.3"
   },
   "engines": {
     "node": ">=24.11.0"

@@ -75,7 +75,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("prefers the heartbeat run responsible user", async () => {
-    const db = createReader(new Map([
+    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
       [heartbeatRuns, [{ responsibleUserId: "run-user" }]],
       [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],
@@ -89,7 +89,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("falls back to issue attribution when the run is unavailable", async () => {
-    const db = createReader(new Map([
+    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
       [heartbeatRuns, []],
       [issues, [{ responsibleUserId: "issue-user", createdByUserId: "creator-user" }]],
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],
@@ -103,7 +103,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("uses explicit issue context for non-issue activity", async () => {
-    const db = createReader(new Map([
+    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
       [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
       [companies, [{ defaultResponsibleUserId: "default-user" }]],
     ]));
@@ -116,7 +116,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("uses the active agent API key responsible user for no-run actions", async () => {
-    const db = createReader(new Map([
+    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],
       [companies, [{ defaultResponsibleUserId: "default-user" }]],
     ]));
@@ -129,7 +129,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("falls back to the company default responsible user", async () => {
-    const db = createReader(new Map([
+    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
       [agentApiKeys, []],
       [companies, [{ defaultResponsibleUserId: "default-user" }]],
     ]));
@@ -142,7 +142,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("uses issue creator attribution when responsibleUserId is absent", async () => {
-    const db = createReader(new Map([
+    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
       [issues, [{ responsibleUserId: null, createdByUserId: "creator-user" }]],
       [companies, [{ defaultResponsibleUserId: "default-user" }]],
     ]));
@@ -151,7 +151,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
   });
 
   it("ignores malformed UUID-backed identifiers", async () => {
-    const db = createReader(new Map([
+    const db = createReader(new Map<unknown, Array<Record<string, unknown>>>([
       [heartbeatRuns, [{ responsibleUserId: "run-user" }]],
       [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],

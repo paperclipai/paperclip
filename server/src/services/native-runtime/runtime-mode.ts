@@ -19,19 +19,6 @@ export const NATIVE_RUNTIME_RESOLVER_VERSION = "paperclip-runner-v1" as const;
 /** Resolver version for the richer native runtime profile used by runnerd. */
 export const NATIVE_RUNTIME_PROFILE_RESOLVER_VERSION = "phase6-v1" as const;
 
-export type HeartbeatRuntimeResolution =
-  | {
-      kind: "legacy";
-      resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
-      reason: "direct_adapter" | "persisted_legacy_selection";
-    }
-  | {
-      kind: "native";
-      resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
-      reason: "explicit_paperclip_runner" | "persisted_native_selection";
-      provider: PaperclipRunnerProviderProfile["provider"];
-    };
-
 export type NativeRuntimeResolution =
   | {
       kind: "legacy";
@@ -50,7 +37,11 @@ export type NativeRuntimeResolution =
           | "opencode_server"
           | "claude_managed_agents_api"
           | "aws_agentcore_harness_api"
-          | "acpx_runtime";
+          | "acpx_runtime"
+          | "openai_dot_mcp"
+          | "grok_bot_mcp"
+          | "muse_external"
+          | "cursor_cloud_api";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
@@ -96,9 +87,12 @@ function ineligible(
 
 export function resolveNativeRuntimeMode(input: {
   enabled: boolean;
+  museEnabled?: boolean;
+  dotEnabled?: boolean;
+  grokEnabled?: boolean;
   runtimeConfig: unknown;
   adapterConfig?: unknown;
-  agent: { id?: string; status: string; adapterType: string | null };
+  agent: { id?: string; companyId?: string; status: string; adapterType: string | null };
   issue: { id: string; workMode: string; executionWorkspaceId?: string | null } | null;
   target: { kind?: string } | null | undefined;
   workspaceId: string | null;
@@ -115,20 +109,31 @@ export function resolveNativeRuntimeMode(input: {
       reason: "direct_adapter",
     };
   }
-  if (!input.enabled) {
-    throw ineligible(
-      "paperclip_runner_rollout_disabled",
-      "Paperclip Runner is experimental and disabled on this instance.",
-    );
-  }
   let runnerProfile: PaperclipRunnerProviderProfile;
   try {
-    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig);
+    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig, { companyId: input.agent.companyId });
   } catch (error) {
     if (error instanceof PaperclipRunnerProviderProfileError) {
       throw ineligible(error.code, error.message);
     }
     throw error;
+  }
+  // Dot has its own rollout; enabling it does not opt in other Runner providers.
+  if (runnerProfile.provider === "muse") {
+    if (!input.enabled) throw ineligible("paperclip_runner_rollout_disabled", "Paperclip Runner is experimental and disabled on this instance.");
+    if (input.museEnabled !== true) throw ineligible("paperclip_runner_muse_disabled", "Enable Muse personal-agent connections in experimental settings before assigning new work.");
+  } else if (runnerProfile.provider === "openai_dot") {
+    if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot in experimental settings before assigning new work.");
+  } else if (runnerProfile.provider === "grok_bot" && (input.grokEnabled !== true || !input.enabled)) {
+    throw ineligible("paperclip_runner_grok_disabled", "Enable Grok Bot and Paperclip Runner before assigning new work.");
+  } else if (runnerProfile.provider !== "codex" && runnerProfile.provider !== "opencode"
+    && !(runnerProfile.provider === "acpx"
+      && (["claude", "copilot", "pi", "antigravity"].includes(runnerProfile.acpxAgent ?? "")))
+    && !input.enabled) {
+    throw ineligible(
+      "paperclip_runner_rollout_disabled",
+      "Paperclip Runner is experimental and disabled on this instance.",
+    );
   }
   if (
     input.agent.adapterType !== "paperclip_runner"
@@ -139,11 +144,14 @@ export function resolveNativeRuntimeMode(input: {
       "Paperclip Runner requires an active agent.",
     );
   }
-  const allowedWorkModes = ["standard", "planning", "ask"];
+  if (runnerProfile.provider === "cursor_cloud" && (input.target?.kind ?? "local") !== "local") {
+    throw ineligible("paperclip_runner_cursor_cloud_local_controller_required", "Cursor Cloud currently requires a local Paperclip controller. Cursor hosts its execution environment.");
+  }
+  const allowedWorkModes = ["standard", "planning", "ask", "skill_test"];
   if (!input.issue || !allowedWorkModes.includes(input.issue.workMode)) {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
-      "Paperclip Runner requires a standard, planning, or ask task.",
+      "Paperclip Runner requires a standard, planning, ask, or skill test task.",
     );
   }
   const rollout = resolveNativeMigrationStatus({
@@ -171,84 +179,6 @@ export function resolveNativeRuntimeMode(input: {
 }
 
 /**
- * Backward-compatible heartbeat selection API. New runnerd code consumes the
- * richer profile from resolveHeartbeatNativeRuntimeMode; this public seam
- * keeps the original result shape, reason codes, and resolver version.
- */
-export function resolveHeartbeatRuntimeMode(input: {
-  persisted: {
-    runtimeMode: string | null;
-    runtimeModeResolvedAt: Date | null;
-  };
-  enabled: boolean;
-  adapterType: string | null;
-  adapterConfig: unknown;
-  agentStatus: string;
-  issue: { workMode: string } | null;
-  executionTarget: { kind?: string } | null | undefined;
-}): HeartbeatRuntimeResolution {
-  if (input.persisted.runtimeModeResolvedAt) {
-    if (input.persisted.runtimeMode === "native") {
-      return {
-        kind: "native",
-        resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-        reason: "persisted_native_selection",
-        provider: "codex",
-      };
-    }
-    return {
-      kind: "legacy",
-      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-      reason: "persisted_legacy_selection",
-    };
-  }
-
-  let resolution: NativeRuntimeResolution;
-  try {
-    resolution = resolveNativeRuntimeMode({
-      enabled: input.enabled,
-      runtimeConfig: {},
-      adapterConfig: input.adapterConfig,
-      agent: {
-        status: input.agentStatus,
-        adapterType: input.adapterType,
-      },
-      issue: input.issue
-        ? { id: "heartbeat-runtime-selection", workMode: input.issue.workMode }
-        : null,
-      target: input.executionTarget,
-      workspaceId: null,
-    });
-  } catch (error) {
-    if (error instanceof NativeRuntimeEligibilityError) {
-      throw new NativeRunnerSelectionError(error.code, error.message);
-    }
-    throw error;
-  }
-  if (resolution.kind === "legacy") {
-    return {
-      kind: "legacy",
-      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-      reason: "direct_adapter",
-    };
-  }
-  return {
-    kind: "native",
-    resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-    reason: "explicit_paperclip_runner",
-    provider: resolution.profile.backend === "opencode_server"
-      ? "opencode"
-      : resolution.profile.backend === "claude_managed_agents_api"
-        ? "claude_managed"
-        : resolution.profile.backend === "aws_agentcore_harness_api"
-          ? "aws_agentcore"
-      : resolution.profile.backend === "acpx_runtime"
-          ? "acpx"
-          : "codex",
-  };
-}
-
-/**
  * Production heartbeat selection seam. A resolved run keeps its persisted
  * mode across configuration changes; only a fresh unresolved run consults the
  * current global flag and agent profile.
@@ -261,9 +191,12 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
     driverKind?: string | null;
   };
   enabled: boolean;
+  museEnabled?: boolean;
+  dotEnabled?: boolean;
+  grokEnabled?: boolean;
   runtimeConfig: unknown;
   adapterConfig?: unknown;
-  agent: { id?: string; status: string; adapterType: string | null };
+  agent: { id?: string; companyId?: string; status: string; adapterType: string | null };
   issue: { id: string; workMode: string; executionWorkspaceId?: string | null } | null;
   target: { kind?: string } | null | undefined;
   workspaceId: string | null;
@@ -292,6 +225,10 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
           ? "claude_managed_agents_api"
           : driverKind === "aws_agentcore_harness_api"
             ? "aws_agentcore_harness_api"
+        : driverKind === "muse_external" ? "muse_external"
+        : driverKind === "grok_bot_mcp" ? "grok_bot_mcp"
+        : driverKind === "openai_dot_mcp" ? "openai_dot_mcp"
+        : driverKind === "cursor_cloud_api" ? "cursor_cloud_api"
         : driverKind === "acpx_runtime"
             ? "acpx_runtime"
             : driverKind === null

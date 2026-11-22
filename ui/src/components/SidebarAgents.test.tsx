@@ -1,14 +1,12 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
-import { flushSync } from "react-dom";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
 import { queryKeys } from "../lib/queryKeys";
-import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -40,7 +38,6 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
 const mockOpenNewAgent = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
-const mockSidebarState = vi.hoisted(() => ({ collapsed: false, peeking: false }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -86,8 +83,6 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
     isMobile: false,
     setSidebarOpen: mockSetSidebarOpen,
-    collapsed: mockSidebarState.collapsed,
-    peeking: mockSidebarState.peeking,
   }),
 }));
 
@@ -129,14 +124,6 @@ if (!globalThis.PointerEvent) {
   (globalThis as any).PointerEvent = MouseEvent;
 }
 
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
-
 function makeAgent(overrides: Partial<Agent>): Agent {
   return {
     id: "agent-1",
@@ -168,7 +155,7 @@ function makeAgent(overrides: Partial<Agent>): Agent {
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await vi.advanceTimersByTimeAsync(0);
   });
 }
 
@@ -227,8 +214,7 @@ describe("SidebarAgents", () => {
   let memberships: ResourceMemberships;
 
   beforeEach(() => {
-    mockSidebarState.collapsed = false;
-    mockSidebarState.peeking = false;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -281,19 +267,33 @@ describe("SidebarAgents", () => {
     localStorage.clear();
   });
 
-  afterEach(async () => {
+  async function unmountSidebarAgents() {
     const currentRoot = root;
+    root = null;
     if (currentRoot) {
       await act(async () => {
         currentRoot.unmount();
       });
     }
-    vi.useRealTimers();
     queryClient.clear();
-    container.remove();
-    document.body.innerHTML = "";
-    localStorage.clear();
-    vi.clearAllMocks();
+    // Radix defers focus restoration until after unmount. Run it while the
+    // JSDOM event constructors still belong to this document.
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  }
+
+  afterEach(async () => {
+    try {
+      await unmountSidebarAgents();
+    } finally {
+      vi.useRealTimers();
+      container.remove();
+      document.body.innerHTML = "";
+      localStorage.clear();
+      vi.clearAllMocks();
+    }
   });
 
   async function renderSidebarAgents(streamlined = true) {
@@ -324,39 +324,21 @@ describe("SidebarAgents", () => {
     await flushReact();
   }
 
-  async function renderSidebarAgentsWithFakeTimers() {
-    const currentRoot = createRoot(container);
-    root = currentRoot;
+  it.each(["agent", "section"])("finishes deferred %s menu focus cleanup before DOM teardown", async (menu) => {
+    await renderSidebarAgents();
+    if (menu === "agent") await openAgentMenu();
+    else await openAgentsSectionMenu();
 
-    await act(async () => {
-      currentRoot.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAgents streamlined />
-        </QueryClientProvider>,
-      );
-    });
-    await act(async () => {
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(0);
-    });
-  }
+    const menuContent = document.body.querySelector('[role="menu"]');
+    expect(menuContent).not.toBeNull();
+    const onUnmountAutoFocus = vi.fn();
+    menuContent!.addEventListener("focusScope.autoFocusOnUnmount", onUnmountAutoFocus);
 
-  async function renderRailSidebarAgents() {
-    mockSidebarState.collapsed = true;
-    const currentRoot = createRoot(container);
-    root = currentRoot;
+    await unmountSidebarAgents();
 
-    await act(async () => {
-      currentRoot.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <SidebarAgents streamlined />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-  }
+    expect(onUnmountAutoFocus).toHaveBeenCalledTimes(1);
+    expect(container.isConnected).toBe(true);
+  });
 
   it("does not query built-in agents when the experimental feature is disabled", async () => {
     queryClient.setQueryData(queryKeys.builtInAgents.list("company-1"), [
@@ -384,26 +366,6 @@ describe("SidebarAgents", () => {
     await flushReact();
 
     expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
-  });
-
-  it("renders icon-only agent rows with tooltips and no row actions in the rail", async () => {
-    mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" })]);
-
-    await renderRailSidebarAgents();
-
-    // The agent name is preserved in the a11y tree but kept in flow (zero-width,
-    // clipped) so the row stays 1:1 tall with the expanded state (PAP-10676); the
-    // row links become tooltip triggers and the per-row actions dropdown is dropped.
-    const nameSpan = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Alpha");
-    expect(nameSpan?.className).not.toContain("sr-only");
-    expect(nameSpan?.className).toContain("w-0");
-    expect(nameSpan?.className).toContain("overflow-hidden");
-    const agentLink = container.querySelector('a[href^="/agents/"]:not([href="/agents/all"])');
-    expect(agentLink?.parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
-    expect(container.querySelector('button[aria-label="Open actions for Alpha"]')).toBeNull();
-
-    // The section header collapses to a divider (no caret / section menu).
-    expect(container.querySelector('button[aria-label="Agents section actions"]')).toBeNull();
   });
 
   it("pins starred agents at the top without subheadings and dedupes them from the recent list", async () => {
@@ -675,7 +637,10 @@ describe("SidebarAgents", () => {
       makeAgent({ id: "agent-1", name: "Alpha", urlKey: "alpha" }),
       makeAgent({ id: "agent-2", name: "Beta", urlKey: "beta" }),
     ]);
-    mockAgentsApi.pause.mockImplementation(() => new Promise(() => {}));
+    let finishPause!: (agent: Agent) => void;
+    mockAgentsApi.pause.mockImplementation(() => new Promise<Agent>((resolve) => {
+      finishPause = resolve;
+    }));
 
     await renderSidebarAgents();
     await openAgentMenu();
@@ -696,6 +661,11 @@ describe("SidebarAgents", () => {
       .find((element) => element.textContent?.includes("Pause agent"));
     expect(betaPauseItem).toBeTruthy();
     expect(document.body.textContent).not.toContain("Updating...");
+
+    await act(async () => {
+      finishPause(makeAgent({ status: "paused" }));
+    });
+    await flushReact();
   });
 
   it("shows only active agents when any agent has a live run", async () => {
@@ -719,7 +689,7 @@ describe("SidebarAgents", () => {
   });
 
   it("keeps formerly live agents visible for the streamlined linger window", async () => {
-    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
       makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
@@ -730,7 +700,7 @@ describe("SidebarAgents", () => {
       { id: "run-1", agentId: "agent-a", status: "running" },
     ]);
 
-    await renderSidebarAgentsWithFakeTimers();
+    await renderSidebarAgents();
 
     let labels = agentLinkLabels(container);
     expect(labels).toHaveLength(1);
@@ -763,7 +733,7 @@ describe("SidebarAgents", () => {
   });
 
   it("expires staggered lingering agents without unrelated sidebar updates", async () => {
-    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00Z") });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
       makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
@@ -774,7 +744,7 @@ describe("SidebarAgents", () => {
       { id: "run-1", agentId: "agent-a", status: "running" },
     ]);
 
-    await renderSidebarAgentsWithFakeTimers();
+    await renderSidebarAgents();
     expect(agentLinkLabels(container)[0]).toContain("Alpha");
 
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);

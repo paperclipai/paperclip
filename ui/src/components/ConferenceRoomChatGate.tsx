@@ -1,4 +1,5 @@
-import { Navigate, Outlet } from "@/lib/router";
+import { Outlet } from "@/lib/router";
+import { CompanyHomeRedirect } from "@/components/CompanyHomeRedirect";
 import { useConferenceRoomChatEnabled } from "@/hooks/useConferenceRoomChatEnabled";
 
 /**
@@ -13,6 +14,6 @@ import { useConferenceRoomChatEnabled } from "@/hooks/useConferenceRoomChatEnabl
 export function ConferenceRoomChatGate() {
   const { enabled, loaded } = useConferenceRoomChatEnabled();
   if (!loaded) return null;
-  if (!enabled) return <Navigate to="/dashboard" replace />;
+  if (!enabled) return <CompanyHomeRedirect />;
   return <Outlet />;
 }

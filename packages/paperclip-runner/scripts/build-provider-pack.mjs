@@ -1,3 +1,5 @@
+import profiles from "../acpx-profiles.json" with { type: "json" };
+import compatibility from "../src/live/provider-pack-contract.json" with { type: "json" };
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -8,7 +10,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -18,7 +19,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { parseProviderPackArguments, materializeCandidateProviderPack } from "./candidate-provider-pack.mjs";
+import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
+import { smokeKimiProviderPack } from "./kimi-provider-pack-smoke.mjs";
+import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
+import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
+import { providerPackLibc, removeControllerArtifactsFromProviderPack, removeForeignLibcPackagesFromProviderPack, sha256Tree } from "./provider-pack-runtime-tree.mjs";
+import { packContractDigest } from "./contracts/contract-fingerprints.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -55,35 +61,6 @@ function sha256File(path) {
     .digest("hex")}`;
 }
 
-function sha256Tree(root) {
-  const hash = createHash("sha256");
-  const visit = (directory, prefix = "") => {
-    const entries = readdirSync(directory, { withFileTypes: true }).sort(
-      (left, right) => left.name.localeCompare(right.name),
-    );
-    for (const entry of entries) {
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const absolutePath = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        hash.update(`directory\0${relativePath}\n`);
-        visit(absolutePath, relativePath);
-      } else if (entry.isFile()) {
-        hash.update(`file\0${relativePath}\0${sha256File(absolutePath)}\n`);
-      } else if (entry.isSymbolicLink()) {
-        hash.update(
-          `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
-        );
-      } else {
-        throw new Error(
-          `Provider pack tree contains unsupported entry ${relativePath}`,
-        );
-      }
-    }
-  };
-  visit(root);
-  return `sha256:${hash.digest("hex")}`;
-}
-
 function writePortableNodeShim(name, entrypoint) {
   const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
   writeFileSync(
@@ -93,21 +70,6 @@ function writePortableNodeShim(name, entrypoint) {
       "set -eu",
       'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
       `exec "$basedir/../node/bin/node" "$basedir/../${entrypoint}" "$@"`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(shimPath, 0o755);
-}
-
-function writePortableExecutableShim(name, executable) {
-  const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(
-    shimPath,
-    [
-      "#!/bin/sh",
-      "set -eu",
-      'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      `exec "$basedir/../${executable}" "$@"`,
       "",
     ].join("\n"),
   );
@@ -128,6 +90,11 @@ try {
   );
   if (deployed.status !== 0) {
     throw new Error(`pnpm deploy failed with exit code ${deployed.status}`);
+  }
+  removeControllerArtifactsFromProviderPack(temporaryRoot);
+  const foreignLibcPackages = removeForeignLibcPackagesFromProviderPack(temporaryRoot, providerPackLibc());
+  if (foreignLibcPackages.length) {
+    process.stderr.write(`Removed ${foreignLibcPackages.length} provider-pack packages built for another libc: ${foreignLibcPackages.join(", ")}\n`);
   }
 
   // Fail the image build if a bridge silently brings back an older/private
@@ -164,22 +131,30 @@ try {
   mkdirSync(dirname(stableNodeCommand), { recursive: true, mode: 0o755 });
   copyFileSync(process.execPath, stableNodeCommand);
   chmodSync(stableNodeCommand, 0o755);
-  const relocatedNode = spawnSync(stableNodeCommand, ["--version"], {
-    cwd: temporaryRoot, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: 10_000,
+  // A freshly copied x64 Mach-O can stall when launched directly from a
+  // translated Node process. Select Rosetta explicitly for this build probe;
+  // native Intel and every other platform still execute the copied bytes directly.
+  const translated = process.platform === "darwin" && process.arch === "x64"
+    && spawnSync("/usr/sbin/sysctl", ["-n", "sysctl.proc_translated"], {
+      encoding: "utf8", timeout: 1_000,
+    }).stdout?.trim() === "1";
+  const relocatedNode = spawnSync(translated ? "/usr/bin/arch" : stableNodeCommand,
+    translated ? ["-x86_64", stableNodeCommand, "--version"] : ["--version"], {
+    cwd: temporaryRoot, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: buildNodeStartupTimeout(),
   });
   if (relocatedNode.status !== 0 || relocatedNode.stdout.trim() !== `v${process.versions.node}`) {
     throw new Error("Provider pack Node is not portable after relocation; build with a standalone Node distribution");
   }
 
   const candidateProviders = {};
-  for (const provider of candidates) {
+  for (const provider of providerPackProviders(process.platform, process.arch, candidates)) {
     const assetPath = `provider-assets/${provider}/${process.platform}-${process.arch}`;
     const metadata = await materializeCandidateProviderPack({ provider, outputRoot: join(temporaryRoot, assetPath) });
     if (typeof metadata?.version !== "string" || !metadata.version || metadata.version.length > 120
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.profileDigest)
       || !/^sha256:[a-f0-9]{64}$/.test(metadata.closureDigest)) throw new Error("Candidate builder omitted its pinned identity");
     candidateProviders[provider] = { version: metadata.version, profileDigest: metadata.profileDigest,
-      closureDigest: metadata.closureDigest, qualification: "pending", path: assetPath,
+      closureDigest: metadata.closureDigest, qualification: ["pi", "cursor", "copilot"].includes(provider) || provider === "kimi" && profiles.profiles.kimi.qualificationStatus !== "pending" ? "qualified" : "pending", path: assetPath,
       sha256: sha256Tree(join(temporaryRoot, assetPath)) };
   }
 
@@ -202,12 +177,15 @@ try {
     `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
   );
   writePortableExecutableShim(
+    temporaryRoot,
     "claude",
     relative(realpathSync(join(temporaryRoot, "node_modules")), realpathSync(claudeExecutable)),
   );
-  writePortableExecutableShim("node", "node/bin/node");
-  writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
+  writePortableExecutableShim(temporaryRoot, "node", "node/bin/node");
+  writePortableExecutableShim(temporaryRoot, "opencode", "opencode-ai/bin/opencode.exe");
+  writePortableCopilotShims(temporaryRoot);
   writePortableNodeShim("acpx", "acpx/dist/cli.js");
+  writePortableNodeShim("paperclip-runner-copilot-metadata-probe", "../dist/cli/copilot-metadata-probe.js");
   writePortableNodeShim(
     "claude-agent-acp",
     "@agentclientprotocol/claude-agent-acp/dist/index.js",
@@ -306,18 +284,33 @@ try {
     : spawnSync("git", ["diff", "--quiet", "--", "packages/paperclip-runner"], {
         cwd: workspaceRoot,
       }).status !== 0;
+  // Set only by a publication build of the Runner image (the
+  // `runner-artifacts` Dockerfile target with
+  // PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1): the identity of the inputs the image
+  // was built from, which is its `inputs-<digest>` tag.
+  // scripts/runner-image-layout.mjs checks it against the image, and refuses
+  // it in a pack from any other build.
+  const runnerInputsDigest = process.env.PAPERCLIP_RUNNER_INPUTS_DIGEST?.trim();
+  if (runnerInputsDigest && !/^[0-9a-f]{64}$/.test(runnerInputsDigest)) {
+    throw new Error("PAPERCLIP_RUNNER_INPUTS_DIGEST must be 64 hexadecimal characters");
+  }
   const payload = {
+    compatibility,
+    // Semantic digest of the Runner/pack contracts. Image packs are reused only
+    // by a controller whose bundled pack records the same value.
+    contractDigest: packContractDigest(workspaceRoot),
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
-      codex: "0.156.0",
-      opencode: "1.18.32",
-      acpx: "0.13.1",
-      grok: "1.0.13",
-      claudeAcp: "0.73.0",
-      codexAcp: "1.6.2",
+      codex: profiles.profiles.codex.agentRuntimeVersion,
+      opencode: "1.18.34",
+      acpx: profiles.acpxVersion,
+      grok: profiles.profiles.grok.agentRuntimeVersion,
+      claudeAcp: profiles.profiles.claude.agentServerVersion,
+      codexAcp: profiles.profiles.codex.agentServerVersion,
     },
     target: { platform: process.platform, architecture: process.arch },
     runnerSourceRevision: `${revision}${dirty ? "-dirty" : ""}`,
+    ...(runnerInputsDigest ? { runnerInputsDigest } : {}),
     distDigest,
     bridgeDigest: `sha256:${createHash("sha256")
       .update(opencodeProxySha)
@@ -327,13 +320,13 @@ try {
       .update(distDigest)
       .digest("hex")}`,
     acpxProfileDigests: {
-      grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
+      grok: profiles.profiles.grok.commandDigest,
       claude:
-        "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+        profiles.profiles.claude.commandDigest,
       codex:
-        "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+        profiles.profiles.codex.commandDigest,
     },
-    ...(candidates.length ? { candidateProviders } : {}),
+    ...providerPackManifestFields(candidateProviders, candidates),
     artifacts: {
       grokLauncher: {
         path: "dist/providers/grok/launcher.cjs",
@@ -374,6 +367,11 @@ try {
     `${JSON.stringify(manifest, null, 2)}\n`,
     { mode: 0o600 },
   );
+
+  if (payload.providers?.kimi && profiles.profiles.kimi.qualificationStatus !== "pending") {
+    const smoke = await smokeKimiProviderPack(temporaryRoot);
+    process.stdout.write(`${JSON.stringify(smoke)}\n`);
+  }
 
   rmSync(outputRoot, { recursive: true, force: true });
   renameSync(temporaryRoot, outputRoot);

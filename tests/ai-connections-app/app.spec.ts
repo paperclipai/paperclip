@@ -17,11 +17,11 @@ test("existing Connections lists AI providers and keeps account management compa
     await expect(page.getByRole("button", { name: new RegExp(`^(Add account|Connect) ${provider}$`) })).toBeVisible();
   }
   const { connections } = await (await request.get(`/api/companies/${companyId}/ai-connections`)).json();
-  const account = connections.find((entry: { ownership: string }) => entry.ownership === "personal");
+  const account = connections.find((entry: { ownership: string; isDefault: boolean }) => entry.ownership === "personal" && entry.isDefault);
   expect(account, "The isolated drive should include an imported personal account").toBeTruthy();
   await page.goto(`/${prefix}/apps/${account.id}/permissions`);
   await expect(page.getByRole("heading", { name: account.name, exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Personal default", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Default for / })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agent usage", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Back to Connectors", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Which humans can use this credential?" })).toBeVisible();
@@ -91,6 +91,104 @@ test("connection setup waits for provider details before enabling Continue", asy
   await expect(page).toHaveURL(/stage=setup/);
 });
 
+test("personal provider defaults move the crown only after saving and survive refresh", async ({ page, request }, testInfo) => {
+  const list = await (await request.get(`/api/companies/${companyId}/ai-connections`)).json();
+  const own = list.connections.filter((account: { provider: string; ownership: string; ownerUserId: string; canSetDefault: boolean; status: string }) =>
+    account.provider === "openai" && account.ownership === "personal" && account.ownerUserId === list.currentUserId && account.canSetDefault && account.status === "connected");
+  const previous = own.find((account: { isDefault: boolean }) => account.isDefault);
+  const target = own.find((account: { isDefault: boolean }) => !account.isDefault);
+  expect(previous, "Seed a selected personal OpenAI account").toBeTruthy();
+  expect(target, "Seed a second personal OpenAI account").toBeTruthy();
+  const others = list.connections.filter((account: { provider: string; isDefault: boolean }) => account.provider !== "openai" && account.isDefault).map((account: { grantId: string }) => account.grantId).sort();
+  await page.goto(`/${prefix}/apps?source=installed`);
+  const announcement = page.getByRole("button", { name: "Dismiss announcement" });
+  if (await announcement.isVisible()) await announcement.click();
+  const provider = page.locator('[data-app-slug="openai"]');
+  const expand = async () => {
+    const trigger = provider.getByRole("button", { name: /^\d+ connections$/ });
+    if (await trigger.getAttribute("data-state") === "closed") await trigger.click();
+  };
+  await expect(provider).toBeVisible();
+  await expand();
+  const crown = provider.getByRole("button", { name: "Your default for OpenAI" });
+  await expect(crown.locator("..")).toContainText(previous.name);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let writes = 0;
+  await page.route(`**/api/companies/${companyId}/ai-connections/default`, async route => {
+    writes++;
+    expect(route.request().postDataJSON()).toEqual({ grantId: target.grantId });
+    await held;
+    await route.continue();
+  });
+  const manage = provider.getByRole("button", { name: `Manage ${target.name} connection` });
+  await manage.click();
+  await page.screenshot({ path: testInfo.outputPath("default-menu.png") });
+  await page.getByRole("menuitem", { name: "Set as default for OpenAI", exact: true }).click();
+  await expect.poll(() => writes).toBe(1);
+  await expect(crown.locator("..")).toContainText(previous.name);
+  await manage.click();
+  await expect(page.getByRole("menuitem", { name: "Set as default for OpenAI", exact: true })).toHaveAttribute("aria-disabled", "true");
+  await page.keyboard.press("Escape");
+  release();
+  await expect(crown.locator("..")).toContainText(target.name);
+  await expect(manage).toBeFocused();
+  await page.screenshot({ path: testInfo.outputPath("default-saved.png"), fullPage: true });
+  await page.unroute(`**/api/companies/${companyId}/ai-connections/default`);
+  const saved = await (await request.get(`/api/companies/${companyId}/ai-connections`)).json();
+  expect(saved.connections.filter((account: { provider: string; isDefault: boolean }) => account.provider === "openai" && account.isDefault).map((account: { grantId: string }) => account.grantId)).toEqual([target.grantId]);
+  expect(saved.connections.filter((account: { provider: string; isDefault: boolean }) => account.provider !== "openai" && account.isDefault).map((account: { grantId: string }) => account.grantId).sort()).toEqual(others);
+  await page.reload();
+  await expand();
+  await expect(crown.locator("..")).toContainText(target.name);
+  await crown.scrollIntoViewIfNeeded();
+  await crown.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.getByRole("tooltip")).toHaveText("Your default for OpenAI");
+
+  await page.route(`**/api/companies/${companyId}/ai-connections/default`, async route => {
+    await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Disposable QA save failure" }) });
+  }, { times: 1 });
+  await provider.getByRole("button", { name: `Manage ${previous.name} connection` }).click();
+  await page.getByRole("menuitem", { name: "Set as default for OpenAI", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Couldn’t change your OpenAI default" })).toBeVisible();
+  await expect(crown.locator("..")).toContainText(target.name);
+  await page.getByRole("alert").filter({ hasText: "Couldn’t change your OpenAI default" }).getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(crown.locator("..")).toContainText(previous.name);
+  const shared = saved.connections.find((account: { provider: string; ownership: string }) => account.provider === "openai" && account.ownership === "shared");
+  if (shared) {
+    await provider.getByRole("button", { name: `Manage ${shared.name} connection` }).click();
+    await expect(page.getByRole("menuitem", { name: /default for OpenAI/ })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+  }
+});
+
+test("personal provider defaults expose crown meaning on touch in both themes at 390px", async ({ browser, request }, testInfo) => {
+  const list = await (await request.get(`/api/companies/${companyId}/ai-connections`)).json();
+  const selected = list.connections.find((account: { provider: string; isDefault: boolean }) => account.provider === "openai" && account.isDefault);
+  expect(selected).toBeTruthy();
+  for (const colorScheme of ["light", "dark"] as const) {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, colorScheme, reducedMotion: "reduce" });
+    const page = await context.newPage();
+    await page.goto(`${testInfo.project.use.baseURL}/${prefix}/apps?source=installed`);
+    const announcement = page.getByRole("button", { name: "Dismiss announcement" });
+    if (await announcement.isVisible()) await announcement.click();
+    const provider = page.locator('[data-app-slug="openai"]');
+    await provider.getByRole("button", { name: /^\d+ connections$/ }).tap();
+    const crown = provider.getByRole("button", { name: "Your default for OpenAI" });
+    await crown.scrollIntoViewIfNeeded();
+    await crown.tap();
+    await expect(page.getByRole("tooltip")).toHaveText("Your default for OpenAI");
+    await page.keyboard.press("Escape");
+    await provider.getByRole("button", { name: `Manage ${selected.name} connection` }).tap();
+    await expect(page.getByRole("menuitem", { name: "Default for OpenAI", exact: true })).toHaveAttribute("aria-disabled", "true");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`default-mobile-${colorScheme}.png`) });
+    await context.close();
+  }
+});
+
 test("new OpenRouter agents use the visible binding and provider model catalog", async ({ page }) => {
   let tested: { aiConnection?: unknown; adapterConfig?: { model?: string } } | undefined;
   await page.route(`**/api/companies/${companyId}/adapters/opencode_local/models*`, async route => {
@@ -135,25 +233,22 @@ test("explicit OpenAI API method survives continuing and reloading", async ({ pa
 });
 
 for (const [provider, label] of [["anthropic", "Claude"], ["openai", "OpenAI"]]) {
-  test(`Connections reuses the agent provider step for ${label}`, async ({ page }, testInfo) => {
+  test(`Connections reuses the local browser sign-in step for ${label} (simulated auth)`, async ({ page }, testInfo) => {
+    // UI contract only: real subscription qualification is provider-connections.
+    const base = `/api/companies/${companyId}/ai-connections/local`;
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    await page.route(`**${base}/attempts`, route => route.fulfill({ json: { sessionId, expiresAt: new Date(Date.now() + 300000).toISOString() } }));
+    await page.route(`**${base}/check`, route => route.fulfill({ json: { status: "sign_in_required", authorizationUrl: "https://provider.example/authorize", ...(provider === "openai" ? { code: "ABCD-EFGH" } : {}) } }));
+    await page.route(`**${base}/attempts/${sessionId}`, route => route.fulfill({ json: { ok: true } }));
     await page.goto(`/${prefix}/apps/connect?source=${provider}&method=ai-subscription`);
-    await page.getByRole("button", { name: /^(Save and continue|Continue)$/ }).click();
     await expect(page.getByRole("radiogroup", { name: "Connect your model provider" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Connect for tool access instead" })).toHaveCount(0);
     await page.getByRole("radio", { name: new RegExp(label) }).click();
-    if (provider === "anthropic") {
-      await expect(page.getByText(/Connect uses your local/)).toBeVisible();
-      await expect(page.getByText("claude auth login", { exact: true })).toBeVisible();
-    } else {
-      await expect(page.getByText(/Your existing terminal login stays separate/)).toBeVisible();
-      const command = page.getByText(/^CODEX_HOME=.* codex login$/);
-      await expect(command).toBeVisible();
-      const preparedCommand = await command.textContent();
-      await page.reload();
-      await page.getByRole("radio", { name: new RegExp(label) }).click();
-      await expect(command).toHaveText(preparedCommand!);
-    }
-    await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeEnabled();
+    await expect(page.getByRole("link", { name: `Sign in to ${label}`, exact: true })).toHaveAttribute("href", "https://provider.example/authorize");
+    await expect(page.getByText(/CODEX_HOME=|claude auth login|existing terminal login/)).toHaveCount(0);
+    if (provider === "anthropic") await expect(page.getByRole("button", { name: "Submit code", exact: true })).toBeDisabled();
+    else await expect(page.getByText("ABCD-EFGH", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeDisabled();
     // Let the shared tile-collapse and card-enter animations settle for visual review.
     await page.waitForTimeout(1000);
     await page.screenshot({ path: testInfo.outputPath(`${provider}-shared-provider-step.png`), fullPage: true });
@@ -206,7 +301,7 @@ for (const [provider, label, adapter] of [["anthropic", "Claude", "claude_local"
     else await expect(page.getByText("ABCD-EFGH", { exact: true })).toBeVisible();
     await signIn.click();
     expect(await page.evaluate(() => (window as unknown as { loginDestination: string }).loginDestination)).toBe("https://provider.example/authorize");
-    await expect(page.getByRole("button", { name: "Waiting for code", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: provider === "openai" ? "Waiting for auth…" : "Waiting for code", exact: true })).toBeDisabled();
     // The shared footer label animates; capture after it has settled.
     await page.waitForTimeout(600);
     await page.screenshot({ path: testInfo.outputPath(`${provider}-onboarding-browser-login.png`), fullPage: true });

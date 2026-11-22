@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { HIRING_TEMPLATE_READ_FILES, HIRING_TEMPLATE_SKILL_KEY } from "./hiring-template-cases.js";
 import type { ChatIssue, ChatRun } from "./chat-flow.js";
+import { gradeHiringTemplateTurns } from "./hiring-template-turn-accounting.js";
 
 const record = (value: unknown): Record<string, any> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
@@ -22,6 +23,8 @@ export interface HiringTemplateEvidence {
   connectionId: string; binding: unknown; tasks: ChatIssue[]; runs: ChatRun[];
   first?: HiringDocument; firstAfterReuse?: HiringDocument; second?: HiringDocument;
   readRuns: HiringReadRun[];
+  /** Independent public chat/comment/run observations for strict lifecycle accounting. */
+  turnApiState?: unknown;
 }
 
 function expectedFixture(inputs: readonly string[], marker: string, separator: "-" | "_") {
@@ -130,13 +133,9 @@ export function gradeHiringTemplate(e: HiringTemplateEvidence) {
   check("two-worker-tasks", "outcome", ids.every(Boolean) && new Set(ids).size === 2 && e.tasks.length === 2
     && ids.every(id => e.tasks.some(t => t.id === id && t.status === "done" && t.assigneeAgentId === hired?.id
       && t.projectId === e.projectId && !t.parentId)), "Both independent tasks are completed by the same coder in the chosen project.");
-  check("five-successful-turns", "outcome", e.runs.length === 5 && e.runs.every(r => r.status === "succeeded" && r.runtimeMode === "native")
-    && e.runs.filter(r => r.agentId === e.leadId && r.contextSnapshot?.issueId === e.chatIssueId).length === 3
-    && ids.every(id => {
-      const runs = e.runs.filter(r => r.contextSnapshot?.issueId === id);
-      return runs.length === 1 && runs[0]?.agentId === hired?.id
-        && record(runs[0]?.contextSnapshot?.aiConnection).connectionId === e.connectionId;
-    }), "Five turns include one actual coder execution for each task, attributed to the managed account.");
+  const turnAccounting = gradeHiringTemplateTurns({ evidence: e, apiState: e.turnApiState });
+  check("bounded-work-and-completion-turns", "outcome", turnAccounting.passed,
+    "Exactly three requested lead turns and two coder executions, plus at most two strictly attributed completion notifications; every actual run remains counted.");
   check("initial-json-artifact", "outcome", documentMatches(e.first, expectedFixture(e.inputs, e.marker, "-"))
     && e.first?.createdByAgentId === hired?.id, "Independent computation checks each original input/value and worker authorship.");
   check("reused-json-artifact", "outcome", documentMatches(e.second, expectedFixture(e.inputs, `REUSE${e.marker}`, "_"))
@@ -161,8 +160,10 @@ export function gradeHiringTemplate(e: HiringTemplateEvidence) {
     && e.hiredInstructions.entryFile === "AGENTS.md" && instruction.trim() === expectedCoder, "Saved hired instructions use the source revision's coder example with its company/name placeholders filled.");
   check("hired-instructions-durable", "coverage", Boolean(e.hiredInstructions) && sameJson(e.hiredInstructions, e.hiredInstructionsAfterReuse), "The same saved instruction bundle survives the reused worker execution.");
   check("hired-skills-durable", "coverage", Boolean(e.hiredSkills) && sameJson(e.hiredSkills, e.hiredSkillsAfterReuse), "The saved skill selections survive the reused worker execution.");
+  check("completion-action-attribution", "coverage", turnAccounting.actionEvidence.status !== "uncomparable",
+    "Notification actions require exact canonical/native identities; missing cross-namespace mapping is uncomparable, not proof of extra work.");
   return {
-    checks, readReceipts: receipts,
+    checks, readReceipts: receipts, turnAccounting,
     outcomePassed: checks.filter(c => c.dimension === "outcome").every(c => c.passed),
     comparisonStatus: checks.filter(c => c.dimension === "coverage").every(c => c.passed) ? "comparable" : "uncomparable",
     instructionSizes: { ceo: Object.fromEntries(Object.entries(e.leadInstructions?.files ?? {}).map(([file, content]) => [file, hiringTemplateSize(content)])), coder: hiringTemplateSize(instruction) },

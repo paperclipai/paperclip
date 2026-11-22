@@ -1,5 +1,7 @@
 export const HTTP_LOG_REDACT_PATHS = [
   "req.headers.authorization",
+  'req.headers["x-paperclip-source-run-token"]',
+  "res.headers.location",
   'req.headers["proxy-authorization"]',
   "req.headers.cookie",
   // "set-cookie" is normally a response header; keep the request-side
@@ -15,8 +17,10 @@ export const HTTP_LOG_REDACT_PATHS = [
   'req.headers["x-paperclip-cloud-session-id"]',
   'req.headers["x-paperclip-cloud-runtime-identity"]',
   'req.headers["x-paperclip-cloud-control"]',
+  'req.headers["x-paperclip-cloud-inspection"]',
   // Runtime GitHub capabilities authorize credential acquisition for a live run.
   'req.headers["x-paperclip-github-capability"]',
+  'req.headers["x-paperclip-runner-scope-token"]',
   // Telegram's optional webhook verification header is a reusable bearer
   // secret sent on every provider callback.
   'req.headers["x-telegram-bot-api-secret-token"]',
@@ -25,5 +29,11 @@ export const HTTP_LOG_REDACT_PATHS = [
   // at the final serialization boundary in case a future custom serializer
   // bypasses the recursive redactor.
   "reqBody.credentials",
+  // The app-connect/reconnect body groups every provider credential under
+  // `credentialValues`: a map of provider config paths
+  // (`credentials.authorization`, `headers.X-Api-Key`) to the secret string for
+  // each. The key names are chosen by the caller, so no fixed list of leaf
+  // names can cover them. Redact the whole envelope instead.
+  "reqBody.credentialValues",
   "errorContext.details.credentials",
 ] as const;

@@ -4,17 +4,26 @@ import type { AppDefinition, ConnectionMethodDef, FieldDef } from "./types/app-d
 import type { ToolConnectionOwnership } from "./types/tool-access.js";
 
 export const CONNECTABLE_APP_SLUGS = new Set([
-  "anthropic", "openai", "openrouter", "xai",
+  "anthropic", "openai", "openrouter", "xai", "google", "bedrock",
+  "responses-api", "messages-api", "chat-completions-api", "local",
   "agentmail",
   "browser-use-cloud",
+  "daytona",
+  "unikraft",
+  "vercel",
+  "1password",
   "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
+  "monday",
+  "enterpret",
   "zapier",
   "arcade",
   "executor",
   "slack",
   "notion",
+  "paperclip-notebook",
   "railway",
+  "aws",
   "posthog",
   "linear",
   "google-sheets",
@@ -29,9 +38,12 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-chat",
   "google-people",
   "google-workspace-search",
+  "google-workspace",
   "github",
   "github-code-review-bot",
+  "github-copilot",
   "discord",
+  "speko",
   "microsoft-teams",
   "telegram",
   "imessage-photon",
@@ -49,17 +61,17 @@ export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
  */
 export const APP_STORE_HIDDEN_SLUGS = new Set([
   "beehiiv",
-  "bitly",
   "brex",
   "candid",
+  "clickup",
   "coda",
-  "context7",
   "egnyte",
   "embat",
   "kernel",
+  "klaviyo",
   "local-falcon",
-  "make",
   "manufact",
+  "monday",
   "oreilly",
   "planetscale",
   "razorpay",
@@ -81,16 +93,33 @@ export const DEFAULT_OWNERSHIP_AVAILABILITY: Record<ToolConnectionOwnership, boo
   dcr: true,
 };
 
+/**
+ * Connector types contributed by enabled plugins (see `plugin-apps.ts`). The
+ * host replaces the whole set whenever it reads plugin state, and the board UI
+ * replaces it from each gallery response, so a disabled plugin's apps drop out
+ * of every lookup below. Slugs are namespaced, so this set can never shadow a
+ * built-in app.
+ */
+let pluginAppDefinitions = new Map<string, AppDefinition>();
+
+export function setPluginAppDefinitions(definitions: readonly AppDefinition[]): void {
+  pluginAppDefinitions = new Map(definitions.filter((app) => app.plugin).map((app) => [app.slug, app]));
+}
+
+export function listPluginAppDefinitions(): AppDefinition[] {
+  return [...pluginAppDefinitions.values()];
+}
+
 export function getConnectableAppDefinition(slug: string): AppDefinition | null {
-  return CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug) ?? null;
+  return CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug) ?? pluginAppDefinitions.get(slug) ?? null;
 }
 
 export function getAppStoreDefinition(slug: string): AppDefinition | null {
-  return APP_STORE_DEFINITIONS.find((app) => app.slug === slug) ?? null;
+  return APP_STORE_DEFINITIONS.find((app) => app.slug === slug) ?? pluginAppDefinitions.get(slug) ?? null;
 }
 
 export function isAppStoreVisibleSlug(slug: string | null | undefined): boolean {
-  return Boolean(slug && !APP_STORE_HIDDEN_SLUGS.has(slug) && CONNECTABLE_APP_SLUGS.has(slug));
+  return Boolean(slug && ((!APP_STORE_HIDDEN_SLUGS.has(slug) && CONNECTABLE_APP_SLUGS.has(slug)) || pluginAppDefinitions.has(slug)));
 }
 
 function wildcardPatternToRegExp(pattern: string): RegExp {
@@ -190,6 +219,7 @@ export function connectionMethodRequiresConfiguration(method: ConnectionMethodDe
     || visibleTenantFields.length
     || visibleExtensionFields.length
     || method.configRequirements?.atLeastOneOf?.length
+    || Object.keys((method.settingsSchema?.properties as Record<string, unknown> | undefined) ?? {}).length
     // "Use your own OAuth app" is an advanced alternative when DCR/CIMD is
     // available, not a required setup field. Only customer-client-only methods
     // must stop on the configuration screen.
@@ -205,7 +235,7 @@ export function appSupportsCatalogSetup(app: AppDefinition | null | undefined): 
 }
 
 export function isConnectableAppSlug(slug: string | null | undefined): boolean {
-  return Boolean(slug && CONNECTABLE_APP_SLUGS.has(slug));
+  return Boolean(slug && (CONNECTABLE_APP_SLUGS.has(slug) || pluginAppDefinitions.has(slug)));
 }
 
 export function appSupportsAutomaticOAuth(app: AppDefinition | null | undefined): boolean {
@@ -255,14 +285,28 @@ export function resolveConnectionMethodServerUrl(
 
 export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string | null): Record<string, unknown> {
   // Keep the parameters in the public contract: callers resolve defaults for a
-  // concrete app/method even though the initial policy is uniform. This is
-  // an open default, not an approval bypass: connection finalization remains a
-  // configure-authorized, audited operation, and Ask first stays available as
-  // an operator-selected policy for any action after the connection is made.
-  // The connect flow lands on the Permissions tab so that choice is the very
-  // next screen (PAP-659: agents get full permissions unless someone narrows them).
-  void app;
-  void methodKey;
+  // concrete app/method. Connection finalization remains a configure-authorized,
+  // audited operation, and Ask first stays available as an operator-selected
+  // policy for any action after the connection is made.
+  const method = methodKey
+    ? app.methods.find((candidate) => candidate.key === methodKey)
+    : null;
+  if (app.slug === "gmail" && method?.capabilityProfile?.key === "archive") {
+    return {
+      access: "all_agents",
+      askFirstRiskLevels: ["write", "destructive"],
+    };
+  }
+  // Enterpret's run_graph_query self-reports readOnlyHint but executes Cypher
+  // and has not been established as read-only. Classify it as write (server
+  // classifyRisk) and require Ask first so new token connections do not ship
+  // that action as Allowed.
+  if (app.slug === "enterpret") {
+    return {
+      access: "all_agents",
+      askFirstRiskLevels: ["write", "destructive"],
+    };
+  }
   return {
     access: "all_agents",
     askFirstRiskLevels: [],

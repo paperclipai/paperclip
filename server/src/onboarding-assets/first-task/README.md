@@ -1,5 +1,10 @@
 # First-task onboarding assets
 
+The company wizard now opens a standing chat and starts a live welcome after the
+thread is visible. It creates no task or project; see
+[`doc/onboarding-chat.md`](../../../../doc/onboarding-chat.md).
+These assets remain for existing onboarding tasks and explicit legacy fixtures.
+
 Everything the very first agent is told during onboarding lives here as plain
 markdown so the board can edit the wording without touching TypeScript. The
 server loads these files (see `server/src/services/onboarding-first-task-assets.ts`
@@ -32,6 +37,14 @@ changes or the `task` option loses `freeText: true`. When the user answers, the
 answer reaches the agent in its wake payload and the `first-task` skill tells it
 which path to take; when the user types a message instead, the card expires
 and the message wakes the agent as before.
+
+With the coordinator chat enabled, the agent's chat with the user mirrors the
+onboarding task's pending questions. If the agent asks a question in that chat
+(for example, the user moved onboarding there), the onboarding task's pending
+question cards expire as superseded, so only one card stays answerable. When
+that leaves the onboarding task in review with no other pending card, it is
+marked done with a comment linking to the chat, so the user is never asked to
+decide how an internal task continues.
 
 ## Placeholders
 

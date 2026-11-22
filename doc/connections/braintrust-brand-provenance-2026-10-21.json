@@ -1,0 +1,17 @@
+{
+  "retrievedAt": "2026-10-21",
+  "providers": [
+    {
+      "slug": "braintrust",
+      "provider": "Braintrust",
+      "localAsset": "/brands/apps/braintrust.png",
+      "darkAsset": "/brands/apps/braintrust-dark.png",
+      "sourceUrl": "https://www.braintrust.dev/icon180.png?v=2",
+      "darkSourceUrl": "https://www.braintrust.dev/icon-dark180.png?v=2",
+      "linkedFrom": "https://www.braintrust.dev/",
+      "sha256": "aa4434ae1033d523f11d08761933ec317ef30c04ac543ec06ae7443d2fd38cb3",
+      "darkSha256": "6c64f3fd8b32bb84544cb438ea18aac4f461402d1fdb6960022f5d410bc0e1ca",
+      "note": "Official 180\u00d7180 transparent Braintrust website icons, retained without modification. Purple mark for light mode and white mark for dark mode; use the existing Paperclip gray icon frame."
+    }
+  ]
+}
