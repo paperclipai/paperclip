@@ -87,21 +87,11 @@ describe("canonical native event UI boundary corpus", () => {
 
       expect(transcript).toContainEqual(
         expect.objectContaining({
-          kind: "tool_call",
-          toolUseId: `plan:${fixture.expected.planId}`,
-          name: "plan",
-          input: {
-            eventType: "plan.updated",
-            summary: "Keep every boundary lossless.",
-          },
-        }),
-      );
-      expect(transcript).toContainEqual(
-        expect.objectContaining({
-          kind: "tool_result",
-          toolUseId: `plan:${fixture.expected.planId}`,
-          content: "Keep every boundary lossless.",
-          isError: false,
+          kind: "provider_activity",
+          family: "plan",
+          eventType: "plan.updated",
+          summary: "Keep every boundary lossless.",
+          payload: expect.objectContaining({ planId: fixture.expected.planId }),
         }),
       );
 

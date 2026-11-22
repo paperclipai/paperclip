@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -118,7 +118,7 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
         .values({ companyId: customer.id, projectId: project.id, title: "First successful task" })
         .returning();
       const storage = { provider: "local_disk" } as StorageService;
-      const start = async (handler: Parameters<typeof createServer>[0]) => {
+      const start = async (handler: RequestListener) => {
         const server = createServer(handler);
         servers.push(server);
         await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -289,7 +289,7 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
           env: { PAPERCLIP_CUSTOMER_SUCCESS_CLOUD_ORIGIN: cloudOrigin },
         },
         context: {},
-        runtime: { sessionId: null, sessionParams: null, taskKey: null },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         onLog: async (_stream, chunk) => {
           output.push(chunk);
         },
