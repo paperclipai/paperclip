@@ -133,7 +133,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   })).filter(agent => agentIds.includes(String(agent.id)));
   const slotProof = hostedQueueWait(agentIds, agents, runs);
   if (slotProof.missing.length) input.record("hosted_agent_slots_unavailable", { agentIds: slotProof.missing });
-  const slotQueued = slotQueuedRuns(agents, runs, gradedAt, slotProof.queueWait);
+  const slotQueued = slotQueuedRuns(runs, gradedAt, slotProof);
   const notGraded = issues.filter(issue => queuedBehindSlotCap(views.get(issue.id)?.status, runsByIssue.get(issue.id) ?? [], slotQueued))
     .map(issue => ({ issueId: issue.id, identifier: issue.identifier, runIds: (runsByIssue.get(issue.id) ?? []).filter(run => slotQueued.has(run.runId)).map(run => run.runId) }));
   const notGradedIds = new Set(notGraded.map(entry => entry.issueId));

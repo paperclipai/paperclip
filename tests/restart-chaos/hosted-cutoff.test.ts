@@ -65,7 +65,7 @@ describe("runs queued behind a full agent slot cap", () => {
   const rows = (list: Json[]) => list.map(runRow);
   const queued = (list: Json[], at: number) => {
     const runs = rows(list);
-    return slotQueuedRuns(agents, runs, at, hostedQueueWait(["a1"], agents, runs).queueWait);
+    return slotQueuedRuns(runs, at, hostedQueueWait(["a1"], agents, runs));
   };
 
   it("counts a never-started run as slot-queued only while the running runs fill the cap with no idle slot since it was created", () => {
@@ -79,7 +79,7 @@ describe("runs queued behind a full agent slot cap", () => {
     const overtaken = [apiRun("h1", "i1", T0, T0), apiRun("h2", "i2", T0 + MIN, T0 + MIN, { status: "succeeded", finishedAt: iso(T0 + 3 * MIN) }),
       apiRun("q1", "i3", T0 + 2 * MIN, null), apiRun("h3", "i4", T0 + 2.5 * MIN, T0 + 3 * MIN)];
     expect([...queued(overtaken, T0 + 8 * MIN)]).toEqual([]);
-    expect([...slotQueuedRuns([{ id: "a1", runtimeConfig: null }], rows(full), T0 + 8 * MIN, hostedQueueWait(["a1"], [], rows(full)).queueWait)]).toEqual([]);
+    expect([...slotQueuedRuns(rows(full), T0 + 8 * MIN, hostedQueueWait(["a1"], [{ id: "a1", runtimeConfig: null }], rows(full)))]).toEqual([]);
   });
 
   it("leaves a task to the grade unless every live run of it is slot-queued and it is still open", () => {
@@ -88,6 +88,8 @@ describe("runs queued behind a full agent slot cap", () => {
     expect(queuedBehindSlotCap("todo", runs, new Set(["q1"]))).toBe(false);
     expect(queuedBehindSlotCap("blocked", runs.slice(0, 1), new Set(["q1"]))).toBe(false);
     expect(queuedBehindSlotCap("todo", [], new Set(["q1"]))).toBe(false);
+    const failedFirst = rows([apiRun("q1", "i3", T0, null), apiRun("f1", "i3", T0 - MIN, T0 - MIN, { status: "failed", finishedAt: iso(T0) })]);
+    expect(queuedBehindSlotCap("todo", failedFirst, new Set(["q1"]))).toBe(false);
   });
 });
 

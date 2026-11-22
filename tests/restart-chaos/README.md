@@ -306,7 +306,7 @@ minutes is not a live owner, the same window the drain uses. The drain also wait
 (`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading. The drain cap
 counts from the later of the last release and the end of arrivals, so a run that stops launching at `--hosted-max-hours`
 long after its last release still drains for `--hosted-drain-minutes`. Run activity is aged from the moment the grade
-read the runs, not from after the task view reads. A task that is still open and whose every live run is still queued
+read the runs, not from after the task view reads. A task that is still open, has no failed run, and whose every live run is still queued
 behind its agent's full `maxConcurrentRuns` cap, with the queue-wait proof finding no idle slot and no newer
 assignment run started ahead of it, is not graded: `SUMMARY.md` names it on a `Not graded` line and
 `hosted-release-swap.json` lists it under `notGraded`. The runs holding the slots are still graded.
