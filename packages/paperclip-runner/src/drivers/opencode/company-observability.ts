@@ -19,7 +19,6 @@ const terminalCodes = new Set(["opencode_empty_response", "opencode_output_limit
 function failureCode(error: unknown): string {
   const detail = record(error);
   const failure = readProviderFailure(detail.providerFailure);
-  // Export classifications, never upstream codes, messages, request IDs or raw bodies.
   if (failure) return `provider_${failure.category}`;
   return typeof detail.code === "string" && terminalCodes.has(detail.code) ? detail.code : "unknown";
 }
@@ -190,7 +189,6 @@ export function createOpenCodeCompanyObservability(input: {
       const turn = current;
       if (!turn || event.runId !== turn.runId || event.turnId !== turn.turnId) return;
       const payload = record(event.payload);
-      // Track only completed PRP stages, even when content and tool capture are off.
       if (event.eventType === "tool.execution.completed" || (event.eventType === "item.completed" && payload.kind === "dynamicToolCall")) {
         turn.root.attributes["paperclip.turn.last_completed_stage"] = "tool";
       } else if (event.eventType === "item.completed" && payload.kind === "agentMessage") {
