@@ -14502,8 +14502,9 @@ export function issueRoutes(
     const run = await heartbeat.getRun(runId);
     if (!run || run.runtimeMode !== "native" || run.status !== "running"
       || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    // Any task status: recovery can hand a task back as todo while its stage is still pending.
     if (options.allowStageApproval && (requestedStatus === "done" || requestedStatus === "in_progress") &&
-        issue.status === "in_review" && activeExecutionParticipantAgentId(issue) === req.actor.agentId) {
+        activeExecutionParticipantAgentId(issue) === req.actor.agentId) {
       return "defer_stage_decision";
     }
     // A blocker that the dependency rules reject anyway keeps its specific
@@ -15659,11 +15660,11 @@ export function issueRoutes(
           req.body.reviewPolicy !== lockedExisting.reviewPolicy;
         // A deferred native approval is still a review verdict even though
         // its status write is left to the run's finish report.
-        const lockedReviewVerdictRequested =
-          lockedExisting.status === "in_review" &&
-          (updateFields.status === "done" ||
-            updateFields.status === "cancelled" ||
-            deferredNativeStageApproval);
+        // A deferred native decision is a verdict on whatever status recovery
+        // left the task in; the review policy still applies to it.
+        const lockedReviewVerdictRequested = deferredNativeStageApproval ||
+          (lockedExisting.status === "in_review" &&
+            (updateFields.status === "done" || updateFields.status === "cancelled"));
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&

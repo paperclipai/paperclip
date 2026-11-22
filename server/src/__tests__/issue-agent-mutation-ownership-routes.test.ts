@@ -3302,6 +3302,27 @@ describe("agent issue mutation checkout ownership", () => {
           expect.anything(), expect.objectContaining({ reason: "execution_changes_requested" }));
       });
 
+      it("records the decision when recovery left the task in todo with its stage still pending", async () => {
+        const issue = { ...reviewIssue([finalStage]), status: "todo" };
+        mockIssueService.getById.mockResolvedValue(issue);
+        mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }));
+        const db = createRunContextDb();
+        const inserted: Array<{ table: string; values: Record<string, unknown> }> = [];
+        db.insert = vi.fn((table: Parameters<typeof getTableName>[0]) => ({ values: vi.fn(async (values: Record<string, unknown>) => {
+          inserted.push({ table: getTableName(table), values });
+        }) })) as typeof db.insert;
+
+        const res = await request(createApp(runActor(), db)).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved: verified after the task was recovered." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+        expect(patch).not.toHaveProperty("status");
+        expect(patch.executionState).toMatchObject({ status: "completed", lastDecisionOutcome: "approved" });
+        expect(inserted.find(row => row.table === "issue_execution_decisions")?.values)
+          .toMatchObject({ outcome: "approved", createdByRunId: ownerRunId });
+      });
+
       it("still requires the comment for a changes request", async () => {
         mockIssueService.getById.mockResolvedValue(reviewIssue([finalStage]));
 
