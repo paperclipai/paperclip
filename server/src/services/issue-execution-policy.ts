@@ -925,7 +925,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
             };
           }
         }
-        patch.status = "in_progress";
+        patch.status = requestedStatus === "blocked" ? "blocked" : "in_progress";
         Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
         patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
         return {
