@@ -45,6 +45,15 @@ export function createOpenCodeRuntimePack(source, destination) {
     copyFileSync(file, target);
     chmodSync(target, lstatSync(file).mode & 0o777);
   }
+  for (const [name, pin] of Object.entries({ acpx: "acpx", "@agentclientprotocol/claude-agent-acp": "claudeAcp",
+    "@agentclientprotocol/codex-acp": "codexAcp", "opencode-ai": "opencode" })) {
+    const path = join("node_modules", name, "package.json"), file = realpathSync(join(sourceRoot, path));
+    if (relative(sourceRoot, file).startsWith("..") || JSON.parse(readFileSync(file, "utf8")).version !== manifest.payload.pins[pin]) {
+      throw Error(`Invalid runtime package metadata: ${name}`);
+    }
+    mkdirSync(dirname(join(destination, path)), { recursive: true });
+    copyFileSync(file, join(destination, path));
+  }
   delete manifest.payload.providers;
   delete manifest.payload.candidateProviders;
   manifest.digest = sha(canonical(manifest.payload));

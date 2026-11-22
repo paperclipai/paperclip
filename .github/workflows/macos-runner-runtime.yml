@@ -82,6 +82,32 @@ jobs:
             "$RUNNER_TEMP/macos-provider-pack" \
             packages/paperclip-runner/dist/bin/paperclip-runnerd \
             "$GITHUB_SHA" "$RUNNER_TEMP/macos-runner-runtime" "$RUNTIME_INPUTS_DIGEST"
+      - name: Verify the unpacked pack with the remote startup verifier
+        if: steps.cached.outputs.run_id == ''
+        env:
+          RUNTIME_INPUTS_DIGEST: ${{ steps.cached.outputs.digest }}
+        run: |
+          node scripts/macos-runner-runtime.mjs install \
+            "$RUNNER_TEMP/macos-runner-runtime" "$RUNNER_TEMP/qualified-runtimes" "$GITHUB_SHA" "$RUNTIME_INPUTS_DIGEST"
+          node --import ./server/node_modules/tsx/dist/loader.mjs --input-type=module <<'JS'
+          import { execFile } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { promisify } from 'node:util';
+          import { verifyRemoteProviderPack } from './server/src/services/native-runtime/remote-provider-pack-verification.ts';
+          const packRoot = join(process.env.RUNNER_TEMP, 'qualified-runtimes/darwin-arm64/provider-pack');
+          const manifest = JSON.parse(readFileSync(join(packRoot, 'provider-pack.json'), 'utf8'));
+          const execute = async request => {
+            try {
+              const result = await promisify(execFile)(request.command, request.args, { cwd: request.cwd, timeout: request.timeoutMs });
+              return { ...result, exitCode: 0, signal: null, timedOut: false, pid: null, startedAt: null };
+            } catch (error) {
+              return { stdout: error.stdout ?? '', stderr: error.stderr ?? String(error), exitCode: error.code,
+                signal: error.signal ?? null, timedOut: Boolean(error.killed), pid: null, startedAt: null };
+            }
+          };
+          await verifyRemoteProviderPack({ runner: { execute }, cwd: packRoot, packRoot, manifest });
+          JS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ steps.cached.outputs.artifact_name }}
@@ -99,7 +125,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24.21.0
+          node-version: 24
           package-manager-cache: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:

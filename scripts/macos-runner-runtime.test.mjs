@@ -70,6 +70,13 @@ test("the OpenCode runtime keeps its sealed artifacts and excludes unrelated har
   writeFileSync(join(source, "dist/proxy.cjs"), "qualified proxy");
   writeFileSync(join(source, "node_modules/unrelated/runtime"), "unrelated harness");
   const file = join(source, "provider-pack.json"), pack = JSON.parse(readFileSync(file, "utf8"));
+  for (const [name, pin] of Object.entries({ acpx: "acpx", "@agentclientprotocol/claude-agent-acp": "claudeAcp",
+    "@agentclientprotocol/codex-acp": "codexAcp", "opencode-ai": "opencode" })) {
+    const directory = join(source, "node_modules", name);
+    mkdirSync(directory, { recursive: true });
+    pack.payload.pins[pin] ??= "1.0.0";
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ name, version: pack.payload.pins[pin] }));
+  }
   pack.payload.artifacts = { opencodeProxy: { path: "dist/proxy.cjs", sha256: sha("qualified proxy") } };
   pack.payload.providers = { kimi: { path: "provider-assets/kimi/darwin-arm64" } };
   pack.digest = sha(canonical(pack.payload)); writeFileSync(file, JSON.stringify(pack));
@@ -78,4 +85,8 @@ test("the OpenCode runtime keeps its sealed artifacts and excludes unrelated har
   assert.equal(existsSync(join(destination, "node_modules/unrelated")), false);
   assert.equal(result.payload.providers, undefined);
   assert.equal(result.digest, sha(canonical(result.payload)));
+  for (const name of ["acpx", "@agentclientprotocol/claude-agent-acp", "@agentclientprotocol/codex-acp", "opencode-ai"]) {
+    assert.deepEqual(JSON.parse(readFileSync(join(destination, "node_modules", name, "package.json"), "utf8")),
+      JSON.parse(readFileSync(join(source, "node_modules", name, "package.json"), "utf8")));
+  }
 });
