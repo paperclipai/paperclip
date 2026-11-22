@@ -121,8 +121,10 @@ export function assertCompletionRequirementMutation(input: {
   });
 }
 
+const PLUGIN_PROTECTED_COMPLETION_KEYS = ["completionRequirement", "completionRequirementRevision"] as const;
+
 export function assertNoPluginCompletionRequirementSupply(input: Record<string, unknown> | undefined) {
-  if (!input || !Object.prototype.hasOwnProperty.call(input, "completionRequirement")) return;
+  if (!input || !PLUGIN_PROTECTED_COMPLETION_KEYS.some((key) => Object.prototype.hasOwnProperty.call(input, key))) return;
   throw forbidden("Plugins cannot set the completion requirement", {
     code: "completion_requirement_protected",
   });

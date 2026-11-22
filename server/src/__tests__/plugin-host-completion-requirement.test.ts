@@ -62,9 +62,13 @@ describeEmbeddedPostgres("plugin host completion requirement guard", () => {
     const { company } = await seedGatedIssue();
     const services = buildHostServices(db, "plugin-record-id", "completion-requirement", createEventBusStub());
     try {
-      for (const completionRequirement of ["workspace_delivery", null]) {
+      for (const fields of [
+        { completionRequirement: "workspace_delivery" },
+        { completionRequirement: null },
+        { completionRequirementRevision: 7 },
+      ]) {
         await expect(
-          services.issues.create({ companyId: company.id, title: "Plugin issue", completionRequirement } as any),
+          services.issues.create({ companyId: company.id, title: "Plugin issue", ...fields } as any),
         ).rejects.toMatchObject({ status: 403, details: { code: "completion_requirement_protected" } });
       }
     } finally {
@@ -80,6 +84,8 @@ describeEmbeddedPostgres("plugin host completion requirement guard", () => {
         { completionRequirement: null },
         { completionRequirement: null, actorUserId: randomUUID() },
         { completionRequirement: "workspace_delivery", actorUserId: randomUUID() },
+        { completionRequirementRevision: 99 },
+        { completionRequirementRevision: 0, actorUserId: randomUUID() },
       ]) {
         await expect(
           services.issues.update({ companyId: company.id, issueId: issue.id, patch } as any),
