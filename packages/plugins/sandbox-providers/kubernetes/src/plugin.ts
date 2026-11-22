@@ -342,7 +342,11 @@ const plugin = definePlugin({
       paperclipServerNamespace: PAPERCLIP_SERVER_NAMESPACE,
       serviceAccountAnnotations: config.serviceAccountAnnotations,
       egressMode: config.egressMode,
-      egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
+      egressAllowFqdns: config.egressAllowFqdns,
+      adapterEgress: {
+        adapterType: effectiveAdapterType,
+        allowFqdns: adapterDefaults.allowFqdns,
+      },
       egressAllowCidrs: config.egressAllowCidrs,
       resourceQuota: DEFAULT_RESOURCE_QUOTA,
     });
