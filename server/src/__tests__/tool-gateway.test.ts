@@ -6794,6 +6794,66 @@ rl.on("line", (line) => {
     expect(await requestStatuses()).toEqual(["cancelled", "pending"]);
   });
 
+  it("keeps a repeated request when the same run then asks for another action", async () => {
+    const { firstRun, requestFrom, startRun, finishRun, requestStatuses } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await finishRun(firstRun.id);
+    // The next run still wants A, and also asks for B. The reused A request
+    // stays linked to the first run, but this run asked for it too.
+    const secondRun = await startRun();
+    await requestFrom(secondRun.id, "Draft A");
+    await requestFrom(secondRun.id, "Draft B");
+
+    expect(await requestStatuses()).toEqual(["pending", "pending"]);
+  });
+
+  it("leaves one live request per action when a newer run repeats each of an ended run's requests", async () => {
+    const { firstRun, requestFrom, startRun, finishRun } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await requestFrom(firstRun.id, "Draft B");
+    await finishRun(firstRun.id);
+    const secondRun = await startRun();
+    // Repeating A reuses it and withdraws the first run's B, which this run
+    // has not asked for yet. Repeating B then asks for B afresh.
+    await requestFrom(secondRun.id, "Draft A");
+    await requestFrom(secondRun.id, "Draft B");
+
+    const requests = await db.select().from(toolActionRequests).orderBy(asc(toolActionRequests.createdAt));
+    const live = requests.filter((request) => request.status === "pending");
+    expect(new Set(live.map((request) => request.canonicalArgumentsHash)).size).toBe(2);
+    expect(live[0]!.id).toBe(requests[0]!.id);
+    expect(requests.map((request) => request.status)).toEqual(["pending", "cancelled", "pending"]);
+  });
+
+  it("withdraws a repeated request once the run that repeated it has ended", async () => {
+    const { firstRun, requestFrom, startRun, finishRun, requestStatuses } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await finishRun(firstRun.id);
+    const secondRun = await startRun();
+    await requestFrom(secondRun.id, "Draft A");
+    await finishRun(secondRun.id);
+    const thirdRun = await startRun();
+    await requestFrom(thirdRun.id, "Draft B");
+
+    expect(await requestStatuses()).toEqual(["cancelled", "pending"]);
+  });
+
+  it("never withdraws a request that was already approved", async () => {
+    const { firstRun, requestFrom, startRun, finishRun, requestStatuses } = await setupNoteApprovals();
+
+    await requestFrom(firstRun.id, "Draft A");
+    await finishRun(firstRun.id);
+    // The person approves A before the next run asks for B.
+    await db.update(toolActionRequests).set({ status: "approved", decidedAt: new Date() });
+    const secondRun = await startRun();
+    await requestFrom(secondRun.id, "Draft B");
+
+    expect(await requestStatuses()).toEqual(["approved", "pending"]);
+  });
+
   it("keeps earlier requests from runs that are still in progress", async () => {
     const { firstRun, requestFrom, startRun, requestStatuses } = await setupNoteApprovals();
 

@@ -2809,6 +2809,18 @@ export function createToolGatewayService(
         eq(toolInvocations.toolName, input.toolName),
         ne(toolInvocations.runId, runId),
         sql`${heartbeatRuns.status} not in ('queued', 'running')`,
+        // A request that a run repeated is reused, so it stays linked to the
+        // run that first asked. Its approval_requested events record every
+        // run that asked for it. Keep it while any of those runs is this run
+        // or is still in progress.
+        sql`not exists (
+          select 1 from ${toolCallEvents} asked
+          join ${heartbeatRuns} asking_run on asking_run.id = asked.run_id
+          where asked.company_id = ${companyId}
+            and asked.action_request_id = ${toolActionRequests.id}
+            and asked.event_type = 'approval_requested'
+            and (asked.run_id = ${runId} or asking_run.status in ('queued', 'running'))
+        )`,
       ));
     for (const request of stale) {
       const now = new Date();
@@ -11273,8 +11285,20 @@ export function createToolGatewayService(
     }
     if (actionRequest.status === "pending") {
       // A later run that repeats one of an ended run's requests reuses that
-      // request. Withdraw the ended run's other requests for this tool, as a
-      // new request would, so they cannot hold back the reused one's result.
+      // request. Record that this run asked for it, so later cleanup in this
+      // run keeps it. Then withdraw the ended run's other requests for this
+      // tool, as a new request would, so they cannot hold back its result.
+      await writeToolCallEvent({
+        invocationId: invocation.id,
+        actionRequestId: actionRequest.id,
+        session: input.session,
+        eventType: "approval_requested",
+        outcome: "pending",
+        toolName: input.toolName,
+        policyDecision: "require_approval",
+        reasonCode: "requires_approval_policy",
+        metadata: { actionRequestId: actionRequest.id, interactionId: actionRequest.interactionId, replay: true },
+      });
       await supersedeEarlierToolActionRequests({
         session: input.session,
         toolName: input.toolName,
