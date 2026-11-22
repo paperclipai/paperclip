@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "issues_execution_run_idx" ON "issues" USING btree ("execution_run_id") WHERE "issues"."execution_run_id" is not null;--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "issues_checkout_run_idx" ON "issues" USING btree ("checkout_run_id") WHERE "issues"."checkout_run_id" is not null;
