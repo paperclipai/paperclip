@@ -80,6 +80,7 @@ import {
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import { readBuildCommit } from "../build-commit.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
@@ -2645,12 +2646,15 @@ function applySelectedFilesToSource(source: ResolvedSource, selectedFiles?: stri
 
 async function resolveBundledSkillsCommit() {
   if (!bundledSkillsCommitPromise) {
-    bundledSkillsCommitPromise = execFileAsync("git", ["rev-parse", "HEAD"], {
-      cwd: process.cwd(),
-      encoding: "utf8",
-    })
-      .then(({ stdout }) => stdout.trim() || null)
-      .catch(() => null);
+    const buildCommit = readBuildCommit();
+    bundledSkillsCommitPromise = buildCommit
+      ? Promise.resolve(buildCommit)
+      : execFileAsync("git", ["rev-parse", "HEAD"], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      })
+        .then(({ stdout }) => stdout.trim() || null)
+        .catch(() => null);
   }
   return bundledSkillsCommitPromise;
 }
@@ -2692,6 +2696,10 @@ async function buildSkillSourceEntry(skill: CompanySkill) {
   }
 
   return null;
+}
+
+function isBundledPaperclipSkill(skill: CompanySkill) {
+  return isPlainRecord(skill.metadata) && asString(skill.metadata.sourceKind) === "paperclip_bundled";
 }
 
 function shouldReferenceSkillOnExport(skill: CompanySkill, expandReferencedSkills: boolean) {
@@ -4202,9 +4210,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     const skillExportDirs = buildSkillExportDirMap(selectedSkillRows, company.issuePrefix);
     const skillFileJobs: Array<{ filePath: string; load: () => Promise<string | null> }> = [];
+    const unpinnedBundledSkillSlugs: string[] = [];
     for (const skill of selectedSkillRows) {
       const packageDir = skillExportDirs.get(skill.key) ?? `skills/${normalizeSkillSlug(skill.slug) ?? "skill"}`;
       if (shouldReferenceSkillOnExport(skill, Boolean(input.expandReferencedSkills))) {
+        if (isBundledPaperclipSkill(skill) && !(await resolveBundledSkillsCommit())) {
+          unpinnedBundledSkillSlugs.push(skill.slug);
+          continue;
+        }
         skillFileJobs.push({
           filePath: `${packageDir}/SKILL.md`,
           load: () => buildReferencedSkillMarkdown(skill),
@@ -4234,6 +4247,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     );
     for (const result of skillFileResults) {
       if (result.content !== null) files[result.filePath] = result.content;
+    }
+    if (unpinnedBundledSkillSlugs.length > 0) {
+      warnings.push(
+        `Bundled Paperclip skills were omitted from export because this build has no commit to pin them to: ${unpinnedBundledSkillSlugs.join(", ")}. The importing instance uses its own bundled copies.`,
+      );
     }
 
     if (include.agents) {
