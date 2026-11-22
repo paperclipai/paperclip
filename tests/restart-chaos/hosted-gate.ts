@@ -49,6 +49,27 @@ export function hostedQueueWait(agentIds: readonly string[], agents: readonly Ho
   return { queueWait: queueWaitFairnessFrom(slots), missing: agentIds.filter(id => !capped.has(id)) };
 }
 
+export function slotQueuedRuns(agents: readonly HostedAgentRow[], runs: readonly HostedRunRow[], at: number, queueWait: QueueWaitFairness): Set<string> {
+  const caps = new Map(agents.map(agent => [String(agent.id), Number(agent.runtimeConfig?.heartbeat?.maxConcurrentRuns)]));
+  const holding = (agentId: string) => runs.filter(run => run.agentId === agentId && run.status === "running" && run.startedAt !== null && run.startedAt <= at
+    && (run.finishedAt === null || run.finishedAt > at)).length;
+  return new Set(runs.filter(run => {
+    if (run.status !== "queued" || run.startedAt !== null || run.createdAt === null || run.createdAt > at || !run.agentId) return false;
+    const cap = caps.get(run.agentId);
+    if (cap === undefined || !Number.isInteger(cap) || cap < 1 || holding(run.agentId) < cap) return false;
+    return queueWait(run.runId, run.createdAt, at).verdict === "fair";
+  }).map(run => run.runId));
+}
+
+const SLOT_WAIT_STATUSES = new Set(["todo", "in_progress"]);
+const LIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
+
+export function queuedBehindSlotCap(status: unknown, runs: readonly HostedRunRow[], slotQueued: ReadonlySet<string>): boolean {
+  if (!SLOT_WAIT_STATUSES.has(String(status))) return false;
+  const live = runs.filter(run => LIVE_RUN_STATUSES.has(run.status));
+  return live.length > 0 && live.every(run => slotQueued.has(run.runId));
+}
+
 /**
  * The local waves' R1 for one hosted task: done within the staging-mix budget plus outage time, plus the first run's
  * queue wait when the agent's slots prove it fair. The API has no wake evidence, so a follow-up run's wait is never
