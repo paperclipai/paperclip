@@ -46,7 +46,9 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
     if (selected && Array.isArray(entry.accounts)) {
       observed = true;
       for (const item of entry.accounts) {
+        if (++visited > 20_000) { incomplete = true; return; }
         const account = record(item);
+        if (account && reportsFailure(account)) throw checkFailed();
         const id = account?.id ?? account?.account_id ?? account?.connected_account_id;
         if (typeof id !== "string" || !id || id.length > 200) { incomplete = true; continue; }
         accounts.set(id, { id, alias: typeof account?.alias === "string" ? account.alias.slice(0, 100) : null,
@@ -54,7 +56,16 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
           isDefault: account?.is_default === true || account?.isDefault === true });
       }
     }
-    for (const [key, child] of Object.entries(entry)) visit(child, selected || key === toolkit, depth + 1);
+    // Account records are leaves: the loop above reads the selected toolkit's records, and a record's nested
+    // fields (such as user_info) are the provider's own data. TikTok sends error: { code: "ok" } on success,
+    // and a deep profile would use up this check's budget. An item with its own accounts is a toolkit result.
+    for (const [key, child] of Object.entries(entry)) {
+      if (key !== "accounts" || !Array.isArray(child)) { visit(child, selected || key === toolkit, depth + 1); continue; }
+      for (const item of child) {
+        if (++visited > 20_000) { incomplete = true; return; }
+        if (Array.isArray(record(item)?.accounts)) visit(item, selected, depth + 2);
+      }
+    }
   }
   payloadsFrom(response).forEach(payload => visit(payload, false, 0));
   return observed && !incomplete ? [...accounts.values()] : undefined;
