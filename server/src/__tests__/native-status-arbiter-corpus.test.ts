@@ -3052,6 +3052,31 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     });
   });
 
+  it.each(["invalid", "done"] as const)("validates a new %s result before retiring an existing automatic review", async disposition => {
+    const seeded = await seedAutomaticReview();
+    const runId = randomUUID(), resultId = randomUUID();
+    const [sourceRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    const [sourceResult] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
+      nativeIssueId: seeded.issueId, contextSnapshot: { issueId: seeded.issueId },
+      completionContractId: seeded.contractId!, completionContractSha256: sourceRun!.completionContractSha256 });
+    await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId: seeded.issueId, runId,
+      completionContractId: seeded.contractId!, serverFingerprint: resultId, canonicalSha256: resultId, schemaStatus: "accepted",
+      resultJson: { ...sourceResult!.resultJson,
+        result: { ...(sourceResult!.resultJson.result as object), reportedWorkDisposition: disposition } } });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId: seeded.issueId, phase: "observed", resultId });
+    const finalizing = finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
+    if (disposition === "invalid") await expect(finalizing).rejects.toThrow("native_result_invalid_disposition");
+    else expect((await finalizing)?.phase).toBe("committed");
+    const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+    if (disposition === "invalid") {
+      expect(card).toMatchObject({ status: "pending", result: null, resolvedAt: null });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      expect(issue).toMatchObject({ status: "in_review", lastStatusDecisionId: seeded.decision.id });
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId))).toEqual([]);
+    } else expect(card).toMatchObject({ status: "cancelled", result: { reason: "automatic_completion_review_removed" } });
+  }, 30_000);
+
   it("retires a proven automatic review and applies the current successful completion exactly once", async () => {
     const seeded = await seedAutomaticReview();
     // The persisted result is done, while its old assessment/decision required a review.

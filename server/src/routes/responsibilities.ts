@@ -1,3 +1,4 @@
+import { agentMayReportFor, dashboardOwner } from "./responsibility-owner.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -72,27 +73,8 @@ function linkTarget(body: LinkResponsibility | ResponsibilityLinkLookupQuery): R
   return { kind: "routine", id: body.routineId! };
 }
 
-/**
- * The writer rule: a board user manages their own responsibilities; company
- * owners/admins and instance admins manage anyone's.
- */
-export function boardCanManageResponsibilityOwner(req: Request, companyId: string, ownerUserId: string) {
-  if (req.actor.type !== "board") return false;
-  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
-  if (req.actor.userId && req.actor.userId === ownerUserId) return true;
-  const membership = req.actor.memberships?.find((item) => item.companyId === companyId && item.status === "active");
-  return membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
-}
-
-/**
- * Whose responsibilities a request means when it names no owner: a board user
- * means their own, and an agent means the person its run works for (the
- * person chatting, or the task's responsible person).
- */
-export function defaultResponsibilityOwnerUserId(req: Request): string | undefined {
-  if (req.actor.type === "board") return req.actor.userId ?? undefined;
-  if (req.actor.type === "agent") return req.actor.onBehalfOfUserId ?? undefined;
-  return undefined;
+export function boardCanManageResponsibilityOwner(req: Request, _companyId: string, ownerUserId: string) {
+  return req.actor.type === "board" && req.actor.userId === ownerUserId;
 }
 
 export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
@@ -157,14 +139,15 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
 
   function assertBoardCanManage(req: Request, row: { companyId: string; ownerUserId: string }) {
     if (!boardCanManageOwner(req, row.companyId, row.ownerUserId)) {
-      throw forbidden("Only the person who owns this responsibility, or a company admin, can change it");
+      throw forbidden("Only the person who owns this responsibility can change it");
     }
   }
 
-  async function loadForRead(req: Request, res: Response) {
+  async function loadForRead(req: Request, res: Response, reporting = false) {
     const row = await getAccessibleResource(req, res, svc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return null;
     await assertCompanyRead(req, row.companyId);
+    if (!(reporting && agentMayReportFor(req, row.ownerUserId) && row.status === "active")) await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     return row;
   }
 
@@ -191,7 +174,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     }
     const personUserId = await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId);
     if (!personUserId) {
-      throw forbidden(`Only the person who owns this responsibility, or a company admin, can change it, and this agent's run does not act for such a person. ${AGENT_PERSON_RULE}.`);
+      throw forbidden(`Only the person who owns this responsibility can change it, and this agent's run does not act for such a person. ${AGENT_PERSON_RULE}.`);
     }
     return { personUserId, agentId: getActorInfo(req).actorId };
   }
@@ -294,12 +277,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = listResponsibilitiesQuerySchema.parse(req.query);
-    const ownerUserId = query.ownerUserId ?? defaultResponsibilityOwnerUserId(req);
-    if (!ownerUserId) {
-      throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: this run works for no person, so name the person whose responsibilities to read"
-        : "ownerUserId is required");
-    }
+    const ownerUserId = await dashboardOwner(db, req, companyId, query.ownerUserId);
     res.json(await svc.overview(companyId, ownerUserId, {
       includeLetGo: query.includeLetGo,
       scope: await readScope(req, companyId),
@@ -311,28 +289,8 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const actor = getActorInfo(req);
-    let ownerUserId: string;
-    // An agent acting for someone who may manage the owner creates what that person could.
-    let actsFor: string | null = null;
-    if (req.actor.type === "agent") {
-      const owner = req.body.ownerUserId ?? defaultResponsibilityOwnerUserId(req);
-      if (!owner) {
-        throw unprocessable("ownerUserId is required: this run works for no person, so name the person in this company the responsibility is for");
-      }
-      ownerUserId = owner;
-      if (!(await svc.isCompanyMember(companyId, ownerUserId))) throw notFound("Owner is not a member of this company");
-      actsFor = await agentActsForResponsibilityOwner(db, req, companyId, ownerUserId);
-    } else {
-      const self = req.actor.userId;
-      ownerUserId = req.body.ownerUserId ?? self ?? "";
-      if (!ownerUserId) throw unprocessable("ownerUserId is required");
-      if (ownerUserId !== self) {
-        if (!boardCanManageOwner(req, companyId, ownerUserId)) {
-          throw forbidden("Only a company admin can create a responsibility for another person");
-        }
-        if (!(await svc.isCompanyMember(companyId, ownerUserId))) throw notFound("Owner is not a member of this company");
-      }
-    }
+    const ownerUserId = await dashboardOwner(db, req, companyId, req.body.ownerUserId);
+    const actsFor = req.actor.type === "agent" ? ownerUserId : null;
     const { areaTitle, ...body } = req.body as typeof req.body & { areaTitle?: string };
     if (areaTitle && body.areaId) throw unprocessable("Send areaId or areaTitle, not both");
     const { responsibility: created, activatedArea, created: isNew, newArea } = await inChange(req, res, {
@@ -341,7 +299,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       createdAreaIds: (result) => (result.newArea ? [result.newArea.id] : []),
     }, async ({ svc: scoped, areas }: ScopedServices) => {
       // The area by title is made in the same transaction, so a refused create leaves no area behind.
-      const area = areaTitle ? await areas.create(companyId, { title: areaTitle }, areaActorFor(req, actsFor)) : null;
+      const area = areaTitle ? await areas.create(companyId, ownerUserId, { title: areaTitle }, areaActorFor(req, actsFor)) : null;
       const result = await scoped.create(
         companyId,
         { ...body, ...(area ? { areaId: area.area.id } : {}) },
@@ -379,7 +337,8 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
 
   router.patch("/responsibilities/:id", validate(updateResponsibilitySchema), async (req, res) => {
     await assertResponsibilitiesEnabled();
-    const row = await loadForWrite(req, res);
+    const reporting = req.body.metricCurrent !== undefined && Object.keys(req.body).length === 1;
+    const row = await loadForRead(req, res, reporting);
     if (!row) return;
     const scope = await readScope(req, row.companyId);
     const actsFor = req.actor.type === "agent" ? await agentActsForResponsibilityOwner(db, req, row.companyId, row.ownerUserId) : null;
@@ -391,7 +350,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       createdAreaIds: (result) => (result.newArea ? [result.newArea.id] : []),
     }, async ({ svc: scoped, areas }: ScopedServices) => {
       // The area by title is made in the same transaction, so a refused change leaves no area behind.
-      const area = areaTitle ? await areas.create(row.companyId, { title: areaTitle }, areaActorFor(req, actsFor)) : null;
+      const area = areaTitle ? await areas.create(row.companyId, row.ownerUserId, { title: areaTitle }, areaActorFor(req, actsFor)) : null;
       if (area) patch.areaId = area.area.id;
       const result = await scoped.update(
         row,
@@ -523,7 +482,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       moveFromIds = await svc.liveIdsOfOwner(row.companyId, row.ownerUserId, row.id);
     } else if (req.body.moveFrom && req.body.moveFrom !== row.id) {
       const source = await svc.getById(req.body.moveFrom);
-      if (!source || source.companyId !== row.companyId) throw notFound("Responsibility to move from not found");
+      if (!source || source.companyId !== row.companyId || source.ownerUserId !== row.ownerUserId) throw notFound("Responsibility to move from not found");
       await assertWriter(req, source);
       moveFromIds = [source.id];
       owners.add(source.ownerUserId);
@@ -612,7 +571,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
       action: "issue.created",
       entityType: "issue",
       entityId: issue.id,
-      details: { title: issue.title, identifier: issue.identifier, responsibilityId: row.id },
+      details: { title: issue.title, identifier: issue.identifier },
     });
     await logMutation(req, row.companyId, "responsibility.delegated", row.id, {
       issueId: issue.id,
@@ -639,7 +598,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = responsibilityLinkLookupQuerySchema.parse(req.query);
-    const responsibilities = await svc.lookup(companyId, linkTarget(query), await readScope(req, companyId));
+    const responsibilities = await svc.lookup(companyId, await dashboardOwner(db, req, companyId), linkTarget(query), await readScope(req, companyId));
     res.json({ responsibilities });
   });
 

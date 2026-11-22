@@ -16,7 +16,7 @@ import type {
 } from "../constants.js";
 
 /**
- * A broad area a company cares about ("Fundraising"). No owner, no deadline.
+ * A broad area on the acting person's dashboard ("Fundraising").
  * Responsibilities are filed under an area (experimental, `enableResponsibilities`).
  */
 export interface ResponsibilityArea {
@@ -354,7 +354,7 @@ export interface ResponsibilityLooseWork {
 export interface ResponsibilityOverview {
   ownerUserId: string;
   /**
-   * Every active area in the company, plus any other area (proposed or
+   * Every active area on this person's dashboard, plus any other area (proposed or
    * archived) that a returned responsibility is filed under. By sortOrder,
    * then title.
    */

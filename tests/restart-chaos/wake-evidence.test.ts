@@ -152,7 +152,8 @@ describe.skipIf(!support.supported)("wake evidence against real PostgreSQL", () 
         owner: { pid: 4242, processSpace: "space-wake" }, providerTurnStarted: false });
       const slots = JSON.parse(await readFile(path.join(waveDir, "wake-evidence", "agent-slots.json"), "utf8"));
       expect(slots.agents).toEqual(expect.arrayContaining([{ agentId, maxConcurrentRuns: 3 }, { agentId: wideAgentId, maxConcurrentRuns: 50 }]));
-      expect(slots.runs).toEqual([{ runId, agentId, startedAt: 1_800_000_000_000, finishedAt: 1_800_000_060_000 }]);
+      expect(slots.runs).toEqual([{ runId, agentId, createdAt: evidence.runs[0].createdAt, invocationSource: "on_demand", retryOfRunId: null, startedAt: 1_800_000_000_000, finishedAt: 1_800_000_060_000 }]);
+      expect(slots.runs[0].createdAt).toEqual(expect.any(Number));
       expect(evidence.wakes[0]).toMatchObject({ id: wakeId, reason: "retry", source: "on_demand", triggerDetail: "manual", requestedByActorType: "user",
         requestedByActorId: "[REDACTED]", idempotencyKey: "idem-1", runId });
       expect(evidence.wakes[0].servingAtCreate.map((server: { pid: number }) => server.pid)).toEqual([4242]);

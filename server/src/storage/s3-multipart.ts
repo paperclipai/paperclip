@@ -4,7 +4,7 @@ import { recordStorageBackoff, recordStoragePart, recordStorageThrottle, withSto
 import { once } from "node:events";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
-import { PassThrough, Readable } from "node:stream";
+import { addAbortSignal, PassThrough, Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import type { PutObjectInput, PutObjectReceipt } from "./types.js";
 import { withS3FailureDiagnostics } from "./s3-failure.js";
@@ -186,7 +186,15 @@ function isTransientFileRequestFailure(error: unknown) {
     || (typeof name === "string" && TRANSIENT_FILE_REQUEST_NAMES.has(name));
 }
 
-export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
+export function sendFileRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
+  return sendRequestWithRetry(signal, send, true);
+}
+
+export function sendThrottledRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
+  return sendRequestWithRetry(signal, send, false);
+}
+
+async function sendRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>, retryTransient: boolean): Promise<T> {
   for (let failures = 0, throttles = 0; ;) {
     signal?.throwIfAborted();
     try {
@@ -202,11 +210,30 @@ export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefine
         await delay(wait, undefined, { signal });
         continue;
       }
-      if (!isTransientFileRequestFailure(error) || ++failures >= FILE_PART_ATTEMPTS) throw error;
+      if (!retryTransient || !isTransientFileRequestFailure(error) || ++failures >= FILE_PART_ATTEMPTS) throw error;
       recordStorageBackoff(failures * 500);
       await delay(failures * 500, undefined, { signal });
     }
   }
+}
+
+export async function withBufferedUploadBody(source: Readable, length: number, signal: AbortSignal | undefined,
+  send: (body: Buffer) => Promise<void>): Promise<boolean> {
+  if (bufferedPayloadBytes + length > bufferedPayloadLimit) return false;
+  bufferedPayloadBytes += length;
+  try {
+    const payload = Buffer.allocUnsafe(length);
+    let position = 0;
+    for await (const chunk of signal ? addAbortSignal(signal, source) : source) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      if (position + bytes.length > length) throw new Error("S3 upload source exceeds its declared size");
+      bytes.copy(payload, position);
+      position += bytes.length;
+    }
+    if (position !== length) throw new Error("S3 upload source was truncated");
+    await send(payload);
+    return true;
+  } finally { bufferedPayloadBytes -= length; }
 }
 
 /** Base64 MD5 of an inclusive byte range, as the Content-MD5 header expects. Hashed off the server's thread. */

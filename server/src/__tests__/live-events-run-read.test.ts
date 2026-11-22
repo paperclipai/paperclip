@@ -3,9 +3,11 @@ import { plugins, heartbeatRunEvents } from "@paperclipai/db";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { getSecretProvider } from "../secrets/provider-registry.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { redactActivityDetails } from "../services/activity-log.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -13,10 +15,10 @@ import type { AddressInfo } from "node:net";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { WebSocket } from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentApiKeys, agents, authUsers, companies, companyMemberships, createDb,
-  heartbeatRuns, issueAccessGrants, issues, type Db,
+  heartbeatRuns, issueAccessGrants, issueComments, issues, type Db,
 } from "@paperclipai/db";
 import * as schema from "@paperclipai/db/schema/index";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
@@ -292,6 +294,205 @@ describe("live-event run read boundaries", () => {
       await Promise.all([...wss.clients].map(client => { const closed = new Promise<void>(resolve => client.on("close", resolve)); client.terminate(); return closed; }));
       await new Promise<void>((resolve, reject) => (wss as typeof wss & { close(callback: (error?: Error) => void): void }).close(error => error ? reject(error) : resolve()));
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it.each(["authenticated", "local_trusted"] as const)("redacts full saved notification text before preview truncation (%s)", async deploymentMode => {
+    const companyId = randomUUID(), viewer = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Notification redaction", issuePrefix: `NR${companyId.slice(0, 6)}` });
+    await db.insert(authUsers).values({ id: viewer, name: "Fixture viewer", email: `${viewer}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: viewer, membershipRole: "operator", status: "active" });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Notification fixture", adapterType: "process" }).returning();
+    const registered = "ordinary-notification-credential-value";
+    await db.insert(issues).values({ id: issueId, companyId, title: `Review ${registered}` });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId,
+      contextSnapshot: { issueId }, status: "running" }).returning();
+    const registry = createRunSecretRedactionRegistry(db);
+    await registry.register(companyId, run.id, registered);
+    const previousCensor = (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs;
+    await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: true });
+    let failRedaction = false;
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query) {
+      if (failRedaction && query.startsWith("select ") && query.includes("paperclipSecretRedactions")) throw new Error("fixture secret registry unavailable");
+    } } }) as Db;
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, observedDb, { deploymentMode,
+      resolveCloudActor: async () => ({ userId: viewer, companyIds: [companyId] }) });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
+    const deliver = async (commentId: string, body: string) => {
+      const message = once(socket, "message");
+      publishLiveEvent({ companyId, type: "activity.logged", payload: { action: "issue.comment_added", entityType: "issue", entityId: issueId,
+        actorType: "agent", actorId: agent.id, details: { commentId, bodySnippet: body.slice(0, 120), issueTitle: `Review ${registered}`,
+          changes: { description: { from: registered, to: body } } } } });
+      const [bytes] = await message;
+      return JSON.parse(bytes.toString()).payload;
+    };
+    try {
+      await once(socket, "open");
+      for (const body of [`Review ${registered} now`, `${"x".repeat(110)} ${registered} now`, `${homedir()}/notify.txt Authorization: Bearer header-fixture-value`]) {
+        const [comment] = await db.insert(issueComments).values({ companyId, issueId, body, authorAgentId: agent.id }).returning();
+        const payload = await deliver(comment.id, body);
+        const expected = await redactActivityDetails(db, await registry.redactForIssue(companyId, issueId, { issueTitle: `Review ${registered}`, bodySnippet: body }));
+        expect(payload.issueTitle).toBe(expected?.issueTitle);
+        expect(payload.notificationDetails.bodySnippet).toBe(expected?.bodySnippet);
+        expect(JSON.stringify(payload)).not.toContain(registered);
+        expect(JSON.stringify(payload)).not.toContain(registered.slice(0, 9));
+      }
+      const titleWithPath = `${homedir()}/notify-task ${registered}`;
+      await db.update(issues).set({ title: titleWithPath }).where(eq(issues.id, issueId));
+      const deliverTitle = async (action: string) => {
+        const message = once(socket, "message");
+        publishLiveEvent({ companyId, type: "activity.logged", payload: { action, entityType: "issue", entityId: issueId,
+          actorType: "system", details: { status: "blocked" } } });
+        const [bytes] = await message;
+        return JSON.parse(bytes.toString()).payload;
+      };
+      const maskedTitle = await redactActivityDetails(db, await registry.redactForIssue(companyId, issueId, { issueTitle: titleWithPath }));
+      for (const action of ["issue.created", "issue.updated"]) {
+        const payload = await deliverTitle(action);
+        expect(payload.issueTitle).toBe(maskedTitle?.issueTitle);
+        expect(JSON.stringify(payload)).not.toContain(homedir());
+      }
+      await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: false });
+      const unmaskedTitle = await registry.redactForIssue(companyId, issueId, { issueTitle: titleWithPath });
+      expect((await deliverTitle("issue.updated")).issueTitle).toBe(unmaskedTitle.issueTitle);
+      await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: true });
+      const foreignIssueId = randomUUID();
+      await db.insert(issues).values({ id: foreignIssueId, companyId, title: "Other task" });
+      const [foreign] = await db.insert(issueComments).values({ companyId, issueId: foreignIssueId, body: registered }).returning();
+      expect((await deliver(foreign.id, registered)).notificationDetails).not.toHaveProperty("bodySnippet");
+      const [deleted] = await db.insert(issueComments).values({ companyId, issueId, body: registered, deletedAt: new Date() }).returning();
+      expect((await deliver(deleted.id, registered)).notificationDetails).not.toHaveProperty("bodySnippet");
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId, body: registered }).returning();
+      failRedaction = true;
+      const refused = await deliver(comment.id, registered);
+      expect(refused.issueTitle).toBeNull();
+      expect(refused.notificationDetails).not.toHaveProperty("bodySnippet");
+      expect(JSON.stringify(refused)).not.toContain(registered);
+    } finally {
+      await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: previousCensor });
+      socket.terminate();
+      wss.close();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it("shares notification redaction across viewers and refreshes secrets for each new event", async () => {
+    const companyId = randomUUID(), viewer = randomUUID(), issueId = randomUUID(), otherIssueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Notification fanout", issuePrefix: `NF${companyId.slice(0, 6)}` });
+    await db.insert(authUsers).values({ id: viewer, name: "Fixture viewer", email: `${viewer}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: viewer, membershipRole: "operator", status: "active" });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Fanout fixture", adapterType: "process" }).returning();
+    const registered = "fanout-registered-fixture-value";
+    await db.insert(issues).values([{ id: issueId, companyId, title: `Review ${registered}`, createdByUserId: viewer }, { id: otherIssueId, companyId, title: "Unrelated history" }]);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId, contextSnapshot: { issueId } }).returning();
+    await db.insert(heartbeatRuns).values(Array.from({ length: 512 }, () => ({ companyId, agentId: agent.id, scopeKind: "issue" as const,
+      issueId: otherIssueId, contextSnapshot: { issueId: otherIssueId } })));
+    const registry = createRunSecretRedactionRegistry(db);
+    await registry.register(companyId, run.id, registered);
+    const registryQueries: Array<{ query: string; params: unknown[] }> = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query, params) {
+      if (query.startsWith("select ") && query.includes("paperclipSecretRedactions")) registryQueries.push({ query, params });
+    } } }) as Db;
+    const resolve = vi.spyOn(getSecretProvider("local_encrypted"), "resolveVersion");
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, observedDb, { deploymentMode: "authenticated",
+      resolveCloudActor: async () => ({ userId: viewer, companyIds: [companyId] }) });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`;
+    const sockets = Array.from({ length: 6 }, () => new WebSocket(url));
+    const deliver = async () => {
+      const messages = Promise.all(sockets.map(socket => once(socket, "message")));
+      publishLiveEvent({ companyId, type: "activity.logged", payload: { action: "issue.updated", entityType: "issue", entityId: issueId,
+        actorType: "system", details: { status: "done" } } });
+      return (await messages).map(([bytes]) => JSON.parse(bytes.toString()));
+    };
+    try {
+      await Promise.all(sockets.map(socket => once(socket, "open")));
+      for (let event = 0; event < 3; event += 1) {
+        for (const message of await deliver()) expect(message.payload.issueTitle).toBe("Review ***REDACTED***");
+      }
+      expect(registryQueries).toHaveLength(6);
+      expect(resolve).toHaveBeenCalledTimes(3);
+      const nextSecret = "newly-registered-fanout-value";
+      await registry.register(companyId, run.id, nextSecret);
+      await db.update(issues).set({ title: `Review ${nextSecret}` }).where(eq(issues.id, issueId));
+      for (const message of await deliver()) expect(message.payload.issueTitle).toBe("Review ***REDACTED***");
+      expect(registryQueries).toHaveLength(8);
+      expect(resolve).toHaveBeenCalledTimes(5);
+    } finally {
+      resolve.mockRestore();
+      sockets.forEach(socket => socket.terminate());
+      wss.close();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it("bounds notification history reads with existing indexes and hides text on budget overflow", async () => {
+    const companyId = randomUUID(), viewer = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Bounded notification", issuePrefix: `NB${companyId.slice(0, 6)}` });
+    await db.insert(authUsers).values({ id: viewer, name: "Fixture viewer", email: `${viewer}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: viewer, membershipRole: "operator", status: "active" });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Budget fixture", adapterType: "process" }).returning();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Bounded title", createdByUserId: viewer });
+    await db.insert(heartbeatRuns).values(Array.from({ length: 512 }, () => ({ companyId, agentId: agent.id, scopeKind: "issue" as const,
+      issueId, contextSnapshot: { paperclipIssue: { id: issueId } } })));
+    const unrelatedIssueId = randomUUID();
+    await db.insert(issues).values({ id: unrelatedIssueId, companyId, title: "Other task history" });
+    await db.insert(heartbeatRuns).values(Array.from({ length: 1024 }, () => ({ companyId, agentId: agent.id, scopeKind: "issue" as const,
+      issueId: unrelatedIssueId, contextSnapshot: { paperclipIssue: { id: unrelatedIssueId } } })));
+    const registryQueries: Array<{ query: string; params: unknown[] }> = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query, params) {
+      if (query.startsWith("select ") && query.includes("paperclipSecretRedactions")) registryQueries.push({ query, params });
+    } } }) as Db;
+    const resolve = vi.spyOn(getSecretProvider("local_encrypted"), "resolveVersion");
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, observedDb, { deploymentMode: "authenticated",
+      resolveCloudActor: async () => ({ userId: viewer, companyIds: [companyId] }) });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
+    try {
+      await once(socket, "open");
+      const received = once(socket, "message");
+      publishLiveEvent({ companyId, type: "activity.logged", payload: { action: "issue.updated", entityType: "issue", entityId: issueId,
+        actorType: "system", details: { status: "blocked" } } });
+      const [bytes] = await received;
+      const event = JSON.parse(bytes.toString());
+      expect(event.payload.issueTitle).toBeNull();
+      expect(event.payload.notificationDetails).toEqual({ status: "blocked" });
+      expect(registryQueries).toHaveLength(2);
+      expect(resolve).not.toHaveBeenCalled();
+      await db.$client.unsafe('ANALYZE heartbeat_runs');
+      for (const statement of registryQueries) {
+        expect(statement.query).toMatch(/order by .*created_at.*desc(?: nulls last)? limit/);
+        const rows = await db.$client.unsafe(`EXPLAIN (ANALYZE, FORMAT JSON) ${statement.query}`, statement.params as never[]);
+        const plan = JSON.stringify(rows[0]["QUERY PLAN"]);
+        expect(plan).toMatch(/heartbeat_runs_company_ctx_(?:issue|paperclip_issue)_created_idx/);
+        type Plan = { "Actual Rows": number; "Rows Removed by Filter"?: number; Plans?: Plan[] };
+        const bounded = (node: Plan) => {
+          expect(node["Actual Rows"] + (node["Rows Removed by Filter"] ?? 0)).toBeLessThanOrEqual(129);
+          node.Plans?.forEach(bounded);
+        };
+        bounded((rows[0]["QUERY PLAN"] as Array<{ Plan: Plan }>)[0].Plan);
+      }
+      const oversizedIssue = randomUUID();
+      const oversizedSecret = "oversized-notification-fixture".repeat(1000);
+      await db.insert(issues).values({ id: oversizedIssue, companyId, title: oversizedSecret });
+      const [oversizedRun] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, issueId: oversizedIssue,
+        scopeKind: "issue", contextSnapshot: { issueId: oversizedIssue } }).returning();
+      await createRunSecretRedactionRegistry(db).register(companyId, oversizedRun.id, oversizedSecret);
+      const oversizedMessage = once(socket, "message");
+      publishLiveEvent({ companyId, type: "activity.logged", payload: { action: "issue.updated", entityType: "issue", entityId: oversizedIssue,
+        actorType: "system", details: { status: "blocked" } } });
+      const [oversizedBytes] = await oversizedMessage;
+      expect(JSON.parse(oversizedBytes.toString()).payload.issueTitle).toBeNull();
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      resolve.mockRestore();
+      socket.terminate();
+      wss.close();
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 
