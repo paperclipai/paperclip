@@ -250,19 +250,21 @@ export function detectClaudeLoginRequired(input: {
     : "";
   // Plain startup output and failed-run stderr can carry a CLI login prompt.
   // JSON transcript records and diagnostics after success are not auth evidence.
-  const diagnosticText = (parsed === null ? [input.stdout, input.stderr] : terminalFailed ? [input.stderr] : [])
-    .join("\n")
-    .split(/\r?\n/)
-    .filter((line) => {
-      if (line.trim().startsWith("{")) return false;
-      try {
-        JSON.parse(line);
-        return false;
-      } catch {
-        return true;
-      }
-    })
-    .join("\n");
+  const isPlainLine = (line: string) => {
+    try {
+      JSON.parse(line);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const stdoutLines = parsed === null
+    ? input.stdout.split(/\r?\n/).filter((line) => !line.trim().startsWith("{") && isPlainLine(line))
+    : [];
+  const stderrLines = parsed === null || terminalFailed
+    ? input.stderr.split(/\r?\n/).filter(isPlainLine)
+    : [];
+  const diagnosticText = [...stdoutLines, ...stderrLines].join("\n");
   const loginPrompt = CLAUDE_LOGIN_PROMPT_RE.test([terminalText, diagnosticText].join("\n"));
   const tokenFailure = terminalFailed && CLAUDE_AUTH_TOKEN_FAILURE_RE.test(terminalText);
   const unauthorizedStatus = parsed !== null &&
