@@ -76,7 +76,7 @@ it.skipIf(!enabled).each([true, false])("exports the current request through ins
     session = undefined;
     const recovered = await driver.recoverSession(snapshot);
     expect(recovered.recovered).toBe(true);
-    if (!recovered.recovered) throw new Error(recovered.reason);
+    if (!recovered.recovered || !recovered.session) throw new Error(recovered.reason);
     session = recovered.session;
     await runTurn("recovered-runtime-request");
     await session.close({ reason: "test" });
