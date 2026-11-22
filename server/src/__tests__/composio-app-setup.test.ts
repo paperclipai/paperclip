@@ -67,6 +67,13 @@ describe("Composio app authorization evidence", () => {
     } } };
     expect(composioAppAccounts(response, "tiktok")).toEqual([{ id: "ca_tiktok", alias: null, status: "ACTIVE", isDefault: false }]);
     expect(composioAppAccounts(response, "github")).toEqual([{ id: "ca_github", alias: null, status: "ACTIVE", isDefault: false }]);
+    const unnamed = { results: { github: { accounts: [{ id: "ca_github", status: "active", user_info: deep }] }, tiktok: { accounts: [{ id: "ca_tiktok", status: "active" }] } } };
+    expect(composioAppAccounts(unnamed, "tiktok")).toEqual([{ id: "ca_tiktok", alias: null, status: "ACTIVE", isDefault: false }]);
+  });
+  it("still reads a toolkit result listed under an accounts key", () => {
+    const account = { id: "ca_tiktok", status: "active", user_info: { error: { code: "ok" } } };
+    expect(composioAppAccounts({ data: { accounts: [{ toolkit: "tiktok", accounts: [account] }] } }, "tiktok"))
+      .toEqual([{ id: "ca_tiktok", alias: null, status: "ACTIVE", isDefault: false }]);
   });
 });
 
