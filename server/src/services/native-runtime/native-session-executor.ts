@@ -7,6 +7,7 @@ import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION, nativeSandboxDiskFullSourceCode } from "./native-sandbox-disk-full.js";
+import { runFailureMessage } from "@paperclipai/shared";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
@@ -23,8 +24,8 @@ import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js"
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { restartRecoveryMeasurementFor, speedBudgetAdapter } from "./native-speed-budgets.js";
 import { getStartupRecoveryState } from "../../startup-recovery-state.js";
-import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, nativeHarnessBackupOwner, persistNativeHarnessBackup,
-  restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
+import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS,
+  nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
   retainReadyNativeProviderArtifacts, NativeProviderArtifactTransferTimeoutError, nativeProviderArtifactTransferBounds,
   type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
@@ -119,7 +120,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { redactNativeFailureError } from "./native-failure-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
-import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
+import { createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent } from "./native-provider-failure.js";
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
@@ -7197,9 +7198,19 @@ export function noteRemoteBootstrapRestartProven(runId: string, stopped: "absent
   provenRemoteBootstrapRestarts.set(runId, stopped);
 }
 
+type RemoteBootstrapRestartProofOutcome = Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>;
+const REMOTE_BOOTSTRAP_RESTART_PROOF_OUTCOME_LIMIT = 1_000;
+const remoteBootstrapRestartProofOutcomes = new Map<string, RemoteBootstrapRestartProofOutcome>();
+
 export function recordRemoteBootstrapRestartProof(runId: string,
-  stopped: Awaited<ReturnType<typeof stopStaleRemoteRunnerBeforeBootstrap>>): boolean {
+  stopped: RemoteBootstrapRestartProofOutcome): boolean {
   provenRemoteBootstrapRestarts.delete(runId);
+  remoteBootstrapRestartProofOutcomes.delete(runId);
+  remoteBootstrapRestartProofOutcomes.set(runId, stopped);
+  if (remoteBootstrapRestartProofOutcomes.size > REMOTE_BOOTSTRAP_RESTART_PROOF_OUTCOME_LIMIT) {
+    const oldest = remoteBootstrapRestartProofOutcomes.keys().next().value;
+    if (oldest !== undefined) remoteBootstrapRestartProofOutcomes.delete(oldest);
+  }
   if (stopped !== "absent_confirmed" && stopped !== "stopped" && stopped !== "killed") return false;
   provenRemoteBootstrapRestarts.set(runId, stopped);
   return true;
@@ -7239,6 +7250,21 @@ export function hasRemoteBootstrapRestartProof(runId: string): boolean {
 
 export function takeRemoteBootstrapRestartProof(runId: string): boolean {
   return provenRemoteBootstrapRestarts.delete(runId);
+}
+
+export function remoteBootstrapRestartRefusalDiagnostic(input: {
+  restartKind: string | null;
+  sameRun: boolean;
+  providerUnopened: boolean;
+  runId: string;
+}): string {
+  if (input.restartKind !== "bootstrap_incomplete") return "";
+  const proof = hasRemoteBootstrapRestartProof(input.runId)
+    ? "held"
+    : remoteBootstrapRestartProofOutcomes.get(input.runId) ?? "not_recorded";
+  remoteBootstrapRestartProofOutcomes.delete(input.runId);
+  return `; bootstrap_restart=${input.sameRun ? "same_run" : "other_run"},`
+    + `provider=${input.providerUnopened ? "unopened" : "opened"},proof=${proof}`;
 }
 
 export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
@@ -9024,19 +9050,7 @@ function armWarmNativeSessionIdleTimer(
   entry.idleTimer.unref();
 }
 
-/** Classify only a committed provider terminal, never model prose or tool output. */
-export function nativeProviderUsageLimitFromEvent(
-  event: Pick<PrpEvent, "sourceKind" | "eventType" | "payload">,
-): boolean {
-  const payload = record(event.payload);
-  if (event.sourceKind !== "runner" || event.eventType !== "turn.failed" || payload.status !== "failed") return false;
-  const error = record(payload.error);
-  if (error.codexErrorInfo === "usageLimitExceeded") return true;
-  // ACP harnesses type the same exhausted allowance as a provider failure.
-  // Context, turn and configured budget limits stay ordinary terminals.
-  const category = readProviderFailure(error.providerFailure)?.category;
-  return category === "quota_exhausted" || category === "rate_limit";
-}
+export { nativeProviderUsageLimitFromEvent };
 
 export function nativeSessionFailureDisposition(
   attempt: number,
@@ -9194,18 +9208,23 @@ export function nativeStartupFailureSignature(failure: unknown): string | null {
  * can own the sandbox) and the previous attempt did not fail with the same
  * startup error. Otherwise it ends at once with Retry. A deterministic
  * rejection never reaches here: it is already NATIVE_PROVIDER_STARTUP_REJECTED.
+ *
+ * An exhausted provider allowance (a rate limit or quota) ends as a usage-limit
+ * hold instead: it passes by itself, so the hold retries the task at the reset
+ * like a limit reported on a turn, rather than waiting for a person's Retry.
  */
 export function nativeRemoteStartupRejectionCode<Code extends string>(
   sourceFailureCode: Code,
   error: unknown,
   remoteTarget: boolean,
   previousStartupSignature?: string | null,
-): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED {
+): Code | typeof NATIVE_PROVIDER_STARTUP_REJECTED | "native_provider_usage_limit" {
   if (!remoteTarget || sourceFailureCode !== "provider_session_open_rejected") return sourceFailureCode;
   const failure = providerFailureFromError(error);
   if (failure?.phase !== "startup") return sourceFailureCode;
-  return nativeRunnerExitConfirmed(error) && !nativeRepeatedStartupFailure(error, previousStartupSignature)
-    ? sourceFailureCode : NATIVE_PROVIDER_STARTUP_REJECTED;
+  if (nativeRunnerExitConfirmed(error) && !nativeRepeatedStartupFailure(error, previousStartupSignature)) return sourceFailureCode;
+  return failure.category === "rate_limit" || failure.category === "quota_exhausted"
+    ? "native_provider_usage_limit" : NATIVE_PROVIDER_STARTUP_REJECTED;
 }
 
 export function nativeRepeatedStartupFailure(error: unknown, previousStartupSignature: string | null | undefined): boolean {
@@ -13412,7 +13431,7 @@ async function executePaperclipNativeSessionAttempt(
           ? sourceFailureCode
           : disposition.failureCode;
       const providerFailure = providerFailureFromError(error);
-      const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry"
+      const startupFailureSignature = recoveryEvidence.recoveryMode === "bootstrap_retry" || remoteStartupRejection
         ? nativeStartupFailureSignature(providerFailure) : null;
       const startupRejectedAction = repeatedRemoteStartupFailure && providerFailure
         ? nativeRepeatedStartupFailureAction(providerFailure.message) : NATIVE_PROVIDER_STARTUP_REJECTED_ACTION;
@@ -13455,9 +13474,13 @@ async function executePaperclipNativeSessionAttempt(
       // An exhausted provider allowance is not ambiguous session state: the
       // provider ended its turn. Say when it resets and whether Paperclip will
       // retry then. A failed read only loses that detail.
+      // A limit at session start has no turn event; its reset comes from this
+      // failure. The hold keeps it: the run row keeps an earlier attempt's failure.
+      const startupProviderLimit = sourceFailureCode === "native_provider_usage_limit" && providerFailure?.phase === "startup"
+        ? { failure: providerFailure, observedAt: now } : undefined;
       const providerLimit = sourceFailureCode === "native_provider_usage_limit" && phase === "terminal_failure"
         ? await import("./provider-limit-resume.js").then(async ({ planProviderLimitResume, providerLimitNextAction }) => {
-          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId);
+          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId, startupProviderLimit);
           return { plan, nextAction: providerLimitNextAction(plan) };
         }).catch((failure: unknown) => {
           logger.warn({ err: failure, runId: input.execution.binding.runId }, "provider limit reset unavailable");
@@ -13472,10 +13495,11 @@ async function executePaperclipNativeSessionAttempt(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
-      const message = redactOutputText(
+      const originalMessage = redactOutputText(
         error instanceof Error ? error.message : String(error),
       ).slice(0, 2_000);
-      const sanitizedStderrTail = redactOutputText(message).slice(-4_096);
+      const message = runFailureMessage({ errorCode: sourceFailureCode, error: originalMessage })!;
+      const sanitizedStderrTail = originalMessage.slice(-4_096);
       const remoteRunnerRecovery = readRemoteRunnerRecoveryError(error);
       // Set inside the transaction only when the write below genuinely
       // transitions the run into "failed". Read after the transaction
@@ -13749,7 +13773,14 @@ async function executePaperclipNativeSessionAttempt(
             error: message,
             resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'remoteRunnerRecovery')
               || ${JSON.stringify(remoteRunnerRecovery ? { remoteRunnerRecovery } : {})}::jsonb
-              || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}`,
+              || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}
+              || ${startupProviderLimit && phase === "terminal_failure"
+                // providerFailure keeps an earlier attempt's failure; this names the limit that ended the run.
+                ? sql`jsonb_build_object('providerLimitStartup', ${JSON.stringify({
+                  failure: outputRedactor.redact(startupProviderLimit.failure),
+                  observedAt: startupProviderLimit.observedAt.toISOString(),
+                })}::jsonb)`
+                : sql`'{}'::jsonb`}`,
             errorCode: ownershipUnverified
               ? NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE
               : sourceFailureCode,
@@ -13826,6 +13857,10 @@ async function executePaperclipNativeSessionAttempt(
               recoveryEvidence.providerSessionEstablished,
             ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
             ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
+            ...(providerLimit && startupProviderLimit ? { providerLimitStartup: {
+              failure: outputRedactor.redact(startupProviderLimit.failure),
+              observedAt: startupProviderLimit.observedAt.toISOString(),
+            } } : {}),
           },
           nextAction:
             providerLimit
@@ -17688,7 +17723,13 @@ async function createRunnerdBackendWithinSessionClaim(
           notSuspendedRunId: input.execution.binding.runId,
         };
       }
-      throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)})`);
+      const restartRefusal = source === "host_preparation" ? remoteBootstrapRestartRefusalDiagnostic({
+        restartKind: input.restartRecovery?.kind ?? null,
+        sameRun: runnerState.runId === input.execution.binding.runId,
+        providerUnopened: remoteProviderStateNeverOpened(input.execution, providerState),
+        runId: input.execution.binding.runId,
+      }) : "";
+      throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)}${restartRefusal})`);
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
       root,
@@ -18395,7 +18436,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 if (durableStorage && backupOwner) {
                   await persistNativeHarnessBackup({ db: input.db, storage: durableStorage, owner: backupOwner,
                     scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), root: pendingRoot,
-                    signal: AbortSignal.timeout(300_000) });
+                    transferIdleTimeoutMs: NATIVE_HARNESS_UPLOAD_IDLE_TIMEOUT_MS });
                 }
                 // Without durable storage the local publication below is the
                 // save; its result is uncertain once it starts, so keep the

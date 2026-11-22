@@ -17,6 +17,7 @@ import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import { RUNNER_REVISION_MISMATCH_CODE } from "../runner-revision-mismatch.js";
+import { NATIVE_SANDBOX_DISK_FULL } from "../native-runtime/native-sandbox-disk-full.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
@@ -618,6 +619,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "project_access_denied",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
+  NATIVE_SANDBOX_DISK_FULL,
   "adapter_engine_unavailable",
   "agent_not_invokable",
   "agent_not_found",

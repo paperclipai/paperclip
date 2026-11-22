@@ -66112,7 +66112,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["person", "person_with_input_before_stop", "person_after_held_admission", "person_paused_after_accept", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
+  it.each(["person", "person_with_input_before_stop", "person_after_held_admission", "person_paused_after_accept", "person_with_superseded_continuation", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
     const f = await currentGitHubTaskRetryFixture(initiator === "person_with_input_before_stop");
     try {
       const companyId = f.fixture.companyId, issueId = f.issue.id;
@@ -66215,6 +66215,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(joined).toMatchObject({ accepted: true, requestId: request.requestId, chatActionId: request.chatActionId });
       }
       expect(request).toMatchObject({ accepted: true, stale: false, chatActionId: expect.any(String) });
+      if (initiator === "person_with_superseded_continuation") await db.insert(heartbeatRuns).values({ companyId,
+        agentId: f.fixture.assignedAgentId, status: "cancelled", errorCode: "issue_execution_lock_changed", runtimeMode: "legacy",
+        issueId, retryOfRunId: sourceRunId, finishedAt: new Date(), contextSnapshot: { issueId } });
       const chatAction = async () => (await db.select().from(chatActions).where(eq(chatActions.id, request.chatActionId!)))[0];
       expect((await chatAction()).payload.sourceAuthorizationPending).toBe(true);
 

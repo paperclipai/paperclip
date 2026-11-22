@@ -353,7 +353,9 @@ export async function admitExplicitNativeContinuation(input: {
     )).for("update");
     if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
       || adapterExecutionControls.has(source.id) ||
-      !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
+      !(await isFailedNativePreparation(db, source, coordinator)
+        || source.errorCode === "adapter_failed" && await isFailedNativePreparationRetryAncestor(db, source, coordinator)
+        || await isPreDispatchExecutionWaitVerified(db, source))) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
@@ -394,7 +396,9 @@ export async function admitExplicitNativeContinuation(input: {
     // A user's message written after their Stop request is new direction even
     // when the stopped native run settled later.
     const stoppedAt = userStopBoundaryAt(run)!;
-    const failedPreparation = await isFailedNativePreparation(db, run, coordinator);
+    const failedPreparation = await isFailedNativePreparation(db, run, coordinator)
+      || taskRetry?.sourceRunId === run.id && run.errorCode === "adapter_failed"
+        && await isFailedNativePreparationRetryAncestor(db, run, coordinator);
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId &&

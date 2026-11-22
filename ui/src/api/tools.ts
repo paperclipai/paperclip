@@ -38,6 +38,7 @@ import type {
   ToolProfileEntrySelectorType,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileListItem,
   ToolProfileConfiguration,
   ToolProfileNewToolReviewDecision,
   ToolProfileNewToolsReview,
@@ -525,6 +526,8 @@ export const toolsApi = {
     api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`, options),
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
+  listProfileSummaries: (companyId: string) =>
+    api.get<{ profiles: ToolProfileListItem[] }>(`/companies/${companyId}/tools/profiles/summary`),
   getProfileNewTools: (profileId: string) =>
     api.get<ToolProfileNewToolsReview>(`/tool-profiles/${profileId}/new-tools`),
   reviewProfileNewTools: (profileId: string, input: ReviewNewToolsInput) =>

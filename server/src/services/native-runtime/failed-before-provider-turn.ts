@@ -14,7 +14,8 @@ const SLOW_SETUP_CODES = new Set(["native_provider_artifacts_transfer_timeout", 
 
 function technicalCauseCode(cause: unknown): string {
   const code = cause && typeof cause === "object" ? (cause as { code?: unknown }).code : undefined;
-  return typeof code === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(code) ? code : "unknown";
+  if (typeof code === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(code)) return code;
+  return cause instanceof Error && /^native_[a-z0-9_]{1,72}$/.test(cause.message) ? cause.message : "unknown";
 }
 
 export function readFailedBeforeProviderTurnRecord(profile: unknown): FailedBeforeProviderTurnRecord | null {

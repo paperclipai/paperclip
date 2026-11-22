@@ -2230,30 +2230,74 @@ describe("task subtree notification context", () => {
 
 describe("activity toast attribution", () => {
   const build = __liveUpdatesTestUtils.buildActivityToast;
-  const payload = { action: "issue.created", entityType: "issue", entityId: "task-1", issueIdentifier: "PAP-1234", actorType: "user", actorId: "user-1", actorName: "Alex Example", actorImage: "/alex.png" };
+  const payload = { action: "issue.created", entityType: "issue", entityId: "task-1", issueIdentifier: "PAP-1234", issueTitle: "Fix task notifications", actorType: "user", actorId: "user-1", actorName: "Alex Example", actorImage: "/alex.png" };
+  const viewer = { userId: "other-user", agentId: null };
   it.each([
-    ["issue.created", "Alex Example created PAP-1234"],
-    ["issue.updated", "Alex Example updated PAP-1234"],
-    ["issue.comment_added", "Alex Example commented on PAP-1234"],
-  ])("uses the server task identifier for %s with an empty cache and no activity details", (action, title) => {
-    const toast = build(new QueryClient(), "company", { ...payload, action }, { userId: "other-user", agentId: null });
-    expect(toast?.title).toBe(title);
-    expect(toast?.action).toEqual({ label: "View PAP-1234", href: "/issues/PAP-1234" });
-    if (action === "issue.updated") expect(toast?.body).toBe("PAP-1234");
-    expect(JSON.stringify(toast)).not.toContain("Task task-1");
+    ["issue.created", {}, "Alex Example created the task"],
+    ["issue.updated", { status: "in_review", statusFrom: "in_progress" }, "Alex Example changed status from in progress to in review"],
+    ["issue.comment_added", { commentId: "c", bodySnippet: "## Ready **for review**\nSee [the plan](/plan)." }, "Alex Example: Ready for review See the plan."],
+  ])("shows the task title and useful content for %s with an empty cache", (action, notificationDetails, body) => {
+    const toast = build(new QueryClient(), "company", { ...payload, action, notificationDetails }, viewer);
+    expect(toast?.title).toBe("Fix task notifications");
+    expect(toast?.body).toBe(body);
+    expect(toast?.action).toEqual({ label: "View task", href: "/issues/PAP-1234" });
   });
-  it("uses a generic task label when the identifier is unavailable", () => {
-    const toast = build(new QueryClient(), "company", { ...payload, action: "issue.updated", issueIdentifier: undefined }, { userId: "other-user", agentId: null });
-    expect(toast?.title).toBe("Alex Example updated Task");
-    expect(toast?.body).toBe("Task");
-    expect(toast?.action).toEqual({ label: "View Task", href: "/issues/task-1" });
+  it("uses a generic task title when the title and identifier are unavailable", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, issueTitle: undefined, issueIdentifier: undefined }, viewer);
+    expect(toast?.title).toBe("Task");
+    expect(toast?.body).toBe("Alex Example created the task");
+    expect(toast?.action).toEqual({ label: "View task", href: "/issues/task-1" });
   });
-  it("resolves cached task titles by the server identifier", () => {
+  it("resolves cached task titles for older servers, and prefers a fresh server title", () => {
     const queryClient = new QueryClient();
-    queryClient.setQueryData(queryKeys.issues.detail("PAP-1234"), { id: "task-1", identifier: "PAP-1234", title: "Fix task toasts" });
-    const toast = build(queryClient, "company", { ...payload, action: "issue.updated" }, { userId: "other-user", agentId: null });
-    expect(toast?.title).toBe("Alex Example updated PAP-1234");
-    expect(toast?.body).toBe("Fix task toasts");
+    queryClient.setQueryData(queryKeys.issues.detail("PAP-1234"), { id: "task-1", identifier: "PAP-1234", title: "Cached title" });
+    expect(build(queryClient, "company", { ...payload, issueTitle: undefined }, viewer)?.title).toBe("Cached title");
+    expect(build(queryClient, "company", payload, viewer)?.title).toBe("Fix task notifications");
+  });
+  it("keeps routine or unspecified updates quiet, even with a cached title", () => {
+    for (const details of [undefined, {}, { executionRunId: "run" }, { source: "comment", status: "done" }]) {
+      expect(build(new QueryClient(), "company", { ...payload, action: "issue.updated", notificationDetails: details }, viewer)).toBeNull();
+    }
+  });
+  it("does not fall back to raw details when the server projected an empty update", () => {
+    expect(build(new QueryClient(), "company", { ...payload, action: "issue.updated", notificationDetails: {}, details: { status: "done" } }, viewer)).toBeNull();
+  });
+  it("keeps actor names, priority and description changes in the body", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, action: "issue.updated", notificationDetails: { priority: "high", descriptionChanged: true } }, viewer);
+    expect(toast?.body).toBe("Alex Example set priority to high, changed the description");
+  });
+  it("combines a comment with its status change without repeating the task title", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, action: "issue.comment_added", notificationDetails: { commentId: "c", bodySnippet: "Finished the fix", status: "done", statusFrom: "in_progress" } }, viewer);
+    expect(toast?.title).toBe("Fix task notifications");
+    expect(toast?.body).toBe("Alex Example changed status from in progress to done: Finished the fix");
+  });
+  it("reports a projected reopen once and retains other changes and the comment", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, action: "issue.comment_added", notificationDetails: {
+      commentId: "reopen-comment", bodySnippet: "One more fix", reopened: true, reopenedFrom: "done",
+      status: "todo", statusFrom: "done", priority: "high", descriptionChanged: true,
+    } }, viewer);
+    expect(toast?.body).toBe("Alex Example reopened from done to to do, set priority to high, changed the description: One more fix");
+    expect(toast?.body).not.toContain("changed status");
+  });
+  it("includes reopen context and uses a clear fallback when the comment is unavailable", () => {
+    expect(build(new QueryClient(), "company", { ...payload, action: "issue.comment_added", notificationDetails: { reopened: true, reopenedFrom: "done", bodySnippet: "One more fix" } }, viewer)?.body)
+      .toBe("Alex Example reopened from done: One more fix");
+    expect(build(new QueryClient(), "company", { ...payload, action: "issue.comment_added" }, viewer)?.body).toBe("Alex Example added a comment");
+  });
+  it("retains legacy comment snippets and change details", () => {
+    expect(build(new QueryClient(), "company", { ...payload, action: "issue.comment_added", details: { bodySnippet: "Ready" } }, viewer)?.body).toBe("Alex Example: Ready");
+    expect(build(new QueryClient(), "company", { ...payload, action: "issue.updated", details: { status: "blocked" } }, viewer)?.body).toBe("Alex Example changed status to blocked");
+  });
+  it("bounds long titles and comments while retaining the actor", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, issueTitle: "Title ".repeat(100), action: "issue.comment_added", notificationDetails: { bodySnippet: "Comment ".repeat(100) } }, viewer);
+    expect(toast?.title.length).toBeLessThanOrEqual(120);
+    expect(toast?.body?.length).toBeLessThanOrEqual(240);
+    expect(toast?.body).toMatch(/^Alex Example: Comment/);
+    expect(toast?.body).toMatch(/…$/);
+  });
+  it("deduplicates by comment ID rather than the task", () => {
+    const make = (id: string) => build(new QueryClient(), "company", { ...payload, action: "issue.comment_added", notificationDetails: { commentId: id } }, viewer);
+    expect(make("first")?.dedupeKey).not.toBe(make("second")?.dedupeKey);
   });
   it.each(["issue.created", "issue.updated", "issue.comment_added"])("hides the viewer's own %s", (action) => {
     expect(build(new QueryClient(), "company", { ...payload, action }, { userId: "user-1", agentId: null })).toBeNull();
@@ -2262,19 +2306,18 @@ describe("activity toast attribution", () => {
     expect(build(new QueryClient(), "company", { ...payload, actorType: "agent", actorId: "agent-1" }, { userId: null, agentId: "agent-1" })).toBeNull();
   });
   it("uses the real name and photo with an empty directory cache", () => {
-    const toast = build(new QueryClient(), "company", payload, { userId: "other-user", agentId: null });
-    expect(toast?.title).toBe("Alex Example created PAP-1234");
-    expect(toast?.actor).toMatchObject({ type: "user", name: "Alex Example", image: "/alex.png" });
+    expect(build(new QueryClient(), "company", payload, viewer)?.actor).toMatchObject({ type: "user", name: "Alex Example", image: "/alex.png" });
   });
   it("uses the agent's custom avatar with an empty agent cache", () => {
     const appearance = { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "bubblegum-sky", customAvatarAssetId: "11111111-1111-4111-8111-111111111111" };
-    const toast = build(new QueryClient(), "company", { ...payload, actorType: "agent", actorId: "agent-1", actorName: "Coder", actorAppearance: appearance }, { userId: "user-1", agentId: null });
-    expect(toast?.title).toBe("Coder created PAP-1234");
+    const toast = build(new QueryClient(), "company", { ...payload, actorType: "agent", actorId: "agent-1", actorName: "Coder", actorAppearance: appearance }, viewer);
+    expect(toast?.body).toBe("Coder created the task");
     expect(toast?.actor?.appearance).toEqual(appearance);
   });
-  it("keeps system activity distinct from people", () => {
-    const toast = build(new QueryClient(), "company", { ...payload, actorType: "system", actorName: undefined }, { userId: "user-1", agentId: null });
-    expect(toast?.title).toBe("System created PAP-1234");
+  it("keeps system activity distinct from people and explains the change", () => {
+    const toast = build(new QueryClient(), "company", { ...payload, action: "issue.updated", actorType: "system", actorName: undefined, notificationDetails: { status: "blocked" } }, viewer);
+    expect(toast?.title).toBe("Fix task notifications");
+    expect(toast?.body).toBe("System changed status to blocked");
     expect(toast?.actor).toBeUndefined();
   });
 });

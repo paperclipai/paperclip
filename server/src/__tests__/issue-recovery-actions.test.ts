@@ -189,6 +189,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   }, 30_000);
 
   afterEach(async () => {
+    await heartbeatService(db).drainActiveRunExecutions();
     await db.delete(caseHandoffs);
     await db.delete(cases);
     await db.delete(documentRevisions);
