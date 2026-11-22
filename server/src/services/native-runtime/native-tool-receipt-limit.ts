@@ -8,7 +8,9 @@ export const NATIVE_TOOL_RECEIPT_LIMIT_CODE = "semantic_tool_turn_receipt_limit"
 export const NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS = 2;
 export const NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_DELAY_MS = 5_000;
 export const NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE = "The agent's turn held too many tool results at once. Paperclip continues the task in a fresh session.";
-export const NATIVE_TOOL_RECEIPT_LIMIT_HINT = "The previous turn stopped because it held too many tool results at once. "
+/** The same runner stop when no automatic continuation follows it. */
+export const NATIVE_TOOL_RECEIPT_LIMIT_STOPPED_MESSAGE = "The agent's turn held too many tool results at once, and Paperclip stopped it.";
+export const NATIVE_TOOL_RECEIPT_LIMIT_HINT ="The previous turn stopped because it held too many tool results at once. "
   + "Continue the task from its saved work. Make fewer tool calls in parallel, and do not re-read data you already have.";
 
 export function nativeRunHasStopRequest(resultJson: Record<string, unknown> | null | undefined): boolean {
