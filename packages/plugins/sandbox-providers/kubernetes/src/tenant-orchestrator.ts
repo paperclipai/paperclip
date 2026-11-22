@@ -20,7 +20,8 @@ export interface EnsureTenantInput {
    * Optional per-adapter FQDN allow-list reconciled as its own adapter-scoped
    * CiliumNetworkPolicy (`paperclip.io/adapter: <adapterType>`) so starting a
    * lease for a new adapter never overwrites domains needed by other running
-   * adapters in the same namespace.
+   * adapters in the same namespace. Passing an empty `allowFqdns` deletes any
+   * stale adapter policy so removed domains are never left allowed.
    */
   adapterEgress?: AdapterEgressInput;
   resourceQuota: {
@@ -173,18 +174,16 @@ function computeAdapterEgressFingerprint(adapter: AdapterEgressInput): string {
  *
  * Before applying, verifies that an existing Namespace is not owned by a
  * different `paperclip.io/company-id`. Switching `egressMode` between
- * `"standard"` and `"cilium"` applies the new policy BEFORE deleting the stale
- * counterpart (zero-downtime apply-before-delete).
+ * `"standard"` and `"cilium"` applies all replacement policies (shared and
+ * adapter-scoped) BEFORE deleting stale counterparts (zero-downtime
+ * apply-before-delete).
  */
 export async function ensureTenant(clients: KubeClients, input: EnsureTenantInput): Promise<void> {
   const ttlMs = input.cacheTtlMs ?? DEFAULT_TENANT_CACHE_TTL_MS;
   const nowFn = input.now ?? Date.now;
   const tenantKey = resolveTenantKey(clients, input);
   const tenantFingerprint = computeTenantFingerprint(input);
-  const adapterEgress =
-    input.egressMode === "cilium" && input.adapterEgress && input.adapterEgress.allowFqdns.length > 0
-      ? input.adapterEgress
-      : null;
+  const adapterEgress = input.egressMode === "cilium" && input.adapterEgress ? input.adapterEgress : null;
   const adapterCacheKey = adapterEgress
     ? `${tenantKey}::adapter::${adapterEgress.adapterType}`
     : null;
@@ -220,6 +219,43 @@ export async function ensureTenant(clients: KubeClients, input: EnsureTenantInpu
     const previousEntry = tenantReconcileCache.get(tenantKey);
     const previouslyCilium = previousEntry?.egressMode === "cilium";
 
+    const reconcileAdapterPolicy = async (): Promise<void> => {
+      if (!adapterEgress || !adapterCacheKey || !adapterFingerprint) return;
+      const policyName = adapterCiliumPolicyName(adapterEgress.adapterType);
+      if (adapterEgress.allowFqdns.length > 0) {
+        const adapterPolicy = buildCiliumNetworkPolicyManifest({
+          name: policyName,
+          namespace: input.namespace,
+          paperclipServerNamespace: input.paperclipServerNamespace,
+          egressAllowFqdns: adapterEgress.allowFqdns,
+          egressAllowCidrs: [],
+          endpointSelector: {
+            "paperclip.io/role": "agent",
+            "paperclip.io/adapter": adapterEgress.adapterType,
+          },
+          includeBaseRules: false,
+        });
+        await ensureCiliumNetworkPolicy(clients, input.namespace, adapterPolicy);
+        let known = knownAdapterPoliciesByTenant.get(tenantKey);
+        if (!known) {
+          known = new Set<string>();
+          knownAdapterPoliciesByTenant.set(tenantKey, known);
+        }
+        known.add(policyName);
+      } else {
+        // Empty allowFqdns: delete any stale adapter policy so removed domains are revoked.
+        await deleteStaleCiliumEgressPolicy(clients, input.namespace, policyName, false);
+        knownAdapterPoliciesByTenant.get(tenantKey)?.delete(policyName);
+      }
+      if (ttlMs > 0) {
+        adapterEgressCache.set(adapterCacheKey, {
+          fingerprint: adapterFingerprint,
+          policyName,
+          expiresAt: lockedNow + ttlMs,
+        });
+      }
+    };
+
     if (!tenantFresh) {
       await ensureNamespace(clients, input);
       await ensureServiceAccount(clients, input);
@@ -227,7 +263,13 @@ export async function ensureTenant(clients: KubeClients, input: EnsureTenantInpu
       await ensureRoleBinding(clients, input);
       await ensureResourceQuota(clients, input);
       await ensureLimitRange(clients, input);
-      await ensureNetworkPolicies(clients, input, tenantKey, previouslyCilium);
+      await ensureNetworkPolicies(
+        clients,
+        input,
+        tenantKey,
+        previouslyCilium,
+        adapterEgress ? reconcileAdapterPolicy : undefined,
+      );
 
       if (ttlMs > 0) {
         tenantReconcileCache.set(tenantKey, {
@@ -236,36 +278,8 @@ export async function ensureTenant(clients: KubeClients, input: EnsureTenantInpu
           expiresAt: lockedNow + ttlMs,
         });
       }
-    }
-
-    if (adapterEgress && adapterCacheKey && adapterFingerprint && (!tenantFresh || !adapterFresh)) {
-      const policyName = adapterCiliumPolicyName(adapterEgress.adapterType);
-      const adapterPolicy = buildCiliumNetworkPolicyManifest({
-        name: policyName,
-        namespace: input.namespace,
-        paperclipServerNamespace: input.paperclipServerNamespace,
-        egressAllowFqdns: adapterEgress.allowFqdns,
-        egressAllowCidrs: [],
-        endpointSelector: {
-          "paperclip.io/role": "agent",
-          "paperclip.io/adapter": adapterEgress.adapterType,
-        },
-        includeBaseRules: false,
-      });
-      await ensureCiliumNetworkPolicy(clients, input.namespace, adapterPolicy);
-      let known = knownAdapterPoliciesByTenant.get(tenantKey);
-      if (!known) {
-        known = new Set<string>();
-        knownAdapterPoliciesByTenant.set(tenantKey, known);
-      }
-      known.add(policyName);
-      if (ttlMs > 0) {
-        adapterEgressCache.set(adapterCacheKey, {
-          fingerprint: adapterFingerprint,
-          policyName,
-          expiresAt: lockedNow + ttlMs,
-        });
-      }
+    } else if (!adapterFresh) {
+      await reconcileAdapterPolicy();
     }
   });
 }
@@ -487,6 +501,7 @@ async function ensureNetworkPolicies(
   input: EnsureTenantInput,
   tenantKey: string,
   previouslyCilium: boolean,
+  reconcileAdapterPolicy?: () => Promise<void>,
 ): Promise<void> {
   const standardFqdns = [
     ...input.egressAllowFqdns,
@@ -508,12 +523,18 @@ async function ensureNetworkPolicies(
       egressAllowFqdns: input.egressAllowFqdns,
       egressAllowCidrs: input.egressAllowCidrs,
     });
-    // Apply-before-delete: install CiliumNetworkPolicy first, then delete stale standard policy.
+    // Apply-before-delete: install BOTH the shared CiliumNetworkPolicy and any
+    // per-adapter CiliumNetworkPolicy BEFORE deleting the stale standard policy.
     await ensureCiliumNetworkPolicy(clients, input.namespace, cnp);
+    if (reconcileAdapterPolicy) {
+      await reconcileAdapterPolicy();
+    }
     await deleteStaleStandardEgressPolicy(clients, input.namespace);
   } else {
-    // Apply-before-delete: install standard NetworkPolicy first, then delete stale Cilium policies.
+    // Apply-before-delete: install standard NetworkPolicy first, then discover
+    // and delete all managed Cilium egress policies (shared + per-adapter).
     await ensureNetworkPolicy(clients, input.namespace, egressStd);
+    const ignoreForbidden = !previouslyCilium;
     const staleNames = new Set<string>([CILIUM_EGRESS_POLICY_NAME]);
     const knownAdapters = knownAdapterPoliciesByTenant.get(tenantKey);
     if (knownAdapters) {
@@ -522,12 +543,20 @@ async function ensureNetworkPolicies(
     if (input.adapterEgress) {
       staleNames.add(adapterCiliumPolicyName(input.adapterEgress.adapterType));
     }
+    const discovered = await listManagedCiliumEgressPolicies(
+      clients,
+      input.namespace,
+      ignoreForbidden,
+    );
+    for (const name of discovered) {
+      staleNames.add(name);
+    }
     for (const policyName of staleNames) {
       await deleteStaleCiliumEgressPolicy(
         clients,
         input.namespace,
         policyName,
-        !previouslyCilium,
+        ignoreForbidden,
       );
     }
     knownAdapterPoliciesByTenant.delete(tenantKey);
@@ -537,6 +566,44 @@ async function ensureNetworkPolicies(
         adapterEgressCache.delete(key);
       }
     }
+  }
+}
+
+async function listManagedCiliumEgressPolicies(
+  clients: KubeClients,
+  namespace: string,
+  ignoreForbidden: boolean,
+): Promise<string[]> {
+  if (typeof clients.custom?.listNamespacedCustomObject !== "function") {
+    return [];
+  }
+  try {
+    const resp = (await clients.custom.listNamespacedCustomObject({
+      group: "cilium.io",
+      version: "v2",
+      namespace,
+      plural: "ciliumnetworkpolicies",
+      labelSelector: `paperclip.io/managed-by=${FIELD_MANAGER}`,
+    })) as {
+      items?: Array<{ metadata?: { name?: string } }>;
+      body?: { items?: Array<{ metadata?: { name?: string } }> };
+    };
+    const items = resp?.items ?? resp?.body?.items ?? [];
+    const names: string[] = [];
+    for (const item of items) {
+      const name = item?.metadata?.name;
+      if (
+        typeof name === "string" &&
+        (name === CILIUM_EGRESS_POLICY_NAME || name.startsWith(CILIUM_ADAPTER_POLICY_PREFIX))
+      ) {
+        names.push(name);
+      }
+    }
+    return names;
+  } catch (err) {
+    if (isNotFound(err)) return [];
+    if (ignoreForbidden && isForbidden(err)) return [];
+    throw err;
   }
 }
 

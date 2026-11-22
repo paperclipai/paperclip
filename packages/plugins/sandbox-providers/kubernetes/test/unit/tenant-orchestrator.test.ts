@@ -42,6 +42,7 @@ function makeMockClients(clusterId = "cluster-a") {
     custom: {
       getNamespacedCustomObject: vi.fn().mockRejectedValue({ code: 404 }),
       createNamespacedCustomObject: track("CiliumNetworkPolicy"),
+      listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: [] }),
       deleteNamespacedCustomObject: vi.fn().mockRejectedValue({ code: 404 }),
     },
   };
@@ -76,6 +77,7 @@ function makeSsaMockClients(options: { clusterId?: string; delayMs?: number } = 
       }),
     },
     custom: {
+      listNamespacedCustomObject: vi.fn().mockResolvedValue({ items: [] }),
       deleteNamespacedCustomObject: vi.fn(async (arg: { name: string }) => {
         await delay();
         events.push(`delete:CiliumNetworkPolicy:${arg.name}`);
@@ -223,9 +225,14 @@ describe("ensureTenant", () => {
     });
     // 8 shared resources + 1 claude adapter policy
     expect(clients.applyServerSide).toHaveBeenCalledTimes(9);
-    expect(clients.events).toContain(
+    const sharedIdx = clients.events.indexOf("apply:CiliumNetworkPolicy:paperclip-egress-fqdn");
+    const adapterIdx = clients.events.indexOf(
       `apply:CiliumNetworkPolicy:${adapterCiliumPolicyName("claude_local")}`,
     );
+    const deleteStdIdx = clients.events.indexOf("delete:NetworkPolicy:paperclip-egress-allow");
+    // Both shared and adapter Cilium policies MUST be applied BEFORE deleting stale standard policy.
+    expect(adapterIdx).toBeGreaterThan(sharedIdx);
+    expect(deleteStdIdx).toBeGreaterThan(adapterIdx);
 
     // Second lease in same namespace: codex_local
     await ensureTenant(clients as never, {
@@ -247,8 +254,61 @@ describe("ensureTenant", () => {
     });
   });
 
-  it("ignores 403 Forbidden when cleaning up CiliumNetworkPolicy on standard-only clusters", async () => {
+  it("deletes the per-adapter CiliumNetworkPolicy when an adapter's allowFqdns becomes empty", async () => {
     const clients = makeSsaMockClients();
+
+    await ensureTenant(clients as never, {
+      ...baseInput,
+      egressMode: "cilium",
+      egressAllowFqdns: [],
+      adapterEgress: { adapterType: "claude_local", allowFqdns: ["api.anthropic.com"] },
+    });
+
+    // Clearing allowFqdns must delete the stale adapter policy instead of leaving old domains allowed.
+    await ensureTenant(clients as never, {
+      ...baseInput,
+      egressMode: "cilium",
+      egressAllowFqdns: [],
+      adapterEgress: { adapterType: "claude_local", allowFqdns: [] },
+    });
+
+    expect(clients.events).toContain(
+      `delete:CiliumNetworkPolicy:${adapterCiliumPolicyName("claude_local")}`,
+    );
+  });
+
+  it("discovers and deletes leftover per-adapter Cilium policies from Kubernetes when switching to standard after restart", async () => {
+    const clients = makeSsaMockClients();
+    // Simulate a fresh worker process (empty in-memory cache) where claude + codex Cilium policies exist in-cluster.
+    clients.custom.listNamespacedCustomObject.mockResolvedValue({
+      items: [
+        { metadata: { name: "paperclip-egress-fqdn" } },
+        { metadata: { name: adapterCiliumPolicyName("claude_local") } },
+        { metadata: { name: adapterCiliumPolicyName("codex_local") } },
+        // Per-run scoped policy must NOT be touched by tenant cleanup.
+        { metadata: { name: "paperclip-run-egress-123" } },
+      ],
+    });
+
+    await ensureTenant(clients as never, {
+      ...baseInput,
+      egressMode: "standard",
+      adapterEgress: { adapterType: "codex_local", allowFqdns: ["api.openai.com"] },
+    });
+
+    expect(clients.events).toContain("delete:CiliumNetworkPolicy:paperclip-egress-fqdn");
+    expect(clients.events).toContain(
+      `delete:CiliumNetworkPolicy:${adapterCiliumPolicyName("claude_local")}`,
+    );
+    expect(clients.events).toContain(
+      `delete:CiliumNetworkPolicy:${adapterCiliumPolicyName("codex_local")}`,
+    );
+    expect(clients.events).not.toContain("delete:CiliumNetworkPolicy:paperclip-run-egress-123");
+  });
+
+  it("ignores 403 Forbidden when listing or cleaning up CiliumNetworkPolicy on standard-only clusters", async () => {
+    const clients = makeSsaMockClients();
+    clients.custom.listNamespacedCustomObject.mockRejectedValue({ statusCode: 403 });
     clients.custom.deleteNamespacedCustomObject.mockRejectedValue({ statusCode: 403 });
 
     await expect(
