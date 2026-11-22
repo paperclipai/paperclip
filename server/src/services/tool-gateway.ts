@@ -2778,6 +2778,59 @@ export function createToolGatewayService(
     }));
   }
 
+  /**
+   * When an agent asks again for the same action on the same task from a newer
+   * run, its earlier unanswered requests for that action no longer apply: the
+   * run that asked has ended and the reader may already have redirected it
+   * (a comment never cancels an approval, by design). Left pending, they stay
+   * in the decisions list and would still execute if approved. Withdraw them,
+   * and close their cards as stale. Requests from a run still in progress, and
+   * formal board approvals, are left alone.
+   */
+  async function supersedeEarlierToolActionRequests(input: {
+    session: ToolGatewaySession;
+    toolName: string;
+    keepActionRequestId: string;
+  }): Promise<void> {
+    const { issueId, runId, agentId, companyId } = input.session;
+    if (!issueId || !runId || !agentId) return;
+    const stale = await db
+      .select({ id: toolActionRequests.id, invocationId: toolActionRequests.invocationId })
+      .from(toolActionRequests)
+      .innerJoin(toolInvocations, eq(toolInvocations.id, toolActionRequests.invocationId))
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, toolInvocations.runId))
+      .where(and(
+        eq(toolActionRequests.companyId, companyId),
+        eq(toolActionRequests.issueId, issueId),
+        eq(toolActionRequests.status, "pending"),
+        ne(toolActionRequests.id, input.keepActionRequestId),
+        isNull(toolActionRequests.approvalId),
+        eq(toolInvocations.agentId, agentId),
+        eq(toolInvocations.toolName, input.toolName),
+        ne(toolInvocations.runId, runId),
+        sql`${heartbeatRuns.status} not in ('queued', 'running')`,
+      ));
+    for (const request of stale) {
+      const now = new Date();
+      const withdrawn = await writeToolReviewChange(db, companyId, tx => tx
+        .update(toolActionRequests)
+        .set({ status: "cancelled", resolvedAt: now, updatedAt: now })
+        .where(and(eq(toolActionRequests.id, request.id), eq(toolActionRequests.status, "pending")))
+        .returning({ id: toolActionRequests.id }));
+      if (withdrawn.length === 0) continue;
+      await db
+        .update(toolInvocations)
+        .set({ approvalState: "expired", idempotencyKey: null, updatedAt: now })
+        .where(eq(toolInvocations.id, request.invocationId));
+      await reflectToolActionInteractionLifecycle({
+        actionRequestId: request.id,
+        status: "cancelled",
+        errorCode: "superseded_by_newer_request",
+        errorMessage: "Replaced by a newer request for the same action.",
+      });
+    }
+  }
+
   async function reflectToolActionInteractionLifecycle(input: {
     actionRequestId: string;
     status:
@@ -3244,6 +3297,12 @@ export function createToolGatewayService(
         },
       );
     }
+
+    await supersedeEarlierToolActionRequests({
+      session: input.session,
+      toolName: input.tool.name,
+      keepActionRequestId: actionRequest.id,
+    });
 
     await db.transaction(async tx => {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolAction);
@@ -11213,6 +11272,14 @@ export function createToolGatewayService(
         });
     }
     if (actionRequest.status === "pending") {
+      // A later run that repeats one of an ended run's requests reuses that
+      // request. Withdraw the ended run's other requests for this tool, as a
+      // new request would, so they cannot hold back the reused one's result.
+      await supersedeEarlierToolActionRequests({
+        session: input.session,
+        toolName: input.toolName,
+        keepActionRequestId: actionRequest.id,
+      });
       await throwApprovalRequired({
         invocationId: invocation.id,
         actionRequestId: actionRequest.id,
