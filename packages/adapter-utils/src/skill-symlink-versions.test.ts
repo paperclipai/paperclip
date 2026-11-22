@@ -12,10 +12,19 @@ async function setup() {
   const oldVersion = path.join(versions, "skill-a", "v1");
   const newVersion = path.join(versions, "skill-a", "v2");
   const otherSkill = path.join(versions, "skill-b", "v1");
-  for (const dir of [oldVersion, newVersion, otherSkill]) await mkdir(dir, { recursive: true });
+  const liveDir = path.join(root, "skills", "company-1", "skill-a");
+  const otherLiveDir = path.join(root, "skills", "company-1", "skill-b");
+  for (const dir of [oldVersion, newVersion, otherSkill, liveDir, otherLiveDir]) await mkdir(dir, { recursive: true });
   const home = path.join(root, "home");
   await mkdir(home, { recursive: true });
-  return { oldVersion, newVersion, otherSkill, target: path.join(home, "skill-a--1234") };
+  return {
+    oldVersion,
+    newVersion,
+    otherSkill,
+    liveDir,
+    otherLiveDir,
+    target: path.join(home, "skill-a--0123456789"),
+  };
 }
 
 afterEach(async () => {
@@ -70,5 +79,43 @@ describe("ensurePaperclipSkillSymlink with company skill versions", () => {
     await symlink(plainSibling, target);
     await expect(ensurePaperclipSkillSymlink(plainSource, target)).resolves.toBe("skipped");
     expect(await readlink(target)).toBe(plainSibling);
+  });
+
+  it("re-points a link from the live skill directory to a version", async () => {
+    const { liveDir, newVersion, target } = await setup();
+    await symlink(liveDir, target);
+    await expect(ensurePaperclipSkillSymlink(newVersion, target)).resolves.toBe("repaired");
+    expect(await readlink(target)).toBe(newVersion);
+  });
+
+  it("re-points a link from a version to the live skill directory", async () => {
+    const { liveDir, oldVersion, target } = await setup();
+    await symlink(oldVersion, target);
+    await expect(ensurePaperclipSkillSymlink(liveDir, target)).resolves.toBe("repaired");
+    expect(await readlink(target)).toBe(liveDir);
+  });
+
+  it("re-points a live directory link when the runtime name has no hash", async () => {
+    const { liveDir, newVersion } = await setup();
+    const target = path.join(root, "home", "skill-a");
+    await symlink(liveDir, target);
+    await expect(ensurePaperclipSkillSymlink(newVersion, target)).resolves.toBe("repaired");
+    expect(await readlink(target)).toBe(newVersion);
+  });
+
+  it("does not touch a link to the live directory of another skill", async () => {
+    const { otherLiveDir, newVersion, target } = await setup();
+    await symlink(otherLiveDir, target);
+    await expect(ensurePaperclipSkillSymlink(newVersion, target)).resolves.toBe("skipped");
+    expect(await readlink(target)).toBe(otherLiveDir);
+  });
+
+  it("does not touch a link to a same-named directory outside the company skills root", async () => {
+    const { newVersion, target } = await setup();
+    const outside = path.join(root, "elsewhere", "skill-a");
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, target);
+    await expect(ensurePaperclipSkillSymlink(newVersion, target)).resolves.toBe("skipped");
+    expect(await readlink(target)).toBe(outside);
   });
 });
