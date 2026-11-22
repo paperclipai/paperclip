@@ -24,7 +24,7 @@ test("testEnvironment accepts config.command when hermesCommand is absent", asyn
   try {
     await writeFile(
       cliPath,
-      "#!/bin/sh\necho fake-hermes 1.2.3\n",
+      "#!/bin/sh\nif [ \"$1\" = chat ]; then echo hello; else echo fake-hermes 1.2.3; fi\n",
       "utf8",
     );
     await chmod(cliPath, 0o755);

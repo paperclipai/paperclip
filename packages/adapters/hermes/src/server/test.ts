@@ -325,6 +325,26 @@ async function checkProviderConsistency(
 // Main test
 // ---------------------------------------------------------------------------
 
+async function runHelloProbe(command: string, config: Record<string, unknown>): Promise<AdapterEnvironmentCheck> {
+  const env = { ...process.env };
+  for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  const args = ["chat", "-Q", "-q", "Respond with hello. Do not use tools.", "--max-turns", "1"];
+  if (asString(config.model)) args.push("-m", asString(config.model)!);
+  const provider = asString(config.provider);
+  if (provider && provider !== "auto") args.push("--provider", provider);
+  try {
+    const { stdout } = await execFileAsync(command, args, {
+      env, cwd: asString(config.cwd), timeout: 45_000, maxBuffer: 1024 * 1024,
+    });
+    if (!/\bhello\b/i.test(stdout)) throw new Error("No hello response");
+    return { level: "info", code: "hermes_hello_probe_passed", message: "Hermes responded through the selected connection." };
+  } catch {
+    return { level: "error", code: "hermes_hello_probe_failed", message: "Hermes could not complete a request through this connection.", hint: "Check the Hermes installation, endpoint, credential, and model, then test again." };
+  }
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -339,23 +359,7 @@ export async function testEnvironment(
     if (remote) {
       checks.push({ level: "error", code: "hermes_remote_probe_unsupported", message: "Hermes connection testing requires a local execution environment." });
     } else {
-      const env = { ...process.env };
-      for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
-        if (typeof value === "string") env[key] = value;
-      }
-      const args = ["chat", "-Q", "-q", "Respond with hello. Do not use tools.", "--max-turns", "1"];
-      if (asString(config.model)) args.push("-m", asString(config.model)!);
-      const provider = asString(config.provider);
-      if (provider && provider !== "auto") args.push("--provider", provider);
-      try {
-        const { stdout } = await execFileAsync(command, args, {
-          env, cwd: asString(config.cwd), timeout: 45_000, maxBuffer: 1024 * 1024,
-        });
-        if (!/\bhello\b/i.test(stdout)) throw new Error("No hello response");
-        checks.push({ level: "info", code: "hermes_hello_probe_passed", message: "Hermes responded through the selected connection." });
-      } catch {
-        checks.push({ level: "error", code: "hermes_hello_probe_failed", message: "Hermes could not complete a request through this connection.", hint: "Check the Hermes installation, endpoint, credential, and model, then test again." });
-      }
+      checks.push(await runHelloProbe(command, config));
     }
     return { adapterType: ADAPTER_TYPE, status: checks.some(check => check.level === "error") ? "fail" : "pass", checks, testedAt: new Date().toISOString() };
   }
@@ -401,6 +405,10 @@ export async function testEnvironment(
   // 7. Provider/model consistency
   const providerCheck = await checkProviderConsistency(config, detectedConfig);
   if (providerCheck) checks.push(providerCheck);
+
+  if (!checks.some((c) => c.level === "error") && ctx.executionTarget?.kind !== "remote") {
+    checks.push(await runHelloProbe(command, config));
+  }
 
   // Determine overall status
   const hasErrors = checks.some((c) => c.level === "error");
