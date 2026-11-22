@@ -1,11 +1,11 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { workspacePaths } from "./workspace-manifest.js";
 import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep, withWorkspaceRestoreGitCommand } from "./workspace-restore-diagnostics.js";
 
 import {
@@ -27,6 +27,7 @@ import {
   REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES,
   runLocalGit,
   resetLocalGitIndexToHead,
+  STALE_GIT_INDEX_LOCK_MIN_AGE_MS,
   sanitizeGitRemoteUrl,
   setExpensiveWorkspaceGitExecutor,
   withShallowGitWorkspaceClone,
@@ -1020,6 +1021,81 @@ exit 0
     expect((error as Error).message).toContain("Failed to reset local git index");
     expect(error).not.toHaveProperty("cause");
     expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "workspace", step: "index_reset", errorCode: "unknown", exitCode: 128 });
+  });
+
+  describe("resetLocalGitIndexToHead index.lock recovery", () => {
+    async function stagedRepo() {
+      const repo = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-reset-lock-"));
+      cleanupDirs.push(repo);
+      await git(repo, ["init"]);
+      await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+      await git(repo, ["add", "tracked.txt"]);
+      await git(repo, ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev", "commit", "-m", "base"]);
+      await writeFile(path.join(repo, "tracked.txt"), "changed\n", "utf8");
+      await git(repo, ["add", "tracked.txt"]);
+      return repo;
+    }
+
+    it("removes a stale index.lock, warns, and completes the reset", async () => {
+      const repo = await stagedRepo();
+      const lockPath = path.join(repo, ".git", "index.lock");
+      await writeFile(lockPath, "", "utf8");
+      const old = new Date(Date.now() - STALE_GIT_INDEX_LOCK_MIN_AGE_MS - 60_000);
+      await utimes(lockPath, old, old);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        await resetLocalGitIndexToHead({ localDir: repo });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(lockPath));
+      } finally {
+        warn.mockRestore();
+      }
+      await expect(lstat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await git(repo, ["diff", "--cached", "--name-only"])).toBe("");
+      expect(await readFile(path.join(repo, "tracked.txt"), "utf8")).toBe("changed\n");
+    });
+
+    it("keeps a fresh index.lock and surfaces the original error", async () => {
+      const repo = await stagedRepo();
+      const lockPath = path.join(repo, ".git", "index.lock");
+      await writeFile(lockPath, "", "utf8");
+      const error = await resetLocalGitIndexToHead({ localDir: repo }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("Failed to reset local git index");
+      expect((error as Error).message).toContain("index.lock");
+      await expect(lstat(lockPath)).resolves.toBeTruthy();
+    });
+
+    it("recovers a stale lock in a linked worktree's own git dir", async () => {
+      const repo = await stagedRepo();
+      await git(repo, ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev", "commit", "-m", "two"]);
+      const worktree = path.join(path.dirname(repo), `${path.basename(repo)}-wt`);
+      cleanupDirs.push(worktree);
+      await git(repo, ["worktree", "add", "--detach", worktree]);
+      const gitDir = await git(worktree, ["rev-parse", "--absolute-git-dir"]);
+      const lockPath = path.join(gitDir, "index.lock");
+      await writeFile(lockPath, "", "utf8");
+      const old = new Date(Date.now() - STALE_GIT_INDEX_LOCK_MIN_AGE_MS - 60_000);
+      await utimes(lockPath, old, old);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        await resetLocalGitIndexToHead({ localDir: worktree });
+      } finally {
+        warn.mockRestore();
+      }
+      await expect(lstat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("leaves the normal path untouched when no lock exists", async () => {
+      const repo = await stagedRepo();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        await resetLocalGitIndexToHead({ localDir: repo });
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+      expect(await git(repo, ["diff", "--cached", "--name-only"])).toBe("");
+    });
   });
 
   describe("readReferencedSourceGitIgnoredPaths", () => {

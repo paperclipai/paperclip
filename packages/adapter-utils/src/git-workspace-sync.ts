@@ -1082,15 +1082,76 @@ export async function integrateImportedGitHead(input: {
   throw new Error(`Failed to integrate concurrent remote git history for ${input.importedHead.slice(0, 12)} after multiple retries.`);
 }
 
+/**
+ * Minimum age before an `index.lock` is treated as abandoned. The longest
+ * Paperclip-owned Git command that takes the index lock in this file (`reset`)
+ * has a 60 s timeout; the read-only snapshot scans can run far longer but run
+ * with `--no-optional-locks` and never hold the index lock. Ten minutes is
+ * 10x that bound, so a live command cannot plausibly own a lock this old.
+ */
+export const STALE_GIT_INDEX_LOCK_MIN_AGE_MS = 10 * 60_000;
+
+function isGitIndexLockExistsError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const text = [(error as { message?: unknown }).message, (error as { stderr?: unknown }).stderr]
+    .filter((value): value is string => typeof value === "string")
+    .join("\n");
+  return text.includes("index.lock") && text.includes("File exists");
+}
+
+/**
+ * Remove `<gitdir>/index.lock` when it is clearly abandoned (a regular file
+ * older than {@link STALE_GIT_INDEX_LOCK_MIN_AGE_MS}), e.g. left by a Git
+ * process that was SIGKILLed or by a server crash. Returns whether a lock was
+ * removed. The Git directory is resolved through Git so linked worktrees use
+ * their own per-worktree index lock.
+ *
+ * There is no per-workspace serialization of Git commands to consult, so the
+ * age threshold is the only guard against racing a live Git process. Callers
+ * invoke this only after a command already failed on the lock.
+ */
+export async function removeStaleGitIndexLock(
+  localDir: string,
+  options: { now?: number } = {},
+): Promise<boolean> {
+  try {
+    const gitDir = (await runLocalGit(localDir, ["rev-parse", "--absolute-git-dir"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    })).stdout.trim();
+    if (!gitDir) return false;
+    const lockPath = path.join(gitDir, "index.lock");
+    const info = await fs.lstat(lockPath);
+    if (!info.isFile()) return false;
+    const ageMs = (options.now ?? Date.now()) - info.mtimeMs;
+    if (ageMs < STALE_GIT_INDEX_LOCK_MIN_AGE_MS) return false;
+    await fs.unlink(lockPath);
+    console.warn(
+      `[paperclip] Removed stale git index lock ${lockPath} (age ${Math.round(ageMs / 1000)}s, threshold ${STALE_GIT_INDEX_LOCK_MIN_AGE_MS / 1000}s).`,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function resetLocalGitIndexToHead(input: {
   localDir: string;
   checkWorkingTreeClean?: boolean;
 }): Promise<void> {
+  const reset = () => runLocalGit(input.localDir, ["reset", "--quiet", "HEAD", "--", "."], {
+    timeout: 60_000,
+    maxBuffer: 1024 * 1024,
+  });
   try {
-    await runLocalGit(input.localDir, ["reset", "--quiet", "HEAD", "--", "."], {
-      timeout: 60_000,
-      maxBuffer: 1024 * 1024,
-    });
+    try {
+      await reset();
+    } catch (error) {
+      // A timed-out or killed reset, or a crash, can leave index.lock behind and
+      // fail every later restore. Recover once if the lock is clearly stale.
+      if (!isGitIndexLockExistsError(error) || !await removeStaleGitIndexLock(input.localDir)) throw error;
+      await reset();
+    }
   } catch (error) {
     const detail = error && typeof error === "object"
       ? [
