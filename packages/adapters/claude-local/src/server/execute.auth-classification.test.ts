@@ -369,7 +369,7 @@ const cases: Case[] = [
     execute: { code: "claude_auth_required" },
   },
   {
-    id: "A1",
+    id: "A8",
     title: "failed result, stderr malformed JSON-looking line with 'Please run /login'",
     stdout: jsonl(init, failure("API Error: 500 Internal server error")),
     stderr: '{"error":"Not logged in. Please run /login',
@@ -378,7 +378,7 @@ const cases: Case[] = [
     execute: { code: "claude_auth_required" },
   },
   {
-    id: "A2",
+    id: "A9",
     title: "no result, stderr malformed JSON-looking line with 'Please run /login'",
     stdout: "",
     stderr: '{"error":"Not logged in. Please run /login',
@@ -387,7 +387,7 @@ const cases: Case[] = [
     execute: { code: "claude_auth_required" },
   },
   {
-    id: "A3",
+    id: "A10",
     title: "failed result, JSON-looking terminal result text with 'Please run /login'",
     stdout: jsonl(init, failure('{"error":"Not logged in. Please run /login')),
     exitCode: 1,
