@@ -53,6 +53,7 @@ import type {
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { cn } from "@/lib/utils";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { createUuid } from "../../../lib/uuid";
 const selectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
 
@@ -113,7 +114,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
   const [selectedCredentialId, setSelectedCredentialId] = useState<string | null>(draft.selectedCredentialId !== undefined ? draft.selectedCredentialId : connectionId || null);
   const [restrictedInbox, setRestrictedInbox] = useState("");
   const [allowInboxKey, setAllowInboxKey] = useState(draft.allowInboxKey ?? false);
-  const [requestId] = useState(() => draft.requestId ?? resumeId ?? (setupId && isUuidLike(setupId) ? setupId : crypto.randomUUID()));
+  const [requestId] = useState(() => draft.requestId ?? resumeId ?? (setupId && isUuidLike(setupId) ? setupId : createUuid()));
   const [addressMode, setAddressMode] = useState<"new" | "existing">(draft.addressMode ?? "new");
   const [inboxId, setInboxId] = useState(draft.inboxId ?? "");
   const [username, setUsername] = useState(draft.username ?? "");
@@ -209,7 +210,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
         return false;
       }
       const changingAccount = !!connectionId && selectedCredentialId !== connectionId;
-      const nextRequestId = changingAccount ? crypto.randomUUID() : requestId;
+      const nextRequestId = changingAccount ? createUuid() : requestId;
       let id = selectedCredentialId;
       if (!id) {
         const result = await emailApi.connect(companyId, {
@@ -330,7 +331,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
   const chooseAnotherAddress = () => {
     // Preserve the allocated inbox and its resumable setup. A different address
     // must use a new provider client_id, never silently rename a retry.
-    const nextRequestId = crypto.randomUUID();
+    const nextRequestId = createUuid();
     openDraft({
       connectionId, selectedCredentialId: connectionId, agentId, step: 1,
       requestId: nextRequestId, addressMode: "new", username: "", inboxId: "",

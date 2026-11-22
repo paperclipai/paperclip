@@ -36,6 +36,7 @@ export type AgentBasics = {
   setupAgentId: string;
 };
 export { AdapterMark } from "../AdapterMark";
+import { createUuid } from "../../lib/uuid";
 
 function AgentBasicsCharacter() {
   const { selectedCompanyId } = useCompany();
@@ -64,7 +65,7 @@ export function AgentBasicsDialog({
   const { selectedCompanyId: companyId } = useCompany();
   const cache = useQueryClient();
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
-  const setupId = useRef(setupAgentId ?? crypto.randomUUID());
+  const setupId = useRef(setupAgentId ?? createUuid());
   const saved = useRef<Agent | null>(null);
   const busy = useRef(false);
   const active = useRef(true);

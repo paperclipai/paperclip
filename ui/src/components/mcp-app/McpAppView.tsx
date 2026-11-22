@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { McpAppFrame } from "./McpAppFrame";
 import { useMcpAppSendMessage } from "./McpAppIssueContext";
 import { mcpAppNavigationGuardSupported, type McpAppDisplayMode } from "./mcp-app-host";
+import { createUuid } from "../../lib/uuid";
 
 const UNSUPPORTED_BROWSER_MESSAGE = "This browser can't show this app's widget safely. The tool result is still in the activity.";
 
@@ -180,7 +181,7 @@ export function useMcpAppMessageProposal(issueId: string, viewId: string) {
       reject(new Error("A message from this view is already waiting for the user"));
       return;
     }
-    pending.current = { text, clientRequestId: crypto.randomUUID(), resolve, reject };
+    pending.current = { text, clientRequestId: createUuid(), resolve, reject };
     setProposal({ text, status: "pending" });
   }), []);
 

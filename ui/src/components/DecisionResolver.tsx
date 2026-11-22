@@ -14,6 +14,7 @@ import { NeedsYouPanel, NeedsYouPanelNote } from "./coordinator/NeedsYouCardKit"
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { createUuid } from "../lib/uuid";
 
 interface DecisionResolverProps {
   companyId: string;
@@ -280,7 +281,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
 
   const busy = decideMutation.isPending;
   const errorMessage = (decideMutation.error instanceof Error && decideMutation.error.message) || null;
-  const decide = (optionId: string, inputValues: Record<string, string>) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: crypto.randomUUID() });
+  const decide = (optionId: string, inputValues: Record<string, string>) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: createUuid() });
 
   if (compact && decision.status === "open" && !decision.options.some((option) => option.effects.some((effect) => effect.type === "cancel_issue_tree"))) {
     return <CompactDecision decision={decision} resolveIssue={resolveIssue} targetChanged={targetChanged} busy={busy} errorMessage={errorMessage} leading={leading} onDecide={decide} />;

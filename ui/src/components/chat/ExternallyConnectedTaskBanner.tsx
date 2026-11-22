@@ -42,6 +42,7 @@ import {
 
 import { LegacyBoardSendNotice } from "./LegacyBoardSendNotice";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { createUuid } from "../../lib/uuid";
 
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
@@ -941,7 +942,7 @@ function ConnectedTaskComposer({
                   autoResend.resendNow();
                   return;
                 }
-                idempotencyKey.current ??= crypto.randomUUID();
+                idempotencyKey.current ??= createUuid();
                 const input = retainedSend.current ?? {
                   attachmentIds: selectedAttachmentIds,
                   attachmentNames: selectedAttachmentIds.map((id) => ({

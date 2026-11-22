@@ -5,6 +5,7 @@ import { emailApi } from "@/api/email";
 import { describeError } from "@/api/errors";
 import { Button } from "@/components/ui/button";
 import { AgentMailCredentialField } from "./AgentMailCredentialField";
+import { createUuid } from "../../lib/uuid";
 
 interface InlineEmailDraft {
   setupRequestId: string;
@@ -53,7 +54,7 @@ export function AgentMailIntentSetup({ companyId, agentId, requestId, savedCrede
       if (pending) await emailApi.control(pending.id, "remove");
     },
     onSuccess: () => {
-      setSetupRequestId(crypto.randomUUID());
+      setSetupRequestId(createUuid());
       setCredentialId(null);
       setSelectedCredentialId("");
       setApiKey("");

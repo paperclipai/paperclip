@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import type { RunnerGoalComposerCommand } from "./TaskChatComposer";
+import { createUuid } from "../../lib/uuid";
 
 const PENDING_LABELS: Record<string, string> = {
   starting: "Starting",
@@ -26,9 +27,7 @@ const PENDING_LABELS: Record<string, string> = {
 };
 
 function requestId() {
-  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `goal_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  return createUuid();
 }
 
 function formatDuration(seconds: number) {
