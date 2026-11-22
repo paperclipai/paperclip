@@ -6,7 +6,6 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-/** Composio's own outcome flags. Provider data nested in an account record is never read as one. */
 function reportsFailure(entry: Record<string, unknown>) {
   return Boolean(entry.error) || entry.success === false || entry.successful === false;
 }
@@ -56,9 +55,6 @@ export function composioAppAccounts(response: unknown, toolkit: string): Composi
           isDefault: account?.is_default === true || account?.isDefault === true });
       }
     }
-    // Account records are leaves: the loop above reads the selected toolkit's records, and a record's nested
-    // fields (such as user_info) are the provider's own data. TikTok sends error: { code: "ok" } on success,
-    // and a deep profile would use up this check's budget. An item with its own accounts is a toolkit result.
     for (const [key, child] of Object.entries(entry)) {
       if (key !== "accounts" || !Array.isArray(child)) { visit(child, selected || key === toolkit, depth + 1); continue; }
       for (const item of child) {

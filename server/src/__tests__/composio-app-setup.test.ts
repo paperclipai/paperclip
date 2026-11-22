@@ -46,7 +46,6 @@ describe("Composio app authorization evidence", () => {
     expect(composioAppSetupResult(response, "gmail")).toEqual({ status: "not_connected" });
   });
   it("reads an account's provider profile as data, so TikTok's success envelope is not a failed check (#22467)", () => {
-    // TikTok sends error: { code: "ok" } on every successful response; Composio passes user_info through unchanged.
     const tiktok = { toolkit: "tiktok", status: "active", accounts: [{ id: "ca_tiktok", alias: "Brand", status: "active", is_default: true,
       user_info: { data: { user: { display_name: "Brand" } }, error: { code: "ok", message: "", log_id: "202611210319450000" } } }] };
     const response = { result: { content: [{ type: "text", text: JSON.stringify({ data: { results: { tiktok } }, error: null, successful: true }) }], isError: false } };
