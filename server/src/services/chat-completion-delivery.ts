@@ -24,6 +24,14 @@ function ids(run: Run): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
+export class ChatCompletionSupersededError extends Error {
+  readonly code = "chat_completion_superseded";
+  constructor() {
+    super("chat_completion_superseded");
+    this.name = "ChatCompletionSupersededError";
+  }
+}
+
 /** Human-confirmed suggestions use the same durable audience as native create_task.
  * The source must be read/authorized by the caller; ownership and generation are
  * rechecked under the creation transaction so reset chats cannot receive new work. */
