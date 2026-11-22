@@ -63,6 +63,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { extractCompanyPrefixFromPath, toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 import { agentRouteRef } from "../lib/utils";
+import { markdownToPlainText } from "../lib/markdown-plain-text";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { tryCreateWebSocket } from "../lib/websocket";
 
@@ -1143,32 +1144,25 @@ function describeIssueUpdate(
 ): string | null {
   if (!details) return null;
   const changes: string[] = [];
-  if (typeof details.status === "string")
-    changes.push(`status -> ${details.status.replace(/_/g, " ")}`);
-  if (typeof details.priority === "string")
-    changes.push(`priority -> ${details.priority}`);
-  if (
-    typeof details.assigneeAgentId === "string" ||
-    typeof details.assigneeUserId === "string"
-  ) {
-    changes.push("reassigned");
-  } else if (
-    details.assigneeAgentId === null ||
-    details.assigneeUserId === null
-  ) {
-    changes.push("unassigned");
-  }
+  const statusLabel = (status: string) => status === "todo" ? "to do" : status.replace(/_/g, " ");
   if (details.reopened === true) {
-    const from = readString(details.reopenedFrom);
-    changes.push(
-      from ? `reopened from ${from.replace(/_/g, " ")}` : "reopened",
-    );
+    const from = readString(details.reopenedFrom) ?? readString(details.statusFrom);
+    const to = readString(details.status);
+    changes.push(`reopened${from ? ` from ${statusLabel(from)}` : " the task"}${to ? ` to ${statusLabel(to)}` : ""}`);
+  } else if (typeof details.status === "string") {
+    changes.push(typeof details.statusFrom === "string"
+      ? `changed status from ${statusLabel(details.statusFrom)} to ${statusLabel(details.status)}`
+      : `changed status to ${statusLabel(details.status)}`);
   }
-  if (typeof details.title === "string") changes.push("title changed");
-  if (typeof details.description === "string")
-    changes.push("description changed");
-  if (changes.length > 0) return changes.join(", ");
-  return null;
+  if (typeof details.priority === "string") changes.push(`set priority to ${details.priority}`);
+  if (details.assignment === "reassigned" || typeof details.assigneeAgentId === "string" || typeof details.assigneeUserId === "string") {
+    changes.push("reassigned the task");
+  } else if (details.assignment === "unassigned" || details.assigneeAgentId === null || details.assigneeUserId === null) {
+    changes.push("unassigned the task");
+  }
+  if (details.titleChanged === true || typeof details.title === "string") changes.push("changed the title");
+  if (details.descriptionChanged === true || typeof details.description === "string") changes.push("changed the description");
+  return changes.length > 0 ? changes.join(", ") : null;
 }
 
 function buildActivityToast(
@@ -1180,7 +1174,8 @@ function buildActivityToast(
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
   const action = readString(payload.action);
-  const details = readRecord(payload.details);
+  const activityDetails = readRecord(payload.details);
+  const details = readRecord(payload.notificationDetails) ?? activityDetails;
   const actorId = readString(payload.actorId);
   const actorType = readString(payload.actorType);
 
@@ -1198,8 +1193,9 @@ function buildActivityToast(
     companyId,
     entityId,
     {
-      ...details,
-      identifier: readString(payload.issueIdentifier) ?? readString(details?.identifier),
+      ...activityDetails,
+      title: readString(payload.issueTitle) ?? readString(activityDetails?.title),
+      identifier: readString(payload.issueIdentifier) ?? readString(activityDetails?.identifier),
     },
   );
   const actor = readString(readString(payload.actorName)?.trim()) ?? resolveActorLabel(queryClient, companyId, actorType, actorId);
@@ -1226,70 +1222,41 @@ function buildActivityToast(
       actorId === currentActor.agentId);
   if (isSelfActivity) return null;
 
+  const title = truncate((issue.title?.trim() || "Task").replace(/\s+/g, " "), 120);
+  const actionLink = { label: "View task", href: issue.href };
   if (action === "issue.created") {
     return {
       actor: toastActor,
-      title: `${actor} created ${issue.ref}`,
-      body: issue.title ? truncate(issue.title, 96) : undefined,
+      title,
+      body: truncate(`${actor} created the task`, 240),
       tone: "success",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: actionLink,
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
 
+  const changeDesc = describeIssueUpdate(details);
   if (action === "issue.updated") {
-    if (readString(details?.source) === "comment") {
-      // Comment-driven updates emit a paired comment event; show one combined toast on the comment event.
-      return null;
-    }
-    const changeDesc = describeIssueUpdate(details);
-    const body = changeDesc
-      ? issue.title
-        ? `${truncate(issue.title, 64)} - ${changeDesc}`
-        : changeDesc
-      : issue.title
-        ? truncate(issue.title, 96)
-        : issue.label;
+    if (details?.source === "comment" || !changeDesc) return null;
     return {
       actor: toastActor,
-      title: `${actor} updated ${issue.ref}`,
-      body: truncate(body, 100),
+      title,
+      body: truncate(`${actor} ${changeDesc}`, 240),
       tone: "info",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: actionLink,
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
 
   const commentId = readString(details?.commentId);
-  const bodySnippet = readString(details?.bodySnippet);
-  const reopened = details?.reopened === true;
-  const updated = details?.updated === true;
-  const reopenedFrom = readString(details?.reopenedFrom);
-  const reopenedLabel = reopened
-    ? reopenedFrom
-      ? `reopened from ${reopenedFrom.replace(/_/g, " ")}`
-      : "reopened"
-    : null;
-  const title = reopened
-    ? `${actor} reopened and commented on ${issue.ref}`
-    : updated
-      ? `${actor} commented and updated ${issue.ref}`
-      : `${actor} commented on ${issue.ref}`;
-  const body = bodySnippet
-    ? reopenedLabel
-      ? `${reopenedLabel} - ${bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")}`
-      : bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")
-    : reopenedLabel
-      ? issue.title
-        ? `${reopenedLabel} - ${issue.title}`
-        : reopenedLabel
-      : (issue.title ?? undefined);
+  const snippet = markdownToPlainText(readString(details?.bodySnippet) ?? "");
+  const summary = changeDesc ? `${actor} ${changeDesc}` : actor;
   return {
     actor: toastActor,
     title,
-    body: body ? truncate(body, 96) : undefined,
+    body: truncate(snippet ? `${summary}: ${snippet}` : changeDesc ? summary : `${actor} added a comment`, 240),
     tone: "info",
-    action: { label: `View ${issue.ref}`, href: issue.href },
+    action: actionLink,
     dedupeKey: `activity:${action}:${entityId}:${commentId ?? "na"}`,
   };
 }

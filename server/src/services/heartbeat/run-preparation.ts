@@ -1,3 +1,4 @@
+import { isUniqueViolation } from "../../db-errors.js";
 import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
@@ -1035,7 +1036,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     return [];
   }
   const profileKey = `native:${input.agent.id}:${assignmentDigest}`;
-  let [profile] = await input.db
+  const findProfile = () => input.db
     .select()
     .from(toolProfiles)
     .where(
@@ -1045,6 +1046,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       ),
     )
     .limit(1);
+  let [profile] = await findProfile();
 
   if (!profile) {
     const fullConnectionIds = new Set(
@@ -1081,7 +1083,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     // selector here: truncating or replacing them with connection-wide grants
     // would either lose assigned tools or authorize tools outside this snapshot.
     try {
-      const created = await access.createProfile(input.agent.companyId, {
+      profile = await access.createProfileRow(input.agent.companyId, {
         profileKey,
         name: `Native ${input.agent.id.slice(0, 8)} ${assignmentDigest.slice(0, 12)}`,
         description: "Immutable Paperclip Runner MCP assignment profile.",
@@ -1094,22 +1096,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         },
         entries,
       });
-      [profile] = await input.db
-        .select()
-        .from(toolProfiles)
-        .where(eq(toolProfiles.id, created.id))
-        .limit(1);
     } catch (error) {
-      [profile] = await input.db
-        .select()
-        .from(toolProfiles)
-        .where(
-          and(
-            eq(toolProfiles.companyId, input.agent.companyId),
-            eq(toolProfiles.profileKey, profileKey),
-          ),
-        )
-        .limit(1);
+      if (!isUniqueViolation(error, "tool_profiles_company_key_uq") &&
+          !isUniqueViolation(error, "tool_profiles_company_name_uq")) throw error;
+      [profile] = await findProfile();
       if (!profile) throw error;
     }
   }

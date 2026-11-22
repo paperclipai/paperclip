@@ -197,6 +197,8 @@ export function responsibilityStatusReportService(db: Db) {
         status: "todo",
         priority: "low",
         assigneeAgentId: reporter.agentId,
+        visibility: "private",
+        responsibleUserId: row.ownerUserId,
         originKind: RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND,
         originId: row.id,
         createdByUserId: actor.userId,
