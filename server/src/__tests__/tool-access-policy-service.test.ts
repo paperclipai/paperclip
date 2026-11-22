@@ -661,6 +661,125 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(remainingTrustRules.map((policy) => policy.id)).toEqual([trustRule.id]);
   });
 
+  it("patches config-bearing policies without rejecting unchanged stored config", async () => {
+    const company = await createCompany(db);
+    const svc = toolAccessPolicyService(db);
+    const agentId = randomUUID();
+    const connectionId = randomUUID();
+    const config = { source: "connection_intent", connectionId, agentId };
+    const [policy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `connection-intent:${agentId}:send_email`,
+      policyType: "require_approval",
+      priority: 100,
+      enabled: true,
+      selectors: { connectionId, catalogEntryId: randomUUID() },
+      conditions: { actor: { agentId } },
+      config,
+    }).returning();
+
+    expect(await svc.updatePolicy({ companyId: company.id, policyId: policy.id, body: { enabled: false } }))
+      .toMatchObject({ enabled: false, config });
+
+    expect(await svc.updatePolicy({ companyId: company.id, policyId: policy.id, body: { enabled: true, config } }))
+      .toMatchObject({ enabled: true, config });
+
+    await expect(svc.updatePolicy({
+      companyId: company.id,
+      policyId: policy.id,
+      body: { config: { source: "connection_intent", connectionId: randomUUID(), agentId } },
+    })).rejects.toMatchObject({ status: 422 });
+
+    await expect(svc.updatePolicy({ companyId: company.id, policyId: policy.id, body: { policyType: "allow" } }))
+      .rejects.toMatchObject({ status: 422 });
+    await expect(svc.updatePolicy({ companyId: company.id, policyId: policy.id, body: { policyType: "allow", config } }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(await svc.updatePolicy({
+      companyId: company.id,
+      policyId: policy.id,
+      body: { policyType: "allow", config: null },
+    })).toMatchObject({ policyType: "allow", config: null });
+  });
+
+  it("patches every field of a config-bearing policy while preserving the stored config", async () => {
+    const company = await createCompany(db);
+    const svc = toolAccessPolicyService(db);
+    const agentId = randomUUID();
+    const connectionId = randomUUID();
+    const config = { source: "connection_intent", connectionId, agentId };
+    const [policy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `connection-intent:${agentId}:delete_email`,
+      policyType: "require_approval",
+      priority: 100,
+      enabled: true,
+      selectors: { connectionId, catalogEntryId: randomUUID() },
+      conditions: { actor: { agentId } },
+      config,
+    }).returning();
+
+    const nextAgentId = randomUUID();
+    expect(await svc.updatePolicy({
+      companyId: company.id,
+      policyId: policy.id,
+      body: {
+        name: "Renamed intent rule",
+        selectors: { toolName: "send_email" },
+        conditions: { actor: { agentId: nextAgentId } },
+        enabled: false,
+      },
+    })).toMatchObject({
+      name: "Renamed intent rule",
+      selectors: { toolName: "send_email" },
+      conditions: { actor: { agentId: nextAgentId } },
+      enabled: false,
+      config,
+    });
+
+    const [ratePolicy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Send rate limit",
+      policyType: "rate_limit",
+      priority: 50,
+      enabled: true,
+      selectors: { toolName: "send_email" },
+      config: { limit: 5, windowSeconds: 3600 },
+    }).returning();
+    expect(await svc.updatePolicy({ companyId: company.id, policyId: ratePolicy.id, body: { enabled: false } }))
+      .toMatchObject({ enabled: false });
+    await expect(svc.updatePolicy({ companyId: company.id, policyId: ratePolicy.id, body: { enabled: true, config: null } }))
+      .rejects.toMatchObject({ status: 422 });
+  });
+
+  it("duplicates config-bearing policies with their stored config intact", async () => {
+    const company = await createCompany(db);
+    const svc = toolAccessPolicyService(db);
+    const agentId = randomUUID();
+    const connectionId = randomUUID();
+    const catalogEntryId = randomUUID();
+    const config = { source: "connection_intent", connectionId, agentId };
+    const [policy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `connection-intent:${agentId}:send_email`,
+      policyType: "require_approval",
+      priority: 100,
+      enabled: true,
+      selectors: { connectionId, catalogEntryId },
+      conditions: { actor: { agentId } },
+      config,
+    }).returning();
+
+    const copy = await svc.duplicatePolicy({ companyId: company.id, policyId: policy.id, body: {} });
+    expect(copy).toMatchObject({
+      name: `${policy.name} copy`,
+      policyType: "require_approval",
+      enabled: false,
+      selectors: { connectionId, catalogEntryId },
+      conditions: { actor: { agentId } },
+      config,
+    });
+  });
+
   it("treats glob-looking action-name selectors as exact names", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
