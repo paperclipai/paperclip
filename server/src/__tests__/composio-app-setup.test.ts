@@ -45,6 +45,29 @@ describe("Composio app authorization evidence", () => {
     expect(composioAppSetupResult(response, "circleback_mcp")).toEqual({ status: "connected" });
     expect(composioAppSetupResult(response, "gmail")).toEqual({ status: "not_connected" });
   });
+  it("reads an account's provider profile as data, so TikTok's success envelope is not a failed check (#22467)", () => {
+    // TikTok sends error: { code: "ok" } on every successful response; Composio passes user_info through unchanged.
+    const tiktok = { toolkit: "tiktok", status: "active", accounts: [{ id: "ca_tiktok", alias: "Brand", status: "active", is_default: true,
+      user_info: { data: { user: { display_name: "Brand" } }, error: { code: "ok", message: "", log_id: "202611210319450000" } } }] };
+    const response = { result: { content: [{ type: "text", text: JSON.stringify({ data: { results: { tiktok } }, error: null, successful: true }) }], isError: false } };
+    expect(composioAppAccounts(response, "tiktok")).toEqual([{ id: "ca_tiktok", alias: "Brand", status: "ACTIVE", isDefault: true }]);
+  });
+  it("never reads provider data nested in an account as Composio structure, but keeps Composio's own failure flags", () => {
+    const results = (account: Record<string, unknown>) => ({ data: { results: { tiktok: { toolkit: "tiktok", accounts: [account] } } } });
+    expect(composioAppAccounts(results({ id: "ca_1", status: "active", user_info: { success: false, accounts: [{ name: "Ad account" }] } }), "tiktok"))
+      .toEqual([{ id: "ca_1", alias: null, status: "ACTIVE", isDefault: false }]);
+    expect(() => composioAppAccounts(results({ id: "ca_1", status: "active", error: "Composio could not refresh this account" }), "tiktok")).toThrow("could not check");
+    expect(() => composioAppAccounts(results({ id: "ca_1", status: "active", successful: false }), "tiktok")).toThrow("could not check");
+  });
+  it("does not let one provider's deep account profile make other apps in the batch incomplete", () => {
+    const deep = Array.from({ length: 16 }).reduce<unknown>(value => ({ value }), "leaf");
+    const response = { data: { results: {
+      github: { toolkit: "github", accounts: [{ id: "ca_github", status: "active", user_info: deep }] },
+      tiktok: { toolkit: "tiktok", accounts: [{ id: "ca_tiktok", status: "active" }] },
+    } } };
+    expect(composioAppAccounts(response, "tiktok")).toEqual([{ id: "ca_tiktok", alias: null, status: "ACTIVE", isDefault: false }]);
+    expect(composioAppAccounts(response, "github")).toEqual([{ id: "ca_github", alias: null, status: "ACTIVE", isDefault: false }]);
+  });
 });
 
 const support = await getEmbeddedPostgresTestSupport();
