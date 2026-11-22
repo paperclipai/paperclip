@@ -71,7 +71,7 @@ function requestText(value: unknown): { text: string; omittedHistory: boolean } 
 
 /** A controller opt-in, not OpenCode's raw OTLP. Projected PRP events never include reasoning or raw provider payloads. */
 export function createOpenCodeCompanyObservability(input: {
-  environment: NodeJS.ProcessEnv | undefined; model: string; sensitiveValues: readonly string[];
+  environment: NodeJS.ProcessEnv | undefined; model: string; providerSessionId: string; sensitiveValues: readonly string[];
   managedToolNames?: readonly string[];
   fetch?: typeof globalThis.fetch; onDiagnostic?: (message: string) => void;
 }) {
@@ -118,7 +118,8 @@ export function createOpenCodeCompanyObservability(input: {
       name: span.name, kind: 0, startTimeUnixNano: String(BigInt(Math.trunc(span.start)) * 1_000_000n),
       endTimeUnixNano: String(BigInt(Math.trunc(Math.max(span.start, span.end))) * 1_000_000n),
       status: { code: span.failed ? 2 : 1 }, attributes: attributes({ ...resource, ...span.attributes,
-        "paperclip.run.id": turn.runId, "paperclip.turn.id": turn.turnId }),
+        "paperclip.run.id": turn.runId, "paperclip.turn.id": turn.turnId,
+        "session.id": input.providerSessionId }),
     }));
     // One bounded request per terminal turn, no idle worker, retries or durable secret-bearing queue.
     if (pending.size >= 4) { diagnostic("export_busy"); return; }
