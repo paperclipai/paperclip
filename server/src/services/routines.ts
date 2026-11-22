@@ -168,7 +168,7 @@ async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string)
   return owner?.userId ?? null;
 }
 
-async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorUserId: string | null | undefined, parentIssueId?: string | null) {
+export async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorUserId: string | null | undefined, parentIssueId?: string | null) {
   if (actorUserId) return actorUserId;
   if (parentIssueId) {
     const parent = await db

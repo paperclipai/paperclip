@@ -55,6 +55,7 @@ any new fork patch; remove one when the patch is upstreamed.
 - `server/src/services/default-mcp-*.ts`
 - `server/src/services/default-agent-profile-routine.ts`
 - `server/src/services/default-kb-ingest-routine.ts`
+- `server/src/services/default-kb-ingest-templates.ts`
 - `server/src/secrets/default-mcp-template-scope.ts`
 - `packages/shared/src/default-mcp-template-env.ts`
 - `packages/shared/src/memory-agent-guidance.ts`
