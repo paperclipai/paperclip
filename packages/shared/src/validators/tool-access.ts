@@ -1,5 +1,6 @@
 import { connectionAgentInstructionsSchema } from "../connection-instructions.js";
 import { isRemoteMcpConnectorMethod } from "../remote-mcp-connectors.js";
+import { APP_DEFINITIONS } from "../app-definitions.generated.js";
 import { z } from "zod";
 import {
   CONNECTION_TOKEN_ISSUANCE_PATHS,
@@ -38,7 +39,7 @@ import {
   mcpRemoteHeaderNameFromConfigPath,
   mcpRemoteHeaderRejectionMessage,
 } from "../mcp-remote-headers.js";
-import { jsonSchemaSchema } from "./plugin.js";
+import { jsonSchemaSchema } from "./json-schema.js";
 import { objectWithoutDefaults } from "./partial.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
@@ -107,6 +108,13 @@ export const toolRateLimitWindowKindSchema = z.enum(TOOL_RATE_LIMIT_WINDOW_KINDS
 const safeKeyPattern = /^[a-z0-9][a-z0-9._:-]*$/i;
 const sensitiveConfigKeyPattern =
   /^(access[-_]?key([-_]?id)?|api[-_]?key|authorization|bearer|client[-_]?secret|credential|credentials|jwt|password|passwd|private[-_]?key|refresh[-_]?token|secret|secret[-_]?access[-_]?key|secret[-_]?key|session[-_]?token|token)$/i;
+
+/** Minted-credential methods (AWS role) save a draft first: the provider must trust a connection that already exists. */
+function methodMintsCredentials(galleryKey: unknown, methodKey: unknown): boolean {
+  if (typeof galleryKey !== "string" || typeof methodKey !== "string") return false;
+  return Boolean(APP_DEFINITIONS.find((app) => app.slug === galleryKey)?.methods
+    .find((method) => method.key === methodKey)?.credentialMinter);
+}
 
 function rejectSensitiveConfigKeys(value: unknown, ctx: z.RefinementCtx, path: Array<string | number> = []) {
   if (!value || typeof value !== "object") return;
@@ -191,7 +199,8 @@ export const createToolConnectionSchema = z.object({
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
   config: toolTransportConfigSchema.optional(),
-  transportConfig: toolTransportConfigSchema.default({}),
+  // No default: when the caller omits it, the service stores `config` here.
+  transportConfig: toolTransportConfigSchema.optional(),
   credentialRefs: z.array(mcpConnectionCredentialRefSchema).optional(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema).default([]),
   enabled: z.boolean().optional(),
@@ -351,7 +360,7 @@ export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCom
  *
  * `auto` is the default and the only value the simple path sends: Paperclip
  * probes the endpoint and branches on what it finds. The rest are the explicit
- * choices behind "Advanced authentication", where the operator already knows.
+ * choices behind the sign-in Change control, where the operator already knows.
  */
 export const GENERIC_MCP_AUTH_MODES = ["auto", "none", "bearer", "custom_headers", "oauth"] as const;
 
@@ -370,6 +379,45 @@ export const genericMcpOAuthClientSchema = z.object({
 }).strict();
 
 export type GenericMcpOAuthClient = z.infer<typeof genericMcpOAuthClientSchema>;
+
+/**
+ * Machine sign-in (MCP OAuth client credentials) for organization-owned
+ * connections. "paperclip_key" means Paperclip holds a signing key and the admin
+ * registers its public half with the provider; "client_secret" stores a secret
+ * the provider issued. Secret values are write-only.
+ */
+export const MACHINE_SIGN_IN_METHODS = ["paperclip_key", "client_secret"] as const;
+export const machineSignInMethodSchema = z.enum(MACHINE_SIGN_IN_METHODS);
+export type MachineSignInMethod = z.infer<typeof machineSignInMethodSchema>;
+
+const machineSignInScopesSchema = z.string().trim().max(2048)
+  .refine((value) => !/[\u0000-\u001f"\\]/.test(value), "Scopes can only contain letters, numbers and punctuation, separated by spaces.");
+
+export const createMachineSignInSchema = z.object({
+  link: z.string().trim().url("Enter the server's full address, starting with https://").max(4096),
+  name: z.string().trim().min(1).max(160).optional(),
+  /** The sign-in service's address, or its token URL. Omitted means "find it from the server". */
+  authorizationServer: z.string().trim().url("Enter the sign-in service's full address, starting with https://").max(4096).optional(),
+  method: machineSignInMethodSchema,
+  clientId: z.string().trim().min(1).max(4096).optional(),
+  clientSecret: z.string().min(1).max(16384).optional(),
+  scopes: machineSignInScopesSchema.optional(),
+  applicationId: z.string().uuid().optional(),
+}).strict();
+export type CreateMachineSignIn = z.infer<typeof createMachineSignInSchema>;
+
+export const testMachineSignInSchema = z.object({
+  clientId: z.string().trim().min(1).max(4096).optional(),
+  clientSecret: z.string().min(1).max(16384).optional(),
+  scopes: machineSignInScopesSchema.optional(),
+}).strict();
+export type TestMachineSignIn = z.infer<typeof testMachineSignInSchema>;
+
+export const rotateMachineSignInSchema = z.discriminatedUnion("method", [
+  z.object({ method: z.literal("paperclip_key") }).strict(),
+  z.object({ method: z.literal("client_secret"), clientSecret: z.string().min(1).max(16384) }).strict(),
+]);
+export type RotateMachineSignIn = z.infer<typeof rotateMachineSignInSchema>;
 
 /**
  * Reject `headers.*` credential paths whose header name Paperclip refuses to
@@ -422,8 +470,10 @@ export const googleWorkspaceServiceSelectionSchema = z.object({
 export const connectToolAppSchema = z.object({
   workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
   agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
-  galleryKey: z.string().trim().min(1).max(120).optional(),
+  galleryKey: z.string().trim().min(1).max(300).optional(),
   connectionMethodKey: z.string().trim().min(1).max(120).optional(),
+  /** Per-connection settings of a plugin-served connector, checked against its `settingsSchema`. */
+  settings: z.record(z.string(), z.unknown()).optional(),
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
@@ -458,8 +508,9 @@ export const connectToolAppSchema = z.object({
   if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectAgentId"], message: "subjectAgentId is required exactly for an agent grant" });
   }
-  if (value.saveDraft && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["saveDraft"], message: "Draft saving requires a remote MCP connector" });
+  if (value.saveDraft && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)
+    && !methodMintsCredentials(value.galleryKey, value.connectionMethodKey)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["saveDraft"], message: "Draft saving requires a remote MCP connector or a method with minted credentials" });
   }
   if (value.authMode && value.galleryKey && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)) {
     ctx.addIssue({

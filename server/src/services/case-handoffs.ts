@@ -1,15 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, caseAccessSources, caseEvents, caseHandoffs, caseIssueLinks, cases, chatConversations, companies, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { handoffCaseSchema, isUuidLike, type DoneCaseHandoffInput, type HandoffCaseInput, type HandoffCaseResult } from "@paperclipai/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { casesDisabledError } from "./cases-disabled.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { withExternalAdmissionGuard, type ExternalAdmissionTransaction } from "../modules/external-agents/index.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { authorizationDeniedDetails, authorizationService, type AuthorizationActor } from "./authorization.js";
 import { assertActorCanReadCase, assertCaseTrustedForExecution, canActorReceiveCase, retainCaseAccessSource } from "./case-access.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -50,7 +52,7 @@ function companyAllowed(actor: AuthorizationActor, companyId: string) {
 }
 
 async function assertEnabled(db: Db) {
-  if (!(await instanceSettingsService(db).getExperimental()).enableCases) throw forbidden("Cases are disabled");
+  if (!(await instanceSettingsService(db).getExperimental()).enableCases) throw casesDisabledError();
 }
 
 function result(row: CaseHandoffRow, issue: Pick<IssueRow, "id" | "identifier">, actor: AuthorizationActor, replayed: boolean): HandoffCaseResult {
@@ -90,7 +92,7 @@ async function authorizeTask(tx: Db, actor: AuthorizationActor, companyId: strin
   const assignment = await authorizationService(tx).decide({ actor, action: "tasks:assign", resource, scope: {
     issueId: issue?.id ?? null, projectId, parentIssueId, assigneeAgentId: toAgentId, assigneeUserId: null,
   } });
-  if (!assignment.allowed) throw forbidden(assignment.explanation);
+  if (!assignment.allowed) throw forbidden(assignment.explanation, authorizationDeniedDetails(assignment));
   if (options.validateRecipient !== false) {
     try {
       await assertAssignableAgent(tx, companyId, toAgentId, { kind: "work" });
@@ -110,10 +112,37 @@ async function authorizeTerminalTask(tx: Db, actor: AuthorizationActor, issue: I
     parentIssueId: issue.parentId, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status };
   if (!(await access.decide({ actor, action: "issue:read", resource })).allowed) throw notFound("Task not found");
   if (actor.type === "agent" && (issue.assigneeAgentId !== actor.agentId || issue.assigneeUserId)) {
-    throw forbidden("Agents may complete only their own case work");
+    const task = issue.identifier ?? issue.id;
+    const [owner] = issue.assigneeAgentId && !issue.assigneeUserId ? await tx.select({ name: agents.name }).from(agents)
+      .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, issue.companyId))).limit(1) : [];
+    throw forbidden(owner
+      ? `Agents may complete only their own case work. ${owner.name} (agent ${issue.assigneeAgentId}) owns primary task ${task} and records the terminal handoff. Ask that agent on ${task} to close the case.`
+      : `Agents may complete only their own case work. Primary task ${task} has no assigned agent to close the case.`,
+    { primaryTaskId: issue.id, assigneeAgentId: issue.assigneeAgentId });
   }
   const mutation = await access.decide({ actor, action: "issue:mutate", resource });
-  if (!mutation.allowed) throw forbidden(mutation.explanation);
+  if (!mutation.allowed) throw forbidden(mutation.explanation, authorizationDeniedDetails(mutation));
+}
+
+const TERMINAL_CASE_STATUSES = new Set(["done", "cancelled"]);
+
+/**
+ * Direct case writes must not close or reopen a case with a primary task past
+ * the authority a terminal handoff requires. Agents need the same ownership of
+ * the primary task, and `done` still goes through the handoff so primary-task
+ * completion passes its normal gates.
+ */
+export async function assertCaseStatusWriteAuthority(tx: Db, actor: AuthorizationActor,
+  current: { companyId: string; status: string; workIssueId: string | null }, nextStatus: string | undefined) {
+  if (actor.type !== "agent" || nextStatus === undefined || nextStatus === current.status || !current.workIssueId) return;
+  if (!TERMINAL_CASE_STATUSES.has(nextStatus) && !TERMINAL_CASE_STATUSES.has(current.status)) return;
+  const [issue] = await tx.select().from(issues)
+    .where(and(eq(issues.id, current.workIssueId), eq(issues.companyId, current.companyId))).limit(1);
+  if (!issue) throw notFound("Task not found");
+  await authorizeTerminalTask(tx, actor, issue);
+  if (nextStatus === "done") {
+    throw unprocessable("Close a case that has a primary task with a terminal handoff to done");
+  }
 }
 
 async function authorizeHandoffControl(tx: Db, actor: AuthorizationActor, row: CaseHandoffRow, issue: IssueRow, validateRecipient = true) {
@@ -405,7 +434,7 @@ export function caseHandoffService(db: Db) {
               type: "issue", companyId, issueId: issue.id, projectId: issue.projectId, parentIssueId: issue.parentId,
               assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status,
             } });
-            if (!mutation.allowed) throw forbidden(mutation.explanation);
+            if (!mutation.allowed) throw forbidden(mutation.explanation, authorizationDeniedDetails(mutation));
           }
         }
         // Lock task before case, matching task mutation admission and dispatch.
@@ -446,6 +475,9 @@ export function caseHandoffService(db: Db) {
         await authorizeTask(tx, actor, companyId, issue, issue?.projectId ?? projectId, input.toAgentId, {
           invalidRecipientAsUnprocessable: true, ...(issue ? {} : { parentIssueId: parent?.id ?? null }),
         });
+        await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
+          operation: "assign", issueId: issue?.id, parentIssueId: parent?.id, targetAgentId: input.toAgentId,
+          texts: [JSON.stringify(input)], lock: true });
         if (caseRow && (await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(eq(caseHandoffs.caseId, caseRow.id), inArray(caseHandoffs.state, PENDING))).limit(1)).length) throw conflict("A handoff is already pending for this case");
         if (issue && (await tx.select({ id: cases.id }).from(cases).where(and(eq(cases.workIssueId, issue.id), caseRow ? sql`${cases.id} <> ${caseRow.id}` : sql`true`)).limit(1)).length) throw conflict("Task is already the primary task of another case");
         const id = randomUUID();
@@ -489,7 +521,7 @@ export function caseHandoffService(db: Db) {
             const saved = await documentService(tx).upsertIssueDocument({ issueId: issue.id, ...initial, format: "markdown",
               baseRevisionId: null, createdByAgentId: actor.type === "agent" ? actor.agentId : null,
               createdByUserId: actor.type === "board" ? actor.userId ?? null : null, createdByRunId: source?.id ?? null,
-              sourceTrust, lockedDocumentStrategy: "conflict" });
+              sourceTrust, lockedDocumentStrategy: "conflict" }, { initialTaskCreation: !targetId });
             publications.push((await persistActivity(tx, { companyId, ...who, agentId: actor.type === "agent" ? actor.agentId : null,
               runId: source?.id ?? null, issueId: issue.id, action: "issue.document_created", entityType: "issue", entityId: issue.id,
               details: { key: saved.document.key, documentId: saved.document.id, title: saved.document.title,

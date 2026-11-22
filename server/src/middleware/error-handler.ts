@@ -8,7 +8,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 import { logger } from "./logger.js";
-import { isSecretSensitiveHttpRequest } from "./http-log-policy.js";
+import {
+  isSecretSensitiveHttpRequest,
+  secretSensitiveRouteFamily,
+} from "./http-log-policy.js";
+import { SecretSensitiveRequestError } from "./secret-sensitive-request-error.js";
 import {
   collectSensitiveStringValues,
   redactSensitiveValueOccurrences,
@@ -17,7 +21,10 @@ import {
   recordResponsibleUserDenialOnActiveRun,
   rememberResponsibleUserDenialForRun,
 } from "../services/responsible-user-denial-run-outcomes.js";
+import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
+import { isOpenRouterCatalogUnavailable } from "../services/openrouter-models.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, readTransientSandboxCreationRefusal } from "../services/environment-provider-unavailable-error.js";
 import { isEndedDbPoolError } from "../database-retry.js";
 import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 
@@ -72,12 +79,13 @@ function attachErrorContext(
 }
 
 function sanitizeSecretSensitiveError(req: Request, error: Error): Error {
-  if (!isSecretSensitiveHttpRequest(req.method, req.originalUrl)) return error;
-  const sanitized = new Error("Secret-sensitive request failed");
-  // Both `name` and `message` are attacker/provider-controlled properties on
-  // JavaScript errors. Do not preserve either on a credential-bearing route.
-  sanitized.name = "Error";
-  return sanitized;
+  const routeFamily = secretSensitiveRouteFamily(req.method, req.originalUrl);
+  if (!routeFamily) return error;
+  return new SecretSensitiveRequestError(error, {
+    routeFamily,
+    method: req.method,
+    routePath: (req.route as { path?: unknown } | undefined)?.path,
+  });
 }
 
 function sanitizeSecretSensitiveResponse(
@@ -224,6 +232,8 @@ function respondToHttpError(
   const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
   const workspaceRepairPreconditionFailure =
     details?.code === "workspace_repair_precondition_failed";
+  // Its code and remediation are already top-level; repeating them only lengthens agent context.
+  const boardAccessDenial = details?.code === "board_access_required";
   const structuredConnectionError = new Set([
     "user_authorization_required",
     "organization_authorization_required",
@@ -261,7 +271,9 @@ function respondToHttpError(
           },
       reportableError,
     );
-    reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err));
+    // An unreachable public provider catalog still answers 503 with its
+    // retry guidance, but it is the provider's outage, not a server fault.
+    reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err) && !isOpenRouterCatalogUnavailable(err));
   }
   const secretSensitiveServerError =
     err.status >= 500 &&
@@ -304,6 +316,7 @@ function respondToHttpError(
             : {}),
           ...(!redactedSkillPolicyDenial &&
           !workspaceRepairPreconditionFailure &&
+          !boardAccessDenial &&
           responseDetailsValue
             ? { details: responseDetailsValue }
             : {}),
@@ -401,6 +414,16 @@ export function errorHandler(
     return;
   }
 
+  // A route that cancels its work when the response closes (for example a
+  // storage read) rejects with AbortError after the client has gone. That
+  // rejection is the cancellation, not a server fault. An AbortError while
+  // the client is still connected is still reported.
+  if (rootError.name === "AbortError" && res.destroyed && !res.writableFinished) {
+    if (!res.headersSent) res.status(499);
+    res.end();
+    return;
+  }
+
   // Shutdown drains the HTTP listener before it ends the pool, but a handler
   // whose client already disconnected (or whose socket the drain timeout
   // closed) keeps running. Its next query then fails with CONNECTION_ENDED
@@ -410,6 +433,30 @@ export function errorHandler(
   if (isDatabaseClosing(req) && isEndedDbPoolError(rootError)) {
     if (!res.headersSent) {
       res.status(503).json({ error: "Server is shutting down" });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  if (isObjectJournalBusyError(rootError)) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "2");
+      res.status(503).json({ error: rootError.message, code: rootError.code });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  // A sandbox provider outage during a sandbox creation that this request
+  // started is not a server fault. The answer is fixed text: provider text and
+  // provisional sandbox names stay out, and cleanup stays with its own record.
+  const providerRefusal = readTransientSandboxCreationRefusal(rootError);
+  if (providerRefusal) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "30");
+      res.status(503).json({ error: providerRefusal.message, code: ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE });
     } else {
       res.end();
     }

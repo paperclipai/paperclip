@@ -15,8 +15,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { museIdentity, museCredentialHash, assertMuseCurrentAuthority, assertMuseSubjectCredential, inspectMuseConnectionCredential, assertMuseCleanupCredential, museCleanupBoundaryIds, assertMuseDisabledStopControlCredential, museStopControlBoundaryIds } from "../../services/muse-identity.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { updateAgentConfigurationInTransaction } from "../../services/agent-configuration-transaction.js";
-import { AgentLifecycleConflict, canConfigureAgentConnection } from "../agent-lifecycle/index.js";
-import { createAgentLifecycle } from "../../services/agent-lifecycle.js";
+import { canConfigureAgentConnection, requestAgentLifecycleRecheckInTransaction } from "../agent-lifecycle/index.js";
 import { authorizationService, issueReadSqlCondition, type AuthorizationActor } from "../../services/authorization.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import { issueService } from "../../services/issues.js";
@@ -133,7 +132,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     await logActivity(tx as unknown as Db,{companyId:b.companyId,actorType,actorId:operatorId,action:"muse.binding_revoked",entityType:"agent",entityId:b.agentId,details:{bindingId:b.id,generation:b.generation,authorizingUserId:b.operatorId,source:reason,externalStopConfirmed:false}});
     return runs;
   }
-  const nativeBroker=createNativeExternalBroker<AgentConnectionSubject>(db,"muse",{enabled:identity.enabled,expectedResource:connectionResource,
+  const nativeBroker=createNativeExternalBroker<AgentConnectionSubject>(db,"muse",{enabled:database=>identity.enabled(database),expectedResource:connectionResource,
     assertSubjectCredential:async(tx,s)=>{await assertMuseSubjectCredential(tx,s,s.credentialSource==="oauth"?connectionResource():undefined);},
     authorize:async(s,id,settled)=>{const {b,a}=await authorizeAssignment(s,id,settled);return {binding:b,assignment:a};}});
   const operation=nativeBroker.operation;
@@ -387,23 +386,17 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
         if(!b.receiverContactAt)throw conflict("No persisted receiver contact yet.");
         const publications: ActivityPublication[] = [];
         await db.transaction(async tx => {
+          // Match reconnect's agent-before-binding lock order. Both readiness
+          // and its durable recheck commit together, before any callback runs.
+          await requestAgentLifecycleRecheckInTransaction(tx,
+            { companyId: b.companyId, agentId: b.agentId },
+            () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle));
+          await assertMuseCurrentAuthority(tx, b, true);
           const [ready]=await tx.update(bindings).set({status:"ready",verifiedReplyAt:new Date(),challengeHash:null,challengeExpiresAt:null,revision:b.revision+1,updatedAt:new Date()}).where(and(eq(bindings.id,b.id),eq(bindings.generation,b.generation),eq(bindings.challengeHash,museCredentialHash(c.nonce)),gt(bindings.challengeExpiresAt,new Date()),isNull(bindings.revokedAt))).returning();
           if(!ready)throw conflict("Challenge expired or does not match.");
           await logActivity(tx as unknown as Db,{companyId:b.companyId,actorType:"agent",actorId:b.agentId,agentId:b.agentId,responsibleUserIdOverride:b.operatorId,action:"muse.background_reply_verified",entityType:"agent",entityId:b.agentId,details:{bindingId:b.id,generation:b.generation,authorizingUserId:b.operatorId,requestId:c.requestId}},publications);
         });
         publications.forEach(publishActivity);
-        // The completed challenge changes this hire's verification facts. Clear
-        // its deferred retry durably; a wake alone cannot bypass that deadline.
-        const lifecycle=createAgentLifecycle(db),agent=await lifecycle.get(b.agentId);
-        if(agent&&["preparing","verifying"].includes(agent.lifecycleState)) {
-          try { await lifecycle.retry(b.agentId); }
-          catch(error) {
-            // A concurrent lifecycle completion or Stop owns the newer phase.
-            // Confirmation remains accepted; it must not restart that phase.
-            const current=error instanceof AgentLifecycleConflict?await lifecycle.get(b.agentId):null;
-            if(!current||["preparing","verifying"].includes(current.lifecycleState))throw error;
-          }
-        }
         return {status:"ready",bindingId:b.id,generation:b.generation};
       }
       if(c.command==="task.create"||c.command==="task.comment")return idleMutation(s,c);

@@ -67,7 +67,7 @@ describe("onboarding approval history journey", () => {
       `onboarding-approval-history.runner-acpx-claude.local.${APPROVAL_HISTORY_CASE}`]);
     expect(cells.every(cell => cell.task.automaticRetryPolicy === "single_attempt" && cell.task.expectedRunCount === 7)).toBe(true);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(cell => cell.suite.id === APPROVAL_HISTORY_SUITE)).toBe(false);
-    expect(runnerMatrix.filter(cell => cell.suite.id === "first-task")).toHaveLength(52);
+    expect(runnerMatrix.filter(cell => cell.suite.id === "first-task")).toHaveLength(56);
   });
 
   it("accepts the complete interview, partial plan approval, hiring, execution, and reload recording", () => {

@@ -13,7 +13,6 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { issueService } from "./issues.js";
 import { reserveRemoteWorkspace } from "./remote-workspaces.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -62,8 +61,9 @@ describe.skipIf(!support.supported)("remote workspace reservation authority", ()
       metadata: { remoteWorkspace: authority } }).returning();
     await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode } }).where(eq(issues.id, parent.id));
-    const child = await issueService(db).create(company.id, { parentId: parent.id, title: "Continue the saved work", assigneeAgentId: agent.id });
-    expect(child.executionWorkspaceId).toBe(workspace.id);
+    // New children never share a parent's workspace. This is the shape an older
+    // release wrote, which the reservation authority must still handle safely.
+    const child = await insertBoundChild(company.id, parent, workspace.id, mode, "Continue the saved work", agent.id);
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
       issueId: child.id, status: "running", runtimeMode: "legacy" }).returning();
     const storage = { ...createStorageService(createLocalDiskStorageProvider(join(home, company.id))), provider: "s3" as const };
@@ -72,6 +72,14 @@ describe.skipIf(!support.supported)("remote workspace reservation authority", ()
       existingWorkspaceId: workspace.id, source: authority.source };
     const [boundWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
     return { input, parent, child, workspace: boundWorkspace!, authority, run, agent, company };
+  }
+  async function insertBoundChild(companyId: string, parent: typeof issues.$inferSelect, workspaceId: string,
+    mode: string, title: string, assigneeAgentId: string) {
+    const [child] = await db.insert(issues).values({ companyId, parentId: parent.id, projectId: parent.projectId,
+      projectWorkspaceId: parent.projectWorkspaceId, title, status: "todo", assigneeAgentId,
+      executionWorkspaceId: workspaceId, executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode } }).returning();
+    return child!;
   }
   const current = async (id: string) => (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!;
 
@@ -180,8 +188,8 @@ describe.skipIf(!support.supported)("remote workspace reservation authority", ()
 
   it("grants only one writer when two bound children reserve concurrently", async () => {
     const f = await fixture();
-    const sibling = await issueService(db).create(f.company.id, { parentId: f.parent.id,
-      title: "Another child", assigneeAgentId: f.agent.id });
+    const sibling = await insertBoundChild(f.company.id, f.parent, f.workspace.id, "isolated_workspace",
+      "Another child", f.agent.id);
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
       issueId: sibling.id, status: "running" }).returning();
     const inputs = [f.input, { ...f.input, issueId: sibling.id, runId: run.id }];

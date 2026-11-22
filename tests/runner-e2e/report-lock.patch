@@ -1,24 +1,12 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index f586e6f..ad6952c 100644
+index ced60385..b925688a 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -1216,6 +1216,9 @@ importers:
-       '@dnd-kit/utilities':
-         specifier: ^3.2.2
-         version: 3.2.2(react@19.2.8)
-+      '@lexical/clipboard':
-+        specifier: 0.48.0
-+        version: 0.48.0(typescript@7.0.2)
-       '@lexical/link':
-         specifier: 0.48.0
-         version: 0.48.0(typescript@7.0.2)
-@@ -1343,6 +1346,9 @@ importers:
-         specifier: 13.6.32
-         version: 13.6.32
-     devDependencies:
-+      '@lexical/rich-text':
-+        specifier: 0.48.0
-+        version: 0.48.0(typescript@7.0.2)
-       '@paperclipai/plugin-sdk':
-         specifier: workspace:*
-         version: link:../packages/plugins/sdk
+@@ -5145,6 +5145,7 @@ packages:
+   '@sapphire/shapeshift@4.0.0':
+     resolution: {integrity: sha512-d9dUmWVA7MMiKobL3VpLF8P2aeanRTu6ypG2OIaEv/ZHH/SUQ2iHOVyi5wAPjQ+HmnMuL0whK9ez8I/raWbtIg==}
+     engines: {node: '>=v16'}
++    deprecated: Shapeshift was created when other validation libraries had significant limitations in performance and error reporting. Those advantages have diminished as libraries such as Zod have become faster and improved their error messages, while also gaining broader environment support, a larger community, and custom error printers.
+ 
+   '@sapphire/snowflake@3.5.5':
+     resolution: {integrity: sha512-xzvBr1Q1c4lCe7i6sRnrofxeO1QTP/LKQ6A6qy0iB4x5yfiSfARMEQEghojzTNALDTcv8En04qYNIco9/K9eZQ==}

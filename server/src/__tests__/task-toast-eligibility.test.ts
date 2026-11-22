@@ -73,6 +73,8 @@ describe.skipIf(!support.supported)("personal task toast eligibility (persisted 
       await db.insert(activityLog).values({ companyId, entityType: "issue", entityId: id, actorType: "user", actorId: "alice",
         action, details: { source: "source_revalidation", trigger: "read_projection" } });
     }
+    await db.insert(activityLog).values({ companyId, entityType: "issue", entityId: id, actorType: "user", actorId: "alice",
+      action: "issue.updated", details: { source: "needs_you_responsibility_repair" } });
     expect(await taskToastEligible(db, event(id), "alice")).toBe(false);
     await db.insert(activityLog).values({ companyId, entityType: "issue", entityId: id, actorType: "user", actorId: "alice", action: "issue.updated" });
     await onlyAlice(id);

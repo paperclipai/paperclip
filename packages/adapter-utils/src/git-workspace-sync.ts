@@ -24,6 +24,7 @@ export interface GitWorkspaceSnapshot {
 }
 
 export const PROJECT_REPOSITORIES_DIR = ".paperclip-repositories";
+export const PROJECT_REPOSITORY_STAGING_PATTERN = /^[a-zA-Z0-9_-]+\.clone-[a-zA-Z0-9_-]+$/;
 
 export interface ExpensiveWorkspaceGitInput {
   localDir: string;
@@ -175,6 +176,15 @@ export function workspaceSnapshotTimeoutMs(): number {
   return Number.isFinite(configured) && configured >= 1000 ? Math.min(configured, 86_400_000) : 30 * 60_000;
 }
 
+export async function listProjectRepositoryStagingPaths(localDir: string): Promise<string[]> {
+  const entries = await fs.readdir(path.join(localDir, PROJECT_REPOSITORIES_DIR), { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return [];
+    throw error;
+  });
+  return entries.filter((entry) => entry.isDirectory() && PROJECT_REPOSITORY_STAGING_PATTERN.test(entry.name))
+    .map((entry) => `${PROJECT_REPOSITORIES_DIR}/${entry.name}`).sort();
+}
+
 export async function readManagedWorkspaceRepositories(localDir: string, options: { signal?: AbortSignal } = {}): Promise<NonNullable<GitWorkspaceSnapshot["repositories"]>> {
   const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
   try {
@@ -187,6 +197,7 @@ export async function readManagedWorkspaceRepositories(localDir: string, options
       if (rootStat) {
         if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
         for await (const entry of await fs.opendir(root)) {
+          if (entry.isDirectory() && PROJECT_REPOSITORY_STAGING_PATTERN.test(entry.name)) continue;
           if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
           const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
           const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false, options);

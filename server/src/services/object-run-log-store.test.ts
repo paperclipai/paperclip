@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
+import { S3_CLIENT_MAX_SOCKETS } from "../storage/s3-client-limits.js";
+import { OBJECT_JOURNAL_IO_CEILING, OBJECT_JOURNAL_READ_IO_RESERVE, OBJECT_JOURNAL_UPLOAD_SLOTS, ObjectJournalBusyError,
+  objectJournalIOSlots, objectJournalUploadActivity, objectJournalUploadSlots } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 
 async function readBody(body: AsyncIterable<Uint8Array>) {
@@ -63,6 +66,18 @@ const event = (seq: number) => ({
 });
 
 describe("S3 run log store", () => {
+  it("removes every object of a finalized log and stays removable", async () => {
+    const m = memory(), store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs",
+      assertWriterAuthority: async () => undefined });
+    const handle = await store.begin(input);
+    await store.append(handle, { ...event(1), chunk: "tool result content" });
+    await store.finalize(handle);
+    expect([...m.objects.keys()].some((key) => key.includes(handle.logRef))).toBe(true);
+    await store.remove!(handle);
+    await store.remove!(handle);
+    expect([...m.objects.keys()].filter((key) => key.includes(handle.logRef) && !key.endsWith("/head.json"))).toEqual([]);
+    await expect(store.read(handle)).rejects.toThrow("Run log not found");
+  });
   it("awaits a successor flush started by another drain waiter before finalizing", async () => {
     const m = memory(), store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", flushMs: 1000,
       segmentBytes: 1024, assertWriterAuthority: async () => undefined });
@@ -115,6 +130,22 @@ describe("S3 run log store", () => {
     const content = (await store.read(handle)).content;
     expect(content.trim().split("\n")).toHaveLength(1);
     expect((await store.finalize(handle)).bytes).toBe(Buffer.byteLength(content));
+  });
+
+  it("begins a new run log with one head read and no source proof read", async () => {
+    const m = memory(), options = { provider: m.provider, keyPrefix: "logs", flushMs: 1,
+      assertWriterAuthority: async () => undefined };
+    const get = m.provider.getObject.bind(m.provider), reads: string[] = [];
+    m.provider.getObject = async value => { reads.push(value.objectKey); return get(value); };
+    const headReads = () => reads.filter(key => key.endsWith("/head.json")).length;
+    const proofReads = () => reads.filter(key => key.includes("/objects/source-prefix-proof-v1-")).length;
+    const handle = await createObjectRunLogStore(options).begin(input);
+    expect(handle.initialSourcePrefixVerified).toBe(false);
+    expect({ head: headReads(), proof: proofReads() }).toEqual({ head: 1, proof: 0 });
+    reads.length = 0;
+    const resumed = await createObjectRunLogStore(options).begin(input);
+    expect(resumed.initialSourcePrefixVerified).toBe(false);
+    expect({ head: headReads(), proof: proofReads() }).toEqual({ head: 1, proof: 1 });
   });
 
   it("keeps live byte appends deliverable after a proof-only outage and requires cold prefix verification", async () => {
@@ -272,6 +303,40 @@ describe("S3 run log store", () => {
       .rejects.toThrow("object_journal_source_prefix_proof_invalid");
   });
 
+  it("resumes a run log through the prefix read and proof while the store still hides the head it just published", async () => {
+    const m = memory(),
+      options = { provider: m.provider, keyPrefix: "logs", flushMs: 10, assertWriterAuthority: async () => undefined };
+    const lagged = { ...input, runId: "lagged-run" };
+    const a = createObjectRunLogStore(options),
+      handle = await a.begin(lagged);
+    await Promise.all([1, 2, 3].map((seq) => a.append(handle, event(seq))));
+    const b = createObjectRunLogStore(options),
+      successor = await b.begin(lagged);
+    const original = m.provider.getObject;
+    let hiddenHeadReads = 0;
+    m.provider.getObject = async (i) => {
+      if (i.objectKey === "logs/segments-v1/company/agent/lagged-run/head.json") {
+        hiddenHeadReads++;
+        throw Object.assign(Error("not yet visible"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      }
+      return original(i);
+    };
+    const read = await b.read(successor, { limitBytes: successor.initialBytes });
+    expect(read.content.trim().split("\n").map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3]);
+    await b.recordVerifiedSourcePrefix!(successor, 0);
+    expect(successor.initialSourcePrefixVerified).toBe(false);
+    expect(hiddenHeadReads).toBeGreaterThanOrEqual(2);
+    m.provider.getObject = original;
+    await b.append(successor, event(4));
+    const resumed = await b.read(successor);
+    expect(resumed.content.trim().split("\n").map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3, 4]);
+  });
+  it("fails a read of a run log that was never written", async () => {
+    const m = memory(),
+      store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", assertWriterAuthority: async () => undefined });
+    await expect(store.read({ store: "s3_segments", logRef: "company/agent/never-written", attemptId: "attempt" }))
+      .rejects.toMatchObject({ status: 404, message: "Run log not found" });
+  });
   it("batches concurrent appends, confirms durability, and resumes offsets/sequence on a replacement", async () => {
     const m = memory(),
       options = {
@@ -481,5 +546,140 @@ describe("S3 run log store", () => {
     await Promise.all([first.committed, second]);
     await store.append(h, event(3));
     expect((await store.finalize(h)).bytes).toBeGreaterThan(9 * 1024 * 1024);
+  });
+  it("bounds ordinary reads while explicit internal reads keep queuing", async () => {
+    const m = memory(),
+      store = createObjectRunLogStore({
+        provider: m.provider,
+        keyPrefix: "logs",
+        assertWriterAuthority: async () => undefined,
+      });
+    const handle = await store.begin(input);
+    await store.append(handle, event(1));
+    await store.finalize(handle);
+    const get = m.provider.getObject;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    m.provider.getObject = async (i) => {
+      await gate;
+      return get(i);
+    };
+    const polls = Array.from({ length: 40 }, () => store.read(handle));
+    const excess = store.read(handle);
+    let rejected: unknown;
+    void excess.catch((error) => { rejected = error; });
+    let internal: ReturnType<typeof store.read> | undefined;
+    try {
+      await vi.waitFor(() => expect(rejected).toBeInstanceOf(ObjectJournalBusyError));
+      internal = store.read(handle, { priority: "background" });
+      open();
+      for (const poll of await Promise.allSettled(polls))
+        if (poll.status === "rejected") expect(poll.reason).toBeInstanceOf(ObjectJournalBusyError);
+      expect((await internal).content.trim().split("\n")).toHaveLength(1);
+    } finally {
+      open();
+      await Promise.allSettled([...polls, excess, ...(internal ? [internal] : [])]);
+    }
+  });
+
+  it("keeps the object storage sockets the journal may use within the storage client's budget", () => {
+    expect(OBJECT_JOURNAL_UPLOAD_SLOTS.ceiling + OBJECT_JOURNAL_READ_IO_RESERVE).toBeLessThanOrEqual(OBJECT_JOURNAL_IO_CEILING);
+    expect(OBJECT_JOURNAL_IO_CEILING).toBeLessThanOrEqual(S3_CLIENT_MAX_SOCKETS / 2);
+  });
+
+  async function uploadsInFlightWithOpenRuns(runs: number) {
+    const m = memory(),
+      store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", flushMs: 30_000,
+        assertWriterAuthority: async () => undefined });
+    const slotsBefore = objectJournalUploadSlots();
+    const handles = [];
+    for (let run = 0; run < runs; run++) handles.push(await store.begin({ ...input, runId: `run-${run}` }));
+    const put = m.provider.putObjectConditional!.bind(m.provider);
+    let open!: () => void;
+    const gate = new Promise<void>(resolve => { open = resolve; });
+    let inFlight = 0, peak = 0;
+    m.provider.putObjectConditional = async value => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      try {
+        await gate;
+        return await put(value);
+      } finally {
+        inFlight--;
+      }
+    };
+    const appended = await Promise.all(handles.map(handle => store.enqueue!(handle, event(1))));
+    const flushes = handles.map(handle => store.flush!(handle));
+    await vi.waitFor(() => expect(inFlight).toBe(Math.min(runs, objectJournalUploadSlots())));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const waiting = { slotsBefore, slots: objectJournalUploadSlots(), ioSlots: objectJournalIOSlots() };
+    open();
+    await Promise.all(flushes);
+    await Promise.all(appended.map(entry => entry.committed));
+    await Promise.all(handles.map(handle => store.finalize(handle, { computeDigest: false })));
+    return { ...waiting, peak, slotsAfterFinalize: objectJournalUploadSlots() };
+  }
+
+  it("gives a log upload slot to each ten open runs, so 200 runs upload at least twenty logs at once", async () => {
+    const result = await uploadsInFlightWithOpenRuns(200);
+    expect(result.slotsBefore).toBe(OBJECT_JOURNAL_UPLOAD_SLOTS.floor);
+    expect(result.peak).toBeGreaterThanOrEqual(20);
+    expect(result.peak).toBeLessThanOrEqual(result.ioSlots);
+  });
+
+  it("caps log uploads at the storage budget with 1,000 open runs and finishes every run's upload", async () => {
+    const result = await uploadsInFlightWithOpenRuns(1_000);
+    expect(result.slots).toBe(OBJECT_JOURNAL_UPLOAD_SLOTS.ceiling);
+    expect(result.peak).toBeLessThanOrEqual(result.ioSlots);
+    expect(result.ioSlots).toBeLessThanOrEqual(S3_CLIENT_MAX_SOCKETS / 2);
+    expect(result.slotsAfterFinalize).toBeLessThan(result.slots);
+  });
+
+  it("starts waiting uploads when runs open and starts no new upload after runs close until the count is under the limit", async () => {
+    const options = { keyPrefix: "logs", flushMs: 30_000, assertWriterAuthority: async () => undefined };
+    const busy = memory(), idle = memory();
+    const busyStore = createObjectRunLogStore({ ...options, provider: busy.provider });
+    const idleStore = createObjectRunLogStore({ ...options, provider: idle.provider });
+    const busyHandles = [];
+    for (let run = 0; run < 40; run++) busyHandles.push(await busyStore.begin({ ...input, runId: `busy-${run}` }));
+    const slotsBefore = objectJournalUploadSlots();
+    const put = busy.provider.putObjectConditional!.bind(busy.provider);
+    const held: Array<() => void> = [];
+    busy.provider.putObjectConditional = async value => {
+      await new Promise<void>(resolve => held.push(resolve));
+      return put(value);
+    };
+    const appended = await Promise.all(busyHandles.map(handle => busyStore.enqueue!(handle, event(1))));
+    const flushes = busyHandles.map(handle => busyStore.flush!(handle));
+    await vi.waitFor(() => expect(objectJournalUploadActivity().active).toBe(slotsBefore));
+    expect(objectJournalUploadActivity().waiting).toBe(40 - slotsBefore);
+
+    const idleHandles = [];
+    for (let run = 0; run < 160; run++) idleHandles.push(await idleStore.begin({ ...input, runId: `idle-${run}` }));
+    const grown = objectJournalUploadSlots();
+    expect(grown).toBeGreaterThanOrEqual(slotsBefore + 16);
+    expect(objectJournalUploadActivity().active).toBe(grown);
+    await vi.waitFor(() => expect(held).toHaveLength(grown));
+
+    const closing = Promise.all(idleHandles.map(handle => idleStore.finalize(handle, { computeDigest: false })));
+    let previous = grown, shrankWhileBusy = false;
+    while (held.length || objectJournalUploadActivity().waiting || objectJournalUploadSlots() > slotsBefore) {
+      held.shift()?.();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const { active } = objectJournalUploadActivity(), limit = objectJournalUploadSlots();
+      expect(active).toBeLessThanOrEqual(Math.max(previous, limit));
+      if (active > limit && limit === slotsBefore) shrankWhileBusy = true;
+      previous = active;
+    }
+    await closing;
+    busy.provider.putObjectConditional = put;
+    await Promise.all(flushes);
+    await Promise.all(appended.map(entry => entry.committed));
+    await Promise.all(busyHandles.map(handle => busyStore.finalize(handle, { computeDigest: false })));
+    expect(shrankWhileBusy).toBe(true);
+    expect(objectJournalUploadActivity()).toEqual({ active: 0, waiting: 0 });
   });
 });

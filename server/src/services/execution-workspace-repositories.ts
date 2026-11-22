@@ -1,5 +1,5 @@
 import { measureRunTransaction } from "./execution-transaction-timing.js";
-import { prepareRemoteWorkspaceRepository, readRemoteWorkspaceAuthority } from "./remote-workspaces.js";
+import { prepareRemoteWorkspaceRepository, saveRemoteWorkspace, readRemoteWorkspaceAuthority } from "./remote-workspaces.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { beginRunPhase, measureRunPhase } from "./execution-preparation-timing.js";
@@ -113,9 +113,9 @@ export function assertRepositoryRetryMatches(row: Pick<RepositoryRow, "repositor
 }
 
 export function executionWorkspaceRepositoryService(db: Db) {
-  async function catalog(companyId: string, userId: string | null, localTrusted: boolean) {
+  async function catalog(companyId: string, userId: string | null, localTrusted: boolean, requiredRepositoryIds: string[] = []) {
     return measureRunPhase("workspace.repository.catalog", async () =>
-      (await toolAccessService(db).listProjectRepositories(companyId, userId, localTrusted)).repositories);
+      (await toolAccessService(db).listProjectRepositories(companyId, userId, localTrusted, { requiredRepositoryIds })).repositories);
   }
   async function requiresAnonymousAcquisition(reader: Db | DbTransaction, input: {
     issue: typeof issues.$inferSelect; workspace: Pick<typeof executionWorkspaces.$inferSelect, "projectId"> | null;
@@ -207,6 +207,54 @@ export function executionWorkspaceRepositoryService(db: Db) {
       return row;
     });
     return { kind: "requires_next_admission" as const, applies: "next_normal_admission" as const, operationId: receipt.id, repository: receipt, reason: "immutable_admitted_workspace" };
+  }
+  /**
+   * A task in a project without a project workspace gets its repositories by
+   * acquisition into its own task files. A subtask's new workspace repeats its
+   * parent's (or requester's) repository requests as its own pending requests,
+   * so admission clones a fresh copy at the requested ref through the normal
+   * acquisition path, with the subtask's own access checks. Nothing is copied
+   * from the parent's checkout: no pinned commit, branch, or files.
+   */
+  async function inheritSelections(input: { companyId: string; issueId: string; workspaceId: string }) {
+    return db.transaction(async tx => {
+      const [workspace] = await tx.select({ id: executionWorkspaces.id, sourceIssueId: executionWorkspaces.sourceIssueId })
+        .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.workspaceId),
+          eq(executionWorkspaces.companyId, input.companyId))).for("update");
+      if (!workspace || workspace.sourceIssueId !== input.issueId) return 0;
+      const [existing] = await tx.select({ id: executionWorkspaceRepositories.id }).from(executionWorkspaceRepositories)
+        .where(and(eq(executionWorkspaceRepositories.companyId, input.companyId),
+          eq(executionWorkspaceRepositories.executionWorkspaceId, input.workspaceId))).limit(1);
+      if (existing) return 0;
+      const [task] = await tx.select({ parentId: issues.parentId, privacyParentIssueId: issues.privacyParentIssueId,
+        projectId: issues.projectId })
+        .from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
+      const sourceIssueId = task?.privacyParentIssueId ?? task?.parentId;
+      if (!sourceIssueId) return 0;
+      const [source] = await tx.select({ executionWorkspaceId: issues.executionWorkspaceId, projectId: issues.projectId })
+        .from(issues).where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, input.companyId)));
+      if (!source?.executionWorkspaceId || source.executionWorkspaceId === input.workspaceId) return 0;
+      // Repositories belong to the source's project. A task in another project
+      // takes its own project's defaults instead, like a top-level task there.
+      if (task?.projectId !== source.projectId) return 0;
+      const requested = await tx.select().from(executionWorkspaceRepositories).where(and(
+        eq(executionWorkspaceRepositories.companyId, input.companyId),
+        eq(executionWorkspaceRepositories.executionWorkspaceId, source.executionWorkspaceId)));
+      if (!requested.length) return 0;
+      const rows = await tx.insert(executionWorkspaceRepositories).values(requested.map(row => {
+        const requestKey = `inherited:${row.id}`;
+        return { companyId: input.companyId, executionWorkspaceId: input.workspaceId, requestedByIssueId: input.issueId,
+          repositoryIdentity: row.repositoryIdentity, catalogRepositoryId: row.catalogRepositoryId, repoUrl: row.repoUrl,
+          relativePath: row.relativePath, requestedRef: row.requestedRef, requestKey, requestKeys: [requestKey] };
+      })).onConflictDoNothing().returning({ id: executionWorkspaceRepositories.id });
+      if (rows.length) {
+        await tx.insert(activityLog).values({ companyId: input.companyId, actorType: "system", actorId: "workspace-preparation",
+          action: "workspace.repository.requested", entityType: "execution_workspace", entityId: input.workspaceId,
+          details: { issueId: input.issueId, inheritedFromIssueId: sourceIssueId, repositoryIds: rows.map(row => row.id),
+            applies: "current_admission" } });
+      }
+      return rows.length;
+    });
   }
   async function list(companyId: string, workspaceId: string) {
     return measureRunPhase("workspace.repository.receipts", () => db.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.companyId, companyId), eq(executionWorkspaceRepositories.executionWorkspaceId, workspaceId))));
@@ -352,8 +400,10 @@ export function executionWorkspaceRepositoryService(db: Db) {
     return candidatePin;
   }
   async function prepareForAdmission(input: { companyId: string; issueId: string; workspaceId: string; cwd: string; agentId: string; runId: string; responsibleUserId: string | null;
-    remoteTarget?: AdapterExecutionTarget | null; remoteLease?: EnvironmentLease; assertOwned?: () => Promise<void> }) {
+    remoteTarget?: AdapterExecutionTarget | null; remoteLease?: EnvironmentLease; assertOwned?: () => Promise<void>;
+    inheritRepositorySelections?: boolean }) {
     const { acquisitionRestricted, workspace } = await publicationBinding(db, input, false);
+    if (input.inheritRepositorySelections) await inheritSelections(input);
     const rows = await list(input.companyId, input.workspaceId);
     if (!rows.length) return [];
     await publicationBinding(db, input);
@@ -362,10 +412,13 @@ export function executionWorkspaceRepositoryService(db: Db) {
     }
     if (readRemoteWorkspaceAuthority(workspace.metadata)) {
       if (!input.remoteTarget || !input.remoteLease) throw conflict("Remote repository preparation requires its bound sandbox");
-      const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+      const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board",
+        rows.flatMap(row => row.catalogRepositoryId ? [row.catalogRepositoryId] : []));
       const resolveAuth = createGitRemoteAuthProvider(db, input.companyId, { issueId: input.issueId, heartbeatRunId: input.runId,
         agentId: input.agentId, responsibleUserId: input.responsibleUserId });
       const prepared: Array<{ id: string; cwd: string; repoUrl: string; relativePath: string; pinnedCommit: string; branchName: string | null }> = [];
+      let requiresSave = false;
+      const verifications: Array<() => Promise<void>> = [];
       for (const row of rows) {
         assertAcquisitionReceipt(row, acquisitionRestricted);
         const source = resolveAcquisitionSource(row.catalogRepositoryId ? { kind: "catalog", id: row.catalogRepositoryId }
@@ -378,7 +431,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
           await publicationBinding(db, input);
           if (!acquisitionRestricted) await assertCurrentControllerAcquisition(input);
           if (source.catalogRepositoryId) {
-            const current = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+            const current = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board", [source.catalogRepositoryId]);
             const authorized = resolveAcquisitionSource({ kind: "catalog", id: source.catalogRepositoryId }, current, false);
             if (authorized.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository catalog authorization changed");
           }
@@ -392,13 +445,12 @@ export function executionWorkspaceRepositoryService(db: Db) {
             repository: { id: row.id, relativePath: row.relativePath, repoUrl: row.repoUrl,
               ref: row.requestedRef === "HEAD" ? null : row.requestedRef,
               ...(row.pinnedCommit ? { pinnedCommit: row.pinnedCommit } : {}) },
-            assertOwned: verify, verifyOnly: acquisitionRestricted,
+            assertOwned: verify, verifyOnly: acquisitionRestricted, deferSave: true,
             resolveGitAuth: source.catalogRepositoryId ? resolveAuth : async () => anonymous,
           });
           await verify();
-          await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: result.pinnedCommit,
-            branchName: result.branchName, failureCode: null, updatedAt: new Date() })
-            .where(and(eq(executionWorkspaceRepositories.id, row.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
+          requiresSave ||= result.requiresSave;
+          verifications.push(verify);
           prepared.push({ ...result, id: row.id, repoUrl: row.repoUrl, relativePath: row.relativePath });
         } catch (error) {
           await db.update(executionWorkspaceRepositories).set({ state: "needs_repair", failureCode: "repository_preparation_failed", updatedAt: new Date() })
@@ -406,10 +458,31 @@ export function executionWorkspaceRepositoryService(db: Db) {
           throw error;
         }
       }
+      for (const verify of verifications) await verify();
+      if (requiresSave) {
+        try {
+          await saveRemoteWorkspace({ db, workspace, runId: input.runId, lease: input.remoteLease,
+            target: input.remoteTarget, boundary: `repositories:${prepared.map(row => `${row.id}:${row.pinnedCommit}`).sort().join(",")}`,
+            repositories: prepared.map(row => ({ id: row.id, relativePath: row.relativePath, repoUrl: row.repoUrl,
+              ref: rows.find(source => source.id === row.id)!.requestedRef, pinnedCommit: row.pinnedCommit })),
+            assertOwned: async () => { for (const verify of verifications) await verify(); } });
+        } catch (error) {
+          for (const result of prepared) await db.update(executionWorkspaceRepositories)
+            .set({ state: "needs_repair", failureCode: "repository_preparation_failed", updatedAt: new Date() })
+            .where(and(eq(executionWorkspaceRepositories.id, result.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
+          throw error;
+        }
+      }
+      for (const result of prepared) {
+        await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: result.pinnedCommit,
+          branchName: result.branchName, failureCode: null, updatedAt: new Date() })
+          .where(and(eq(executionWorkspaceRepositories.id, result.id), eq(executionWorkspaceRepositories.companyId, input.companyId)));
+      }
       return prepared;
     }
     const root = await measureRunPhase("workspace.repository.paths", () => fs.realpath(input.cwd));
-    const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+    const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board",
+      rows.flatMap(row => row.catalogRepositoryId ? [row.catalogRepositoryId] : []));
     const resolveAuth = createGitRemoteAuthProvider(db, input.companyId, { issueId: input.issueId, heartbeatRunId: input.runId, agentId: input.agentId, responsibleUserId: input.responsibleUserId });
     const sources = rows.map(row => {
       assertAcquisitionReceipt(row, acquisitionRestricted);
@@ -514,7 +587,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
                 await assertCurrentControllerAcquisition(input);
                 await assertPublicationAllowed(input);
                 if (source.catalogRepositoryId) {
-                  const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+                  const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board", [source.catalogRepositoryId]);
                   const currentSource = resolveAcquisitionSource({ kind: "catalog", id: source.catalogRepositoryId }, currentCatalog, false);
                   if (currentSource.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository preparation receipt does not match its source");
                 }
@@ -537,7 +610,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
           if (!acquisitionRestricted) {
             await assertCurrentControllerAcquisition(input);
             if (source.catalogRepositoryId) {
-              const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+              const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board", [source.catalogRepositoryId]);
               const currentSource = resolveAcquisitionSource({ kind: "catalog", id: source.catalogRepositoryId }, currentCatalog, false);
               if (currentSource.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository preparation receipt does not match its source");
             }

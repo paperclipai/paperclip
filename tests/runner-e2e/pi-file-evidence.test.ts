@@ -18,7 +18,7 @@ function fixture() {
   const tool = (seq: number, executionId: string, name: string, operation: string,
     phase: "start" | "progress" | "end", target: string | null, text = "", rawOutput: unknown = undefined) => {
     // Sanitized shape of the retained Pi stream: missing opening location,
-    // later resolved edit arguments, and stable bash name with command progress.
+    // later resolved edit arguments, and a bash opening name refined to the command.
     // This exercises TS normalization/projection, not the Rust implementation.
     const event = normalize({ type: "tool_call", toolCallId: executionId,
       tag: phase === "start" ? "tool_call" : "tool_call_update", title: name, kind: operation,
@@ -83,7 +83,9 @@ describe("Pi edit, validation and public artifact oracle", () => {
     expect(result.verification).toMatchObject({ commandEvidence: "correlated_native_progress",
       exitEvidence: "native_structured_output_receipt", nativeStructuredExitCode: 0, typedExitCode: null });
     expect(fixture().events.map(e => e.payload.prpEvent.payload.target)).toEqual([null, "extended-fixture.txt", "extended-fixture.txt", null, null, null]);
-    expect(fixture().events.slice(3).every(e => e.payload.prpEvent.payload.name === "bash")).toBe(true);
+    // The runner keeps the latest concrete ACP title (#19265): bash, then the exact command.
+    expect(fixture().events.slice(3).map(e => e.payload.prpEvent.payload.name)).toEqual(["bash",
+      piFileContract("fixture").validationCommand, piFileContract("fixture").validationCommand]);
     expect(result.verification.nativeFileAttribution).toBe("workspace_relative_display_target");
   });
   it.each(["before", "after"])("rejects an extra metadata bash call %s validation despite correct file and download bytes", placement => {
@@ -91,6 +93,8 @@ describe("Pi edit, validation and public artifact oracle", () => {
     const metadata = structuredClone(f.events.slice(3));
     for (const row of metadata) row.payload.prpEvent.payload.executionId = "metadata";
     metadata[1]!.payload.prpEvent.payload.progress = "wc -c extended-fixture.txt (in_progress): wc -c extended-fixture.txt";
+    // A refined title names the extra call by its own command; it still counts.
+    metadata[1]!.payload.prpEvent.payload.name = metadata[2]!.payload.prpEvent.payload.name = "wc -c extended-fixture.txt";
     metadata[2]!.payload.prpEvent.payload.output = JSON.stringify({
       content: [{ type: "text", text: "17 extended-fixture.txt\n" }],
       structuredContent: { output: "17 extended-fixture.txt\n", truncated: false, exit_code: 0 },
@@ -110,6 +114,8 @@ describe("Pi edit, validation and public artifact oracle", () => {
     ["missing edit", f => { f.events = f.events.slice(3); }],
     ["missing validation", f => { f.events = f.events.slice(0, 3); }],
     ["echo-only validation", f => { f.events[3]!.payload.prpEvent.payload.name = `echo ${piFileContract("fixture").validationMarker}`; f.events[5]!.payload.prpEvent.payload.name = f.events[3]!.payload.prpEvent.payload.name; }],
+    ["validation name regresses to bash", f => { f.events[5]!.payload.prpEvent.payload.name = "bash"; }],
+    ["validation renamed to another command", f => { f.events[4]!.payload.prpEvent.payload.name = f.events[5]!.payload.prpEvent.payload.name = "node -e 'console.log(1)'"; }],
     ["failed validation", f => { f.events[5]!.payload.prpEvent.payload.status = "failed"; }],
     ["unfinished validation", f => { f.events.pop(); }],
     ["unrelated validation turn", f => { f.events[3]!.payload.prpEvent.turnId = "other"; f.events[5]!.payload.prpEvent.turnId = "other"; }],

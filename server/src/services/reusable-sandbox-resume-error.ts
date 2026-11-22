@@ -3,8 +3,9 @@ import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 
 /**
  * Setup failure code for a preserved reusable sandbox that could not be
- * resumed before provider work began. The failure is retried with the bounded
- * bootstrap budget; it never authorizes a replacement sandbox.
+ * resumed before provider work began, where replacing it was not safe (see
+ * `reusable-sandbox-resume-replacement.ts`). The failure is retried with the
+ * bounded bootstrap budget; it never authorizes a replacement sandbox.
  */
 export const REUSABLE_SANDBOX_RESUME_FAILED_CODE = "reusable_sandbox_resume_failed";
 
@@ -13,6 +14,11 @@ export class ReusableSandboxResumeError extends Error {
   readonly code = REUSABLE_SANDBOX_RESUME_FAILED_CODE;
   readonly provider: string;
   readonly providerLeaseId: string;
+  /**
+   * The provider answered the resume with an HTTP 5xx. That is an outage of
+   * the provider, not a refusal of this sandbox, so the bounded retry owns it.
+   */
+  readonly providerOutage: boolean;
 
   constructor(input: {
     provider: string;
@@ -40,6 +46,8 @@ export class ReusableSandboxResumeError extends Error {
     this.name = "ReusableSandboxResumeError";
     this.provider = input.provider;
     this.providerLeaseId = input.providerLeaseId;
+    // Only the closed status decides: a gateway page's text can also read as a timeout.
+    this.providerOutage = failure?.status != null && failure.status >= 500 && failure.status <= 599;
   }
 }
 

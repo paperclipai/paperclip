@@ -10,6 +10,7 @@ const trackErrorHandlerCrashMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/responsible-user-denial-run-outcomes.js", () => ({
   recordResponsibleUserDenialOnActiveRun: vi.fn().mockResolvedValue(null),
+  rememberResponsibleUserDenialForRun: vi.fn(),
 }));
 vi.mock("../sentry.js", () => ({ captureException: captureExceptionMock }));
 vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => ({}) }));

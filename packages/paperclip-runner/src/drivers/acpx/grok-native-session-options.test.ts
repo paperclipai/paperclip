@@ -7,6 +7,11 @@ import { expect, it } from "vitest";
 import { createGrokEffortAdmission } from "./grok-effort.js";
 import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 
+// The patched acpx runtime implements this method without declaring it.
+interface ExtensionRuntime {
+  requestExtension(input: { handle: AcpRuntimeHandle; method: string; params: Record<string, unknown>; sessionMode?: "persistent" | "oneshot" }): Promise<Record<string, unknown>>;
+}
+
 it("retains a native Grok acknowledgement failure through the real ACPX connection", async () => {
   const root = await mkdtemp(join(tmpdir(), "grok-rejected-admission-"));
   const fixture = join(root, "grok.cjs");
@@ -80,8 +85,9 @@ it.each(["low", "high"] as const)("transports and restores native Grok %s effort
     protocolGuardFactory: () => admission.createGuard(),
     spawnAgent: () => spawn(process.execPath, [fixture], { cwd: root, env: {}, stdio: "pipe" }),
   };
-  const input = { sessionKey: "grok-native-options", agent: "grok", mode: "persistent" as const,
-    sessionOptions: { model } };
+  // Like the runtime adapter, bind Grok's model only through session-open
+  // metadata: ACPX would replay a registered model with a rejected setter.
+  const input = { sessionKey: "grok-native-options", agent: "grok", mode: "persistent" as const };
   let runtime = createAcpRuntime(options);
   let handle: AcpRuntimeHandle | undefined;
   try {
@@ -94,7 +100,7 @@ it.each(["low", "high"] as const)("transports and restores native Grok %s effort
     handle = await runtime.ensureSession(input);
     expect(handle.backendSessionId).toBe(originalSession);
     expect(admission.isReady()).toBe(false);
-    await runtime.requestExtension({ handle, method: "_x.ai/session/info", params: { sessionId: handle.backendSessionId }, sessionMode: "persistent" });
+    await (runtime as typeof runtime & ExtensionRuntime).requestExtension({ handle, method: "_x.ai/session/info", params: { sessionId: handle.backendSessionId }, sessionMode: "persistent" });
     admission.assertReady();
     const turn = runtime.startTurn({ handle, text: "Verify the restored fixture", mode: "prompt", requestId: "grok-cold-turn", timeoutMs: 5_000 });
     const output: string[] = [];

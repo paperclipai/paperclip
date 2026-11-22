@@ -29,6 +29,10 @@ available tools and records before asking the user for missing information:
   architecture, adapter, model/effort, execution workspace, trust mode, and credential
   source. Trace effective values back through task overrides, inherited settings,
   defaults, and saved session state. Redact credential values.
+- Whether a deploy or restart separated save from resume. Compare the served
+  revision and runner/provider pack versions that saved the session, checkpoint,
+  lease, or launch input with those that resumed it. Failures clustered after
+  a deploy usually mean the new release refuses state the old one saved.
 - Which endpoint is authorized: verified fix and green PR, or also rollout and
   recovery. Preserve the requested work and success criteria throughout.
 
@@ -39,9 +43,9 @@ Use authorized diagnostic access. If company scoping blocks a read, use an
 already-authorized diagnostic path or label the missing evidence; do not bypass
 the boundary.
 
-Read repository instructions and the relevant current execution contract. In this
-repository, use `doc/execution-semantics.md` for ownership, continuation, waiting,
-finalization, and recovery. Inspect recent changes and open/merged repairs in the
+Read repository instructions. In this repository, the code and tests under
+`server/src/services/heartbeat/` and `server/src/services/recovery/` define
+ownership, continuation, waiting, finalization, and recovery. Inspect recent changes and open/merged repairs in the
 affected area. A correct fix that has not reached the target is a deployment gap;
 do not create a second patch without evidence that the first is insufficient.
 Choose code repair, configuration repair, or recovery from that evidence. If an
@@ -66,6 +70,10 @@ Separate these questions:
 2. Why did the responsible component make that decision or emit that value?
 3. Why did recovery or continuation fail to complete the already-authorized work?
 4. Which later errors are consequences, misleading summaries, or independent bugs?
+
+Answer early whether the failing step resumed state saved by a different release.
+If it did, compare what the old release persisted with what the new one requires
+before pursuing provider, model, or capacity explanations.
 
 Trace the causal value or transition to its producer and shared contract. Verify
 the hypothesis against a counterexample or a reproduction. Check logs before and
@@ -124,6 +132,9 @@ the evidence requires. Avoid historical string allowlists, swallowed errors,
 unbounded retries, or relaxing an integrity check to accommodate malformed input.
 Preserve the requested model, trust, isolation, and performance behavior unless a
 change or explicit fallback policy is part of the assignment.
+A repair that makes recovery start more runs must state its worst-case starts per
+hour across the company during an outage (provider refusing, crash loop, deploy)
+and what bounds them; per-task caps do not bound the aggregate.
 
 Before implementation, state the behavioral rule and the strongest plausible
 second-order failure. Trace callers, downstream consumers, persisted state, and
@@ -137,11 +148,24 @@ assumptions into observable regression cases, not just assurances in the PR:
 | Waiting or task disposition | Real approval/budget/credential gates still stop work; actionable work has a durable wake; recovery is bounded; no recursive recovery tree. |
 | Input, tool, or credential plumbing | Company and trust boundaries hold; intentional configuration reaches execution without ambient secret forwarding; distinct tools still dispatch correctly; sensitive logging remains redacted. |
 | Packaging, compatibility, or session identity | Relevant local/sandbox, platform, fresh/resumed, and old/new artifact combinations work; obsolete saved values are handled by a contract rather than a list of incident exceptions. |
+| Persisted run identity across releases | State saved by the previous release resumes on the new one, or stops with a permanent, named code that recovery does not retry. A deploy landing mid-run follows the same contract. |
 | Performance or lifecycle | Warm reuse remains warm where intended; queueing and finalization do not regress; configured deadlines retain their meaning. |
 
 Select cases that exercise the actual blast radius. Do not create an unrelated
 platform matrix. Test the sibling success path and the negative case that the old
 guard protected. Keep reproduction and safety tests through later revisions.
+
+Upgrade safety is part of every repair that touches persisted run identity:
+launch arguments, provider/runner pack digests, leases, listeners, session or
+checkpoint schema, and workspace authority. Each must either carry forward across
+releases or fail with a permanent, named code, never a generic retryable one such
+as `native_session_interrupted`. A retry cannot change saved identity; it repeats
+the refusal or replaces saved state. Add an old-saved/new-resumed regression using
+state shaped by the previous release, and a deploy-lands-mid-run case when the run
+can be in flight at the cutover. Prefer one class-level rule at the shared
+admission or recovery boundary over another per-error-code exception. For remote
+sandbox paths, test with the provider's confinement rules applied; a local test
+without them does not prove the remote path.
 
 With the red established and the safety assumptions identified, make the repair
 and run the same regression green. Run the relevant safety cases and existing
@@ -186,6 +210,11 @@ address review and CI failures, and inspect required checks and review on the
 current head SHA. Pending, skipped, and passing are distinct. Retry a failed check
 only with a reason; retain its evidence and fix repeatable failures. Resolve
 companion repository/artifact changes needed by the fix and state their ordering.
+A job whose log shows the runner shut down or lost communication is lost
+infrastructure: re-run it. A cancellation without that evidence may be deliberate. A test failing in a file the PR does not touch gets one re-run; if it
+repeats, check master and tell the test's owner. When review finds one instance of
+a bug class, enumerate and test every entry point or counter of that class before
+pushing again.
 
 The PR must explain the causal defect, behavioral change, failing-before/passing-
 after evidence, safety regressions, actual acceptance environment, and limitations.

@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 
-vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true }) }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: "reviewer" }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: true }) }));
 vi.mock("@/hooks/useCombinedInboxTasksEnabled", () => ({ useCombinedInboxTasksEnabled: () => ({ enabled: false }) }));
 vi.mock("@/hooks/useInboxBadge", () => ({ useInboxBadge: () => ({ inbox: 0 }) }));
@@ -14,15 +14,15 @@ vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompan
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/lib/router", () => ({ useLocation: () => ({ pathname: "/chats" }), NavLink: ({ to, children }: { to: string; children: (state: { isActive: boolean }) => ReactNode }) => <a href={to}>{children({ isActive: false })}</a> }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-it("uses the canonical outstanding count on the phone as well as the desktop", async () => {
+it("counts only decisions for the signed-in user on the phone as well as the desktop", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
-  const key = coordinatorAttentionSummaryQueryKey("company");
-  client.setQueryData(key, { totalCount: 3, deskBadgeCount: 0 });
+  const key = coordinatorAttentionSummaryQueryKey("company", "reviewer");
+  client.setQueryData(key, { totalCount: 8, deskBadgeCount: 3 });
   const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
   try {
     await act(() => root.render(<QueryClientProvider client={client}><MobileBottomNav visible /></QueryClientProvider>));
-    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("3Needs you");
-    await act(async () => { client.setQueryData(key, { totalCount: 0, deskBadgeCount: 0 }); await new Promise(resolve => setTimeout(resolve, 1)); });
-    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("Needs you");
+    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("3Inbox");
+    await act(async () => { client.setQueryData(key, { totalCount: 5, deskBadgeCount: 0 }); await new Promise(resolve => setTimeout(resolve, 1)); });
+    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("Inbox");
   } finally { await act(() => root.unmount()); host.remove(); client.clear(); }
 });

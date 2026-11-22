@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mockOnboardingLocalAiConnection } from "./helpers/onboarding-ai-connection";
 import {
-  expectLandsOnFirstTaskWithoutDashboardBounce,
+  expectLandsOnChatWithoutDashboardBounce,
   instrumentNavLog,
 } from "./helpers/onboarding-landing";
 
@@ -32,6 +32,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await instrumentNavLog(page);
   await mockOnboardingLocalAiConnection(page);
+  await page.route("**/onboarding/greeting", route => route.fulfill({ json: { started: false } }));
 
   await page.route("**/test-environment", (route) =>
     route.fulfill({
@@ -88,27 +89,19 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   // The connect step arrives with no source selected — the tile row is a
   // question, not a confirmation — so its CTA stays disabled until one is
-  // pressed. It reads "Connect", not "Next": the button starts the sign-in
-  // where there is one to start. The test simulates successful local account
-  // connection, then exercises the real first-task creation flow.
-  //
-  // Waited on for enabled rather than visible: it is already on screen, and
-  // clicking a disabled button raises nothing and does nothing.
+  // pressed. The simulated verified account then advances automatically.
   const source = page.getByRole("radio").first();
   await source.waitFor({ timeout: 30_000 });
   await source.click();
-  const connectNext = page.getByRole("button", { name: /^Connect$/ });
-  await expect(connectNext).toBeEnabled({ timeout: 30_000 });
-  await connectNext.click();
 
   // The review step names the agent rather than the step.
   await expect(
     page.getByRole("heading", { name: "Let's get started..." }),
   ).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /Get started/ }).click();
-  // The wizard now drops the user straight onto the first task's detail page,
+  // The wizard opens the standing chat,
   // and must not bounce through the dashboard (PAP-404).
-  await expectLandsOnFirstTaskWithoutDashboardBounce(page);
+  await expectLandsOnChatWithoutDashboardBounce(page);
 
   const baseOrigin = new URL(page.url()).origin;
   const companyRes = await page.request.get(`${baseOrigin}/api/companies`);
@@ -119,17 +112,20 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const issueRes = await page.request.get(`${baseOrigin}/api/companies/${company.id}/issues`);
   expect(issueRes.ok()).toBe(true);
   const issues = await issueRes.json();
-  const planningSeedIssue = issues.find(
-    (candidate: { id: string; identifier?: string; title: string }) =>
-      candidate.title === TASK_TITLE,
-  );
-  expect(planningSeedIssue).toBeTruthy();
-
-  const issue = planningSeedIssue;
+  expect(issues).toEqual([]);
+  const agentsRes = await page.request.get(`${baseOrigin}/api/companies/${company.id}/agents`);
+  const [agent] = await agentsRes.json();
+  // This suite explicitly creates its legacy planning/question fixture; the
+  // onboarding wizard itself must leave execution work empty.
+  const created = await page.request.post(`${baseOrigin}/api/companies/${company.id}/issues`, {
+    data: { title: TASK_TITLE, assigneeAgentId: agent.id, onboardingFirstTask: true, status: "todo" },
+  });
+  expect(created.ok()).toBe(true);
+  const issue = await created.json();
   const issueIdentifier = issue.identifier ?? issue.id;
   const issuePath = `/${company.issuePrefix ?? company.id}/issues/${issueIdentifier}`;
   const companyPrefix = company.issuePrefix ?? company.id;
-  const issueLinkSelector = `a[href$="/issues/${issueIdentifier}"]`;
+  const issueRow = page.locator(`[data-issue-row-details="${issue.id}"]`);
 
   const setMode = async (mode: "standard" | "planning") => {
     const patchRes = await page.request.patch(`${baseOrigin}/api/issues/${issue.id}`, {
@@ -163,8 +159,8 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto(`/${companyPrefix}/issues`);
-  await expect(page.locator(issueLinkSelector)).toBeVisible();
-  await expect(page.locator(issueLinkSelector)).not.toContainText("Plan mode");
+  await expect(issueRow).toBeVisible();
+  await expect(issueRow).not.toContainText("Plan mode");
   await page.screenshot({
     path: `${screenshotDir}/desktop-planning-row-${timestamp}.png`,
     fullPage: true,
@@ -194,8 +190,8 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto(`/${companyPrefix}/issues`);
-  await expect(page.locator(issueLinkSelector)).toBeVisible();
-  await expect(page.locator(issueLinkSelector)).not.toContainText("Plan mode");
+  await expect(issueRow).toBeVisible();
+  await expect(issueRow).not.toContainText("Plan mode");
   await page.screenshot({
     path: `${screenshotDir}/mobile-planning-row-${timestamp}.png`,
     fullPage: true,

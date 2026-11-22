@@ -236,30 +236,34 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(reserveRunBudget(db, f.companyId, await f.queuedRun(), otherProject.id)).resolves.toMatchObject({ reused: false });
   });
 
-  it("keeps missing-price terminal work held until accounting evidence arrives", async () => {
+  // Invariant 3: the missing price stays pending accounting debt, but it is
+  // exposure, never an admission gate.
+  it("keeps missing-price terminal accounting pending without holding new work", async () => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
-    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).not.toBeNull();
+    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).toBeNull();
     expect(await f.exposure()).toMatchObject({ pendingTerminalRunCount: 1, ledgerCents: "0.0000000", liveObservedCents: "0.0000000" });
     expect(await accountRunCost(db, f.runId)).toBe(false);
     expect((await f.readRun()).costAccountingPending).toBe(true);
     expect(await db.select().from(costEvents).where(and(eq(costEvents.companyId, f.companyId), eq(costEvents.heartbeatRunId, f.runId)))).toHaveLength(0);
   });
 
-  it.each(["pre-provider release", "stale pending marker"])("releases accounting-induced holds after %s", async kind => {
+  // Pending accounting never places a budget hold or an admission gate.
+  it.each(["pre-provider release", "stale pending marker"])("settles pending accounting after %s without a hold", async kind => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
-    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).not.toBeNull();
+    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).toBeNull();
     await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, f.projectId);
     await flushBudgetEvaluationWork(db);
     const [held] = await db.select().from(agents).where(eq(agents.id, f.agentId));
-    expect(held.lifecycleHolds).toContain("budget");
+    expect(held.lifecycleHolds).not.toContain("budget");
     await db.update(heartbeatRuns).set(kind === "pre-provider release"
       ? { resultJson: { executionRecovery: { providerWorkStarted: false } } }
       : { costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
     expect(await accountRunCost(db, f.runId)).toBe(kind === "pre-provider release");
     const [released] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     expect(released.lifecycleHolds).not.toContain("budget");
+    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).toBeNull();
     expect((await f.readRun()).costAccountingPending).toBe(false);
     expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(0);
   });

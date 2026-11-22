@@ -13,6 +13,9 @@
 // This file only branches on that facts object; it never queries a
 // database, reads the clock, or reads the wake context payload directly.
 
+/** The error a saved wake records when a completed run already received all of its messages. */
+export const QUEUED_MESSAGES_DELIVERED_REASON = "Queued messages were already delivered to a completed run";
+
 export type WakeAdmissionFacts = {
   /** True when the active execution run's agent and this wake's own agent share an execution-agent-name key. */
   isSameExecutionAgent: boolean;
@@ -227,6 +230,7 @@ export type ReleaseRecoveryImmediateFacts = {
   isResponsibleUserDenialRun?: boolean;
   /** didAutomaticRecoveryFail(run, expectedRetryReason) for the issue's own status branch. */
   automaticRecoveryAlreadyFailed: boolean;
+  automaticRecoveryRetryableBeforeProviderWork?: boolean;
   /** Exact admitted-chat lineage or a non-retryable failure forbids generic continuation. */
   sourceRequiresExplicitRecovery?: boolean;
 };
@@ -425,7 +429,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
     immediate.isWorkspaceValidationFailedRun ||
     immediate.isConfigurationIncompleteFailedRun ||
     immediate.isResponsibleUserDenialRun === true ||
-    immediate.automaticRecoveryAlreadyFailed;
+    (immediate.automaticRecoveryAlreadyFailed && immediate.automaticRecoveryRetryableBeforeProviderWork !== true);
   if (shouldBlockImmediately) {
     const notice: ReleaseRecoveryBlockedNoticeKind = immediate.isWorkspaceValidationFailedRun
       ? "workspace_validation"
@@ -436,6 +440,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
           : "immediate_execution_path";
     return { kind: "blocked", notice };
   }
+  if (immediate.automaticRecoveryAlreadyFailed) return { kind: "released" };
 
   return { kind: "queue_recovery" };
 }

@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { type FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -9,7 +10,6 @@ import type {
 } from "@paperclipai/shared";
 import { Check, ChevronDown, Copy, KeyRound, Link as LinkIcon, Plus, RotateCcw, X } from "lucide-react";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
 import { toolsApi } from "@/api/tools";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { LoadingState, RelativeTime, ToolsPageHeader } from "./shared";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 type CreateGatewayDraft = {
   name: string;
@@ -141,8 +143,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     queryFn: () => agentsApi.list(companyId),
   });
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(companyId, { includeArchived: true }),
-    queryFn: () => projectsApi.list(companyId, { includeArchived: true }),
+    ...companyProjectsQuery(companyId, { includeArchived: true }),
   });
   const gatewaysView = useQueryView(gatewaysQuery);
 
@@ -526,7 +527,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                         Copy token
                       </Button>
                     </div>
-                    <div className="break-all rounded bg-background px-3 py-2 font-mono text-xs text-muted-foreground">
+                    <div className={cn("break-all rounded bg-background px-3 py-2 font-mono text-xs text-muted-foreground", ANALYTICS_NO_CAPTURE_CLASS)}>
                       {createdToken.token}
                     </div>
                   </div>
@@ -643,7 +644,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
                                 Copy
                               </Button>
                             </summary>
-                            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-3 text-xs text-muted-foreground">
+                            <pre className={cn("mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-3 text-xs text-muted-foreground", ANALYTICS_NO_CAPTURE_CLASS)}>
                               {formatSnippetConfig(snippet.config)}
                             </pre>
                             {snippet.notes.length > 0 ? (

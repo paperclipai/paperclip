@@ -12,10 +12,14 @@ const report = {
   evidence: [], verification: [],
 };
 
+type RpcResponse = {
+  result: { isError?: boolean; tools: Array<{ name: string; inputSchema: unknown }> };
+};
+
 async function rpc(bridge: OpenCodeMcpBridge, id: number, method: string, params?: unknown) {
   return (await fetch(bridge.url, { method: "POST", headers: {
     Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json",
-  }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) })).json();
+  }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) })).json() as Promise<RpcResponse>;
 }
 
 it("binds closed rejection shapes to the actual offered finish schema without recording values", async () => {
@@ -23,7 +27,7 @@ it("binds closed rejection shapes to the actual offered finish schema without re
   const bridge = await startOpenCodeMcpBridge({ handler, onDiagnostic: message => messages.push(message) });
   bridges.push(bridge);
   const listed = await rpc(bridge, 1, "tools/list");
-  const schema = listed.result.tools.find((tool: { name: string }) => tool.name === "paperclip_finish").inputSchema;
+  const schema = listed.result.tools.find((tool: { name: string }) => tool.name === "paperclip_finish")!.inputSchema;
   const digest = createHash("sha256").update(JSON.stringify(schema)).digest("hex");
   for (const [index, input] of [report, { ...report, continuation: null }].entries()) {
     const result = await rpc(bridge, index + 2, "tools/call", { name: "paperclip_finish", arguments: input });
@@ -40,7 +44,7 @@ it("binds closed rejection shapes to the actual offered finish schema without re
   });
   expect(unrelated.result.isError).toBe(true);
   expect(handler).toHaveBeenCalledTimes(2);
-  expect(messages.map(message => JSON.parse(message))).toEqual([
+  expect(messages.map(message => JSON.parse(message)).filter(message => message.schema === "paperclip.opencode.finish-input-diagnostic/v1")).toEqual([
     { schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "offered", schemaSha256: digest },
     ...["string", "array", "number", "boolean"].map((continuationShape, index) => ({
       schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "input_rejected",
@@ -59,7 +63,7 @@ it("reports the effective supplied schema and bounds diagnostics without admitti
   const inputSchema = { type: "object", required: ["continuation"], properties: { continuation: { type: "object" } } };
   const bridge = await startOpenCodeMcpBridge({
     tools: [{ name: "paperclip_finish", inputSchema }], handler,
-    onDiagnostic: message => messages.push(message),
+    onDiagnostic: message => { if (message.includes("finish-input-diagnostic")) messages.push(message); },
   });
   bridges.push(bridge);
   for (let index = 0; index < 12; index++) {
