@@ -102,6 +102,7 @@ const assetSvc = {
 const secretSvc = {
   create: vi.fn(async () => ({ id: "secret-created" })),
   remove: vi.fn(async () => true),
+  listAdapterSchemaSecretFieldKeys: vi.fn(async (_adapterType?: string | null): Promise<string[]> => []),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
   normalizeEnvBindingsForPersistence: vi.fn(async (_companyId: string, env: Record<string, unknown>) => env),
   syncEnvBindingsForTarget: vi.fn(async () => []),
@@ -241,6 +242,7 @@ describe("company portability", () => {
     });
     secretSvc.create.mockResolvedValue({ id: "secret-created" });
     secretSvc.remove.mockResolvedValue(true);
+    secretSvc.listAdapterSchemaSecretFieldKeys.mockResolvedValue([]);
     secretSvc.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     secretSvc.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
     secretSvc.syncEnvBindingsForTarget.mockResolvedValue([]);
@@ -870,6 +872,58 @@ describe("company portability", () => {
       defaultValue: "development",
       portability: "portable",
     });
+  });
+
+  it("exports adapter config secret refs as secret inputs without the source secret id", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([
+      {
+        id: "agent-hermes",
+        name: "Hermes",
+        status: "idle",
+        role: "engineer",
+        title: null,
+        icon: null,
+        reportsTo: null,
+        capabilities: null,
+        adapterType: "hermes_gateway",
+        adapterConfig: {
+          apiBaseUrl: "https://hermes.example",
+          apiKey: {
+            type: "secret_ref",
+            secretId: "secret-hermes-source",
+            version: "latest",
+          },
+        },
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: {
+          canCreateAgents: false,
+        },
+        metadata: null,
+      },
+    ]);
+
+    const exported = await exportCompanyAndAgents(portability);
+
+    const serialized = JSON.stringify(exported);
+    expect(serialized).not.toContain("secret-hermes-source");
+    expect(serialized).not.toContain("secret_ref");
+    expect(exported.manifest.agents.find((agent) => agent.slug === "hermes")?.adapterConfig).toEqual({
+      apiBaseUrl: "https://hermes.example",
+    });
+    expect(exported.manifest.envInputs).toEqual([
+      {
+        key: "apiKey",
+        description: "Provide apiKey for agent hermes",
+        agentSlug: "hermes",
+        projectSlug: null,
+        kind: "secret",
+        requirement: "optional",
+        defaultValue: "",
+        portability: "portable",
+      },
+    ]);
   });
 
   it("exports default sidebar order into the Paperclip extension and manifest", async () => {
@@ -2026,6 +2080,97 @@ describe("company portability", () => {
         OPENAI_API_KEY: expect.objectContaining({ secretId: "secret-created" }),
       }),
     );
+  });
+
+  it("writes an imported adapter config secret input to the adapter config field", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      status: input.status,
+    }));
+    secretSvc.listAdapterSchemaSecretFieldKeys.mockImplementation(async (adapterType) => (
+      adapterType === "hermes_gateway" ? ["apiKey"] : []
+    ));
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/hermes/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/hermes/AGENTS.md": [
+            "---",
+            "name: Hermes",
+            "slug: hermes",
+            "kind: agent",
+            "---",
+            "",
+            "# Hermes",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  hermes:",
+            "    adapter:",
+            "      type: hermes_gateway",
+            "      config:",
+            "        apiBaseUrl: https://hermes.example",
+            "    inputs:",
+            "      env:",
+            "        apiKey:",
+            "          kind: secret",
+            "          requirement: optional",
+            "        GH_TOKEN:",
+            "          kind: secret",
+            "          requirement: optional",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: {
+        company: false,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+      secretValues: {
+        "agent:hermes:apiKey": "hermes-imported-key",
+        "agent:hermes:GH_TOKEN": "gh-imported-token",
+      },
+    }, "user-1");
+
+    const importedSecretRef = {
+      type: "secret_ref",
+      secretId: "secret-created",
+      version: "latest",
+    };
+    expect(secretSvc.listAdapterSchemaSecretFieldKeys).toHaveBeenCalledWith("hermes_gateway");
+    expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      adapterType: "hermes_gateway",
+      adapterConfig: expect.objectContaining({
+        apiBaseUrl: "https://hermes.example",
+        apiKey: importedSecretRef,
+        env: {
+          GH_TOKEN: importedSecretRef,
+        },
+      }),
+    }), { createdByUserId: "user-1" });
   });
 
   it("imports agent permission grants from package metadata", async () => {
