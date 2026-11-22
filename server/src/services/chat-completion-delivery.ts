@@ -250,7 +250,7 @@ export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> 
     const initialIds = ids(run);
     // Only completion wakes absorb pending events; ordinary user turns retain their existing input.
     if (initialIds.length === 0 && run.contextSnapshot?.wakeReason !== CHAT_COMPLETION_WAKE_REASON) return run;
-    if (run.contextSnapshot?.conversationSessionGeneration !== source.conversationSessionGeneration) throw new Error("chat_completion_superseded");
+    if (run.contextSnapshot?.conversationSessionGeneration !== source.conversationSessionGeneration) throw new ChatCompletionSupersededError();
     const rows = await tx.select({ delivery: deliveries }).from(deliveries).innerJoin(handoffs, eq(handoffs.taskId, deliveries.taskId))
       .where(and(eq(deliveries.companyId, run.companyId), eq(handoffs.conversationId, issueId),
         eq(handoffs.agentId, run.agentId), eq(handoffs.sessionGeneration, source.conversationSessionGeneration),
@@ -278,7 +278,7 @@ export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> 
       await tx.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
       return { ...run, contextSnapshot };
     }
-    if (accepted.length === 0) throw new Error("chat_completion_superseded");
+    if (accepted.length === 0) throw new ChatCompletionSupersededError();
     const contextSnapshot = { ...run.contextSnapshot, chatCompletionDeliveryIds: accepted, chatCompletionUpdates: updates };
     await tx.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
     return { ...run, contextSnapshot };
