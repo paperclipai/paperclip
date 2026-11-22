@@ -45,6 +45,7 @@ import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js"
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
+import { UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON, UNMANAGED_BACKGROUND_TASK_STOP_REASON } from "@paperclipai/adapter-utils/server-utils";
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
@@ -622,6 +623,114 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await read(f.run.id)).toMatchObject({ status: expected, errorCode: result.errorCode });
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, expected, expect.any(String), expect.objectContaining({ keepIdleOnFailure: result.errorCode === "provider_quota" }));
   });
+
+  it.each([
+    { label: "trapped SIGTERM exit 143", exitCode: 143, signal: null, cleanupSignal: "SIGTERM" as const, forceKilled: false },
+    { label: "untrapped SIGTERM", exitCode: null, signal: "SIGTERM", cleanupSignal: "SIGTERM" as const, forceKilled: false },
+    { label: "SIGKILL escalation exit 137", exitCode: 137, signal: null, cleanupSignal: "SIGKILL" as const, forceKilled: true },
+  ])("records unmanaged_background_task_stopped and keeps agent idle on post-result cleanup ($label)", async ({ exitCode, signal, cleanupSignal, forceKilled }) => {
+    const f = await fixture();
+    Object.assign(f.input.adapterResult, {
+      exitCode,
+      signal,
+      errorCode: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      errorMessage: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      resultJson: {
+        unmanagedBackgroundTask: {
+          kind: "terminal_result_cleanup",
+          stopped: true,
+          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+          terminalResultSeen: true,
+          signal: cleanupSignal,
+          forceKilled,
+        },
+      },
+    });
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({
+      status: "failed",
+      errorCode: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      error: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      exitCode,
+      signal,
+      sessionIdAfter: "provider-session",
+      resultJson: { stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON },
+    });
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(
+      f.agent.id,
+      "failed",
+      UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      expect.objectContaining({ keepIdleOnFailure: true }),
+    );
+  });
+
+  it("preserves cancelled precedence when signal is aborted on post-result cleanup", async () => {
+    const aborted = await fixture();
+    Object.assign(aborted.input.adapterResult, {
+      exitCode: 143,
+      signal: null,
+      errorCode: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      errorMessage: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+    });
+    aborted.controller.abort();
+    await aborted.completion.completeRun(aborted.input);
+    expect(await read(aborted.run.id)).toMatchObject({ status: "cancelled" });
+  });
+
+  it("refuses keepIdleOnFailure when process cancellation failed on post-result cleanup", async () => {
+    const cancelFailed = await fixture();
+    Object.assign(cancelFailed.input.adapterResult, {
+      exitCode: 143,
+      signal: null,
+      errorCode: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      errorMessage: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+    });
+    cancelFailed.deps.failedProcessRunCancellations.set(cancelFailed.run.id, { settled: Promise.resolve(), failed: true });
+    await cancelFailed.completion.completeRun(cancelFailed.input);
+    expect(await read(cancelFailed.run.id)).toMatchObject({
+      status: "failed",
+      errorCode: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+    });
+    expect(cancelFailed.deps.finalizeAgentStatus).toHaveBeenCalledWith(
+      cancelFailed.agent.id,
+      "failed",
+      UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      expect.objectContaining({ keepIdleOnFailure: false }),
+    );
+  });
+
+  it.each(["claude_auth_required", "claude_refusal", "duplex_channel_lost", "max_turns_exhausted"])(
+    "does not keep agent idle when %s fails even with unmanagedBackgroundTask metadata",
+    async (errorCode) => {
+      const f = await fixture();
+      Object.assign(f.input.adapterResult, {
+        exitCode: 143,
+        signal: null,
+        errorCode,
+        errorMessage: `failure:${errorCode}`,
+        resultJson: {
+          unmanagedBackgroundTask: {
+            kind: "terminal_result_cleanup",
+            stopped: true,
+            stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+            reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+            terminalResultSeen: true,
+            signal: "SIGTERM",
+            forceKilled: false,
+          },
+        },
+      });
+      await f.completion.completeRun(f.input);
+      expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode });
+      expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(
+        f.agent.id,
+        "failed",
+        `failure:${errorCode}`,
+        expect.objectContaining({ keepIdleOnFailure: false }),
+      );
+    },
+  );
 
   it.each(["completeRun", "failRun"] as const)("waits for an owned Stop before %s can write a competing outcome", async operation => {
     const f = await fixture();

@@ -75,6 +75,7 @@ import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js
 import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
 import { ACCOUNTING_CONTENTION_MESSAGE, isAccountingContentionError } from "../accounting-transaction.js";
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { UNMANAGED_BACKGROUND_TASK_STOP_REASON } from "@paperclipai/adapter-utils/server-utils";
 import type { getRunLogStore, RunLogHandle } from "../run-log-store.js";
 import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
@@ -801,7 +802,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         ((finalizedRun
           ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
           : runErrorCode === "provider_quota") ||
-          isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+          isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
+          (!processCancellation?.failed &&
+            runErrorCode === UNMANAGED_BACKGROUND_TASK_STOP_REASON)),
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
     });
     if (finalizedRun) {
