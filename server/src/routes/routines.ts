@@ -540,7 +540,9 @@ export function routineRoutes(
     const routine = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Routine not found");
     if (!routine) return;
     const limit = Number(req.query.limit ?? 50);
-    const result = await svc.listRuns(routine.id, Number.isFinite(limit) ? limit : 50);
+    const before = req.query.before;
+    if (before !== undefined && (typeof before !== "string" || !before)) throw badRequest("Invalid routine run cursor");
+    const result = await svc.listRuns(routine.id, Number.isFinite(limit) ? limit : 50, before);
     res.json(result);
   });
 

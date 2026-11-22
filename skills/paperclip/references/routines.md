@@ -230,6 +230,9 @@ GET /api/routines/{routineId}
 GET /api/routines/{routineId}/runs?limit=50
 ```
 
+Run history is newest first, with at most 200 entries per page. Pass the last
+run ID as `before` to read the next page, until the response is empty.
+
 Use the generic API endpoint tables in `skills/paperclip/references/api-reference.md` when you need a full cross-domain reference. Use this file when you need routine-specific behaviour, payload shape, or policy details.
 
 **Delivering results to the human's chat**

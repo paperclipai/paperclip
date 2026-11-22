@@ -239,6 +239,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
+  it("rejects an empty routine history cursor", async () => {
+    const { routine, svc } = await seedFixture();
+    await expect(svc.listRuns(routine.id, 50, "")).rejects.toMatchObject({ status: 400 });
+  });
+
   it("checks the author of an agent-edited routine revision when dispatching later work", async () => {
     const f = await seedFixture();
     const editorId = randomUUID();
