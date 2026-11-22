@@ -7,6 +7,7 @@ import * as runnerCheckpoint from "./native-runner-checkpoint.js";
 import * as harnessStorage from "./native-harness-backup-storage.js";
 import * as stagedAttachmentRecovery from "./native-staged-attachment-recovery.js";
 import * as controllerRecovery from "./native-controller-recovery.js";
+import * as nativeSshCommandRunner from "./native-ssh-command-runner.js";
 import * as ownerProof from "../owner-proof.js";
 import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
 import * as remoteWarmRecoveryRuntime from "./remote-warm-session-recovery.js";
@@ -23584,6 +23585,9 @@ describe("runnerd provider runtime wiring", () => {
   ])(
     "requires a build-owned provider pack identity before launching remote %s",
     async (providerKind, provider, driverKind) => {
+      vi.spyOn(nativeSshCommandRunner, "createNativeSshCommandRunner").mockReturnValue({
+        execute: vi.fn(async () => ({ stdout: "Linux\nx86_64\n", stderr: "", exitCode: 0, timedOut: false })),
+      } as unknown as ReturnType<typeof nativeSshCommandRunner.createNativeSshCommandRunner>);
       state.bundledPackManifestPath = join(tmpdir(), randomUUID(), "provider-pack.json");
       const remoteCwd = "/home/daytona/paperclip-workspace";
       const remoteProviderExecution = {
