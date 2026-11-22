@@ -69,6 +69,7 @@ import {
   getIssueContinuationSummaryDocument,
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
+import { CANCELLED_DEPENDENCY_HANDOFF_SOURCE } from "../../../services/issue-dependency-wakeups.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
 import type {
   QueuedRunFacts,
@@ -646,6 +647,10 @@ export function createPostgresRunDispatchAdapter(
       context,
       ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
     );
+    const isOwnerBoundInteractionWake = context.source === CANCELLED_DEPENDENCY_HANDOFF_SOURCE;
+    const expectedAssigneeAgentId = isOwnerBoundInteractionWake
+      ? readNonEmptyString(context.expectedAssigneeAgentId)
+      : null;
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason =
@@ -738,6 +743,8 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      isOwnerBoundInteractionWake,
+      expectedAssigneeAgentId,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,

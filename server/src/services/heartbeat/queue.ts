@@ -3520,8 +3520,22 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         { companyId: agent.companyId, issueId, durableChatRequest: durableRequest },
         async (tx, { lockedIssue, lockIssue, prepareRecovery }) => {
           // Route delivery and recovery share this admission fence. The comment
-          // transaction alone cannot serialize two subsequent queue writes.
+          // transaction alone cannot serialize two subsequent queue writes, and
+          // reassignment can commit between handoff creation and wake admission.
           if (wakeCommentId && opts.idempotencyKey === `issue_dependency_cancelled:${wakeCommentId}`) {
+            const lockedForHandoff = lockedIssue ?? await lockIssue();
+            const expectedAssigneeAgentId =
+              readNonEmptyString(payload.expectedAssigneeAgentId) ??
+              readNonEmptyString(enrichedContextSnapshot.expectedAssigneeAgentId) ??
+              agentId;
+            if (
+              !lockedForHandoff ||
+              lockedForHandoff.assigneeAgentId !== agentId ||
+              expectedAssigneeAgentId !== agentId ||
+              !["blocked", "todo", "in_progress"].includes(lockedForHandoff.status)
+            ) {
+              return { kind: "deferred" as const };
+            }
             const existing = await findExistingCancelledDependencyHandoffWake(tx as unknown as Db, {
               companyId: agent.companyId, commentId: wakeCommentId,
             });

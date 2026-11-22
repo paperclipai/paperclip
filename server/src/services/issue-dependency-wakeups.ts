@@ -306,6 +306,8 @@ export async function hasUnfinishedBlockers(dbOrTx: Db | DbTransaction, task: { 
   }
 }
 
+export const CANCELLED_DEPENDENCY_HANDOFF_SOURCE = "issue.cancelled_dependency_handoff";
+
 export type CancelledDependencyHandoff = {
   issueId: string;
   assigneeAgentId: string;
@@ -325,6 +327,7 @@ export function buildCancelledDependencyHandoffWake(handoff: CancelledDependency
       issueId: handoff.issueId,
       commentId: handoff.commentId,
       mutation: "interaction",
+      expectedAssigneeAgentId: handoff.assigneeAgentId,
       cancelledBlockerIssueIds: handoff.cancelledBlockerIssueIds,
     },
     contextSnapshot: {
@@ -333,7 +336,8 @@ export function buildCancelledDependencyHandoffWake(handoff: CancelledDependency
       commentId: handoff.commentId,
       wakeCommentId: handoff.commentId,
       wakeReason: "issue_commented",
-      source: "issue.cancelled_dependency_handoff",
+      source: CANCELLED_DEPENDENCY_HANDOFF_SOURCE,
+      expectedAssigneeAgentId: handoff.assigneeAgentId,
       cancelledBlockerIssueIds: handoff.cancelledBlockerIssueIds,
     },
   };

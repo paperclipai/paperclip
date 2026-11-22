@@ -9915,7 +9915,7 @@ export function issueService(db: Db) {
           "Keep other blockers and human approvals intact. Do not wait for a cancelled task to finish.\n\n" + marker;
         let comment = await tx.select({ id: issueComments.id }).from(issueComments)
           .where(and(eq(issueComments.companyId, dependent.companyId), eq(issueComments.issueId, dependent.id),
-            eq(issueComments.authorType, "system"), eq(issueComments.body, body)))
+            eq(issueComments.authorType, "system"), sql`${issueComments.body} like ${`%${marker}%`}`))
           .then(rows => rows[0] ?? null);
         if (!comment) {
           comment = await service.addComment(dependent.id, body, {}, { authorType: "system" }, tx);

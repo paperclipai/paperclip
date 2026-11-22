@@ -895,6 +895,55 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect((await svc.getCancelledDependencyHandoff(blockedIssueId))?.commentId).not.toBe(initial?.commentId);
   });
 
+  it("does not queue a cancelled dependency handoff for a former owner after reassignment", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture();
+    const newAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: newAgentId,
+      companyId,
+      name: "Nadia",
+      role: "engineer",
+      status: "idle",
+      adapterType: "test_adapter",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.update(issues).set({ status: "cancelled", cancelledAt: new Date() }).where(eq(issues.id, blockerIssueId));
+    const handoff = (await issueService(db).getCancelledDependencyHandoff(blockedIssueId))!;
+    expect(handoff.assigneeAgentId).toBe(agentId);
+    // Reassignment commits after getCancelledDependencyHandoff returns but before wakeup is queued.
+    await db.update(issues).set({ assigneeAgentId: newAgentId }).where(eq(issues.id, blockedIssueId));
+
+    const heartbeat = heartbeatService(db);
+    const staleWake = await heartbeat.wakeup(agentId, {
+      ...buildCancelledDependencyHandoffWake(handoff),
+      requestedByActorType: "system",
+      requestedByActorId: "dependency-handoff-test",
+    });
+    expect(staleWake).toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId))).toHaveLength(0);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    // Recovery delivers a fresh handoff to the new owner instead.
+    expect((await heartbeat.reconcileResolvedDependencyWakes()).healed).toBe(1);
+    await heartbeat.drainActiveRunExecutions();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, newAgentId))).toHaveLength(1);
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+  });
+
+  it("reuses the cancellation handoff comment by stable marker after a blocker identifier rename", async () => {
+    const { blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture();
+    const svc = issueService(db);
+    await db.update(issues).set({ status: "cancelled", cancelledAt: new Date("2026-11-07T10:00:00Z") }).where(eq(issues.id, blockerIssueId));
+    const initial = (await svc.getCancelledDependencyHandoff(blockedIssueId))!;
+    await db.update(issues).set({ identifier: "RENAMED-999" }).where(eq(issues.id, blockerIssueId));
+    const afterRename = (await svc.getCancelledDependencyHandoff(blockedIssueId))!;
+    expect(afterRename.commentId).toBe(initial.commentId);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, blockedIssueId))).toHaveLength(1);
+  });
+
   it("keeps resolved dependency wake reconciliation active", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
