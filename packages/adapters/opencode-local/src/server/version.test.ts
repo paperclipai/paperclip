@@ -54,6 +54,13 @@ describe("OpenCode version detection", () => {
     await expect(usesOpenCodeV2(input)).rejects.toThrow("version check was interrupted");
   });
 
+  it("does not start a version probe for an already cancelled run", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(usesOpenCodeV2({ ...input, signal: controller.signal })).rejects.toThrow();
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("does not continue after the run is cancelled during the version check", async () => {
     const controller = new AbortController();
     run.mockImplementation(async () => {
