@@ -241,6 +241,22 @@ export function buildRemoteRunHomeEnv(homeRoot: string): Record<string, string> 
 }
 
 /**
+ * The scratch-dir env a Local run gets from the heartbeat (a host temp dir), pointed at the run home's
+ * sandbox-side `tmp` instead. Routines such as kb-ingest write intermediate files to
+ * `$PAPERCLIP_SCRATCH_DIR`; the heartbeat only sets it for Local targets, and any host value a config
+ * carried would be meaningless in the pod. The run home is removed after the run, like the Local scratch.
+ */
+export function buildRemoteRunScratchEnv(homeRoot: string): Record<string, string> {
+  const dir = path.posix.join(homeRoot, "tmp");
+  return {
+    PAPERCLIP_RUN_SCRATCH_DIR: dir,
+    PAPERCLIP_TASK_SCRATCH_DIR: dir,
+    PAPERCLIP_SCRATCH_DIR: dir,
+    PAPERCLIP_TMPDIR: dir,
+  };
+}
+
+/**
  * Entry point from execute(): any remote target lands here. Only sandbox targets run; an SSH
  * target is refused before anything is created or launched.
  */
@@ -678,7 +694,7 @@ async function executeHermesInSandbox(
       if (hardeningFlags.mem0AutoSyncOff) env.MEM0_AUTO_SYNC = "false";
     }
     // Applied last so no config env can redirect the home, Hermes home or protected invariants.
-    Object.assign(env, buildRemoteRunHomeEnv(remoteHomeRoot));
+    Object.assign(env, buildRemoteRunHomeEnv(remoteHomeRoot), buildRemoteRunScratchEnv(remoteHomeRoot));
     env.HERMES_HOME = remoteHermesHome;
     env.HERMES_EPHEMERAL_SYSTEM_PROMPT = finalSystemPrompt;
     env.HERMES_DISABLE_LAZY_INSTALLS = "1";

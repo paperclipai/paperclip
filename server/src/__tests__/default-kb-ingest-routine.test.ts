@@ -7,6 +7,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  buildDefaultKbIngestRoutineDescription,
   createDefaultKbIngestRoutineForNewAgent,
   isDefaultKbIngestRoutineEnabled,
 } from "../services/default-kb-ingest-routine.ts";
@@ -27,6 +28,21 @@ describe("isDefaultKbIngestRoutineEnabled", () => {
     expect(isDefaultKbIngestRoutineEnabled({ PAPERCLIP_DEFAULT_KB_INGEST_ROUTINE_ENABLED: "yes" })).toBe(false);
     expect(isDefaultKbIngestRoutineEnabled({ PAPERCLIP_DEFAULT_KB_INGEST_ROUTINE_ENABLED: "TRUE" })).toBe(true);
     expect(isDefaultKbIngestRoutineEnabled({ PAPERCLIP_DEFAULT_KB_INGEST_ROUTINE_ENABLED: " true " })).toBe(true);
+  });
+});
+
+describe("buildDefaultKbIngestRoutineDescription", () => {
+  it("resolves the code dir from the run's cwd and never hard-codes a host instance path (TECH-9621)", () => {
+    const description = buildDefaultKbIngestRoutineDescription({});
+    expect(description).toContain("under your current working directory");
+    expect(description).toContain("/workspace");
+    expect(description).not.toContain("/paperclip/instances");
+  });
+
+  it("falls back to TMPDIR when no scratch dir is set", () => {
+    const description = buildDefaultKbIngestRoutineDescription({});
+    expect(description).toContain("$PAPERCLIP_SCRATCH_DIR/commsboard.json");
+    expect(description).toContain("${TMPDIR:-/tmp}");
   });
 });
 

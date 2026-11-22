@@ -252,6 +252,11 @@ function hermesCall(): ProcessCall & { unsetNames: string[] } {
 }
 
 describe("Hermes execute on a sandbox target (TECH-8174)", () => {
+  it("a host scratch dir in the agent env cannot reach the pod", async () => {
+    await execute(ctx({ config: { env: { OPENAI_API_KEY: PROVIDER_KEY, PAPERCLIP_SCRATCH_DIR: "/host/tmp/paperclip-run-x" } } }));
+    expect(hermesCall().options.env.PAPERCLIP_SCRATCH_DIR).toBe(`${REMOTE_RUNTIME}/home/tmp`);
+  });
+
   it("never puts the persistent agent identity key in the pod env (TECH-8988)", async () => {
     const privateKeyPem = "-----BEGIN PRIVATE KEY-----\nPERSISTENT-IDENTITY-SENTINEL-8988\n-----END PRIVATE KEY-----\n";
     await execute(ctx({
@@ -315,6 +320,10 @@ describe("Hermes execute on a sandbox target (TECH-8174)", () => {
     expect(env.HERMES_HOME).toBe(REMOTE_HERMES_HOME);
     expect(env.HOME).toBe(`${REMOTE_RUNTIME}/home`);
     expect(env.TMPDIR).toBe(`${REMOTE_RUNTIME}/home/tmp`);
+    // The scratch dir routines write to (set by the heartbeat only for Local runs) is a sandbox path too.
+    for (const key of ["PAPERCLIP_SCRATCH_DIR", "PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_TMPDIR"]) {
+      expect(env[key], key).toBe(`${REMOTE_RUNTIME}/home/tmp`);
+    }
     expect(env.PATH).toBeUndefined();
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.HERMES_DISABLE_LAZY_INSTALLS).toBe("1");
