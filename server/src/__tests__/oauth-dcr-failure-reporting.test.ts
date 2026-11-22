@@ -12,7 +12,7 @@ vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => null }));
 
 const PROVIDER_CANARY = "provider-body-canary-7c1e";
 
-function createApp(status: number, body: unknown) {
+function createApp(status: number, body: unknown, authMethods?: string[]) {
   const { requestOAuthClientRegistration } = createOAuthClientProtocol({
     assertOAuthEndpointUrl: (_kind, value) => String(value),
     fetchRemoteHttpUrl: async () => new Response(JSON.stringify(body), {
@@ -29,6 +29,7 @@ function createApp(status: number, body: unknown) {
         authorizationUrl: "https://auth.example.test/authorize",
         tokenUrl: "https://auth.example.test/token",
         registrationUrl: "https://auth.example.test/register",
+        ...(authMethods ? { tokenEndpointAuthMethodsSupported: authMethods } : {}),
       },
       redirectUri: "https://paperclip.example.test/api/tools/oauth/callback",
     }));
@@ -82,5 +83,56 @@ describe("OAuth dynamic client registration failure reporting", () => {
     expect(res.body).toMatchObject({ code: "oauth_dcr_response_invalid" });
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(oauthProviderFailureDiagnosticsFor(captureExceptionMock.mock.calls[0]![0])).toBeNull();
+  });
+
+  describe("registered token-endpoint auth method", () => {
+    const REDIRECT = "https://paperclip.example.test/api/tools/oauth/callback";
+    const base = { client_id: "cid", redirect_uris: [REDIRECT] };
+
+    // TrueFoundry's MCP gateway answers a request for `none` with a confidential
+    // `client_secret_post` client and a generated secret.
+    it("adopts the method the server registered instead of failing on a substitution", async () => {
+      const res = await request(createApp(
+        201,
+        { ...base, client_secret: "generated-secret", token_endpoint_auth_method: "client_secret_post" },
+        ["client_secret_post", "none"],
+      )).post("/register");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        clientId: "cid",
+        clientSecret: "generated-secret",
+        tokenEndpointAuthMethod: "client_secret_post",
+      });
+    });
+
+    it("still requires the secret that the registered method needs", async () => {
+      const res = await request(createApp(
+        201,
+        { ...base, token_endpoint_auth_method: "client_secret_post" },
+        ["client_secret_post", "none"],
+      )).post("/register");
+
+      expect(res.status).toBe(502);
+      expect(res.body).toMatchObject({ code: "oauth_dcr_response_invalid" });
+    });
+
+    it("rejects a method the authorization server never advertised", async () => {
+      const res = await request(createApp(
+        201,
+        { ...base, client_secret: "s", token_endpoint_auth_method: "client_secret_basic" },
+        ["client_secret_post", "none"],
+      )).post("/register");
+
+      expect(res.status).toBe(502);
+      expect(res.body).toMatchObject({ code: "oauth_dcr_response_invalid" });
+    });
+
+    it("keeps the requested method when the response omits it", async () => {
+      const res = await request(createApp(201, base, ["none"])).post("/register");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ tokenEndpointAuthMethod: "none", clientSecret: null });
+    });
   });
 });
