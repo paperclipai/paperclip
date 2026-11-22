@@ -285,6 +285,7 @@ import {
 import {
   prepareChatCompletionTurn,
   chatCompletionAlreadyReported,
+  ChatCompletionSupersededError,
 } from "./chat-completion-delivery.js";
 
 import {
@@ -4085,6 +4086,12 @@ export function heartbeatService(
         await cancelRunInternal(run.id, outerErr.code, {
           errorCode: outerErr.code,
           eventMessage: "stale execution continuation cancelled before dispatch",
+          suppressImmediateRecovery: true,
+        });
+      } else if (outerErr instanceof ChatCompletionSupersededError && !nativeDispatchMayHaveStarted()) {
+        await cancelRunInternal(run.id, outerErr.code, {
+          errorCode: outerErr.code,
+          eventMessage: "superseded chat completion turn cancelled before dispatch",
           suppressImmediateRecovery: true,
         });
       } else if (outerErr instanceof AgentDirectoryPreparationDeferral && await finalizeAgentDirectoryBusyDeferral(run, outerErr)
