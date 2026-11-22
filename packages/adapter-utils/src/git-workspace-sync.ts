@@ -734,6 +734,17 @@ export function isMissingGitPrerequisiteError(error: unknown): boolean {
   return GIT_MISSING_PREREQUISITE_MARKERS.some((marker) => message.includes(marker));
 }
 
+/**
+ * `git -c safe.directory=<dir> -C <dir>` prefix for git commands that run inside a
+ * sandbox workspace. The workspace files can be owned by a different uid than the
+ * one running git in the pod, which otherwise fails with "detected dubious
+ * ownership". The value is passed per invocation; no global gitconfig is written.
+ */
+export function remoteGitCommandPrefix(remoteDir: string): string {
+  const quoted = shellQuote(remoteDir);
+  return `git -c safe.directory=${quoted} -C ${quoted}`;
+}
+
 export function buildRemoteGitDeltaBundleScript(input: {
   remoteDir: string;
   baseSha: string;
@@ -749,7 +760,7 @@ export function buildRemoteGitDeltaBundleScript(input: {
    */
   forceFullBundle?: boolean;
 }): string {
-  const remoteDir = shellQuote(input.remoteDir);
+  const git = remoteGitCommandPrefix(input.remoteDir);
   const bundlePath = shellQuote(input.bundlePath);
   const exportRef = shellQuote(input.exportRef);
   const baseSha = shellQuote(input.baseSha);
@@ -757,7 +768,7 @@ export function buildRemoteGitDeltaBundleScript(input: {
   const cleanupParts = [
     `rm -f ${bundlePath}`,
     ...(statusPath ? [`rm -f ${statusPath}`] : []),
-    `git -C ${remoteDir} update-ref -d ${exportRef} >/dev/null 2>&1 || true`,
+    `${git} update-ref -d ${exportRef} >/dev/null 2>&1 || true`,
   ];
   return [
     "set -e",
@@ -785,8 +796,8 @@ export function buildRemoteGitDeltaBundleScript(input: {
     ...(input.forceFullBundle
       ? [`bundle_base=""`]
       : [
-        `if git -C ${remoteDir} cat-file -e ${baseSha}^{commit} 2>/dev/null; then`,
-        `  bundle_base=$(git -C ${remoteDir} merge-base ${baseSha} HEAD 2>/dev/null || true)`,
+        `if ${git} cat-file -e ${baseSha}^{commit} 2>/dev/null; then`,
+        `  bundle_base=$(${git} merge-base ${baseSha} HEAD 2>/dev/null || true)`,
         "else",
         `  bundle_base=""`,
         "fi",
@@ -794,27 +805,27 @@ export function buildRemoteGitDeltaBundleScript(input: {
     // An empty bundle means "still at baseSha" to the importer. A reset to an
     // older ancestor has no delta commits either, but must carry its new tip.
     // Use the full-bundle path so Git advertises that tip instead of losing it.
-    `if [ -n "$bundle_base" ] && [ "$bundle_base" != ${baseSha} ] && [ "$bundle_base" = "$(git -C ${remoteDir} rev-parse HEAD)" ]; then`,
+    `if [ -n "$bundle_base" ] && [ "$bundle_base" != ${baseSha} ] && [ "$bundle_base" = "$(${git} rev-parse HEAD)" ]; then`,
     `  bundle_base=""`,
     "fi",
     `if [ -n "$bundle_base" ]; then`,
-    `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD --not "$bundle_base")`,
+    `  commit_count=$(${git} rev-list --count HEAD --not "$bundle_base")`,
     "else",
-    `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD)`,
+    `  commit_count=$(${git} rev-list --count HEAD)`,
     "fi",
     'if [ "$commit_count" -gt 0 ]; then',
-    `  git -C ${remoteDir} update-ref ${exportRef} HEAD`,
+    `  ${git} update-ref ${exportRef} HEAD`,
     `  if [ -n "$bundle_base" ]; then`,
-    `    git -C ${remoteDir} bundle create ${bundlePath} ${exportRef} --not "$bundle_base" >/dev/null`,
+    `    ${git} bundle create ${bundlePath} ${exportRef} --not "$bundle_base" >/dev/null`,
     "  else",
-    `    git -C ${remoteDir} bundle create ${bundlePath} ${exportRef} >/dev/null`,
+    `    ${git} bundle create ${bundlePath} ${exportRef} >/dev/null`,
     "  fi",
     "else",
     `  : > ${bundlePath}`,
     "fi",
     statusPath
       ? [
-        `git -C ${remoteDir} status --porcelain=v1 --untracked-files=normal -z > ${shellQuote(`${input.statusPath}.git-status`)}`,
+        `${git} status --porcelain=v1 --untracked-files=normal -z > ${shellQuote(`${input.statusPath}.git-status`)}`,
         `if [ ! -s ${shellQuote(`${input.statusPath}.git-status`)} ]; then`,
         `  printf clean > ${statusPath}`,
         "else",

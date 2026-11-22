@@ -10,6 +10,7 @@ import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnostics, withWor
 
 import {
   buildRemoteGitDeltaBundleScript,
+  remoteGitCommandPrefix,
   createImportedGitRef,
   createRemoteGitExportRef,
   deleteLocalGitRef,
@@ -389,6 +390,31 @@ describe("git workspace sync", () => {
       expect(await git(upstream, ["rev-parse", "refs/heads/sandbox-change"])).toBe(cloneHead);
       expect(await git(upstream, ["merge-base", "refs/heads/main", "refs/heads/sandbox-change"])).toBe(baseHead);
     });
+  });
+
+  it("trusts the sandbox workspace directory in every generated git command", () => {
+    const remoteDir = "/work space/it's here";
+    const quoted = `'/work space/it'"'"'s here'`;
+    expect(remoteGitCommandPrefix(remoteDir)).toBe(`git -c safe.directory=${quoted} -C ${quoted}`);
+
+    for (const forceFullBundle of [false, true]) {
+      const script = buildRemoteGitDeltaBundleScript({
+        remoteDir,
+        baseSha: "abc123",
+        exportRef: "refs/paperclip/git-sync/export/sandbox/x",
+        bundlePath: "/work space/.paperclip-runtime/hermes/git-delta.bundle",
+        statusPath: "/tmp/status",
+        cleanupBundle: true,
+        forceFullBundle,
+      });
+      const gitLines = script.split("\n").filter((line) => /\bgit\b/.test(line));
+      expect(gitLines.length).toBeGreaterThan(0);
+      // No git invocation may skip the safe.directory option.
+      expect(script).not.toMatch(/git -C/);
+      expect(script.match(/git -c safe\.directory=/g)?.length).toBe(script.match(/\bgit /g)?.length);
+      expect(script).toContain(`git -c safe.directory=${quoted} -C ${quoted} bundle create`);
+      expect(script).toContain(`git -c safe.directory=${quoted} -C ${quoted} status --porcelain=v1`);
+    }
   });
 
   it("builds thin git delta bundles relative to the imported base", async () => {

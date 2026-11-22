@@ -16,7 +16,7 @@ import {
   type AdapterExecutionTarget,
   type PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
-import { disposeGitWorkspaceSnapshot, type GitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { disposeGitWorkspaceSnapshot, remoteGitCommandPrefix, type GitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import {
   directorySnapshotSha256,
   disposeDirectorySnapshot,
@@ -713,7 +713,7 @@ async function remoteStampMatches(input: {
   // starts from that same Git identity, including each managed repository.
   const gitChecks: string[] = [];
   const checkGit = (remoteDir: string, snapshot: GitWorkspaceSnapshot) => {
-    const git = `git -C ${shellQuote(remoteDir)}`;
+    const git = remoteGitCommandPrefix(remoteDir);
     gitChecks.push(`test "$(${git} rev-parse HEAD)" = ${shellQuote(snapshot.headCommit)}`);
     gitChecks.push(snapshot.branchName === null
       ? `(${git} symbolic-ref --quiet HEAD >/dev/null 2>&1; test $? -eq 1)`
