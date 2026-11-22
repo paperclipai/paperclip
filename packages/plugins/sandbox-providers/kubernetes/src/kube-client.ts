@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   KubeConfig,
   CoreV1Api,
@@ -34,10 +35,29 @@ export interface KubeClients {
   networking: NetworkingV1Api;
   rbac: RbacAuthorizationV1Api;
   object?: KubernetesObjectApi;
+  /** Stable identifier for the target cluster derived from the active KubeConfig. */
+  clusterId?: string;
   applyServerSide?: (
     manifest: Record<string, unknown>,
     fieldManager?: string,
   ) => Promise<void>;
+}
+
+/**
+ * Derives a stable, non-secret identifier for the active cluster in a KubeConfig
+ * so in-process caches and locks are strictly isolated across clusters even when
+ * different environments share the same tenant namespace name.
+ */
+export function deriveClusterId(kc: KubeConfig): string {
+  const cluster = typeof kc.getCurrentCluster === "function" ? kc.getCurrentCluster() : null;
+  const context = typeof kc.getCurrentContext === "function" ? kc.getCurrentContext() : "";
+  const raw = JSON.stringify({
+    server: cluster?.server ?? "",
+    caData: cluster?.caData ?? "",
+    caFile: cluster?.caFile ?? "",
+    context: context ?? "",
+  });
+  return createHash("sha256").update(raw).digest("hex").slice(0, 16);
 }
 
 export function makeKubeClients(kc: KubeConfig): KubeClients {
@@ -49,6 +69,7 @@ export function makeKubeClients(kc: KubeConfig): KubeClients {
     networking: kc.makeApiClient(NetworkingV1Api),
     rbac: kc.makeApiClient(RbacAuthorizationV1Api),
     object,
+    clusterId: deriveClusterId(kc),
     applyServerSide: async (manifest, fieldManager = "paperclip-k8s-plugin") => {
       await object.patch(
         manifest as never,
