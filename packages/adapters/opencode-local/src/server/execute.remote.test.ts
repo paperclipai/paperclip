@@ -12,6 +12,7 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  versionCheck,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[], _options?: { onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> }) => {
     if (args.includes("models")) {
@@ -61,7 +62,10 @@ const {
     },
     stop: async () => {},
   })),
+  versionCheck: vi.fn(async (_input: { env: Record<string, string> }) => false),
 }));
+
+vi.mock("./version.js", () => ({ usesOpenCodeV2: versionCheck }));
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
@@ -109,6 +113,7 @@ describe("opencode remote execution", () => {
     cleanupDirs.push(configHome);
     vi.stubEnv("XDG_CONFIG_HOME", configHome);
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
+    versionCheck.mockReset().mockResolvedValue(false);
   });
 
   afterEach(async () => {
@@ -124,6 +129,39 @@ describe("opencode remote execution", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("uses the realized remote workspace for OpenCode 2 version detection and execution", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "opencode-remote-v2-"));
+    cleanupDirs.push(workspace);
+    let versionToken: string | undefined;
+    versionCheck.mockImplementationOnce(async (input) => {
+      versionToken = input.env.PAPERCLIP_API_KEY;
+      return true;
+    });
+    const remoteCwd = "/remote/workspace/.paperclip-runtime/runs/run-v2/workspace";
+    await execute({
+      runId: "run-v2",
+      agent: { id: "agent", companyId: "company", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", cwd: workspace, model: "openai/gpt-4.1", variant: "high",
+        env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: {},
+      executionTransport: { remoteExecution: { host: "127.0.0.1", port: 2222, username: "fixture",
+        remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace" } },
+      authToken: "fixture-host-run-token",
+      onLog: async () => {},
+    });
+    expect(versionCheck).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: remoteCwd,
+      target: expect.objectContaining({ kind: "remote", remoteCwd }),
+    }));
+    expect(versionToken).toBe("bridge-token");
+    const run = runChildProcess.mock.calls.find((entry) => entry[2].includes("run"))!;
+    expect(run[2]).toContain("openai/gpt-4.1#high");
+    expect(run[2]).not.toContain("--dir");
+    expect(run[2]).not.toContain("--variant");
+    expect((run[3] as { env: Record<string, string> }).env.PWD).toBe(remoteCwd);
   });
 
   it.each([[false, false], [false, true], [true, false], [true, true]])(

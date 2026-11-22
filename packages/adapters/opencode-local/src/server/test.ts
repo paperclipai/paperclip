@@ -30,6 +30,7 @@ import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable, requ
 import { openCodeErrorStatusCodes, parseOpenCodeJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
+import { usesOpenCodeV2 } from "./version.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -386,11 +387,6 @@ export async function testEnvironment(
       const variant = asString(config.variant, "").trim();
       const probeModel = configuredModel;
 
-      const args = ["run", "--format", "json"];
-      args.push("--model", probeModel);
-      if (variant) args.push("--variant", variant);
-      if (extraArgs.length > 0) args.push(...extraArgs);
-
       // Sandbox bridges still add cold-start and transport overhead, but the
       // standard-2 Cloudflare tier now probes quickly enough that 90s keeps
       // useful headroom without letting slow hangs linger.
@@ -398,6 +394,19 @@ export async function testEnvironment(
         1,
         asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 60),
       );
+      const opencodeV2 = await usesOpenCodeV2({
+        runId,
+        target: runtimeTarget,
+        command,
+        cwd: runtimeCwd,
+        env: runtimeEnv,
+        timeoutSec: helloProbeTimeoutSec,
+      });
+      if (opencodeV2) runtimeEnv.PWD = runtimeCwd;
+      const args = ["run", "--format", "json"];
+      args.push("--model", opencodeV2 && variant ? `${probeModel.split("#", 1)[0]}#${variant}` : probeModel);
+      if (variant && !opencodeV2) args.push("--variant", variant);
+      if (extraArgs.length > 0) args.push(...extraArgs);
 
       try {
         const probe = await runAdapterExecutionTargetProcess(

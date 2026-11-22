@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+vi.mock("./version.js", () => ({ usesOpenCodeV2: async () => false }));
+
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, runAdapterExecutionTargetProcess: vi.fn() };

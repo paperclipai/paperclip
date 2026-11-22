@@ -64,6 +64,7 @@ import {
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
+import { usesOpenCodeV2 } from "./version.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
 
@@ -343,6 +344,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    if (!executionTargetIsRemote) runtimeEnv.PWD = cwd;
     const adapterExecutionTimeout = resolveAdapterExecutionTargetTimeout(
       executionTarget,
       asNumber(config.timeoutSec, 0),
@@ -510,6 +512,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           });
         }
       }
+      const opencodeV2 = await usesOpenCodeV2({
+        runId,
+        target: runtimeExecutionTarget ?? null,
+        command,
+        cwd: effectiveExecutionCwd,
+        env: executionTargetIsRemote ? preparedRuntimeConfig.env : runtimeEnv,
+        timeoutSec,
+        signal: ctx.signal,
+      });
+      if (opencodeV2) {
+        preparedRuntimeConfig.env.PWD = effectiveExecutionCwd;
+        loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
+          runtimeEnv: { ...runtimeEnv, PWD: effectiveExecutionCwd },
+          includeRuntimeKeys: ["HOME"],
+          resolvedCommand,
+        });
+      }
 
       const runtimeSessionParams = parseObject(runtime.sessionParams);
       const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -627,13 +646,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const args = ["run", "--format", "json"];
         if (printLogs) args.push("--print-logs");
         if (resumeSessionId) args.push("--session", resumeSessionId);
-        if (model) args.push("--model", model);
-        if (variant) args.push("--variant", variant);
+        if (model) args.push("--model", opencodeV2 && variant ? `${model.split("#", 1)[0]}#${variant}` : model);
+        if (variant && !opencodeV2) args.push("--variant", variant);
         // OpenCode prefers the inherited PWD over process.cwd(). Use the realized
         // workspace unless the operator already selected a directory explicitly.
         const optionTerminator = extraArgs.indexOf("--");
         const extraOptionArgs = optionTerminator === -1 ? extraArgs : extraArgs.slice(0, optionTerminator);
-        if (!extraOptionArgs.some((arg) => arg === "--dir" || arg.startsWith("--dir="))) {
+        if (!opencodeV2 && !extraOptionArgs.some((arg) => arg === "--dir" || arg.startsWith("--dir="))) {
           args.push("--dir", effectiveExecutionCwd);
         }
         if (extraArgs.length > 0) args.push(...extraArgs);

@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 
+vi.mock("../../../packages/adapters/opencode-local/src/server/version.js", () => ({
+  usesOpenCodeV2: async () => false,
+}));
+
 const processResult = vi.hoisted(() => vi.fn());
 vi.mock("@paperclipai/adapter-utils/execution-target", async (original) => ({
   ...await original<typeof import("@paperclipai/adapter-utils/execution-target")>(),
