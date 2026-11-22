@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import { readProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { redactObservabilityDiagnostic } from "../agent-observability.js";
+import { RUNNER_TERMINAL_FAILURE_CODES } from "./terminal-failure.js";
 
 type Attributes = Record<string, string | number | boolean>;
 type Outcome = "completed" | "failed" | "cancelled" | "interrupted" | "superseded" | "observer_closed";
@@ -15,7 +16,7 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 const id = () => randomBytes(8).toString("hex");
 const maxRows = 64;
 const maxTextBytes = 8192;
-const terminalCodes = new Set(["opencode_empty_response", "opencode_output_limit_reached", "opencode_server_exited", "opencode_event_stream_lost"]);
+const terminalCodes = new Set<string>(Object.values(RUNNER_TERMINAL_FAILURE_CODES));
 function failureCode(error: unknown): string {
   const detail = record(error);
   const failure = readProviderFailure(detail.providerFailure);

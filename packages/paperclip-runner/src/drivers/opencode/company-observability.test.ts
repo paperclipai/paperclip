@@ -70,6 +70,18 @@ it("names synthetic close and replacement without guessing the provider cause", 
   expect(bodies.map(body => spanAttributes(body.resourceSpans[0].scopeSpans[0].spans[0])["paperclip.failure.code"]))
     .toEqual(["superseded", "observer_closed"]);
 });
+it.each(["0", "1"])("retains model_usage as the last completed stage with tool capture %s", async capture => {
+  const { observer, bodies } = setup({ ...environment, OTEL_LOG_TOOL_DETAILS: capture });
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("tool.execution.completed", { name: "read" }, "run-one", "tool"));
+  observer.observe(event("item.completed", { kind: "usage", usageMessageId: "message", usage: { input: 3 } }));
+  observer.observe(event("turn.failed", { error: { code: "opencode_server_exited" } }));
+  await observer.close();
+  const root = bodies[0].resourceSpans[0].scopeSpans[0].spans[0];
+  expect(spanAttributes(root)).toMatchObject({
+    "paperclip.turn.last_completed_stage": "model_usage", "paperclip.failure.code": "opencode_server_exited",
+  });
+});
 it("routes failure diagnostics only to each controller's configured company receiver", async () => {
   for (const company of ["first-company", "second-company"]) {
     const endpoint = `https://${company}.example/v1/traces`;
