@@ -63,6 +63,23 @@ describe("native status authority", () => {
     expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true, governanceGate: { kind: "execution_stage", id: "run" } }))
       .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
   });
+  it("hands the task on from the reviewer's recorded stage decision, whatever its finish report says", () => {
+    for (const handoff of ["in_review", "in_progress"] as const) {
+      const handed = { statusAction: handoff, toStatus: handoff, reasonCode: "execution_stage_decision_recorded",
+        unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+      expect(arbitrate({ executionStageHandoffByRun: handoff })).toMatchObject(handed);
+      // The durable decision outranks the report's own disposition and a failed provider turn.
+      expect(arbitrate({ executionStageHandoffByRun: handoff, assessment: assessment({ reportedDisposition: "needs_review" }) }))
+        .toMatchObject(handed);
+      expect(arbitrate({ executionStageHandoffByRun: handoff, terminalState: "failed" })).toMatchObject(handed);
+    }
+    // Without a recorded decision those reports keep their ordinary outcomes.
+    expect(arbitrate()).toMatchObject({ toStatus: "done", reasonCode: "completion_contract_satisfied" });
+    expect(arbitrate({ assessment: assessment({ reportedDisposition: "needs_review" }) }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete" });
+    expect(arbitrate({ terminalState: "failed" }))
+      .toMatchObject({ statusAction: "preserve", reasonCode: "run_failed_partial_evidence_preserved" });
+  });
   it("cannot complete an explicitly required quality review from claims or file evidence", () => {
     expect(arbitrate({ completionClaimPolicyAccepted: true, requiredQualityReviewSatisfied: false }))
       .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });

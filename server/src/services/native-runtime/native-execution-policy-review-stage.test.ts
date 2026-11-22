@@ -2,7 +2,7 @@ import * as pullRequestMerge from "../github-pull-request-merge.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentWakeupRequests, agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueThreadInteractions, issueWorkProducts, issues, statusDecisions } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueExecutionDecisions, issueThreadInteractions, issueWorkProducts, issues, statusDecisions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -136,6 +136,32 @@ describe.skipIf(!support.supported)("native completion with a configured review 
     expect(r.task).toMatchObject({ status: "in_review", assigneeAgentId: r.reviewerAgentId, assigneeUserId: null });
     expect(r.task.executionState).toMatchObject({ status: "pending", currentParticipant: { type: "agent", agentId: r.reviewerAgentId } });
     expect(r.wakes.filter(wake => wake.reason === "execution_review_requested"))
+      .toEqual([expect.objectContaining({ agentId: r.reviewerAgentId, status: "queued" })]);
+  });
+
+  it("hands a recorded changes request back to the return assignee at the reviewer's finish report", async () => {
+    // The finishing run plays the stage reviewer: the issue route recorded its
+    // changes_requested decision and kept the task with it until this finish
+    // report. The configured reviewer participant plays the implementer the
+    // decision routes the work back to.
+    const r = await finishVerifiedDone({ stage: "agent", beforeFinish: async runId => {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const [task] = await db.select().from(issues).where(eq(issues.id, run.nativeIssueId!));
+      const stage = (task.executionPolicy as { stages: Array<{ id: string; participants: Array<{ agentId: string | null }> }> }).stages[0]!;
+      const decisionId = randomUUID();
+      await db.insert(issueExecutionDecisions).values({ id: decisionId, companyId: run.companyId, issueId: run.nativeIssueId!,
+        stageId: stage.id, stageType: "review", actorAgentId: run.agentId, outcome: "changes_requested",
+        body: "The hero copy must state the signup deadline.", createdByRunId: runId });
+      await db.update(issues).set({ status: "in_review", executionState: { status: "changes_requested",
+        currentStageId: stage.id, currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: run.agentId },
+        returnAssignee: { type: "agent", agentId: stage.participants[0]!.agentId }, completedStageIds: [],
+        lastDecisionId: decisionId, lastDecisionOutcome: "changes_requested" } }).where(eq(issues.id, run.nativeIssueId!));
+    } });
+    expect(r.task).toMatchObject({ status: "in_progress", assigneeAgentId: r.reviewerAgentId, assigneeUserId: null });
+    expect(r.decisions.map(row => [row.toStatus, row.reasonCode]))
+      .toEqual([["in_progress", "execution_stage_decision_recorded"]]);
+    expect(r.wakes.filter(wake => wake.reason === "execution_changes_requested"))
       .toEqual([expect.objectContaining({ agentId: r.reviewerAgentId, status: "queued" })]);
   });
 

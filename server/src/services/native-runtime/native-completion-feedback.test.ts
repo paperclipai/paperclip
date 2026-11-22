@@ -12,6 +12,7 @@ import { nativePullRequestCompletionReferences, verifyNativePullRequestCompletio
 import { workProductService } from "../work-products.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { executionStageApprovedByRun } from "./native-run-finalizer.js";
+import { executionStageHandoffByRun } from "./status-decision-committer.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
 const done: PrpStructuredRunResult = {
@@ -266,6 +267,39 @@ describe("native final-response feedback", () => {
     expect(await executionStageApprovedByRun(db, run, { id: value.issueId, executionState: { ...completed, status: "pending" } })).toBe(false);
     expect(await executionStageApprovedByRun(db, run, { id: value.issueId, executionState: { ...completed, lastDecisionOutcome: "changes_requested" } })).toBe(false);
     expect(await executionStageApprovedByRun(db, run, { id: value.issueId, executionState: { ...completed, lastDecisionId: randomUUID() } })).toBe(false);
+  });
+  it("binds a recorded stage hand-off to the decision row this run wrote", async () => {
+    const value = await fixture(), stageId = randomUUID(), nextStageId = randomUUID(), participantAgentId = randomUUID(),
+      returnAgentId = randomUUID(), approvedDecisionId = randomUUID(), changesDecisionId = randomUUID();
+    const run = { id: value.runId, companyId: value.companyId, agentId: value.agentId };
+    await db.insert(issueExecutionDecisions).values([
+      { id: approvedDecisionId, companyId: value.companyId, issueId: value.issueId, stageId, stageType: "review",
+        actorAgentId: value.agentId, outcome: "approved", body: "Approved: verified.", createdByRunId: value.runId },
+      { id: changesDecisionId, companyId: value.companyId, issueId: value.issueId, stageId, stageType: "review",
+        actorAgentId: value.agentId, outcome: "changes_requested", body: "Rework the heading.", createdByRunId: value.runId },
+    ]);
+    // The issue route keeps the task with the reviewing run, so the issue still
+    // names this run's agent as its assignee; the helper reads the assignee
+    // from the issue argument, not from the stored row.
+    const held = { id: value.issueId, assigneeAgentId: value.agentId, assigneeUserId: null };
+    const pending = { status: "pending", currentStageId: nextStageId, currentStageIndex: 1, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: participantAgentId }, returnAssignee: { type: "agent", agentId: returnAgentId },
+      completedStageIds: [stageId], lastDecisionId: approvedDecisionId, lastDecisionOutcome: "approved" };
+    const changes = { status: "changes_requested", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: value.agentId }, returnAssignee: { type: "agent", agentId: returnAgentId },
+      completedStageIds: [], lastDecisionId: changesDecisionId, lastDecisionOutcome: "changes_requested" };
+    // An approval that starts the next stage hands the task to that participant.
+    expect(await executionStageHandoffByRun(db, run, { ...held, executionState: pending }))
+      .toMatchObject({ status: "in_review", assigneePatch: { assigneeAgentId: participantAgentId, assigneeUserId: null } });
+    // A changes request hands the task back to the stored return assignee.
+    expect(await executionStageHandoffByRun(db, run, { ...held, executionState: changes }))
+      .toMatchObject({ status: "in_progress", assigneePatch: { assigneeAgentId: returnAgentId, assigneeUserId: null } });
+    // Another run's decision, a task already assigned to someone else, a
+    // completed state, or a different decision row grants no hand-off.
+    expect(await executionStageHandoffByRun(db, { ...run, id: randomUUID() }, { ...held, executionState: changes })).toBe(null);
+    expect(await executionStageHandoffByRun(db, run, { ...held, assigneeAgentId: returnAgentId, executionState: changes })).toBe(null);
+    expect(await executionStageHandoffByRun(db, run, { ...held, executionState: { ...changes, status: "completed" } })).toBe(null);
+    expect(await executionStageHandoffByRun(db, run, { ...held, executionState: { ...changes, lastDecisionId: randomUUID() } })).toBe(null);
   });
   it("rejects a duplicate approval report for the exact pending tool-action card", async () => {
     const value = await fixture(), interactionId = randomUUID();
