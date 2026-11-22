@@ -22,25 +22,15 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function settleQueries() {
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
-}
-
 async function render(node: React.ReactNode, settle = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
   await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>));
-  if (settle) await settleQueries();
+  if (settle) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1)); });
   teardown = () => { act(() => root.unmount()); host.remove(); client.clear(); };
   return host;
-}
-
-function occupyRunner<T>(value: T): T {
-  const until = performance.now() + 3;
-  while (performance.now() < until);
-  return value;
 }
 
 function HomePathProbe() {
@@ -65,13 +55,11 @@ describe("CompanyHomeRedirect", () => {
 
   it("renders nothing while the flag loads, then a single redirect", async () => {
     let resolve: (value: unknown) => void = () => {};
-    const response = new Promise((done) => { resolve = done; });
-    experimental.getExperimental.mockReturnValue(response.then(occupyRunner));
+    experimental.getExperimental.mockReturnValue(new Promise((done) => { resolve = done; }));
     const host = await render(<CompanyHomeRedirect />, false);
     expect(host.querySelector('[data-testid="navigate"]')).toBeNull();
     await act(async () => { resolve({ enableResponsibilities: true }); });
-    await settleQueries();
-    expect(host.querySelector('[data-testid="navigate"]')?.getAttribute("data-to")).toBe("/responsibilities");
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="navigate"]')?.getAttribute("data-to")).toBe("/responsibilities"));
   });
 });
 
