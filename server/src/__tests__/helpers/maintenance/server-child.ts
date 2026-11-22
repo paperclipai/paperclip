@@ -2,7 +2,7 @@ import { channel } from "node:diagnostics_channel";
 import { mock } from "node:test";
 import type { Db } from "@paperclipai/db";
 import type { Socket } from "node:net";
-import { trackDatabaseConnectionStartup } from "./database-startup.js";
+import { databasePort, trackDatabaseConnectionStartup } from "./database-startup.js";
 import { observeMaintenanceIncomingHttp } from "./incoming-http-observation.js";
 
 const realTimeout = globalThis.setTimeout, realInterval = globalThis.setInterval, clearRealInterval = globalThis.clearInterval, realNow = Date.now;
@@ -27,12 +27,12 @@ if (process.env.PAPERCLIP_MAINTENANCE_GITHUB_ORIGIN) {
   };
 }
 
-const databaseStartup = trackDatabaseConnectionStartup(Number(new URL(process.env.DATABASE_URL!).port));
+const databaseStartup = trackDatabaseConnectionStartup(databasePort(process.env.DATABASE_URL!));
 let outgoingHttpRequests = 0;
 const sockets: Array<{ socket: Socket; database: boolean }> = [];
 channel("net.client.socket").subscribe(message => {
   const socket = (message as { socket: Socket }).socket;
-  socket.once("connect", () => sockets.push({ socket, database: socket.remotePort === Number(new URL(process.env.DATABASE_URL!).port) }));
+  socket.once("connect", () => sockets.push({ socket, database: socket.remotePort === databasePort(process.env.DATABASE_URL!) }));
 });
 function network() {
   return { nonDatabaseConnections: sockets.filter(entry => !entry.database).length,
@@ -85,8 +85,7 @@ try {
         if (message.command === "realtime" && fakeClock) runClock();
         if (message.command === "advance") {
           if (!fakeClock || typeof message.ms !== "number" || !Number.isFinite(message.ms) || message.ms < 0 || message.ms > 30_000) throw new Error("Invalid maintenance clock advance");
-          do await databaseStartup.waitUntilStarted(); while (databaseStartup.starting > 0);
-          mock.timers.tick(message.ms);
+          await databaseStartup.advanceAfterStartup(ms => mock.timers.tick(ms), message.ms);
         }
         if (message.command === "drain") startTaskDrain({ purpose: "idle" });
         if (message.command === "resume") stopTaskDrain();
