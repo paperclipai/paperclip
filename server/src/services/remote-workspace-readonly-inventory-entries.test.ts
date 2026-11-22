@@ -35,8 +35,9 @@ it("inventories a workspace with more than 100,000 entries", async () => {
   expect(await readWorkspaceInventory(root, true)).toEqual(inventory);
 }, 240_000);
 
-it("still refuses one directory with more than 100,000 names", async () => {
+it("inventories one directory with more than 100,000 names", async () => {
   await writeLinks(path.join(root, "wide"), 100_000);
-  await expect(readWorkspaceInventory(root)).rejects.toThrow("remote_workspace_readonly_capture_budget");
-  await expect(readWorkspaceInventory(root, true)).rejects.toThrow("remote_workspace_readonly_capture_budget");
+  const inventory = await readWorkspaceInventory(root);
+  expect(inventory.entries).toBe(100_002);
+  expect(await readWorkspaceInventory(root, true)).toEqual(inventory);
 }, 240_000);
