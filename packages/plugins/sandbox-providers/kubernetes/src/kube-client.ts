@@ -5,6 +5,8 @@ import {
   CustomObjectsApi,
   NetworkingV1Api,
   RbacAuthorizationV1Api,
+  KubernetesObjectApi,
+  PatchStrategy,
 } from "@kubernetes/client-node";
 
 export interface CreateKubeConfigInput {
@@ -31,14 +33,31 @@ export interface KubeClients {
   custom: CustomObjectsApi;
   networking: NetworkingV1Api;
   rbac: RbacAuthorizationV1Api;
+  object?: KubernetesObjectApi;
+  applyServerSide?: (
+    manifest: Record<string, unknown>,
+    fieldManager?: string,
+  ) => Promise<void>;
 }
 
 export function makeKubeClients(kc: KubeConfig): KubeClients {
+  const object = KubernetesObjectApi.makeApiClient(kc);
   return {
     core: kc.makeApiClient(CoreV1Api),
     batch: kc.makeApiClient(BatchV1Api),
     custom: kc.makeApiClient(CustomObjectsApi),
     networking: kc.makeApiClient(NetworkingV1Api),
     rbac: kc.makeApiClient(RbacAuthorizationV1Api),
+    object,
+    applyServerSide: async (manifest, fieldManager = "paperclip-k8s-plugin") => {
+      await object.patch(
+        manifest as never,
+        undefined,
+        undefined,
+        fieldManager,
+        true,
+        PatchStrategy.ServerSideApply,
+      );
+    },
   };
 }

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { ensureTenant } from "../../src/tenant-orchestrator.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { clearTenantReconcileCache, ensureTenant } from "../../src/tenant-orchestrator.js";
 
 function makeMockClients() {
   const calls: { kind: string; name: string; namespace?: string; body?: unknown }[] = [];
@@ -31,13 +31,44 @@ function makeMockClients() {
     networking: {
       readNamespacedNetworkPolicy: vi.fn().mockRejectedValue({ code: 404 }),
       createNamespacedNetworkPolicy: track("NetworkPolicy"),
+      deleteNamespacedNetworkPolicy: vi.fn().mockRejectedValue({ code: 404 }),
     },
     custom: {
       getNamespacedCustomObject: vi.fn().mockRejectedValue({ code: 404 }),
       createNamespacedCustomObject: track("CiliumNetworkPolicy"),
+      deleteNamespacedCustomObject: vi.fn().mockRejectedValue({ code: 404 }),
     },
   };
 }
+
+function makeSsaMockClients() {
+  const events: string[] = [];
+  const applied: Array<{ manifest: Record<string, unknown>; fieldManager?: string }> = [];
+  return {
+    events,
+    applied,
+    applyServerSide: vi.fn(async (manifest: Record<string, unknown>, fieldManager?: string) => {
+      const kind = String(manifest.kind ?? "");
+      const name = String((manifest.metadata as { name?: string } | undefined)?.name ?? "");
+      events.push(`apply:${kind}:${name}`);
+      applied.push({ manifest, fieldManager });
+    }),
+    networking: {
+      deleteNamespacedNetworkPolicy: vi.fn(async (arg: { name: string }) => {
+        events.push(`delete:NetworkPolicy:${arg.name}`);
+      }),
+    },
+    custom: {
+      deleteNamespacedCustomObject: vi.fn(async (arg: { name: string }) => {
+        events.push(`delete:CiliumNetworkPolicy:${arg.name}`);
+      }),
+    },
+  };
+}
+
+beforeEach(() => {
+  clearTenantReconcileCache();
+});
 
 describe("ensureTenant", () => {
   const baseInput = {
@@ -97,10 +128,71 @@ describe("ensureTenant", () => {
 
   it("tolerates a 409 AlreadyExists from a concurrent ensure for the same tenant", async () => {
     const clients = makeMockClients();
-    // Both racers saw the 404 read; the loser's create returns 409, which means
-    // the desired state exists and must not fail the lease acquisition.
     clients.core.createNamespace.mockRejectedValue({ statusCode: 409 });
     clients.core.createNamespacedServiceAccount.mockRejectedValue({ code: 409 });
     await expect(ensureTenant(clients as never, baseInput)).resolves.not.toThrow();
+  });
+
+  it("reconciles all tenant resources via Server-Side Apply and preserves canonical names", async () => {
+    const clients = makeSsaMockClients();
+    await ensureTenant(clients as never, baseInput);
+    expect(clients.applied).toHaveLength(8);
+    expect(clients.applied.every((a) => a.fieldManager === "paperclip-k8s-plugin")).toBe(true);
+    expect(clients.events).toEqual([
+      "apply:Namespace:paperclip-acme",
+      "apply:ServiceAccount:paperclip-tenant-sa",
+      "apply:Role:paperclip-tenant-role",
+      "apply:RoleBinding:paperclip-tenant-rb",
+      "apply:ResourceQuota:paperclip-quota",
+      "apply:LimitRange:paperclip-limits",
+      "apply:NetworkPolicy:paperclip-deny-all",
+      "apply:NetworkPolicy:paperclip-egress-allow",
+      "delete:CiliumNetworkPolicy:paperclip-egress-fqdn",
+    ]);
+  });
+
+  it("caches tenant reconciliation for 5 minutes and invalidates on config change or TTL expiry", async () => {
+    let clock = 1_000_000;
+    const clients = makeSsaMockClients();
+
+    await ensureTenant(clients as never, { ...baseInput, now: () => clock });
+    expect(clients.applyServerSide).toHaveBeenCalledTimes(8);
+
+    clock += 60_000;
+    await ensureTenant(clients as never, { ...baseInput, now: () => clock });
+    expect(clients.applyServerSide).toHaveBeenCalledTimes(8);
+
+    await ensureTenant(clients as never, {
+      ...baseInput,
+      resourceQuota: { ...baseInput.resourceQuota, pods: "40" },
+      now: () => clock,
+    });
+    expect(clients.applyServerSide).toHaveBeenCalledTimes(16);
+
+    clock += 5 * 60 * 1000 + 1;
+    await ensureTenant(clients as never, {
+      ...baseInput,
+      resourceQuota: { ...baseInput.resourceQuota, pods: "40" },
+      now: () => clock,
+    });
+    expect(clients.applyServerSide).toHaveBeenCalledTimes(24);
+  });
+
+  it("applies CiliumNetworkPolicy BEFORE deleting stale standard NetworkPolicy when switching to cilium", async () => {
+    const clients = makeSsaMockClients();
+    await ensureTenant(clients as never, { ...baseInput, egressMode: "cilium" });
+    const applyIdx = clients.events.indexOf("apply:CiliumNetworkPolicy:paperclip-egress-fqdn");
+    const deleteIdx = clients.events.indexOf("delete:NetworkPolicy:paperclip-egress-allow");
+    expect(applyIdx).toBeGreaterThan(-1);
+    expect(deleteIdx).toBeGreaterThan(applyIdx);
+  });
+
+  it("applies standard NetworkPolicy BEFORE deleting stale CiliumNetworkPolicy when switching to standard", async () => {
+    const clients = makeSsaMockClients();
+    await ensureTenant(clients as never, { ...baseInput, egressMode: "standard" });
+    const applyIdx = clients.events.indexOf("apply:NetworkPolicy:paperclip-egress-allow");
+    const deleteIdx = clients.events.indexOf("delete:CiliumNetworkPolicy:paperclip-egress-fqdn");
+    expect(applyIdx).toBeGreaterThan(-1);
+    expect(deleteIdx).toBeGreaterThan(applyIdx);
   });
 });
