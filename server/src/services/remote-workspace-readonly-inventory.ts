@@ -23,8 +23,12 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
     const directory = path.join(root, relative), before = await fs.lstat(directory);
     if (!before.isDirectory() || before.isSymbolicLink() || await fs.realpath(directory) !== directory) fail();
     const names: string[] = [];
+    // Normal capture has no entry cap: its sealed manifest is limited to
+    // 64 MiB (about 1.6 million of the smallest entries), and this fallback
+    // seals with the same codec. This bound only stops runaway fan-out, so it
+    // must admit any tree normal capture can archive. Deadlines bound time.
     for await (const entry of await fs.opendir(directory)) {
-      check(); if (++scannedEntries > 100_000) budget(); names.push(entry.name);
+      check(); if (++scannedEntries > 2_000_000) budget(); names.push(entry.name);
     }
     const inGit = relative.split("/").includes(".git");
     const repository = !inGit && names.includes(".git") ? directory : parentRepository;
