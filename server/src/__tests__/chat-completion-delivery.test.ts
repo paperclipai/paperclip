@@ -375,6 +375,32 @@ import { ALREADY_REPORTED_WAKE_REASON, createPostgresWakeQueueAdapter } from "..
     await f.due(); await f.service.sweepPending();
     expect(await f.rows()).toMatchObject([{ status: "superseded" }]);
   });
+  it.each(["reset", "reopen"])("cancels a completion turn that a %s superseded before it started", async kind => {
+    const f = await seed(); await f.finish(); const [delivery] = await f.rows();
+    await db.update(issues).set({ responsibleUserId: "operator" }).where(eq(issues.id, f.sourceId));
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      triggerDetail: "system", reason: "chat_task_completed", status: "queued", requestedByActorType: "system",
+      requestedByActorId: "chat_completion_delivery", idempotencyKey: `chat-completion:${delivery.id}:0` }).returning();
+    const [queued] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "queued",
+      invocationSource: "automation", triggerDetail: "system", wakeupRequestId: wake.id,
+      contextSnapshot: { issueId: f.sourceId, taskId: f.sourceId, wakeReason: "chat_task_completed",
+        chatCompletionDeliveryIds: [delivery.id], conversationSessionGeneration: 0 } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: queued.id }).where(eq(agentWakeupRequests.id, wake.id));
+    await db.update(deliveries).set({ status: "queued", targetRunId: queued.id }).where(eq(deliveries.id, delivery.id));
+    if (kind === "reset") await db.update(issues).set({ conversationSessionGeneration: 1 }).where(eq(issues.id, f.sourceId));
+    else await issueService(db).update(f.task.id, { status: "todo" });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+    await heartbeat.drainActiveRunExecutions();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id))).toMatchObject([{ status: "cancelled",
+      errorCode: "chat_completion_superseded", resultJson: { cancellation: { source: "control_plane", expected: true } } }]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id))).toMatchObject([{ status: "cancelled" }]);
+    expect(await db.select().from(agents).where(eq(agents.id, f.agentId))).toMatchObject([{ status: "idle", errorReason: null }]);
+    expect(await db.select().from(issues).where(eq(issues.id, f.sourceId))).toMatchObject([{ status: "in_progress", executionRunId: null }]);
+    await f.due(); await f.service.sweepPending();
+    expect(f.wakeup).not.toHaveBeenCalled();
+    expect(await f.rows()).toMatchObject([{ status: "superseded" }]);
+  });
   it("recovers the wake receipt if the dispatcher crashes before saving the run pointer", async () => {
     const f = await seed(); await f.finish(); const [delivery] = await f.rows();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
