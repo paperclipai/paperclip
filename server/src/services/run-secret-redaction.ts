@@ -25,6 +25,7 @@ const REGISTRY_KEY = "paperclipSecretRedactions";
 const OUTPUT_SECRET_KEY = "paperclipOutputSecretRedactions";
 // Project only the registry: run contexts can contain megabytes of prompt data.
 const registrySnapshot = sql`jsonb_build_object('paperclipSecretRedactions', ${heartbeatRuns.contextSnapshot} -> 'paperclipSecretRedactions')`;
+const hasRegistry = sql`${heartbeatRuns.contextSnapshot} ? 'paperclipSecretRedactions'`;
 
 export function runSecretRedactionVersionSql() {
   return sql<string>`md5(coalesce((${heartbeatRuns.contextSnapshot}->${REGISTRY_KEY})::text, ''))`;
@@ -159,6 +160,7 @@ export function createRunSecretRedactionRegistry(db: Db) {
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, companyId),
+        hasRegistry,
         or(
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
           sql`${heartbeatRuns.contextSnapshot} -> 'paperclipIssue' ->> 'id' = ${issueId}`,
