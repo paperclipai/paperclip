@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agentWakeupRequests,
   agents,
   approvals,
@@ -30,6 +31,8 @@ import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
+const TASK_WATCHDOG_MAX_CORRECTIONS_PER_STOP_EVENT = 5;
+const TASK_WATCHDOG_CORRECTION_ACTION = "issue.task_watchdog_finding_corrected";
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
 const TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
@@ -1693,13 +1696,59 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       ));
   }
 
+  async function authorizeCorrection(
+    scope: { watchdogId: string; companyId: string; stopFingerprint: string | null },
+    issueId: string,
+    body: string,
+  ): Promise<{ ok: true; retractedCommentId: string } | { ok: false; reason: string }> {
+    const candidates = body.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? [];
+    let retractedCommentId: string | null = null;
+    for (const candidate of new Set(candidates.map((value) => value.toLowerCase()))) {
+      const found = await db
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.id, candidate),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.companyId, scope.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (found) {
+        retractedCommentId = found.id;
+        break;
+      }
+    }
+    if (!retractedCommentId) {
+      return {
+        ok: false,
+        reason: "Task-watchdog correction comments must contain the id of an existing comment on this issue that they retract.",
+      };
+    }
+    const [used] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, scope.companyId),
+        eq(activityLog.action, TASK_WATCHDOG_CORRECTION_ACTION),
+        sql`${activityLog.details}->>'watchdogId' = ${scope.watchdogId}`,
+        sql`${activityLog.details}->>'stopFingerprint' = ${scope.stopFingerprint}`,
+      ));
+    if ((used?.count ?? 0) >= TASK_WATCHDOG_MAX_CORRECTIONS_PER_STOP_EVENT) {
+      return {
+        ok: false,
+        reason: `Task-watchdog correction limit of ${TASK_WATCHDOG_MAX_CORRECTIONS_PER_STOP_EVENT} per stop event is exhausted.`,
+      };
+    }
+    return { ok: true, retractedCommentId };
+  }
+
   async function revalidateMutationScope(scope: {
     kind: "watchdog";
     watchdogId: string;
     companyId: string;
     watchedIssueId: string;
     stopFingerprint: string | null;
-  }) {
+  }, intent: "mutate" | "comment" = "mutate") {
     if (!scope.stopFingerprint) {
       return {
         allowed: false as const,
@@ -1727,7 +1776,22 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
-      return { allowed: true as const, classification };
+      return { allowed: true as const, correction: false as const, classification };
+    }
+    if (
+      classification.state === "already_reviewed" &&
+      classification.stopFingerprint === scope.stopFingerprint
+    ) {
+      return { allowed: true as const, correction: false as const, classification };
+    }
+    if (
+      intent === "comment" &&
+      classification.state !== "incomplete" &&
+      classification.state !== "not_applicable" &&
+      (watchdog.lastReviewedFingerprint === scope.stopFingerprint ||
+        watchdog.lastObservedFingerprint === scope.stopFingerprint)
+    ) {
+      return { allowed: true as const, correction: true as const, classification };
     }
 
     return {
@@ -1955,5 +2019,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     },
 
     revalidateMutationScope,
+    authorizeCorrection,
   };
 }
