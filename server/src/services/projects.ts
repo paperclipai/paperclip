@@ -671,6 +671,67 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
+export type ProjectParentLookup = (projectId: string) => Promise<{
+  id: string;
+  companyId: string;
+  archivedAt: Date | null;
+  parentProjectId: string | null;
+} | null>;
+
+export async function assertProjectParentBinding(input: {
+  companyId: string;
+  projectId: string | null;
+  parentProjectId: string | null | undefined;
+  lookup: ProjectParentLookup;
+}): Promise<void> {
+  const { companyId, projectId, parentProjectId, lookup } = input;
+  if (parentProjectId === undefined || parentProjectId === null) return;
+  if (projectId && parentProjectId === projectId) {
+    throw unprocessable("A project cannot be its own parent.");
+  }
+  const seen = new Set<string>();
+  let currentId: string | null = parentProjectId;
+  let hops = 0;
+  while (currentId) {
+    if (projectId && currentId === projectId) {
+      throw conflict("That parent would create a cycle in the project tree.");
+    }
+    if (seen.has(currentId)) {
+      throw conflict("The parent chain already contains a cycle.");
+    }
+    seen.add(currentId);
+    const row = await lookup(currentId);
+    if (!row) throw unprocessable("Parent project not found.");
+    if (row.companyId !== companyId) {
+      throw unprocessable("Parent project must belong to the same company.");
+    }
+    if (hops === 0 && row.archivedAt) {
+      throw unprocessable("Parent project is archived.");
+    }
+    currentId = row.parentProjectId;
+    hops += 1;
+    if (hops > 500) {
+      throw conflict("The project tree is too deep or contains a cycle.");
+    }
+  }
+}
+
+export function projectParentLookup(dbOrTx: Pick<Db, "select">): ProjectParentLookup {
+  return async (projectId) => {
+    const [row] = await dbOrTx
+      .select({
+        id: projects.id,
+        companyId: projects.companyId,
+        archivedAt: projects.archivedAt,
+        parentProjectId: projects.parentProjectId,
+      })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    return row ?? null;
+  };
+}
+
 export function projectService(db: Db, options: { captureWorkspaceUpdates?: boolean } = {}) {
   const createProject = async (
     companyId: string,
@@ -701,6 +762,12 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      await assertProjectParentBinding({
+        companyId,
+        projectId: null,
+        parentProjectId: projectData.parentProjectId,
+        lookup: projectParentLookup(txDb),
+      });
       const row = await tx
         .insert(projects)
         .values({ ...projectData, executionWorkspacePolicy, goalId: legacyGoalId, companyId })
@@ -1046,6 +1113,14 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       }
 
       const row = await db.transaction(async (tx) => {
+        if (projectData.parentProjectId !== undefined) {
+          await assertProjectParentBinding({
+            companyId: existingProject.companyId,
+            projectId: id,
+            parentProjectId: projectData.parentProjectId,
+            lookup: projectParentLookup(tx as unknown as Db),
+          });
+        }
         if (updates.visibility !== undefined) {
           await notifyStatusCardIssueChange(tx, existingProject.companyId);
           await notifyChatInboundWakeNotices(tx, { companyId: existingProject.companyId });
