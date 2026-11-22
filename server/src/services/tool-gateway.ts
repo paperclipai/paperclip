@@ -41,7 +41,7 @@ import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access
 import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 import { usesClientCredentials } from "./tool-access/oauth/client-credentials.js";
-import { boundedMcpToolName } from "./mcp-tool-names.js";
+import { boundedMcpToolName, mayBeBoundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
 import { isBrowserUseConnection } from "./browser-use-client.js";
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl, callCogneeCloud } from "./cognee-connection.js";
@@ -1079,6 +1079,11 @@ function riskFromCatalogEntry(
   return "read";
 }
 
+const SLUG_SEGMENT_SEPARATOR = /[^a-z0-9]+/g;
+const SLUG_SEGMENT_LIMIT = 64;
+const CONNECTED_TOOL_SLUG_FALLBACK = "tool";
+const NON_ASCII_TOOL_NAME = /[^\x01-\x7f]/;
+
 export function slugSegment(
   value: string | null | undefined,
   fallback: string,
@@ -1086,9 +1091,9 @@ export function slugSegment(
   const slug = String(value ?? "")
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
+    .replace(SLUG_SEGMENT_SEPARATOR, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
+    .slice(0, SLUG_SEGMENT_LIMIT);
   return slug || fallback;
 }
 
@@ -1828,15 +1833,40 @@ export function createToolGatewayService(
     );
   }
 
+  function exactConnectedToolScope(name: string) {
+    // Hashed aliases may have lost the UUID prefix when their namespace was truncated.
+    if (mayBeBoundedMcpToolName(name)) return undefined;
+    const match = /^(?:app|mcp)\.[a-z0-9-]+-([a-f0-9]{8}):([a-z0-9-]+)$/.exec(name);
+    if (!match) return undefined;
+    const [, prefix, slug] = match;
+    if (!prefix || !slug) return undefined;
+    // A suffix can be part of the original slug or the ID of a colliding entry.
+    const base = slug.replace(/-[a-f0-9]{8}$/, "");
+    return { prefix, slugs: base === slug ? [slug] : [slug, base] };
+  }
+
   async function connectedMcpToolsForCompany(
     companyId: string,
     scope?: { connectionIds: ReadonlySet<string>; preserveToolNames?: true },
+    exact?: ReturnType<typeof exactConnectedToolScope>,
   ): Promise<ToolGatewayDescriptor[]> {
     if (scope?.connectionIds.size === 0) return [];
     // Equal gateway base names require the same short connection UUID. Include
     // these peers in the catalog snapshot so their eligible tools still affect naming.
     let connectionScope: SQL | undefined;
-    if (scope?.preserveToolNames) {
+    if (exact) {
+      // Match slugSegment for ASCII and keep Unicode candidates for the JS name builder.
+      const normalizedSlug = sql<string>`coalesce(nullif(left(btrim(regexp_replace(
+        lower(${toolCatalogEntries.toolName} collate "C"), ${SLUG_SEGMENT_SEPARATOR.source}, '-', 'g'
+      ), '-'), ${SLUG_SEGMENT_LIMIT}), ''), ${CONNECTED_TOOL_SLUG_FALLBACK})`;
+      connectionScope = and(
+        sql`split_part(${toolConnections.id}::text, '-', 1) = ${exact.prefix}`,
+        or(
+          inArray(normalizedSlug, exact.slugs),
+          sql`${toolCatalogEntries.toolName} collate "C" ~ ${NON_ASCII_TOOL_NAME.source}`,
+        ),
+      );
+    } else if (scope?.preserveToolNames) {
       const prefixes = [...new Set(Array.from(scope.connectionIds, shortStableId))];
       connectionScope = sql`split_part(${toolConnections.id}::text, '-', 1) = any(${sql.param(prefixes)}::text[])`;
     } else if (scope) {
@@ -1953,7 +1983,7 @@ export function createToolGatewayService(
   }>): ToolGatewayDescriptor[] {
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
-        const toolSlug = slugSegment(catalogEntry.toolName, "tool");
+        const toolSlug = slugSegment(catalogEntry.toolName, CONNECTED_TOOL_SLUG_FALLBACK);
         return `${connectionToolNamespace({
           connectionId: connection.id, transport: connection.transport, connectionName: connection.name,
           config: connection.config, applicationKey: application.applicationKey, applicationName: application.name,
@@ -2051,10 +2081,15 @@ export function createToolGatewayService(
   async function connectedMcpToolsForConnection(
     companyId: string,
     connectionId: string,
+    upstreamToolName?: string | null,
   ): Promise<ToolGatewayDescriptor[]> {
-    return (await connectedMcpToolsForCompany(companyId)).filter(
-      (tool) => tool.connectionId === connectionId,
-    );
+    const exact = typeof upstreamToolName === "string"
+      ? { prefix: shortStableId(connectionId), slugs: [slugSegment(upstreamToolName, CONNECTED_TOOL_SLUG_FALLBACK)] }
+      : undefined;
+    return connectedMcpToolsForCompany(companyId, {
+      connectionIds: new Set([connectionId]),
+      preserveToolNames: true,
+    }, exact);
   }
 
   async function assertAgentInCompany(
@@ -3387,8 +3422,13 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     toolName: string,
   ): Promise<ToolGatewayDescriptor> {
-    const connectedTools = (await connectedMcpToolsForCompany(session.companyId)).filter(isModelVisibleTool);
-    const hasOnDemandTargets = connectedTools.some(isOnDemandRemoteTool);
+    const exact = exactConnectedToolScope(toolName);
+    let connectedTools = (await connectedMcpToolsForCompany(session.companyId, undefined, exact)).filter(isModelVisibleTool);
+    if (exact && connectedTools.filter((candidate) => candidate.name === toolName).length > 1) {
+      // Preserve the existing lookup order for duplicate canonical aliases.
+      connectedTools = (await connectedMcpToolsForCompany(session.companyId)).filter(isModelVisibleTool);
+    }
+    const hasOnDemandTargets = !exact && connectedTools.some(isOnDemandRemoteTool);
     const virtualTools = hasOnDemandTargets ? VIRTUAL_TOOLS : [];
     const githubBotTools = await githubBotToolsForSession(db, session);
     const tool = [...await toolsForAgent(session.companyId, session.agentId), ...connectedTools, ...virtualTools, ...githubBotTools, ...await slackToolsForSession(db, session), ...await spekoToolsForSession(db, session)]
@@ -3444,12 +3484,14 @@ export function createToolGatewayService(
         // gets its own catalog descriptor and policy checks; never replay a call.
         for (let attempt = 0; attempt < 2; attempt += 1) {
           const grant = selected.grant!;
-          const target = connectedTools.find(
-            (candidate) =>
-              candidate.connectionId === grant.connectionId &&
-              candidate.upstreamToolName === tool.upstreamToolName &&
-              candidate.providerType === tool.providerType,
-          );
+          const matchesTarget = (candidate: ToolGatewayDescriptor) =>
+            candidate.connectionId === grant.connectionId &&
+            candidate.upstreamToolName === tool.upstreamToolName &&
+            candidate.providerType === tool.providerType &&
+            isModelVisibleTool(candidate);
+          const target = connectedTools.find(matchesTarget) ?? (exact
+            ? (await connectedMcpToolsForConnection(session.companyId, grant.connectionId, tool.upstreamToolName)).find(matchesTarget)
+            : undefined);
           if (!target)
             throw new ToolGatewayHttpError(
               404,
@@ -11429,7 +11471,11 @@ export function createToolGatewayService(
         input.body.displaySlug ??
         input.body.slug ??
         slugSegment(input.body.name, "gateway");
-      const gateway = await db.transaction(async tx => {
+      // The create locks the agent row, then its insert takes key-share on the
+      // company and profile rows. A writer that locks those in the other order
+      // can make this transaction the deadlock victim. The rolled-back attempt
+      // wrote nothing, so a bounded retry of the whole transaction is safe.
+      const gateway = await retryTransientLockContention(() => db.transaction(async tx => {
         await assertAgentToolAssignmentInteractions(tx as unknown as Db,
           input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : input.actor?.agentId,
           input.companyId, input.body.agentId ? [input.body.agentId] : []);
@@ -11482,7 +11528,7 @@ export function createToolGatewayService(
           })
           .onConflictDoNothing();
         return gateway;
-      });
+      }));
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,

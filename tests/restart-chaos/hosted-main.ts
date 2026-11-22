@@ -164,6 +164,7 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
       health: () => continuity(probe.samples), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
       quietMs: options.quietMs,
       stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records), banners: () => new Map(workload.banners),
+      tasks: () => workload.records, wantedReleases: options.releases,
       agentNames: Object.values(state.agents).map(agent => agent!.name),
       lastReleaseAt: releases.at(-1)?.lastOldAt ?? Date.now(), settleMs: options.settleMs, drainMs: options.drainMs, dir, cancelled, record });
     console.info(`\n${graded.markdown}`);
