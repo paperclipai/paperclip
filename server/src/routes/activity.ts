@@ -104,6 +104,10 @@ const createActivitySchema = z.object({
   details: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
+const companyActivityQuerySchema = z.object({
+  agentId: z.preprocess((value) => (value === "" ? undefined : value), z.string().guid().optional()),
+});
+
 const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
 
 const agentActionAuditQuerySchema = z.object({
@@ -233,9 +237,14 @@ export function activityRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, companyId))) return;
 
+    const parsedQuery = companyActivityQuerySchema.safeParse({ agentId: req.query.agentId });
+    if (!parsedQuery.success) {
+      throw badRequest("Invalid activity query", parsedQuery.error.issues);
+    }
+
     const filters = {
       companyId,
-      agentId: req.query.agentId as string | undefined,
+      agentId: parsedQuery.data.agentId,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
