@@ -115,7 +115,7 @@ function stripGitHubCommentCodeSpans(body: string): string {
       indentedCode = true;
       continue;
     }
-    if (run && (!indented || (listIndent !== null && indent < listIndent + 4))) {
+    if (run && (!indented || (listIndent !== null && indent >= listIndent && indent < listIndent + 4))) {
       fenceChar = run[1][0];
       fenceLen = run[1].length;
       fenceListIndent = listIndent !== null && indent >= listIndent ? listIndent : null;

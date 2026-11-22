@@ -102,6 +102,17 @@ describe("explicit GitHub mentions", () => {
     expect(githubBodyMentionsBot("100. item\n    continuation\n\n    @maya", "maya[bot]")).toBe(false);
   });
 
+  it("keeps a fence-looking lazy continuation as list paragraph text", () => {
+    // "    ~~~"/"    ```" sit below the list content column, so they continue
+    // the item's paragraph as text instead of opening a code fence.
+    expect(githubBodyMentionsBot("100. item\n    ~~~\n@maya help", "maya[bot]")).toBe(true);
+    expect(githubBodyMentionsBot("100. item\n    ```\n@maya help", "maya[bot]")).toBe(true);
+    // A fence at the list content column still opens inside the item.
+    expect(githubBodyMentionsBot("100. item\n     ~~~\n     @maya help\n     ~~~", "maya[bot]")).toBe(false);
+    // A top-level fence at column zero still interrupts the list.
+    expect(githubBodyMentionsBot("100. item\n~~~\n@maya help\n~~~", "maya[bot]")).toBe(false);
+  });
+
   it("downgrades a code-only mention trigger before the envelope is addressed", async () => {
     const message = {
       id: "m1", text: "@maya", isMention: true,
