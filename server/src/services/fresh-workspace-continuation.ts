@@ -297,7 +297,7 @@ async function stoppedNativeContinuationWorkspace(db: Db, source: typeof heartbe
   )).where(and(eq(issues.companyId, source.companyId), eq(issues.id, input.issueId),
     eq(issues.assigneeAgentId, source.agentId), eq(executionWorkspaces.id, parsed.data.executionWorkspaceId),
     eq(executionWorkspaces.cwd, parsed.data.workspaceCwd), eq(executionWorkspaces.status, "active"),
-    eq(executionWorkspaces.providerType, "local_fs"),
+    inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]),
     or(isNull(executionWorkspaces.sourceIssueId), eq(executionWorkspaces.sourceIssueId, input.issueId)),
   )).limit(1);
   if (!bound) throw new Error("Verified native continuation workspace binding changed");
