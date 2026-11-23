@@ -17,7 +17,7 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
 import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
-import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { endSupersededNativeFinalizationRuns, finalizeNativeRun, NATIVE_FINALIZATION_SUPERSEDED } from "./native-run-finalizer.js";
 import { projectCommittedRun } from "./native-run-projection.js";
 import { NATIVE_RUN_FINALIZATION_WORK_QUERY } from "../idle-sleep-safety.js";
 import { nativeResponsePresentationCandidates } from "./native-response-presentation-query.js";
@@ -233,6 +233,9 @@ describe("durable native provider capacity retry", () => {
         const [saved] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId));
         const { acceptedOutcome: _dropped, ...older } = saved.resultJson as Record<string, unknown>;
         await db.update(nativeRunResults).set({ resultJson: older }).where(eq(nativeRunResults.id, saved.id));
+        const [accepting] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        await db.update(heartbeatRuns).set({ resultJson: { ...accepting.resultJson,
+          prpRunTerminalState: terminal.runTerminalState, prpTurnTerminalState: terminal.turnTerminalState } }).where(eq(heartbeatRuns.id, runId));
       }
       return { result, terminal, turnId: native.turnId, normalizedSessionId: native.normalizedSessionId, providerSessionId: "fixture-session", driverKind: "codex_app_server", driverVersion: "fixture", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
     });
@@ -245,6 +248,15 @@ describe("durable native provider capacity retry", () => {
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
     await projectCommittedRun({ db, run: projectedRun, coordinator });
     return adapter;
+  }
+
+  /** A later finalization attempt was superseded: the run ends from its saved terminal state. */
+  async function endAsSuperseded(runId: string) {
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: NATIVE_FINALIZATION_SUPERSEDED, failureDetail: {} })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, errorCode: null, error: null }).where(eq(heartbeatRuns.id, runId));
+    expect(await endSupersededNativeFinalizationRuns(db, [runId])).toEqual([runId]);
+    return (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0];
   }
 
   const capacityRefusal = { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn", category: "overloaded",
@@ -302,6 +314,7 @@ describe("durable native provider capacity retry", () => {
     await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, runId));
     const pending = await db.execute(sql.raw(NATIVE_RUN_FINALIZATION_WORK_QUERY.replace("WHERE (", `WHERE f.run_id = '${runId}' AND (`)));
     expect(Array.from(pending)).toHaveLength(0);
+    expect(await endAsSuperseded(runId)).toMatchObject({ status: "succeeded" });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "done" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
     expect(sentry.captureRunFailure).not.toHaveBeenCalled();
@@ -332,8 +345,10 @@ describe("durable native provider capacity retry", () => {
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: { issueId } });
     await acceptResultThenProviderFailure(runId, issueId, { provider: typedProvider, savedByOlderRelease: true,
       error: { code: "provider_turn_failed", message: capacityRefusal.message, providerFailure: capacityRefusal } });
-    // The finalizer and the projection agree on the saved failed terminal.
-    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].status).toBe("failed");
+    // The finalizer, the projection and the superseded path all keep the saved failed terminal.
+    const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(settled).toMatchObject({ status: "failed", resultJson: { prpRunTerminalState: "failed" } });
+    expect(await endAsSuperseded(runId)).toMatchObject({ status: "failed" });
     for (const retry of await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))
       await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
   });
