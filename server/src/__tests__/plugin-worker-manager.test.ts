@@ -541,31 +541,57 @@ describe("plugin-worker-manager stderr failure context", () => {
       return { handle, stateGet, agentsList, companiesList };
     };
 
-    it("admits instance state and company enumeration while a scoped invocation stays active", async () => {
+    it.each(["getData", "onEvent", "executeTool"] as const)("admits job host calls while a scoped %s invocation stays active", async (method) => {
       const { handle, stateGet, companiesList } = makeHandle();
       let release!: () => void;
       const held = new Promise<void>((resolve) => { release = resolve; });
       let entered!: () => void;
       const started = new Promise<void>((resolve) => { entered = resolve; });
-      stateGet.mockImplementationOnce(async () => { entered(); await held; return null; });
+      stateGet.mockImplementation(async () => {
+        // A job must not inherit a concurrent tool's initiating agent.
+        expect(currentPluginInteractionOrigin()).toBeUndefined();
+        return null;
+      });
+      stateGet.mockImplementationOnce(async () => {
+        expect(currentPluginInteractionOrigin()).toEqual(method === "executeTool"
+          ? { companyId: "company-configured", agentId: "agent-a", runId: "run-a" }
+          : undefined);
+        entered();
+        await held;
+        return null;
+      });
       let concurrent: Promise<unknown> | undefined;
       try {
         await handle.start();
-        concurrent = handle.call("getData", {
-          key: "probe", companyId: "company-configured",
-          params: { mode: "echo", hostMethod: "state.get", nestedScopeKind: "instance" },
-        });
+        const params = { mode: "echo", hostMethod: "state.get", nestedScopeKind: "instance" };
+        concurrent = method === "onEvent"
+          ? handle.call("onEvent", { event: {
+              eventId: "event-1", eventType: "issue.updated", occurredAt: job.scheduledAt,
+              companyId: "company-configured", payload: params,
+            } })
+          : method === "executeTool"
+            ? handle.call("executeTool", {
+                toolName: "probe", parameters: params,
+                runContext: { companyId: "company-configured", agentId: "agent-a", runId: "run-a" },
+              } as HostToWorkerMethods["executeTool"][0])
+            : handle.call("getData", { key: "probe", companyId: "company-configured", params });
         await started;
         await expect(handle.call("runJob", {
           job, params: { mode: "echo", hostMethod: "state.get", nestedScopeKind: "instance", stateKey: "job-state" },
         } as never)).resolves.toBeNull();
         // Unlike kind-none state calls, companies.list checks invalidInvocationScope.
-        // Holding getData open makes the original no-id race deterministic.
+        // Holding the other invocation open makes the original no-id race deterministic.
         await expect(handle.call("runJob", {
           job, params: { mode: "echo", hostMethod: "companies.list" },
         } as never)).resolves.toEqual([]);
         expect(stateGet).toHaveBeenCalledWith(expect.objectContaining({ scopeKind: "instance", stateKey: "job-state" }));
         expect(companiesList).toHaveBeenCalledOnce();
+        await expect(handle.call("runJob", {
+          job, params: { mode: "echo", hostMethod: "agents.list", requestedCompanyId: "company-configured" },
+        } as never)).resolves.toEqual([]);
+        await expect(handle.call("runJob", {
+          job, params: { mode: "echo", hostMethod: "agents.list", requestedCompanyId: "company-other" },
+        } as never)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
       } finally {
         release();
         await concurrent?.catch(() => undefined);
