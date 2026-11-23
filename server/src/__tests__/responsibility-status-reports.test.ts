@@ -192,8 +192,8 @@ describeEmbeddedPostgres("agent-written responsibility status", () => {
       expect(byOwner.status).toBe(201);
       expect(byOwner.body.current).toMatchObject({ status: "behind", agentId: null, userId: OWNER });
 
-      expect((await write(seeded, sessionBoardActor(seeded.company.id, OTHER))).status).toBe(403);
-      expect((await write(seeded, sessionBoardActor(seeded.company.id, OTHER, "admin"))).status).toBe(201);
+      expect((await write(seeded, sessionBoardActor(seeded.company.id, OTHER))).status).toBe(404);
+      expect((await write(seeded, sessionBoardActor(seeded.company.id, OTHER, "admin"))).status).toBe(404);
 
       // Nobody names the author: the body is strict, and the record follows the caller.
       const forged = await write(seeded, agentActor(seeded.company.id, seeded.builder.id), { ...REPORT, agentId: seeded.ceo.id });
@@ -203,17 +203,17 @@ describeEmbeddedPostgres("agent-written responsibility status", () => {
 
       const rows = await db.select().from(responsibilityStatusReports).where(eq(responsibilityStatusReports.responsibilityId, seeded.responsibility.id));
       expect(rows.map((row) => [row.agentId, row.userId]).sort()).toEqual([
-        [null, OTHER], [null, OWNER], [seeded.analyst.id, null], [seeded.builder.id, null],
+        [null, OWNER], [seeded.analyst.id, null], [seeded.builder.id, null],
       ].sort());
 
       const history = (await read(seeded)).body.history as Array<{ userId: string | null }>;
-      expect(history).toHaveLength(4);
-      expect(history[0]!.userId).toBe(OTHER);
+      expect(history).toHaveLength(3);
+      expect(history[0]!.userId).toBe(OWNER);
 
       const logged = await db.select({ action: activityLog.action, details: activityLog.details }).from(activityLog)
         .where(and(eq(activityLog.companyId, seeded.company.id), eq(activityLog.action, "responsibility.status_reported")));
-      expect(logged).toHaveLength(4);
-      expect(logged.map((row) => (row.details as { writtenBy: string }).writtenBy).sort()).toEqual(["agent", "agent", "user", "user"]);
+      expect(logged).toHaveLength(3);
+      expect(logged.map((row) => (row.details as { writtenBy: string }).writtenBy).sort()).toEqual(["agent", "agent", "user"]);
     });
 
     it("checks the message's shape", async () => {
@@ -252,7 +252,7 @@ describeEmbeddedPostgres("agent-written responsibility status", () => {
       const ask = () => request(owner).post(`/api/responsibilities/${seeded.responsibility.id}/status-report/request`).send({});
 
       // Someone who may not edit the responsibility cannot ask.
-      expect((await request(createApp(sessionBoardActor(seeded.company.id, OTHER))).post(`/api/responsibilities/${seeded.responsibility.id}/status-report/request`).send({})).status).toBe(403);
+      expect((await request(createApp(sessionBoardActor(seeded.company.id, OTHER))).post(`/api/responsibilities/${seeded.responsibility.id}/status-report/request`).send({})).status).toBe(404);
       expect((await request(createApp(agentActor(seeded.company.id, seeded.builder.id))).post(`/api/responsibilities/${seeded.responsibility.id}/status-report/request`).send({})).status).toBe(403);
 
       const first = await ask();
@@ -404,8 +404,8 @@ describeEmbeddedPostgres("agent-written responsibility status", () => {
       const seeded = await seed();
       const url = `/api/companies/${seeded.company.id}/responsibilities/status-reports`;
       const agentRead = await request(createApp(agentActor(seeded.company.id, seeded.builder.id))).get(url);
-      expect(agentRead.status).toBe(422);
-      expect((await request(createApp(agentActor(seeded.company.id, seeded.builder.id))).get(`${url}?ownerUserId=${OWNER}`)).status).toBe(200);
+      expect(agentRead.status).toBe(403);
+      expect((await request(createApp(agentActor(seeded.company.id, seeded.builder.id))).get(`${url}?ownerUserId=${OWNER}`)).status).toBe(403);
       expect((await request(createApp(agentActor(randomUUID(), seeded.builder.id))).get(url)).status).toBe(403);
 
       await instanceSettingsService(db).updateExperimental({ enableResponsibilities: false });

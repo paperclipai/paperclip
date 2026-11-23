@@ -273,6 +273,8 @@ export function responsibilityBarService(db: Db) {
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
+        visibility: "private",
+        responsibleUserId: row.ownerUserId,
         originKind: RESPONSIBILITY_BAR_ORIGIN_KIND,
         originId: row.id,
         createdByUserId: actor.userId,

@@ -2374,7 +2374,13 @@ export function heartbeatService(
             .listDependencyReadiness(agent.companyId, [issueId])
             .then((rows) => rows.get(issueId) ?? null))
         : null;
-      const dependencyResponse = issueId && issueContext?.status === "blocked"
+      // A verified human answer on a task with open blockers is a bounded turn
+      // without checkout. A blocked task keeps that turn even if its last
+      // blocker finished during preparation. An active task (for example one
+      // waiting in review) checks out normally once its blockers are resolved;
+      // while they are open, checkout would refuse the answer with a 422.
+      const dependencyResponse = issueId && (issueContext?.status === "blocked"
+          || issueDependencyReadiness?.isDependencyReady === false)
         && context.dependencyBlockedInteraction === true
         && await isVerifiedDependencyInteractionResponse(db, { companyId: agent.companyId,
           issueId, agentId: agent.id, context });

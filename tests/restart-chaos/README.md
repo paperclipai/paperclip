@@ -303,7 +303,13 @@ inside or outside a release window (from the old build's last answer to 60 s aft
 on no answer, a server error, or 401, 403, 408 or 429; a deliberate 400, 404, 409 or 422 answer is not a failure. Runs come from the company run list, or from every task's
 run list when that list is full, so no task's early runs are lost. A queued or running run with no activity for 5
 minutes is not a live owner, the same window the drain uses. The drain also waits for the 90 s quiet period
-(`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading.
+(`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading. The drain cap
+counts from the later of the last release and the end of arrivals, so a run that stops launching at `--hosted-max-hours`
+long after its last release still drains for `--hosted-drain-minutes`. Run activity is aged from the moment the grade
+read the runs, not from after the task view reads. A task that is still open, has no failed run, and whose every live run is still queued
+behind its agent's full `maxConcurrentRuns` cap, with the queue-wait proof finding no idle slot and no newer
+assignment run started ahead of it, is not graded: `SUMMARY.md` names it on a `Not graded` line and
+`hosted-release-swap.json` lists it under `notGraded`. The runs holding the slots are still graded.
 
 **Gate D verdict** (`hosted-gate.ts`). A run exits 0 only when every check in the `Gate D` block of `SUMMARY.md` holds:
 every started task completed hands-off; every task the harness launched was created; every started task passes the local waves'

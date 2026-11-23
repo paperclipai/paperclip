@@ -885,11 +885,11 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
   }
 
   /** Company-wide unfinished projects, open tasks and active routines under no live responsibility. */
-  async function looseWork(companyId: string, scope: ResponsibilityReadScope): Promise<ResponsibilityLooseWork> {
+  async function looseWork(companyId: string, ownerUserId: string, scope: ResponsibilityReadScope): Promise<ResponsibilityLooseWork> {
     const liveLink = (column: SQL) => sql`exists (
       select 1 from ${responsibilityLinks} ll
       join ${responsibilities} lr on lr.id = ll.responsibility_id
-      where ${column} and lr.status in ${LIVE_STATUS_SQL})`;
+      where ${column} and lr.owner_user_id = ${ownerUserId} and lr.status in ${LIVE_STATUS_SQL})`;
     const projectLoose = sql`not ${liveLink(sql`ll.project_id = ${projects.id}`)}`;
     const issueLoose = sql`not ${liveLink(sql`ll.issue_id = ${issues.id}`)}
       and (${issues.projectId} is null or not ${liveLink(sql`ll.project_id = ${issues.projectId}`)})`;
@@ -977,8 +977,8 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
     return row;
   }
 
-  async function assertAreaUsable(companyId: string, areaId: string, database: Db | DbTransaction = db) {
-    const area = await areasSvc.getInCompany(companyId, areaId, database);
+  async function assertAreaUsable(companyId: string, ownerUserId: string, areaId: string, database: Db | DbTransaction = db) {
+    const area = await areasSvc.getInCompany(companyId, ownerUserId, areaId, database);
     if (!area) throw notFound("Area not found");
     if (area.status === "archived") throw unprocessable("That area is archived; restore it or choose another area");
     return area;
@@ -1017,7 +1017,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
   /** Inside `tx`: when the row is active and its area is proposed, the area becomes active. */
   async function activateAreaFor(tx: DbTransaction, row: ResponsibilityRow): Promise<ResponsibilityArea | null> {
     if (row.status !== "active" || !row.areaId) return null;
-    return areasSvc.activateIfProposed(tx, row.companyId, row.areaId);
+    return areasSvc.activateIfProposed(tx, row.companyId, row.ownerUserId, row.areaId);
   }
 
   /** Agent rule for an active responsibility: it runs it, or is assigned a member task or routine. */
@@ -1208,8 +1208,8 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
         withRollups(rows, opts.scope),
         distinctTaskTotals(activeIds, opts.scope),
         distinctProjectTotals(activeIds, opts.scope),
-        looseWork(companyId, opts.scope),
-        areasSvc.listActiveAnd(companyId, referencedAreaIds),
+        looseWork(companyId, ownerUserId, opts.scope),
+        areasSvc.listActiveAnd(companyId, ownerUserId, referencedAreaIds),
       ]);
       const responsibilitiesList = all.filter((row) => row.status !== "proposed");
       const proposed = all.filter((row) => row.status === "proposed");
@@ -1271,7 +1271,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
         rollups, area, projectRows, directRoutineRows, projectRoutineRows, directTaskRows, projectTaskRows, skills, artifacts, projectTaskCounts,
       ] = await Promise.all([
         computeRollups([row], scope),
-        row.areaId ? areasSvc.getInCompany(row.companyId, row.areaId) : Promise.resolve(null),
+        row.areaId ? areasSvc.getInCompany(row.companyId, row.ownerUserId, row.areaId) : Promise.resolve(null),
         db.select({
           linkId: responsibilityLinks.id,
           id: projects.id,
@@ -1386,7 +1386,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
           metricHigh: input.metricHigh ?? null,
         });
       }
-      if (input.areaId) await assertAreaUsable(companyId, input.areaId);
+      if (input.areaId) await assertAreaUsable(companyId, ownerUserId, input.areaId);
       if (input.runByAgentId) await assertAgentInCompany(companyId, input.runByAgentId);
       const now = new Date();
       // The schema guarantees a metric is either whole or absent; without one
@@ -1518,7 +1518,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
           throw forbidden("Agents can only propose or dismiss a responsibility; a board user confirms it");
         }
       }
-      if (patch.areaId) await assertAreaUsable(existing.companyId, patch.areaId);
+      if (patch.areaId) await assertAreaUsable(existing.companyId, existing.ownerUserId, patch.areaId);
       if (patch.runByAgentId) await assertAgentInCompany(existing.companyId, patch.runByAgentId);
 
       const nextStatus = patch.status ?? existing.status;
@@ -1736,6 +1736,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
      */
     async lookup(
       companyId: string,
+      ownerUserId: string,
       target: ResponsibilityLinkTarget,
       scope: ResponsibilityReadScope,
     ): Promise<ResponsibilityLinkLookupEntry[]> {
@@ -1752,6 +1753,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
         .innerJoin(responsibilities, eq(responsibilities.id, responsibilityLinks.responsibilityId))
         .where(and(
           eq(responsibilities.companyId, companyId),
+          eq(responsibilities.ownerUserId, ownerUserId),
           inArray(responsibilities.status, [...LIVE_STATUSES]),
           projectId
             ? or(eq(column, target.id), eq(responsibilityLinks.projectId, projectId))
