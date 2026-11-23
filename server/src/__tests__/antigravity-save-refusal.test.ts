@@ -81,7 +81,7 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
       ? await aiConnectionService(db).save(agent.companyId, userId, { provider: "google", method: "api_key", ownership: "personal",
         name: "Gemini key", apiKey: "fixture-gemini-key", agentIds: [agent.id], allAgents: false }, "fixture-gemini-key")
       : await aiConnectionService(db).save(agent.companyId, userId, { provider: "google", method: "subscription", ownership: "personal",
-        name: "Google account", agentIds: [agent.id], allAgents: false });
+        name: "Google account", agentIds: [agent.id], allAgents: false }, "fixture-google-sign-in");
     await aiConnectionService(db).setDefault(agent.companyId, userId, connection.grantId);
     return { provider: "google", method, mode: "responsible_user" } as const;
   }
