@@ -1,5 +1,7 @@
-import { agentSlotsFromRows, queueWaitFairnessFrom, type QueueWaitFairness } from "./agent-slots.js";
+import { agentSlotsFromRows, queueWaitFairnessFrom, slotFreeFrom, type QueueWaitFairness } from "./agent-slots.js";
+import type { SlotFree } from "./universal.js";
 import { gradeR1 } from "./grader.js";
+import type { FailureClassSummary } from "./hosted-diagnostics.js";
 import type { ContinuityReport, DetectedRelease } from "./hosted-release.js";
 import { ms, type HostedRunRow } from "./hosted-readers.js";
 import type { HostedTaskRecord } from "./hosted-workload.js";
@@ -41,12 +43,27 @@ type R1Subject = Pick<TaskRecord, "issueId" | "identifier" | "createdAt" | "laun
  * be proven fair; the gate fails on it instead of grading R1 without the evidence.
  */
 export function hostedQueueWait(agentIds: readonly string[], agents: readonly HostedAgentRow[], companyRuns: readonly HostedRunRow[]):
-  { queueWait: QueueWaitFairness; missing: string[] } {
+  { queueWait: QueueWaitFairness; slotFree: SlotFree; missing: string[] } {
   const slots = agentSlotsFromRows(agents.map(agent => ({ id: agent.id, maxConcurrentRuns: agent.runtimeConfig?.heartbeat?.maxConcurrentRuns })),
     companyRuns.map(run => ({ id: run.runId, agentId: run.agentId, createdAt: run.createdAt, invocationSource: run.invocationSource,
       retryOfRunId: run.retryOfRunId, startedAt: run.startedAt, finishedAt: run.finishedAt })));
   const capped = new Set(slots.agents.filter(agent => agent.maxConcurrentRuns !== null).map(agent => agent.agentId));
-  return { queueWait: queueWaitFairnessFrom(slots), missing: agentIds.filter(id => !capped.has(id)) };
+  return { queueWait: queueWaitFairnessFrom(slots), slotFree: slotFreeFrom(slots), missing: agentIds.filter(id => !capped.has(id)) };
+}
+
+export function slotQueuedRuns(runs: readonly HostedRunRow[], at: number, proof: { queueWait: QueueWaitFairness; slotFree: SlotFree }): Set<string> {
+  return new Set(runs.filter(run => run.status === "queued" && run.startedAt === null && run.createdAt !== null && run.createdAt <= at
+    && proof.queueWait(run.runId, run.createdAt, at).verdict === "fair" && proof.slotFree(run.runId, at) === false).map(run => run.runId));
+}
+
+const SLOT_WAIT_STATUSES = new Set(["todo", "in_progress"]);
+const LIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
+const FAILED_RUN_STATUSES = new Set(["failed", "timed_out", "interrupted"]);
+
+export function queuedBehindSlotCap(status: unknown, runs: readonly HostedRunRow[], slotQueued: ReadonlySet<string>): boolean {
+  if (!SLOT_WAIT_STATUSES.has(String(status)) || runs.some(run => FAILED_RUN_STATUSES.has(run.status))) return false;
+  const live = runs.filter(run => LIVE_RUN_STATUSES.has(run.status));
+  return live.length > 0 && live.every(run => slotQueued.has(run.runId));
 }
 
 /**
@@ -84,6 +101,7 @@ export interface HostedGate {
   r1Failed: Array<{ identifier: string | null; detail: string }>;
   bannersShown: number;
   healthFailures: number;
+  healthClientSide: number;
   duplicates: number;
   stopThenStart: number[];
   unloaded: number[];
@@ -91,17 +109,24 @@ export interface HostedGate {
 }
 
 /**
- * Gate D: every task hands-off and inside R1, no Retry banner, no failed health probe, no duplicated work, and every
+ * Gate D: every task hands-off and inside R1, no Retry banner, no server-side or unclassified failed health probe, no duplicated work, and every
  * release a swap two builds served (never stop-then-start) with at least one live run carried across it. A fixed batch
  * (`--hosted-releases 0`) waits for no release, so it is not required to see one.
  */
 export function hostedGate(input: { handsOffPass: boolean; wantedReleases: number; createErrors: number; slotEvidenceMissing: readonly string[]; r1: ReadonlyArray<{ identifier: string | null; result: RuleResult }>; bannersShown: number;
-  health: ContinuityReport; duplicates: { overlappingRuns: readonly unknown[]; duplicateComments: readonly unknown[]; duplicateChildren: readonly unknown[] };
+  health: ContinuityReport; healthClasses?: FailureClassSummary; duplicates: { overlappingRuns: readonly unknown[]; duplicateComments: readonly unknown[]; duplicateChildren: readonly unknown[] };
   releases: readonly DetectedRelease[]; metrics: readonly SwapMetrics[] }): HostedGate {
   const r1Failed = input.r1.filter(entry => entry.result.verdict === "fail").map(entry => ({ identifier: entry.identifier, detail: entry.result.detail }));
   const duplicates = input.duplicates.overlappingRuns.length + input.duplicates.duplicateComments.length + input.duplicates.duplicateChildren.length;
   const stopThenStart = input.releases.filter(release => release.shape === "stop_then_start").map(release => release.index);
   const unloaded = input.metrics.filter(metric => metric.survivors.length === 0).map(metric => metric.index);
+  const classes = input.healthClasses;
+  const clientSide = classes?.client ?? 0;
+  const unmatched = classes ? Math.max(0, input.health.failures - classes.failures.length) : 0;
+  const unclassified = classes ? classes.unclassified + unmatched : input.health.failures;
+  const healthFailures = (classes?.server ?? 0) + unclassified;
+  const healthDetail = `${input.health.failures} of ${input.health.requests} failed`
+    + (classes ? ` (${classes.server} server-side, ${unclassified} unclassified, ${clientSide} client-side, informational)` : "");
   const checks: Array<[string, boolean, string]> = [
     ["hands-off", input.handsOffPass, input.handsOffPass ? "every started task done without a person" : "a task did not finish hands-off"],
     ["R1", r1Failed.length === 0, r1Failed.length ? `${r1Failed.length} failed (${r1Failed.slice(0, 3).map(entry => `${entry.identifier ?? "?"}: ${entry.detail}`).join("; ")})`
@@ -110,7 +135,7 @@ export function hostedGate(input: { handsOffPass: boolean; wantedReleases: numbe
       ? `maxConcurrentRuns unreadable for ${input.slotEvidenceMissing.length} agent(s), so R1 queue credit cannot be proven` : "read for every agent"],
     ["tasks created", input.createErrors === 0, `${input.createErrors} task(s) could not be created`],
     ["Retry banners", input.bannersShown === 0, `${input.bannersShown} shown`],
-    ["health probes", input.health.failures === 0, `${input.health.failures} of ${input.health.requests} failed`],
+    ["health probes", healthFailures === 0, healthDetail],
     ["duplicates", duplicates === 0, `${duplicates} (overlapping runs, duplicated agent comments, duplicated subtasks)`],
     ["swap shape", stopThenStart.length === 0, stopThenStart.length ? `stop-then-start at release ${stopThenStart.join(", ")}` : "no stop-then-start release"],
     ...(input.wantedReleases > 0 ? [["releases under load", input.releases.length > 0 && unloaded.length === 0,
@@ -118,6 +143,6 @@ export function hostedGate(input: { handsOffPass: boolean; wantedReleases: numbe
         : `${input.releases.length} release(s), each with a live run`]] as Array<[string, boolean, string]> : []),
   ];
   const pass = checks.every(([, ok]) => ok);
-  return { pass, r1Failed, bannersShown: input.bannersShown, healthFailures: input.health.failures, duplicates, stopThenStart, unloaded,
+  return { pass, r1Failed, bannersShown: input.bannersShown, healthFailures, healthClientSide: clientSide, duplicates, stopThenStart, unloaded,
     lines: [`Gate D: ${pass ? "PASS" : "FAIL"}`, ...checks.map(([name, ok, detail]) => `- ${ok ? "pass" : "FAIL"} ${name}: ${detail}`)] };
 }
