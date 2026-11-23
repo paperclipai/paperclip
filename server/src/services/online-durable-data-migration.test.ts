@@ -313,9 +313,13 @@ describe("online durable-data migration pass", () => {
       expect(blockers).toEqual(expect.arrayContaining(["workspaces_require_migration", "local_instruction_copies_require_settlement", "external_agent_instructions"]));
       for (const blocker of blockers) {
         resetOnlineDurableDataMigrationProgressForTests();
-        const fixture = owners({ eligibility: async () => ({ eligible: false, blockers: [blocker] }) });
+        const fixture = owners({ eligibility: async () => ({ eligible: false, blockers: [blocker] }),
+          agentFiles: async () => ({ results: [], next: null }),
+          skillObjects: async () => ({ inspected: 0, migrated: 0, busy: 0, after: null }),
+          skillInstallations: () => ({ installations: async () => ({ inspected: 0, after: null, results: [] }) }),
+          nativeHarnessBackups: async () => ({ inspected: 0, published: 0, current: 0, deferred: {} }) });
         const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
-        expect(Object.keys(result.deferred), blocker).not.toEqual([]);
+        expect(Object.keys(result.deferred), blocker).toHaveLength(1);
       }
     });
 
