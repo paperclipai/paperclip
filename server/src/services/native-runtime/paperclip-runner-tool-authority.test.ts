@@ -1112,6 +1112,23 @@ describe("PaperclipRunnerToolAuthority", () => {
     }
   });
 
+  it("projects assigned catalogs that exceed the run.prepare tool budget", async () => {
+    const assignedMcpTools = await createAssignedMcpTools({
+      gateway: { listToolsForNamedGateway: vi.fn().mockResolvedValue(Array.from({ length: 120 }, (_, i) => ({
+        name: `app.action_${i}`, displayName: `Action ${i}`, description: "x".repeat(3500),
+        parametersSchema: { type: "object", properties: {} }, risk: "read",
+      }))) } as unknown as ToolGatewayService,
+      gatewayPublicId: "fixture", bearerToken: "fixture-token",
+    });
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, assignedMcpTools });
+    const tools = authority.definitions();
+    expect(tools.filter(tool => String(tool.name).startsWith("app_"))).toEqual([]);
+    expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      "paperclip_search_assigned_tools", "paperclip_call_assigned_tool",
+    ]));
+    expect(runnerCodexDynamicToolsFit(tools)).toBe(true);
+  });
+
   it("relays assigned MCP calls only while the native run still owns its task", async () => {
     const tool = { name: "app_mem0_recall", description: "Recall memory", inputSchema: { type: "object" } };
     const execute = vi.fn().mockResolvedValue({ content: "synthetic memory" });

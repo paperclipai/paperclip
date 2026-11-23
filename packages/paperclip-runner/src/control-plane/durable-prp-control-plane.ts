@@ -64,7 +64,7 @@ const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
 const maxFrameBytes = 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
-const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
+export const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
 const maxCommandsAtAttach = 32;
 const maxEventsPerAck = 64;

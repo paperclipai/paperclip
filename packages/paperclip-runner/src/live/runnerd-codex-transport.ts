@@ -77,6 +77,7 @@ import type {
 import { NativeRunnerResumeStateUnavailableError, NativeRunnerSourceReconciliationRequiredError } from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
+  maxCommandBytes,
   inspectStagedRunAttachment,
   SemanticToolHandedOffError,
   SemanticToolNotDispatchedError,
@@ -3883,10 +3884,12 @@ export function runnerCodexDynamicToolsFit(
   tools: readonly Readonly<Record<string, unknown>>[],
 ): boolean {
   const supplied = [...tools, ...codexSemanticToolSpecs()];
+  const runPrepareReserveBytes = 160 * 1024;
   // Keep these bounds aligned with runner-core/provider_bridge.rs. Project
   // large optional catalogs before run.prepare; never raise the protocol caps.
   return supplied.length <= 256 &&
-    Buffer.byteLength(JSON.stringify(authorizedToolSet(supplied)), "utf8") <= 768 * 1024;
+    Buffer.byteLength(JSON.stringify(authorizedToolSet(supplied)), "utf8") <=
+      Math.min(768 * 1024, maxCommandBytes - runPrepareReserveBytes);
 }
 
 /**
