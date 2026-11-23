@@ -1868,8 +1868,12 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       ? toolRequestIdentityHash(input.request.arguments, options.toolActionSigningSecret)
       : null;
     const argumentsHash = input.request.sideEffecting ? requestIdentityHash! : ctx.argumentsHash;
-    const idempotencyKey = input.request.idempotencyKey
+    const sessionOpener = input.runContext?.sessionOpenedByUserId ?? null;
+    const unscopedIdempotencyKey = input.request.idempotencyKey
       ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, requestIdentityHash!) : null);
+    const idempotencyKey = unscopedIdempotencyKey && sessionOpener
+      ? `${unscopedIdempotencyKey}:opened_by:${sha256(sessionOpener)}`
+      : unscopedIdempotencyKey;
     if (idempotencyKey) {
       const [existing] = await db.select().from(toolInvocations).where(and(
         eq(toolInvocations.companyId, input.companyId),
@@ -1877,7 +1881,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       ));
       if (existing) return { invocation: existing, replayed: true, actionRequest: null };
     }
-    if (input.request.sideEffecting && input.request.idempotencyKey == null) {
+    if (input.request.sideEffecting && input.request.idempotencyKey == null && !sessionOpener) {
       // Before complete request identities, default keys used shortened and
       // redacted preview hashes. Check both historical key-redaction variants
       // so upgrading cannot silently repeat a completed or uncertain write.

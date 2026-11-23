@@ -2293,6 +2293,13 @@ rl.on("line", (line) => {
         .send({ tool: tool.name, parameters: { key: "test", value: randomUUID() } });
     };
     const lastAuthorization = () => authorizations.at(-1);
+    const callWith = async (token: string, connectionId: string, parameters: Record<string, unknown>) => {
+      const tool = (await gateway.listToolsForSession(token)).find((item) => item.connectionId === connectionId)!;
+      return request(createGatewayRouteApp(db, gateway))
+        .post("/api/tool-gateway/tools/call")
+        .set("x-paperclip-tool-gateway-token", token)
+        .send({ tool: tool.name, parameters });
+    };
 
     const bobToken = await openSession("bob");
     expect((await callTool(bobToken, personal.connection.id)).body.status).toBe("completed");
@@ -2302,6 +2309,15 @@ rl.on("line", (line) => {
     const aliceToken = await openSession("alice");
     expect((await callTool(aliceToken, personal.connection.id)).body.status).toBe("completed");
     expect(lastAuthorization()).toBe("Bearer alice-personal-token");
+
+    const sameWrite = { key: "same", value: randomUUID() };
+    expect((await callWith(bobToken, personal.connection.id, sameWrite)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer bob-personal-token");
+    const aliceSameWrite = await callWith(aliceToken, personal.connection.id, sameWrite);
+    expect(aliceSameWrite.body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer alice-personal-token");
+    const bobRetry = await callWith(bobToken, personal.connection.id, sameWrite);
+    expect(bobRetry.body.status).toBe("replayed");
 
     const agentSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, actorType: "agent", actorId: agent.id });
     expect((await callTool(agentSession.token, personal.connection.id)).body.status).toBe("completed");

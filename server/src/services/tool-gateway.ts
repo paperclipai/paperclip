@@ -3336,6 +3336,7 @@ export function createToolGatewayService(
       issueId: input.session.issueId,
       projectId: input.session.projectId,
       gatewayId: input.session.gatewayId ?? null,
+      sessionOpenedByUserId: input.session.createdByUserId ?? null,
     });
   }
 
@@ -3354,6 +3355,7 @@ export function createToolGatewayService(
     issueId?: string | null;
     projectId?: string | null;
     gatewayId?: string | null;
+    sessionOpenedByUserId?: string | null;
   }): ToolAccessDecisionInput {
     const actorType = input.actorType ?? (input.agentId ? "agent" : "system");
     const actorId =
@@ -3372,6 +3374,7 @@ export function createToolGatewayService(
         projectId: input.projectId ?? null,
         gatewayId: input.gatewayId ?? null,
         gatewayTokenId: input.gatewayTokenId ?? null,
+        ...(input.sessionOpenedByUserId ? { sessionOpenedByUserId: input.sessionOpenedByUserId } : {}),
       },
       request: {
         toolName: input.tool.name,
@@ -11110,6 +11113,9 @@ export function createToolGatewayService(
           inArray(toolActionRequests.canonicalArgumentsHash, [input.argumentsHash, summarizeToolValue(input.parameters).sha256]),
           eq(toolInvocations.agentId, input.session.agentId),
           eq(toolInvocations.toolName, input.toolName),
+          input.session.createdByUserId
+            ? sql`${toolInvocations.policyExplanation}->>'sessionOpenedByUserId' = ${input.session.createdByUserId}`
+            : sql`(${toolInvocations.policyExplanation}->>'sessionOpenedByUserId') is null`,
           inArray(toolActionRequests.status, [
             "pending",
             "approved",
