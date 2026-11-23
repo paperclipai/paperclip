@@ -52,6 +52,7 @@ function HeldUpMore({ issueId, issueLabel, moreCount, behindCount }: { issueId: 
   const [open, setOpen] = useState(false);
   const issue = useQuery({ queryKey: queryKeys.issues.detail(issueId), queryFn: () => issuesApi.get(issueId), enabled: open });
   const blocks = openHeldUpTasks(issue.data?.blocks ?? []);
+  const heldUpCount = issue.data ? blocks.length : moreCount;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -64,9 +65,13 @@ function HeldUpMore({ issueId, issueLabel, moreCount, behindCount }: { issueId: 
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 p-0" data-unblock-held-up-list>
-        <p className="border-b border-border px-3 py-2 text-sm font-medium">{issueLabel} holds up {blocks.length || moreCount} tasks</p>
+        {/* Once the list has loaded, its own count wins, zero included; the card's count only fills in while it loads. */}
+        <p data-unblock-held-up-heading className="border-b border-border px-3 py-2 text-sm font-medium">
+          {issueLabel} holds up {heldUpCount} {heldUpCount === 1 ? "task" : "tasks"}
+        </p>
         <div className="max-h-64 overflow-y-auto py-1">
           {issue.isLoading ? <p className="px-3 py-2 text-xs text-muted-foreground">Loading…</p> : null}
+          {issue.data && blocks.length === 0 ? <p className="px-3 py-2 text-xs text-muted-foreground">None of them are open now.</p> : null}
           {blocks.map((entry) => (
             <div key={entry.id} data-unblock-held-up-row className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-sm">
               <IssueReferencePill issue={entry} />

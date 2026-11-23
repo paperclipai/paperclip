@@ -86,5 +86,16 @@ describe("human unblock card", () => {
     expect([...list.querySelectorAll("[data-unblock-held-up-row]")].map((row) => visibleText(row))).toEqual(["PAP-8Follow-up 8", "PAP-4Follow-up 4"]);
     expect(list.querySelector('[role="alert"]')?.textContent).toMatch(/^Couldn't refresh this list, so it may be out of date\. /);
   });
+
+  it("counts what the list loaded, even when nothing is held up any more", async () => {
+    issues.get.mockResolvedValueOnce({ blocks: [{ ...heldUpTask(4), status: "done", priority: "medium" }] });
+    const card = await renderCard({ heldUpTasks: [heldUpTask(4), heldUpTask(8), heldUpTask(9)], heldUpDirectCount: 10, heldUpTotalCount: 10 });
+    await act(async () => card.querySelector<HTMLButtonElement>("[data-unblock-held-up-more]")!.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const list = document.body.querySelector<HTMLElement>("[data-unblock-held-up-list]")!;
+    expect(list.querySelector("[data-unblock-held-up-heading]")?.textContent).toBe("PAP-3 holds up 0 tasks");
+    expect(list.querySelectorAll("[data-unblock-held-up-row]")).toHaveLength(0);
+    expect(list.textContent).toContain("None of them are open now.");
+  });
 });
 
