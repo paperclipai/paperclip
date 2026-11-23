@@ -237,8 +237,11 @@ export function isTransientPaperclipCloudConnectorError(error: unknown): boolean
 }
 
 // Last answers the broker confirmed, per connector identity, for this process.
+// The generation stops a request that started before an invalidation from
+// saving its older answer over the newer state.
 const lastKnownCapabilities = new Map<string, PaperclipCloudConnectorProfileId[]>();
 const lastKnownInstanceStatus = new Map<string, "active" | "suspended" | "removed">();
+let savedAnswerGeneration = 0;
 
 function connectorConfigKey(config: PaperclipCloudConnectorConfig): string {
   return `${config.baseUrl}|${config.instanceId}|${config.environment}`;
@@ -322,8 +325,8 @@ export function createPaperclipCloudConnector(input: {
   const signingKey = privateKey(config.signPrivateKey, "ed25519");
   const sealKey = privateKey(config.sealPrivateKey, "x25519");
   const configKey = connectorConfigKey(config);
-  function remember<T>(store: Map<string, T>, value: T): T {
-    store.set(configKey, value);
+  function remember<T>(store: Map<string, T>, value: T, generation: number): T {
+    if (generation === savedAnswerGeneration) store.set(configKey, value);
     return value;
   }
   let eventWakeVersion: 1 | null = null;
@@ -438,6 +441,7 @@ export function createPaperclipCloudConnector(input: {
   }
 
   async function readCapabilities(): Promise<{ profiles: PaperclipCloudConnectorProfileId[]; confirmed: boolean }> {
+    const generation = savedAnswerGeneration;
     let response: ConnectorResponse;
     try {
       response = await call("status", {
@@ -451,15 +455,17 @@ export function createPaperclipCloudConnector(input: {
       if (isTransientPaperclipCloudConnectorError(error)) {
         return { profiles: lastKnownCapabilities.get(configKey) ?? [], confirmed: false };
       }
-      return { profiles: [], confirmed: false };
+      // A rejection (for example a removed registration) is an answer: a
+      // later outage must not bring the old sign-ins back.
+      return { profiles: remember(lastKnownCapabilities, [], generation), confirmed: false };
     }
     if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles)) {
-      return { profiles: remember(lastKnownCapabilities, []), confirmed: true };
+      return { profiles: remember(lastKnownCapabilities, [], generation), confirmed: true };
     }
     return {
       profiles: remember(lastKnownCapabilities, [...new Set(response.profiles.flatMap((value) =>
         typeof value === "string" && isPaperclipCloudConnectorProfileId(value) ? [value] : []
-      ))]),
+      ))], generation),
       confirmed: true,
     };
   }
@@ -544,6 +550,12 @@ export function createPaperclipCloudConnector(input: {
       return opened;
     },
     async getInstanceStatus(): Promise<"active" | "suspended" | "removed"> {
+      const generation = savedAnswerGeneration;
+      const settle = (status: "active" | "suspended" | "removed") => {
+        // An inactive registration has no usable sign-ins either.
+        if (status !== "active") remember(lastKnownCapabilities, [], generation);
+        return remember(lastKnownInstanceStatus, status, generation);
+      };
       let response: ConnectorResponse;
       try {
         response = await call("status", {
@@ -551,16 +563,16 @@ export function createPaperclipCloudConnector(input: {
           companyId: "instance-status",
         });
       } catch (error) {
-        if (error instanceof PaperclipCloudConnectorError && error.status === 401) return remember(lastKnownInstanceStatus, "removed");
+        if (error instanceof PaperclipCloudConnectorError && error.status === 401) return settle("removed");
         // A busy or unreachable broker gave no verdict on this instance. Keep
         // the standing it last confirmed rather than reporting it unenrolled.
         const known = lastKnownInstanceStatus.get(configKey);
         if (known && isTransientPaperclipCloudConnectorError(error)) return known;
         throw error;
       }
-      if (response.status === "active" && response.active === true) return remember(lastKnownInstanceStatus, "active");
-      if (response.status === "suspended" && response.active === false) return remember(lastKnownInstanceStatus, "suspended");
-      if (response.status === "removed" && response.active === false) return remember(lastKnownInstanceStatus, "removed");
+      if (response.status === "active" && response.active === true) return settle("active");
+      if (response.status === "suspended" && response.active === false) return settle("suspended");
+      if (response.status === "removed" && response.active === false) return settle("removed");
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
     },
     readCapabilities,
@@ -824,6 +836,7 @@ const UNCONFIRMED_CAPABILITIES_TTL_MS = 5_000;
 export function invalidatePaperclipCloudConnectorCapabilities(): void {
   capabilityCacheGeneration += 1;
   capabilityCache = null;
+  savedAnswerGeneration += 1;
   lastKnownCapabilities.clear();
   lastKnownInstanceStatus.clear();
 }

@@ -1747,7 +1747,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
     getCloudConnectorEnrollmentMock.mockResolvedValue({
       configured: false,
-      status: "unverified",
+      status: "unreachable",
       brokerBaseUrl: "https://my.paperclip.app",
       instanceId: "stack-test",
       environment: "production",
@@ -1768,6 +1768,20 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     expect(getCloudConnectorEnrollmentMock.mock.calls.length).toBeGreaterThan(calls);
     expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps Cloud registration available when the local Cloud identity is unverified", async () => {
+    // "unverified" is a local identity problem (for example a saved identity
+    // for another broker); registering again fixes it, a retry does not.
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ ...unconfiguredConnectorEnrollment(), status: "unverified" });
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).toContain("You must connect this instance to Paperclip to connect to GitHub");
+    expect(container.textContent).not.toContain("couldn’t reach Paperclip Cloud");
   });
 
   it("prompts for one-time Cloud registration inside Gmail when managed methods are not yet advertised", async () => {

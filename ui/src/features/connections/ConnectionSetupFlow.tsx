@@ -2397,10 +2397,10 @@ function StandardConnectionSetupFlow({
     && (directOAuthEntry || oauthPhase !== "entry"),
   );
 
-  // "unverified" means Paperclip could not reach Cloud to check, not that this
-  // instance is unenrolled. Offering enrollment there sends a Cloud workspace
-  // (or an already-enrolled instance) into a flow that cannot succeed.
-  const cloudConnectorUnreachable = connectorEnrollmentQuery.data?.status === "unverified";
+  // "unreachable" means Cloud did not answer the check, not that this instance
+  // is unenrolled. Offering enrollment there sends a Cloud workspace (or an
+  // already-enrolled instance) into a flow that cannot succeed; a retry can.
+  const cloudConnectorUnreachable = connectorEnrollmentQuery.data?.status === "unreachable";
   const managedConnectorUnavailable = Boolean(
     step === "key"
     && entry

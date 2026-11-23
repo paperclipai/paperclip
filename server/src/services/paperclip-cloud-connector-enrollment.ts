@@ -46,7 +46,13 @@ export type PaperclipCloudConnectorIdentity = {
 
 export type PaperclipCloudConnectorEnrollmentStatus = {
   configured: boolean;
-  status: PaperclipCloudConnectorIdentity["status"] | "not_configured" | "suspended" | "unverified";
+  /**
+   * `unverified`: the local identity cannot be checked (incomplete managed
+   * settings, or a saved identity for another broker). `unreachable`: the
+   * identity is complete, but Cloud did not answer the check (rate limit,
+   * outage, network), so retrying is the right action.
+   */
+  status: PaperclipCloudConnectorIdentity["status"] | "not_configured" | "suspended" | "unverified" | "unreachable";
   brokerBaseUrl: string;
   instanceId: string | null;
   environment: LocalConnectorEnvironment;
