@@ -165,7 +165,7 @@ For external adapters, use a self-contained `ui-parser.ts` instead. See the [UI 
 
 ## Step 5: CLI Module
 
-`format-event.ts` — pretty-prints stdout for `paperclipai run --watch` using `picocolors`.
+`format-event.ts` — pretty-prints stdout for `paperclipai heartbeat run --agent-id <agent-id>` using `picocolors`.
 
 ```ts
 export function formatStdoutEvent(line: string, debug: boolean): void {
