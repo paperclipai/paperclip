@@ -127,6 +127,8 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
   const { options, dir, timeline, record, cancelled, api } = input;
   const me = await api.get<{ userId?: string; companyIds?: string[] }>("/api/cli-auth/me");
   timeline.add("hosted_signed_in", { baseUrl: options.target.baseUrl, mode: options.mode, label: options.label, companies: me.companyIds?.length ?? 0 });
+  const control = await api.primeControl();
+  timeline.add("hosted_control_probe", { ok: control?.ok ?? null, status: control?.status ?? null, ms: control?.ms ?? null, error: control?.error?.code ?? control?.error?.name ?? null });
 
   if (options.mode === "cleanup") {
     const state = await loadState(dir);

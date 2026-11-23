@@ -23,7 +23,8 @@ const clock = (overrides: Partial<ClientClock> = {}): ClientClock => ({ timeoutM
 const ok = { url: "https://www.cloudflare.com/cdn-cgi/trace", ok: true, status: 200, ms: 35, error: null, remoteAddress: "104.16.124.96" };
 const down = { ...ok, ok: false, status: null, ms: 42, error: { name: "TypeError", message: "fetch failed", code: "ENETUNREACH" } };
 const diagnosis = (overrides: Partial<FailureDiagnosis> = {}): FailureDiagnosis => ({ url: "/api/health", method: "GET", aborted: false, answer: null,
-  cause: { name: "Error", message: "fetch failed: read ECONNRESET", code: "ECONNRESET", errno: -54, syscall: "read" }, connection: null, clock: clock(), control: ok, retry: ok, ...overrides });
+  cause: { name: "Error", message: "fetch failed: read ECONNRESET", code: "ECONNRESET", errno: -54, syscall: "read" }, connection: null, clock: clock(), control: ok, retry: ok,
+  controlReachedThisRun: true, ...overrides });
 
 function resetError(): TypeError {
   const cause = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET",
@@ -32,7 +33,7 @@ function resetError(): TypeError {
 }
 
 const sample = (at: number, failure: FailureDiagnosis | null): HealthSample => ({ at, ok: failure === null, status: failure?.answer?.status ?? (failure ? null : 200), ms: 40,
-  processStartedAt: null, commit: null, ...(failure ? { failure: { ...failure, ...classifyFailure(failure) } } : {}) });
+  processStartedAt: null, commit: null, ...(failure ? { failure: { ...failure, ...classifyFailure(failure), state: "settled" as const } } : {}) });
 
 const gateInput = (healthSamples: HealthSample[]) => ({ handsOffPass: true, wantedReleases: 0, createErrors: 0, slotEvidenceMissing: [] as string[],
   r1: [{ identifier: "GIT-1", result: { verdict: "pass" as const, detail: "done" } }], bannersShown: 0,
@@ -59,6 +60,21 @@ describe("gate D failure classifier", () => {
     expect(classifyFailure(diagnosis({ clock: clock({ loopDelayMaxMs: 4_000 }) })).reason).toMatch(/^client_stall: the event loop was blocked/);
     const onTime = diagnosis({ aborted: true, cause: { name: "TimeoutError", message: "aborted" }, clock: clock({ elapsedMs: 10_004, monotonicMs: 10_004, timerLagMs: 4 }) });
     expect(classifyFailure(onTime)).toMatchObject({ class: "server", reason: expect.stringContaining("timeout") });
+  });
+
+  it("does not trust a failed control probe when the neutral endpoint never answered in this run", () => {
+    expect(classifyFailure(diagnosis({ control: down, controlReachedThisRun: false }))).toMatchObject({ class: "unclassified",
+      reason: expect.stringContaining("has not answered once in this run") });
+    const blocked = [{ at: 0, ok: true, status: 200, ms: 40, processStartedAt: "old", commit: "c" }, sample(2_000, diagnosis({ control: down, controlReachedThisRun: false })),
+      { at: 4_000, ok: true, status: 200, ms: 40, processStartedAt: "new", commit: "c" }];
+    expect(detectReleases(blocked, { now: 600_000 })[0]!.shape).toBe("stop_then_start");
+    expect(hostedGate(gateInput(blocked)).pass).toBe(false);
+  });
+
+  it("counts a pending diagnosis as unclassified in the summary", () => {
+    const pending = sample(1, diagnosis({ control: down }));
+    pending.failure = { ...pending.failure!, state: "pending" };
+    expect(summarizeFailures([pending]).failures[0]).toMatchObject({ class: "unclassified", reason: "diagnosis still pending at the grade" });
   });
 
   it("counts a client DNS failure as client-side", () => {
@@ -144,8 +160,15 @@ describe("hosted request failure recording", () => {
     expect(sampleOk.error).toBe("fetch failed (UND_ERR_SOCKET)");
     expect(sampleOk.failure).toMatchObject({ class: "server", cause: { code: "UND_ERR_SOCKET", message: "fetch failed: other side closed",
       socket: { localAddress: "192.168.1.20", localPort: 51799, remoteAddress: "66.33.22.11", remotePort: 443, bytesWritten: 612, bytesRead: 0 } } });
+    let controlUp = true;
     const flaky = new HostedApi(target, "t", 1_000, (async () => { throw resetError(); }) as unknown as typeof fetch,
-      { control: (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ENETUNREACH"), { code: "ENETUNREACH", syscall: "connect" }) }); }) as unknown as typeof fetch });
+      { control: (async () => {
+        if (controlUp) return new Response("ok", { status: 200 });
+        throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ENETUNREACH"), { code: "ENETUNREACH", syscall: "connect" }) });
+      }) as unknown as typeof fetch });
+    expect(await flaky.primeControl()).toMatchObject({ ok: true });
+    controlUp = false;
+    await new Promise(resolve => setTimeout(resolve, 1_050));
     const flakySample = await flaky.health();
     await flaky.settleDiagnostics();
     expect(flakySample.failure).toMatchObject({ class: "client", control: { ok: false, error: { code: "ENETUNREACH", syscall: "connect" } } });
@@ -298,6 +321,13 @@ describe("connection evidence", () => {
     expect(health).toMatchObject({ ok: false, status: 503 });
     expect(health.failure).toMatchObject({ class: "server", reason: "HTTP 503", cause: { code: "ECONNRESET" },
       answer: { status: 503, headers: { "x-paperclip-status": "draining" }, bodyExcerpt: "{\"error\":\"draining\"" } });
+  });
+
+  it("keeps at most 512 bytes of a non-2xx body on a fresh connection", async () => {
+    const { url } = await listen((_request, response) => { response.writeHead(503); response.end("x".repeat(100_000)); });
+    const answer = await freshConnectionFetch(url);
+    expect(answer.status).toBe(503);
+    expect((await answer.text()).length).toBe(512);
   });
 
   it("reports a reset on a fresh connection with the socket's addresses and byte counts", async () => {

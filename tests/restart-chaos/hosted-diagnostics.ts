@@ -24,10 +24,10 @@ export interface ClientClock { timeoutMs: number; elapsedMs: number; monotonicMs
   gapBeforeMs: number | null; intervalMs: number | null }
 export interface FollowUp { url: string; ok: boolean; status: number | null; ms: number; error: ErrorCause | null; remoteAddress: string | null }
 export interface FailureDiagnosis { url: string; method: string; aborted: boolean; answer: AnswerEvidence | null; cause: ErrorCause | null; connection: ConnectionInfo | null;
-  clock: ClientClock; control: FollowUp | null; retry: FollowUp | null }
+  clock: ClientClock; control: FollowUp | null; retry: FollowUp | null; controlReachedThisRun: boolean }
 export type FailureClass = "client" | "server" | "unclassified";
 export interface Classified { class: FailureClass; reason: string }
-export type FailureRecord = FailureDiagnosis & Classified;
+export type FailureRecord = FailureDiagnosis & Classified & { state: "pending" | "settled" | "unfinished" };
 export interface ProbeContext { gapBeforeMs: number | null; intervalMs: number | null }
 
 const DNS_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA", "EAI_NONAME"]);
@@ -236,7 +236,15 @@ function freshHop(url: URL, init: RequestInit, headers: Record<string, string>, 
     request.on("response", response => {
       info.ttfbMs = since();
       answered = { response, chunks: [] };
-      response.on("data", chunk => answered!.chunks.push(Buffer.from(chunk)));
+      const status = response.statusCode ?? 0;
+      const limit = status >= 200 && status < 300 ? Number.POSITIVE_INFINITY : BODY_EXCERPT_BYTES;
+      let kept = 0;
+      response.on("data", (chunk: Buffer) => {
+        if (kept >= limit) return;
+        const piece = chunk.subarray(0, Math.min(chunk.length, limit - kept));
+        kept += piece.length;
+        answered!.chunks.push(Buffer.from(piece));
+      });
       response.on("error", error => finish(() => reject(failed(error))));
       response.on("aborted", () => finish(() => reject(failed(Object.assign(new Error("the answer was cut short"), { code: "ECONNRESET" })))));
       response.on("end", () => finish(() => {
@@ -309,7 +317,9 @@ export function classifyFailure(diagnosis: FailureDiagnosis | null | undefined):
   if (stall) return { class: "client", reason: `client_stall: ${stall}` };
   const { control, retry } = diagnosis;
   const code = diagnosis.cause?.code ?? null;
-  if (control && !control.ok) return { class: "client", reason: `the control probe to the neutral endpoint failed too (${followUpText("control", control)})` };
+  if (control && !control.ok) return diagnosis.controlReachedThisRun
+    ? { class: "client", reason: `the control probe to the neutral endpoint failed too (${followUpText("control", control)})` }
+    : { class: "unclassified", reason: `the control probe failed and the neutral endpoint has not answered once in this run (${followUpText("control", control)})` };
   if (code && DNS_CODES.has(code)) {
     if (code !== "ENOTFOUND") return { class: "client", reason: `client DNS failure (${code})` };
     if (retry && retry.error?.code !== "ENOTFOUND") return { class: "client", reason: "client DNS failure (ENOTFOUND, the immediate retry resolved the host)" };
@@ -358,8 +368,10 @@ export interface ClassifiedFailure extends Classified { at: number; evidence: st
 export interface FailureClassSummary { client: number; server: number; unclassified: number; failures: ClassifiedFailure[] }
 
 export function summarizeFailures(entries: ReadonlyArray<{ at: number; ok: boolean; failure?: FailureRecord | null }>): FailureClassSummary {
-  const failures = entries.filter(entry => !entry.ok).map((entry): ClassifiedFailure => ({ at: entry.at, class: entry.failure?.class ?? "unclassified",
-    reason: entry.failure?.reason ?? "no diagnosis recorded", evidence: failureEvidence(entry.failure) }));
+  const classOf = (failure: FailureRecord | null | undefined): Classified => !failure ? { class: "unclassified", reason: "no diagnosis recorded" }
+    : failure.state === "settled" ? { class: failure.class, reason: failure.reason }
+      : { class: "unclassified", reason: failure.state === "pending" ? "diagnosis still pending at the grade" : failure.reason };
+  const failures = entries.filter(entry => !entry.ok).map((entry): ClassifiedFailure => ({ at: entry.at, ...classOf(entry.failure), evidence: failureEvidence(entry.failure) }));
   return { client: failures.filter(entry => entry.class === "client").length, server: failures.filter(entry => entry.class === "server").length,
     unclassified: failures.filter(entry => entry.class === "unclassified").length, failures };
 }

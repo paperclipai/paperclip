@@ -59,6 +59,7 @@ export class HostedApi {
   private readonly controlFetcher: typeof fetch | null;
   private readonly controlUrl: string;
   private control: { at: number; outcome: Promise<FollowUp> } | null = null;
+  private controlReached = false;
   private readonly diagnosing = new WeakMap<FailureRecord, Promise<void>>();
 
   constructor(readonly target: HostedTarget, private readonly token: string, private readonly timeoutMs = 20_000,
@@ -120,8 +121,16 @@ export class HostedApi {
   private controlProbe(): Promise<FollowUp> | null {
     if (!this.controlFetcher) return null;
     if (this.control && Date.now() - this.control.at < 1_000) return this.control.outcome;
-    this.control = { at: Date.now(), outcome: followUp(this.controlFetcher, this.controlUrl, {}, CONTROL_TIMEOUT_MS) };
-    return this.control.outcome;
+    const outcome = followUp(this.controlFetcher, this.controlUrl, {}, CONTROL_TIMEOUT_MS).then(result => {
+      if (result.ok) this.controlReached = true;
+      return result;
+    });
+    this.control = { at: Date.now(), outcome };
+    return outcome;
+  }
+
+  async primeControl(): Promise<FollowUp | null> {
+    return await this.controlProbe();
   }
 
   private diagnose(input: { method: string; url: string; timeoutMs: number; clock: ClockStart; probe: ProbeContext | undefined; answer: AnswerEvidence | null;
@@ -129,12 +138,12 @@ export class HostedApi {
     const aborted = input.error !== null && isAbort(input.error);
     const failure: FailureRecord = { url: input.url.slice(this.target.baseUrl.length), method: input.method, aborted, answer: input.answer,
       cause: input.error === null ? null : errorCause(input.error), connection: input.connection, clock: readClock(input.clock, input.timeoutMs, aborted, input.probe),
-      control: null, retry: null, class: "unclassified", reason: "diagnosis pending" };
+      control: null, retry: null, controlReachedThisRun: false, class: "unclassified", reason: "diagnosis pending", state: "pending" };
     const fetcher = input.url.endsWith("/api/health") ? this.healthFetcher : this.fetcher;
     const retry = this.controlFetcher !== null && input.method === "GET" && !aborted ? followUp(fetcher, input.url, this.headers(undefined), RETRY_TIMEOUT_MS) : null;
     const task = Promise.all([this.controlProbe(), retry]).then(([control, retried]) => {
-      Object.assign(failure, { control, retry: retried });
-      Object.assign(failure, classifyFailure(failure));
+      Object.assign(failure, { control, retry: retried, controlReachedThisRun: this.controlReached });
+      Object.assign(failure, classifyFailure(failure), { state: "settled" });
     });
     this.diagnosing.set(failure, task);
     return failure;
@@ -147,8 +156,8 @@ export class HostedApi {
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([Promise.all(waits), new Promise<void>(resolve => { timer = setTimeout(resolve, deadlineMs); })]);
     clearTimeout(timer);
-    const unfinished = targets.filter(failure => failure.reason === "diagnosis pending");
-    for (const failure of unfinished) failure.reason = `diagnosis did not finish within ${Math.round(deadlineMs / 1000)} s of the grade`;
+    const unfinished = targets.filter(failure => failure.state === "pending");
+    for (const failure of unfinished) Object.assign(failure, { state: "unfinished", reason: `diagnosis did not finish within ${Math.round(deadlineMs / 1000)} s of the grade` });
     return unfinished.length;
   }
 

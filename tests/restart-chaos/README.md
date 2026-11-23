@@ -317,7 +317,7 @@ new or reused socket (API requests, from undici's diagnostics channels), remote 
 connect, TLS and first-byte times where they are cheap to read. Every failed request in `health.jsonl` and
 `requests.jsonl` carries a `failure` object: for an answer, its status, the headers `x-paperclip-status`, `retry-after`,
 `server`, `via`, `x-railway-request-id`, `x-railway-edge`, `cf-ray`, `date`, `content-type`, `cache-control` and
-`connection`, the first 512 bytes of the body, and the parsed `error` and `statusPage.code`; for an exception, undici's
+`connection`, the first 512 bytes of the body (the health client keeps no more than that of a non-2xx body), and the parsed `error` and `statusPage.code`; for an exception, undici's
 `error.cause` (`code`, `errno`, `syscall`, `hostname`, `address`, `port`, message, and the socket's addresses and byte
 counts for `UND_ERR_SOCKET`). It also records the client clock: how late an abort fired (`timerLagMs`), how far the
 wall clock moved past the monotonic clock, the event loop's longest delay (`monitorEventLoopDelay`), and the pause
@@ -333,7 +333,9 @@ Only the live entry point (`hosted-main.ts`) turns the control probe on; unit te
 Each failure gets a class. Server-side: any HTTP answer that is not a readable 2xx; a reset or refused connection
 while the control probe succeeded; a timeout while the control probe succeeded and the client did not stall.
 Client-side: a `client_stall` (an abort more than 1 s late, a clock jump over 1 s, an event-loop delay over 1 s, or a
-pause before the probe longer than twice the interval); a control probe that failed too; a client DNS failure
+pause before the probe longer than twice the interval); a control probe that failed too, once the neutral endpoint
+has answered at least once in the run (the run probes it right after sign-in; if it never answered, a failed control
+probe proves nothing and the failure stays unclassified); a client DNS failure
 (`EAI_AGAIN`, or `ENOTFOUND` that the immediate retry did not repeat). Anything else is unclassified. Release
 detection skips client-side failures, so a client-side failure in a swap gap does not make a release stop-then-start.
 
