@@ -5,7 +5,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines, issueThreadInteractions, nativeRunFinalizations, heartbeatRunEvents, agentWakeupRequests, issueRecoveryActions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings, quotaIdentityFromSessionSnapshot } from "../services/ai-connection-router.js";
@@ -445,6 +445,43 @@ describe("durable, authorized connection routing", () => {
           extraArgs: ["-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=false"] } });
       expect((await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, first.id))))[0]?.selection.memberId).toBe(members[0]!.id);
     } finally { await db.delete(aiConnectionQuotaCooldowns).where(and(eq(aiConnectionQuotaCooldowns.companyId, companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, identity))); }
+  });
+  it("switches a stopped quota-limited task to a healthy account on explicit fresh Retry", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true, enableAiConnectionRouters: true });
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Fresh Retry pool", enabled: true, mode: "failover",
+      members: [members[1]!, members[0]!].map(member => ({ id: member.id, connection: member.binding, harness: { type: member === members[0] ? "codex" as const : "claude_code" as const }, model: member.profile.model })) } }, "alice");
+    const [agent] = await db.insert(agents).values({ companyId, name: "Fresh Retry agent", adapterType: "paperclip_runner", adapterConfig: { cwd: home }, runtimeConfig: { harnessPool: { poolId: pool.id } } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Fresh Retry issue", status: "in_progress", assigneeAgentId: agent.id }).returning();
+    const [initial] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "queued" }).returning();
+    const initialClaim = await preparePoolAdapterClaim(db, initial, agent, "alice");
+    const selection = initialClaim.context.aiRouterSelection!;
+    expect(selection?.memberId).toBe(members[1]!.id);
+    const sourceRunId = initial.id;
+    await db.update(heartbeatRuns).set({ contextSnapshot: initialClaim.context, nativeIssueId: issue.id, status: "failed", errorCode: "native_provider_usage_limit", runtimeMode: "native", finishedAt: new Date() }).where(eq(heartbeatRuns.id, sourceRunId));
+    const retryId = randomUUID();
+    const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id, status: "queued",
+      contextSnapshot: { forceFreshSession: true, explicitUserContinuation: { commentId: null, taskRetryRequestId: retryId, previousRunId: sourceRunId } } }).returning();
+    await db.update(issues).set({ executionRunId: retry.id }).where(eq(issues.id, issue.id));
+    await db.insert(agentWakeupRequests).values({ id: retryId, companyId, agentId: agent.id, runId: retry.id, reason: "task_retry", source: "on_demand", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: "alice", payload: { issueId: issue.id, taskRetry: { schema: "paperclip.task-retry.v1", generationId: retryId, actorId: "alice", sourceRunId, strategy: "fresh_isolated_workspace" } } });
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue.id, status: "resolved", cause: "uncertain_control_plane_action", kind: "repair", fingerprint: retryId, nextAction: "Retry",
+      evidence: { runId: sourceRunId, explicitUserContinuation: { runId: retry.id, previousRunId: sourceRunId, commentId: null, actorId: "alice", taskRetryRequestId: retryId } } });
+    await db.insert(nativeRunFinalizations).values({ companyId, runId: sourceRunId, issueId: issue.id, phase: "terminal_failure", failureCode: "native_provider_usage_limit",
+      failureDetail: { replacementDenied: "explicit_user_continuation" } });
+    const deadline = new Date(Date.now() + 60_000);
+    const identity = await identityFor(members[1]!.binding.grantId);
+    await service().recordQuotaCooldown(companyId, members[1]!.binding.connectionId, identity, deadline);
+    await db.insert(heartbeatRunEvents).values([
+      { companyId, runId: sourceRunId, agentId: agent.id, seq: 1, eventType: "native.local_process_stopped", payload: {} },
+      { companyId, runId: sourceRunId, agentId: agent.id, seq: 2, eventType: "ai_connection.quota_attributed", sourceEventId: `ai-connection-quota-attributed:${sourceRunId}`,
+        payload: { schema: "paperclip.ai-connection-quota-attribution.v1", runId: sourceRunId, selection, taskKey: issue.id, retryAt: deadline.toISOString() } },
+    ]);
+    try {
+      expect((await preparePoolAdapterClaim(db, retry, agent, "alice")).context.aiRouterSelection?.memberId).toBe(members[0]!.id);
+    } finally {
+      await db.delete(aiConnectionQuotaCooldowns).where(and(eq(aiConnectionQuotaCooldowns.companyId, companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, identity)));
+    }
   });
   it("pins the effective Codex adapter for a configured Claude agent", async () => {
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
