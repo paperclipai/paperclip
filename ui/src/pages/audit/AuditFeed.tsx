@@ -211,7 +211,10 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
 
 function auditOutcome(record: AuditActionRecord): string | null {
   if (record.action === "tool_connection.archived" || record.action === "tool_connection.grant_revoked") {
-    return googleAccessRemovalNotice(record.details?.providerAccess as ManagedGoogleAccessRemoval | undefined)?.body ?? null;
+    return googleAccessRemovalNotice(
+      record.details?.providerAccess as ManagedGoogleAccessRemoval | undefined,
+      record.action === "tool_connection.grant_revoked" ? "credentials" : "connection",
+    )?.body ?? null;
   }
   return formatActivityOutcome(record.action, record.details);
 }

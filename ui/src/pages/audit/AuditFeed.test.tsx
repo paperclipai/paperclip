@@ -303,6 +303,8 @@ describe("AuditFeed", () => {
     expect(primary[9]).toContain("could not use gmail get message on the connection");
     expect(primary[10]).toContain("revoked credentials from the Google Workspace connection");
     expect(primary[10]).toContain("couldn't end its access at Google");
+    expect(primary[10]).toContain("Paperclip removed the credentials");
+    expect(primary[10]).not.toContain("removed the connection but");
     expect(rows[0].textContent).toContain("tool_gateway.call_completed");
   });
 
