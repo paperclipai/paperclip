@@ -20,7 +20,7 @@ const ID = "11111111-1111-4111-8111-111111111111";
 const BASE = `https://acme.paperclip.app/api/agent-setup-progress/${ID}`;
 const WAITING: AgentSetupProgress = {
   id: ID, companyId: "company-1", purpose: "aws_connection", subjectId: "conn-1", status: "waiting", items: [], summary: null,
-  expiresAt: "2026-11-23T20:00:00.000Z", createdAt: "2026-11-23T14:00:00.000Z", updatedAt: "2026-11-23T14:00:00.000Z",
+  expiresAt: new Date(Date.now() + 6 * 3600_000).toISOString(), createdAt: "2026-11-23T14:00:00.000Z", updatedAt: "2026-11-23T14:00:00.000Z",
 };
 const HANDOFF: AgentSetupProgressHandoff = {
   progress: WAITING, token: "pcsp_token", urls: { checklist: `${BASE}/checklist`, item: `${BASE}/items/{key}`, finish: `${BASE}/finish` },
@@ -68,8 +68,8 @@ describe("agent setup progress", () => {
     });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(client.create).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain("Your agent is setting up AWS");
-    expect(container.textContent).toContain("Paste the prompt into your agent.");
+    await vi.waitFor(() => expect(container.textContent).toContain("Your agent is setting up AWS"));
+    await vi.waitFor(() => expect(container.textContent).toContain("Paste the prompt into your agent."));
 
     current = { ...WAITING, status: "in_progress", updatedAt: new Date().toISOString(), items: [
       { key: "check-account", title: "Check the AWS account", status: "done", detail: "Account 123456789012" },
@@ -87,14 +87,14 @@ describe("agent setup progress", () => {
       "in_progress · Create the role · In progress",
       "pending · Report the role ARN · Not started",
     ]);
-    expect(container.textContent).toContain("Last update");
+    await vi.waitFor(() => expect(container.textContent).toContain("Last update"));
 
     current = { ...current, status: "done", summary: "Role ARN: arn:aws:iam::123456789012:role/paperclip-conn-1",
       items: current.items.map((item) => ({ ...item, status: "done" as const })) };
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(ID) }); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.textContent).toContain("Your agent set up AWS");
-    expect(container.textContent).toContain("Role ARN: arn:aws:iam::123456789012:role/paperclip-conn-1");
+    await vi.waitFor(() => expect(container.textContent).toContain("Your agent set up AWS"));
+    await vi.waitFor(() => expect(container.textContent).toContain("Role ARN: arn:aws:iam::123456789012:role/paperclip-conn-1"));
     expect(client.create).toHaveBeenCalledOnce();
   });
 
@@ -110,7 +110,7 @@ describe("agent setup progress", () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     // The copied prompt writes to the first checklist, so coming back must not make another.
     expect(client.create).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain("Your agent is setting up AWS");
+    await vi.waitFor(() => expect(container.textContent).toContain("Your agent is setting up AWS"));
   });
 
   it("says when the prompt expired and starts again with a fresh checklist", async () => {
@@ -131,13 +131,13 @@ describe("agent setup progress", () => {
     }
     await act(async () => { root.render(<QueryClientProvider client={queryClient}><Renewing /></QueryClientProvider>); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.textContent).toContain("This setup prompt expired");
+    await vi.waitFor(() => expect(container.textContent).toContain("This setup prompt expired"));
     const startAgain = [...container.querySelectorAll("button")].find((b) => b.textContent === "Start again")!;
     await act(async () => { startAgain.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(create).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-testid="token"]')?.textContent).toBe("pcsp_fresh");
-    expect(container.textContent).toContain("Paste the prompt into your agent.");
+    await vi.waitFor(() => expect(container.textContent).toContain("Paste the prompt into your agent."));
   });
 
   it("keeps following the same checklist after the page reloads", async () => {
@@ -152,7 +152,7 @@ describe("agent setup progress", () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(client.create).toHaveBeenCalledOnce();
     expect(client.get).toHaveBeenCalledWith(ID);
-    expect(container.textContent).toContain("Your agent is setting up AWS");
+    await vi.waitFor(() => expect(container.textContent).toContain("Your agent is setting up AWS"));
   });
 
   function Full({ client }: { client: AgentSetupProgressClient }) {
@@ -179,12 +179,12 @@ describe("agent setup progress", () => {
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(ID) }); });
     await flush();
     // The failed attempt stays on screen while this page is open, with a way to try again.
-    expect(container.textContent).toContain("Your agent couldn’t finish setting up AWS");
+    await vi.waitFor(() => expect(container.textContent).toContain("Your agent couldn’t finish setting up AWS"));
     expect(window.sessionStorage.length).toBe(0);
     const startAgain = [...container.querySelectorAll("button")].find((b) => b.textContent === "Start again")!;
     await act(async () => { startAgain.click(); });
     await flush();
-    expect(token()).toBe("pcsp_second");
+    await vi.waitFor(() => expect(token()).toBe("pcsp_second"));
 
     // Opening the step again with a finished checklist in the cache (such as a reconnect) starts a fresh one.
     const third: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_third", progress: { ...WAITING, id: "44444444-4444-4444-8444-444444444444" } };
@@ -200,7 +200,7 @@ describe("agent setup progress", () => {
     await flush();
     await flush();
     expect(reopenCreate).toHaveBeenCalledOnce();
-    expect(token()).toBe("pcsp_third");
+    await vi.waitFor(() => expect(token()).toBe("pcsp_third"));
   });
 
   it("keeps the last checklist when a refresh fails, says so, and retries", async () => {
@@ -212,8 +212,8 @@ describe("agent setup progress", () => {
     await flush();
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(ID) }); });
     await flush();
-    expect(container.textContent).toContain("Create the role");
-    expect(container.textContent).toContain("Couldn’t refresh your agent’s progress");
+    await vi.waitFor(() => expect(container.textContent).toContain("Create the role"));
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn’t refresh your agent’s progress"));
     const retry = [...container.querySelectorAll("button")].find((b) => b.textContent === "Retry")!;
     await act(async () => { retry.click(); });
     await flush();
@@ -226,7 +226,7 @@ describe("agent setup progress", () => {
     const client: AgentSetupProgressClient = { create, get: vi.fn(async (id: string) => id === ID ? WAITING : second.progress) };
     await act(async () => { root.render(<QueryClientProvider client={queryClient}><Full client={client} /></QueryClientProvider>); });
     await flush();
-    expect(token()).toBe("pcsp_token");
+    await vi.waitFor(() => expect(token()).toBe("pcsp_token"));
     // Signed out in another tab (this tab's storage stays), then another account opens the same setup here.
     await act(async () => root.unmount());
     account.userId = "user-2";
@@ -235,7 +235,7 @@ describe("agent setup progress", () => {
     await act(async () => { root.render(<QueryClientProvider client={freshCache}><Full client={client} /></QueryClientProvider>); });
     await flush();
     expect(create).toHaveBeenCalledTimes(2);
-    expect(token()).toBe("pcsp_other_account");
+    await vi.waitFor(() => expect(token()).toBe("pcsp_other_account"));
   });
 
   it("replaces a finished checklist from an earlier visit even when the session arrives late", async () => {
