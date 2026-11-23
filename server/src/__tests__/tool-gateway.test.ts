@@ -5741,14 +5741,21 @@ rl.on("line", (line) => {
     }
   });
 
-  it("applies the same resolution policy to the direct tool review routes and the issue thread path", async () => {
+  it.each([
+    { scenario: "a chat owned by one member", outsiderAllowed: false, outsiderStatus: 403,
+      issuePatch: (agentId: string) => ({ conversationAgentId: agentId, conversationUserId: "alice", conversationState: "active" as const }) },
+    { scenario: "a personal dashboard conversation", outsiderAllowed: false, outsiderStatus: 404,
+      issuePatch: () => ({ originKind: "responsibility_dashboard", originId: "alice" }) },
+    { scenario: "an ordinary task", outsiderAllowed: true, outsiderStatus: 200,
+      issuePatch: () => ({}) },
+  ])("gives the direct tool review routes and the issue thread path the same answer for $scenario", async ({ outsiderAllowed, outsiderStatus, issuePatch }) => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
     await createActiveMember(db, company.id, "alice");
     await createActiveMember(db, company.id, "bob");
-    await db.update(issues).set({ conversationAgentId: agent.id, conversationUserId: "alice", conversationState: "active" })
-      .where(eq(issues.id, issue.id));
+    const patch = issuePatch(agent.id);
+    if (Object.keys(patch).length > 0) await db.update(issues).set(patch).where(eq(issues.id, issue.id));
     const remote = await createRemoteMcpTool(db, company.id, { toolName: "send_note", riskLevel: "write" });
     await allowAllToolsForAgent(db, company.id, agent.id);
     await db.insert(toolPolicies).values({
@@ -5794,28 +5801,42 @@ rl.on("line", (line) => {
       app.use(errorHandler);
       return app;
     };
+    const direct = (userId: string, actionRequestId: string, decision: "approve" | "decline") =>
+      request(createGatewayRouteApp(db, gateway, boardActor(userId)))
+        .post(`/api/tool-gateway/action-requests/${actionRequestId}/${decision}`)
+        .send({ companyId: company.id });
     const outcomes = async (userId: string, decision: "approve" | "decline") => {
       const viaIssue = await requestReview();
       const issueStatus = (await request(issueApp(userId))
         .post(`/api/issues/${issue.id}/interactions/${viaIssue.interactionId}/${decision === "approve" ? "accept" : "reject"}`)
         .send({})).status;
-      const direct = await requestReview();
-      const directStatus = (await request(createGatewayRouteApp(db, gateway, boardActor(userId)))
-        .post(`/api/tool-gateway/action-requests/${direct.id}/${decision}`)
-        .send({ companyId: company.id })).status;
+      const viaDirect = await requestReview();
+      const directStatus = (await direct(userId, viaDirect.id, decision)).status;
       const [after] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
-        .where(eq(toolActionRequests.id, direct.id));
+        .where(eq(toolActionRequests.id, viaDirect.id));
       await db.update(toolActionRequests).set({ status: "expired" })
         .where(and(eq(toolActionRequests.companyId, company.id), eq(toolActionRequests.status, "pending")));
-      return { issueAllowed: issueStatus < 300, directAllowed: directStatus < 300, directStatus, directRequestStatus: after!.status };
+      return { issueAllowed: issueStatus < 300, directAllowed: directStatus < 300, directRequestStatus: after!.status };
     };
 
     for (const decision of ["approve", "decline"] as const) {
       const outsider = await outcomes("bob", decision);
-      expect(outsider).toMatchObject({ issueAllowed: false, directAllowed: false, directStatus: 403, directRequestStatus: "pending" });
+      expect(outsider.issueAllowed).toBe(outsiderAllowed);
+      expect(outsider.directAllowed).toBe(outsiderAllowed);
+      if (!outsiderAllowed) expect(outsider.directRequestStatus).toBe("pending");
       const owner = await outcomes("alice", decision);
       expect(owner).toMatchObject({ issueAllowed: true, directAllowed: true });
     }
+
+    const settled = await requestReview();
+    expect((await direct("alice", settled.id, "approve")).status).toBe(200);
+    expect((await direct("bob", settled.id, "approve")).status).toBe(outsiderAllowed ? 200 : outsiderStatus);
+    expect((await direct("bob", settled.id, "decline")).status).toBe(outsiderAllowed ? 409 : outsiderStatus);
+
+    await db.update(toolActionRequests).set({ status: "approved" }).where(eq(toolActionRequests.id, settled.id));
+    await expect(gateway.approveActionRequest({
+      companyId: company.id, actionRequestId: settled.id, actor: { userId: "alice" }, recoveringApprovedReview: true,
+    })).resolves.toBeDefined();
   });
 
   it("denies agents without responsible-user authority from runtime control and gateway audit routes", async () => {

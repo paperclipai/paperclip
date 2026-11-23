@@ -19,6 +19,7 @@ export const ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES = [
   "interaction_issue_closed",
   "interaction_governed_action_denied",
   "review_policy_denied",
+  "interaction_conversation_owner_required",
 ] as const;
 
 export type IssueThreadInteractionResolutionDenialCode =
@@ -438,7 +439,13 @@ export function conversationInteractionResponderAllowed(
 
 export type HumanToolReviewResolutionDecision =
   | { allowed: true }
-  | { allowed: false; status: 403 | 404 | 422; code: string; message: string; details?: Record<string, unknown> };
+  | {
+      allowed: false;
+      status: 403 | 404 | 422;
+      code: IssueThreadInteractionResolutionDenialCode;
+      message: string;
+      details?: Record<string, unknown>;
+    };
 
 export function evaluateHumanToolReviewResolution(input: {
   userId: string;
@@ -463,4 +470,11 @@ export function evaluateHumanToolReviewResolution(input: {
   });
   if (decision.allowed) return { allowed: true };
   return { allowed: false, status: decision.status, code: decision.code, message: decision.message, details: decision.details };
+}
+
+export function assertHumanToolReviewResolution(input: Parameters<typeof evaluateHumanToolReviewResolution>[0]) {
+  const decision = evaluateHumanToolReviewResolution(input);
+  if (!decision.allowed) {
+    throw issueThreadInteractionResolutionError(decision.status, decision.code, decision.message, decision.details);
+  }
 }

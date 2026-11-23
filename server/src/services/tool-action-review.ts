@@ -11,7 +11,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
-import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
+import { assertHumanToolReviewResolution } from "./issue-thread-interaction-resolution.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
@@ -133,10 +133,11 @@ export async function commitToolActionReview(
         payload.toolAction.invocationId !== current.invocationId
       )
         throw conflict("Tool review context does not match");
-      assertIssueThreadInteractionResolverAudience({
-        actor: { type: "user", userId: input.actor.userId ?? "board" },
+      if (!issue) throw conflict("Tool review context does not match");
+      assertHumanToolReviewResolution({
+        userId: input.actor.userId ?? "board",
+        issue,
         interaction,
-        governedAction: true,
       });
       if (interaction.status !== "pending")
         throw conflict("This review has already been resolved");

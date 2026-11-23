@@ -2234,11 +2234,11 @@ export function createToolGatewayService(
     };
   }
 
-  async function assertHumanMayDecideToolReview(
+  async function assertHumanMaySeeSettledToolReview(
     actionRequest: typeof toolActionRequests.$inferSelect,
     userId: string | null | undefined,
   ) {
-    if (actionRequest.status !== "pending") return;
+    if (actionRequest.status === "pending") return;
     if (!userId) {
       throw new ToolGatewayHttpError(403, "Only a human can resolve a tool review", "human_review_required");
     }
@@ -2253,14 +2253,7 @@ export function createToolGatewayService(
       ))
       .limit(1);
     const [issue] = await db
-      .select({
-        originKind: issues.originKind,
-        originId: issues.originId,
-        responsibleUserId: issues.responsibleUserId,
-        assigneeAgentId: issues.assigneeAgentId,
-        conversationAgentId: issues.conversationAgentId,
-        conversationUserId: issues.conversationUserId,
-      })
+      .select()
       .from(issues)
       .where(and(eq(issues.id, actionRequest.issueId), eq(issues.companyId, actionRequest.companyId)))
       .limit(1);
@@ -12757,7 +12750,7 @@ export function createToolGatewayService(
           const { request, invocation, payload } = prepared;
           if (!isTestOriginInvocation(invocation) && payload.executionOnApprove !== true) return false;
           await this.approveActionRequest({ companyId: request.companyId, actionRequestId: request.id,
-            actor: { userId: request.decidedByUserId ?? request.resolvedByUserId } });
+            actor: { userId: request.decidedByUserId ?? request.resolvedByUserId }, recoveringApprovedReview: true });
           const [remaining] = await db.select({ status: toolActionRequests.status, errorCode: toolInvocations.errorCode })
             .from(toolActionRequests).innerJoin(toolInvocations, eq(toolInvocations.id, toolActionRequests.invocationId))
             .where(eq(toolActionRequests.id, request.id));
@@ -12779,6 +12772,7 @@ export function createToolGatewayService(
 
     async approveActionRequest(input: {
       companyId: string;
+      recoveringApprovedReview?: boolean;
       rememberAction?: boolean;
       issueId?: string;
       interactionId?: string;
@@ -12803,7 +12797,7 @@ export function createToolGatewayService(
           "action_request_not_found",
         );
       }
-      await assertHumanMayDecideToolReview(actionRequest, input.actor.userId);
+      if (!input.recoveringApprovedReview) await assertHumanMaySeeSettledToolReview(actionRequest, input.actor.userId);
       const [invocation] = await db
         .select()
         .from(toolInvocations)
@@ -13086,7 +13080,7 @@ export function createToolGatewayService(
           .from(toolActionRequests)
           .where(and(eq(toolActionRequests.id, input.actionRequestId), eq(toolActionRequests.companyId, input.companyId)))
           .limit(1);
-        if (actionRequest) await assertHumanMayDecideToolReview(actionRequest, input.actor.userId);
+        if (actionRequest) await assertHumanMaySeeSettledToolReview(actionRequest, input.actor.userId);
       }
       const updated = await commitToolActionReview(db, {
         ...input,
