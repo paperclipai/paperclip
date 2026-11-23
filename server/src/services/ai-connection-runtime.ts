@@ -31,7 +31,7 @@ import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigrav
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
 import { trackIdleWork } from "./task-admission.js";
-import { hasPendingClaudeExchange } from "./claude-subscription-refresh.js";
+import { hasPendingClaudeExchange, type ClaudeProbeHold } from "./claude-subscription-refresh.js";
 
 // A cleanup renewal whose exchange succeeded but whose vault save failed is
 // saved again after a short wait, this many times.
@@ -231,6 +231,8 @@ export async function prepareManagedAiRuntime(
     config: Record<string, unknown>;
     /** The run this runtime is prepared for. Its own token does not defer a Claude renewal, and the renewal records it as a holder of the token it receives. */
     currentRunId?: string;
+    /** Set by `withManagedAiProbe`: counts this preparation as a holder of a Claude subscription token until the probe releases it. */
+    probeHold?: ClaudeProbeHold;
   },
 ) {
   const configuredEnv =
@@ -306,7 +308,7 @@ export async function prepareManagedAiRuntime(
       // against a concurrent reconnect or explicit rotation.
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const before = await readFreshness();
-        const value = await service.runtimeCredential(selection, { currentRunId: input.currentRunId });
+        const value = await service.runtimeCredential(selection, { currentRunId: input.currentRunId, probeHold: input.probeHold });
         const after = await readFreshness();
         if (before && after && before.version === after.version && before.epoch === after.epoch) {
           return { value, freshness: after };
@@ -644,7 +646,14 @@ export async function withManagedAiProbe<T>(
   input: Parameters<typeof prepareManagedAiRuntime>[1],
   probe: (runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) => Promise<T>,
 ): Promise<T> {
-  const runtime = await prepareManagedAiRuntime(db, input);
+  // A probe has no run row, so the holder check of a Claude subscription
+  // renewal cannot see it. Count it in memory while it uses the token: a
+  // renewal in that time would revoke the token and fail the test, and a
+  // failed agent verification then waits for a person.
+  const probeHold: ClaudeProbeHold = {};
+  let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>;
+  try { runtime = await prepareManagedAiRuntime(db, { ...input, probeHold }); }
+  catch (error) { probeHold.release?.(); throw error; }
   let retained = false;
   try {
     return await probe(runtime);
@@ -661,6 +670,8 @@ export async function withManagedAiProbe<T>(
     }
     throw error;
   } finally {
+    // Before cleanup, so the renewal at cleanup does not wait for this probe.
+    probeHold.release?.();
     if (!retained) {
       try { await runtime.cleanup(); }
       catch (error) {

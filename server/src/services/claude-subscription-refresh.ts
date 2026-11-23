@@ -22,6 +22,15 @@ export const hasPendingClaudeExchange = (companyId: string, grantId: string) => 
 // shutdown must wait for its save.
 registerIdleLocalWorkProbe(() => pendingExchanges.size ? "present" : "none");
 
+/**
+ * An account test or an agent verification holds a token like a run does, but
+ * it has no run row. Each one in flight is counted here, per grant, from the
+ * moment it receives the token until it releases the hold.
+ */
+export type ClaudeProbeHold = { release?: () => void };
+const probeHolders = new Map<string, number>();
+export type ClaudeRefreshOptions = { currentRunId?: string; probeHold?: ClaudeProbeHold };
+
 type Selection = { connection: typeof toolConnections.$inferSelect; grant: typeof connectionGrants.$inferSelect };
 
 /** Serialize exchanges with reconnect and other controllers. Only the vault holds refresh tokens. */
@@ -29,7 +38,7 @@ export async function refreshClaudeSubscription(
   db: Db,
   row: Selection,
   readRaw: (tx: Db, selection: Selection) => Promise<string>,
-  options: { currentRunId?: string } = {},
+  options: ClaudeRefreshOptions = {},
 ): Promise<string> {
   const companyId = row.connection.companyId;
   return withAccountHomeSecretMutationLock(undefined, companyId, async () => {
@@ -80,7 +89,7 @@ export async function refreshClaudeSubscription(
                 sql`${heartbeatRuns.contextSnapshot}->>${AI_CREDENTIAL_HOLDER_KEY} = ${grant.id}`),
               ...(options.currentRunId ? [ne(heartbeatRuns.id, options.currentRunId)] : []),
             )).limit(1);
-            if (held) return { value: current };
+            if (held || probeHolders.get(key)) return { value: current };
           }
           const recovering = Boolean(replacement);
           let refreshed = replacement?.value;
@@ -141,6 +150,14 @@ export async function refreshClaudeSubscription(
           await db.update(heartbeatRuns)
             .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ [AI_CREDENTIAL_HOLDER_KEY]: row.grant.id })}::jsonb` })
             .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, options.currentRunId)));
+        }
+        if (options.probeHold && !options.probeHold.release) {
+          probeHolders.set(key, (probeHolders.get(key) ?? 0) + 1);
+          options.probeHold.release = () => {
+            options.probeHold!.release = () => undefined;
+            const left = (probeHolders.get(key) ?? 1) - 1;
+            if (left > 0) probeHolders.set(key, left); else probeHolders.delete(key);
+          };
         }
         return claudeAccessTokenOf(result.value!);
       } catch (error) {

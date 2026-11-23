@@ -1,5 +1,5 @@
 import { claudeAccessTokenOf, parseStoredClaudeOauth, serializeClaudeOauth } from "./claude-oauth-credential.js";
-import { hasPendingClaudeExchange, refreshClaudeSubscription } from "./claude-subscription-refresh.js";
+import { hasPendingClaudeExchange, refreshClaudeSubscription, type ClaudeRefreshOptions } from "./claude-subscription-refresh.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -629,7 +629,7 @@ export function aiConnectionService(db: Db) {
     }
     return value;
   }
-  async function credential(row: Parameters<typeof credentialRaw>[0], retry = 0, audit?: Parameters<typeof credentialRaw>[2], options: { currentRunId?: string } = {}): Promise<string> {
+  async function credential(row: Parameters<typeof credentialRaw>[0], retry = 0, audit?: Parameters<typeof credentialRaw>[2], options: ClaudeRefreshOptions = {}): Promise<string> {
     const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
     if (metadata.provider !== "anthropic" || metadata.method !== "subscription") return credentialRaw(row, retry, audit);
     // Resolve under the credential lock too: resolution records lastResolvedAt,
@@ -1047,7 +1047,7 @@ export function aiConnectionService(db: Db) {
     return pending.value;
   }
 
-  async function runtimeCredential(row: Parameters<typeof credential>[0], options: { currentRunId?: string } = {}) {
+  async function runtimeCredential(row: Parameters<typeof credential>[0], options: ClaudeRefreshOptions = {}) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
     if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row, 0, undefined, options);
     if (!(await quotaCredentialRecovery(row.connection.companyId, row.grant.id).read())) return credential(row);

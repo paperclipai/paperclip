@@ -10,7 +10,7 @@ import { companies, agents, companyMemberships, companySecrets, connectionGrants
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
-import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe } from "../services/ai-connection-runtime.js";
 import * as secretModule from "../services/secrets.js";
 import { secretService } from "../services/secrets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -386,6 +386,31 @@ describe("Claude subscription idle renewal", () => {
     expect(exchange).not.toHaveBeenCalled();
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, starting));
     await run.cleanup();
+    await vi.waitFor(async () => expect((await state()).latestVersion).toBe(2), { timeout: 10_000 });
+    expect(exchange).toHaveBeenCalledOnce();
+  });
+
+  it("counts an account test in flight as a holder, and renews once it has ended", async () => {
+    const { account, owner, service, row, state } = await connect(document(Date.now() + 3600_000));
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    // A run holds the token while the test starts, so the test receives the same token.
+    const other = await holdingRun(account.grantId);
+    let finish!: () => void;
+    const testing = new Promise<void>(resolve => { finish = resolve; });
+    let started!: () => void;
+    const reached = new Promise<void>(resolve => { started = resolve; });
+    const probe = withManagedAiProbe(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} } }, async runtime => {
+      expect(runtime.config.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("old-access");
+      started();
+      await testing;
+    });
+    await reached;
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    // No run holds the token now, but the test does: a read by another caller must not renew under it.
+    expect(await service.credential(row)).toBe("old-access");
+    expect(exchange).not.toHaveBeenCalled();
+    finish();
+    await probe;
     await vi.waitFor(async () => expect((await state()).latestVersion).toBe(2), { timeout: 10_000 });
     expect(exchange).toHaveBeenCalledOnce();
   });
