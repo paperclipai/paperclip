@@ -51,3 +51,13 @@ it("does not reuse another account's choice", async () => {
   await render("bob");
   expect(container.querySelector("select")?.value).toBe("5");
 });
+
+it("retains the saved choice after a failed background refresh", async () => {
+  await render();
+  mocks.get.mockRejectedValue(new Error("Refresh unavailable"));
+  await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.workspacePreferences.mine("alice") }); });
+  await flush();
+  expect(container.querySelector("select")?.value).toBe("20");
+  expect(container.querySelector("select")?.disabled).toBe(false);
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Refresh unavailable");
+});

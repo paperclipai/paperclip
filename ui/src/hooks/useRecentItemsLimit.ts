@@ -20,9 +20,10 @@ export function useRecentItemsLimit(userId: string | null | undefined) {
     onSuccess: result => client.setQueryData<WorkspacePreference>(queryKeys.workspacePreferences.mine(result.userId),
       current => current ? { ...current, recentItemsLimit: result.recentItemsLimit } : result),
   });
-  const loaded = !!userId && preference.isSuccess && preference.data.userId === userId;
+  const saved = userId && preference.data?.userId === userId ? preference.data : undefined;
+  const loaded = saved !== undefined;
   return {
-    limit: loaded ? preference.data.recentItemsLimit ?? DEFAULT_RECENT_ITEMS_LIMIT : 0,
+    limit: saved ? saved.recentItemsLimit ?? DEFAULT_RECENT_ITEMS_LIMIT : 0,
     loaded,
     error: preference.error ?? (mutation.variables?.owner === userId ? mutation.error : null),
     isSaving: mutation.isPending && mutation.variables?.owner === userId,
