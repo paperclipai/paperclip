@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { AcpxPrivateSnapshot } from "./private-snapshot.js";
@@ -18,6 +18,12 @@ export interface NativeAcpxDistributionInput {
   isolatedCacheEnvironmentName?: "COPILOT_PKG_CACHE_HOME";
   /** Trusted Copilot profile only; resolved inside each immutable spawn lease. */
   copilotDistributionDirectory?: string;
+  /**
+   * The provider whose pinned closure this is (for example `antigravity`). When
+   * set, a launch retires this provider's sealed stores for closures it no
+   * longer pins, once no live runner process holds them.
+   */
+  storeFamily?: string;
 }
 export interface NativeAcpxDistributionSnapshot {
   snapshot: AcpxPrivateSnapshot;
@@ -145,7 +151,89 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
     await writeSourceRecord(storeRoot, input.expectedClosureSha256, source, await verifyNativeSource(source, entries, signal));
   }
   signal?.throwIfAborted();
-  return await createNativeLaunch(input, entries, join(storeDirectory, "distribution"), identities);
+  if (input.storeFamily !== undefined) await holdVerifiedStore(storeRoot, input.expectedClosureSha256, input.storeFamily);
+  const launch = await createNativeLaunch(input, entries, join(storeDirectory, "distribution"), identities);
+  // Retiring superseded closures never delays this launch.
+  if (input.storeFamily !== undefined) scheduleNativeAcpxStorePrune(storeRoot, input.storeFamily, input.expectedClosureSha256);
+  return launch;
+}
+
+const validStoreFamily = (value: string) => /^[a-z0-9][a-z0-9-]{0,63}$/.test(value);
+const heldStores = new Set<string>();
+const scheduledPrunes = new Map<string, Promise<string[]>>();
+
+/**
+ * Mark a store as used by this runner process and record its provider. The
+ * lease names the process, so a store stays while any live runner holds it,
+ * including an older release still finishing its runs during a deploy.
+ */
+async function holdVerifiedStore(storeRoot: string, closure: string, family: string): Promise<void> {
+  if (!validStoreFamily(family)) throw new Error("Native ACPX store family is invalid");
+  const key = `${storeRoot}\0${closure}`;
+  if (heldStores.has(key)) return;
+  await writeFile(join(storeRoot, `${closure}.lease-${process.pid}`), "", { mode: 0o600 });
+  await writeFile(join(storeRoot, `${closure}.family`), family, { mode: 0o600 });
+  heldStores.add(key);
+}
+
+function scheduleNativeAcpxStorePrune(storeRoot: string, family: string, keepClosure: string): void {
+  const key = `${storeRoot}\0${family}\0${keepClosure}`;
+  if (scheduledPrunes.has(key)) return;
+  scheduledPrunes.set(key, pruneNativeAcpxStores(storeRoot, family, keepClosure).catch(() => []));
+}
+
+/** Test seam: the background prune a launch scheduled, if any. */
+export function scheduledNativeAcpxStorePrune(family: string, keepClosure: string): Promise<string[]> | undefined {
+  for (const [key, prune] of scheduledPrunes) if (key.endsWith(`\0${family}\0${keepClosure}`)) return prune;
+  return undefined;
+}
+
+const processAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+};
+
+/** Live runner processes holding `closure`; stale leases of exited processes are removed. */
+async function liveStoreHolders(storeRoot: string, closure: string, names: readonly string[]): Promise<number> {
+  let live = 0;
+  for (const name of names) {
+    const match = new RegExp(`^${closure}\\.lease-(\\d{1,10})$`).exec(name);
+    if (!match) continue;
+    if (processAlive(Number(match[1]))) live++;
+    else await rm(join(storeRoot, name), { force: true });
+  }
+  return live;
+}
+
+/**
+ * Remove `family`'s sealed stores whose closure is not `keepClosure` and that
+ * no live runner process holds. Stores of other providers, unmarked stores and
+ * the kept closure are never touched. Returns the retired closures.
+ */
+export async function pruneNativeAcpxStores(storeRoot: string, family: string, keepClosure: string): Promise<string[]> {
+  if (!validStoreFamily(family) || !/^[a-f0-9]{64}$/.test(keepClosure)) return [];
+  const retired: string[] = [];
+  for (const name of await readdir(storeRoot)) {
+    const closure = /^([a-f0-9]{64})\.family$/.exec(name)?.[1];
+    if (!closure || closure === keepClosure) continue;
+    const marker = await readFile(join(storeRoot, name), "utf8").catch(() => null);
+    if (marker !== family) continue;
+    if (await liveStoreHolders(storeRoot, closure, await readdir(storeRoot)) > 0) continue;
+    const storeDirectory = join(storeRoot, closure);
+    const parked = join(storeRoot, `.retiring-${randomUUID()}`);
+    try { await rename(storeDirectory, parked); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") continue;
+    }
+    // A runner that took a lease while the store was being parked keeps it.
+    if (await liveStoreHolders(storeRoot, closure, await readdir(storeRoot)) > 0) {
+      await rename(parked, storeDirectory).catch(() => undefined);
+      continue;
+    }
+    await removeSealedTree(parked).catch(() => undefined);
+    await rm(join(storeRoot, `${closure}.source.json`), { force: true });
+    await rm(join(storeRoot, name), { force: true });
+    retired.push(closure);
+  }
+  return retired;
 }
 
 /** Runner-owned private store root; a foreign or unsafe location falls back to a process-private one. */

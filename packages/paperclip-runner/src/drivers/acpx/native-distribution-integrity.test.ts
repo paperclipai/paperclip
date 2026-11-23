@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { constants } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmod, copyFile, link, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile, type FileHandle } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { copyOwnedNodeRuntime } from "../../test-support/owned-node-runtime.js";
 import { awaitVerifiedAcpxProviderExit, awaitVerifiedAcpxProviderOwnership, verifyNativeAcpxInstallation } from "./installation-integrity.js";
-import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_STORE_ROOT_ENV, readNativeAcpxDistributionEntries, parseNativeAcpxDistributionEntries, type NativeAcpxDistributionInput, type NativeAcpxDistributionEntry } from "./native-distribution-integrity.js";
+import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_STORE_ROOT_ENV, pruneNativeAcpxStores, scheduledNativeAcpxStorePrune, readNativeAcpxDistributionEntries, parseNativeAcpxDistributionEntries, type NativeAcpxDistributionInput, type NativeAcpxDistributionEntry } from "./native-distribution-integrity.js";
 import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
@@ -864,6 +864,52 @@ describe("native ACPX verified store reuse", () => {
     expect((await output(lease.spawn())).text).toBe("native:fixed:none");
     await lease.close();
     expect(await readdir(shared)).toEqual([]);
+  });
+
+  describe("superseded closure stores", () => {
+    const script = (marker: string) => `#!/bin/sh\nprintf "${marker}:%s" "$1"\n`;
+    const launch = async (declaration: NativeAcpxDistributionInput) => {
+      const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
+      const result = await output(lease.spawn());
+      await lease.close();
+      return result.text;
+    };
+    /** Hand this process's lease on `closure` to a runner process that has exited. */
+    const releaseToExitedRunner = async (closure: string) => {
+      const exited = spawnSync("true").pid!;
+      await rename(join(storeRoot, `${closure}.lease-${process.pid}`), join(storeRoot, `${closure}.lease-${exited}`));
+    };
+
+    it("retires a provider's superseded closure once no live runner holds it, and nothing else", async () => {
+      const old = { ...await fixture({ script: script("old") }), storeFamily: "fixture-provider" };
+      const other = { ...await fixture({ script: script("other") }), storeFamily: "other-provider" };
+      const unmarked = await fixture({ script: script("unmarked") });
+      for (const declaration of [old, other, unmarked]) await launch(declaration);
+      await releaseToExitedRunner(old.expectedClosureSha256);
+      await releaseToExitedRunner(other.expectedClosureSha256);
+      const current = { ...await fixture({ script: script("current") }), storeFamily: "fixture-provider" };
+      expect(await launch(current)).toBe("current:fixed");
+      expect(await scheduledNativeAcpxStorePrune("fixture-provider", current.expectedClosureSha256)).toEqual([old.expectedClosureSha256]);
+      const names = await readdir(storeRoot);
+      expect(names.filter(name => name.startsWith(old.expectedClosureSha256))).toEqual([]);
+      expect(names).toEqual(expect.arrayContaining([current.expectedClosureSha256, other.expectedClosureSha256, unmarked.expectedClosureSha256]));
+      expect(names.filter(name => name.startsWith(".retiring-") || name.startsWith(".retired-"))).toEqual([]);
+      // A later launch of the retired closure verifies it again from source.
+      expect(await launch(old)).toBe("old:fixed");
+    });
+
+    it("never retires a superseded store that a live runner still holds", async () => {
+      const old = { ...await fixture({ script: script("held") }), storeFamily: "held-provider" };
+      await launch(old);
+      const current = { ...await fixture({ script: script("next") }), storeFamily: "held-provider" };
+      await launch(current);
+      expect(await scheduledNativeAcpxStorePrune("held-provider", current.expectedClosureSha256)).toEqual([]);
+      expect(await readdir(join(storeRoot, old.expectedClosureSha256))).toContain("distribution");
+      expect(await pruneNativeAcpxStores(storeRoot, "held-provider", current.expectedClosureSha256)).toEqual([]);
+      await releaseToExitedRunner(old.expectedClosureSha256);
+      expect(await pruneNativeAcpxStores(storeRoot, "held-provider", current.expectedClosureSha256)).toEqual([old.expectedClosureSha256]);
+      expect(await pruneNativeAcpxStores(storeRoot, "held-provider", old.expectedClosureSha256)).toEqual([]);
+    });
   });
 });
 
