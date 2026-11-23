@@ -84,6 +84,27 @@ it("detects browser completion on focus without needing a Connect attempt", asyn
   expect(host.textContent).not.toContain("ABCD-12345");
   expect(api.connectLocal).not.toHaveBeenCalled();
 });
+it("shows a terminal sign-in error and waits for an explicit retry", async () => {
+  vi.useFakeTimers();
+  const message = "Claude browser sign-in requires Claude Code.";
+  try {
+    api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required", error: message });
+    flushSync(() => root.render(<Harness provider="anthropic" />));
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]')?.textContent).toContain(message));
+
+    await vi.advanceTimersByTimeAsync(5000);
+    window.dispatchEvent(new Event("focus"));
+    await Promise.resolve();
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(1);
+
+    api.checkLocalLogin.mockResolvedValue({ status: "ready" });
+    flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Start sign-in again")!.click());
+    await vi.waitFor(() => expect(host.textContent).toContain("is signed in"));
+    expect(api.startLocalLogin).toHaveBeenLastCalledWith("company", expect.objectContaining({ restart: true }));
+  } finally {
+    vi.useRealTimers();
+  }
+});
 it("keeps a browser sign-in attempt alive after leaving the page", async () => {
   flushSync(() => root.render(<Harness />));
   await vi.waitFor(() => expect(host.textContent).toContain("ABCD-12345"));

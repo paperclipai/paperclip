@@ -26,9 +26,9 @@ afterEach(async () => {
   root = undefined;
 });
 
-async function fakeCli(name: string, source: string) {
+async function fakeCli(name: string, source: string, binDir = "bin") {
   root ??= await mkdtemp(path.join(os.tmpdir(), "paperclip-browser-login-"));
-  const bin = path.join(root, "bin");
+  const bin = path.join(root, binDir);
   await mkdir(bin, { recursive: true });
   await writeFile(path.join(bin, name), `#!/bin/sh\n${source}\n`, { mode: 0o700 });
   if (name === "codex") vi.mocked(resolveCodexCommand).mockReturnValue(path.join(bin, name));
@@ -182,7 +182,9 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
   });
 
   it("surfaces a Codex device link and code from a local PTY without a user shell command", async () => {
+    vi.stubEnv("CLAUDE_CODE_FULL_SIGN_IN_LINK", undefined);
     const home = await fakeCli("codex", [
+      '[ -z "$CLAUDE_CODE_FULL_SIGN_IN_LINK" ] && [ "$BROWSER" = "true" ] || exit 1',
       'printf "1. Open this link in your browser and sign in to your account\\n"',
       'printf "https://auth.openai.com/codex/device\\n"',
       'printf "2. Enter this one-time code (expires in 15 minutes)\\n"',
@@ -194,9 +196,68 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(login.code).toBe("ABCD-EFGHJ");
   });
 
+  it.each([".local/bin", ".claude/local"])("finds Claude in %s when the host PATH omits it", async binDir => {
+    const home = await fakeCli("claude", 'printf "launched\\n" > "$CLAUDE_CONFIG_DIR/fixture"', binDir);
+    const fixturePath = path.join(home, "fixture");
+    process.env.PATH = "/usr/bin:/bin";
+    vi.stubEnv("HOME", root!);
+    const login = startLocalBrowserLogin("anthropic", home);
+
+    await vi.waitFor(() => expect(login.outcome).toBeDefined());
+    expect(await readFile(fixturePath, "utf8")).toBe("launched\n");
+  });
+
+  it("reports a missing Claude CLI before launching the terminal", async () => {
+    targetPlatform("linux", "x64");
+    const home = await fakeCli("claude", "exit 0");
+    process.env.PATH = path.join(root!, "no-python-or-claude");
+    vi.stubEnv("HOME", root!);
+    const login = startLocalBrowserLogin("anthropic", home);
+
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"));
+    expect(login.error).toMatch(/requires Claude Code.*Install Claude Code/);
+    expect(JSON.stringify(login)).not.toContain(root!);
+  });
+
+  it("reports early Claude exit without exposing the provider output", async () => {
+    const home = await fakeCli("claude", 'echo "private-provider-error" >&2\nexit 1');
+    const login = startLocalBrowserLogin("anthropic", home);
+
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"));
+    expect(login.error).toMatch(/Paperclip could not obtain a Claude sign-in credential/);
+    expect(JSON.stringify(login)).not.toContain("private-provider-error");
+  });
+
+  it.each(["local_trusted", "authenticated", undefined] as const)("accepts a promptless Claude credential only with explicit local trust (%s)", async deploymentMode => {
+    const token = "sk-ant-oat01-AAAAAAAAAAAAAAAAAAAAAAAA";
+    const home = await fakeCli("claude", `cat <<'LOGIN_OUTPUT'
+Finishing sign-in…
+✔ Long-lived authentication token created
+Your OAuth token (valid for 1 year):
+${token}
+Store this token securely. You won't be able to see it again.
+LOGIN_OUTPUT`);
+    const login = startLocalBrowserLogin("anthropic", home, deploymentMode);
+
+    await vi.waitFor(() => expect(login.outcome).toBeDefined());
+    expect(login.authorizationUrl).toBeUndefined();
+    expect(JSON.stringify(login)).not.toContain(token);
+    const credentialFile = path.join(home, ".credentials.json");
+    if (deploymentMode !== "local_trusted") {
+      expect(login.outcome).toBe("failure");
+      await expect(readFile(credentialFile)).rejects.toMatchObject({ code: "ENOENT" });
+      return;
+    }
+    expect(login.outcome).toBe("success");
+    expect(JSON.parse(await readFile(credentialFile, "utf8"))).toEqual({ claudeAiOauth: { accessToken: token } });
+    expect((await stat(credentialFile)).mode & 0o777).toBe(0o600);
+  });
+
   it("accepts a Claude browser code and stores its token only in the attempt home", async () => {
+    vi.stubEnv("CLAUDE_CODE_FULL_SIGN_IN_LINK", undefined);
     const url = "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
     const home = await fakeCli("claude", [
+      '[ "$CLAUDE_CODE_FULL_SIGN_IN_LINK" = "1" ] && [ "$BROWSER" = "true" ] || exit 1',
       'printf "Welcome to Claude Code\\nOpening browser to sign in…\\nBrowser didn\x27t open? Use the url below to sign in (c to copy)\\n"',
       `printf '%s\\n' '${url}'`,
       'printf "Paste code here if prompted >\\n"',
@@ -207,6 +268,7 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     await vi.waitFor(() => expect(login.authorizationUrl).toBe(url), { timeout: 5000 });
     login.submitCode?.("fixture-code");
     await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 5000 });
+    expect(login.completedAfterCodeSubmission).toBe(true);
     const credential = JSON.parse(await readFile(path.join(home, ".credentials.json"), "utf8"));
     expect(credential.claudeAiOauth.accessToken).toMatch(/^sk-ant-oat01-/);
     expect((await stat(path.join(home, ".credentials.json"))).mode & 0o777).toBe(0o600);

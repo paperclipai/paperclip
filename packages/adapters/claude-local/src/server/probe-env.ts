@@ -1,5 +1,6 @@
-import { access } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 
 /**
@@ -81,23 +82,17 @@ function readCaseInsensitive(
   return undefined;
 }
 
-/**
- * Resolve a command name to a trusted absolute executable. The function reads
- * the PATH and PATHEXT from the trusted server env only. It never reads a
- * caller value, so a hostile caller PATH cannot select the executable. The
- * function ignores a command that contains a path separator; a local probe
- * must not run a caller-supplied executable path.
- */
 async function resolveTrustedExecutable(
   commandName: string,
   trustedEnv: NodeJS.ProcessEnv,
+  fallbackDirs: string[] = [],
 ): Promise<string | null> {
   if (commandName.includes("/") || commandName.includes("\\")) {
     return null;
   }
   const pathValue = trustedEnv.PATH ?? trustedEnv.Path ?? "";
   const delimiter = process.platform === "win32" ? ";" : ":";
-  const dirs = pathValue.split(delimiter).filter(Boolean);
+  const dirs = new Set([...pathValue.split(delimiter).filter(Boolean), ...fallbackDirs]);
   const exts =
     process.platform === "win32"
       ? (trustedEnv.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
@@ -106,18 +101,27 @@ async function resolveTrustedExecutable(
   for (const dir of dirs) {
     const candidates =
       process.platform === "win32"
-        ? exts.map((ext) => path.join(dir, `${commandName}${ext}`))
-        : [path.join(dir, commandName)];
+        ? exts.map((ext) => path.resolve(dir, `${commandName}${ext}`))
+        : [path.resolve(dir, commandName)];
     for (const candidate of candidates) {
       try {
         await access(candidate, mode);
-        return candidate;
+        if ((await stat(candidate)).isFile()) return candidate;
       } catch {
         // Try the next candidate.
       }
     }
   }
   return null;
+}
+
+export function resolveClaudeHostCommand(trustedEnv = process.env): Promise<string | null> {
+  const home = homedir();
+  const fallbackDirs = process.platform === "win32"
+    ? []
+    : [path.join(home, ".local/bin"), path.join(home, ".claude/local")];
+  if (process.platform === "darwin") fallbackDirs.push("/opt/homebrew/bin", "/usr/local/bin");
+  return resolveTrustedExecutable("claude", trustedEnv, fallbackDirs);
 }
 
 /**
@@ -144,10 +148,13 @@ export async function buildLocalAdapterTestProbeEnv(input: {
   callerEnv: Record<string, string>;
   trustedEnv?: NodeJS.ProcessEnv;
   commandName?: string;
+  includeHostInstallPaths?: boolean;
 }): Promise<LocalProbeEnvironment> {
   const trustedEnv = input.trustedEnv ?? process.env;
   const commandName = input.commandName ?? "claude";
-  const command = await resolveTrustedExecutable(commandName, trustedEnv);
+  const command = await (input.includeHostInstallPaths && commandName === "claude"
+    ? resolveClaudeHostCommand(trustedEnv)
+    : resolveTrustedExecutable(commandName, trustedEnv));
 
   const env: Record<string, string> = {};
 

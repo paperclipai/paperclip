@@ -6,7 +6,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray, isNotNull, lte, notInArray, sql } from "drizzle-orm";
 import { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES, databaseWorkScopeKey, environments, type Db } from "@paperclipai/db";
-import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
+import type { AiConnectionLoginIntent, DeploymentMode, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
@@ -63,8 +63,9 @@ registerIdleLocalWorkProbe(() => browserRetirements.size || deferredRetirements.
 
 /** Local sign-ins share the durable attempt/credential lifecycle, but never seed
  * their home from the operator's rotating CLI credential. */
-export function localAiLoginService(db: Db) {
+export function localAiLoginService(db: Db, deploymentMode?: DeploymentMode) {
   const scope = databaseWorkScopeKey(db);
+  const requiresClaudeCode = deploymentMode !== "local_trusted";
   function retirementReady(id: string) {
     const retained = deferredRetirements.get(id);
     if (!retained || retained.scope !== scope || retained.ready) return;
@@ -148,7 +149,7 @@ export function localAiLoginService(db: Db) {
   }
   function ensureBrowserLogin(id: string, provider: string) {
     if (provider === "xai" || browserLogins.has(id)) return;
-    browserLogins.set(id, startLocalBrowserLogin(provider as "anthropic" | "openai" | "google", loginHome(id)));
+    browserLogins.set(id, startLocalBrowserLogin(provider as "anthropic" | "openai" | "google", loginHome(id), deploymentMode));
   }
   async function reapExpired() {
     // Waiting native owners have a completion wake, not a retry deadline. The
@@ -292,12 +293,13 @@ export function localAiLoginService(db: Db) {
         return { status: "expired" };
       directory = loginHome(id);
     }
+    const login = browserLogins.get(id!);
     try {
-      if (intent.provider === "google" && browserLogins.get(id!)?.outcome !== "success") throw new Error("Google sign-in is incomplete");
+      if (intent.provider === "google" && login?.outcome !== "success") throw new Error("Google sign-in is incomplete");
+      if (intent.provider === "anthropic" && requiresClaudeCode && !login?.completedAfterCodeSubmission) throw new Error("Claude code submission is incomplete");
       const verified = await readVerifiedLocalAiCredentialDetails(intent.provider, directory);
       return { status: "ready", ...(verified.accountLabel ? { accountLabel: verified.accountLabel } : {}) };
     } catch {
-      const login = id ? browserLogins.get(id) : undefined;
       return { status: "sign_in_required", authorizationUrl: login?.authorizationUrl, code: login?.code,
         ...(!login && intent.provider !== "xai"
           ? { error: "The server restarted during sign-in. Start sign-in again." }
@@ -348,6 +350,8 @@ export function localAiLoginService(db: Db) {
         throw unprocessable("This sign-in attempt has expired or was cancelled. Start sign-in again.");
       if (intent.provider === "google" && browserLogins.get(id)?.outcome !== "success")
         throw unprocessable("Finish Google browser sign-in before connecting. If the server restarted, start sign-in again.");
+      if (intent.provider === "anthropic" && requiresClaudeCode && !browserLogins.get(id)?.completedAfterCodeSubmission)
+        throw unprocessable("Submit the Claude authorization code before connecting. If the server restarted, start sign-in again.");
       const verified = await readVerifiedLocalAiCredentialDetails(intent.provider, loginHome(id));
       await tx.update(adapterAuthSessions).set({ status: "promoting", updatedAt: new Date() })
         .where(eq(adapterAuthSessions.id, id));

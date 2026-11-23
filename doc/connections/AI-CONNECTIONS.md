@@ -595,14 +595,20 @@ the server preserves the managed binding and will not restore legacy fallback.
 Local installations do not need a sandbox to connect a subscription. Connections,
 onboarding, and agent setup share `LocalProviderLoginInstructions` and
 `useLocalAiLogin`. Claude and Codex start a local provider process behind the
-browser sign-in card. Claude accepts the authorization code in that card; Codex
-displays its device code there. The user does not run a shell command. Each
-local runner requires Python 3 for its pseudo-terminal (included in the Docker
-image) and the corresponding provider CLI on the Paperclip host. Each
-attempt retains a private credential home. The home is never seeded with the
-operator's existing login: copying a rotating refresh token would
-allow managed runs to invalidate credentials still used by legacy agents or the
-operator's terminal. The user completes browser sign-in, then clicks Connect.
+browser sign-in card. On an authenticated instance, paste the Claude
+authorization code into the card and wait for sign-in to finish. Paperclip
+checks attempt ownership when a code is submitted or a connection is saved.
+A `local_trusted` instance can also accept Claude sign-in that completes
+directly in the browser. Codex displays its device code in the card.
+Each local sign-in requires Python 3 for its
+pseudo-terminal (included in the Docker image) and the corresponding provider
+CLI on the Paperclip host. If the host PATH omits Claude, local sign-in and the
+default local Legacy CLI check the native and legacy user install directories
+and, on macOS, the Homebrew bin directories. Each attempt starts with a
+private credential home. Copying the
+operator's existing login could let managed runs invalidate rotating refresh
+tokens still used by legacy agents or the operator's terminal. After browser
+sign-in completes, click Connect.
 Grok retains its terminal sign-in flow until it has a local browser login runner.
 
 Google Antigravity sign-in uses the pinned native ACP runtime installed with
@@ -668,15 +674,18 @@ authentication with a live account.
 
 ### Local sign-in checks
 
-Local subscription screens share the same credential check on entry and when the
-window regains focus. Waiting screens also poll until sign-in verifies. A successful
-check shows the account is signed in; only **Connect** creates or reconnects the grant.
+Local subscription screens check credentials on entry and when the window
+regains focus. Pending attempts also poll. A terminal error stops checks until
+the user retries. A successful check shows the account is signed in. Use
+**Connect** to create or reconnect the grant.
 Claude, Codex, and Grok check only their connection-specific login home. The
 health response selects whether a self-hosted user may sign in.
 
 Leaving and returning to a local sign-in screen resumes its active attempt. Navigation
 does not delete its credential home. **Start sign-in again**
 explicitly cancels the old attempt; abandoned attempts expire after 30 minutes.
+On an authenticated instance, restart an unsaved Claude sign-in if the server
+restarts, then submit the code for the new attempt.
 Completed and expired attempts are cleaned up through the existing lifecycle.
 
 ### Disposable live inline-repair test

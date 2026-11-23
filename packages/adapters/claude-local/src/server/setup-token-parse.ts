@@ -387,6 +387,7 @@ function findBrowserCodePrompt(lines: string[], endLine: number, url: string): s
     // repeated URL with a trailing punctuation mark still matches.
     if (trimmed.replace(TRAILING_PUNCTUATION_RE, "") === url) continue;
     if (COPY_HINT_LINE_RE.test(trimmed)) continue;
+    if (trimmed === "Paste code here" && i < lines.length - 1) return SETUP_TOKEN_PROMPT;
     return PROMPT_LINE_RE.test(trimmed) ? SETUP_TOKEN_PROMPT : null;
   }
   return null;

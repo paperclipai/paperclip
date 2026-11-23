@@ -60,6 +60,7 @@ interface FakeDriverOptions {
 
 function createFakeDriver(options: FakeDriverOptions = {}) {
   const writes: string[] = [];
+  let emit!: (chunk: string) => void;
   const stops = { count: 0 };
   const disposes = { count: 0 };
   let resolveExit: (exit: { exitCode: number | null }) => void = () => {};
@@ -68,6 +69,7 @@ function createFakeDriver(options: FakeDriverOptions = {}) {
   });
   const driver: SetupTokenPtyDriver = {
     async start(_command, onData) {
+      emit = onData;
       if (options.startError) throw options.startError;
       for (const chunk of options.chunks ?? []) {
         onData(chunk);
@@ -87,7 +89,7 @@ function createFakeDriver(options: FakeDriverOptions = {}) {
       disposes.count += 1;
     },
   };
-  return { driver, writes, stops, disposes, resolveExit: (code: number) => resolveExit({ exitCode: code }) };
+  return { driver, writes, stops, disposes, emit: (chunk: string) => emit(chunk), resolveExit: (code: number) => resolveExit({ exitCode: code }) };
 }
 
 // Lets the pending microtasks run, so the code-input routine writes to the PTY.
@@ -96,6 +98,139 @@ async function flush(): Promise<void> {
 }
 
 describe("runSetupTokenLogin", () => {
+  const browserCallbackChunks = [
+    "Welcome to Claude Code\r\nFinishing sign-in…\r\n",
+    "✔ Long-lived authentication token created\r\nYour OAuth token (valid for 1 year):\r\n",
+    TOKEN_FRAGMENT_A, "\r\n", TOKEN_FRAGMENT_B,
+    "\r\nStore this token securely. You won't be able to see it again.\r\n",
+  ];
+
+  it("accepts a local browser callback without a code only after a clean exit", async () => {
+    const fake = createFakeDriver({ chunks: browserCallbackChunks });
+    const onPrompt = vi.fn();
+    const provideCode = vi.fn();
+    const log = vi.fn();
+    let matchesToken = false;
+    const onCredential = vi.fn(async (bytes: Buffer) => { matchesToken = bytes.toString() === FULL_TOKEN; });
+    const run = runSetupTokenLogin(fake.driver, {
+      completionMode: "browser_callback" as const, onPrompt, provideCode, onCredential, log, timeoutMs: 1000,
+    });
+    expect(onCredential).not.toHaveBeenCalled();
+    fake.resolveExit(0);
+    const result = await run;
+    expect(result).toMatchObject({ outcome: "success", promptSurfaced: false, codeSubmitted: false, credentialDelivered: true });
+    expect(matchesToken).toBe(true);
+    expect(onCredential).toHaveBeenCalledOnce();
+    expect(onCredential.mock.calls[0][0].every(byte => byte === 0)).toBe(true);
+    expect(onPrompt).not.toHaveBeenCalled();
+    expect(provideCode).not.toHaveBeenCalled();
+    expect(fake.writes).toEqual([]);
+    expect(JSON.stringify([result, log.mock.calls])).not.toContain(TOKEN_FRAGMENT_A);
+  });
+
+  it.each([
+    { name: "a redrawn success frame", trailing: SUCCESS_OUTPUT },
+    { name: "more than one terminal buffer of trailing output", trailing: " ".repeat(CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS + 1) },
+  ])("preserves the manual local credential across $name", async ({ trailing }) => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT] });
+    const onCredential = vi.fn(async (bytes: Buffer) => { expect(bytes.toString()).toBe(FULL_TOKEN); });
+    const run = runSetupTokenLogin(fake.driver, {
+      completionMode: "browser_callback", onPrompt: vi.fn(), provideCode: async () => BROWSER_CODE,
+      onCredential, codeSubmitSettleMs: 0, timeoutMs: 1000,
+    });
+    await flush();
+    expect(fake.writes).toEqual([BROWSER_CODE, CODE_SUBMISSION_TERMINATOR]);
+    fake.emit(SUCCESS_OUTPUT);
+    fake.emit(trailing);
+    expect(onCredential).not.toHaveBeenCalled();
+    fake.resolveExit(0);
+    expect(await run).toMatchObject({ outcome: "success", codeSubmitted: true, credentialDelivered: true });
+    expect(onCredential).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { name: "default sandbox mode", completionMode: undefined, chunks: browserCallbackChunks, exitCode: 0 },
+    { name: "code-required mode", completionMode: "submitted_code" as const, chunks: browserCallbackChunks, exitCode: 0 },
+    { name: "incomplete record", completionMode: "browser_callback" as const, chunks: browserCallbackChunks.slice(0, -1), exitCode: 0 },
+    { name: "duplicate records", completionMode: "browser_callback" as const, chunks: browserCallbackChunks.concat(browserCallbackChunks), exitCode: 0 },
+    { name: "nonzero exit", completionMode: "browser_callback" as const, chunks: browserCallbackChunks, exitCode: 1 },
+  ])("rejects promptless credentials for $name", async ({ completionMode, chunks, exitCode }) => {
+    const fake = createFakeDriver({ chunks, exitCode });
+    const onCredential = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, {
+      completionMode, onPrompt: vi.fn(), provideCode: vi.fn(), onCredential, timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("failure");
+    expect(onCredential).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { mode: "browser_callback", chunks: [PROMPT_OUTPUT + SUCCESS_OUTPUT], outcome: "success" },
+    { mode: "browser_callback", chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], outcome: "success" },
+    { mode: "submitted_code", chunks: [PROMPT_OUTPUT + SUCCESS_OUTPUT], outcome: "failure" },
+    { mode: "submitted_code", chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], outcome: "failure" },
+  ] as const)("handles a displayed prompt without a submitted code ($mode, $outcome)", async ({ mode, chunks, outcome }) => {
+    const fake = createFakeDriver({ chunks: [...chunks], exitCode: 0 });
+    const onCredential = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, {
+      completionMode: mode, onPrompt: vi.fn(), onCredential, timeoutMs: 1000,
+      provideCode: signal => new Promise((_, reject) => signal.addEventListener("abort", reject, { once: true })),
+    });
+    expect(result).toMatchObject({ outcome, promptSurfaced: true, codeSubmitted: false });
+    expect(onCredential).toHaveBeenCalledTimes(outcome === "success" ? 1 : 0);
+    expect(fake.writes).toEqual([]);
+  });
+
+  it.each([
+    { name: "after submission", early: "", late: SUCCESS_OUTPUT, outcome: "success", submitted: true },
+    { name: "before submission with a redraw", early: SUCCESS_OUTPUT, late: SUCCESS_OUTPUT, outcome: "failure", submitted: false },
+    { name: "straddling submission", early: SUCCESS_OUTPUT.split(TOKEN_FRAGMENT_A)[0], late: SUCCESS_OUTPUT.slice(SUCCESS_OUTPUT.indexOf(TOKEN_FRAGMENT_A)), outcome: "failure", submitted: true },
+  ])("binds a code-required credential by when its record arrived ($name)", async ({ early, late, outcome, submitted }) => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, early] });
+    const onCredential = vi.fn();
+    const run = runSetupTokenLogin(fake.driver, {
+      completionMode: "submitted_code", onPrompt: vi.fn(), provideCode: async () => BROWSER_CODE,
+      onCredential, codeSubmitSettleMs: 0, timeoutMs: 1000,
+    });
+    await flush();
+    expect(fake.writes).toEqual(submitted ? [BROWSER_CODE, CODE_SUBMISSION_TERMINATOR] : []);
+    fake.emit(late);
+    fake.resolveExit(0);
+    expect(await run).toMatchObject({ outcome, codeSubmitted: submitted });
+    expect(onCredential).toHaveBeenCalledTimes(outcome === "success" ? 1 : 0);
+  });
+
+  it.each([true, false])("requires the code terminator write to succeed (write succeeds = %s)", async writeSucceeds => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT] });
+    fake.driver.write = input => {
+      if (input !== CODE_SUBMISSION_TERMINATOR) return;
+      fake.emit(SUCCESS_OUTPUT);
+      if (!writeSucceeds) throw new Error("terminal unavailable");
+    };
+    const onCredential = vi.fn();
+    const run = runSetupTokenLogin(fake.driver, {
+      completionMode: "submitted_code", onPrompt: vi.fn(), provideCode: async () => BROWSER_CODE,
+      onCredential, codeSubmitSettleMs: 0, timeoutMs: 1000,
+    });
+    await flush();
+    fake.resolveExit(0);
+    expect(await run).toMatchObject({ credentialDelivered: writeSucceeds, codeSubmitted: writeSucceeds });
+    expect(onCredential).toHaveBeenCalledTimes(writeSucceeds ? 1 : 0);
+  });
+
+  it("drops a complete promptless record if the attempt is cancelled before exit", async () => {
+    const fake = createFakeDriver({ chunks: browserCallbackChunks });
+    const controller = new AbortController();
+    const onCredential = vi.fn();
+    const run = runSetupTokenLogin(fake.driver, {
+      completionMode: "browser_callback" as const, onPrompt: vi.fn(), provideCode: vi.fn(),
+      onCredential, signal: controller.signal, timeoutMs: 1000,
+    });
+    controller.abort();
+    expect((await run).outcome).toBe("cancelled");
+    expect(onCredential).not.toHaveBeenCalled();
+  });
+
   it("reports a rejected OAuth code immediately even while the CLI waits for Enter to retry", async () => {
     const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT] });
     let stream!: (chunk: string) => void;
@@ -119,6 +254,25 @@ describe("runSetupTokenLogin", () => {
     expect(onCredential).not.toHaveBeenCalled();
     expect(fake.stops.count).toBe(1);
     expect(JSON.stringify({ result, logs: log.mock.calls })).not.toContain(BROWSER_CODE);
+  });
+
+  it("reports a provider OAuth error while an authenticated caller is still waiting for a code", async () => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT] });
+    const onCredential = vi.fn();
+    const log = vi.fn();
+    const run = runSetupTokenLogin(fake.driver, {
+      completionMode: "submitted_code", timeoutMs: 100, onPrompt: vi.fn(), onCredential, log,
+      provideCode: signal => new Promise((_, reject) => signal.addEventListener("abort", reject, { once: true })),
+    });
+    fake.emit("\r\n\u001b[31mOAuth\u001b[1Cerr");
+    fake.emit(`or: ${BROWSER_CODE}\u001b[0m\r\nPress Enter to retry\r\n`);
+    const result = await run;
+    expect(result).toMatchObject({ outcome: "failure", failureReason: "oauth_error", promptSurfaced: true,
+      codeSubmitted: false, credentialDelivered: false });
+    expect(fake.writes).toEqual([]);
+    expect(fake.stops.count).toBe(1);
+    expect(onCredential).not.toHaveBeenCalled();
+    expect(JSON.stringify([result, log.mock.calls])).not.toContain(BROWSER_CODE);
   });
 
   it("sends one login URL through onPrompt", async () => {

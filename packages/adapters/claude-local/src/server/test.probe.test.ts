@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -590,6 +590,7 @@ describe("claude CLI local hello probe hardening", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     process.env.PATH = savedPath;
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
@@ -597,6 +598,24 @@ describe("claude CLI local hello probe hardening", () => {
     }
     if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
     tempDir = null;
+  });
+
+  it.skipIf(process.platform === "win32")("probes the native install and validates the same executable under a minimal host PATH", async () => {
+    const bin = path.join(tempDir!, ".local/bin");
+    const nativeClaude = path.join(bin, "claude");
+    await mkdir(bin, { recursive: true });
+    await writeFile(nativeClaude, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    vi.stubEnv("HOME", tempDir!);
+    process.env.PATH = path.join(tempDir!, "no-claude-on-path");
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+
+    const result = await testEnvironment({
+      companyId: "company-1", adapterType: "claude_local", config: { model: "claude-opus-5", engine: "cli" },
+    });
+
+    expect(result.status).toBe("pass");
+    expect(ensureAdapterExecutionTargetCommandResolvable).toHaveBeenCalledWith(nativeClaude, null, expect.any(String), expect.any(Object));
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(expect.any(String), null, nativeClaude, expect.any(Array), expect.any(Object));
   });
 
   it("spawns the trusted resolved claude and drops hostile caller env for a local probe", async () => {
@@ -622,6 +641,7 @@ describe("claude CLI local hello probe hardening", () => {
     });
 
     expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    expect(ensureAdapterExecutionTargetCommandResolvable).toHaveBeenCalledWith("/tmp/evil/claude", null, expect.any(String), expect.any(Object));
     const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
     const spawnedCommand = call[2] as string;
     const spawnedEnv = (call[4] as { env: Record<string, string> }).env;

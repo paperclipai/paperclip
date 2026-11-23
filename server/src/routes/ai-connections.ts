@@ -153,7 +153,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   const router = Router();
   const managementGuard = connectionManagementGuard(db, "ai");
   const service = aiConnectionService(db);
-  const localLogin = localAiLoginService(db);
+  const localLogin = localAiLoginService(db, options.deploymentMode);
   const pools = aiConnectionRouterService(db);
   router.get("/companies/:companyId/ai-connection-pools", managementGuard("connections:read", "GET /companies/:companyId/ai-connection-pools", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;

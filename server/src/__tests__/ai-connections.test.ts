@@ -51,7 +51,16 @@ import { agentRoutes } from "../routes/agents.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
 vi.mock("../services/local-ai-browser-login.js", () => ({
-  startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
+  startLocalBrowserLogin: (provider: string) => {
+    if (provider !== "anthropic") return { authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} };
+    const state = {
+      authorizationUrl: "https://claude.ai/oauth/authorize",
+      completedAfterCodeSubmission: false,
+      submitCode: () => { state.completedAfterCodeSubmission = true; },
+      abort: () => {},
+    };
+    return state;
+  },
 }));
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -2578,11 +2587,18 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: provider === "anthropic" ? "claude_local" : "codex_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockRejectedValue(new Error("No credential yet"));
     try {
-      const login = localAiLoginService(db);
+      const login = localAiLoginService(db, "local_trusted");
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "sign_in_required", error: "The server restarted during sign-in. Start sign-in again." });
       await expect(login.check(companyId, "bob", { ...intent, agentIds: [] }, id)).rejects.toThrow("not found");
       reader.mockResolvedValue({ credential: "completed-before-restart", accountLabel: undefined });
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "ready" });
+      if (provider === "anthropic") {
+        const authenticated = localAiLoginService(db, "authenticated");
+        await expect(authenticated.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toMatchObject({
+          status: "sign_in_required", error: "The server restarted during sign-in. Start sign-in again.",
+        });
+        await expect(authenticated.complete(companyId, owner, id, { ...intent, agentIds: [] })).rejects.toThrow("Submit the Claude authorization code");
+      }
     } finally { reader.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
@@ -2652,7 +2668,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? owner), companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: req.headers["x-viewer"] ? "viewer" : "member" }] };
       next();
     });
-    app.use("/api", aiConnectionRoutes(db));
+    app.use("/api", aiConnectionRoutes(db, { deploymentMode: "authenticated", deploymentExposure: "private" }));
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
     const base = `/api/companies/${companyId}/ai-connections/local`;
     const intent = { provider, method: "subscription", ownership: "personal", name: `Self-hosted ${provider}`, allAgents: false, agentIds: [] };
@@ -2672,7 +2688,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       if (provider === "anthropic") {
         const codeUrl = `${base}/attempts/${started.body.sessionId}/code`;
         expect((await request(app).post(codeUrl).set("x-test-user", "bob").send({ browserCode: "fixture-code" })).status).toBe(404);
-        expect((await request(app).post(codeUrl).send({ browserCode: "fixture-code" })).status).toBe(422);
+        expect((await request(app).post(`${base}/check`).send(input)).body.status).toBe("sign_in_required");
+        expect((await request(app).post(base).send(input)).status).toBe(422);
+        expect(reader).not.toHaveBeenCalled();
+        expect((await request(app).post(codeUrl).send({ browserCode: "fixture-code" })).status).toBe(200);
       }
       expect(reader).not.toHaveBeenCalled();
       const checked = await request(app).post(`${base}/check`).send(input);
@@ -2684,6 +2703,32 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(JSON.stringify(saved.body)).not.toContain("isolated-fixture-token");
       expect((await service.list(companyId, owner)).filter(c => c.name === intent.name)).toHaveLength(1);
     } finally { reader.mockRestore(); }
+  });
+  it.each(["local_trusted", undefined] as const)("admits credentials without a Claude code only with explicit local trust (%s)", async deploymentMode => {
+    const owner = `local-code-policy-${deploymentMode ?? "unspecified"}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db, { deploymentMode }));
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "isolated-fixture-token", accountLabel: undefined });
+    const base = `/api/companies/${companyId}/ai-connections/local`;
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Local Claude without a code", allAgents: false, agentIds: [] };
+    let sessionId: string | undefined;
+    try {
+      const started = await request(app).post(`${base}/attempts`).send(intent);
+      expect(started.status, JSON.stringify(started.body)).toBe(201);
+      sessionId = started.body.sessionId;
+      const check = await request(app).post(`${base}/check`).send({ ...intent, localSessionId: sessionId });
+      expect(check.status).toBe(200);
+      expect(check.body.status).toBe(deploymentMode === "local_trusted" ? "ready" : "sign_in_required");
+    } finally {
+      reader.mockRestore();
+      if (sessionId) await request(app).delete(`${base}/attempts/${sessionId}`);
+    }
   });
   it("rejects invalid credentials without exposing the provider response", async () => {
     const request = vi.fn().mockResolvedValue(new Response("secret-provider-body", { status: 401 }));
