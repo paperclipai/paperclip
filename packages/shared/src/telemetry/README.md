@@ -140,13 +140,13 @@ test fails when a code in those sets has no telemetry code.
 The `adapter_type` dimension on `agent.task_run` and `agent.task_completed`
 reports the harness the agent runs, as `agentHarnessType()` resolves it. A
 Paperclip runner agent therefore reports its underlying harness (for example
-`claude_local` or `codex_local`), not `paperclip_runner`. Some runner harnesses
-are not in the generated `adapter_type` enum yet: `acpx:copilot`,
-`antigravity_runtime`, `aws_agentcore`, `claude_managed`, `grok_bot`, `muse`,
-and `openai_dot`. The receiving layer reports them as `other` until the
-contract lists them. A test in
+`claude_local` or `codex_local`), not `paperclip_runner`. The one rename is the
+Copilot harness: `agentHarnessType()` returns `acpx:copilot`, and telemetry
+sends `copilot_runtime`, the name `agentRuntimeSettingsHarness()` also uses.
+Every runner harness is in the generated `adapter_type` enum. A test in
 `server/src/__tests__/agent-task-run-telemetry.test.ts` fails when a runner
-harness that is not in this list is missing from the contract.
+harness is missing from the contract. Add it to the telemetry-backend schema
+first, then copy the regenerated contract here.
 
 ## Product Lifecycle Events
 

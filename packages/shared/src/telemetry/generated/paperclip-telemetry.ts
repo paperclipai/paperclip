@@ -11,7 +11,7 @@ agent_role: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer
 }
 
 export interface PaperclipAgentTaskCompletedDimensions {
-adapter_type: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "other")
+adapter_type: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "antigravity_runtime" | "copilot_runtime" | "aws_agentcore" | "claude_managed" | "grok_bot" | "muse" | "openai_dot" | "other")
 agent_id: string
 agent_role: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
 model?: string
@@ -19,7 +19,7 @@ task_id?: string
 }
 
 export interface PaperclipAgentTaskRunDimensions {
-adapter_type?: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "other")
+adapter_type?: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "antigravity_runtime" | "copilot_runtime" | "aws_agentcore" | "claude_managed" | "grok_bot" | "muse" | "openai_dot" | "other")
 agent_id: string
 agent_role?: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
 model?: string
@@ -309,6 +309,13 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "openclaw_gateway": "Agent runtime uses the OpenClaw gateway adapter.",
       "grok_local": "Agent runtime uses the local Grok adapter.",
       "kimi_local": "Agent runtime uses the local Kimi adapter.",
+      "antigravity_runtime": "Agent runs Google Antigravity through the Paperclip runner.",
+      "copilot_runtime": "Agent runs GitHub Copilot through the Paperclip runner.",
+      "aws_agentcore": "Agent runs on AWS Bedrock AgentCore through the Paperclip runner.",
+      "claude_managed": "Agent runs on Claude Managed Agents through the Paperclip runner.",
+      "grok_bot": "Agent runs as Grok Bot through the Paperclip runner.",
+      "muse": "Agent runs Muse through the Paperclip runner.",
+      "openai_dot": "Agent runs OpenAI Dot through the Paperclip runner.",
       "other": "Fallback when the adapter type is unknown or not represented by the tracked enum."
     },
     "agent_role": {
@@ -344,6 +351,13 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "openclaw_gateway": "Agent runtime uses the OpenClaw gateway adapter.",
       "grok_local": "Agent runtime uses the local Grok adapter.",
       "kimi_local": "Agent runtime uses the local Kimi adapter.",
+      "antigravity_runtime": "Agent runs Google Antigravity through the Paperclip runner.",
+      "copilot_runtime": "Agent runs GitHub Copilot through the Paperclip runner.",
+      "aws_agentcore": "Agent runs on AWS Bedrock AgentCore through the Paperclip runner.",
+      "claude_managed": "Agent runs on Claude Managed Agents through the Paperclip runner.",
+      "grok_bot": "Agent runs as Grok Bot through the Paperclip runner.",
+      "muse": "Agent runs Muse through the Paperclip runner.",
+      "openai_dot": "Agent runs OpenAI Dot through the Paperclip runner.",
       "other": "Fallback when the adapter type is unknown or not represented by the tracked enum."
     },
     "agent_role": {
