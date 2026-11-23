@@ -4,7 +4,7 @@ import type { ConnectionGrant } from "@paperclipai/shared";
 import { RevokeGrantDialog } from "@/pages/apps/app-detail/IdentitiesSection";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { AI_PROVIDERS, type AiConnectionSummary } from "./model";
+import { AI_PROVIDERS, aiSignInNotice, type AiConnectionSummary } from "./model";
 import { describeError } from "@/api/errors";
 import { AiDefaultCrown } from "./AiConnectionDefault";
 import { isOwnAiAccount } from "./useAiConnectionDefaults";
@@ -31,6 +31,7 @@ export function AiConnectionAccountControls({
   const available = account.status === "connected";
   const activeDefault = account.isDefault && available;
   const providerName = AI_PROVIDERS[account.provider].name;
+  const signInNotice = aiSignInNotice(account);
   return (
     <section className="space-y-4" aria-label="AI account settings">
       {eligibleForDefault && (
@@ -50,6 +51,7 @@ export function AiConnectionAccountControls({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0 text-sm">
           <p className={cn("break-words text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>{account.method === "subscription" ? "Subscription" : "API key"}{account.accountLabel ? ` · ${account.accountLabel}` : ""}</p>
+          {signInNotice && <p role="status" className="mt-1 text-xs text-destructive">{signInNotice}</p>}
         </div>
         {!readOnly && grant.capabilities?.canRevoke && (
           <div className="flex flex-wrap items-center gap-2">

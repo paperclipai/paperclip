@@ -295,13 +295,45 @@ describe("Claude subscription renewal through the managed runtime", () => {
   });
 });
 
-describe("Claude subscription idle renewal", () => {
+describe("Claude subscription idle renewal and sign-in end", () => {
+  const broadScopes = ["user:profile", "user:inference", "user:mcp_servers"];
+  const broad = (expiresAt: number, extra: Record<string, unknown> = {}) => {
+    const login = JSON.parse(document(expiresAt));
+    Object.assign(login.claudeAiOauth, { scopes: broadScopes }, extra);
+    return JSON.stringify(login);
+  };
   const binding = (account: { connectionId: string; grantId: string }) => ({ provider: "anthropic" as const, method: "subscription" as const, mode: "delegated" as const, ...account });
   const holdingRun = async (grantId: string, status = "running") => {
     const id = randomUUID();
     await db.insert(heartbeatRuns).values({ id, companyId, agentId, invocationSource: "assignment", status, contextSnapshot: { aiConnection: { grantId } } });
     return id;
   };
+
+  it("saves the sign-in end beside the connection and updates it on reconnect", async () => {
+    const ends = Date.now() + 20 * 86400_000;
+    const { account, owner, service } = await connect(broad(Date.now() + 28800_000, { refreshTokenExpiresAt: ends }));
+    const read = async () => (await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId)))[0]!.config;
+    expect(await read()).toMatchObject({ aiSignInEndsAt: new Date(ends).toISOString(), ai: { provider: "anthropic", method: "subscription" } });
+    expect((await service.list(companyId, owner)).find(entry => entry.id === account.connectionId)).toMatchObject({ status: "connected", signInEndsAt: new Date(ends).toISOString() });
+    const reconnect = { provider: "anthropic" as const, method: "subscription" as const, ownership: "personal" as const, name: owner, loginSessionId: "fixture", allAgents: true, agentIds: [], connectionId: account.connectionId };
+    await service.save(companyId, owner, reconnect, broad(Date.now() + 28800_000, { refreshTokenExpiresAt: ends + 86400_000 }));
+    expect(await read()).toMatchObject({ aiSignInEndsAt: new Date(ends + 86400_000).toISOString() });
+    await service.save(companyId, owner, reconnect, "legacy-token");
+    expect(await read()).not.toHaveProperty("aiSignInEndsAt");
+  });
+
+  it("saves a sign-in end that the provider first states on a renewal", async () => {
+    const { account, row, service } = await connect(document(Date.now() + 60_000));
+    const read = async () => (await db.select().from(toolConnections).where(eq(toolConnections.id, account.connectionId)))[0]!.config;
+    expect(await read()).not.toHaveProperty("aiSignInEndsAt");
+    const before = Date.now();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800, refresh_token_expires_in: 20 * 86400 })));
+    expect(await service.credential(row)).toBe("renewed");
+    const saved = Date.parse(String((await read()).aiSignInEndsAt));
+    expect(saved).toBeGreaterThanOrEqual(before + 20 * 86400_000);
+    expect(saved).toBeLessThanOrEqual(Date.now() + 20 * 86400_000);
+    expect(await read()).toMatchObject({ ai: { provider: "anthropic", method: "subscription" } });
+  });
 
   it("renews instead of requesting sign-in when a run's access token is rejected, and requests sign-in when the renewed token is rejected too", async () => {
     // Not yet due for renewal, so nothing reaches the provider before the rejection.

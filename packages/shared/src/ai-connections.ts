@@ -201,6 +201,8 @@ export interface AiManagedConnectionSummary {
   canSetDefault?: boolean;
   status: "connected" | "needs_attention" | "expired" | "revoked";
   unavailableReason?: string;
+  /** When the provider ends this sign-in, if known. The owner reconnects before then. */
+  signInEndsAt?: string;
   usageProbeSupported?: boolean;
 }
 /** Safe provider account details for one authorized saved credential. */

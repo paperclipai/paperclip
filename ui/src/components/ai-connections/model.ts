@@ -102,6 +102,20 @@ export function personalAiDefault(
   );
 }
 
+const SIGN_IN_NOTICE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A provider can end a subscription sign-in on a fixed date that renewals do
+ * not move. Tell the owner a week ahead; Reconnect starts a new sign-in.
+ */
+export function aiSignInNotice(connection: Pick<AiConnectionSummary, "signInEndsAt">, now = Date.now()): string | null {
+  const endsAt = connection.signInEndsAt ? Date.parse(connection.signInEndsAt) : NaN;
+  if (!Number.isFinite(endsAt) || endsAt - now > SIGN_IN_NOTICE_MS) return null;
+  if (endsAt <= now) return "This sign-in has ended. Reconnect to restore runs.";
+  const days = Math.floor((endsAt - now) / 86_400_000);
+  return `This sign-in ends ${days < 1 ? "today" : days === 1 ? "in 1 day" : `in ${days} days`}. Reconnect to keep runs working.`;
+}
+
 export function aiConnectionProblem(connection?: AiConnectionSummary) {
   if (!connection)
     return "No connection selected. Connect an account to continue.";

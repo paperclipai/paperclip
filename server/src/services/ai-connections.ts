@@ -1,4 +1,4 @@
-import { claudeAccessTokenOf, parseStoredClaudeOauth, serializeClaudeOauth } from "./claude-oauth-credential.js";
+import { claudeAccessTokenOf, claudeSignInEndsAt, parseStoredClaudeOauth, serializeClaudeOauth } from "./claude-oauth-credential.js";
 import { claudeRenewalAfterRejection, hasPendingClaudeExchange, refreshClaudeSubscription, type ClaudeRefreshOptions } from "./claude-subscription-refresh.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
@@ -156,6 +156,8 @@ export function aiConnectionService(db: Db) {
           name: connection.name,
           accountLabel: grant.providerTenant?.name,
           ...(needsReconnect ? { unavailableReason: "Reconnect with a separate sign-in to protect your existing terminal login." } : {}),
+          ...(metadata.data.provider === "anthropic" && metadata.data.method === "subscription" && typeof connection.config.aiSignInEndsAt === "string"
+            ? { signInEndsAt: connection.config.aiSignInEndsAt } : {}),
           ownership:
             grant.kind === "user" ? ("personal" as const) : ("shared" as const),
           ownerUserId: grant.subjectUserId ?? undefined,
@@ -648,6 +650,14 @@ export function aiConnectionService(db: Db) {
   ) {
     await managementContext?.reauthorize();
     const routing = "routing" in input ? input.routing : undefined;
+    // A sibling key of `ai`: the non-secret end of a Claude sign-in, so lists
+    // can show it without reading the credential.
+    const claudeConfig = (existing: Record<string, unknown> = {}) => {
+      if (input.provider !== "anthropic" || input.method !== "subscription") return existing;
+      const { aiSignInEndsAt: _ended, ...rest } = existing;
+      const endsAt = claudeSignInEndsAt(verifiedCredential);
+      return { ...rest, ...(endsAt ? { aiSignInEndsAt: new Date(endsAt).toISOString() } : {}) };
+    };
     if (!(await membership(companyId, userId)))
       throw forbidden("An active company member must own this connection");
     const reconnect = input.connectionId
@@ -848,7 +858,7 @@ export function aiConnectionService(db: Db) {
             status: "active",
             healthStatus: "ok",
             healthMessage: null,
-            config: { ...reconnect.connection.config, aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
+            config: { ...claudeConfig(reconnect.connection.config), aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic" },
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, id));
@@ -870,6 +880,7 @@ export function aiConnectionService(db: Db) {
             enabled: true,
             healthStatus: "ok",
             config: {
+              ...claudeConfig(),
               sourceTemplateKey: source,
               ai: { provider: input.provider, method: input.method, ...(routing ? { routing } : {}) },
               aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",

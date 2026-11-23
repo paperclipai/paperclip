@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { claudeAccessTokenOf, claudeRefreshDue, parseStoredClaudeOauth, refreshClaudeOauth, serializeClaudeOauth } from "../services/claude-oauth-credential.js";
+import { claudeAccessTokenOf, claudeRefreshDue, claudeSignInEndsAt, parseStoredClaudeOauth, refreshClaudeOauth, serializeClaudeOauth } from "../services/claude-oauth-credential.js";
 
 const now = 1_800_000_000_000;
 const stored = { accessToken: "old-access", refreshToken: "old-refresh", expiresAt: now + 28800_000, scopes: ["user:inference"], subscriptionType: "max" };
@@ -26,6 +26,18 @@ describe("Claude OAuth credential", () => {
   it.each([0, -1, 400 * 86400 + 1, "28800"])("rejects an invalid expires_in (%s)", async expires_in => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ access_token: "private-token", expires_in })));
     await expect(refreshClaudeOauth(stored, { fetchImpl })).rejects.toThrow("unexpected response");
+  });
+  it("keeps the sign-in end across renewals and never moves it later", async () => {
+    const ends = now + 20 * 86400_000;
+    const login = { ...stored, refreshTokenExpiresAt: ends };
+    const fetchImpl = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 28800, refresh_token_expires_in: 30 * 86400 })));
+    const next = await refreshClaudeOauth(login, { fetchImpl, now: () => now });
+    expect(parseStoredClaudeOauth(next)).toEqual({ ...login, accessToken: "new-access", refreshToken: "new-refresh" });
+    expect(claudeSignInEndsAt(next)).toBe(ends);
+    // A first statement of the end is kept.
+    const first = await refreshClaudeOauth(stored, { fetchImpl, now: () => now });
+    expect(parseStoredClaudeOauth(first)).toMatchObject({ refreshTokenExpiresAt: now + 30 * 86400_000 });
+    expect(claudeSignInEndsAt("legacy-token")).toBeNull();
   });
   it.each([400, 401, 403, 503])("redacts provider failure bodies (HTTP %s)", async status => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("private-response", { status }));

@@ -223,6 +223,14 @@ work, so an idle shutdown waits for the save. While a pair is pending, the
 server checks at most every 30 seconds whether its grant is still active, and
 drops the pair when the grant was revoked or its connection was removed.
 
+### Sign-in end
+
+A claude.ai login ends on a date fixed at sign-in; renewals do not move it. The
+server saves that date on the connection as `aiSignInEndsAt` (never the
+credential) and returns it as `signInEndsAt`. The connection page shows a notice
+with the existing Reconnect action from seven days before the end. After the end
+the provider refuses renewal and the connection requests sign-in as above.
+
 ## Storage and API
 
 AI connections pair `connectionPurpose: ai` with `transport: runtime_auth`.

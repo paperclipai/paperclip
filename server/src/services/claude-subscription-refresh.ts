@@ -12,7 +12,7 @@ import { AI_CREDENTIAL_HOLDER_KEY } from "./run-ai-credential-holder.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
 import { claudeRenewalAfterRejection, hasPendingClaudeExchange, pendingClaudeExchanges, type PendingClaudeExchange } from "./claude-pending-exchanges.js";
 import { isTransientLockContention, retryTransientLockContention } from "./transient-lock-contention.js";
-import { CLAUDE_REFRESH_FORCE_MS, CLAUDE_REFRESH_MARGIN_MS, claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
+import { CLAUDE_REFRESH_FORCE_MS, CLAUDE_REFRESH_MARGIN_MS, claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, claudeSignInEndsAt, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
 
 type Replacement = PendingClaudeExchange;
 // One pending obligation per grant, kept in `claude-pending-exchanges.ts`. No
@@ -141,6 +141,14 @@ export async function refreshClaudeSubscription(
             }
           });
           await secretService(tx).rotate(secret.id, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
+          // The provider can state the login's end for the first time, or restate
+          // it earlier, on a renewal. Keep the date shown for the connection current.
+          const endsAt = claudeSignInEndsAt(refreshed);
+          const signInEndsAt = endsAt === null ? null : new Date(endsAt).toISOString();
+          if (signInEndsAt && signInEndsAt !== row.connection.config.aiSignInEndsAt) {
+            await tx.update(toolConnections).set({ config: sql`${toolConnections.config} || ${JSON.stringify({ aiSignInEndsAt: signInEndsAt })}::jsonb` })
+              .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, row.connection.id)));
+          }
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
             details: { provider: "anthropic", grantId: grant.id } });

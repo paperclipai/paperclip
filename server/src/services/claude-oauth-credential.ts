@@ -15,6 +15,8 @@ export interface StoredClaudeOauth {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
+  /** When the provider ends this login. Renewals do not move it; the user signs in again. */
+  refreshTokenExpiresAt?: number;
   scopes?: string[];
   subscriptionType?: string;
   rateLimitTier?: string;
@@ -31,6 +33,7 @@ function pickStored(source: unknown): StoredClaudeOauth | null {
     accessToken: oauth.accessToken,
     refreshToken: oauth.refreshToken,
     expiresAt: oauth.expiresAt,
+    ...(typeof oauth.refreshTokenExpiresAt === "number" && Number.isFinite(oauth.refreshTokenExpiresAt) ? { refreshTokenExpiresAt: oauth.refreshTokenExpiresAt } : {}),
     ...(Array.isArray(oauth.scopes) ? { scopes: oauth.scopes.filter((scope): scope is string => typeof scope === "string") } : {}),
     ...(nonEmpty(oauth.subscriptionType) ? { subscriptionType: oauth.subscriptionType } : {}),
     ...(nonEmpty(oauth.rateLimitTier) ? { rateLimitTier: oauth.rateLimitTier } : {}),
@@ -66,6 +69,11 @@ export function claudeScopesAllowRun(stored: StoredClaudeOauth): boolean {
 /** Renew on use, before expiry or delivery of a broad login token. */
 export function claudeRefreshDue(stored: StoredClaudeOauth, now = Date.now(), marginMs = CLAUDE_REFRESH_MARGIN_MS): boolean {
   return stored.expiresAt - marginMs <= now || !claudeScopesAllowRun(stored);
+}
+
+/** When the provider ends the stored login, or null when the document does not say. */
+export function claudeSignInEndsAt(raw: string): number | null {
+  return parseStoredClaudeOauth(raw)?.refreshTokenExpiresAt ?? null;
 }
 
 export class ClaudeOauthRefreshError extends Error {
@@ -125,11 +133,17 @@ export async function refreshClaudeOauth(
     throw new ClaudeOauthRefreshError("Claude token refresh returned an unexpected response", false);
   }
   const granted = nonEmpty(payload.scope) ? payload.scope.split(/\s+/).filter(Boolean) : ["user:inference"];
+  // The provider may restate the login's end. It never moves later than the one saved at sign-in.
+  const restated = typeof payload.refresh_token_expires_in === "number" && Number.isFinite(payload.refresh_token_expires_in) && payload.refresh_token_expires_in > 0
+    ? now() + payload.refresh_token_expires_in * 1000 : undefined;
+  const signInEndsAt = stored.refreshTokenExpiresAt !== undefined && restated !== undefined
+    ? Math.min(stored.refreshTokenExpiresAt, restated) : stored.refreshTokenExpiresAt ?? restated;
   const next: StoredClaudeOauth = {
     ...stored,
     accessToken: payload.access_token,
     refreshToken: nonEmpty(payload.refresh_token) ? payload.refresh_token : stored.refreshToken,
     expiresAt: now() + payload.expires_in * 1000,
+    ...(signInEndsAt !== undefined ? { refreshTokenExpiresAt: signInEndsAt } : {}),
     ...(granted ? { scopes: granted } : {}),
   };
   return JSON.stringify({ claudeAiOauth: next });
