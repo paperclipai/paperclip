@@ -26,10 +26,15 @@ async function render(agents: Agent[]) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider>
-    <AgentBulkSettingsSheet companyId="company-1" agents={agents} totalSelected={agents.length} onClose={onClose} />
-  </TooltipProvider></QueryClientProvider>));
+  const draw = (selected: Agent[]) => root.render(<QueryClientProvider client={client}><TooltipProvider>
+    <AgentBulkSettingsSheet companyId="company-1" agents={selected} totalSelected={selected.length} onClose={onClose} />
+  </TooltipProvider></QueryClientProvider>);
+  await act(async () => draw(agents));
   await vi.waitFor(() => expect(client.isFetching()).toBe(0));
+  return async (selected: Agent[]) => {
+    await act(async () => draw(selected));
+    await vi.waitFor(() => expect(client.isFetching()).toBe(0));
+  };
 }
 
 function button(name: string) {
@@ -67,6 +72,53 @@ afterEach(async () => {
 });
 
 describe("bulk model editing", () => {
+  it("refreshes an Antigravity catalog when its saved binding or environment changes", async () => {
+    const first = { provider: "google", method: "subscription", mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" } as const;
+    const second = { ...first, connectionId: "22222222-2222-4222-8222-222222222222", grantId: "44444444-4444-4444-8444-444444444444" };
+    const google = { ...agent("Antigravity", "paperclip_runner"), defaultEnvironmentId: "local-1",
+      adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "old-model" }, runtimeConfig: { aiConnection: first } } as Agent;
+    const rerender = await render([google]);
+    expect(api.models).toHaveBeenCalledTimes(1);
+    await rerender([{ ...google, defaultEnvironmentId: "remote-2", runtimeConfig: { aiConnection: second } }]);
+    expect(api.models).toHaveBeenCalledTimes(2);
+    expect(api.models).toHaveBeenLastCalledWith("company-1", "paperclip_runner", {
+      provider: "acpx", acpxAgent: "antigravity", agentId: google.id, aiConnection: second, environmentId: "remote-2",
+    });
+  });
+
+  it.each([
+    { method: "api_key", responsible: false },
+    { method: "api_key", responsible: true },
+    { method: "subscription", responsible: false },
+    { method: "subscription", responsible: true },
+  ] as const)("uses the bound Antigravity catalog and preserves $method manual-model policy (responsible: $responsible)", async ({ method, responsible }) => {
+    const connectionId = "11111111-1111-4111-8111-111111111111", grantId = "33333333-3333-4333-8333-333333333333";
+    const binding = responsible ? { provider: "google", method, mode: "responsible_user" } as const
+      : { provider: "google", method, mode: "shared", connectionId, grantId } as const;
+    const google = { ...agent("Antigravity", "paperclip_runner"), defaultEnvironmentId: "local-1",
+      adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "old-model" }, runtimeConfig: { aiConnection: binding } } as Agent;
+    api.accounts.mockResolvedValue({ currentUserId: "board", canManageConnections: true, pools: [], connections: [{
+      id: connectionId, grantId, companyId: "company-1", provider: "google", method, name: "Selected Google account", status: "connected",
+      ownership: responsible ? "personal" : "shared", ownerUserId: "board", isDefault: true,
+    }] });
+    if (method === "api_key") api.models.mockRejectedValue(new Error("Subscription sign-in is required to discover Google models"));
+    else api.models.mockResolvedValue([{ id: "gemini-exact", label: "gemini-exact" }]);
+    api.update.mockImplementation(async (_id, patch) => ({ ...google, adapterConfig: { ...google.adapterConfig, model: patch.model } }));
+    await render([google]);
+    if (method === "api_key") expect(api.models).not.toHaveBeenCalled();
+    else expect(api.models).toHaveBeenCalledWith("company-1", "paperclip_runner", {
+      provider: "acpx", acpxAgent: "antigravity", agentId: google.id, aiConnection: binding, environmentId: "local-1",
+    });
+    await chooseModel("gemini-custom", true);
+    await vi.waitFor(() => expect(button("Update 1 agent").disabled).toBe(false));
+    await act(async () => button("Update 1 agent").click());
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledWith(["Antigravity"], true));
+    expect(api.update).toHaveBeenCalledWith("Antigravity", expect.objectContaining({
+      harness: "antigravity_runtime", model: "gemini-custom",
+      expected: { model: "old-model", aiConnection: binding },
+    }), "company-1");
+  });
+
   it("saves a manual Hermes model when the local adapter has no catalog", async () => {
     const hermes = agent("Hermes");
     api.update.mockResolvedValue({ ...hermes, adapterConfig: { model: "provider/custom-model" } });

@@ -1,3 +1,4 @@
+import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { credentialScope } from "./client-settings.js";
 import { withoutOAuthRefreshLease } from "./refresh-leases.js";
@@ -7,7 +8,7 @@ import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from ".
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
-import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -75,6 +76,11 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
     // a refused request must not stay completable by a later code (PAP-17109).
     const stateRow = await consumeOAuthState(input.state, input.actor);
     if (input.error) {
+      // RFC 9207: an error from a server other than the one we sent the user to
+      // is neither acted on nor shown.
+      const errorConnection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
+      const savedIssuer = oauthConfig(errorConnection).issuer;
+      assertOAuthCallbackIssuer(errorConnection, { issuer: typeof savedIssuer === "string" ? savedIssuer : null }, input.iss);
       await rejectPendingOAuthInteraction(stateRow, input.actor);
       const providerError = normalizeOAuthProviderError(input.error);
       throw new HttpError(
@@ -148,12 +154,9 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       code: input.code,
       resource: endpoints.resource,
     });
-    if (sourceTemplateKey === "google-workspace" && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
-      throw unprocessable("Google did not return a supported permission grant. Reconnect and choose the Google services you want to use.", { code: "oauth_scope_grant_invalid" });
-    }
     if (sourceTemplateKey === "google-workspace") {
-      token.scope = googleWorkspaceEffectiveScopes(authorizedScopes, normalizeOauthScopes(token.scope)).join(" ");
-      if (!token.scope) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
+      token.scope = googleWorkspaceEffectiveScopes(googleWorkspaceSubmittedScopesIn(authorizedScopes), googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(token.scope))).join(" ");
+      if (!isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
     }
     const connectedAt = now();
     const expiresAt = token.expiresIn
@@ -374,18 +377,19 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
             updatedAt: new Date(),
           })
           .where(eq(toolApplications.id, connection.applicationId));
-        const linkedInteractionKind = stateRow.interactionId
+        const linkedInteraction = stateRow.interactionId
           ? await tx
-              .select({ kind: issueThreadInteractions.kind })
+              .select({ kind: issueThreadInteractions.kind, issueId: issueThreadInteractions.issueId })
               .from(issueThreadInteractions)
               .where(eq(issueThreadInteractions.id, stateRow.interactionId))
               .limit(1)
-              .then((rows) => rows[0]?.kind ?? null)
+              .then((rows) => rows[0] ?? null)
           : null;
         if (
           stateRow.interactionId &&
-          linkedInteractionKind === "request_confirmation"
+          linkedInteraction?.kind === "request_confirmation"
         ) {
+          await notifyIssueReviewState(tx, { companyId: connection.companyId, issueId: linkedInteraction.issueId });
           await tx
             .update(issueThreadInteractions)
             .set({

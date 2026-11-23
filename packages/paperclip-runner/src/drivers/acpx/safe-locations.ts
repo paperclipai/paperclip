@@ -42,7 +42,7 @@ export function safeAcpxLocations(
   return (locations ?? []).slice(0, 2_000).flatMap((location) => {
     const candidate = record(location);
     const rawPath = typeof candidate.path === "string" ? candidate.path : "";
-    if (!rawPath || rawPath.includes("\0")) return [];
+    if (!rawPath || /[\p{Cc}\u2028\u2029]/u.test(rawPath)) return [];
     const absolute = isAbsolute(rawPath)
       ? resolve(rawPath)
       : resolve(cwd, rawPath);

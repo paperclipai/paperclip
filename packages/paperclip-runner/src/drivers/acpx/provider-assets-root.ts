@@ -2,7 +2,9 @@ import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, rea
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-type NativeProvider = "cursor" | "copilot" | "pi";
+/** Single source of truth for providers whose pinned native closures resolve here. */
+export const NATIVE_ASSET_PROVIDERS = ["cursor", "copilot", "pi", "kimi", "antigravity"] as const;
+export type NativeProvider = typeof NATIVE_ASSET_PROVIDERS[number];
 const RUNNER_PACKAGE_NAME = "@paperclipai/paperclip-runner";
 const SERVER_PACKAGE_NAME = "@paperclipai/server";
 function assertServerVendorLayout(root: string): void {
@@ -17,7 +19,7 @@ function assertServerVendorLayout(root: string): void {
 
 /** Resolve only runner-owned package assets, including descriptor-loaded sidecars. */
 export function resolveRunnerProviderAssetsRoot(moduleUrl: string, provider: NativeProvider): string {
-  if (!["cursor", "copilot", "pi"].includes(provider)) throw new Error("Unknown native ACP provider assets");
+  if (!(NATIVE_ASSET_PROVIDERS as readonly string[]).includes(provider)) throw new Error("Unknown native ACP provider assets");
   const boundRoot = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
   const boundManifest = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST;
   let packageRoot: string;
@@ -63,6 +65,7 @@ export function resolveRunnerProviderAssetsRoot(moduleUrl: string, provider: Nat
       if (provider !== "copilot") packageRoot = join(packageRoot, "dist/vendor/paperclip-runner");
     } else if (new RegExp(`/(?:src|dist)/drivers/acpx/${provider}-installation\\.(?:ts|js)$`).test(url.pathname)) packageRoot = fileURLToPath(new URL("../../../", url));
     else if (/\/dist\/cli\/acpx-runtime-sidecar\.(?:cjs|js)$/.test(url.pathname)) packageRoot = fileURLToPath(new URL("../../", url));
+    else if (provider === "copilot" && /\/dist\/cli\/copilot-metadata-probe\.(?:cjs|js)$/.test(url.pathname)) packageRoot = fileURLToPath(new URL("../../", url));
     else if (new RegExp(`/dist/vendor/paperclip-runner/drivers/acpx/${provider}-installation\\.(?:js)$`).test(url.pathname)) packageRoot = fileURLToPath(new URL("../../", url));
     else if (/\/dist\/vendor\/paperclip-runner\/cli\/acpx-runtime-sidecar\.(?:cjs|js)$/.test(url.pathname)) packageRoot = fileURLToPath(new URL("../", url));
     else throw new Error("Provider factory is outside a verified package layout");

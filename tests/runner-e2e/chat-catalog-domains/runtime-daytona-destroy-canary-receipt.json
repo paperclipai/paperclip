@@ -1,0 +1,26 @@
+{
+  "syntheticOnly": true,
+  "tests": 2,
+  "childFailureAndExpectedParentFailure": true,
+  "invalidOwnedBindingRejectedBeforeHttp": true,
+  "realProviderCalls": 0,
+  "canonicalAttempts": 0,
+  "browserLaunches": 0,
+  "qualificationClaim": "private child/reporting failure boundary only; actual provider deletion and positive provider receipt unqualified",
+  "checkedSinks": [
+    "stdout",
+    "JUnit",
+    "blob ZIP entries",
+    "HTML embedded report ZIP",
+    "error-context"
+  ],
+  "scannedItems": 12,
+  "privateValueCount": 4,
+  "findings": [],
+  "sourceSha256": {
+    "runtime-daytona-destroy.ts": "59a90160ced0df51e8afdfaea8c5e6203c36f71acf0f46b2a3fd45227a913943",
+    "runtime-daytona-destroy-worker.ts": "7fb18291c9c7969bad3642938a323854eaa62fe35c33e029c77441eecefd543a",
+    "runtime-daytona-destroy-privacy.spec.ts": "2c68d01edb27a99bffd84d165bbfbff26d40345b32d16af3d6565113eb8309f4"
+  },
+  "configSha256": "b4de9cfed9d4cf51b035988d5177ceab1b02cac518809cef869cc7e3cda0b071"
+}

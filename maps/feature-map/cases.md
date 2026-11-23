@@ -117,7 +117,7 @@ Three agents use four bounded runs to save, review, and correct a tiny case rece
 on the same task. Two API-seeded passive cases exercise read-only list filters;
 the browser reads the saved document, its revisions and handoff history. The
 independent oracle checks actual native document reads and revision attribution.
-See [fixture and limits](../../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only).
+See [fixture and limits](../../tests/runner-e2e/SUITES.md#persistent-case-handoffs-explicit-only).
 
 ## Gotchas
 

@@ -1,8 +1,19 @@
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
-import { environmentTaskCredentialSchema, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import {
+  ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS, environmentTaskCredentialSchema,
+  type PluginEnvironmentTaskCredential, type PluginEnvironmentTaskCredentialProvider,
+} from "@paperclipai/plugin-sdk";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
+
+interface PreparedPluginRunnerCredentials {
+  githubBroker?: { url: string; token: string };
+  accountIdentity?: string;
+  credential?: PluginEnvironmentTaskCredential;
+  needsWriteback?: boolean;
+  onCredentials?: (snapshot: PluginEnvironmentTaskCredential) => Promise<void>;
+}
 
 /** Transfer only the selected account. Provider configuration stays at the dedicated provider boundary. */
 export async function preparePluginRunnerCredentials(input: {
@@ -11,8 +22,12 @@ export async function preparePluginRunnerCredentials(input: {
   accountIdentity?: string;
   home?: string;
   environment: NodeJS.ProcessEnv;
-}) {
-  if (!input.identity) return {};
+}): Promise<PreparedPluginRunnerCredentials> {
+  const github = input.environment.PAPERCLIP_GITHUB_BROKER_TOKEN ? { githubBroker: {
+    url: input.environment.PAPERCLIP_GITHUB_BROKER_URL ?? "",
+    token: input.environment.PAPERCLIP_GITHUB_BROKER_TOKEN,
+  } } : {};
+  if (!input.identity) return github;
   const accountIdentity = input.accountIdentity ?? input.identity;
   if (input.provider === "codex") {
     if (!input.home) throw new Error("Plugin Runner selected credential home unavailable");
@@ -21,7 +36,7 @@ export async function preparePluginRunnerCredentials(input: {
     const parsed = JSON.parse(authJson);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Plugin Runner selected credential invalid");
     const credential = environmentTaskCredentialSchema.parse({ type: "codex-auth-json", authJson });
-    return { accountIdentity, credential, needsWriteback: !!parsed.tokens,
+    return { ...github, accountIdentity, credential, needsWriteback: !!parsed.tokens,
       onCredentials: async (snapshot: PluginEnvironmentTaskCredential) => {
         if (snapshot.type !== "codex-auth-json") throw new Error("Plugin Runner credential provider mismatch");
         await copyBackCodexAuth({ hostAuthPath, readSandboxAuth: async () => Buffer.from(snapshot.authJson), log: () => {} });
@@ -34,7 +49,20 @@ export async function preparePluginRunnerCredentials(input: {
     }
     const environment = Object.fromEntries(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
       .flatMap(key => input.environment[key] ? [[key, input.environment[key]]] : []));
-    return { accountIdentity, credential: environmentTaskCredentialSchema.parse({ type: "claude-env", environment }) };
+    return { ...github, accountIdentity, credential: environmentTaskCredentialSchema.parse({ type: "claude-env", environment }) };
+  }
+  if (input.provider === "grok" || input.provider === "copilot" || input.provider === "opencode") {
+    const provider: PluginEnvironmentTaskCredentialProvider = input.provider;
+    if (provider === "grok") {
+      if (input.environment.XAI_BASE_URL) throw new Error("Plugin Runner does not support the selected provider routing");
+      if (!input.environment.XAI_API_KEY) throw new Error("Plugin Runner supports Grok only with an xAI API key. Grok subscription login is not supported.");
+    }
+    const names = new Set(ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS[provider].flat());
+    const environment = Object.fromEntries([...names]
+      .flatMap(key => input.environment[key] ? [[key, input.environment[key]]] : []));
+    const credential = environmentTaskCredentialSchema.safeParse({ type: "provider-env", provider, environment });
+    if (!credential.success) throw new Error("Plugin Runner selected credential unavailable");
+    return { ...github, accountIdentity, credential: credential.data };
   }
   throw new Error("Plugin Runner does not support the selected credential provider");
 }

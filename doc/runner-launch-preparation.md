@@ -10,6 +10,20 @@ The built-in TypeScript implementation constructs the provider descriptor in
 By default, the SDK prepares local files. It stages remote files through the
 existing execution driver.
 
+## Managed sandbox storage
+
+Core holds a 256 MiB runner relaunch reserve only in managed sandboxes. It
+creates the reserve when there is at least 2 GiB of additional free space and
+1,024 free inodes. It leaves scarce capacity available to an existing agent.
+A relaunch releases that reserve before it stages the replacement runner.
+This reserve is recovery headroom; it does not limit the agent's downloads.
+
+When runner diagnostics confirm a full sandbox disk, the saved run error and
+run details show that cause ahead of a later lost-turn or restore error. Raw
+failure diagnostics remain in the run's diagnostic evidence. Older saved runs
+with `sandbox_disk_full` get the same display without a data migration.
+Download budgets and image policy belong to the deployment environment.
+
 ## Environment-owned preparation
 
 An execution driver can supply `prepareLaunch`.
@@ -31,6 +45,14 @@ The result contains a configuration ID, a requirements digest, and a provider
 descriptor. The transport checks Core's selected profile and policy before
 registration and launch. Core still supplies authorized tools and completion
 criteria through PRP. A failed preparation does not enable a fallback launch.
+
+### Codex probe policy
+
+Core can select `settings.disableCodexProjectInstructions` for a hello probe.
+Preparation must preserve it as `project_doc_max_bytes=0` before `app-server`,
+after any environment-supplied overrides. Core validates this setting alongside
+`disableCodexWebSearch`. Ordinary tasks retain project instructions when the
+setting is absent or false. This does not change the selected filesystem policy.
 
 ### Working directory
 
@@ -71,3 +93,11 @@ The [environment task API](plugins/PLUGIN_ENVIRONMENT_TASKS.md#launch-preparatio
 defines the plugin preparation exchange. The [native plugin integration](plugins/PLUGIN_RUNNER_EXECUTION.md)
 connects the callback to task execution. A Launcher implementation remains the
 execution owner's responsibility.
+
+## Managed Git helper interpreter
+
+`githubLauncherSource({ interpreterPath })` can select an absolute Node interpreter
+owned by the execution environment. Without this option, generated helpers retain
+`#!/usr/bin/env node`. The option changes only the shebang; it does not change PATH,
+command discovery, credential handling, or helper behavior. Interpreter paths must
+be absolute and contain no whitespace or NUL bytes.

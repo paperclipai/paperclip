@@ -1,0 +1,93 @@
+{
+  "schema": "paperclip.runner.tool-input-schema-fixtures.v1",
+  "cases": [
+    {
+      "name": "implicit_2020_12",
+      "accepted": true,
+      "schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"], "additionalProperties": false},
+      "valid": [{"title": "Ship it"}],
+      "invalid": [{}, {"title": 1}, {"title": "Ship it", "extra": true}]
+    },
+    {
+      "name": "draft_07_with_fragment_and_id",
+      "accepted": true,
+      "dialectUri": "http://json-schema.org/draft-07/schema#",
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$id": "https://apps.example/deploy/create.json",
+        "type": "object",
+        "definitions": {"file": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+        "properties": {"files": {"type": "array", "items": {"$ref": "#/definitions/file"}}, "pair": {"type": "array", "items": [{"type": "string"}, {"type": "integer"}], "additionalItems": false}},
+        "required": ["files"]
+      },
+      "valid": [{"files": [{"path": "a.txt", "content": "x"}]}, {"files": [], "pair": ["a", 1]}],
+      "invalid": [{"files": [{"path": "a.txt"}]}, {"files": [], "pair": ["a", "b"]}, {"files": [], "pair": ["a", 1, 2]}]
+    },
+    {
+      "name": "draft_07_same_id_second_connection",
+      "accepted": true,
+      "dialectUri": "http://json-schema.org/draft-07/schema#",
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema",
+        "$id": "https://apps.example/deploy/create.json",
+        "type": "object",
+        "properties": {"name": {"type": "string", "minLength": 2}},
+        "required": ["name"]
+      },
+      "valid": [{"name": "ok"}],
+      "invalid": [{"name": "x"}, {}]
+    },
+    {
+      "name": "draft_2019_09_defs",
+      "accepted": true,
+      "dialectUri": "https://json-schema.org/draft/2019-09/schema",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2019-09/schema",
+        "type": "object",
+        "$defs": {"id": {"type": "string", "pattern": "^[a-z]+-[0-9]+$"}},
+        "properties": {"issue": {"$ref": "#/$defs/id"}},
+        "required": ["issue"],
+        "dependentRequired": {"assignee": ["issue"]}
+      },
+      "valid": [{"issue": "eng-12"}, {"issue": "eng-12", "assignee": "a"}],
+      "invalid": [{"issue": "ENG"}, {}]
+    },
+    {
+      "name": "draft_2020_12_explicit_prefix_items",
+      "accepted": true,
+      "dialectUri": "https://json-schema.org/draft/2020-12/schema",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"point": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}], "items": false}},
+        "required": ["point"]
+      },
+      "valid": [{"point": [1, 2.5]}],
+      "invalid": [{"point": [1, "2"]}, {"point": [1, 2, 3]}]
+    },
+    {
+      "name": "draft_04",
+      "accepted": false,
+      "reason": "unsupported_dialect",
+      "schema": {"$schema": "http://json-schema.org/draft-04/schema#", "type": "object"}
+    },
+    {
+      "name": "unknown_dialect",
+      "accepted": false,
+      "reason": "unsupported_dialect",
+      "schema": {"$schema": "https://apps.example/meta/v1", "type": "object"}
+    },
+    {
+      "name": "unresolvable_reference",
+      "accepted": false,
+      "reason": "uncompilable",
+      "schema": {"type": "object", "properties": {"a": {"$ref": "#/definitions/missing"}}}
+    },
+    {
+      "name": "invalid_keyword_value",
+      "accepted": false,
+      "reason": "uncompilable",
+      "schema": {"type": "object", "properties": {"a": {"type": "text"}}}
+    }
+  ]
+}

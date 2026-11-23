@@ -22,7 +22,7 @@ beforeEach(() => {
 afterEach(() => { flushSync(() => root.unmount()); host.remove(); });
 function Harness({ name = "Account", provider = "openai", enabled = true }: { name?: string; provider?: "anthropic" | "openai"; enabled?: boolean }) {
   const login = useLocalAiLogin("company", { provider, method: "subscription", name, ownership: "personal", agentIds: [], allAgents: true }, enabled);
-  return <><LocalProviderLoginInstructions adapterType={provider === "anthropic" ? "claude_local" : "codex_local"} login={login} /><button onClick={() => void login.connect()}>Connect</button></>;
+  return <><LocalProviderLoginInstructions adapterType={provider === "anthropic" ? "claude_local" : "codex_local"} login={login} /><button onClick={() => void login.connect()}>Connect</button><button onClick={login.cancel}>Back</button></>;
 }
 it("checks once under StrictMode, preserves renaming and navigation, and cancels only on explicit retry", async () => {
   flushSync(() => root.render(<StrictMode><Harness name="First name" /></StrictMode>));
@@ -43,6 +43,29 @@ it("checks once under StrictMode, preserves renaming and navigation, and cancels
   expect(api.cancelLocalLogin).toHaveBeenCalledTimes(1);
   expect(api.cancelLocalLogin.mock.invocationCallOrder[0]).toBeLessThan(api.startLocalLogin.mock.invocationCallOrder[1]);
 });
+it.each(["anthropic", "openai"] as const)("waits for the %s authorization card before offering to restart sign-in", async provider => {
+  api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required" });
+  flushSync(() => root.render(<Harness provider={provider} />));
+  await vi.waitFor(() => expect(host.textContent).toContain("Preparing browser sign-in"));
+  expect(host.textContent).not.toContain("Start sign-in again");
+  expect(api.startLocalLogin).toHaveBeenCalledTimes(1);
+
+  api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required", authorizationUrl: "https://example.test/authorize", code: "ABCD-12345" });
+  window.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() => expect(host.querySelector('a[href="https://example.test/authorize"]')).not.toBeNull());
+  if (provider === "anthropic") expect(host.querySelector('input[aria-label="Authorization code"]')).not.toBeNull();
+  else expect(host.textContent).toContain("ABCD-12345");
+  const retry = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Start sign-in again");
+  expect(retry).toBeTruthy();
+
+  api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required" });
+  flushSync(() => retry!.click());
+  await vi.waitFor(() => expect(api.startLocalLogin).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(host.textContent).toContain("Preparing browser sign-in"));
+  expect(host.textContent).not.toContain("Start sign-in again");
+  expect(api.cancelLocalLogin).toHaveBeenCalledTimes(1);
+});
+
 it.each(["anthropic", "openai"] as const)("detects an already-signed-in %s account before showing instructions, and does not save it until Connect", async provider => {
   api.checkLocalLogin.mockResolvedValue({ status: "ready" });
   flushSync(() => root.render(<Harness provider={provider} />));
@@ -92,7 +115,39 @@ it("submits a Claude browser code through the owned local attempt", async () => 
   });
   flushSync(() => Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Submit code")?.click());
   await vi.waitFor(() => expect(api.submitLocalLoginCode).toHaveBeenCalledWith("company", "attempt-1", "fixture-code"));
+  await vi.waitFor(() => expect(host.textContent).toContain("Finishing sign-in"));
+  expect(host.querySelector('input[aria-label="Authorization code"]')).toBeNull();
   expect(host.textContent).not.toContain("claude auth login");
+});
+
+it("submits a pasted Claude code once and waits for verification without another click", async () => {
+  let finishSubmit!: () => void;
+  api.submitLocalLoginCode.mockReturnValue(new Promise<void>(resolve => { finishSubmit = resolve; }));
+  api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required", authorizationUrl: "https://claude.ai/oauth/authorize?client_id=test" });
+  flushSync(() => root.render(<Harness provider="anthropic" />));
+  await vi.waitFor(() => expect(host.querySelector('input[aria-label="Authorization code"]')).not.toBeNull());
+  const input = host.querySelector('input[aria-label="Authorization code"]') as HTMLInputElement;
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "old-code");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(api.submitLocalLoginCode).not.toHaveBeenCalled();
+  input.select();
+  const paste = () => {
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { getData: () => "  pasted-code#state\n" } });
+    input.dispatchEvent(event);
+  };
+  flushSync(() => { paste(); paste(); });
+  await vi.waitFor(() => expect(api.submitLocalLoginCode).toHaveBeenCalledWith("company", "attempt-1", "pasted-code#state"));
+  expect(api.submitLocalLoginCode).toHaveBeenCalledTimes(1);
+  expect(host.textContent).toContain("Finishing sign-in");
+  expect(host.querySelector('input[aria-label="Authorization code"]')).toBeNull();
+  expect(api.connectLocal).not.toHaveBeenCalled();
+  finishSubmit();
+  api.checkLocalLogin.mockResolvedValue({ status: "ready" });
+  window.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() => expect(host.textContent).toContain("is signed in"));
 });
 
 it("hides a failed device prompt and lets the user restart sign-in", async () => {
@@ -105,4 +160,22 @@ it("hides a failed device prompt and lets the user restart sign-in", async () =>
   flushSync(() => Array.from(host.querySelectorAll("button")).find(b => b.textContent === "Start sign-in again")!.click());
   await vi.waitFor(() => expect(host.textContent).toContain("NEW-CODE"));
   expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it.each(["start", "check"])("cancels a local subscription with a pending %s and ignores its late result", async stage => {
+  let finish!: (result: unknown) => void;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const held = stage === "start" ? api.startLocalLogin : api.checkLocalLogin;
+  held.mockReturnValueOnce(pending);
+  flushSync(() => root.render(<Harness />));
+  await vi.waitFor(() => expect(held).toHaveBeenCalledTimes(1));
+  flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Back")!.click());
+  finish(stage === "start" ? { sessionId: "attempt-1", expiresAt: "2099-01-01T00:00:00Z" }
+    : { status: "sign_in_required", authorizationUrl: "https://auth.openai.com/codex/device", code: "CANCELLED-CODE" });
+  await vi.waitFor(() => expect(api.cancelLocalLogin).toHaveBeenCalledWith("company", "attempt-1"));
+  window.dispatchEvent(new Event("focus"));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(host.textContent).not.toContain("CANCELLED-CODE");
+  expect(api.checkLocalLogin).toHaveBeenCalledTimes(stage === "start" ? 0 : 1);
+  expect(api.connectLocal).not.toHaveBeenCalled();
 });

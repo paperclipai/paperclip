@@ -21,6 +21,7 @@ const MAX_DISCOVERY_RESULTS = 10;
 
 const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Object.freeze({
   set_task_title: "active_task",
+  send_chat_message: "active_task",
   handoff_case: "delegation",
   read_case: "delegation", update_case: "delegation",
   create_case: "delegation",
@@ -39,6 +40,12 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
   get_agent_instruction_history: "agent_instructions",
   restore_agent_instructions: "agent_instructions",
  create_skill: "skills", update_skill: "skills", create_task: "delegation", get_workspace: "workspace", list_workspaces: "workspace", select_workspace: "workspace", prepare_repository: "workspace", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
+  list_responsibilities: "responsibilities", get_responsibility: "responsibilities", find_responsibilities_for: "responsibilities",
+  create_area: "responsibilities", update_area: "responsibilities", delete_area: "responsibilities",
+  create_responsibility: "responsibilities", update_responsibility: "responsibilities", delete_responsibility: "responsibilities",
+  file_under_responsibility: "responsibilities", remove_from_responsibility: "responsibilities",
+  list_routines: "routines", update_routine: "routines",
+  update_skill_details: "skills",
   set_dependencies: "delegation", reassign_task: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",
@@ -50,7 +57,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
 export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
   { name: "api_fallback", description: "API escape hatch for work unsupported by available dedicated tools." },
   { name: "discovery", description: "Find company tasks and agents." },
-  { name: "delegation", description: "Create bounded child work and task dependencies." },
+  { name: "delegation", description: "Task assignment, parentage, and dependencies." },
   { name: "governance", description: "Read, request, discuss, and decide approvals." },
   { name: "workspace", description: "Inspect task files, prepare repositories, select workspaces, and control workspace services." },
   { name: "continuation", description: "Schedule a bounded continuation wake." },

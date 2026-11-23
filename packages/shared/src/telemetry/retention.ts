@@ -47,4 +47,12 @@ export const EVENT_RETENTION_CLASS: Partial<Record<string, RetentionClass>> = {
   "codex.credential_health": "operational_enum_count",
   "interaction.created": "operational_enum_count",
   "interaction.resolved": "operational_enum_count",
+  "server.started": "operational_enum_count",
+  "model.connected": "operational_enum_count",
+  "task.created": "operational_enum_count",
+  "task.completed": "operational_enum_count",
+  "task.blocked": "operational_enum_count",
+  "plan.created": "operational_enum_count",
+  "plan.approved": "operational_enum_count",
+  "artifact.created": "operational_enum_count",
 };

@@ -1,4 +1,6 @@
+import { notifyMergeConfirmationWork } from "./merged-pr-confirmation-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { releaseDecisionHeldExecution } from "./deferred-execution-wait.js";
 
 export type ChatConfirmationScope = { companyId: string; issueId?: string };
 
@@ -10,7 +12,9 @@ export async function notifyChatConfirmationWork(tx: object, scope: ChatConfirma
 /** Interaction resolution can release a callback parked while its human input
  * was pending. Register on the owning transaction before its resolution write. */
 export async function notifyChatConfirmationResolution(tx: object, interaction: ChatConfirmationScope & { kind: string }) {
+  if (interaction.kind === "request_confirmation") await notifyMergeConfirmationWork(tx, interaction);
   if (["request_confirmation", "request_checkbox_confirmation", "suggest_tasks", "connection_intent"].includes(interaction.kind)) {
     await notifyChatConfirmationWork(tx, interaction);
   }
+  await releaseDecisionHeldExecution(tx, interaction);
 }

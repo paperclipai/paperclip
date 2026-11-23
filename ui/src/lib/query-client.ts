@@ -101,9 +101,12 @@ export function reconnectDelayFor(failureCount: number, error: unknown): number 
   return retryAfterMs === null ? base : Math.min(Math.max(base, retryAfterMs), MAX_PROBE_DELAY_MS);
 }
 
+/** A successful response whose expected state has not arrived yet. */
+export class QueryNotReadyError extends Error {}
+
 /** Query errors worth a Sentry event: not outages, not denials or missing items. */
 export function shouldReportQueryError(error: unknown): boolean {
-  return classifyError(error) === "unknown";
+  return !(error instanceof QueryNotReadyError) && classifyError(error) === "unknown";
 }
 
 export interface MutationErrorToast {
@@ -113,7 +116,8 @@ export interface MutationErrorToast {
 
 export interface AppQueryClientDeps {
   connectivity: Pick<ConnectivityStore, "reportError" | "getSnapshot">;
-  reportError?: (error: unknown) => void;
+  /** Report a final query error. The key lets the reporter group by query name. */
+  reportError?: (error: unknown, queryKey: QueryKey) => void;
   /** Show a toast for a failed opted-in mutation that has no handler of its own. */
   notifyMutationError?: (toast: MutationErrorToast) => void;
 }
@@ -175,7 +179,7 @@ export function createAppQueryClient(deps: AppQueryClientDeps, config: QueryClie
       const last = lastReportedAt.get(query.queryHash);
       if (last !== undefined && now - last < QUERY_ERROR_REPORT_WINDOW_MS) return;
       lastReportedAt.set(query.queryHash, now);
-      deps.reportError(error);
+      deps.reportError(error, query.queryKey);
     },
   });
   const mutationCache = new MutationCache({

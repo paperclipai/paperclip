@@ -94,6 +94,7 @@ it("requires fresh reviewed allowances tied to the actual CI runner before sched
   expect(() => scheduledOperatingOverhead(raw, "unrecognized", "20", now)).toThrow("runner");
   expect(() => scheduledOperatingOverhead(raw, runner, "20", Date.parse("2026-10-19T23:59:59Z"))).toThrow("needs review");
   expect(() => scheduledOperatingOverhead(raw, runner, "20", Date.parse("2026-11-18T20:00:00Z"))).toThrow("needs review");
+  expect(() => scheduledOperatingOverhead(raw, runner, "20", Date.parse("2026-11-18T20:00:00Z"))).toThrow(/until \S+ less a 4-hour campaign margin; renew the reviewed RUNNER_E2E_OPERATING_OVERHEAD_JSON/);
 });
 
 it("does not turn a zero allowance into an observed zero charge", async () => {

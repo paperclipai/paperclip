@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Copy, Check, Loader2 } from "lucide-react";
 
@@ -12,6 +12,8 @@ import {
   COPIED_REVEAL_DELAY_MS,
   COPIED_REVEAL_TRAVEL,
 } from "./onboarding/onboarding-motion";
+import { ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 /**
  * Which shell a login panel draws itself in.
@@ -50,6 +52,7 @@ export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
   grok_local: "Grok",
+  antigravity_runtime: "Google",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */
@@ -292,7 +295,7 @@ export function OnboardingLoginCodeRow({
 
   return (
     <div className="flex h-(--sz-44px) items-center gap-2 rounded-lg bg-muted px-4">
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+      <span className={cn("min-w-0 flex-1 truncate text-sm text-foreground", ANALYTICS_NO_CAPTURE_CLASS)}>
         {code}
       </span>
       <AnimatePresence initial={false}>
@@ -368,7 +371,7 @@ export function OnboardingCardField({
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
-  onPaste?: () => void;
+  onPaste?: (event: ClipboardEvent<HTMLInputElement>) => void;
   disabled?: boolean;
   label?: string;
   placeholder?: string;
@@ -401,7 +404,7 @@ export function OnboardingCardField({
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
-      onPaste={() => onPaste?.()}
+      onPaste={onPaste}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           event.preventDefault();
@@ -417,35 +420,55 @@ export function OnboardingCardField({
 export function ProviderSubscriptionCard({
   providerName,
   authorizationUrl,
+  onOpenAuthorization,
   mode,
   loading,
+  failure,
+  failureMessage,
+  onRetry,
   children,
 }: {
   providerName: string;
   authorizationUrl?: string;
-  mode: "submitted_code" | "displayed_code";
+  onOpenAuthorization?: () => void;
+  failure?: "expired" | "failed";
+  failureMessage?: string;
+  onRetry?: () => void;
+  mode: "submitted_code" | "displayed_code" | "browser_redirect";
   loading?: boolean;
   children: ReactNode;
 }) {
   return (
     <OnboardingLoginCard
       loading={loading}
-      instruction={
+      instruction={failure ? (failure === "expired" ? "This sign-in expired" : "Sign-in didn’t finish") : (
         <>
           <a
             href={authorizationUrl}
+            onClick={event => {
+              if (!onOpenAuthorization) return;
+              event.preventDefault();
+              onOpenAuthorization();
+            }}
             target="_blank"
             rel="noreferrer noopener"
             className="underline underline-offset-2 hover:text-foreground"
           >
             Sign in to {providerName}
           </a>
-          {mode === "submitted_code"
+          {mode === "browser_redirect" ? " then return here"
+            : mode === "submitted_code"
             ? " then come back and enter authorization code"
             : " by providing the authorization code below"}
         </>
-      }
+      )}
     >
+      {failure && (
+        <div className="flex flex-col items-start gap-3 px-2">
+          <p role="alert" className="text-sm text-muted-foreground">{failureMessage ?? "Retry sign-in to get a fresh code. Your setup is saved."}</p>
+          {onRetry && <Button type="button" variant="outline" onClick={onRetry}>Retry sign-in</Button>}
+        </div>
+      )}
       {children}
     </OnboardingLoginCard>
   );
@@ -469,58 +492,85 @@ export function ProviderApiKeyCard({
 /** Shared instructions for local subscription setup in every authentication host. */
 export function LocalProviderLoginInstructions({ adapterType, login }: {
   adapterType: string;
-  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
+  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const [showCommand, setShowCommand] = useState(false);
   const [browserCode, setBrowserCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
+  const [codeSubmitted, setCodeSubmitted] = useState(false);
+  const codeSubmissionRef = useRef<symbol | null>(null);
+  useEffect(() => {
+    codeSubmissionRef.current = null;
+    setBrowserCode("");
+    setSubmitting(false);
+    setCodeSubmitted(false);
+  }, [login?.authorizationUrl, login?.preparing]);
+  const provider = adapterType === "antigravity_runtime" ? "Google Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = login?.command;
-  const browserLogin = adapterType === "claude_local" || adapterType === "codex_local";
-  async function submitBrowserCode() {
-    if (!browserCode.trim() || !login?.submitCode || submitting) return;
+  const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
+  async function submitBrowserCode(value = browserCode) {
+    if (!value.trim() || !login?.submitCode || codeSubmissionRef.current) return;
+    const submission = Symbol();
+    codeSubmissionRef.current = submission;
     setSubmitting(true);
     try {
-      await login.submitCode(browserCode.trim());
+      await login.submitCode(value.trim());
+      if (codeSubmissionRef.current !== submission) return;
       setBrowserCode("");
+      setCodeSubmitted(true);
     } catch {
       // The login hook presents the request error beside the sign-in card.
+      if (codeSubmissionRef.current === submission) codeSubmissionRef.current = null;
     } finally {
-      setSubmitting(false);
+      if (codeSubmissionRef.current === submission || codeSubmissionRef.current === null) setSubmitting(false);
     }
+  }
+  function pasteBrowserCode(event: ClipboardEvent<HTMLInputElement>) {
+    const pasted = event.clipboardData?.getData("text");
+    if (!pasted?.trim()) return;
+    const input = event.currentTarget;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const value = input.value.slice(0, start) + pasted + input.value.slice(end);
+    event.preventDefault();
+    setBrowserCode(value);
+    void submitBrowserCode(value);
   }
   if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Preparing sign-in…</p>;
   const ready = login?.status === "ready";
+  const awaitingBrowserSignIn = browserLogin && !ready && !login?.authorizationUrl && !login?.error;
   return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
     {ready ? <>
-      <p role="status" className="flex items-center gap-2 text-foreground"><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{provider} is signed in. Click Connect to use this account.</p>
+      <p role="status" className={cn("flex items-center gap-2 text-foreground", ANALYTICS_MASK_CLASS)}><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{login?.accountLabel ?? provider} is signed in. Click Connect to use this account.</p>
       {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => browserLogin ? login?.retry() : setShowCommand(true)}>Use a different account</button>}
     </> : !browserLogin && <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>}
-    {browserLogin && !ready && !login?.authorizationUrl && !login?.error && <p role="status">Preparing browser sign-in…</p>}
-    {browserLogin && !ready && !login?.error && login?.authorizationUrl && <ProviderSubscriptionCard
+    {awaitingBrowserSignIn && <p role="status">Preparing browser sign-in…</p>}
+    {(submitting || codeSubmitted) && !ready && !login?.error && <p role="status">Finishing sign-in…</p>}
+    {browserLogin && !ready && !submitting && !codeSubmitted && !login?.error && login?.authorizationUrl && <ProviderSubscriptionCard
       providerName={connectSourceName(adapterType)}
       authorizationUrl={login.authorizationUrl}
-      mode={adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
+      mode={adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
     >
       {adapterType === "claude_local" ? <div className="flex flex-col gap-2">
         <OnboardingCardField
           value={browserCode}
           onChange={setBrowserCode}
+          onPaste={pasteBrowserCode}
           onSubmit={() => void submitBrowserCode()}
           disabled={submitting}
         />
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit code</Button>
-      </div> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
+      </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Google browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
     </ProviderSubscriptionCard>}
     {!browserLogin && (!ready || showCommand) && !login?.error && <>
       <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>
       {command && <div className="flex min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted p-3 text-foreground">
-        <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs"><code>{command}</code></pre>
+        <pre className={cn("min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs", ANALYTICS_NO_CAPTURE_CLASS)}><code>{command}</code></pre>
         <LoginCardCopyButton value={command} label="Copy sign-in command" />
       </div>}
     </>}
     {login?.error && <p role="alert">{login.error}</p>}
-    {login && !login.preparing && !ready && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
+    {login && !login.preparing && !ready && !awaitingBrowserSignIn && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
   </div>;
 }

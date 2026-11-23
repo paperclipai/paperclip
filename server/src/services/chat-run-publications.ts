@@ -473,15 +473,15 @@ function lifecycleMilestonePages(db: Db, since: Date, scope?: ChatRunMilestoneSc
           // Heartbeat marks a run succeeded before the presentation resolver
           // finishes. Waiting for its durable decision prevents a generic
           // completion from racing an explicitly authored final comment.
-          sql`(
+          sql`case when ${chatPublications.id} is null then (
             ${heartbeatRuns.status} <> 'succeeded'
             or ${heartbeatRuns.resultJson} -> 'presentationDecision' is not null
-          )`,
-          sql`(${heartbeatRuns.status} <> 'succeeded' or coalesce(
+          ) else false end`,
+          sql`case when ${chatPublications.id} is null then (${heartbeatRuns.status} <> 'succeeded' or coalesce(
             ${heartbeatRuns.resultJson}->'nativeResult'->>'reportedWorkDisposition',
             ${heartbeatRuns.resultJson}->'acceptedResult'->>'reportedWorkDisposition',
             ${heartbeatRuns.resultJson}->'semanticResult'->'result'->>'reportedWorkDisposition', ''
-          ) <> 'yielded')`,
+          ) <> 'yielded') else false end`,
           // A successful or interrupted run's selected final remains its
           // authoritative response. Filter it before LIMIT so a page of settled
           // runs cannot starve later milestones.
