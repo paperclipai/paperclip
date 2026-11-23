@@ -10,6 +10,7 @@ import {
   isPrivateAgentObservabilityHttpRequest,
   isPrivateMuseHttpRequest,
   isPrivateDotPrincipalHttpRequest,
+  isPrivateToolCallHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
 import {
@@ -211,6 +212,13 @@ export function createHttpLogger(baseLogger: Logger) {
             ...(ctx || (res as any).err
               ? { errorContext: { name: "Error" } }
               : {}),
+          };
+        }
+        if (isPrivateToolCallHttpRequest(requestClassificationUrl(req))) {
+          return {
+            reqBody: "[REDACTED]",
+            ...(ctx ? { errorContext: redactSensitive(ctx.error), reqParams: redactSensitive(ctx.reqParams) } : {}),
+            ...((req as any).route?.path ? { routePath: (req as any).route.path } : {}),
           };
         }
         if (ctx) {
