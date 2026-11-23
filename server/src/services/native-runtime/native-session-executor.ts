@@ -8,7 +8,7 @@ import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION, nativeSandboxDiskFullSourceCode } from "./native-sandbox-disk-full.js";
-import { isNativeRunPayloadTooLargeMessage, NATIVE_RUN_PAYLOAD_TOO_LARGE, NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION } from "./native-run-payload-too-large.js";
+import { isNativeRunPayloadTooLarge, NATIVE_RUN_PAYLOAD_TOO_LARGE, NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION } from "./native-run-payload-too-large.js";
 import { runFailureMessage } from "@paperclipai/shared";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
@@ -9371,7 +9371,7 @@ function classifyNativeSessionFailure(
   if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
   if (/"code":"controller_sequence_mismatch"/.test(message)) return NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER;
-  if (isNativeRunPayloadTooLargeMessage(message)) return NATIVE_RUN_PAYLOAD_TOO_LARGE;
+  if (isNativeRunPayloadTooLarge(error)) return NATIVE_RUN_PAYLOAD_TOO_LARGE;
   if (/^(?:runner_ingress_unavailable: runnerd exited unexpectedly with code 1: )?runner_task_admission_rejected: (session_state_unavailable|account_binding_mismatch)$/.test(message)) {
     return "runner_task_admission_rejected";
   }
@@ -13905,6 +13905,8 @@ async function executePaperclipNativeSessionAttempt(
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === NATIVE_SANDBOX_DISK_FULL
                 ? NATIVE_SANDBOX_DISK_FULL_ACTION
+              : sourceFailureCode === NATIVE_RUN_PAYLOAD_TOO_LARGE
+                ? NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION
               : sourceFailureCode === "native_provider_terminal_failed"
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
               : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
