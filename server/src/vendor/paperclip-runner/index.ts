@@ -109,6 +109,7 @@ export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapSt
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
+export const nativeRunAttachReservedBytes = runner.nativeRunAttachReservedBytes;
 export const admitToolInputSchema = runner.admitToolInputSchema;
 export const TOOL_INPUT_SCHEMA_MAX_BYTES = runner.TOOL_INPUT_SCHEMA_MAX_BYTES;
 export const canonicalToolInputSchema = runner.canonicalToolInputSchema;
