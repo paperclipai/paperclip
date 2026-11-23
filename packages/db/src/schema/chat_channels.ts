@@ -487,6 +487,11 @@ export const chatDeliveries = pgTable(
       table.endpointId,
       table.deduplicationKey,
     ),
+    // Review checks find their delivery by the GitHub webhook delivery id.
+    index("chat_deliveries_github_automatic_delivery_idx")
+      .on(table.endpointId, sql`(${table.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId')`)
+      .where(sql`(${table.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId') is not null`)
+      .concurrently(),
     foreignKey({
       columns: [table.companyId, table.endpointId],
       foreignColumns: [chatEndpoints.companyId, chatEndpoints.id],
@@ -564,6 +569,8 @@ export const chatPublications = pgTable(
       name: "chat_publications_company_comment_fk",
     }),
     index("chat_publications_work_idx").on(table.state, table.nextAttemptAt),
+    index("chat_publications_comment_destination_idx").on(table.companyId, table.commentId, table.endpointId, table.conversationId)
+      .where(sql`${table.commentId} is not null`),
     uniqueIndex("chat_publications_idempotency_uq").on(
       table.companyId,
       table.idempotencyKey,
@@ -636,6 +643,16 @@ export const chatMessageLinks = pgTable(
       table.conversationId,
       table.providerMessageId,
     ),
+    // Source-comment and delivery lookups (GitHub review waits and checks).
+    // These also serve the comment and delivery `on delete set null` actions.
+    index("chat_message_links_company_comment_idx")
+      .on(table.companyId, table.commentId)
+      .where(sql`${table.commentId} is not null`)
+      .concurrently(),
+    index("chat_message_links_delivery_idx")
+      .on(table.deliveryId)
+      .where(sql`${table.deliveryId} is not null`)
+      .concurrently(),
     foreignKey({
       columns: [table.companyId, table.conversationId],
       foreignColumns: [chatConversations.companyId, chatConversations.id],
@@ -673,10 +690,33 @@ export const chatActions = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index("chat_actions_continuation_work_idx")
+      .on(table.companyId, table.id)
+      .where(sql`${table.kind} = 'interaction_wakeup' AND ${table.status} IN ('issued', 'processing')`),
+    index("chat_actions_confirmation_recovery_idx")
+      .on(table.companyId, table.id)
+      .where(sql`${table.kind} = 'confirmation_response' AND ${table.status} = 'processing'`),
     uniqueIndex("chat_actions_provider_action_uq").on(
       table.endpointId,
       table.providerActionId,
     ),
+    // Chat-admission checks read an issue's inbound input and its failed-run
+    // retries by company and payload issue id.
+    index("chat_actions_company_issue_kind_idx")
+      .on(table.companyId, sql`(${table.payload}->>'issueId')`, table.kind, table.status)
+      .where(sql`${table.kind} IN ('inbound_wakeup', 'failed_run_retry')`)
+      .concurrently(),
+    index("chat_actions_github_stale_head_idx").on(table.companyId, table.endpointId,
+      sql`(${table.payload}->'event'->>'deliveryId')`).where(sql`${table.kind} = 'github_review_check'
+        and ${table.status} = 'cancelled' and ${table.result}->>'code' = 'stale_head'`),
+    index("chat_actions_github_check_work_idx").on(table.id).where(sql`${table.kind} = 'github_review_check'
+      and (${table.status} = 'received' or (${table.status} = 'failed' and ${table.result}->>'retryable' = 'true'))`),
+    index("chat_actions_github_terminal_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
+      and ${table.status} = 'processed' and ${table.deliveryId} is not null
+      and coalesce(${table.result}->>'final', 'false') <> 'true'`),
+    index("chat_actions_github_ack_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
+      and ${table.deliveryId} is not null and coalesce(${table.result}->>'final', 'false') <> 'true'
+      and (${table.status} = 'received' or (${table.status} = 'failed' and ${table.result}->>'retryable' = 'true'))`),
     foreignKey({
       columns: [table.companyId, table.deliveryId],
       foreignColumns: [chatDeliveries.companyId, chatDeliveries.id],

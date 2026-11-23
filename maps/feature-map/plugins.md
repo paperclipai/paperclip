@@ -6,16 +6,18 @@ navigation: {"section":"Apps, channels, and extensions","sectionOrder":50,"order
 
 Operators install and configure plugins, inspect their status and errors, and use their contributed pages, tools, and managed resources within the plugin’s granted capabilities.
 
+Feature ID: `plugins`.
+
 Implementation: [plugin manager](../../ui/src/pages/PluginManager.tsx), [plugin settings](../../ui/src/pages/PluginSettings.tsx), [plugin page](../../ui/src/pages/PluginPage.tsx).
 
 Agent access: [companion](../agent-access-map/plugins.md).
 
 ## Sub-features
 
-- `installation`: install a trusted test package or local development plugin through supported controls.
-- `configuration`: save validated configuration and inspect activation/failure state.
-- `contributions`: open plugin routes, settings, tools, and contributed resource tabs.
-- `lifecycle`: disable/remove or reload a disposable plugin and observe cleanup.
+- `installation`: `plugins/installation` — install a trusted test package or local development plugin through supported controls.
+- `configuration`: `plugins/configuration` — save validated configuration and inspect activation/failure state.
+- `contributions`: `plugins/contributions` — open plugin routes, settings, tools, and contributed resource tabs.
+- `lifecycle`: `plugins/lifecycle` — disable/remove or reload a disposable plugin and observe cleanup.
 
 ## How to get to it (user POV)
 
@@ -51,12 +53,17 @@ Manual: Open the contributed page by navigation and cold deep link, perform a ha
   reload is not a lifecycle action in the plugin manager.
 
 - Installing a plugin does not authorize every host capability or external action.
+- Runtime synchronization is opt-in and uses durable resource delivery. See
+  [the contract](../../doc/plugins/AGENT_RUNTIME_SYNC.md) and
+  [database regressions](../../server/src/__tests__/agent-runtime-hooks.test.ts).
 - Plugin-provided routes are dynamic; this map covers the host lifecycle, not every third-party feature.
 - Environment-driver plugins also need the [environment](./execution-environments.md) checks.
 
 ### Storybook verification
 
 #### `installation`
+
+Capability ID: `plugins/installation`.
 
 Scope: ui
 Storybook: Mount PluginManager trusted package and bundled-local choices, pending install, validation/recoverable error and installed status.
@@ -65,6 +72,8 @@ Sources: Source: [PluginManager.tsx](../../ui/src/pages/PluginManager.tsx), [plu
 
 #### `configuration`
 
+Capability ID: `plugins/configuration`.
+
 Scope: ui
 Storybook: Mount PluginSettings valid/invalid schema inputs, saved configuration, pending/failure and unavailable plugin.
 Production: GET/POST /plugins/{id}/config and POST config/test must preserve validation/company scope and deliver saved config to real plugin worker/startup.
@@ -72,12 +81,16 @@ Sources: Source: [PluginSettings.tsx](../../ui/src/pages/PluginSettings.tsx), [p
 
 #### `contributions`
 
+Capability ID: `plugins/contributions`.
+
 Scope: ui
 Storybook: Mount PluginPage and CompanySettingsPluginPage contributed routes/tabs, loading, missing/unavailable plugin and action failures with a known fixture plugin.
 Production: Serve real static plugin UI; enforce bridge data/action host capabilities and company boundaries; exercise a harmless action and cold deep link.
 Sources: Source: [PluginPage.tsx](../../ui/src/pages/PluginPage.tsx), [CompanySettingsPluginPage.tsx](../../ui/src/pages/CompanySettingsPluginPage.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-ui-static.ts](../../server/src/routes/plugin-ui-static.ts). Tests: [PluginPage.test.tsx](../../ui/src/pages/PluginPage.test.tsx), [CompanySettingsPluginPage.test.tsx](../../ui/src/pages/CompanySettingsPluginPage.test.tsx), [plugin-ui-static.test.ts](../../server/src/__tests__/plugin-ui-static.test.ts), [plugin-tenant-isolation.test.ts](../../server/src/__tests__/plugin-tenant-isolation.test.ts)
 
 #### `lifecycle`
+
+Capability ID: `plugins/lifecycle`.
 
 Scope: ui
 Storybook: Mount PluginManager active/disabled/uninstall/upgrade pending and failures; distinguish operator controls from developer watcher reload.

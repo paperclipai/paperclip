@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
 import { providerDescriptorSchema } from "./generated/schema-bundle.js";
@@ -9,7 +9,7 @@ const validate = new Ajv2020({ allErrors: true, strict: false }).compile(provide
 describe("provider runtime descriptor", () => {
   it("validates negotiated turn controls in descriptors and capability events", () => {
     const descriptor = { provider: "acpx", driver: "acpx_runtime", agent: "pi", model: "explicit-model",
-      requestedModel: "explicit-model", executionKind: "local_process", providerVersion: "0.13.1",
+      requestedModel: "explicit-model", executionKind: "local_process", providerVersion: "0.22.0",
       agentProcessId: 42, acpProtocolVersion: 1, agentServerPackage: "pi-acp", agentServerVersion: "0.0.33",
       acpxRecordId: "record", turnControls: { steering: true, queuedFollowUp: true } };
     expect(validate(descriptor), JSON.stringify(validate.errors)).toBe(true);
@@ -19,7 +19,7 @@ describe("provider runtime descriptor", () => {
     }
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v2", schemaVersion: 2, sourceEventId: "controls", sourceSeq: 1,
-      sourceInstanceId: "runner", sourceKind: "runner", runId: "run", eventType: "session.capabilities.updated",
+      sourceInstanceId: "runner", sourceKind: "runner", runId: "run", normalizedSessionId: "session", eventType: "session.capabilities.updated",
       priority: 0, emittedAt: "2026-09-28T12:00:00.000Z", payload: {
         sessionGoals: { availability: "unsupported", reason: "provider has no native goals", actions: [],
           autonomousUpdates: false, persistentAcrossResume: false, maxObjectiveChars: 4000,
@@ -49,7 +49,7 @@ describe("provider runtime descriptor", () => {
       model: "claude-sonnet-5",
       requestedModel: "claude-sonnet-5",
       executionKind: "local_process",
-      providerVersion: "0.13.1",
+      providerVersion: "0.22.0",
       providerSessionId: "claude-session-1",
       processId: 41001,
       agentProcessId: 41002,

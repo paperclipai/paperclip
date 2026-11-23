@@ -51,7 +51,7 @@ interface IdempotencyRecord {
 
 interface ProductionWorld {
   readonly port: PaperclipRouteSemanticPort;
-  readonly dispatcher: CapabilitySemanticDispatcher;
+  readonly dispatcher: InstanceType<typeof CapabilitySemanticDispatcher>;
   readonly taskId: string;
   readonly runId: string;
 }
@@ -291,7 +291,7 @@ class PaperclipRouteSemanticPort {
       tasks: [{
         id: issue.id,
         companyId: issue.companyId,
-        identifier: issue.identifier,
+        identifier: issue.identifier ?? "",
         title: issue.title,
         description: issue.description,
         status: issue.status as CapabilityFixtureState["tasks"][number]["status"],
@@ -336,10 +336,10 @@ class PaperclipRouteSemanticPort {
         status: interaction.status as CapabilityFixtureState["interactions"][number]["status"],
         title: interaction.title ?? "",
         prompt: readPrompt(interaction.payload),
-        payload: interaction.payload,
+        payload: interaction.payload as unknown as CapabilityFixtureState["interactions"][number]["payload"],
         targetRevisionId: readTargetRevisionId(interaction.payload),
         continuationPolicy: interaction.continuationPolicy as CapabilityFixtureState["interactions"][number]["continuationPolicy"],
-        result: interaction.result ?? null,
+        result: (interaction.result ?? null) as unknown as CapabilityFixtureState["interactions"][number]["result"],
         createdAt: interaction.createdAt.toISOString(),
         resolvedAt: interaction.resolvedAt?.toISOString() ?? null,
       })),
@@ -501,15 +501,15 @@ class PaperclipRouteSemanticPort {
     };
   }
 
-  private post(path: string, body: unknown) {
+  private post(path: string, body: object) {
     return request(this.app).post(path).set("X-Paperclip-Run-Id", this.binding.runId).send(body);
   }
 
-  private put(path: string, body: unknown) {
+  private put(path: string, body: object) {
     return request(this.app).put(path).set("X-Paperclip-Run-Id", this.binding.runId).send(body);
   }
 
-  private patch(path: string, body: unknown) {
+  private patch(path: string, body: object) {
     return request(this.app).patch(path).set("X-Paperclip-Run-Id", this.binding.runId).send(body);
   }
 }
