@@ -38,12 +38,12 @@ describe("listAgyModels caching", () => {
     vi.restoreAllMocks();
   });
 
-  async function fakeAgyCommand(): Promise<{ directory: string; command: string }> {
+  async function fakeAgyCommand(delaySec = 0): Promise<{ directory: string; command: string }> {
     const directory = await mkdtemp(join(tmpdir(), "paperclip-agy-models-"));
     const command = join(directory, "agy");
     await writeFile(
       command,
-      `#!/bin/sh\nprintf 'gemini-3.7-flash-high     Gemini 3.7 Flash (High)\\nclaude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)\\n'\n`,
+      `#!/bin/sh\n${delaySec > 0 ? `sleep ${delaySec}\n` : ""}printf 'gemini-3.7-flash-high     Gemini 3.7 Flash (High)\\nclaude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)\\n'\n`,
     );
     await chmod(command, 0o755);
     return { directory, command };
@@ -72,6 +72,29 @@ describe("listAgyModels caching", () => {
     try {
       const [first, second] = await Promise.all([listAgyModels(command), listAgyModels(command)]);
       expect(first).toEqual(second);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refresh shares the in-flight lookup instead of starting a second spawn", async () => {
+    const { directory, command } = await fakeAgyCommand(0.3);
+    const spy = vi.spyOn(serverUtils, "runChildProcess");
+    try {
+      const listPromise = listAgyModels(command);
+      const refreshPromise = refreshAgyModels(command);
+      const [listed, refreshed] = await Promise.all([listPromise, refreshPromise]);
+      expect(listed).toEqual(refreshed);
+      expect(listed).toEqual([
+        { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (High)" },
+        { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
+      ]);
+      // One spawn total: the refresh joined the lookup already in flight
+      // instead of starting its own, so the slower older lookup cannot
+      // finish afterward and overwrite the refreshed list.
+      expect(spy).toHaveBeenCalledTimes(1);
+      await listAgyModels(command);
       expect(spy).toHaveBeenCalledTimes(1);
     } finally {
       await rm(directory, { recursive: true, force: true });

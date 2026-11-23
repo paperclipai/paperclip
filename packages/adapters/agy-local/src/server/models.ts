@@ -114,14 +114,12 @@ export async function discoverAgyModels(command = "agy"): Promise<{ id: string; 
   return fallbackModels;
 }
 
-export async function listAgyModels(command = "agy"): Promise<{ id: string; label: string }[]> {
-  const cwd = process.cwd();
-  const key = discoveryCacheKey(command, cwd, resolveDiscoveryEnv());
-  const now = Date.now();
-  pruneExpiredDiscoveryCache(now);
-  const cached = discoveryCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.models;
-
+// At most one discovery runs per cache key. A refresh that arrives while a
+// lookup is in flight joins it instead of starting a second spawn, so the
+// older lookup can never finish afterward and overwrite the refreshed list
+// (a timed-out older lookup would otherwise replace a successful refresh
+// with fallback models for the whole TTL).
+function getOrStartDiscovery(key: string, command: string): Promise<{ id: string; label: string }[]> {
   // Concurrent cache misses share one spawn instead of each starting its own.
   const inFlight = discoveryInFlight.get(key);
   if (inFlight) return inFlight;
@@ -138,12 +136,23 @@ export async function listAgyModels(command = "agy"): Promise<{ id: string; labe
   return promise;
 }
 
+export async function listAgyModels(command = "agy"): Promise<{ id: string; label: string }[]> {
+  const cwd = process.cwd();
+  const key = discoveryCacheKey(command, cwd, resolveDiscoveryEnv());
+  const now = Date.now();
+  pruneExpiredDiscoveryCache(now);
+  const cached = discoveryCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.models;
+
+  return getOrStartDiscovery(key, command);
+}
+
 export async function refreshAgyModels(command = "agy"): Promise<{ id: string; label: string }[]> {
   const cwd = process.cwd();
   const key = discoveryCacheKey(command, cwd, resolveDiscoveryEnv());
-  const models = await discoverAgyModels(command);
-  discoveryCache.set(key, { expiresAt: Date.now() + MODELS_CACHE_TTL_MS, models });
-  return models;
+  // Skip the cache read so an explicit refresh always re-discovers, but join
+  // a lookup already in flight rather than spawning a second one.
+  return getOrStartDiscovery(key, command);
 }
 
 export function resetAgyModelsCacheForTests() {
