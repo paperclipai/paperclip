@@ -71,6 +71,10 @@ describe("Coordinator task creation", () => {
     expect(date?.textContent).toBe(formatDateTime("2026-10-20T12:00:00Z"));
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="All conversations"]')!.click());
     expect(document.querySelector('a[href="/chats/alex/old"]')).not.toBeNull();
+    // On a phone the dialog starts below the top inset; its height leaves that room so the last row stays visible.
+    const history = document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!.className.split(/\s+/);
+    expect(history).toContain("h-(--sz-calc-18)");
+    expect(history).not.toContain("h-full");
     await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent === "Create from history")!.click());
     expect(document.querySelector('a[href="/chats/alex/old"]')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="New chat"]')!.click());
