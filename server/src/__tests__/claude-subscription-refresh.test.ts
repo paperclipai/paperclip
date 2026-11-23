@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { companies, agents, companyMemberships, companySecrets, connectionGrants, heartbeatRuns, toolConnections, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
@@ -314,7 +314,7 @@ describe("Claude subscription idle renewal", () => {
     const other = await holdingRun(account.grantId);
     const current = await holdingRun(account.grantId);
     const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} }, currentRunId: current });
-    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(inArray(heartbeatRuns.id, [other, current]));
     const idle = idleWorkSnapshot().active;
     await run.cleanup();
     expect(idleWorkSnapshot().active).toBe(idle + 1);
@@ -330,9 +330,23 @@ describe("Claude subscription idle renewal", () => {
     const current = await holdingRun(account.grantId);
     const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} }, currentRunId: current });
     expect(run.config.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("old-access");
-    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(inArray(heartbeatRuns.id, [other, current]));
     await run.cleanup();
     await vi.waitFor(async () => expect((await state()).latestVersion).toBe(2), { timeout: 10_000 });
     expect(exchange).toHaveBeenCalledOnce();
+  });
+
+  it("does not renew at cleanup while the run is still running, as when its controller detaches for a restart", async () => {
+    const { account, owner, state } = await connect(document(Date.now() + 3600_000));
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    const other = await holdingRun(account.grantId);
+    const current = await holdingRun(account.grantId);
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} }, currentRunId: current });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    const idle = idleWorkSnapshot().active;
+    await run.cleanup();
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(idle), { timeout: 10_000 });
+    expect(exchange).not.toHaveBeenCalled();
+    expect((await state()).latestVersion).toBe(1);
   });
 });

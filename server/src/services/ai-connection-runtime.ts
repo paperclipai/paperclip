@@ -559,11 +559,14 @@ export async function prepareManagedAiRuntime(
           // recovery handoff must own the refresh before deleting its home.
           removalOnly = true;
           await removeHome();
-          // This run no longer holds the token. If no other run does, renew a
-          // token that is close to expiry now instead of under the next run.
-          // The exchange consumes a single-use refresh token, so it stays
-          // tracked as active work until its save settles.
-          if (claudeSubscription) void trackIdleWork(service.runtimeCredential(selection, { currentRunId: input.currentRunId })).catch(() => undefined);
+          // If no run holds the token now, renew a token that is close to
+          // expiry here instead of under the next run. This run is not named
+          // as the caller: it counts as a holder while its status is still
+          // `running`, which is the case when the controller detaches for a
+          // restart and leaves the runner alive. The exchange consumes a
+          // single-use refresh token, so it stays tracked as active work
+          // until its save settles.
+          if (claudeSubscription) void trackIdleWork(service.runtimeCredential(selection)).catch(() => undefined);
         } catch (error) {
           if (!durableGoogleRefresh && !removalOnly) throw error;
           // Once native retirement and encrypted fsync transfer ownership, the
