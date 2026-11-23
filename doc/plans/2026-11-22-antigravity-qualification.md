@@ -80,6 +80,23 @@ Order: 1 and 2 in parallel; then 3, 4 and 5; then 6.
 | Qualification | No operator override needed; candidate grants rejected for the released profile | Not started |
 | Evals under the native Runner | Applicable Product E2E and chat cases run with Antigravity; numbers recorded | Not started |
 
+### Integration round (2026-11-22, no live cells yet)
+
+- Typed turn failures reach the user: a refused model is named with its fix
+  (`antigravityModelRefusalMessage`), a 503 overload takes the bounded capacity
+  retry, rate limits and quotas take the provider-limit wait, a rejected key is
+  shown as the provider's plain message.
+- Save and Test refuse Google sign-in in a cloud environment (route test).
+- A refused saved-conversation reload is `provider_state_incompatible` on every
+  reopen path; Antigravity never takes the Claude-only turn-end restart.
+- Superseded sealed closure stores are retired once no live runner holds them.
+- A verified provider pack is re-checked by kernel identity on the same sandbox
+  (958 MB / 18,002 files: 4.3 s full re-hash, 150 ms identity check in Daytona).
+- CI builds the Daytona image and controller pack with the selected pending
+  candidates; the qualification suite gained `permission-deny-stop` (24 cells).
+- Live: the Gemini key still returns 429 `RESOURCE_EXHAUSTED` for
+  `gemini-3.8-flash`, so no live cell ran.
+
 ## Open decisions
 
 - Which Neon route to qualify first, and the credential for it.
