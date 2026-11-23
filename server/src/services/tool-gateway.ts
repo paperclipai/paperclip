@@ -7631,7 +7631,7 @@ export function createToolGatewayService(
       ? await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, input.session.runId), eq(heartbeatRuns.companyId, input.session.companyId))).limit(1)
       : [];
-    const responsibleUserId = input.session.responsibleUserId ?? run?.responsibleUserId ?? null;
+    const responsibleUserId = input.session.createdByUserId ?? input.session.responsibleUserId ?? run?.responsibleUserId ?? null;
     const now = Date.now();
     const inserted = await db.transaction(async (tx) => {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
@@ -7647,6 +7647,7 @@ export function createToolGatewayService(
         actorType: input.session.actorType ?? "agent",
         actorId: input.session.actorId ?? null,
         responsibleUserId,
+        createdByUserId: input.session.createdByUserId ?? null,
         identityContextId: input.session.identityContextId ?? null,
         catalogToolName: input.catalogToolName,
         requestHash: input.requestHash,
@@ -7968,6 +7969,7 @@ export function createToolGatewayService(
       id: `mcp-task:${row.id}`, token: "", companyId: row.companyId, agentId: row.agentId, runId: row.runId,
       issueId: row.issueId, projectId: null, actorType: row.actorType as ToolGatewaySession["actorType"], actorId: row.actorId,
       responsibleUserId: row.responsibleUserId, identityContextId: row.identityContextId,
+      createdByUserId: row.createdByUserId ?? null,
       createdAt: new Date(), expiresAt: new Date(Date.now() + 5 * 60_000),
     };
     // The same access check a live call makes, as the same caller: audience,

@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { LiveEvent } from "@paperclipai/shared";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
@@ -2318,6 +2318,32 @@ rl.on("line", (line) => {
     expect(lastAuthorization()).toBe("Bearer alice-personal-token");
     const bobRetry = await callWith(bobToken, personal.connection.id, sameWrite);
     expect(bobRetry.body.status).toBe("replayed");
+
+    const savedBeforeUpgrade = async (parameters: Record<string, unknown>, recordedActor: { actorType: string; actorId: string } | null) => {
+      expect((await callWith(bobToken, personal.connection.id, parameters)).body.status).toBe("completed");
+      const [row] = await db.select().from(toolInvocations)
+        .where(and(eq(toolInvocations.companyId, company.id), sql`${toolInvocations.idempotencyKey} like '%:opened_by:%'`))
+        .orderBy(desc(toolInvocations.createdAt)).limit(1);
+      const { sessionOpenedByUserId: _opener, ...explanation } = (row!.policyExplanation ?? {}) as Record<string, unknown>;
+      await db.update(toolInvocations).set({
+        idempotencyKey: row!.idempotencyKey!.split(":opened_by:")[0],
+        policyExplanation: explanation,
+        ...(recordedActor ?? {}),
+      }).where(eq(toolInvocations.id, row!.id));
+      return authorizations.length;
+    };
+    const attributedWrite = { key: "upgrade-attributed", value: randomUUID() };
+    let providerCalls = await savedBeforeUpgrade(attributedWrite, { actorType: "user", actorId: "bob" });
+    expect((await callWith(bobToken, personal.connection.id, attributedWrite)).body.status).toBe("replayed");
+    expect(authorizations).toHaveLength(providerCalls);
+    expect((await callWith(aliceToken, personal.connection.id, attributedWrite)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer alice-personal-token");
+
+    const unattributedWrite = { key: "upgrade-unattributed", value: randomUUID() };
+    providerCalls = await savedBeforeUpgrade(unattributedWrite, null);
+    const unattributedRetry = await callWith(bobToken, personal.connection.id, unattributedWrite);
+    expect(unattributedRetry.status).toBe(409);
+    expect(authorizations).toHaveLength(providerCalls);
 
     const agentSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, actorType: "agent", actorId: agent.id });
     expect((await callTool(agentSession.token, personal.connection.id)).body.status).toBe("completed");

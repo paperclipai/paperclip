@@ -684,6 +684,53 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await ctx.rows())[0]).toMatchObject({ status: "expired", errorCode: "access_removed", nextPollAt: null });
   });
 
+  it("keeps the opener's personal grant on a task started from a person-opened session through a background poll", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    for (const userId of ["task-owner", "task-opener"]) {
+      await db.insert(companyMemberships).values({ companyId: ctx.org.id, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    }
+    await db.update(heartbeatRuns).set({ responsibleUserId: "task-owner" }).where(eq(heartbeatRuns.id, ctx.run.id));
+    await db.update(toolConnections).set({ credentialPolicy: "per_user" }).where(eq(toolConnections.id, ctx.connected.connectionId));
+    const grants = new Map<string, string>();
+    for (const userId of ["task-owner", "task-opener"]) {
+      const [grant] = await db.insert(connectionGrants).values({
+        companyId: ctx.org.id, connectionId: ctx.connected.connectionId, kind: "user", subjectUserId: userId,
+        credentialSecretRefs: [], status: "active", isDefault: false,
+      }).returning();
+      grants.set(userId, grant!.id);
+    }
+    const startTask = async (createdByUserId: string | null, ref: string) => {
+      const session = await ctx.gateway().createSession({ companyId: ctx.org.id, agentId: ctx.agent.id, runId: ctx.run.id, createdByUserId });
+      const tool = (await ctx.gateway().listToolsForSession(session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+      await expect(ctx.gateway().executeTool({ sessionToken: session.token, tool: tool.name, parameters: { ref }, timeoutMs: 400 }))
+        .rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+      const taskId = server.only().id;
+      const [row] = (await ctx.rows()).filter((candidate) => !candidate.completedAt && candidate.status === "working")
+        .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+      return { row: row!, taskId };
+    };
+    const pollUntilSettled = async (rowId: string, taskId: string) => {
+      server.tasks.get(taskId)!.status = "completed";
+      await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), leaseExpiresAt: null, leaseOwner: null }).where(eq(toolMcpTasks.id, rowId));
+      await ctx.poll();
+      const [settled] = await db.select().from(toolMcpTasks).where(eq(toolMcpTasks.id, rowId));
+      return settled!;
+    };
+
+    const opened = await startTask("task-opener", "opener");
+    expect(opened.row).toMatchObject({ grantId: grants.get("task-opener"), createdByUserId: "task-opener", responsibleUserId: "task-opener" });
+    const openedAfter = await pollUntilSettled(opened.row.id, opened.taskId);
+    expect(openedAfter.errorCode).not.toBe("access_removed");
+    expect(openedAfter.status).toBe("completed");
+
+    const legacy = await startTask(null, "legacy");
+    expect(legacy.row).toMatchObject({ grantId: grants.get("task-owner"), createdByUserId: null });
+    const legacyAfter = await pollUntilSettled(legacy.row.id, legacy.taskId);
+    expect(legacyAfter.errorCode).not.toBe("access_removed");
+    expect(legacyAfter.status).toBe("completed");
+  });
+
   it("keeps a completed task recoverable until its result is recorded, then wakes the agent", async () => {
     const server = taskServer();
     const ctx = await setup(server);

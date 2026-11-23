@@ -919,6 +919,7 @@ export const toolMcpTasks = pgTable(
     actorId: text("actor_id"),
     /** The person whose grant applied, and the run identity, so background checks see the same caller. */
     responsibleUserId: text("responsible_user_id"),
+    createdByUserId: text("created_by_user_id"),
     identityContextId: uuid("identity_context_id"),
     catalogToolName: text("catalog_tool_name").notNull(),
     /** Endpoint, tool, and full arguments; a call attaches only on an exact match. */

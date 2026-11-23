@@ -1,5 +1,5 @@
 {
-  "id": "fc27ecbe-d598-49b7-80c0-0aefa3f6bf68",
+  "id": "e7daf0b9-3e4a-42d7-b72a-4d7d413d9686",
   "prevId": "62fdf61f-883c-4e82-a4ab-4311ff6d39e5",
   "version": "7",
   "dialect": "postgresql",
@@ -64046,6 +64046,12 @@
         },
         "responsible_user_id": {
           "name": "responsible_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
