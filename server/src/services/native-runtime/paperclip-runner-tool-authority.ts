@@ -1277,11 +1277,13 @@ export class PaperclipRunnerToolAuthority {
     if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
     const token = this.#apiToken(bound);
     if (!token) throw new Error("Paperclip run authentication is unavailable");
+    let dispatched = false;
     const execute = async (callKey?: string) => {
       const current = await this.#boundContext();
       assertAvailable(current.issue.workMode);
       const result = await executeRunnerApi(input, { ...context, workMode: current.issue.workMode }, {
         apiUrl, token, callKey,
+        onDispatch: () => { dispatched = true; },
         beforeDispatch: async () => {
           const fresh = await this.#boundContext();
           assertAvailable(fresh.issue.workMode);
@@ -1325,7 +1327,29 @@ export class PaperclipRunnerToolAuthority {
       return null;
     });
     if (prior) return prior.result;
-    const result = await execute(key);
+    const result = await execute(key).catch(async error => {
+      // A failure while preparing the request cannot have committed its mutation.
+      // Once fetch is attempted, leave the receipt for reconciliation.
+      if (!dispatched) {
+        await this.db.transaction(async tx => {
+          const [run] = await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, this.binding.runId),
+            eq(heartbeatRuns.companyId, this.binding.companyId),
+          )).for("update");
+          const resultJson = record(run?.resultJson);
+          const receipts = record(resultJson.apiToolReceipts);
+          const receipt = record(receipts[key]);
+          if (receipt.state !== "pending" || receipt.digest !== digest) return;
+          delete receipts[key];
+          await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(and(
+            eq(heartbeatRuns.id, this.binding.runId),
+            eq(heartbeatRuns.companyId, this.binding.companyId),
+          ));
+        }).catch(cleanupError => logger.warn({ err: cleanupError, runId: this.binding.runId, operationId: operation.operationId },
+          "Failed to clear undispatched runner API receipt"));
+      }
+      throw error;
+    });
     const storedResult = provider
       ? { encryptedResult: (await provider.createSecret({ value: JSON.stringify(result) })).material }
       : { result };
