@@ -69,7 +69,9 @@ test("canary dry run, runner support, chat, docker and test-only edits select th
   }
   for (const file of ["tests/runner-e2e/catalog.test.ts", "packages/paperclip-runner/src/index.ts",
     "packages/plugins/sdk/src/index.ts", "packages/adapters/codex-local/src/index.ts",
-    "server/src/services/native-runtime/canonical.ts", ".github/workflows/pr-trusted.yml"]) {
+    "packages/shared/src/constants.ts", "server/src/services/native-runtime/canonical.ts",
+    "server/src/services/ai-api-key-failures.ts", "server/src/services/activity.ts",
+    "ui/src/features/connections/ConnectionSetupFlow.tsx", ".github/workflows/pr-trusted.yml"]) {
     assert.equal(selected(plan([file]), "verify_runner_e2e_support"), true, `runner-e2e-support: ${file}`);
   }
   for (const file of ["server/src/services/chat-channels/github/retry.ts", "server/src/services/connectors/slack-access.ts",
