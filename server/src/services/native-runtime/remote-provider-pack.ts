@@ -1,6 +1,6 @@
 import { redactSensitiveText } from "../../redaction.js";
 import { nativeRunFailureCheck, type NativeRunTrace } from "./native-run-trace.js";
-import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { ANTIGRAVITY_DISTRIBUTION_PINS, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 /** Qualified ACPX releases carry their Linux image manifest and daemon. */
 export function shouldUseBundledAcpxImageAssets(input: {
@@ -15,14 +15,13 @@ export function shouldUseBundledAcpxImageAssets(input: {
 
 /**
  * The patched Antigravity closure (never the vendor closure) this server
- * release admits per platform: exactly the `verified-closure` platforms'
- * `closureSha256` in packages/paperclip-runner/antigravity-distributions.json,
- * which a test keeps equal. Linux appears here when the Linux runtime is
- * pinned; until then no Antigravity image pack verifies.
+ * release admits per platform. It is read from the Runner's generated pins, so
+ * re-pinning the closure in antigravity-distributions.json can never leave a
+ * stale server copy; a test keeps it equal to the `verified-closure` platforms.
  */
-export const ANTIGRAVITY_PATCHED_CLOSURE_SHA256: Readonly<Record<string, string>> = Object.freeze({
-  "darwin-arm64": "044792d793e203bc8b4524a418f1816c4d34db67bb41fa4bae5947a050c49b4a",
-});
+export const ANTIGRAVITY_PATCHED_CLOSURE_SHA256: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(Object.entries(ANTIGRAVITY_DISTRIBUTION_PINS).map(([target, pin]) => [target, pin.closureSha256])),
+);
 
 export type ProviderPackEntry = { version: string; profileDigest: string; closureDigest: string };
 

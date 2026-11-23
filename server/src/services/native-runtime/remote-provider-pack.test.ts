@@ -203,6 +203,16 @@ describe("Google Antigravity image pack identity", () => {
     }
   });
 
+  it("admits the real linux-x64 image pack closure and refuses its vendor closure", () => {
+    const linux = distributions.platforms["linux-x64"];
+    const real = { ...base, patchedClosures: undefined, entry: { ...entry, closureDigest: `sha256:${linux.closureSha256}` } };
+    expect(antigravityProviderPackEntryRefusal(real)).toBeNull();
+    expect(antigravityProviderPackEntryRefusal({ ...real, entry: { ...real.entry, closureDigest: `sha256:${linux.vendorClosureSha256}` } }))
+      .toMatch(/patched closure/);
+    expect(antigravityProviderPackEntryRefusal({ ...real, entry: { ...real.entry, closureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}` } }))
+      .toMatch(/patched closure/);
+  });
+
   it("lists the qualified entry under providers and the pending one under candidateProviders, never both", () => {
     expect(antigravityProviderPackEntryRefusal(base)).toBeNull();
     expect(antigravityProviderPackEntryRefusal({ ...base, releasePending: true, inventory: "candidateProviders" })).toBeNull();
