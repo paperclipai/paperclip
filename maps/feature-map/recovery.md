@@ -430,8 +430,7 @@ while the second cannot use the operator API.
 Automated: [legacy continuation](../../server/src/services/recovery/legacy-continuation.test.ts),
 [queue routes](../../server/src/__tests__/issue-queued-comments-routes.test.ts), and
 [native restart recovery](../../server/src/services/native-runtime/native-restart-recovery.test.ts)
-cover their respective recovery paths. [Legacy failure continuation](../../tests/e2e/legacy-failure-continuation.spec.ts)
-adds a browser journey; it is not native runtime proof.
+cover their respective recovery paths.
 
 [Queued Stop database regressions](../../server/src/modules/wake-queue/adapters/queued-operator-stop-postgres.test.ts)
 verify that an operator cancellation before runtime selection releases its own
@@ -497,4 +496,4 @@ Capability ID: `recovery/user-continuation`.
 Scope: ui
 Storybook: Saved follow-up waiting on stop cleanup, pause/budget gate, one eligible continuation and result/failure.
 Production: Confirm previous execution stopped before delivery, preserve message, avoid duplicate wakes and honor actual task/ancestor/budget gate in separate legacy/native paths.
-Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [legacy-continuation.ts](../../server/src/services/recovery/legacy-continuation.ts), [native-restart-recovery.ts](../../server/src/services/native-runtime/native-restart-recovery.ts). Tests: [legacy-continuation.test.ts](../../server/src/services/recovery/legacy-continuation.test.ts), [native-restart-recovery.test.ts](../../server/src/services/native-runtime/native-restart-recovery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts), [legacy-failure-continuation.spec.ts](../../tests/e2e/legacy-failure-continuation.spec.ts)
+Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [legacy-continuation.ts](../../server/src/services/recovery/legacy-continuation.ts), [native-restart-recovery.ts](../../server/src/services/native-runtime/native-restart-recovery.ts). Tests: [legacy-continuation.test.ts](../../server/src/services/recovery/legacy-continuation.test.ts), [native-restart-recovery.test.ts](../../server/src/services/native-runtime/native-restart-recovery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts)
