@@ -1,0 +1,1 @@
+ALTER TABLE "heartbeat_runs" ADD COLUMN "native_source_cursors" jsonb;

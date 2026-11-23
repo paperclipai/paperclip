@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils";
+import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 

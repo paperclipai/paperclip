@@ -130,6 +130,6 @@ Run deterministic conformance first, then the real Codex boundary:
 
 ```sh
 pnpm --filter @paperclipai/paperclip-runner exec vitest run \
-  src/drivers/codex/codex-app-server-driver.test.ts \
+  src/drivers/codex/codex-app-server-driver \
   src/mock-core/live-console-demo-server.test.ts
 ```

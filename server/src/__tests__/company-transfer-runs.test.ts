@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb } from "@paperclipai/db";
 import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
@@ -10,7 +12,8 @@ import {
   type CompanyTransferPartsIndex,
 } from "../services/company-transfer-runs.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TRANSFER_LEDGER_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -20,11 +23,12 @@ const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 // packer. Distinct content per call: identical content intentionally derives
 // the same idempotency key, which would make separate tests resume each
 // other's runs.
+const fixtureId = randomUUID();
 let manifestSeq = 0;
 function demoManifest(): CompanyTransferPartsIndex & { idempotencyKey: string } {
   manifestSeq += 1;
   return {
-    idempotencyKey: sha256HexOfBytes(Buffer.from(`transfer-run-fixture-${manifestSeq}`)),
+    idempotencyKey: sha256HexOfBytes(Buffer.from(`transfer-run-fixture-${fixtureId}-${manifestSeq}`)),
     chunks: [{ name: "chunks/0000.json.gz" }, { name: "chunks/0001.json.gz" }],
     blobs: [{ name: `blobs/${sha256HexOfBytes(pngBytes)}` }],
   };
@@ -35,11 +39,12 @@ describeEmbeddedPostgres("companyTransferRunService", () => {
   let db!: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-transfer-runs-");
-    db = createDb(tempDb.connectionString);
+    if (!externalTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-transfer-runs-");
+    db = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
