@@ -7,6 +7,7 @@ import { ApiError } from "@/api/client";
 import { describeLinkError } from "@/components/responsibilities/AddExistingWorkPicker";
 import { artifactsTruncationNote } from "@/components/responsibilities/ResponsibilitySkillsAndArtifacts";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   areaFundraising,
   areaPortfolio,
@@ -124,6 +125,7 @@ beforeEach(() => {
   document.body.append(host);
   root = createRoot(host);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queryKeys.auth.session, { user: { id: "user-storybook" } });
 });
 
 afterEach(async () => {
