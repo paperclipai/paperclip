@@ -5245,6 +5245,24 @@ export function createToolGatewayService(
     return grant;
   }
 
+  async function assertSessionOpenerMayUseTool(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+  ) {
+    if (!session.createdByUserId || !tool.connectionId) return;
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(and(eq(toolConnections.id, tool.connectionId), eq(toolConnections.companyId, session.companyId)))
+      .limit(1);
+    if (!connection) return;
+    try {
+      await resolveConnectionGrant(session, connection, false);
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError && error.reasonCode === "personal_grant_owner_required") throw error;
+    }
+  }
+
   async function resolveConnectionGrantForSession(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
@@ -13734,6 +13752,7 @@ export function createToolGatewayService(
           })
           .where(eq(toolInvocations.id, invocationId));
       } else {
+        await assertSessionOpenerMayUseTool(session, tool);
         const decisionInput = policyInputForTool({
           session,
           tool,

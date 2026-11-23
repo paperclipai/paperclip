@@ -2311,6 +2311,22 @@ rl.on("line", (line) => {
     const agentPersonal = await callTool(agentSession.token, personal.connection.id);
     expect(agentPersonal.status).toBe(200);
     expect(agentPersonal.body.status).toBe("completed");
+
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review personal mail",
+      policyType: "require_approval",
+      selectors: { connectionId: personal.connection.id },
+      priority: 10,
+    });
+    const requestsBefore = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+    const bobReviewed = await callTool(bobToken, personal.connection.id);
+    expect(bobReviewed.status).toBe(403);
+    expect(bobReviewed.body.reasonCode).toBe("personal_grant_owner_required");
+    await expect(db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id)))
+      .resolves.toHaveLength(requestsBefore.length);
+    const aliceReviewed = await callTool(aliceToken, personal.connection.id);
+    expect(aliceReviewed.status).toBe(409);
   });
 
   it("refuses a person-created session when the person may not act on the agent", async () => {
