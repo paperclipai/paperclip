@@ -337,7 +337,7 @@ describe("online durable-data migration pass", () => {
 
     it("names every durable-data blocker that readiness can report", async () => {
       const source = await fs.readFile(new URL("./ephemeral-server-contract.ts", import.meta.url), "utf8");
-      const blockers = [...new Set([...source.matchAll(/blockers\.push\("([a-z_]+)"\)/g)].map(match => match[1]!)), RUNTIME_SKILL_ASSETS_BLOCKER];
+      const blockers = [...new Set([...source.matchAll(/(?:blockers\.push\(|check\(\s*"[a-z_]+",)\s*"([a-z_]+)"/g)].map(match => match[1]!)), RUNTIME_SKILL_ASSETS_BLOCKER];
       expect(blockers).toEqual(expect.arrayContaining(["workspaces_require_migration", "local_instruction_copies_require_settlement", "external_agent_instructions"]));
       for (const blocker of blockers) {
         resetOnlineDurableDataMigrationProgressForTests();
@@ -382,6 +382,19 @@ describe("online durable-data migration pass", () => {
       });
       const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
       expect(result.deferred).toMatchObject({ "workspaces:online_workspace_source_scope_unproven": 2, "workspaces:source_scope_git_link_stale": 1 });
+      expect(JSON.stringify(result)).not.toContain("private");
+    });
+
+    it("names the recovery kind and finalizer state that keep a workspace local", async () => {
+      const fixture = owners({
+        localWorkspaces: async () => [workspace(1), workspace(2)],
+        inventoryWorkspace: async (_db: Db, input: { workspaceId: string }) => input.workspaceId === "w1"
+          ? { reasons: ["workspace_recovery_unresolved"], details: ["workspace_recovery_unresolved:active_run_watchdog"] }
+          : { reasons: ["execution_finalization_unresolved"], details: ["execution_finalization_unresolved:finalizer_leased", "bad:/private"] },
+      });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).toMatchObject({ "workspaces:workspace_recovery_unresolved": 1, "workspaces:workspace_recovery_unresolved:active_run_watchdog": 1,
+        "workspaces:execution_finalization_unresolved": 1, "workspaces:execution_finalization_unresolved:finalizer_leased": 1 });
       expect(JSON.stringify(result)).not.toContain("private");
     });
 

@@ -62,13 +62,36 @@ describe("New agent OpenRouter model selection", () => {
   });
 
   it("normalizes a custom OpenRouter model ID for the OpenCode connection", async () => {
+    const connectionId = "00000000-0000-4000-8000-000000000021";
+    managedApi.list.mockResolvedValue({ currentUserId: "user-1", canManageConnections: true, connections: [{
+      id: connectionId, grantId: "00000000-0000-4000-8000-000000000022",
+      companyId: "company-1", provider: "openrouter", method: "api_key", name: "Company OpenRouter",
+      ownership: "shared", isDefault: false, status: "connected",
+      routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] },
+    }] } as any);
     await render("opencode_local");
+    const connection = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    await act(async () => connection.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    await selectModel("Company OpenRouter");
     await searchModels("company/new-model");
     await selectModel("Use manual model");
     await click("Finish setup");
     expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterConfig: expect.objectContaining({ model: "openrouter/company/new-model" }),
+      runtimeConfig: expect.objectContaining({ aiConnection: expect.objectContaining({ connectionId }) }),
     }));
+  });
+
+  it("preserves a custom provider model ID when OpenCode uses harness sign-in", async () => {
+    await render("opencode_local");
+    await searchModels("company/new-model");
+    await selectModel("Use manual model");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      adapterConfig: expect.objectContaining({ model: "company/new-model" }),
+    }));
+    expect(api.hire.mock.calls.at(-1)![1].runtimeConfig.aiConnection).toBeUndefined();
   });
 
   it("searches routed OpenRouter models for a single-provider harness", async () => {

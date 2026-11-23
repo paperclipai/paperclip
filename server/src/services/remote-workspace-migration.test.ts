@@ -564,6 +564,77 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     }
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
   });
+  it.each(["finalized", "missing-receipt", "leased", "prepared"])("moves online past a settled finalizer that already saved its files, and names the rest (%s)", async mode => {
+    const f = await failedCopybackFixture();
+    const contractId = randomUUID(), resultId = randomUUID();
+    await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId, revision: 1,
+      schemaVersion: "v1", policyVersion: "v1", risk: "low", completionAuthority: "agent", incompleteCriteriaPolicy: "block",
+      contractJson: {}, canonicalSha256: "12".repeat(32), createdByActorType: "system", createdByActorId: "test" });
+    const state = mode === "prepared" ? "prepared" : "finalized";
+    await db.update(heartbeatRuns).set({ status: "succeeded", completionContractId: contractId,
+      runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, state, finalHostSha256: state === "finalized" ? "56".repeat(32) : null } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      completionContractId: contractId, serverFingerprint: "saved-result", schemaStatus: "accepted", resultJson: { saved: true }, canonicalSha256: "34".repeat(32) });
+    await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", resultId,
+      ...(mode === "leased" ? { leaseOwner: "live-finalizer", leaseExpiresAt: new Date(Date.now() + 60_000) } : {}) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const operationId = randomUUID();
+    if (mode !== "missing-receipt") await db.insert(workspaceOperations).values({ id: operationId,
+      companyId: f.companyId, executionWorkspaceId: f.workspaceId, heartbeatRunId: f.runId, issueId: f.issueId,
+      phase: "workspace_finalize", status: "succeeded" });
+    const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const inventory = await inventoryRemoteWorkspaceMigration(db, f);
+    if (mode !== "finalized") {
+      expect(inventory).toMatchObject({ eligible: false, details: expect.arrayContaining([`execution_finalization_unresolved:${
+        mode === "leased" ? "finalizer_leased" : mode === "prepared" ? "sync_prepared" : "sync_finalized_without_receipt"}`]) });
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow(/execution_finalization_unresolved|remote_copyback_unresolved/);
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    } else {
+      expect(inventory).toMatchObject({ eligible: true, reasons: [] });
+      await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBeTruthy();
+      expect(await attemptNativeWorkspaceFinalization({ db, runId: f.runId }))
+        .toMatchObject({ kind: "completed", operation: { id: operationId } });
+    }
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+  });
+  it("keeps an online move blocked while a settled run still has to save another workspace of the task", async () => {
+    const f = await failedCopybackFixture(), otherId = randomUUID(), cwd = path.join(root, "other-run-workspace"); await fs.mkdir(cwd);
+    await db.insert(executionWorkspaces).values({ id: otherId, companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Run workspace", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd });
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, workspaceId: otherId, state: "prepared" } } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      details: expect.arrayContaining(["execution_finalization_unresolved:sync_other_workspace"]) });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("execution_finalization_unresolved");
+  });
+  it("refuses an online move when the finalizer takes its lease during the upload", async () => {
+    const f = await failedCopybackFixture();
+    await db.update(heartbeatRuns).set({ status: "succeeded",
+      runnerProfileJson: { nativeWorkspaceSync: { ...f.reference, state: "finalized", finalHostSha256: "56".repeat(32) } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, heartbeatRunId: f.runId,
+      issueId: f.issueId, phase: "workspace_finalize", status: "succeeded" });
+    const put = storage.putFile.bind(storage);
+    storage.putFile = async input => { const result = await put(input);
+      await db.update(nativeRunFinalizations).set({ leaseOwner: "late-finalizer", leaseExpiresAt: new Date(Date.now() + 60_000) })
+        .where(eq(nativeRunFinalizations.runId, f.runId)); return result; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("execution_finalization_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it.each([["active_run_watchdog", "native_session_interrupted", {}, "active_run_watchdog"],
+    ["stranded_assigned_issue", "native_workspace_sync_out_unrecoverable", {}, "stranded_assigned_issue_export_cause"],
+    ["configuration_validation", "configuration_incomplete", { workspaceRecovery: { schema: "x" } }, "configuration_validation_file_evidence"],
+  ] as const)("names the recovery kind that keeps an online move blocked (%s)", async (kind, cause, evidence, code) => {
+    const f = await seed();
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind, cause, fingerprint: randomUUID(), nextAction: "Preserve unresolved recovery", evidence });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["workspace_recovery_unresolved"],
+      details: [`workspace_recovery_unresolved:${code}`] });
+  });
   it("migrates historical records without borrowing another workspace's finalizer", async () => {
     const f = await failedCopybackFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     const otherId = randomUUID(), cwd = path.join(root, "longer-historical-folder"); await fs.mkdir(cwd);

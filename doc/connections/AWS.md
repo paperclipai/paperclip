@@ -103,8 +103,15 @@ already exists. The setup screen walks through them:
      account the CLI uses, checks for an existing identity provider, deploys
      the template with `aws cloudformation deploy` and reports the stack's
      `RoleArn` output. For full access it asks which policy to attach. The
-     prompt holds no secret.
-   - Paste that role ARN into the field below the prompt.
+     prompt holds no AWS credential, but its progress token is a credential
+     for this setup's checklist: give the prompt only to your own agent, not
+     to a shared chat or public place. The token only updates that checklist
+     and stops working after six hours.
+   - While the agent works, the step shows its live checklist (it sets and
+     ticks off its steps with the URLs and token in the prompt; see
+     `docs/api/agent-setup-progress.md`), and its finish summary carries the
+     role ARN.
+   - Paste that role ARN into the Role ARN field.
 
    **Or do it by hand** shows the same setup without an agent:
    - **With CloudFormation.** Download the template, create a stack from it in
