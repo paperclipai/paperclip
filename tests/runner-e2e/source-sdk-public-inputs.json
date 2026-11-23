@@ -130,7 +130,7 @@
     "packages/shared/src/app-definitions/google-slides.json": "289366009d46be6b770eee6cd0bc650eb59a240c",
     "packages/shared/src/app-definitions/google-workspace-search.json": "f3ec9d00ed0116b7cb8b9b1b71353cb8d6dc8cf4",
     "packages/shared/src/app-definitions/google-workspace.json": "c3b55dc3ec502f6b86008e1e5b421748bdd50e91",
-    "packages/shared/src/app-definitions/google.json": "f0da4ff3af061649309c0544af7e1f6822d911a1",
+    "packages/shared/src/app-definitions/google.json": "f0bab0467612f915c88137eddbac0b320ac1aa2a",
     "packages/shared/src/app-definitions/gsc-wizard.json": "a4ba6f183d5f35a25d0a420ade18f00d3fb64534",
     "packages/shared/src/app-definitions/honcho.json": "17185eaf5189fc8c443388997c90ebf833bc9327",
     "packages/shared/src/app-definitions/hugging-face.json": "6567ad1e62c007da1702fc314736c2d3aa1d4499",
