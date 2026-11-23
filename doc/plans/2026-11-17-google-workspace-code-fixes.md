@@ -165,9 +165,10 @@ reasoning mostly goes away, and reviewers expect disconnect to end access.
 Any connection's page has "Delete data", and removing a connection offers the
 same. It clears previews, approval cards, results passed to later runs, app
 views and the whole transcript of each settled run that used the connection.
-It keeps call records without content. Limits: content agents wrote into
-tasks stays; deleting a task or a company does not yet run the same cleanup;
-runs in progress are skipped. The help page is
+It keeps call records without content. Deleting a task or a company runs
+the same cleanup, including run logs and saved files in storage. Limits:
+content agents wrote into tasks stays until the task is deleted; "Delete data"
+skips runs in progress. The help page is
 `docs/guides/board-operator/deleting-connection-data.md`. The inventory is in
 the working memory under "Where Google content is kept". Revoking at Google is
 fix 5. The plan below is kept for reference.

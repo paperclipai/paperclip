@@ -27,7 +27,7 @@ import { createNestedWorkspaceImportVerifier, onlineOrdinarySourceBlockers, offl
 
 import { inspectOnlineWorkspaceSource, requiresOnlineWorkspaceSource, type OnlineWorkspaceSource } from "./online-workspace-source.js";
 import { withWorkspaceSourceLocks, withIndependentWorkspaceSourceLocks, IsolatedRepositorySourceBusy } from "./workspace-source-lock.js";
-import { inspectOnlineLegacyWorkspaceRecoverySource, inspectOnlineLegacyWorkspaceRecoveryHold, lockOnlineLegacyWorkspaceRecoverySources, ONLINE_LEGACY_WORKSPACE_PRESERVATION, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
+import { inspectOnlineLegacyWorkspaceRecoverySource, inspectOnlineLegacyWorkspaceRecoveryHold, isTaskDispositionRecovery, lockOnlineLegacyWorkspaceRecoverySources, ONLINE_LEGACY_WORKSPACE_PRESERVATION, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
 import { inspectNativeWorkspaceMigration, nativeWorkspaceMigrationMarker } from "./native-runtime/native-workspace-migration.js";
 import { readGitCacheExpiration, GIT_CACHE_EXPIRATION_REASON } from "./git-workspace-restoration.js";
 
@@ -300,7 +300,13 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
       }
       continue;
     }
-    if (!input.writersStopped || object(recovery.evidence?.systemRecovery).state === "running") {
+    if (!input.writersStopped) {
+      const held = isTaskDispositionRecovery(recovery) ? await inspectOnlineLegacyWorkspaceRecoveryHold(db, { workspace, recovery }) : null;
+      if (held && !held.finalizedHold && !held.preparedSource && !held.remoteHold) onlineRecoveryHolds.push({ actionId: recovery.id, ...held });
+      else reasons.push("workspace_recovery_unresolved");
+      continue;
+    }
+    if (object(recovery.evidence?.systemRecovery).state === "running") {
       reasons.push("workspace_recovery_unresolved"); continue;
     }
     if (legacyRecoverySources.some(source => source.runId === recovery.evidence?.runId && source.reference?.state !== "finalized")) continue;

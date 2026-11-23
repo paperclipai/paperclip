@@ -161,6 +161,7 @@ async function readAllForDescending(input: ListEventsArgs, window: EventWindow, 
 export const listEvents = defineTool({
   definition: {
     name: "list_events",
+    title: "List events",
     description: "Lists events on one calendar that match all the given filters. Recurring events are returned as their individual occurrences. Set startTime or endTime only when the user asks about a specific time. For open-ended keyword or topic searches on the primary calendar, use search_events instead.",
     inputSchema: {
       type: "object",

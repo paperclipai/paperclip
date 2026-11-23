@@ -21,6 +21,7 @@ import type { Db } from "@paperclipai/db";
 import { eq, inArray } from "drizzle-orm";
 import { createAgentLifecycle, processAgentLifecycle } from "./agent-lifecycle.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
+import { requestCompanyStoredObjectDeletion } from "./tool-access/connections/stored-object-deletion.js";
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
 import { executionAdmissionCompanyDeletion } from "../modules/execution-admission/company-deletion.js";
 import {
@@ -78,6 +79,7 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        await requestCompanyStoredObjectDeletion(tx as unknown as Db, id);
         await mcpCompanyDeletion.deleteCompanyData(tx, id);
         await notifyExternalObjectRefresh(tx, id);
         await notifyIssueRecovery(tx, { companyId: id });

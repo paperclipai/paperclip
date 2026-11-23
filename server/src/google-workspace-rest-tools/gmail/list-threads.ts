@@ -49,6 +49,7 @@ export function listThreadsToolRequest(input: ListThreadsArgs): GoogleRequest {
 export const listThreads = defineTool({
   definition: {
     name: "list_threads",
+    title: "List threads",
     description: "Lists the signed-in user's Gmail threads, newest first, one page at a time, optionally only threads that have every given label. Returns thread IDs with message summaries, not full bodies; use get_thread with a thread ID for full messages. To filter by words, senders or dates, use search_threads.",
     inputSchema: {
       type: "object",

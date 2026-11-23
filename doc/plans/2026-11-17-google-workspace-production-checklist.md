@@ -77,8 +77,8 @@ Decisions and the details behind them are kept in the
       (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010)
       store inventory; summary in the working memory's "Where Google content
       is kept"). Users can now delete it per connection. Content agents wrote
-      into tasks stays, and task or company deletion does not yet run the same
-      cleanup.
+      into tasks stays until the task is deleted. Task and company deletion
+      run the same cleanup, including run logs and saved files in storage.
 - [x] REST-backed tool set for all 36 actions exists but is not switched on
       (Nov 17): Gmail 9
       ([#22000](https://github.com/paperclipai/paperclip/pull/22000),

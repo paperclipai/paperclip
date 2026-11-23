@@ -133,7 +133,8 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 4. Switch services to REST one at a time, each after its live test.
 5. Revoke at Google when the last connection is removed.
 6. Security scans.
-7. Run the same data cleanup when a task or a company is deleted.
+7. Request revocation at Google when a company with Google connections is
+   deleted.
 
 ## Environments
 
@@ -284,21 +285,36 @@ From #22010's store inventory. The earlier audit understated it: it missed the
 second audit table, approval cards, results passed to later runs, app views,
 nested run answers and migrated log originals.
 
-| Place | What is kept | Removed by "Delete data" |
-| --- | --- | --- |
-| Tool-call records (`tool_invocations`, `tool_call_events`) | About 4,000 characters of each request and result | Yes. Size and fingerprint kept. |
-| Connection audit history (`tool_access_audit_events`) | Argument preview | Yes. Decision, IDs, size and fingerprint kept. |
-| Approval requests and their approval cards in the task | Preview, arguments and the executed result | Yes, for settled requests. |
-| Results passed to a later run (run context and wake payload) | Approved action results | Yes, for settled runs and wakes. |
-| App views | Tool input, result and shared context | Yes, rows deleted. |
-| Run transcripts: the run log in every copy (object journal, archive, original local file and its S3 mirror), run events, output excerpts and answer text at any depth of the run result | Full content | Yes, the whole transcript of every settled run that called the connection or received an approved result. |
-| Comments, documents, files and chat messages agents wrote into tasks | Whatever the agent copied | No, by design. The user edits or deletes them, or the task. |
-| Transcripts of later runs that read an app view's shared context | Shared context | No. Nothing records which runs read it. |
-| Questions a provider asked a person; provider tool and skill definitions | Not tool results | No. |
-| Raw provider traces | Full traffic | No. Admin opt-in, encrypted, expire within 24 hours. |
-| Feedback exports already sent | Run logs the user chose to share | No. Already outside Paperclip. |
-| Optional model check for injection screening | If a company turns it on, the full tool result is sent to an OpenRouter model | Not stored by Paperclip. |
-| Connection removal | Deletes tokens locally | Asks Paperclip Cloud to revoke at Google; it does so only when no other connection could share the grant. Customer-owned clients stay local. |
+| Place | What is kept | Removed by "Delete data" | Task deleted | Company deleted |
+| --- | --- | --- | --- | --- |
+| Tool-call records (`tool_invocations`, `tool_call_events`) | About 4,000 characters of each request and result | Yes. Size and fingerprint kept. | Yes, cleared like "Delete data" | Yes, rows deleted |
+| Connection audit history (`tool_access_audit_events`) | Argument preview | Yes. Decision, IDs, size and fingerprint kept. | Yes, for the task's runs | Yes, rows deleted |
+| Approval requests and their approval cards in the task | Preview, arguments and the executed result | Yes, for settled requests. | Yes. Cards are deleted with the task; requests are cleared. | Yes, rows deleted |
+| Results passed to a later run (run context and wake payload) | Approved action results | Yes, for settled runs and wakes. | Yes | Yes, rows deleted |
+| App views | Tool input, result and shared context | Yes, rows deleted. | Yes, rows deleted | Yes, rows deleted |
+| Run transcripts: the run log in every copy (object journal, archive, original local file and its S3 mirror), run events, output excerpts and answer text at any depth of the run result | Full content | Yes, the whole transcript of every settled run that called the connection or received an approved result. | Yes, for each of the task's runs that called a connection or received an approved result. The runs themselves stay. | Yes. Rows deleted, then every run log is removed from storage in the background. |
+| Saved tool results over 500,000 bytes (`runner-api` files and their asset rows) | Full result | Yes, for the runs whose transcript is deleted. Files attached to a task stay. | Yes, for those runs | Yes, file and row |
+| Comments, documents and attached files agents wrote into tasks | Whatever the agent copied | No, by design. The user edits or deletes them, or the task. | Yes. Attached files are also removed from storage, and retried until it succeeds. | Yes. Every company file is removed from storage in the background. |
+| Transcripts of later runs that read an app view's shared context | Shared context | No. Nothing records which runs read it. | Only when the run belongs to the deleted task | Yes |
+| Questions a provider asked a person; provider tool and skill definitions | Not tool results | No. | Not changed | Yes, rows deleted |
+| Raw provider traces | Full traffic | No. Admin opt-in, encrypted, expire within 24 hours. | No | No, they expire |
+| Feedback exports already sent | Run logs the user chose to share | No. Already outside Paperclip. | No | No |
+| Optional model check for injection screening | If a company turns it on, the full tool result is sent to an OpenRouter model | Not stored by Paperclip. | Not stored | Not stored |
+| Connection removal | Deletes tokens locally | Asks Paperclip Cloud to revoke at Google; it does so only when no other connection could share the grant. Customer-owned clients stay local. | Not changed | Connections are deleted locally; revocation at Google is not requested |
+
+Task and company deletion are hard deletes. A task deletion queues an
+`issue_connection_content_deletions` job that records the task's runs
+(including runs still working), calls and call events, including calls made
+without a run, before the task row goes, and runs the same steps as "Delete data". It
+waits for runs and approvals that are still open, rechecking every one to
+five minutes for up to a day, and then finishes on its own. It writes
+`issue.connection_content_deleted` only when it deleted something, and
+`issue.connection_content_deletion_incomplete` when it stopped waiting with
+items still open. The ledger lives in `stored-object-deletion.ts` and the task
+request in `issue-content-deletion.ts`. A company
+deletion records every run log and file in `stored_object_deletions`, which has
+no foreign key to the company, so the background removal outlives the company.
+Both are covered by `tool-connection-content-deletion-canary.test.ts`.
 
 What "Delete data" keeps: the record that each call happened (time, tool,
 agent, outcome, size, fingerprint), and activity entries with counts only.
@@ -307,7 +323,6 @@ Limits:
 
 - Runs still in progress are skipped and counted; delete again after they
   finish.
-- Deleting a task or a company does not yet run the same cleanup.
 - A local log file on another server's disk stays until that server is
   replaced; its S3 mirror is deleted.
 - On versioned buckets, earlier object versions stay until the bucket's

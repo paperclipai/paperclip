@@ -47,6 +47,14 @@ describe("tool allowlist", () => {
     expect(everything).not.toMatch(/label:`? takes label IDs/i);
   });
 
+  it("gives every tool a short human title", () => {
+    for (const service of GOOGLE_WORKSPACE_REST_SERVICES) {
+      for (const tool of listGoogleWorkspaceRestTools(service)) {
+        expect(tool.title, tool.name).toMatch(/^[A-Z][a-z]+( [a-z]+)*$/);
+      }
+    }
+  });
+
   it("implements no send tool", () => {
     const names = GOOGLE_WORKSPACE_REST_SERVICES.flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => tool.name));
     expect(names.filter((name) => /send/i.test(name))).toEqual([]);
