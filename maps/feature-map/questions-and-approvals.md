@@ -132,7 +132,7 @@ history remains and the conversation does not close as a completed task.
 
 ### `attention`
 
-Automated: [attention resolver](../../ui/src/components/AttentionInteractionResolver.test.tsx)
+Automated: attention resolver
 covers preparing-request refresh without accepting it. The resolution-route
 tests above cover the API, not every Decisions or Inbox navigation path.
 

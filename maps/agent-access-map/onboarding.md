@@ -116,7 +116,7 @@ while retaining check messages and details. Local, SSH and custom
 commands remain operator-managed. Controls:
 [runtime](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts),
 [probe](../../packages/adapters/claude-local/src/server/test.remote.test.ts), and
-[wizard](../../ui/src/components/OnboardingWizard.test.tsx). Live managed
+wizard. Live managed
 authorization and subscription execution remain `not-run` for this change.
 
 For fresh managed Codex Auto setup, the wizard's explicit Connect path can call
@@ -140,7 +140,7 @@ change instruction discovery for ordinary task execution.
 
 Scoped source review: 2026-10-13, exact baseline
 `1a0ca66242121e39d88455aa2b52a07acc4a07d9` plus the privately composed onboarding
-correction. [Wizard controls](../../ui/src/components/OnboardingWizard.test.tsx)
+correction. Wizard controls
 and [existing Product E2E observer controls](../../tests/runner-e2e/first-task.test.ts)
 exercise mocked allowed/denied setup and sticky unknown cost coverage. They do
 not prove live actor authorization or provider execution. The explicit manual
@@ -301,7 +301,7 @@ and opening a saved Legacy agent does not apply new-agent defaults.
 The initial matching route opening preserves the authorized saved wizard step
 on bare and company-prefixed reloads. Explicit new-company or changed-company
 openings retain their navigation override and clear foreign company resource
-IDs. [Existing component controls](../../ui/src/components/OnboardingWizard.test.tsx)
+IDs. Existing component controls
 exercise these presentation and account boundaries. This scoped correction adds
 no server draft API, agent grant or proof of live actor authorization. The
 managed first-task eval still reloads before Get started and remains a separate

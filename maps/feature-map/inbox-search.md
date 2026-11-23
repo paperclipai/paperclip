@@ -166,7 +166,7 @@ company/private-task isolation, and private v1 targets.
 cover pending question forms and confirmations in persistent agent chats, removal
 after an answer with retained history, and company/task-visibility/addressee checks.
 Idle chats without structured requests remain absent. The
-[Inbox component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
+Inbox component test
 checks that a chat-sourced canonical question reaches its original resolver and context.
 Idle chats without structured requests remain absent.
 [Audience, badge and claim tests](../../server/src/__tests__/attention-audience-service.test.ts)
@@ -196,15 +196,15 @@ route tests cover the active-member 422 and board-only writes.
 cover the approval/review, budget-stop/override-approval and blocked-task/failed-run joins, the separate human
 review gate, placement with the blocked task's person, one count per obligation,
 evidence that hides and restores with its lead, and the split after an answer. The
-[Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
+Needs You component test
 checks that a chat-sourced canonical question reaches its original resolver and context,
 and the view switch, banner, Why me?, For @name and Claim, and Everyone for a board member only (with the withdraw confirmation for another person's card); the
-[classic page view test](../../ui/src/pages/WhatNeedsMe.views.test.tsx) checks the same on Decisions,
+classic page view test checks the same on Decisions,
 plus the Archived view with Restore, Change time and Decision history on both pages.
 The [Decisions views stories](../../ui/storybook/stories/inbox-search/needs-you-views.stories.tsx)
 show For you, Unassigned, Company, Archived, Everyone, a different person's cards, one card for each obligation and the escalation owners (including the budget owner's hard stop in another person's Company view).
 It also checks simultaneous resize/light and delayed movement to Recent Decisions.
-[Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
+Shared card-motion tests
 cover reduced-motion settlement and returning to a resolved card without replay.
 The [decision-motion stories](../../ui/storybook/stories/design-proposals/coordinator-decision-motion.stories.tsx)
 exercise real Inbox/resolver components with isolated approval, question, and failed-save responses.
@@ -216,7 +216,7 @@ task context on receipt click. Turning the setting off restores the classic surf
 
 ### `search`
 
-Automated: [search page](../../ui/src/pages/Search.test.tsx) and [company search service](../../server/src/__tests__/company-search-service.test.ts) cover UI and server search separately.
+Automated: search page and [company search service](../../server/src/__tests__/company-search-service.test.ts) cover UI and server search separately.
 
 Manual: Search a unique task title and content phrase, open the result, and compare the actual record. Test filters, no results, and a second company. Verify stale results do not expose inaccessible data.
 

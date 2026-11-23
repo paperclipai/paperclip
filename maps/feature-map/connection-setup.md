@@ -102,8 +102,8 @@ do not establish OAuth registration, public callbacks, or production provider ac
 ### `apps-catalog`
 
 Automated: [Browse](../../ui/src/pages/apps/Browse.test.tsx),
-[unconnected app](../../ui/src/pages/apps/AppNotConnected.test.tsx), and
-[AppsConnect](../../ui/src/pages/apps/AppsConnect.test.tsx) cover catalog entry,
+unconnected app, and
+AppsConnect cover catalog entry,
 access selection, provider-specific method choices, and setup failures with
 mocked APIs. [Connection intents](../../tests/e2e/connection-intents.spec.ts)
 drives store and task setup against one fake provider through a useful continuation:
@@ -199,7 +199,7 @@ task does not grant the right to resolve the request.
 
 Automated: AppsConnect tests cover exact-draft resume, declined OAuth, reconnect
 lookup failure/retry, response-lost creation, archived connection revival, and
-saved account reuse. [App detail](../../ui/src/pages/apps/AppDetail.test.tsx) covers
+saved account reuse. App detail covers
 the connection host. These tests do not complete a real provider login.
 
 Manual: leave setup through its footer, reload Apps, choose Finish setup, and
@@ -209,10 +209,10 @@ action afterwards. Count connections before/after to catch accidental duplicates
 
 ### `chat-channel`
 
-Automated: [setup routing](../../ui/src/pages/apps/chat/ChatEndpointSetup.routing.test.tsx),
+Automated: setup routing,
 [saved setup state](../../ui/src/pages/apps/chat/ChatEndpointSetup.state.test.ts),
-[email setup](../../ui/src/pages/apps/chat/EmailEndpointSetup.test.tsx), and
-[identity confirmation](../../ui/src/pages/apps/chat/ChatIdentityConfirm.test.tsx)
+email setup, and
+identity confirmation
 cover shared UI logic with fixtures. Provider-specific live setup is not implied.
 
 [Channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)

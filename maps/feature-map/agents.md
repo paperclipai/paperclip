@@ -173,7 +173,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `hire-agent`
 
-Automated: [new agent page](../../ui/src/pages/NewAgent.test.tsx) and [configuration form](../../ui/src/components/AgentConfigForm.render.test.tsx) cover mocked UI behavior.
+Automated: new agent page and [configuration form](../../ui/src/components/AgentConfigForm.render.test.tsx) cover mocked UI behavior.
 
 For an agent-owned plugin environment, verify preparation before connecting,
 same-agent probes, account preservation after an environment change, failed
@@ -261,7 +261,7 @@ The notice must stay absent for native agents, other harnesses, and unsupported
 targets. Discovery failure must not imply that an upgrade is available.
 Navigate to another agent while an upgrade is pending. Its result must stay with
 the original agent, without showing success on the new page or redirecting back.
-Focused coverage: [save receipt](../../ui/src/pages/AgentRunnerUpgrade.test.tsx)
+Focused coverage: save receipt
 and [configuration form](../../ui/src/components/AgentConfigForm.render.test.tsx).
 
 For an existing native agent on a Daytona snapshot or immutable sandbox image,
@@ -282,7 +282,7 @@ or provider execution.
 
 ### `organization`
 
-Automated: [org chart](../../ui/src/pages/OrgChart.test.tsx) is component evidence. Built-in setup also has [configuration modal tests](../../ui/src/components/ConfigureBuiltInAgentModal.test.tsx).
+Automated: org chart is component evidence. Built-in setup also has configuration modal tests.
 
 Manual: Inspect a manager and report, change the relationship through the offered controls, and reload both views. Exercise a rejected invalid relationship. Configure a built-in agent and verify it retains its required identity and restrictions.
 
