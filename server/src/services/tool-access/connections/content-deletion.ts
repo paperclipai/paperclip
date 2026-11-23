@@ -57,6 +57,8 @@ const DELIVERY_BATCH_SIZE = 50;
 const OBJECT_BATCH_SIZE = 50;
 const OBJECT_RETRY_MS = 30_000;
 const ISSUE_WAIT_MS = 60_000;
+const ISSUE_WAIT_MAX_MS = 60 * 60_000;
+const ISSUE_WAIT_LIMIT_MS = 24 * 60 * 60_000;
 
 type RunInProgress = { id: string; eventAfterId: number; changed: boolean; stage?: "events" | "log" };
 
@@ -263,6 +265,7 @@ export async function requestIssueConnectionContentDeletion(
   tx: Db,
   input: { companyId: string; issueId: string; actorAgentId?: string | null },
 ) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolConnectionContentDeletion);
   await tx.execute(sql`insert into ${storedObjectDeletions} (company_id, kind, object_key)
     select asset.company_id, 'asset', asset.object_key from ${assets} asset
       join issue_attachments link on link.asset_id = asset.id
@@ -288,7 +291,6 @@ export async function requestIssueConnectionContentDeletion(
     ));
   const invocationIds = calls.map((row) => row.id);
   if (runIds.length === 0 && invocationIds.length === 0) return null;
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolConnectionContentDeletion);
   const now = new Date();
   const [created] = await tx
     .insert(issueConnectionContentDeletions)
@@ -833,7 +835,8 @@ export function createConnectionContentDeletion(db: Db, deps: {
         progress.currentRun = null;
         progress.pendingRuns = [];
       }
-      const waiting = kind === "issue" && progress.phase === "done"
+      const waitedMs = Date.now() - job.requestedAt.getTime();
+      const waiting = kind === "issue" && progress.phase === "done" && waitedMs < ISSUE_WAIT_LIMIT_MS
         && progress.counts.itemsInProgress + progress.counts.runsInProgress > 0;
       if (waiting) {
         Object.assign(progress, { ...initialProgress(), counts: { ...progress.counts, itemsInProgress: 0, runsInProgress: 0 } });
@@ -843,7 +846,7 @@ export function createConnectionContentDeletion(db: Db, deps: {
         .set({
           progress: progress as unknown as Record<string, unknown>,
           updatedAt: new Date(),
-          ...(waiting ? { notBefore: new Date(Date.now() + ISSUE_WAIT_MS) } : {}),
+          ...(waiting ? { notBefore: new Date(Date.now() + Math.min(Math.max(ISSUE_WAIT_MS, waitedMs / 10), ISSUE_WAIT_MAX_MS)) } : {}),
         })
         .where(and(
           eq(table.id, job.id),

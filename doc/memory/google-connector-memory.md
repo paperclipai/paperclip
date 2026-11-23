@@ -305,7 +305,9 @@ nested run answers and migrated log originals.
 Task and company deletion are hard deletes. A task deletion queues an
 `issue_connection_content_deletions` job that records the task's runs and
 calls before the task row goes, and runs the same steps as "Delete data". It
-waits for runs that are still working and then finishes on its own. A company
+waits for runs and approvals that are still open, with backoff, for up to a
+day, and then finishes on its own; the activity entry counts what was still
+open. A company
 deletion records every run log and file in `stored_object_deletions`, which has
 no foreign key to the company, so the background removal outlives the company.
 Both are covered by `tool-connection-content-deletion-canary.test.ts`.

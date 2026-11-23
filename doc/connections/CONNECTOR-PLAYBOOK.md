@@ -1571,7 +1571,7 @@ A `tool_connection_content_deletions` row is the durable request; the
 `tool-connection-content-deletion` delivery queue resumes it after a restart.
 Runs that are still working are skipped and counted. Deleting a task queues an
 `issue_connection_content_deletions` row that runs the same steps for the
-task's runs and waits for runs still working. Deleting a company queues its run
+task's runs and waits, for up to a day, for runs and approvals still open. Deleting a company queues its run
 logs and files in `stored_object_deletions`, which outlives the company. A new
 store that keeps connection content must be covered by all three paths;
 `tool-connection-content-deletion-canary.test.ts` scans every text column and

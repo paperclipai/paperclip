@@ -36,6 +36,7 @@ import type { StorageProvider } from "../storage/types.js";
 import { createStorageService } from "../storage/service.js";
 import { issueService } from "../services/issues.js";
 import { deleteCompany } from "../services/company-deletion.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -366,10 +367,50 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
   });
 
+  it("stops waiting a day after the task was deleted and records what was still in progress", async () => {
+    const logs = stores(path.join(baseDir, "task-stuck"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const flow = await seedConnectionFlow(base, logs, marker);
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, flow.callingRunId));
+    await issueService(db).remove(base.issue.id);
+    const old = new Date(Date.now() - 25 * 60 * 60_000);
+    await db.update(issueConnectionContentDeletions).set({ requestedAt: old }).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+    const [job] = await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    expect(job!.status).toBe("completed");
+    const [activity] = await db.execute(sql`select details from activity_log
+      where company_id = ${base.company.id} and action = 'issue.connection_content_deleted'`) as unknown as Array<{ details: Record<string, number> }>;
+    expect(activity!.details.runsInProgress + activity!.details.itemsInProgress).toBeGreaterThan(0);
+  });
+
   it("queues nothing when the deleted task never used a connection", async () => {
     const base = await seedCompany();
     await issueService(db).remove(base.issue.id);
     expect(await db.select().from(issueConnectionContentDeletions).where(eq(issueConnectionContentDeletions.issueId, base.issue.id))).toEqual([]);
+  });
+
+  it("wakes the cleanup worker when the deleted task has files but never used a connection", async () => {
+    const logs = stores(path.join(baseDir, "task-files"));
+    const base = await seedCompany();
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const attached = await logs.storage.putFile({ companyId: base.company.id, namespace: "issues", originalFilename: "notes.txt", contentType: "text/plain",
+      body: Buffer.from(`Attached copy of ${marker}`) });
+    const [asset] = await db.insert(assets).values({ companyId: base.company.id, ...attached }).returning();
+    await db.insert(issueAttachments).values({ companyId: base.company.id, issueId: base.issue.id, assetId: asset!.id });
+    let woken = 0;
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.toolConnectionContentDeletion, () => { woken += 1; });
+    try {
+      await issueService(db).remove(base.issue.id);
+    } finally {
+      unsubscribe();
+    }
+    expect(woken).toBeGreaterThan(0);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
   });
 
   it("leaves the marker nowhere after the company is deleted, and keeps another company's content", async () => {
