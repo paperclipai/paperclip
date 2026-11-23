@@ -81,6 +81,18 @@ describe("feedback redaction", () => {
     expect(output).toContain("[REDACTED_PHONE]");
   });
 
+  it("keeps run ids and dates intact while still redacting a phone number beside them", () => {
+    const state = createFeedbackRedactionState();
+    const runId = "9224d1c8-1dbf-4314-9924-e16fcf3ad1fa";
+    const allDigitId = "12345678-1234-4234-9234-123456789012";
+    const input = `Run ${runId} and ${allDigitId} on 2026-11-12 at 2026-11-12 00:43:37; call +1 (415) 555-1234.`;
+
+    expect(sanitizeFeedbackText(input, state, "body", 10_000)).toBe(
+      `Run ${runId} and ${allDigitId} on 2026-11-12 at 2026-11-12 00:43:37; call [REDACTED_PHONE].`,
+    );
+    expect(finalizeFeedbackRedactionSummary(state).counts).toEqual({ phone: 1 });
+  });
+
   it("preserves nested metadata while masking structured secrets", () => {
     const state = createFeedbackRedactionState();
     const input = {

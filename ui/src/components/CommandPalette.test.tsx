@@ -346,7 +346,7 @@ describe("CommandPalette", () => {
     const { root } = renderWithQueryClient(<CommandPalette />, container, (queryClient) => {
       // Seed the caches so the already-loaded data is available synchronously —
       // this harness's flush model doesn't reliably propagate fresh async fetches.
-      queryClient.setQueryData(queryKeys.projects.list("company-1"), projects);
+      queryClient.setQueryData(queryKeys.projects.list("company-1", { includeArchived: true }), projects);
       queryClient.setQueryData(queryKeys.issues.search("company-1", "mob", undefined, 10), [
         { id: "i1", identifier: "ENG-9", title: "Fix login" },
       ]);
@@ -492,6 +492,59 @@ describe("CommandPalette", () => {
     await waitForAssertion(() => {
       expect(navigateState.navigate).toHaveBeenCalledWith("/search?q=auth&status=blocked&updatedWithin=7d");
     });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  const pageButtons = () =>
+    Array.from(container.querySelectorAll("button")).map((button) => button.textContent?.trim() ?? "");
+
+  it("lists the Responsibilities home as the only Dashboard while that experiment is on", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableResponsibilities: true });
+    const { root } = renderWithQueryClient(<CommandPalette />, container, (queryClient) => {
+      queryClient.setQueryData(queryKeys.instance.experimentalSettings, { enableResponsibilities: true });
+    });
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(pageButtons()).toContain("Dashboard");
+    });
+    await flush();
+    expect(pageButtons().filter((label) => label === "Dashboard")).toHaveLength(1);
+    expect(pageButtons()).not.toContain("Classic dashboard");
+    act(() => {
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Dashboard")!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateState.navigate).toHaveBeenCalledWith("/responsibilities");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("leaves the pages unchanged while the Responsibilities experiment is off", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableResponsibilities: false });
+    const { root } = renderWithQueryClient(<CommandPalette />, container, (queryClient) => {
+      queryClient.setQueryData(queryKeys.instance.experimentalSettings, { enableResponsibilities: false });
+    });
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(pageButtons()).toContain("Dashboard");
+    });
+    await flush();
+    expect(pageButtons()).not.toContain("Responsibilities");
+    expect(pageButtons()).not.toContain("Classic dashboard");
+    expect(pageButtons().filter((label) => label === "Dashboard")).toHaveLength(1);
 
     act(() => {
       root.unmount();

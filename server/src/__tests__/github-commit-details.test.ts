@@ -55,7 +55,7 @@ describe("GitHub commit details", () => {
   it("returns null for unavailable or malformed commit details", async () => {
     const resolve = createGitHubCommitDiffDetailsResolver({} as any, {
       fetch: async () => new Response(JSON.stringify({ files: [] }), { status: 200 }),
-      tokenProvider: null,
+      tokenProvider: () => null,
     });
     await expect(resolve("company-1", {
       host: "github.com",

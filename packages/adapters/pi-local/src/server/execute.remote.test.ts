@@ -190,7 +190,7 @@ describe("pi remote execution", () => {
     });
     expect(String(result.sessionId)).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/sessions/`);
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
-    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
+    expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/pi/skills`,
       followSymlinks: true,
@@ -206,6 +206,8 @@ describe("pi remote execution", () => {
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("--skill");
     expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/skills`);
+    expect(call?.[2]).toContain("--extension");
+    expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/attribution/openrouter-attribution.mjs`);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {
@@ -302,11 +304,11 @@ describe("pi remote execution", () => {
     expect(call?.[2]).toContain("deepseek/deepseek-chat-v3.1");
   });
 
-  it("resumes saved Pi sessions for remote SSH execution only when the identity matches", async () => {
+  it.each([false, true])("resumes saved Pi sessions when the SSH identity matches (inPlace=%s)", async inPlace => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-resume-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
-    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
+    const managedRemoteWorkspace = inPlace ? workspaceDir : "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
     await mkdir(workspaceDir, { recursive: true });
 
     runSshCommand.mockImplementation(async (...args: unknown[]) => {
@@ -327,6 +329,12 @@ describe("pi remote execution", () => {
 
     await execute({
       runId: "run-ssh-resume",
+      executionTarget: inPlace ? {
+        kind: "remote", transport: "ssh", remoteCwd: managedRemoteWorkspace,
+        workspaceRealization: { mode: "in_place", authoritativeRoot: managedRemoteWorkspace, pathAliases: [], outboundRestorePaths: [] },
+        spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: managedRemoteWorkspace, privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA", strictHostKeyChecking: true },
+      } : undefined,
       agent: {
         id: "agent-1",
         companyId: "company-1",

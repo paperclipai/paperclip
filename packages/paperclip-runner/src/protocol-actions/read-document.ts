@@ -1,3 +1,5 @@
+import { taskDocumentKeySchema } from "./task-document-key-schema.js";
+
 /** Canonical definition and documentation for `read_document`. */
 export const readDocumentAction = {
   "id": "read_document",
@@ -62,12 +64,7 @@ export const readDocumentAction = {
       "inputSchema": {
         "type": "object",
         "properties": {
-          "key": {
-            "type": "string",
-            "description": "Stable issue-document key.",
-            "minLength": 1,
-            "maxLength": 120
-          }
+          "key": taskDocumentKeySchema
         },
         "required": [
           "key"
@@ -99,10 +96,7 @@ export const readDocumentAction = {
       "inputSchema": {
         "type": "object",
         "properties": {
-          "key": {
-            "type": "string",
-            "minLength": 1
-          }
+          "key": taskDocumentKeySchema
         },
         "required": [
           "key"

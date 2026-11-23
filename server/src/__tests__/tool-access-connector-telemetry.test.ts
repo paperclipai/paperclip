@@ -26,8 +26,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
 
-const track = vi.fn();
+const track = vi.fn((..._args: unknown[]) => scopedTelemetryCompanyId());
 const isRegisteredEventName = vi.fn(() => true);
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: () => ({ track, isRegisteredEventName }),
@@ -43,6 +44,11 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   : describe.skip;
 
 type Db = ReturnType<typeof createDb>;
+
+function scopesOf(name: string) {
+  return track.mock.calls.flatMap(([eventName], index) =>
+    eventName === name ? [track.mock.results[index]?.value] : []);
+}
 
 function createdEvents() {
   return track.mock.calls.filter(([name]) => name === "connection.created");
@@ -217,6 +223,12 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
       name: "GitHub fixture",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp", sourceTemplateKey: "github" },
+      transportConfig: { url: "https://fixture.example/mcp", sourceTemplateKey: "github" },
+      connectionPurpose: "tool",
+      authKind: "none",
+      ownership: "customer",
+      connectionKind: "managed",
+      credentialSecretRefs: [],
       enabled: true,
       status: "active",
     });
@@ -229,6 +241,7 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
       status: "active",
       enabled: true,
     });
+    expect(scopesOf("connection.created")).toEqual([company.id]);
   }, 30_000);
 
   it("updateConnection emits committed transitions only; metadata saves stay silent", async () => {
@@ -238,6 +251,12 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
       name: "Custom fixture",
       transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
+      transportConfig: { url: "https://fixture.example/mcp" },
+      connectionPurpose: "tool",
+      authKind: "none",
+      ownership: "customer",
+      connectionKind: "managed",
+      credentialSecretRefs: [],
       enabled: true,
       status: "active",
     });
@@ -254,6 +273,7 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
       previous_status: "active",
       status: "active",
     });
+    expect(scopesOf("connection.updated")).toEqual([company.id]);
 
     track.mockClear();
     await svc.updateConnection(connection.id, { name: "Renamed fixture" });
@@ -387,7 +407,7 @@ describeEmbeddedPostgres("connector lifecycle telemetry (tool-access)", () => {
     const svc = service();
     const [application] = await db
       .insert(toolApplications)
-      .values({ companyId: company.id, name: "Composio", type: "mcp_remote", status: "active" })
+      .values({ companyId: company.id, name: "Composio", type: "mcp_http", status: "active" })
       .returning();
     const [connection] = await db
       .insert(toolConnections)

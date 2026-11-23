@@ -97,7 +97,23 @@ have distinct identities.
 
 Native failure records and reports redact the assigned key before truncating diagnostics. Streaming output buffers settle at item or turn completion: short structural prefixes (such as a trailing dash) are preserved, longer interrupted key fragments become redaction markers, and pending buffers are cleared. Terminal events carry these settled `outputTails`; transcript projection displays them as deltas without changing the source event receipt.
 
-Codex shell delivery preserves its default `KEY`/`SECRET`/`TOKEN` name exclusions for other configured credentials. The exceptions are the three identity variables and `PAPERCLIP_API_KEY`: the latter is the short-lived, scoped run/bridge credential required by the Paperclip agent skill’s Bash/curl API calls. Disabling Codex’s automatic exclusions is paired with this explicit filtered allowlist; it does not admit arbitrary host environment variables. Provider authentication secrets can still reach the provider process without being newly exposed to shell commands by this feature.
+Legacy Codex shell delivery includes explicitly configured task variables, including
+resolved secret references such as `SLACK_BOT_TOKEN`. Both ACP and CLI execution
+use the same name-only allowlist, including runs without an agent identity.
+Codex login keys (`OPENAI_API_KEY`, `CODEX_API_KEY`), managed provider keys,
+observability credentials, and private runtime transport credentials remain
+outside that service-secret opt-in. Unassigned host secrets are not added.
+The three identity variables and the short-lived, scoped `PAPERCLIP_API_KEY`
+retain their runtime delivery. Secret values remain in the child environment;
+the shell policy contains only variable names. Removing a configured variable
+removes its shell access at the next launch.
+
+Assigning a service credential through the adapter's environment grants the
+run's shell commands access to that credential. It is not a brokered credential
+that is hidden from the agent: a model-directed command can read it. Assign only
+credentials the run is authorized to use, with the service permissions it needs.
+The shell allowlist protects unassigned host and provider credentials; it does
+not isolate an assigned service credential from the run's own commands.
 
 Cloud customer-success inspection can consume this existing identity together
 with strict active-run authority. See [inspection support](CUSTOMER-SUCCESS-INSPECTION.md).

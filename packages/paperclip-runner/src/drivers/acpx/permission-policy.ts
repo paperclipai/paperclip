@@ -24,7 +24,15 @@ const AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS = new Set([
   "request_human_input", "register_deliverable", "finish_task", "block_task",
   "set_task_title", "request_review", "create_task", "reassign_task", "set_dependencies",
   "create_project", "select_workspace", "request_approval",
+  // Acting for the person the run works for; the routes enforce that person's rights,
+  // every change is an undoable Dashboard version, and a delete waits for their card.
+  "create_area", "update_area", "delete_area", "create_responsibility", "update_responsibility",
+  "delete_responsibility", "file_under_responsibility", "remove_from_responsibility",
+  // Routines the agent runs, or the person it works for is responsible for; each change is a routine revision.
+  "update_routine",
 ]);
+
+export const CLAUDE_SELF_SCHEDULING_TOOLS: readonly string[] = Object.freeze(["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]);
 
 /** Exact SDK rules for the run's runner-owned Paperclip MCP connection. */
 export function claudePaperclipPermissionRules(

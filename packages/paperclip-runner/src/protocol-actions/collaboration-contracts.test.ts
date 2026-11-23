@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
 import { PAPERCLIP_COLLABORATION_PROTOCOL_ACTIONS } from "./collaboration.js";
@@ -31,14 +31,18 @@ describe("collaboration Paperclip protocol action contracts", () => {
 
       if (action.scenario !== null) {
         const scenarioProperties = action.scenario.descriptor.inputSchema.properties ?? {};
-        const callEntries = Object.entries(action.examples.call.input);
+        const scenarioCall = "scenarioCall" in action.examples
+          ? action.examples.scenarioCall
+          : action.examples.call;
+        expect(scenarioCall.operationId).toBe(operationId);
+        const callEntries = Object.entries(scenarioCall.input);
         const outOfBandKeys = callEntries
           .map(([key]) => key)
           .filter((key) => !(key in scenarioProperties));
         // Scenario mutation idempotency is carried by the invocation envelope,
         // not the operation input. No other example field may be omitted.
         expect(outOfBandKeys).toEqual(
-          "idempotencyKey" in action.examples.call.input ? ["idempotencyKey"] : [],
+          "idempotencyKey" in scenarioCall.input ? ["idempotencyKey"] : [],
         );
         const scenarioInput = Object.fromEntries(
           callEntries.filter(([key]) => key !== "idempotencyKey"),
@@ -60,6 +64,11 @@ describe("collaboration Paperclip protocol action contracts", () => {
           ajv.validate(action.scenario.descriptor.inputSchema, scenarioInput),
           JSON.stringify(ajv.errors),
         ).toBe(true);
+        if (action.scenario.descriptor.inputSchema.additionalProperties === false) {
+          expect(ajv.validate(action.scenario.descriptor.inputSchema, {
+            ...scenarioInput, undeclaredScenarioField: true,
+          })).toBe(false);
+        }
         expect(
           ajv.validate(action.scenario.descriptor.outputSchema, scenarioOutput),
           JSON.stringify(ajv.errors),
