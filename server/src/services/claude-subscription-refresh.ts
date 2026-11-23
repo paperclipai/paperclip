@@ -6,7 +6,8 @@ import { unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
-import { retryTransientLockContention } from "./transient-lock-contention.js";
+import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
+import { isTransientLockContention, retryTransientLockContention } from "./transient-lock-contention.js";
 import { CLAUDE_REFRESH_FORCE_MS, CLAUDE_REFRESH_MARGIN_MS, claudeAccessTokenOf, claudeRefreshDue, claudeScopesAllowRun, ClaudeOauthRefreshError, parseStoredClaudeOauth, refreshClaudeOauth } from "./claude-oauth-credential.js";
 
 type Replacement = { value: string; base: string; secretId: string; epoch: number; version: number };
@@ -16,6 +17,9 @@ const pendingExchanges = new Map<string, Replacement>();
 const pendingKey = (companyId: string, grantId: string) => `${companyId}:${grantId}`;
 /** True while an exchanged pair awaits its vault save. The stored credential must not change under it. */
 export const hasPendingClaudeExchange = (companyId: string, grantId: string) => pendingExchanges.has(pendingKey(companyId, grantId));
+// An unsaved pair is the only working refresh token of its sign-in. An idle
+// shutdown must wait for its save.
+registerIdleLocalWorkProbe(() => pendingExchanges.size ? "present" : "none");
 
 type Selection = { connection: typeof toolConnections.$inferSelect; grant: typeof connectionGrants.$inferSelect };
 
@@ -143,14 +147,16 @@ export async function refreshClaudeSubscription(
       }
     }
   }).catch(error => {
-    // SQL row contention and the shared file-lock deadline are temporary waits.
-    let cause: unknown = error;
-    for (let depth = 0; depth < 4 && cause && typeof cause === "object"; depth++) {
+    // SQL contention that outlasts its retries and the shared file-lock
+    // deadline are temporary waits.
+    let fileLockTimeout = false;
+    for (let cause: unknown = error, depth = 0; depth < 4 && cause && typeof cause === "object"; depth++) {
       const entry = cause as { code?: unknown; cause?: unknown };
-      if (entry.code === "55P03" || entry.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) {
-        throw unprocessable("AI credentials are being updated. Retry shortly.", { code: "ai_connection_busy" });
-      }
+      if (entry.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) fileLockTimeout = true;
       cause = entry.cause;
+    }
+    if (fileLockTimeout || isTransientLockContention(error)) {
+      throw unprocessable("AI credentials are being updated. Retry shortly.", { code: "ai_connection_busy" });
     }
     throw error;
   });

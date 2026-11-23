@@ -14,6 +14,7 @@ import { prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
 import * as secretModule from "../services/secrets.js";
 import { secretService } from "../services/secrets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
+import { readIdleLocalWork } from "../services/idle-local-work.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn() }));
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -152,13 +153,28 @@ describe("Claude subscription renewal through the managed runtime", () => {
       ...realService(...args), rotate: async () => { throw new Error("vault is temporarily unavailable"); },
     }));
     const exchange = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ access_token: "pending-access", refresh_token: "pending-refresh", expires_in: 28800 })));
+    const probes = async () => {
+      let state: unknown;
+      await readIdleLocalWork({ diagnostic: (name, value) => { if (name === "local.registered_probes") state = value; } });
+      return state;
+    };
+    expect(await probes()).toBe("none");
     await expect(service.credential(row)).rejects.toThrow("vault is temporarily unavailable");
+    // The unsaved pair holds the only working refresh token: an idle shutdown must wait for it.
+    expect(await probes()).toBe("present");
     failingVault.mockRestore();
     if (reconnect) await secretService(db).rotate(secretId, { value: document(Date.now() + 28800_000, "reconnected", "reconnected-refresh") }, { userId: owner });
     // A new service instance represents the next request, after the outage.
     expect(await aiConnectionService(db).credential(row)).toBe(reconnect ? "reconnected" : "pending-access");
     expect(exchange).toHaveBeenCalledOnce();
     expect(JSON.parse(await service.credentialRaw(row)).claudeAiOauth.refreshToken).toBe(reconnect ? "reconnected-refresh" : "pending-refresh");
+    expect(await probes()).toBe("none");
+  });
+
+  it.each(["40P01", "40001", "55P03"])("reports database contention that outlasts its retries as a temporary wait (%s)", async code => {
+    const { service, row } = await connect(document(Date.now() - 60_000));
+    vi.spyOn(db, "transaction").mockRejectedValue(Object.assign(new Error("contention"), { code }));
+    await expect(service.credential(row)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
   });
 
   it("keeps an exchanged pair when a run that holds the replaced token then reports a rejected token", async () => {

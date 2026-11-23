@@ -31,6 +31,12 @@ import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigrav
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
 import { trackIdleWork } from "./task-admission.js";
+import { hasPendingClaudeExchange } from "./claude-subscription-refresh.js";
+
+// A cleanup renewal whose exchange succeeded but whose vault save failed is
+// saved again after a short wait, this many times.
+const CLAUDE_CLEANUP_SAVE_ATTEMPTS = 3;
+const CLAUDE_CLEANUP_SAVE_RETRY_MS = 2000;
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -565,8 +571,18 @@ export async function prepareManagedAiRuntime(
           // `running`, which is the case when the controller detaches for a
           // restart and leaves the runner alive. The exchange consumes a
           // single-use refresh token, so it stays tracked as active work
-          // until its save settles.
-          if (claudeSubscription) void trackIdleWork(service.runtimeCredential(selection)).catch(() => undefined);
+          // until its save settles. A save that fails is tried again
+          // here; a pair that is still unsaved after that keeps the idle
+          // probe of the renewal module set until the next read saves it.
+          if (claudeSubscription) void trackIdleWork((async () => {
+            for (let attempt = 0; attempt < CLAUDE_CLEANUP_SAVE_ATTEMPTS; attempt += 1) {
+              try { await service.runtimeCredential(selection); return; }
+              catch {
+                if (!hasPendingClaudeExchange(input.companyId, selection.grant.id)) return;
+                await new Promise(resolve => setTimeout(resolve, CLAUDE_CLEANUP_SAVE_RETRY_MS * (attempt + 1)));
+              }
+            }
+          })());
         } catch (error) {
           if (!durableGoogleRefresh && !removalOnly) throw error;
           // Once native retirement and encrypted fsync transfer ownership, the
