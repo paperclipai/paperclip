@@ -1915,6 +1915,40 @@ describeEmbeddedPostgres("attention service", () => {
     expect(heldUp?.[0]).toMatchObject({ id: criticalId, title: "Critical follow-up", status: "blocked" });
   });
 
+  it("leaves private tasks the viewer cannot read out of what a human unblock card holds up", async () => {
+    const { companyId } = await seedCompany("ATX");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1);
+    const blockedId = await insertIssue({
+      companyId,
+      identifier: "ATX-1",
+      title: "Shared stage",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Approve the plan" },
+      blockedTransitionAt: transitionAt,
+    });
+    const openId = await insertIssue({ companyId, identifier: "ATX-2", title: "Visible follow-up", status: "todo" });
+    const privateDependentId = randomUUID();
+    await insertIssue({
+      id: privateDependentId, companyId, identifier: "ATX-3", title: "Confidential follow-up", status: "todo",
+      visibility: "private", privacyRootIssueId: privateDependentId, responsibleUserId: "private-owner",
+    });
+    const privateSubtaskId = randomUUID();
+    await insertIssue({
+      id: privateSubtaskId, companyId, identifier: "ATX-4", title: "Confidential subtask", status: "todo", parentId: openId,
+      visibility: "private", privacyRootIssueId: privateSubtaskId, responsibleUserId: "private-owner",
+    });
+    await db.insert(issueRelations).values([openId, privateDependentId].map((relatedIssueId) => ({
+      companyId, issueId: blockedId, relatedIssueId, type: "blocks" as const,
+    })));
+
+    const actor = { type: "board" as const, source: "session" as const, userId: "non-member", companyIds: [companyId], isInstanceAdmin: false };
+    const feed = await attentionService(db).list(companyId, { userId: actor.userId, actor });
+    const card = feed.items.find((item) => item.dedupKey === `blocked-owner:${blockedId}:${transitionAt.toISOString()}`);
+
+    expect(card?.detail).toMatchObject({ heldUpDirectCount: 1, heldUpTotalCount: 1 });
+    expect(JSON.stringify(card)).not.toContain(privateDependentId);
+  });
+
   it("keeps an open blocker, with its status, on a human unblock card", async () => {
     const { companyId } = await seedCompany("ATO");
     const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1);

@@ -1179,7 +1179,9 @@ async function heldUpTaskMap(
   const byBlocker = new Map<string, typeof rows>();
   for (const row of rows) {
     if (row.id === row.blockerIssueId) continue;
-    byBlocker.set(row.blockerIssueId, [...(byBlocker.get(row.blockerIssueId) ?? []), row]);
+    const dependents = byBlocker.get(row.blockerIssueId) ?? [];
+    dependents.push(row);
+    byBlocker.set(row.blockerIssueId, dependents);
   }
   for (const id of ids) {
     const dependents = [...new Map((byBlocker.get(id) ?? []).map((row) => [row.id, row])).values()];
@@ -1205,7 +1207,13 @@ type BlockedWorkEdge = {
  * Per-root visited sets make corrupt cycles harmless; the blocker analyzer's
  * existing traversal caps bound unusually large graphs.
  */
-async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: string[]) {
+async function blockedWorkCountMap(
+  db: Db,
+  companyId: string,
+  blockerIssueIds: string[],
+  // Tasks the viewer cannot read are neither counted nor walked through.
+  readCondition: SQL<boolean> = sql<boolean>`true`,
+) {
   const rootIds = [...new Set(blockerIssueIds)];
   const seenByRoot = new Map(rootIds.map((rootId) => [rootId, new Set<string>()]));
   if (rootIds.length === 0) return new Map<string, number>();
@@ -1227,6 +1235,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
           eq(issues.companyId, companyId),
           isNull(issues.hiddenAt),
           notInArray(issues.status, ["done", "cancelled"]),
+          readCondition,
         ));
       const childRowsPromise: Promise<BlockedWorkEdge[]> = includeChildren
         ? db
@@ -1240,6 +1249,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
             inArray(issues.parentId, chunk),
             isNull(issues.hiddenAt),
             notInArray(issues.status, ["done", "cancelled"]),
+            readCondition,
           ))
         : Promise.resolve([]);
       const [dependentRows, childRows] = await Promise.all([dependentRowsPromise, childRowsPromise]);
@@ -2301,7 +2311,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         ? [new Map<string, { directCount: number; tasks: AttentionHeldUpTask[] }>(), new Map<string, number>()]
         : await Promise.all([
           heldUpTaskMap(db, companyId, humanUnblockIssueIds, readCondition),
-          blockedWorkCountMap(db, companyId, humanUnblockIssueIds),
+          blockedWorkCountMap(db, companyId, humanUnblockIssueIds, readCondition),
         ]);
 
       for (const issue of typedBlockedIssues) {

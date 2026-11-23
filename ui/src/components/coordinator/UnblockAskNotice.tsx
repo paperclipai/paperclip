@@ -1,9 +1,10 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CircleAlert } from "lucide-react";
-import { ISSUE_PRIORITIES, type AttentionHeldUpTask, type AttentionItem, type IssueRelationIssueSummary } from "@paperclipai/shared";
+import { ISSUE_PRIORITIES, type AttentionHeldUpTask, type AttentionItem, type IssueLockedStub, type IssueRelationIssueSummary } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { isLockedIssueStub } from "@/components/LockedIssueChip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { unblockHeldUp } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
@@ -28,10 +29,17 @@ const priorityRank = (priority: string | null | undefined) => {
 };
 const identifierNumber = (identifier: string | null) => Number(identifier?.match(/(\d+)$/)?.[1] ?? Number.MAX_SAFE_INTEGER);
 
-/** The card's order: highest priority first, then the oldest (lowest-numbered) task. */
-export function sortHeldUpTasks(tasks: readonly IssueRelationIssueSummary[]) {
-  return [...tasks].sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority)
-    || identifierNumber(left.identifier) - identifierNumber(right.identifier));
+/**
+ * The held-up tasks to list: open ones the viewer can read, in the card's
+ * order (highest priority first, then the oldest, lowest-numbered task).
+ * A private task comes back as a locked reference with no status; it is
+ * left out, as the card's own count leaves it out.
+ */
+export function openHeldUpTasks(tasks: ReadonlyArray<IssueRelationIssueSummary | IssueLockedStub>): IssueRelationIssueSummary[] {
+  return tasks
+    .filter((entry): entry is IssueRelationIssueSummary => !isLockedIssueStub(entry) && isOpen(entry.status))
+    .sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority)
+      || identifierNumber(left.identifier) - identifierNumber(right.identifier));
 }
 
 /**
@@ -42,7 +50,7 @@ export function sortHeldUpTasks(tasks: readonly IssueRelationIssueSummary[]) {
 function HeldUpMore({ issueId, issueLabel, moreCount, behindCount }: { issueId: string; issueLabel: string; moreCount: number; behindCount: number }) {
   const [open, setOpen] = useState(false);
   const issue = useQuery({ queryKey: queryKeys.issues.detail(issueId), queryFn: () => issuesApi.get(issueId), enabled: open });
-  const blocks = sortHeldUpTasks((issue.data?.blocks ?? []).filter((entry) => isOpen(entry.status)));
+  const blocks = openHeldUpTasks(issue.data?.blocks ?? []);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
