@@ -84,6 +84,7 @@ type Scope = {
   issueId: string | null;
   runIds: string[];
   invocationIds: string[];
+  eventIds: string[];
 };
 
 function jobTable(kind: JobKind): JobTable {
@@ -93,15 +94,15 @@ function jobTable(kind: JobKind): JobTable {
 function scopeOf(kind: JobKind, row: JobRow): Scope {
   if (kind === "connection") {
     const job = row as DeletionRow;
-    return { companyId: job.companyId, cutoff: job.requestedAt, connectionId: job.connectionId, issueId: null, runIds: [], invocationIds: [] };
+    return { companyId: job.companyId, cutoff: job.requestedAt, connectionId: job.connectionId, issueId: null, runIds: [], invocationIds: [], eventIds: [] };
   }
   const job = row as IssueDeletionRow;
   return { companyId: job.companyId, cutoff: null, connectionId: null, issueId: job.issueId,
-    runIds: job.scope.runIds ?? [], invocationIds: job.scope.invocationIds ?? [] };
+    runIds: job.scope.runIds ?? [], invocationIds: job.scope.invocationIds ?? [], eventIds: job.scope.eventIds ?? [] };
 }
 
 function connectionScope(connection: { id: string; companyId: string }, cutoff: Date): Scope {
-  return { companyId: connection.companyId, cutoff, connectionId: connection.id, issueId: null, runIds: [], invocationIds: [] };
+  return { companyId: connection.companyId, cutoff, connectionId: connection.id, issueId: null, runIds: [], invocationIds: [], eventIds: [] };
 }
 
 function uuidList(values: string[]): SQL {
@@ -178,12 +179,18 @@ function runsCallingConnectionSql(scope: Scope & { connectionId: string; cutoff:
             join ${toolInvocations} on ${toolInvocations.id} = ${toolActionRequests.invocationId} where ${calls})))`;
 }
 
+function runUsedToolsSql(companyId: string): SQL {
+  return sql`(exists (select 1 from ${toolInvocations} where ${toolInvocations.companyId} = ${companyId} and ${toolInvocations.runId} = ${heartbeatRuns.id})
+    or exists (select 1 from ${toolCallEvents} where ${toolCallEvents.companyId} = ${companyId} and ${toolCallEvents.runId} = ${heartbeatRuns.id})
+    or coalesce(${heartbeatRuns.contextSnapshot} ? 'toolActionRequestIds', false))`;
+}
+
 export function runsWithStoredContentSql(scope: Scope): SQL {
   const resultText = sql.join(RESULT_TEXT_KEYS.map((key) =>
     sql.raw(`jsonb_path_exists(coalesce("heartbeat_runs"."result_json", '{}'::jsonb), 'lax $.**.${key} ? (@.type() == "string" && @ != "")')`)), sql` or `);
   const inScope = scope.connectionId && scope.cutoff
     ? runsCallingConnectionSql({ ...scope, connectionId: scope.connectionId, cutoff: scope.cutoff })
-    : sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)})`;
+    : sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)}) and ${runUsedToolsSql(scope.companyId)}`;
   return sql`${heartbeatRuns.companyId} = ${scope.companyId}
     and ${inScope}
     and (${savedResultSql(sql`${heartbeatRuns.id}`)} or ${heartbeatRuns.logRef} is not null or ${heartbeatRuns.logStore} is not null
@@ -276,9 +283,7 @@ export async function requestIssueConnectionContentDeletion(
     .where(and(
       eq(heartbeatRuns.companyId, input.companyId),
       sql`(${heartbeatRuns.issueId} = ${input.issueId} or ${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}::text)`,
-      sql`(exists (select 1 from ${toolInvocations} where ${toolInvocations.companyId} = ${input.companyId} and ${toolInvocations.runId} = ${heartbeatRuns.id})
-        or exists (select 1 from ${toolCallEvents} where ${toolCallEvents.companyId} = ${input.companyId} and ${toolCallEvents.runId} = ${heartbeatRuns.id})
-        or ${heartbeatRuns.contextSnapshot} ? 'toolActionRequestIds')`,
+      sql`(${runUsedToolsSql(input.companyId)} or not ${settledRunSql(sql`${heartbeatRuns.id}`)})`,
     ));
   const runIds = runs.map((row) => row.id);
   const calls = await tx
@@ -290,7 +295,17 @@ export async function requestIssueConnectionContentDeletion(
       sql`(${toolInvocations.runId} is null or not (${toolInvocations.runId} = any(${uuidList(runIds)})))`,
     ));
   const invocationIds = calls.map((row) => row.id);
-  if (runIds.length === 0 && invocationIds.length === 0) return null;
+  const events = await tx
+    .select({ id: toolCallEvents.id })
+    .from(toolCallEvents)
+    .where(and(
+      eq(toolCallEvents.companyId, input.companyId),
+      eq(toolCallEvents.issueId, input.issueId),
+      sql`(${toolCallEvents.runId} is null or not (${toolCallEvents.runId} = any(${uuidList(runIds)})))`,
+      sql`(${toolCallEvents.invocationId} is null or not (${toolCallEvents.invocationId} = any(${uuidList(invocationIds)})))`,
+    ));
+  const eventIds = events.map((row) => row.id);
+  if (runIds.length === 0 && invocationIds.length === 0 && eventIds.length === 0) return null;
   const now = new Date();
   const [created] = await tx
     .insert(issueConnectionContentDeletions)
@@ -301,7 +316,7 @@ export async function requestIssueConnectionContentDeletion(
       updatedAt: now,
       companyId: input.companyId,
       issueId: input.issueId,
-      scope: { runIds, invocationIds },
+      scope: { runIds, invocationIds, eventIds },
       requestedByActorType: input.actorAgentId ? "agent" : "system",
       requestedByActorId: input.actorAgentId ?? null,
       progress: initialProgress() as unknown as Record<string, unknown>,
@@ -569,7 +584,10 @@ export function createConnectionContentDeletion(db: Db, deps: {
         eq(toolCallEvents.companyId, scope.companyId),
         cutoffSql(sql`${toolCallEvents.createdAt}`, scope),
         cursor ? sql`(${toolCallEvents.createdAt}, ${toolCallEvents.id}) > (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)` : undefined,
-        callsInScopeSql(scope, { connectionId: sql`${toolCallEvents.connectionId}`, runId: sql`${toolCallEvents.runId}`, invocationId: sql`${toolCallEvents.invocationId}` }),
+        scope.connectionId
+          ? callsInScopeSql(scope, { connectionId: sql`${toolCallEvents.connectionId}`, runId: sql`${toolCallEvents.runId}`, invocationId: sql`${toolCallEvents.invocationId}` })
+          : sql`(${callsInScopeSql(scope, { connectionId: sql`${toolCallEvents.connectionId}`, runId: sql`${toolCallEvents.runId}`, invocationId: sql`${toolCallEvents.invocationId}` })}
+            or ${toolCallEvents.id} = any(${uuidList(scope.eventIds)}))`,
       ))
       .orderBy(asc(toolCallEvents.createdAt), asc(toolCallEvents.id))
       .limit(BATCH_SIZE);
@@ -610,7 +628,9 @@ export function createConnectionContentDeletion(db: Db, deps: {
         cursor ? sql`(${toolAccessAuditEvents.createdAt}, ${toolAccessAuditEvents.id}) > (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)` : undefined,
         scope.connectionId
           ? eq(toolAccessAuditEvents.connectionId, scope.connectionId)
-          : sql`${toolAccessAuditEvents.details}->>'runId' = any(${textList(scope.runIds)})`,
+          : sql`(${toolAccessAuditEvents.details}->>'runId' = any(${textList(scope.runIds)})
+            or ${toolAccessAuditEvents.details}->>'invocationId' = any(${textList(scope.invocationIds)})
+            or ${toolAccessAuditEvents.details}->>'issueId' = ${scope.issueId})`,
       ))
       .orderBy(asc(toolAccessAuditEvents.createdAt), asc(toolAccessAuditEvents.id))
       .limit(BATCH_SIZE);
@@ -834,6 +854,18 @@ export function createConnectionContentDeletion(db: Db, deps: {
         progress.runCursor = null;
         progress.currentRun = null;
         progress.pendingRuns = [];
+      }
+      if (kind === "issue" && done && progress.phase === "done" && scope.runIds.length > 0) {
+        const [open] = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, scope.companyId),
+            sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)})`,
+            sql`not ${runUsedToolsSql(scope.companyId)}`,
+            sql`not ${settledRunSql(sql`${heartbeatRuns.id}`)}`,
+          ));
+        progress.counts.runsInProgress += open?.count ?? 0;
       }
       const waitedMs = Date.now() - job.requestedAt.getTime();
       const waiting = kind === "issue" && progress.phase === "done" && waitedMs < ISSUE_WAIT_LIMIT_MS

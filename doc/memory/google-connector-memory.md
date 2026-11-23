@@ -303,8 +303,9 @@ nested run answers and migrated log originals.
 | Connection removal | Deletes tokens locally | Asks Paperclip Cloud to revoke at Google; it does so only when no other connection could share the grant. Customer-owned clients stay local. | Not changed | Connections are deleted locally; revocation at Google is not requested |
 
 Task and company deletion are hard deletes. A task deletion queues an
-`issue_connection_content_deletions` job that records the task's runs and
-calls before the task row goes, and runs the same steps as "Delete data". It
+`issue_connection_content_deletions` job that records the task's runs
+(including runs still working), calls and call events, including calls made
+without a run, before the task row goes, and runs the same steps as "Delete data". It
 waits for runs and approvals that are still open, with backoff, for up to a
 day, and then finishes on its own; the activity entry counts what was still
 open. A company

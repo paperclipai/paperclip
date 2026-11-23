@@ -346,6 +346,64 @@ describeEmbeddedPostgres("deleting a connection's stored content leaves no copy 
     expect(activity!.details).toMatchObject({ toolCalls: 2, runs: 2 });
   });
 
+  it("leaves the marker nowhere after deleting a task whose connection call had no run", async () => {
+    const logs = stores(path.join(baseDir, "task-runless"));
+    const base = await seedCompany();
+    const companyId = base.company.id;
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: base.application.id, name: "Docs runless", uid: randomUUID(), transport: "mcp_remote", status: "active",
+    }).returning();
+    const args = summarizeToolValue({ query: marker });
+    const result = summarizeToolValue({ text: `Result ${marker}` });
+    const [call] = await db.insert(toolInvocations).values({
+      companyId, connectionId: connection!.id, runId: null, issueId: base.issue.id, toolName: "read_doc", status: "succeeded",
+      argumentsSummary: args, resultSummary: result, createdAt: new Date(Date.now() - 30_000),
+    }).returning();
+    await db.insert(toolCallEvents).values([
+      { companyId, connectionId: connection!.id, issueId: base.issue.id, eventType: "policy_decision", argumentsSummary: args },
+      { companyId, connectionId: connection!.id, issueId: base.issue.id, invocationId: call!.id, eventType: "call_completed", resultSummary: result },
+    ]);
+    await db.insert(toolAccessAuditEvents).values({
+      companyId, connectionId: connection!.id, action: "tool_access.policy_decision", outcome: "success",
+      details: { decision: "allow", issueId: base.issue.id, runId: null, toolName: "read_doc", argumentsSummary: args },
+    });
+    expect((await scan([marker], logs)).length).toBeGreaterThan(0);
+
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
+  it("removes content a run of the task writes after the task is deleted", async () => {
+    const logs = stores(path.join(baseDir, "task-late"));
+    const base = await seedCompany();
+    const companyId = base.company.id;
+    const marker = `CANARY${randomUUID().replace(/-/g, "")}`;
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: base.application.id, name: "Docs late", uid: randomUUID(), transport: "mcp_remote", status: "active",
+    }).returning();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: base.agent.id, issueId: base.issue.id, status: "running" });
+
+    await issueService(db).remove(base.issue.id);
+    const service = createConnectionContentDeletion(db, { runLogStore: () => logs.store, storage: () => logs.storage });
+    await service.processPending(new AbortController().signal);
+
+    const summary = summarizeToolValue({ text: `Late ${marker}` });
+    await db.insert(toolInvocations).values({
+      companyId, connectionId: connection!.id, runId, agentId: base.agent.id, toolName: "read_doc", status: "succeeded",
+      argumentsSummary: summary, resultSummary: summary,
+    });
+    await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId: base.agent.id, seq: 1, eventType: "tool.execution.completed", message: marker, payload: { output: marker } });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), stdoutExcerpt: `read_doc -> ${marker}` }).where(eq(heartbeatRuns.id, runId));
+    expect((await scan([marker], logs)).length).toBeGreaterThan(0);
+    await db.update(issueConnectionContentDeletions).set({ notBefore: new Date() }).where(eq(issueConnectionContentDeletions.issueId, base.issue.id));
+    await drainPending(service);
+    expect(await scan([marker], logs, { taskOwnedCopies: true })).toEqual([]);
+  });
+
   it("waits for a run that is still going when the task is deleted, then removes its content", async () => {
     const logs = stores(path.join(baseDir, "task-live"));
     const base = await seedCompany();
