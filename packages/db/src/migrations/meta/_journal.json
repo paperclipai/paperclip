@@ -3498,8 +3498,15 @@
     {
       "idx": 501,
       "version": "7",
-      "when": 1795443645494,
-      "tag": "0501_nice_black_panther",
+      "when": 1795444424088,
+      "tag": "0501_charming_living_lightning",
+      "breakpoints": true
+    },
+    {
+      "idx": 502,
+      "version": "7",
+      "when": 1795448912862,
+      "tag": "0502_ordinary_secret_warriors",
       "breakpoints": true
     }
   ]

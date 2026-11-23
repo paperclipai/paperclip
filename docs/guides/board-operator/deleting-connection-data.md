@@ -42,6 +42,7 @@ Deletion starts right away and continues in the background. It finishes even if 
 - Approval previews, arguments and results for those calls, on the approval card and in what was passed back to the agent
 - Interactive app views from those calls
 - The whole transcript of every run that called the connection or received an approved action's result, including that run's other steps and its final summary
+- Tool results too large to pass to the agent directly, which Paperclip saved as files for those runs
 
 ## What is kept
 
@@ -50,6 +51,12 @@ Deletion starts right away and continues in the background. It finishes even if 
 - The connection's audit activity, which records counts only.
 - Transcripts of later runs that only read the context an interactive app view shared. Paperclip does not record which runs read it. Delete those tasks if you need that text gone.
 - Raw provider traces. An administrator must turn them on, and they expire on their own within 24 hours.
+
+## Deleting a task or a company
+
+Deleting a task also deletes this data for the task's runs, from every connected app. Comments, documents and files in the task are deleted with it, including the files in storage. If a run of the task is still working, or an approval for it is still open, Paperclip waits for up to a day and then deletes the data on its own. After a day, it stops waiting and leaves what is still open.
+
+Deleting a company deletes all of its data, including run transcripts and files in storage. Storage clean-up continues in the background after the company is gone, and Paperclip retries it until it succeeds.
 
 ## Runs that are still working
 
