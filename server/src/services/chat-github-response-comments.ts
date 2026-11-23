@@ -34,12 +34,14 @@ const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtim
 const stoppedAcknowledgement = Symbol("stopped GitHub acknowledgement");
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
 const statusMarker = "<!-- paperclip-response-kind:status -->";
-// Status notices posted before the kind marker existed.
-const legacyStatusPrefixes = ["Work is paused.", "This turn ended without publishing a final response.",
-  "This turn stopped before completing.", "This request has been handled."];
+// The complete status notices posted before the kind marker existed.
+const legacyStatusBodies = new Set(["Work is paused. Your request is saved. See the Paperclip task for details.",
+  "This turn ended without publishing a final response. See the Paperclip task for details.",
+  "This turn stopped before completing. See the Paperclip task for details.",
+  "This request has been handled. See the response in this conversation."]);
 /** A reply or review the agent published, as opposed to a placeholder or a Paperclip status notice. */
-const holdsPublishedResponse = (body: string | undefined) => !!body?.includes("<!-- paperclip-response-state:final -->") &&
-  !body.includes(statusMarker) && !legacyStatusPrefixes.some(prefix => body.startsWith(prefix));
+export const holdsPublishedResponse = (body: string | undefined) => !!body?.includes("<!-- paperclip-response-state:final -->") &&
+  !body.includes(statusMarker) && !legacyStatusBodies.has(body.split("\n\n<!-- paperclip-")[0]!.trim());
 const responseMarker = (source: Source) => isMainPullResponse(source) ? pullResponseMarker(source) : requestResponseMarker(source);
 
 async function findResponseComment(source: Source, api: Api, legacyMarkers: string[] = []): Promise<Comment | null> {

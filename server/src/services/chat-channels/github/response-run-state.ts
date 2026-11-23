@@ -79,28 +79,29 @@ const latestRunId = (of: Of) => sql`(select latest.id from (
         and r.context_snapshot->>'issueId' = ${of.issueId}::text and r.agent_id = ${of.agentId}::uuid
       order by r.created_at desc, r.id desc limit 1)
   ) latest order by latest.created_at desc, latest.id desc limit 1)`;
-/** Whether the run woke for one of the request's inbound comments. */
-const wokeForRequest = (of: Of) => sql<boolean>`exists (select 1 from ${chatMessageLinks} l
+/** Whether one of the request's inbound comments matches `match`. */
+const requestLink = (of: Of, match: (commentId: SQL) => SQL) => sql<boolean>`exists (select 1 from ${chatMessageLinks} l
   where l.company_id = ${of.companyId}::uuid and l.endpoint_id = ${of.endpointId}::uuid
-    and l.delivery_id = ${of.deliveryId}::uuid and l.direction = 'inbound'
-    and (l.comment_id::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'
-      or coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))`;
+    and l.delivery_id = ${of.deliveryId}::uuid and l.direction = 'inbound' and (${match(sql`l.comment_id`)}))`;
+/** Whether a run with this context snapshot woke for the comment. */
+const wokeFor = (snapshot: SQL, commentId: SQL) => sql`${commentId}::text = ${snapshot}->>'wakeCommentId'
+  or coalesce(${snapshot}->'wakeCommentIds', '[]'::jsonb) ? ${commentId}::text`;
+/** Whether the run woke for one of the request's inbound comments. */
+const wokeForRequest = (of: Of) => requestLink(of, commentId => wokeFor(sql`${heartbeatRuns.contextSnapshot}`, commentId));
 
-/** The latest finished run that woke for the request, by a wake comment or by
- * an accepted identity context for the request's comment. A newer run woken by
- * another request can follow it within seconds, so the task's latest run alone
- * cannot say how this request ended. */
-const finishedRequestRunId = (of: Of) => sql<string | null>`(select q.id from ${heartbeatRuns} q
+/** The request's own run when it has finished: the latest run that woke for
+ * the request, by a wake comment or by an accepted identity context for the
+ * request's comment. Null while that run is still queued or running. A newer
+ * run woken by another request can follow it within seconds, so the task's
+ * latest run alone cannot say how this request ended. */
+const finishedRequestRunId = (of: Of) => sql<string | null>`(select case
+    when q.status in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled') then q.id end
+  from ${heartbeatRuns} q
   where q.company_id = ${of.companyId}::uuid and q.agent_id = ${of.agentId}::uuid
     and (q.native_issue_id = ${of.issueId}::uuid or (q.native_issue_id is null and q.context_snapshot->>'issueId' = ${of.issueId}::text))
-    and q.status in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled')
-    and exists (select 1 from ${chatMessageLinks} l
-      where l.company_id = ${of.companyId}::uuid and l.endpoint_id = ${of.endpointId}::uuid
-        and l.delivery_id = ${of.deliveryId}::uuid and l.direction = 'inbound'
-        and (l.comment_id::text = q.context_snapshot->>'wakeCommentId'
-          or coalesce(q.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text
-          or exists (select 1 from ${runIdentityContexts} c where c.id = q.active_identity_context_id
-            and c.run_id = q.id and c.company_id = q.company_id and c.status = 'accepted' and c.message_id = l.comment_id)))
+    and ${requestLink(of, commentId => sql`${wokeFor(sql`q.context_snapshot`, commentId)}
+      or exists (select 1 from ${runIdentityContexts} c where c.id = q.active_identity_context_id
+        and c.run_id = q.id and c.company_id = q.company_id and c.status = 'accepted' and c.message_id = ${commentId})`)}
   order by q.created_at desc, q.id desc limit 1)`;
 
 const request = sql.identifier("github_response_request");
