@@ -858,6 +858,40 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "other_connections_remain" }]);
   });
 
+  it("keeps the token version that was sent when the grant pins an older version", async () => {
+    const fixture = await connectManagedGmail();
+    const refreshRef = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!;
+    const [secret] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, refreshRef.secretId));
+    await secretService(db).rotate(refreshRef.secretId, { value: "newer-refresh-token-do-not-log" });
+    await db.update(connectionGrants).set({
+      credentialSecretRefs: fixture.grant.credentialSecretRefs.map((ref) => ref.secretId === refreshRef.secretId ? { ...ref, versionSelector: secret!.latestVersion } : ref),
+    }).where(eq(connectionGrants.id, fixture.grant.id));
+    fixture.connector.revoke.mockResolvedValueOnce({ outcome: "broker_error" });
+
+    await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(fixture.connector.revoke).toHaveBeenLastCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+    const [pending] = await db.select().from(googlePendingRevocations);
+    fixture.connector.revoke.mockResolvedValueOnce({ outcome: "revoked" });
+    await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+    expect(fixture.connector.revoke).toHaveBeenLastCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+  });
+
+  it("saves the removed instance's revocations before dropping any token, and overlapping sweeps queue each token once", async () => {
+    const fixture = await connectManagedGmail();
+    const failing = vi.fn(async () => { throw new Error("stopped before the token was dropped"); });
+
+    await Promise.all([
+      revokeGoogleAccessForRemovedInstance(db, failing),
+      revokeGoogleAccessForRemovedInstance(db, failing),
+    ]);
+
+    expect(await db.select().from(googlePendingRevocations)).toHaveLength(1);
+    await drain(fixture.connector, Date.now());
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+  });
+
   it("keeps one company's pending revocation apart from another company's with the same token", async () => {
     const first = await connectManagedGmail();
     const second = await connectManagedGmail();

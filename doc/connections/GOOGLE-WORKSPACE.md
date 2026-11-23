@@ -348,7 +348,8 @@ Cloud still stores no provider token.
   the delete transaction (`reason = company_deleted`), before the secrets go.
 - When an instance admin's Cloud connection status check gets a signed answer
   that the instance is `removed` (a `401` alone does not count), the app, in
-  the background and one sweep at a time,
+  in one transaction for all companies (so the work is saved before any token
+  is dropped),
   queues every managed Google refresh token (`reason = instance_removed`), then
   deletes each connection secret. Those connections need a reconnect after a new
   enrollment. The broker accepts a Google revoke from a removed instance after

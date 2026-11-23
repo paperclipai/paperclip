@@ -271,7 +271,8 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
             actorType: actor?.actorType ?? "system",
             actorId: actor?.actorId ?? null,
           });
-          revocations.push({ kind: "call", subject, token: value, grantId: grant.id, secretId, version: latestVersion });
+          const sentVersion = typeof refreshRef.versionSelector === "number" ? refreshRef.versionSelector : latestVersion;
+          revocations.push({ kind: "call", subject, token: value, grantId: grant.id, secretId, version: sentVersion });
           sentSecrets.push({ secretId, version: latestVersion });
         } catch {
           revocations.push({ kind: "skip", outcome: "credential_unavailable" });

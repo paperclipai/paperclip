@@ -1240,10 +1240,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
     assertBoard(req);
     const canEndInstanceAccess = req.actor.type === "board" && (req.actor.isInstanceAdmin || req.actor.source === "local_implicit");
     res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus(process.env, fetch, canEndInstanceAccess ? async () => {
-      void revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secretService(db).remove(secretId, { expectedVersion }))
-        .catch((error) => {
-          logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, "Could not queue ending Google access after Paperclip Cloud removed this instance");
-        });
+      try {
+        await revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secretService(db).remove(secretId, { expectedVersion }));
+      } catch (error) {
+        logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, "Could not queue ending Google access after Paperclip Cloud removed this instance");
+      }
     } : undefined));
   });
 

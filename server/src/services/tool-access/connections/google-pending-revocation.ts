@@ -327,32 +327,25 @@ export function createGooglePendingRevocation(db: Db, deps: {
   return { drain, nextDeadline };
 }
 
-let removedInstanceSweep: Promise<number> | null = null;
-
-export function revokeGoogleAccessForRemovedInstance(db: Db, removeSecret: (secretId: string, expectedVersion: number) => Promise<unknown>): Promise<number> {
-  removedInstanceSweep ??= sweepRemovedInstance(db, removeSecret).finally(() => {
-    removedInstanceSweep = null;
+export async function revokeGoogleAccessForRemovedInstance(db: Db, removeSecret: (secretId: string, expectedVersion: number) => Promise<unknown>) {
+  const queued = await db.transaction(async (tx) => {
+    const owners = await tx.selectDistinct({ companyId: toolConnections.companyId }).from(toolConnections)
+      .where(eq(toolConnections.authKind, "oauth"));
+    const all: Array<{ companyId: string; secretId: string; version: number }> = [];
+    for (const { companyId } of owners) {
+      for (const entry of await queueCompanyGoogleRevocations(tx as unknown as Db, companyId, "instance_removed")) all.push({ companyId, ...entry });
+    }
+    return all;
   });
-  return removedInstanceSweep;
-}
-
-async function sweepRemovedInstance(db: Db, removeSecret: (secretId: string, expectedVersion: number) => Promise<unknown>) {
-  const owners = await db.selectDistinct({ companyId: toolConnections.companyId }).from(toolConnections)
-    .where(eq(toolConnections.authKind, "oauth"));
-  let queued = 0;
-  for (const { companyId } of owners) {
-    const secrets = await db.transaction((tx) => queueCompanyGoogleRevocations(tx as unknown as Db, companyId, "instance_removed"));
-    queued += secrets.length;
-    for (const { secretId, version } of secrets) {
-      try {
-        await removeSecret(secretId, version);
-      } catch (error) {
-        logger.warn(
-          { companyId, errorName: error instanceof Error ? error.name : typeof error },
-          "Could not delete a Google refresh token after Paperclip Cloud removed this instance",
-        );
-      }
+  for (const { companyId, secretId, version } of queued) {
+    try {
+      await removeSecret(secretId, version);
+    } catch (error) {
+      logger.warn(
+        { companyId, errorName: error instanceof Error ? error.name : typeof error },
+        "Could not delete a Google refresh token after Paperclip Cloud removed this instance",
+      );
     }
   }
-  return queued;
+  return queued.length;
 }
