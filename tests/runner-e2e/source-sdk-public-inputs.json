@@ -69,7 +69,7 @@
     "packages/shared/src/analytics-consent.ts": "00c4bfbd24ac3a288a68caae52468dfcd26df3e7",
     "packages/shared/src/announcements.test.ts": "121ed97b560e0dd271fe6602c97e2415ee4e4bf7",
     "packages/shared/src/announcements.ts": "1405e849eeeeb67239bacc1bbb3903385a5faa6f",
-    "packages/shared/src/antigravity-models.generated.ts": "a9168854b27def8a2e40e6dfdfc7309f44391821",
+    "packages/shared/src/antigravity-models.generated.ts": "cb1e231baef960dff9efda50a9a9f3679a1cc9c1",
     "packages/shared/src/antigravity-models.test.ts": "eb5d07faee2dbcd3b9e38690bff78faf01512845",
     "packages/shared/src/antigravity-models.ts": "f829cc6bc3755743f39d6e14486bdf3ff7b52456",
     "packages/shared/src/antigravity-runtime.test.ts": "f9ebcc9430be51c342b42644b735f1434b405ec7",
