@@ -147,8 +147,18 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
     if (resolved.privateStore === undefined) return launch;
     const privateStore = resolved.privateStore;
     const closeLaunch = launch.snapshot.close;
+    // A failed cleanup stays retryable, and the store is released only once
+    // the launch directory is actually gone.
     let closing: Promise<void> | undefined;
-    launch.snapshot.close = () => closing ??= closeLaunch().finally(() => releasePrivateStore(privateStore));
+    let released = false;
+    launch.snapshot.close = () => closing ??= closeLaunch().then(async () => {
+      if (released) return;
+      released = true;
+      await releasePrivateStore(privateStore);
+    }, error => {
+      closing = undefined;
+      throw error;
+    });
     return launch;
   } catch (error) {
     if (resolved.privateStore !== undefined) await releasePrivateStore(resolved.privateStore);
@@ -218,20 +228,28 @@ async function holdVerifiedStore(storeRoot: string, closure: string, family: str
   heldStores.add(key);
 }
 
-async function awaitNoLivePrune(storeRoot: string, closure: string): Promise<void> {
+/**
+ * True while a live process holds a prune marker for `closure`. Markers of
+ * exited processes (a runner killed mid-prune) are removed, so they never
+ * block a later launch or prune. Like leases, a marker names its process id.
+ */
+async function livePruneMarker(storeRoot: string, closure: string): Promise<boolean> {
   const pattern = new RegExp(`^${closure}\\.pruning-(\\d{1,10})$`);
+  let pruning = false;
+  for (const name of await readdir(storeRoot)) {
+    const pid = pattern.exec(name)?.[1];
+    if (pid === undefined) continue;
+    if (processAlive(Number(pid))) pruning = true;
+    else await rm(join(storeRoot, name), { force: true });
+  }
+  return pruning;
+}
+
+async function awaitNoLivePrune(storeRoot: string, closure: string): Promise<void> {
   const deadline = Date.now() + PRUNE_MARKER_WAIT_MS;
-  for (;;) {
-    let pruning = false;
-    for (const name of await readdir(storeRoot)) {
-      const pid = pattern.exec(name)?.[1];
-      if (pid === undefined) continue;
-      if (processAlive(Number(pid))) pruning = true;
-      else await rm(join(storeRoot, name), { force: true });
-    }
-    // A stuck prune never blocks a launch: past the deadline this proceeds and
-    // the store is read, or verified again, as usual.
-    if (!pruning || Date.now() >= deadline) return;
+  // A stuck prune never blocks a launch: past the deadline this proceeds and
+  // the store is read, or verified again, as usual.
+  while (await livePruneMarker(storeRoot, closure) && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, PRUNE_MARKER_POLL_MS));
   }
 }
@@ -290,6 +308,8 @@ export async function pruneNativeAcpxStores(storeRoot: string, family: string, k
 
 async function retireUnheldStore(storeRoot: string, closure: string): Promise<boolean> {
   const marker = join(storeRoot, `${closure}.pruning-${process.pid}`);
+  // Another live prune of this closure owns it; an exited one's marker is removed here.
+  if (await livePruneMarker(storeRoot, closure)) return false;
   try { await writeFile(marker, "", { mode: 0o600, flag: "wx" }); } catch { return false; }
   let parked: string | undefined;
   try {

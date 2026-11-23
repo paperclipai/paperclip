@@ -11,6 +11,18 @@ import { agentRoutes } from "../routes/agents.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as environmentTests from "../services/agent-environment-test.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { readFileSync } from "node:fs";
+import { QUALIFIED_ACPX_PROFILES } from "../vendor/paperclip-runner/index.js";
+import { ANTIGRAVITY_CANDIDATE_ADMISSION_ENV } from "../services/native-runtime/acpx-qualification.js";
+
+const distributions = JSON.parse(readFileSync(new URL("../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
+/** The operator's pending grant for one company, model and platform. */
+const grant = (companyId: string, target: string) => {
+  const [platform, architecture] = target.split("-");
+  return JSON.stringify({ schema: "paperclip.acpx-candidate-admission.v1", companyId, agent: "antigravity", model: "gemini-3.8-flash-high",
+    profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest, nativeClosureDigest: `sha256:${distributions.platforms[target].closureSha256}`,
+    platform, architecture, expiresAt: Date.now() + 60_000 });
+};
 
 const release = vi.hoisted(() => ({ pending: true }));
 vi.mock("../services/native-runtime/antigravity-release.js", async importOriginal => ({
@@ -70,7 +82,7 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
       res.status(error.status ?? 500).json({ error: error.message, details: error.details });
     });
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, undefined); });
   afterAll(async () => {
     await database?.cleanup(); vi.unstubAllEnvs();
     if (home) await rm(home, { recursive: true, force: true });
@@ -107,6 +119,35 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
     expect(response.body.error).toBe("Google Antigravity runs only on the Paperclip host for now. Choose the Paperclip host as this agent's environment.");
     expect(JSON.stringify(response.body)).not.toContain("fixture-gemini-key");
     expect((await readAgent()).defaultEnvironmentId).toBeNull();
+  });
+
+  it("saves a Gemini API key on a cloud environment while pending when the operator granted linux-x64", async () => {
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant(agent.companyId, "linux-x64"));
+    const binding = await saveGoogleConnection("api_key");
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).defaultEnvironmentId).toBe(cloud.id);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("refuses a cloud environment when the grant is for another company or another platform", async () => {
+    const binding = await saveGoogleConnection("api_key");
+    for (const value of [grant(randomUUID(), "linux-x64"), grant(agent.companyId, "linux-arm64")]) {
+      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, value);
+      const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.details).toMatchObject({ code: "antigravity_remote_unavailable" });
+    }
+    expect((await readAgent()).defaultEnvironmentId).toBeNull();
+  });
+
+  it.skipIf(process.platform === "linux" && process.arch === "x64")("refuses a host agent when the company holds only a cloud grant", async () => {
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant(agent.companyId, "linux-x64"));
+    const response = await request(app).patch(`/api/agents/${agent.id}`)
+      .send({ adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-high" } });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error).toBe("Google Antigravity is enabled only for cloud environments in this company for now. Choose a cloud environment for this agent.");
+    expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toHaveLength(0);
   });
 
   it("saves a Gemini API key on a cloud environment once released", async () => {

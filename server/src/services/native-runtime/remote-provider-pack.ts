@@ -1,6 +1,6 @@
 import { redactSensitiveText } from "../../redaction.js";
 import { nativeRunFailureCheck, type NativeRunTrace } from "./native-run-trace.js";
-import { ANTIGRAVITY_DISTRIBUTION_PINS, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { ANTIGRAVITY_DISTRIBUTION_PINS, COPILOT_CLOSURE_SHA256, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 /** Qualified ACPX releases carry their Linux image manifest and daemon. */
 export function shouldUseBundledAcpxImageAssets(input: {
@@ -67,12 +67,8 @@ export type RemoteProviderPackRelease = {
   antigravityPatchedClosures?: Readonly<Record<string, string>>;
 };
 
-/** Copilot's pinned closure per platform in this release. */
-export const COPILOT_PROVIDER_PACK_CLOSURES: Readonly<Record<string, string>> = Object.freeze({
-  "darwin-arm64": "362f2663e967fb9e34a814bac4619cbf89e6b23069c4051ab1f2f686852d0a32",
-  "darwin-x64": "c08b7c3dd4e7bcf9a3e16ec6eba29cfa10308e865d196c5f120a3a15f6b3116a",
-  "linux-x64": "a3d8f4367cfa1694d79e3f8b7930b6fbfe42a229c272b375b11951d631db8d07",
-});
+/** Copilot's pinned closure per platform: the Runner's canonical pins. */
+export const COPILOT_PROVIDER_PACK_CLOSURES: Readonly<Record<string, string>> = COPILOT_CLOSURE_SHA256;
 
 /**
  * The complete expectation for one provider entry of a remote pack: which

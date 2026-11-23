@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createNativeRunTrace } from "./native-run-trace.js";
+import { COPILOT_CLOSURE_SHA256 } from "../../vendor/paperclip-runner/index.js";
 import { readFileSync } from "node:fs";
 import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, COPILOT_PROVIDER_PACK_CLOSURES, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, type RemoteProviderPackRelease, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 
@@ -249,6 +250,11 @@ describe("remote provider pack entry expectation", () => {
   });
   const check = (provider: string, inventory: "providers" | "candidateProviders", value: unknown, listed = { providers: inventory === "providers", candidateProviders: inventory === "candidateProviders" }) =>
     remoteProviderPackEntryRefusal({ provider, inventory, allowedProviders: all, target, entry: value, listed, release });
+
+  it("checks Copilot against the Runner's canonical closure pins", () => {
+    expect(COPILOT_PROVIDER_PACK_CLOSURES).toEqual(COPILOT_CLOSURE_SHA256);
+    expect(Object.keys(COPILOT_PROVIDER_PACK_CLOSURES).sort()).toEqual(["darwin-arm64", "darwin-x64", "linux-x64"]);
+  });
 
   it("admits each provider's entry only with this release's inventory, qualification, profile and closure", () => {
     expect(check("pi", "providers", entry("pi", "qualified", "any", digest("8"), "8".repeat(64)))).toBeNull();
