@@ -20,17 +20,17 @@ import { ProposalsNotice } from "./ResponsibilityViewParts";
 import type { DashboardViewProps } from "./view-props";
 
 /** Which areas are folded, remembered in the browser; works without storage. */
-function useCollapsedAreas(): [ReadonlySet<string>, (key: string) => void] {
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => readCollapsedAreas());
+function useCollapsedAreas(scope: string): [ReadonlySet<string>, (key: string) => void] {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => readCollapsedAreas(scope));
   const toggle = useCallback((key: string) => {
     setCollapsed((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
-      writeCollapsedAreas(next);
+      writeCollapsedAreas(next, scope);
       return next;
     });
-  }, []);
+  }, [scope]);
   return [collapsed, toggle];
 }
 
@@ -146,7 +146,7 @@ export function DashboardOutlineV2({
     () => outlineV2Groups(overview.areas, overview.responsibilities, keepEmptyAreas),
     [overview.areas, overview.responsibilities, keepEmptyAreas],
   );
-  const [collapsed, toggle] = useCollapsedAreas();
+  const [collapsed, toggle] = useCollapsedAreas(JSON.stringify([companyId, overview.ownerUserId]));
   const query = search.trim();
   const shown = useMemo(() => searchOutlineV2Groups(groups, query), [groups, query]);
 
@@ -161,7 +161,7 @@ export function DashboardOutlineV2({
   );
 
   // Nothing owned and nothing proposed: only the module, and any area just added by hand.
-  if (active.length === 0 && overview.proposed.length === 0) {
+  if (groups.length === 0 && active.length === 0 && overview.proposed.length === 0) {
     return (
       <div className="flex flex-col gap-4" data-dashboard-view="outline_v2" data-dashboard-empty="">
         <DashboardEditModule
@@ -171,7 +171,6 @@ export function DashboardOutlineV2({
           agentsById={agentsById}
           onAddArea={onAddArea}
         />
-        {groups.filter((group) => keepEmptyAreas.has(group.key)).map(renderArea)}
       </div>
     );
   }
