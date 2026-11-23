@@ -12577,7 +12577,7 @@ registerCurrentRoute({
 
 const managedGoogleAccessRemovalSchema = z.object({
   provider: z.literal("google"),
-  result: z.enum(["ended", "ended_unconfirmed", "other_connections_remain", "not_ended"]),
+  result: z.enum(["ended", "ended_unconfirmed", "other_connections_remain", "retrying", "not_ended"]),
   outcomes: z.array(z.string()).describe("One diagnostic code per refresh token sent to Paperclip Cloud, in order."),
 }).describe("Present only for a Google connection managed by Paperclip Cloud. A failure to end access at Google does not undo the local removal.");
 

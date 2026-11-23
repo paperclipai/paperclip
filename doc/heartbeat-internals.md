@@ -722,3 +722,16 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## Setup-token cleanup retries
+
+The setup-token cleanup worker removes reapable login records. A record with no
+provider lease is removed without a call to the lease provider. A failed cleanup
+keeps the record and logs the error class and code of the failure and its
+causes, never the error message. Consecutive failed sweeps back off from 30
+seconds to 30 minutes through the shared delivery scheduler, and a successful
+sweep resets the delay. The configured cleanup interval stays the minimum delay.
+The backoff applies to the whole setup-token cleanup worker, so new cleanup can
+wait behind a failing provider. The failure count resets on restart; the
+retained database rows rebuild the cleanup obligation. No timer remains once the
+durable schedule has no pending cleanup or future expiry.

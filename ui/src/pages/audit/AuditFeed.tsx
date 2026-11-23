@@ -577,10 +577,13 @@ export function AuditFeed({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-foreground">Activity</h2>
-            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              {resolvedMode === "agents"
-                ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
-                : "Everything happening in your organization, newest first — people, agents, and the system. Each line is one recorded action."}
+            <p className="mt-1 grid max-w-2xl text-sm text-muted-foreground">
+              <span className="col-start-1 row-start-1" style={{ visibility: resolvedMode === "agents" ? "hidden" : "visible" }}>
+                Everything happening in your organization, newest first — people, agents, and the system. Each line is one recorded action.
+              </span>
+              <span className="col-start-1 row-start-1" style={{ visibility: resolvedMode === "agents" ? "visible" : "hidden" }}>
+                Every recorded agent action, newest first — with the responsible person and run behind each one.
+              </span>
             </p>
           </div>
         </div>
@@ -588,16 +591,18 @@ export function AuditFeed({
 
       {showModeToggle ? (
         <Tabs data-canonical-toolbar="audit-scope" value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList className="design-view-toggle" aria-label="Activity scope">
-            <TabsTrigger value="all">Activity</TabsTrigger>
-            <TabsTrigger
-              value="agents"
-              disabled={accessTier === "basic"}
-              title={accessTier === "basic" ? "Agent Actions requires audit access" : undefined}
-            >
-              Agent Actions
-            </TabsTrigger>
-          </TabsList>
+          <div className="design-view-toggle">
+            <TabsList aria-label="Activity scope">
+              <TabsTrigger value="all">Activity</TabsTrigger>
+              <TabsTrigger
+                value="agents"
+                disabled={accessTier === "basic"}
+                title={accessTier === "basic" ? "Agent Actions requires audit access" : undefined}
+              >
+                Agent Actions
+              </TabsTrigger>
+            </TabsList>
+          </div>
         </Tabs>
       ) : null}
 

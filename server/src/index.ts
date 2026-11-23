@@ -19,6 +19,7 @@ import { registerNativeHarnessBackupExpirationWork } from "./services/native-run
 import { registerGitHubConnectionEventWork, registerGitHubConnectionContinuityWork } from "./services/github-connection-work.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
 import { registerToolConnectionContentDeletionWork } from "./services/tool-connection-content-deletion-work.js";
+import { registerGooglePendingRevocationWork } from "./services/google-pending-revocation-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
 import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
@@ -1452,6 +1453,10 @@ async function startServerWithDatabaseTeardown(
     () => !heartbeatSchedulerStopped && !isWarmStandby());
   trackHeartbeatSchedulerWork(toolConnectionContentDeletionWork.ready);
   server.on("close", toolConnectionContentDeletionWork.stop);
+  const googlePendingRevocationWork = registerGooglePendingRevocationWork(db, deliveryWork,
+    () => !heartbeatSchedulerStopped && !isWarmStandby());
+  trackHeartbeatSchedulerWork(googlePendingRevocationWork.ready);
+  server.on("close", googlePendingRevocationWork.stop);
   const executionSchedule = executionControlSchedule(db);
   const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
   const nativeRunnerEvidenceRetentionWorker = config.nativeHarnessBackupExpirationEnabled
@@ -1772,7 +1777,7 @@ async function startServerWithDatabaseTeardown(
       result: Awaited<ReturnType<typeof setupTokenReaper.sweep>>,
     ) => {
       if (result.released > 0 || result.failed > 0) {
-        logger.info(result, "setup-token login reaper released leases");
+        logger.info(result, "setup-token login reaper cleared records");
       }
     };
 
@@ -2036,7 +2041,7 @@ async function startServerWithDatabaseTeardown(
       const loginSchedule = loginCleanupSchedule(db, config.heartbeatSchedulerIntervalMs);
       await step("login_cleanup_workers", () => registerLoginCleanupWork(deliveryWork, [
         { queue: DELIVERY_QUEUES.adapterLoginCleanup, run: () => adapterLoginReaper.sweep().then(logAdapterLoginReaperResult), next: loginSchedule.adapter },
-        { queue: DELIVERY_QUEUES.setupTokenCleanup, run: () => setupTokenReaper.sweep().then(logSetupTokenReaperResult), next: loginSchedule.setupToken },
+        { queue: DELIVERY_QUEUES.setupTokenCleanup, run: () => setupTokenReaper.sweep().then(logSetupTokenReaperResult), next: loginSchedule.setupToken, retryDelayMs: setupTokenReaper.retryDelayMs },
       ], () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped, config.heartbeatSchedulerIntervalMs).ready);
       // Retry any orphan sandbox teardown left by a failed acquire before a
       // server restart, so a leaked sandbox does not stay allocated.
@@ -2285,6 +2290,7 @@ async function startServerWithDatabaseTeardown(
     });
     await preDrain.run("provider_trace_retention_stop", () => providerTraceRetentionWork.stop());
     await preDrain.run("tool_connection_content_deletion_stop", () => toolConnectionContentDeletionWork.stop());
+    await preDrain.run("google_pending_revocation_stop", () => googlePendingRevocationWork.stop());
     await preDrain.run("skill_version_retention_dispose", async () => {
       await skillVersionRetentionWorker?.dispose();
     });

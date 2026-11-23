@@ -236,6 +236,21 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
   } catch { return null; }
 }
 
+const TRANSIENT_PROVIDER_REFUSALS: ReadonlySet<string> = new Set<ProviderFailure["category"]>(["overloaded", "rate_limit"]);
+
+/** An accepted done report outlives a later transient provider refusal in the same turn. */
+export function nativeAcceptedResultOutlivesProviderFailure(input: {
+  terminal: Pick<PrpTerminalState, "turnTerminalState" | "runTerminalState" | "reportedWorkDisposition">;
+  providerFailure: { errorCode: string } | null;
+  providerExplanation: ProviderFailure | null;
+}): boolean {
+  if (input.terminal.runTerminalState !== "failed" || input.terminal.turnTerminalState !== "failed" ||
+      input.terminal.reportedWorkDisposition !== "done") return false;
+  if (input.providerFailure) return input.providerFailure.errorCode === NATIVE_PROVIDER_OVERLOADED_CODE;
+  const failure = input.providerExplanation;
+  return failure !== null && failure.retryability === "transient" && TRANSIENT_PROVIDER_REFUSALS.has(failure.category);
+}
+
 /** Observe only events accepted by the bound control-plane persistence port. */
 export function createNativeProviderFailureObservation(
   provider: { kind: string; model?: string | null; agent?: string },

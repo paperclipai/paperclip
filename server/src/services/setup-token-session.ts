@@ -314,9 +314,9 @@ export interface SetupTokenCleanupStore {
 
 /** The counts one reaper sweep produced over the durable cleanup store. */
 export interface SetupTokenReapResult {
-  /** The reapable records whose lease released and whose row cleared. */
+  /** The reapable records cleared after releasing any lease they held. */
   released: number;
-  /** The reapable records whose lease release failed. The row stays for a retry. */
+  /** The reapable records whose cleanup failed. The row stays for a retry. */
   failed: number;
 }
 
@@ -357,7 +357,9 @@ export async function reapSetupTokenLeases(
   let failed = 0;
   for (const record of records) {
     try {
-      await deps.leases.releaseById(record.leaseId);
+      if (record.leaseId) {
+        await deps.leases.releaseById(record.leaseId);
+      }
       await deps.store.remove({
         sessionId: record.sessionId,
         companyId: record.companyId,
@@ -367,7 +369,7 @@ export async function reapSetupTokenLeases(
       released += 1;
     } catch (error) {
       failed += 1;
-      log(`[paperclip] Setup-token reaper: a lease release failed; it stays retryable. Cause: ${releaseFailureCause(error)}.`);
+      log(`[paperclip] Setup-token reaper: a cleanup failed; it stays retryable. Cause: ${releaseFailureCause(error)}.`);
     }
   }
   return { released, failed };

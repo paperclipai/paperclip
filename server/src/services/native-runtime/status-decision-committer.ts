@@ -1,4 +1,5 @@
 import { NativePullRequestCompletionError, verifyNativePullRequestCompletion } from "./native-pull-request-completion.js";
+import { nativeEffectiveTerminal } from "./native-accepted-outcome.js";
 import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
 import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
@@ -2373,7 +2374,7 @@ export async function commitNativeStatusDecision(input: {
         eq(nativeRunResults.id, coordinator.resultId!), eq(nativeRunResults.companyId, input.companyId),
         eq(nativeRunResults.issueId, input.issueId), eq(nativeRunResults.runId, input.runId), eq(nativeRunResults.schemaStatus, "accepted"),
       ));
-      const result = record(accepted?.resultJson.result), terminal = record(accepted?.resultJson.terminal);
+      const result = record(accepted?.resultJson.result), terminal = nativeEffectiveTerminal(accepted?.resultJson, record(accepted?.resultJson.terminal));
       if (ids.length !== expected.interactionIds.length || expected.interactionIds.some(id => !ids.includes(id)) ||
           terminal.runTerminalState !== "succeeded" || terminal.turnTerminalState !== "completed" ||
           !["done", "yielded"].includes(String(result.reportedWorkDisposition)) ||

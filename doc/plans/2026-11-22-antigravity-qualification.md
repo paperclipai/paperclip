@@ -76,10 +76,12 @@ Order: 1 and 2 in parallel; then 3, 4 and 5; then 6.
 Profile state: **pending**. The qualification flip has not happened and must
 not happen until every row marked NOT RUN below has passed live.
 
-**No prompt has completed on 1.5.2 on any platform.** The only Gemini key
-available is free tier; Google answered every prompt attempt on two days with
-503 (overloaded) or 429 (`RESOURCE_EXHAUSTED`). Everything below that needs a
-model to answer is therefore NOT RUN, not failed and not passed.
+**First prompts completed on 1.5.2 on 2026-11-23, local darwin-arm64 only,
+Google sign-in route, model `gemini-3.8-flash-low`** (see "First live tasks"
+below). The API-key route has still not completed a prompt: the only Gemini
+key available is free tier, and Google answered every attempt with 503
+(overloaded) or 429 (`RESOURCE_EXHAUSTED`). Rows that need another model, the
+API-key route or Daytona remain NOT RUN, not failed and not passed.
 
 | Gate | Required observation | Verdict (2026-11-22) |
 | --- | --- | --- |
@@ -88,18 +90,53 @@ model to answer is therefore NOT RUN, not failed and not passed.
 | Remote provider pack | Pack carries the Linux closure; server's remote path verifies it | Passed for linux-x64 through the server's remote path in Daytona. Re-verification on a reused sandbox lease 4.3 s → ~0.25 s |
 | API-key auth | Native `gemini-api-key` session reaches an exact-model receipt | Passed live on macOS and Linux x64 (receipt only; no prompt) |
 | Model admission | Every model ID admitted by exact-model admission, prompt-free | Passed: all 28 IDs (14 Gemini 3, 14 Gemini 4 including Neon at four levels) get exact receipts under an API key on both platforms, without `AGY_ACP_DEFAULT_MODEL` |
-| Kill and resume | Native process killed between turns; a new process resumes the session | Passed prompt-free on macOS and Linux x64 with exact receipts. Not yet shown with a completed prompt, and no live `session/load` was observed |
+| Kill and resume | Native process killed between turns; a new process resumes the session | Passed prompt-free on macOS and Linux x64 with exact receipts. With completed prompts (2026-11-23, local, sign-in): native process kill recovered and the task finished. No live `session/load` call was observed in the logs |
 | Launch cost | Run start to native initialize | Sealed verified store: 1.46 s (macOS) / 1.74 s (Linux x64), from 3.45 / 3.65 s. Measured before the launcher regained its streamed executable hash (below); that hash measured ~60 ms for the 179 MB macOS server and is not yet re-measured for the ~722 MB Linux launcher |
-| Model lineup inference | Per model/level: one accepted prompt | NOT RUN (no prompt completes on the free key) |
-| Neon inference | Real task on `gemini-4-neon-*`, each level acknowledged | NOT RUN (free-tier Neon quota is 0) |
-| Ordinary task | File bytes, artifact, accepted result, Done after reload, local and Daytona | NOT RUN on 1.5.2 (local macOS passed on 1.4.3 in October) |
+| Model lineup inference | Per model/level: one accepted prompt | Partial: `gemini-3.8-flash-low` accepted prompts over Google sign-in (local). The signed-in catalog listed only three Gemini 3.8 Flash levels, so the rest of the lineup is NOT RUN; the free API key still completes no prompt |
+| Neon inference | Real task on `gemini-4-neon-*`, each level acknowledged | NOT RUN (free-tier Neon quota is 0; the signed-in catalog does not list Neon) |
+| Ordinary task | File bytes, artifact, accepted result, Done after reload, local and Daytona | Local darwin-arm64 passed on 1.5.2 (sign-in, 2026-11-23), including a follow-up on the same task. Daytona NOT RUN |
 | Scoped tools | Semantic and MCP round trip; wrong-company and stale authority denied | NOT RUN |
-| Questions and permissions | Native identity, one continuation, denial holds | NOT RUN |
-| Stop and lifecycle | Stop during a tool call, pending-input Stop, provider death mid-turn, no late revival | NOT RUN |
+| Questions and permissions | Native identity, one continuation, denial holds | Question passed locally (asked, answered, task finished). Permissions NOT RUN |
+| Stop and lifecycle | Stop during a tool call, pending-input Stop, provider death mid-turn, no late revival | Partial: Stop of a running task passed locally (run cancelled, task kept its status, as for every native harness). Pending-input Stop and provider death mid-turn NOT RUN |
 | Continuity and recovery | Loaded session keeps model and instructions; interrupted run resumes or Retry works | Partial: prompt-free resume only (see Kill and resume) |
 | Qualification suite | All 24 `antigravity-qualification` cells, local and Daytona | NOT RUN |
 | Evals under the native Runner | Applicable Product E2E and chat cases run with Antigravity; numbers recorded | NOT RUN |
 | Image pull and startup time | Daytona image with the Linux closure, measured cold | NOT RUN |
+
+### First live tasks (2026-11-23, local, Google sign-in)
+
+Setup: ACP server 1.5.2 (`1.5.2-paperclip.2`), darwin-arm64, a local source
+checkout of Paperclip, Google sign-in connection, model
+`gemini-3.8-flash-low`. A source checkout needed the dev-only "Run tasks in
+this worktree" setting before tasks would start; installed builds do not.
+
+| Case | Result |
+| --- | --- |
+| Ordinary task (create a file, reply with its content, mark Done) | Passed |
+| Follow-up on the same task (recall the earlier file, append a line) | Passed |
+| Question (agent asks, user answers, agent finishes) | Passed |
+| Stop of a running task | Passed: run cancelled, task keeps its status |
+| Native process killed during a task | Passed: recovered automatically and finished |
+
+Provider capacity: 10 of 17 runs were refused by Google with 503
+`No capacity available for model ...`; every task still finished through
+automatic retries, with no user action. This exposed three product issues:
+
+- Two refusals arrived after the agent's finish had already been accepted;
+  the run was counted as failed and retried, so one task got the same reply
+  three times. Fixed: an accepted done report followed only by a transient
+  provider refusal (capacity or rate limit) is now the run's outcome, for
+  every native harness.
+- A refusal before any accepted result takes the saved-work replacement
+  path (about 30 s, task shown as blocked meanwhile), while one after an
+  accepted result takes the bounded capacity retry. Both carry the same typed
+  `overloaded`/`transient` failure; the split is by path, not by classifier.
+  Open decision below.
+- Antigravity 1.5.2 streams the provider's error text as agent text before it
+  ends the turn, so the live transcript shows it like a reply. Open below.
+
+No live `session/load` call was observed in the logs, so the profile still
+must not claim `recovery: "session-load"`.
 
 ### Must pass live before the qualification flip
 
@@ -175,6 +212,15 @@ provider-death fixtures now target the store and per-launch directory layout.
   `gemini-3.8-flash`, so no live cell ran.
 
 ## Open decisions
+
+- Capacity refusals before an accepted result: route them to the bounded
+  capacity retry (one-, then two-minute waits, then blocked) instead of the
+  saved-work replacement, and keep the task out of "blocked" while that retry
+  is pending. The replacement path proves the previous session stopped and
+  reconciles unconfirmed actions before a fresh session; the capacity retry
+  does not, so moving these failures changes a recovery safeguard.
+- Hide provider error text that Antigravity streams as agent text when the
+  turn then ends with a typed provider failure (runner driver change).
 
 - A paid Gemini key for the prompt-dependent gates (the API-key route to Neon
   is admitted; inference is unproven).

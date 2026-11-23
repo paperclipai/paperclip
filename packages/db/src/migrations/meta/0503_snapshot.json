@@ -1,6 +1,6 @@
 {
-  "id": "00aaeb32-9423-4cdd-ae8d-dc721ac83170",
-  "prevId": "3ea0a4c2-54f0-43fd-8c27-bcde98e3dd82",
+  "id": "6d216ee0-8a1e-45e1-a71a-38c1e51b0ec1",
+  "prevId": "e7daf0b9-3e4a-42d7-b72a-4d7d413d9686",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -34245,6 +34245,163 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.google_pending_revocations": {
+      "name": "google_pending_revocations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_secret_id": {
+          "name": "source_secret_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "profile": {
+          "name": "profile",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_material": {
+          "name": "token_material",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_sha256": {
+          "name": "token_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_outcome": {
+          "name": "last_outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "give_up_at": {
+          "name": "give_up_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "google_pending_revocations_due_idx": {
+          "name": "google_pending_revocations_due_idx",
+          "columns": [
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "google_pending_revocations_token_idx": {
+          "name": "google_pending_revocations_token_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "token_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.grok_bot_dispatches": {
       "name": "grok_bot_dispatches",
       "schema": "",
@@ -39066,6 +39223,169 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_connection_content_deletions": {
+      "name": "issue_connection_content_deletions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scope": {
+          "name": "scope",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "requested_by_actor_type": {
+          "name": "requested_by_actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_by_actor_id": {
+          "name": "requested_by_actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "progress": {
+          "name": "progress",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "not_before": {
+          "name": "not_before",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "issue_connection_content_deletions_issue_idx": {
+          "name": "issue_connection_content_deletions_issue_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issue_connection_content_deletions_pending_idx": {
+          "name": "issue_connection_content_deletions_pending_idx",
+          "columns": [
+            {
+              "expression": "not_before",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"issue_connection_content_deletions\".\"status\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "issue_connection_content_deletions_company_id_companies_id_fk": {
+          "name": "issue_connection_content_deletions_company_id_companies_id_fk",
+          "tableFrom": "issue_connection_content_deletions",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -52761,6 +53081,23 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "responsibilities_owned_area_fk": {
+          "name": "responsibilities_owned_area_fk",
+          "tableFrom": "responsibilities",
+          "tableTo": "responsibility_areas",
+          "columnsFrom": [
+            "company_id",
+            "owner_user_id",
+            "area_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "owner_user_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -52802,6 +53139,12 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "title": {
           "name": "title",
@@ -52879,11 +53222,44 @@
           "method": "btree",
           "with": {}
         },
-        "responsibility_areas_company_title_uq": {
-          "name": "responsibility_areas_company_title_uq",
+        "responsibility_areas_identity_uq": {
+          "name": "responsibility_areas_identity_uq",
           "columns": [
             {
               "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "responsibility_areas_owner_title_uq": {
+          "name": "responsibility_areas_owner_title_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -53190,6 +53566,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "skill_id": {
+          "name": "skill_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -53280,6 +53662,28 @@
           "method": "btree",
           "with": {}
         },
+        "responsibility_links_responsibility_skill_uq": {
+          "name": "responsibility_links_responsibility_skill_uq",
+          "columns": [
+            {
+              "expression": "responsibility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "skill_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"responsibility_links\".\"skill_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "responsibility_links_project_idx": {
           "name": "responsibility_links_project_idx",
           "columns": [
@@ -53315,6 +53719,21 @@
           "columns": [
             {
               "expression": "routine_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "responsibility_links_skill_idx": {
+          "name": "responsibility_links_skill_idx",
+          "columns": [
+            {
+              "expression": "skill_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -53391,6 +53810,19 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "responsibility_links_skill_id_company_skills_id_fk": {
+          "name": "responsibility_links_skill_id_company_skills_id_fk",
+          "tableFrom": "responsibility_links",
+          "tableTo": "company_skills",
+          "columnsFrom": [
+            "skill_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -53399,7 +53831,7 @@
       "checkConstraints": {
         "responsibility_links_single_target_check": {
           "name": "responsibility_links_single_target_check",
-          "value": "(\"responsibility_links\".\"project_id\" is not null)::int + (\"responsibility_links\".\"issue_id\" is not null)::int + (\"responsibility_links\".\"routine_id\" is not null)::int = 1"
+          "value": "(\"responsibility_links\".\"project_id\" is not null)::int + (\"responsibility_links\".\"issue_id\" is not null)::int + (\"responsibility_links\".\"routine_id\" is not null)::int + (\"responsibility_links\".\"skill_id\" is not null)::int = 1"
         }
       },
       "isRLSEnabled": false
@@ -57676,6 +58108,114 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.stored_object_deletions": {
+      "name": "stored_object_deletions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "log_store": {
+          "name": "log_store",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "object_key": {
+          "name": "object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "not_before": {
+          "name": "not_before",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "stored_object_deletions_due_idx": {
+          "name": "stored_object_deletions_due_idx",
+          "columns": [
+            {
+              "expression": "not_before",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "stored_object_deletions_company_idx": {
+          "name": "stored_object_deletions_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.summary_slots": {
       "name": "summary_slots",
       "schema": "",
@@ -61217,6 +61757,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "token_hash": {
           "name": "token_hash",
           "type": "text",
@@ -63657,6 +64203,12 @@
         },
         "responsible_user_id": {
           "name": "responsible_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
