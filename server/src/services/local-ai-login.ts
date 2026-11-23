@@ -151,12 +151,6 @@ export function localAiLoginService(db: Db) {
     if (provider === "xai" || browserLogins.has(id)) return;
     browserLogins.set(id, startLocalBrowserLogin(provider as "anthropic" | "openai" | "google", loginHome(id)));
   }
-  /**
-   * Stop a sign-in process while the caller holds the row lock of its attempt.
-   * `start` launches the process after its transaction commits, so a reopened
-   * attempt can gain a process after `retireOwnedAttempt` stopped the previous
-   * one. The caller removes the login home next; no process may outlive that.
-   */
   async function stopBrowserLoginUnderLock(id: string) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const retirement = stopBrowserLogin(id);
@@ -304,10 +298,6 @@ export function localAiLoginService(db: Db) {
     });
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
     ensureBrowserLogin(attempt.sessionId, intent.provider);
-    // A cancel or a replacement may have retired this attempt between the
-    // transaction above and the launch. Read the row under its lock: a
-    // retirement that still holds the lock stops the process itself, and one
-    // that has committed is visible here.
     const waiting = await db.transaction(async tx => (await tx.select().from(adapterAuthSessions)
       .where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update"))[0]?.status === "waiting_for_user");
     if (!waiting) {

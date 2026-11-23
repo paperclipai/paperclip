@@ -2611,8 +2611,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     try {
       id = (await login.start(companyId, owner, intent)).sessionId;
       expect([...running]).toEqual([1]);
-      // The other tab reopens the attempt after cancel stopped the first
-      // process and before cancel's transaction takes the row lock.
       const transaction = db.transaction.bind(db);
       let reopened = false;
       const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
@@ -2628,7 +2626,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(launched).toBe(2);
       expect([...running]).toEqual([]);
       expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]?.status).toBe("cancelled");
-      // A reopen that arrives after the cancel has committed starts a new attempt, not a process for the cancelled one.
       const next = await login.start(companyId, owner, intent);
       expect(next.sessionId).not.toBe(id);
       await login.cancel(companyId, owner, next.sessionId);
