@@ -467,6 +467,7 @@ export interface ToolGatewaySession {
   gatewayTokenAllowedActions?: ToolMcpGatewayTokenAction[];
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
+  createdByUserId?: string | null;
   /** Human whose personal connection grant applies to this execution. */
   responsibleUserId?: string | null;
   /** Captured by the controller for this request, never accepted from tool arguments. */
@@ -1019,6 +1020,7 @@ function gatewaySessionFromRow(
     runId: row.runId,
     issueId: row.issueId,
     projectId: row.projectId,
+    createdByUserId: row.createdByUserId ?? null,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
   };
@@ -5231,6 +5233,22 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
     allowInteraction = true,
+  ): Promise<typeof connectionGrants.$inferSelect> {
+    const grant = await resolveConnectionGrantForSession(session, connection, allowInteraction);
+    if (session.createdByUserId && grant.subjectUserId && grant.subjectUserId !== session.createdByUserId) {
+      throw new ToolGatewayHttpError(
+        403,
+        "Only the person who owns this personal connection can use it from a session they open.",
+        "personal_grant_owner_required",
+      );
+    }
+    return grant;
+  }
+
+  async function resolveConnectionGrantForSession(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    allowInteraction: boolean,
   ): Promise<typeof connectionGrants.$inferSelect> {
     if (!(await pluginAppCatalogFor(db, [connection])).isAvailable(connectionSourceSlug(connection))) {
       throw new ToolGatewayHttpError(
@@ -11865,6 +11883,7 @@ export function createToolGatewayService(
       ttlMs?: number;
       actorType?: LogActivityInput["actorType"];
       actorId?: string;
+      createdByUserId?: string | null;
     }): Promise<ToolGatewaySession> {
       await assertAgentInCompany(input.companyId, input.agentId);
       const { issueId, projectId } = await resolveRunContext(input);
@@ -11879,6 +11898,7 @@ export function createToolGatewayService(
         runId: input.runId,
         issueId,
         projectId,
+        createdByUserId: input.createdByUserId ?? null,
         createdAt: now,
         expiresAt: new Date(now.getTime() + sessionTtlMs(input.ttlMs)),
       };
@@ -11892,6 +11912,7 @@ export function createToolGatewayService(
           runId: input.runId,
           issueId: session.issueId,
           projectId: session.projectId,
+          createdByUserId: session.createdByUserId,
           tokenHash: hashGatewayToken(token),
           expiresAt: session.expiresAt,
           createdAt: session.createdAt,

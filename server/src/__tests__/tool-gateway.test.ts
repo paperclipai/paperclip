@@ -2229,6 +2229,110 @@ rl.on("line", (line) => {
     },
   );
 
+  it("uses a personal grant in a person-created session only for the person who owns the run", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await createActiveMember(db, company.id, "alice");
+    await createActiveMember(db, company.id, "bob");
+    await db.update(heartbeatRuns).set({ responsibleUserId: "alice" }).where(eq(heartbeatRuns.id, run.id));
+    const secrets = secretService(db);
+    const definition = await secrets.createUserSecretDefinition(company.id, {
+      name: "Personal mail token",
+      key: `personal_mail_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+    });
+    const secret = await secrets.createCurrentUserSecretValue(company.id, "alice", {
+      definitionId: definition.id, value: "alice-personal-token",
+    });
+    const personal = await createRemoteMcpTool(db, company.id, { toolName: "read_mail" });
+    await db.update(toolConnections).set({
+      credentialPolicy: "per_user",
+      credentialRefs: [{ name: "credentials.authorization", secretId: secret.id, placement: "header", key: "Authorization", prefix: "Bearer " }],
+    }).where(eq(toolConnections.id, personal.connection.id));
+    await secrets.syncUserSecretDeclarationsForTarget(company.id,
+      { targetType: "tool_connection", targetId: personal.connection.id },
+      [{ definitionKey: definition.key, configPath: "credentials.authorization", envKey: "Authorization", versionSelector: "latest", required: true }],
+      { replaceAll: true });
+    await db.insert(connectionGrants).values({
+      companyId: company.id, connectionId: personal.connection.id, kind: "user", subjectUserId: "alice",
+      credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.authorization", versionSelector: "latest" }],
+      status: "active", isDefault: false,
+    });
+    const shared = await createRemoteMcpTool(db, company.id, { toolName: "shared_lookup" });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const authorizations: string[] = [];
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+      authorizations.push(new Headers(init.headers).get("authorization") ?? "");
+      const body = JSON.parse(String(init.body)) as { id: string };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id,
+        result: { content: [{ type: "text", text: "synthetic result" }] } }),
+      { headers: { "content-type": "application/json" } });
+    } });
+    const boardActor = (userId: string): Express.Request["actor"] => ({
+      type: "board",
+      userId,
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "member", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    const openSession = async (userId: string) => {
+      const response = await request(createGatewayRouteApp(db, gateway, boardActor(userId)))
+        .post("/api/tool-gateway/sessions")
+        .send({ companyId: company.id, agentId: agent.id, runId: run.id });
+      expect(response.status).toBe(201);
+      return response.body.token as string;
+    };
+    const callTool = async (token: string, connectionId: string) => {
+      const tool = (await gateway.listToolsForSession(token)).find((item) => item.connectionId === connectionId)!;
+      return request(createGatewayRouteApp(db, gateway))
+        .post("/api/tool-gateway/tools/call")
+        .set("x-paperclip-tool-gateway-token", token)
+        .send({ tool: tool.name, parameters: { key: "test", value: randomUUID() } });
+    };
+
+    const bobToken = await openSession("bob");
+    const bobPersonal = await callTool(bobToken, personal.connection.id);
+    expect(bobPersonal.status).toBe(403);
+    expect(bobPersonal.body.reasonCode).toBe("personal_grant_owner_required");
+    expect(authorizations).toEqual([]);
+    const bobShared = await callTool(bobToken, shared.connection.id);
+    expect(bobShared.status).toBe(200);
+    expect(bobShared.body.status).toBe("completed");
+
+    const aliceToken = await openSession("alice");
+    const alicePersonal = await callTool(aliceToken, personal.connection.id);
+    expect(alicePersonal.status).toBe(200);
+    expect(alicePersonal.body.status).toBe("completed");
+    expect(authorizations.at(-1)).toBe("Bearer alice-personal-token");
+
+    const agentSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, actorType: "agent", actorId: agent.id });
+    const agentPersonal = await callTool(agentSession.token, personal.connection.id);
+    expect(agentPersonal.status).toBe(200);
+    expect(agentPersonal.body.status).toBe("completed");
+  });
+
+  it("refuses a person-created session when the person may not act on the agent", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await db.insert(companyMemberships).values({
+      companyId: company.id, principalType: "user", principalId: "viewer-user", status: "active", membershipRole: "viewer",
+    });
+    const response = await request(createGatewayRouteApp(db, createTestToolGatewayService(db), {
+      type: "board",
+      userId: "viewer-user",
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "member", status: "active" }],
+      isInstanceAdmin: false,
+    }))
+      .post("/api/tool-gateway/sessions")
+      .send({ companyId: company.id, agentId: agent.id, runId: run.id });
+    expect(response.status).toBe(403);
+  });
+
   it("passes only the selected grant identity to local stdio MCP processes", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

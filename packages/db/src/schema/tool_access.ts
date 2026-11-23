@@ -716,6 +716,7 @@ export const toolGatewaySessions = pgTable(
     clientName: text("client_name"),
     mcpSessionId: text("mcp_session_id"),
     correlationId: text("correlation_id"),
+    createdByUserId: text("created_by_user_id"),
     tokenHash: text("token_hash").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
