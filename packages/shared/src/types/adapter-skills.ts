@@ -43,11 +43,15 @@ export interface AgentSkillSnapshot {
   mode: AgentSkillSyncMode;
   desiredSkills: string[];
   desiredSkillEntries?: AgentDesiredSkillEntry[];
+  /** Library membership, including disabled skills. Does not grant runtime access. */
+  installedSkills?: string[];
   entries: AgentSkillEntry[];
   warnings: string[];
 }
 
 export interface AgentSkillSyncRequest {
   mode: AgentSkillAssignmentMode;
+  /** Optional full library membership. Older clients retain existing membership. */
+  installedSkills?: string[];
   desiredSkills: Array<string | AgentDesiredSkillEntry>;
 }
