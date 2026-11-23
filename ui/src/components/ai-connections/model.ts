@@ -112,8 +112,11 @@ export function aiSignInNotice(connection: Pick<AiConnectionSummary, "signInEnds
   const endsAt = connection.signInEndsAt ? Date.parse(connection.signInEndsAt) : NaN;
   if (!Number.isFinite(endsAt) || endsAt - now > SIGN_IN_NOTICE_MS) return null;
   if (endsAt <= now) return "This sign-in has ended. Reconnect to restore runs.";
-  const days = Math.floor((endsAt - now) / 86_400_000);
-  return `This sign-in ends ${days < 1 ? "today" : days === 1 ? "in 1 day" : `in ${days} days`}. Reconnect to keep runs working.`;
+  // Count calendar days in the viewer's time zone: an end shortly after
+  // midnight is tomorrow, not today.
+  const day = (time: number) => { const date = new Date(time); return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000; };
+  const days = day(endsAt) - day(now);
+  return `This sign-in ends ${days < 1 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`}. Reconnect to keep runs working.`;
 }
 
 export function aiConnectionProblem(connection?: AiConnectionSummary) {

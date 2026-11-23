@@ -73,8 +73,11 @@ export function claudeRefreshDue(stored: StoredClaudeOauth, now = Date.now(), ma
 
 /** When the provider ends the stored login, or null when the document does not say. */
 export function claudeSignInEndsAt(raw: string): number | null {
-  return parseStoredClaudeOauth(raw)?.refreshTokenExpiresAt ?? null;
+  const endsAt = parseStoredClaudeOauth(raw)?.refreshTokenExpiresAt;
+  return endsAt !== undefined && representableTime(endsAt) ? endsAt : null;
 }
+// The end is shown as a date. A number that no date can hold must not fail the save of the credential it came with.
+const representableTime = (time: number) => time > 0 && time <= 8.64e15;
 
 export class ClaudeOauthRefreshError extends Error {
   /** True when the provider refused the refresh token, so the user must sign in again. */
@@ -135,6 +138,7 @@ export async function refreshClaudeOauth(
   const granted = nonEmpty(payload.scope) ? payload.scope.split(/\s+/).filter(Boolean) : ["user:inference"];
   // The provider may restate the login's end. It never moves later than the one saved at sign-in.
   const restated = typeof payload.refresh_token_expires_in === "number" && Number.isFinite(payload.refresh_token_expires_in) && payload.refresh_token_expires_in > 0
+    && representableTime(now() + payload.refresh_token_expires_in * 1000)
     ? now() + payload.refresh_token_expires_in * 1000 : undefined;
   const signInEndsAt = stored.refreshTokenExpiresAt !== undefined && restated !== undefined
     ? Math.min(stored.refreshTokenExpiresAt, restated) : stored.refreshTokenExpiresAt ?? restated;

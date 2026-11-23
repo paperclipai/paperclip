@@ -39,6 +39,14 @@ describe("Claude OAuth credential", () => {
     expect(parseStoredClaudeOauth(first)).toMatchObject({ refreshTokenExpiresAt: now + 30 * 86400_000 });
     expect(claudeSignInEndsAt("legacy-token")).toBeNull();
   });
+  it("ignores a sign-in end that no date can hold, and keeps the renewed tokens", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 28800, refresh_token_expires_in: 1e300 })));
+    const next = await refreshClaudeOauth(stored, { fetchImpl, now: () => now });
+    expect(parseStoredClaudeOauth(next)).toMatchObject({ accessToken: "new-access", refreshToken: "new-refresh" });
+    expect(claudeSignInEndsAt(next)).toBeNull();
+    // A stored document that already carries such a number yields no date either.
+    expect(claudeSignInEndsAt(JSON.stringify({ claudeAiOauth: { ...parseStoredClaudeOauth(next), refreshTokenExpiresAt: 1e300 } }))).toBeNull();
+  });
   it.each([400, 401, 403, 503])("redacts provider failure bodies (HTTP %s)", async status => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response("private-response", { status }));
     await expect(refreshClaudeOauth(stored, { fetchImpl })).rejects.toMatchObject({ rejected: status !== 503, message: `Claude token refresh failed with HTTP ${status}` });
