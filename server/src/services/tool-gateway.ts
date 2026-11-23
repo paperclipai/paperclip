@@ -33,7 +33,8 @@ import { connectionManagementService, type ConnectionManagementContext } from ".
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
-import { callGoogleWorkspaceRest, googleWorkspaceRestAuditEndpoint, googleWorkspaceRestToolDefinition } from "./google-workspace-rest-dispatch.js";
+import { callGoogleWorkspaceRest, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
+import { paperclipDefinedTool } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
@@ -2018,15 +2019,14 @@ export function createToolGatewayService(
           ...(baseNameCounts.get(baseName)! > 1 ? [catalogEntry.id] : []),
         ]);
         const applicationKey = application.applicationKey ?? null;
-        const currentDefinition = connection.config.sourceTemplateKey === "google-workspace"
-          ? googleWorkspaceRestToolDefinition(catalogEntry.toolName) : null;
+        const currentDefinition = paperclipDefinedTool(connection, catalogEntry.toolName);
         const inputSchema = projectedConnectionToolInputSchema(
           connection,
-          (currentDefinition?.inputSchema as Record<string, unknown> | undefined) ?? catalogEntry.inputSchema ?? {},
+          currentDefinition?.inputSchema ?? catalogEntry.inputSchema ?? {},
           catalogEntry.toolName,
         );
-        const outputSchema = (currentDefinition?.outputSchema as Record<string, unknown> | undefined) ?? catalogEntry.outputSchema ?? null;
-        const annotations = (currentDefinition?.annotations as Record<string, unknown> | undefined) ?? catalogEntry.annotations ?? {};
+        const outputSchema = currentDefinition?.outputSchema ?? catalogEntry.outputSchema ?? null;
+        const annotations = currentDefinition?.annotations ?? catalogEntry.annotations ?? {};
         const description = currentDefinition?.description ?? catalogEntry.description;
         const risk = riskFromCatalogEntry(catalogEntry);
         const onDemandTools = readOnDemandToolsEnabled(connection);

@@ -26,7 +26,9 @@ describe("Google Workspace REST transport eligibility", () => {
 
 describe("googleWorkspaceRestToolDefinition", () => {
   it("returns this folder's definition for a tool of a service on paperclip_rest, and nothing otherwise", () => {
-    expect(googleWorkspaceRestToolDefinition("docs__update_doc")).toEqual(listGoogleWorkspaceRest("docs").find((tool) => tool.name === "update_doc"));
+    const rest = listGoogleWorkspaceRest("docs").find((tool) => tool.name === "update_doc")!;
+    expect(googleWorkspaceRestToolDefinition("docs__update_doc")).toEqual({ name: rest.name, title: rest.title ?? null, description: rest.description,
+      inputSchema: rest.inputSchema, outputSchema: rest.outputSchema, annotations: rest.annotations });
     expect(googleWorkspaceRestToolDefinition("docs__update_doc")?.inputSchema.required).toContain("writeControl");
     expect(googleWorkspaceRestToolDefinition("chat__list_messages")).toBeNull();
     expect(googleWorkspaceRestToolDefinition("gmail__send_message")).toBeNull();

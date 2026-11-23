@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues,
@@ -641,6 +641,33 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
       await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }))
         .rejects.toMatchObject({ reasonCode: "approval_required" });
+    });
+
+    it("keeps an action that is both Off and held for review Off, and one that is both Ask first and held for review Ask first", async () => {
+      for (const service of LAUNCH_SERVICES) useTransport(service, "google_mcp");
+      const f = await connectWorkspace({ off: ["gmail__get_message"], askFirst: ["gmail__create_draft"] });
+      const held = f.catalog.filter((entry) => entry.toolName === "gmail__get_message" || entry.toolName === "gmail__create_draft").map((entry) => entry.id);
+      expect(held).toHaveLength(2);
+      await db.update(toolCatalogEntries).set({ status: "quarantined", quarantineReason: "pending_review", quarantinedAt: new Date() })
+        .where(inArray(toolCatalogEntries.id, held));
+      const listed = async () => (await f.gateway.listToolsForSession(f.session.token))
+        .filter((tool) => tool.connectionId === f.connectionId).map((tool) => tool.upstreamToolName).sort();
+      const draft = { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." };
+
+      Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
+      expect(await listed()).toEqual(["docs__read_doc", "gmail__search_threads"]);
+      for (let refresh = 0; refresh < 2; refresh += 1) {
+        const refreshed = await f.service.refreshCatalog(f.connectionId, f.actor);
+        expect(refreshed.catalog.filter((entry) => held.includes(entry.id))).toEqual([
+          expect.objectContaining({ status: "active" }), expect.objectContaining({ status: "active" }),
+        ]);
+        const after = await listed();
+        expect(after).not.toContain("gmail__get_message");
+        expect(after).toContain("gmail__create_draft");
+        expect(after).toEqual(expect.arrayContaining(["gmail__list_threads", "gmail__search_messages"]));
+        await expect(f.call("gmail__create_draft", draft)).rejects.toMatchObject({ reasonCode: "approval_required" });
+      }
+      expect(f.restRequests.filter((request) => request.path.endsWith("/drafts") || request.path.endsWith("/messages/msg1"))).toEqual([]);
     });
   });
 

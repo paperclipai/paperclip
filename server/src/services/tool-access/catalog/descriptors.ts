@@ -25,8 +25,6 @@ export type McpToolDescriptor = {
   ui?: McpAppToolUi | null;
   /** Sanitized provider icons (SEP-973). Display only: not part of the version hash. */
   icons?: McpIcon[] | null;
-  /** The definition comes from Paperclip's own code, not from a remote server. */
-  paperclipDefined?: boolean;
 };
 
 export function normalizeToolDescriptor(tool: unknown): McpToolDescriptor | null {

@@ -248,21 +248,24 @@ connection working with no user action:
 
 - **Agents see this folder's definitions at once.** When the gateway lists a
   connection's tools for an agent, it takes the input schema, output schema,
-  description and annotations of a `paperclip_rest` tool from this folder
-  (`googleWorkspaceRestToolDefinition` in the adapter), not from the saved row.
+  description and annotations of a `paperclip_rest` tool from this folder, not
+  from the saved row. It asks `paperclipDefinedTool` in
+  `server/src/services/connectors/paperclip-defined-tools.ts`, which calls
+  `googleWorkspaceRestToolDefinition` in the adapter.
   Routing and the advertised definition read the same transport setting in
   the same process, so an agent never gets Google's MCP schema for a call that
   goes to REST. This is an in-memory lookup: no request and no refresh before
   the turn starts.
-- **The next catalog refresh saves this folder's definitions.** Discovery
-  marks each descriptor of a `paperclip_rest` service `paperclipDefined`.
-  Catalog publication never holds a `paperclipDefined` action for review, and
-  it makes an action active again when it was held for review
-  (`quarantined`, `pending_review`) only because a remote definition changed.
-  An action a person turned Off (left out of the connection's profile) stays
-  Off, and an Ask first policy stays in force; refresh does not change
-  either. New actions (Gmail `list_threads` and `search_messages`) are added
-  as for any refresh.
+- **The next catalog refresh saves this folder's definitions.** Catalog
+  publication asks the same `paperclipDefinedTool`. It never holds such an
+  action for review, and it clears the review hold (`quarantined`,
+  `pending_review`) of an action held only because a remote definition
+  changed. Clearing the hold does not count the action as new, so it does not
+  add the action to the connection's profile: an action a person turned Off
+  (left out of the profile) stays Off, also when it was held, and an Ask first
+  policy stays in force. Only actions the connection never had (Gmail
+  `list_threads` and `search_messages`) get the connection's default for new
+  actions.
 
 The saved risk level of an action changes only on that refresh. Until then,
 `docs__update_doc`, `slides__update_presentation`, `sheets__update_spreadsheet`

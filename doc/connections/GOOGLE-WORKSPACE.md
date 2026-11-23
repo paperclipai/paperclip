@@ -76,8 +76,10 @@ which new setup does not offer, stay on `google_mcp`. A service can move to
 test enforces that. Actions of a service on `paperclip_rest` are Paperclip's
 own definitions. Agents receive them at once, also for a connection saved
 before the switch, and the next catalog refresh saves them without holding
-any for review. That refresh also releases actions held for review; actions
-turned Off and Ask first settings stay as they are. The setting applies only to the combined `google-workspace`
+any for review. That refresh also clears the review hold of held actions,
+without enabling them: actions turned Off stay Off and Ask first settings
+stay, also for a held action. Only the two Gmail actions the connection never
+had get the default for new actions. The setting applies only to the combined `google-workspace`
 connection; saved individual product connections (for example the Gmail app)
 still call Google's MCP servers directly. On either transport, the same grant scope checks, approvals,
 audit, token refresh and reconnection, prompt-injection screening, cancellation
