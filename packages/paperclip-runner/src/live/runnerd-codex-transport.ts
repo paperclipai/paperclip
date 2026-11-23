@@ -1392,6 +1392,17 @@ function runnerCloseDeadlines(
   };
 }
 
+function runnerCloseDrainBudgetMs(
+  options: Pick<CapabilityRunnerdCodexTransportOptions, "provider" | "acpxAgent">,
+  preparationDeadline: number,
+): number {
+  const remainingMs = Math.max(0, preparationDeadline - Date.now());
+  // A settled Claude session can still be waiting for a durable journal receipt.
+  // Give it the rest of preparation without borrowing from suspension.
+  if (options.provider === "acpx" && options.acpxAgent === "claude") return remainingMs;
+  return Math.min(5_000, remainingMs);
+}
+
 async function awaitAdoptedRunnerAuthentication(input: {
   activeConnectionCount: () => number;
   isAlive: () => Promise<boolean> | boolean;
@@ -5906,7 +5917,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         timings.stopMs = Date.now() - stopStartedAt;
         const drainStartedAt = Date.now();
         providerDrained = await this.#drainSettledProviderEventsBeforeSuspend(
-          Math.min(5_000, Math.max(0, preparationDeadline - Date.now())),
+          runnerCloseDrainBudgetMs(this.options, preparationDeadline),
           cleanupProviderStopConfirmed,
         );
         timings.drainMs = Date.now() - drainStartedAt;
@@ -9960,6 +9971,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   cutOffRunAttachmentPayload,
   releaseRunnerProcessOwnership,
   runnerCloseDeadlines,
+  runnerCloseDrainBudgetMs,
   runnerCloseGraceMs,
   rotatedRunAttachPayload,
   localRunnerStateArchive,
