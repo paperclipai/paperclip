@@ -4,7 +4,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { ONBOARDING_AGENT_STEP } from "../lib/onboarding-route";
 
@@ -200,12 +199,9 @@ describe("OnboardingWizard — which step it lands on", () => {
       checks: [],
       testedAt: new Date("2026-03-02T00:00:00Z").toISOString(),
     });
-    // Onboarding applies a stored Claude login automatically; this suite is
-    // not testing that path, so default to "no stored value" (the route's
-    // fixed 404) so the hire path behaves as it did before that feature.
-    mockAgentsApi.getClaudeOAuthTokenStatus.mockRejectedValue(
-      new ApiError("Not found", 404, null),
-    );
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+      secretId: "saved-claude-login", latestVersion: 1,
+    });
     mockEnvironmentsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
@@ -595,7 +591,7 @@ describe("OnboardingWizard — which step it lands on", () => {
 
       await press(stepCta());
       await pickModelSource();
-      await press(stepCta());
+      await settle();
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const [, payload] = mockAgentsApi.hire.mock.calls.at(-1)!;
