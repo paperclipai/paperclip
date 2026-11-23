@@ -22,4 +22,13 @@ describe("agent update schema", () => {
   it("accepts profile and budget limit changes", () => {
     expect(updateAgentSchema.parse({ name: "Renamed", budgetMonthlyCents: 100 })).toEqual({ name: "Renamed", budgetMonthlyCents: 100 });
   });
+  it("accepts an explicit null aiConnection so a pin can be cleared", () => {
+    const result = updateAgentSchema.safeParse({ runtimeConfig: { aiConnection: null } });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.runtimeConfig?.aiConnection).toBeNull();
+  });
+  it("rejects a non-object aiConnection value", () => {
+    const result = updateAgentSchema.safeParse({ runtimeConfig: { aiConnection: "anthropic" } });
+    expect(result.success).toBe(false);
+  });
 });

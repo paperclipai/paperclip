@@ -5804,7 +5804,17 @@ export function agentRoutes(
       });
     }
     const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+    // An explicit aiConnection: null clears the pin; an omitted field keeps
+    // it. The clear deletes the key so the persisted config carries no pin.
+    let clearsAiConnection = false;
+    if (
+      requestedRuntimeConfig !== null
+      && Object.prototype.hasOwnProperty.call(requestedRuntimeConfig, "aiConnection")
+      && requestedRuntimeConfig.aiConnection == null
+    ) {
+      delete requestedRuntimeConfig.aiConnection;
+      clearsAiConnection = true;
+    } else if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
       && !isAgentSetupDraft(existing)) {
       const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
       if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
@@ -5813,7 +5823,7 @@ export function agentRoutes(
         requestedRuntimeConfig.aiConnection = existingBinding;
       }
     }
-    if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+    if (!clearsAiConnection && !requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
       && !isAgentSetupDraft(existing)
       && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
       && nextAiConfig.acpxAgent === "copilot"
@@ -5821,7 +5831,9 @@ export function agentRoutes(
       requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
         aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
     }
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
+    const nextAiBinding = clearsAiConnection
+      ? undefined
+      : aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanConfigureAgentSetup(req, existing);
       const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
