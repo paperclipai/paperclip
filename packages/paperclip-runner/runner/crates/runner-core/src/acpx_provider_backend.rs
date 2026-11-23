@@ -328,7 +328,7 @@ impl AcpxProviderDescriptor {
     fn supports_host_parking(&self) -> bool {
         matches!(self.agent.as_str(), "codex" | "claude")
             && self.names_qualified_release()
-            && acpx_release_profile(&self.agent)
+            && crate::acpx_candidate_admission::release_profile(&self.agent)
                 .is_some_and(|profile| !profile.qualification_pending)
     }
 
@@ -1003,6 +1003,17 @@ fn validate_pending_runtime_requests(
     Ok(())
 }
 
+/// The sidecar refused to reload a saved conversation in a new provider
+/// process (ACP `session/load` or `session/resume` behind a recovering
+/// `session.open`). Only the typed rejection decides; the message never does.
+fn saved_state_reload_refused(error: &crate::local_runner::LocalRunnerError) -> bool {
+    error.command_rejection().is_some_and(|rejection| {
+        rejection.command == GeneratedAcpxSidecarCommand::SessionOpen.as_str()
+            && rejection.classification
+                == crate::acpx_sidecar_transport::ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE
+    })
+}
+
 fn attested_pending_runtime_requests(
     pending: &BTreeMap<String, Value>,
     provider: &crate::acpx_provider_state::AcpxProviderState,
@@ -1537,8 +1548,17 @@ impl AcpxCommandExecutor {
                 }
                 Err(_) => return Ok(false),
             };
-        let Ok(session) = self.start_session(true) else {
-            return Ok(false);
+        let session = match self.start_session(true) {
+            Ok(session) => session,
+            // The provider refused this saved conversation by name: closing
+            // the turn as a generic interruption would hide that the server
+            // must start a replacement conversation.
+            Err(error)
+                if error.classification() == Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE) =>
+            {
+                return Err(error)
+            }
+            Err(_) => return Ok(false),
         };
         let identity = session.identity().clone();
         let process_id = session.process_id();
@@ -1607,8 +1627,15 @@ impl AcpxCommandExecutor {
             self.launch_profile.as_ref(),
         )?;
         let mut session = AcpxProviderSession::start(&config).map_err(|error| {
-            DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
-                .with_provider_failure(error.provider_failure())
+            let incompatible = recovering && saved_state_reload_refused(&error);
+            let failure =
+                DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
+                    .with_provider_failure(error.provider_failure());
+            if incompatible {
+                failure.with_classification(crate::durable::PROVIDER_STATE_INCOMPATIBLE)
+            } else {
+                failure
+            }
         })?;
         if session.identity().profile_digest != state.descriptor.command_digest {
             let _ = session.shutdown("qualified ACPX profile digest mismatch");
@@ -1619,7 +1646,7 @@ impl AcpxCommandExecutor {
         let expected_dormant = recovering
             && self.recovery_pending_effects == Some(0)
             && self.candidate_admission().is_none()
-            && acpx_release_profile(&state.descriptor.agent)
+            && crate::acpx_candidate_admission::release_profile(&state.descriptor.agent)
                 .is_some_and(|profile| !profile.qualification_pending)
             && matches!(state.lifecycle.as_str(), "session_open" | "suspended")
             && state.active_turn_id.is_none()

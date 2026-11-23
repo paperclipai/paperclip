@@ -22,6 +22,54 @@ fn native_host_matches(platform: &str, architecture: &str, os: &str, host_arch: 
     )
 }
 
+/// The generated release profile that runtime qualification gates read.
+///
+/// Every gate that depends on `qualification_pending` reads it here, so tests
+/// can exercise the released state of a still-pending profile exactly as the
+/// declaration change at qualification would produce it.
+pub(crate) fn release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
+    #[allow(unused_mut)]
+    let mut profile = acpx_release_profile(agent)?;
+    #[cfg(test)]
+    if released_for_test::contains(agent) {
+        profile.qualification_pending = false;
+    }
+    Some(profile)
+}
+
+/// Test-only simulation of a profile flipped to released on this thread.
+#[cfg(test)]
+pub(crate) mod released_for_test {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static RELEASED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn contains(agent: &str) -> bool {
+        RELEASED.with(|released| released.borrow().iter().any(|name| name == agent))
+    }
+
+    /// Treats `agent` as released until the guard drops.
+    pub(crate) fn release(agent: &str) -> Guard {
+        RELEASED.with(|released| released.borrow_mut().push(agent.to_owned()));
+        Guard(agent.to_owned())
+    }
+
+    pub(crate) struct Guard(String);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            RELEASED.with(|released| {
+                let mut released = released.borrow_mut();
+                if let Some(index) = released.iter().position(|name| *name == self.0) {
+                    released.remove(index);
+                }
+            });
+        }
+    }
+}
+
 /// Operator authority supplied only through trusted process startup. Company
 /// membership is authorized by the server; an agent descriptor cannot mint it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -73,7 +121,7 @@ impl AcpxCandidateAdmission {
     }
 
     fn validate_at(&self, now: u64, os: &str, architecture: &str) -> Result<(), LocalRunnerError> {
-        let profile = acpx_release_profile(&self.agent).ok_or_else(invalid)?;
+        let profile = release_profile(&self.agent).ok_or_else(invalid)?;
         self.validate_against_profile(&profile, now, os, architecture)
     }
 
@@ -340,6 +388,32 @@ mod tests {
                 .validate_against_profile(&released, now, os, host_arch)
                 .is_err());
         }
+    }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    fn released_antigravity_rejects_startup_and_binding_records() {
+        let current = test_admission("run-1", "session-1");
+        current.validate().unwrap();
+        let _released = released_for_test::release("antigravity");
+        assert!(
+            !release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
+        assert!(current.validate().is_err());
+        assert!(current
+            .validate_binding("antigravity", "explicit-model", "run-1", "session-1")
+            .is_err());
+        assert!(
+            AcpxCandidateAdmission::parse_json(&serde_json::to_string(&current).unwrap()).is_err()
+        );
     }
 
     fn kimi_admission(platform: &str, architecture: &str) -> AcpxCandidateAdmission {
