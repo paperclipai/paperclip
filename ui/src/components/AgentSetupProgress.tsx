@@ -8,6 +8,7 @@ import type {
   CreateAgentSetupProgress,
 } from "@paperclipai/shared";
 import { agentSetupProgressApi } from "@/api/agentSetupProgress";
+import { useAccountIdentity } from "@/api/companies-query";
 import { describeError } from "@/api/errors";
 import { Button } from "@/components/ui/button";
 import { StatusIcon } from "@/components/StatusIcon";
@@ -53,10 +54,21 @@ export function useAgentSetupProgress({
   subjectId,
   enabled = true,
   client = agentSetupProgressApiClient,
-}: CreateAgentSetupProgress & { companyId: string | null | undefined; enabled?: boolean; client?: AgentSetupProgressClient }) {
+  accountId: accountOverride,
+}: CreateAgentSetupProgress & {
+  companyId: string | null | undefined;
+  enabled?: boolean;
+  client?: AgentSetupProgressClient;
+  /** The signed-in account; stories and tests pass it, the app reads the session. */
+  accountId?: string;
+}) {
   const queryClient = useQueryClient();
-  const handoffKey = ["agent-setup-progress-handoff", companyId ?? null, purpose, subjectId ?? null] as const;
-  const storageKey = agentSetupHandoffStorageKey(companyId, purpose, subjectId);
+  // The checklist belongs to the person setting up: keyed by account so another account never reuses it.
+  const account = useAccountIdentity();
+  const accountId = accountOverride ?? account.userId ?? "anonymous";
+  const accountKnown = Boolean(accountOverride) || account.settled;
+  const handoffKey = ["agent-setup-progress-handoff", accountId, companyId ?? null, purpose, subjectId ?? null] as const;
+  const storageKey = agentSetupHandoffStorageKey(accountId, companyId, purpose, subjectId);
   const handoffQuery = useQuery({
     queryKey: handoffKey,
     queryFn: async () => {
@@ -65,7 +77,7 @@ export function useAgentSetupProgress({
       storeAgentSetupHandoff(storageKey, created);
       return created;
     },
-    enabled: Boolean(companyId) && enabled,
+    enabled: Boolean(companyId) && enabled && accountKnown,
     // Created once per setup: never re-created on its own (renew does that). A failed create
     // follows the app's retry defaults; at worst a retry leaves an unused checklist that expires.
     staleTime: Infinity,

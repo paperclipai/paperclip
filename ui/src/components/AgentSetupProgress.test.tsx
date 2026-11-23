@@ -13,6 +13,8 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 
 vi.mock("@/api/agentSetupProgress", () => ({ agentSetupProgressApi: {} }));
+const account = vi.hoisted(() => ({ userId: "user-1" as string | null }));
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: account.userId, settled: true }) }));
 
 const ID = "11111111-1111-4111-8111-111111111111";
 const BASE = `https://acme.paperclip.app/api/agent-setup-progress/${ID}`;
@@ -35,6 +37,7 @@ describe("agent setup progress", () => {
     root = createRoot(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     window.sessionStorage.clear();
+    account.userId = "user-1";
   });
   afterEach(async () => {
     await act(async () => root.unmount());
@@ -185,7 +188,7 @@ describe("agent setup progress", () => {
     const third: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_third", progress: { ...WAITING, id: "44444444-4444-4444-8444-444444444444" } };
     const reopenCreate = vi.fn().mockResolvedValueOnce(third);
     const finishedCache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    finishedCache.setQueryData(["agent-setup-progress-handoff", "company-1", "aws_connection", "conn-1"], HANDOFF);
+    finishedCache.setQueryData(["agent-setup-progress-handoff", "user-1", "company-1", "aws_connection", "conn-1"], HANDOFF);
     const reopenClient: AgentSetupProgressClient = { create: reopenCreate, get: vi.fn(async (id: string) => id === ID ? { ...failedAttempt, status: "done" as const } : third.progress) };
     await act(async () => root.unmount());
     root = createRoot(container);
@@ -211,5 +214,23 @@ describe("agent setup progress", () => {
     await act(async () => { retry.click(); });
     await flush();
     expect(container.textContent).not.toContain("Couldn’t refresh your agent’s progress");
+  });
+
+  it("never hands one account's checklist to another account in the same tab", async () => {
+    const second: AgentSetupProgressHandoff = { ...HANDOFF, token: "pcsp_other_account", progress: { ...WAITING, id: "55555555-5555-4555-8555-555555555555" } };
+    const create = vi.fn().mockResolvedValueOnce(HANDOFF).mockResolvedValueOnce(second);
+    const client: AgentSetupProgressClient = { create, get: vi.fn(async (id: string) => id === ID ? WAITING : second.progress) };
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><Full client={client} /></QueryClientProvider>); });
+    await flush();
+    expect(token()).toBe("pcsp_token");
+    // Signed out in another tab (this tab's storage stays), then another account opens the same setup here.
+    await act(async () => root.unmount());
+    account.userId = "user-2";
+    root = createRoot(container);
+    const freshCache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root.render(<QueryClientProvider client={freshCache}><Full client={client} /></QueryClientProvider>); });
+    await flush();
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(token()).toBe("pcsp_other_account");
   });
 });

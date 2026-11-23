@@ -66,6 +66,8 @@ export interface AwsRoleSetupProps {
   /** The company, for the agent's live progress checklist; without it the prompt has no progress reporting. */
   companyId?: string | null;
   progressClient?: AgentSetupProgressClient;
+  /** The signed-in account for the checklist; stories and tests pass it, the app reads the session. */
+  progressAccountId?: string;
 }
 
 /** The steps the agent is asked to report; it may adjust them. */
@@ -102,10 +104,13 @@ export function AwsRoleSetup({
   beforeFooter,
   companyId,
   progressClient,
+  progressAccountId,
 }: AwsRoleSetupProps) {
   const [setup, setSetup] = useState<AwsConnectionSetup | null>(null);
   const agentProgress = useAgentSetupProgress({
-    companyId, purpose: "aws_connection", subjectId: connectionId, ...(progressClient ? { client: progressClient } : {}),
+    companyId, purpose: "aws_connection", subjectId: connectionId,
+    ...(progressClient ? { client: progressClient } : {}),
+    ...(progressAccountId ? { accountId: progressAccountId } : {}),
   });
   // The prompt waits for the checklist (or its failure), so a copied prompt always carries progress reporting when it can.
   const promptReady = !companyId || Boolean(agentProgress.handoff) || Boolean(agentProgress.error);

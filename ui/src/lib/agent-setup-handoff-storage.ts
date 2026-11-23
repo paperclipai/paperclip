@@ -3,13 +3,19 @@ import type { AgentSetupProgressHandoff } from "@paperclipai/shared";
 /**
  * The agent setup handoff (checklist id, token and URLs) for one setup, kept in
  * this tab so a reload follows the checklist the copied prompt writes to. The
- * token can do nothing but update that checklist until it expires, and sign-out
- * clears every stored handoff so the next account in the tab never inherits one.
+ * token can do nothing but update that checklist until it expires. The key names
+ * the signed-in account, so another account in this tab (even after a sign-out
+ * in another tab) never finds it, and sign-out here clears every stored handoff.
  */
 const PREFIX = "paperclip:agent-setup-progress:";
 
-export function agentSetupHandoffStorageKey(companyId: string | null | undefined, purpose: string, subjectId: string | null | undefined) {
-  return `${PREFIX}${companyId ?? ""}:${purpose}:${subjectId ?? ""}`;
+export function agentSetupHandoffStorageKey(
+  accountId: string,
+  companyId: string | null | undefined,
+  purpose: string,
+  subjectId: string | null | undefined,
+) {
+  return `${PREFIX}${accountId}:${companyId ?? ""}:${purpose}:${subjectId ?? ""}`;
 }
 
 export function storedAgentSetupHandoff(key: string): AgentSetupProgressHandoff | null {

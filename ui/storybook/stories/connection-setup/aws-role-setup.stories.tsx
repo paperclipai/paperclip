@@ -82,11 +82,12 @@ export const RoleArnSaved: Story = { args: { client: fixed({ ...readOnly, savedR
 export const NotReachable: Story = { args: { client: fixed({ available: false, reason: "loopback" }) } };
 
 /** With live progress: the agent has not reported yet. */
-export const AgentWaiting: Story = { args: { companyId: "company-storybook", progressClient: progressAt("waiting", []) } };
+export const AgentWaiting: Story = { args: { companyId: "company-storybook", progressAccountId: "storybook-user", progressClient: progressAt("waiting", []) } };
 /** The agent set its checklist and is part way through. */
 export const AgentWorking: Story = {
   args: {
     companyId: "company-storybook",
+    progressAccountId: "storybook-user",
     progressClient: progressAt("in_progress", [
       step("check-account", "Check the AWS account", "done", "Signed in to account 123456789012 as an administrator."),
       step("check-provider", "Check the identity provider", "done", "No provider for this Paperclip address yet, so the stack creates one."),
@@ -99,6 +100,7 @@ export const AgentWorking: Story = {
 export const AgentDone: Story = {
   args: {
     companyId: "company-storybook",
+    progressAccountId: "storybook-user",
     progressClient: progressAt("done", [
       step("check-account", "Check the AWS account", "done", "Signed in to account 123456789012 as an administrator."),
       step("check-provider", "Check the identity provider", "done", "No provider for this Paperclip address yet, so the stack creates one."),
@@ -111,6 +113,7 @@ export const AgentDone: Story = {
 export const AgentFailed: Story = {
   args: {
     companyId: "company-storybook",
+    progressAccountId: "storybook-user",
     progressClient: progressAt("failed", [
       step("check-account", "Check the AWS account", "done", "Signed in to account 123456789012."),
       step("check-provider", "Check the identity provider", "done"),
