@@ -223,7 +223,7 @@ export async function prepareManagedAiRuntime(
     allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
     config: Record<string, unknown>;
-    /** The run this runtime is prepared for, so its own token never defers a Claude renewal. */
+    /** The run this runtime is prepared for. Its own token does not defer a Claude renewal, and the renewal records it as a holder of the token it receives. */
     currentRunId?: string;
   },
 ) {

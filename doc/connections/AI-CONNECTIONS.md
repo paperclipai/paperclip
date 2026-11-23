@@ -197,6 +197,9 @@ renewal therefore waits while another run of the same grant is `running`: the
 new run receives the current token, which is still valid. The server renews when
 no other run holds the token, both when a run starts and when a run's runtime is
 cleaned up, so a busy connection is renewed in the gap after its last run ends.
+A run counts as a holder from the moment it receives the token until its status
+is final. That includes a run whose controller detached for a restart and left
+its runner alive, and a run that restart recovery reconnects to a live runner.
 Once less than five minutes remain, renewal no longer waits; the other runs would
 lose the token at expiry either way. A run that outlasts the token it started
 with fails with an authentication error and can be retried. That failure does
