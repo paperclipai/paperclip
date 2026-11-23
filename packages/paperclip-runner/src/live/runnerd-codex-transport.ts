@@ -88,6 +88,7 @@ import {
   type RunnerProcessHandle,
   type RunnerProcessConnection,
   type DurablePrpControlPlaneOptions,
+  runAttachToolCatalogFits,
 } from "../control-plane/durable-prp-control-plane.js";
 import {
   type QualifiedAcpxAgent,
@@ -3885,8 +3886,9 @@ export function runnerCodexDynamicToolsFit(
   const supplied = [...tools, ...codexSemanticToolSpecs()];
   // Keep these bounds aligned with runner-core/provider_bridge.rs. Project
   // large optional catalogs before run.prepare; never raise the protocol caps.
-  return supplied.length <= 256 &&
-    Buffer.byteLength(JSON.stringify(authorizedToolSet(supplied)), "utf8") <= 768 * 1024;
+  if (supplied.length > 256) return false;
+  const catalog = authorizedToolSet(supplied);
+  return Buffer.byteLength(JSON.stringify(catalog), "utf8") <= 768 * 1024 && runAttachToolCatalogFits(catalog);
 }
 
 /**

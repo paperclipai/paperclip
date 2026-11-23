@@ -65,6 +65,7 @@ const transitionCoreStateSchema =
 const maxFrameBytes = 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
+const MAX_RUN_ATTACH_TOOL_CATALOG_BYTES = 384 * 1024;
 const maxCommands = 500;
 const maxCommandsAtAttach = 32;
 const maxEventsPerAck = 64;
@@ -796,18 +797,19 @@ function credentialMaterial(token: string): {
 }
 
 const MAX_CANONICAL_JSON_DEPTH = 64;
-const MAX_CANONICAL_JSON_NODES = 10_000;
+const MAX_RUNNER_INPUT_JSON_NODES = 10_000;
+const MAX_CONTROLLER_JSON_NODES = maxCommandBytes;
 
 function canonicalJson(
   value: unknown,
   ancestors = new WeakSet<object>(),
-  state = { nodes: 0 },
+  state = { nodes: 0, maxNodes: MAX_CONTROLLER_JSON_NODES },
   depth = 0,
 ): string {
   state.nodes += 1;
   if (
     depth > MAX_CANONICAL_JSON_DEPTH ||
-    state.nodes > MAX_CANONICAL_JSON_NODES
+    state.nodes > state.maxNodes
   ) {
     throw new Error("durable_prp_canonical_json_too_large");
   }
@@ -866,15 +868,23 @@ export const durableRecoveryInternals = Object.freeze({
   createCheckpointRecordCache: () => new CheckpointRecordCache(),
 });
 
-function canonicalDigest(value: unknown): string {
-  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+function canonicalDigest(value: unknown, maxNodes = MAX_CONTROLLER_JSON_NODES): string {
+  return createHash("sha256").update(canonicalJson(value, new WeakSet<object>(), { nodes: 0, maxNodes })).digest("hex");
+}
+
+export function runAttachToolCatalogFits(authorizedTools: Record<string, unknown>): boolean {
+  try {
+    return Buffer.byteLength(canonicalJson(authorizedTools), "utf8") <= MAX_RUN_ATTACH_TOOL_CATALOG_BYTES;
+  } catch {
+    return false;
+  }
 }
 
 function matchesSemanticInputDigest(input: unknown, digest: unknown): boolean {
   try {
     // Wire integrity covers the complete input, including protected fields.
     // Receipt redaction can erase those differences and has a separate hash.
-    return digest === `sha256:${canonicalDigest(input)}`;
+    return digest === `sha256:${canonicalDigest(input, MAX_RUNNER_INPUT_JSON_NODES)}`;
   } catch {
     // Canonicalization bounds must keep the same permanent integrity fence.
     // Never attach an input-derived error or payload to the diagnostic.
@@ -1073,7 +1083,7 @@ function unsettledSemanticInput(
         canonicalJson(expectedCorrelation) ||
       (command.payload.inputDigest === undefined
         ? canonicalJson(command.payload.input) !== canonicalJson(semantic.input)
-        : command.payload.inputDigest !== canonicalDigest(semantic.input)
+        : command.payload.inputDigest !== canonicalDigest(semantic.input, MAX_RUNNER_INPUT_JSON_NODES)
           || (command.payload.input !== undefined
             && canonicalJson(command.payload.input) !== canonicalJson(semantic.input)))
     );

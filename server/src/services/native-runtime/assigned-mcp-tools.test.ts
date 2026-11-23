@@ -10,7 +10,7 @@ import {
   ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES, ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES, assignedSchemaAdmissionCacheSize,
   createAssignedMcpTools, getAssignedMcpGateway, registerAssignedMcpGateway,
 } from "./assigned-mcp-tools.js";
-import { admitToolInputSchema } from "../../vendor/paperclip-runner/index.js";
+import { admitToolInputSchema, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
 import { startOpenCodeMcpBridge } from "../../vendor/paperclip-runner/testing.js";
 
 vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
@@ -254,6 +254,22 @@ describe("assigned MCP runner tools", () => {
     } finally {
       await bridge.close();
     }
+  });
+
+  it("moves a connector catalog the durable run attachment cannot carry to on-demand tools", async () => {
+    const properties = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`field_${index}`, {
+      type: "string", description: `Connector field ${index} with the provider's own documentation text.`,
+      enum: Array.from({ length: 6 }, (_, value) => `value_${value}`),
+    }]));
+    const descriptors = Array.from({ length: 180 }, (_, index) => ({
+      ...descriptor(`connector.operation_${index}`), parametersSchema: { type: "object", properties },
+    }) as ToolGatewayDescriptor);
+    const assigned = await createAssignedMcpTools(fixture(descriptors));
+    const direct = assigned.definitions();
+    expect(direct).toHaveLength(180);
+    expect(Buffer.byteLength(JSON.stringify(direct))).toBeLessThan(768 * 1024);
+    expect(runnerCodexDynamicToolsFit(direct)).toBe(false);
+    expect(assigned.definitions(runnerCodexDynamicToolsFit).map(tool => tool.name)).toEqual([searchName, callName]);
   });
 
   it.each([1, 741])("uses bounded on-demand delivery for %i tools even when the direct catalog fits", async count => {

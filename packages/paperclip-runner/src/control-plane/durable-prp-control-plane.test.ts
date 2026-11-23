@@ -24,7 +24,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
-import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment, waitForRunnerCommand } from "../live/runnerd-codex-transport.js";
+import { authorizedToolSetForProvider, createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment, runnerCodexDynamicToolsFit, waitForRunnerCommand } from "../live/runnerd-codex-transport.js";
 import { providerTurnStartBefore } from "../live/provider-turn-tool-order.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { validatePrpEvent } from "../protocol/replay-contract.js";
@@ -402,6 +402,49 @@ it("persists an undispatched source-to-target attachment before bootstrap and pr
   } finally {
     client?.socket.destroy();
     await restored?.stop(); await core.stop(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function denseToolCatalog(toolCount: number, valuesPerTool: number): Record<string, unknown>[] {
+  return Array.from({ length: toolCount }, (_, tool) => ({
+    name: `connector_tool_${tool}`,
+    description: "Dense connector tool",
+    inputSchema: {
+      type: "object",
+      properties: Object.fromEntries(Array.from({ length: valuesPerTool / 10 }, (_, property) => [
+        `p${property}`, { type: "string", enum: Array.from({ length: 10 }, (_, value) => String(value)) },
+      ])),
+    },
+  }));
+}
+
+it("stages and restores a run attachment for every tool catalog the provider protocol admits", async () => {
+  let valuesPerTool = 10;
+  while (runnerCodexDynamicToolsFit(denseToolCatalog(250, valuesPerTool + 10))) valuesPerTool += 10;
+  const tools = denseToolCatalog(250, valuesPerTool);
+  expect(runnerCodexDynamicToolsFit(tools)).toBe(true);
+  const connectorCatalog = denseToolCatalog(180, 300);
+  expect(Buffer.byteLength(JSON.stringify(connectorCatalog))).toBeLessThan(768 * 1024);
+  expect(runnerCodexDynamicToolsFit(connectorCatalog)).toBe(false);
+  const root = mkdtempSync(resolve(tmpdir(), "runner-large-catalog-"));
+  const target = { ...identity, runId: "00000000-0000-4000-8000-000000000003", turnId: "catalog-turn", itemId: "catalog-item" };
+  const template = { provider: { provider: "acpx", command: "fixture", instructions: "assigned" }, authorizedTools: authorizedToolSetForProvider("acpx", tools) };
+  const core = new DurablePrpControlPlane({ stateDirectory: resolve(root, "first"), identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async value => { checkpoint = value; });
+  try {
+    core.stageRunAttachment(target, template);
+    await core.flushCheckpoint();
+    expect(() => decodeDurablePrpCheckpoint(checkpoint.records)).not.toThrow();
+    checkpoint.restoreSessionDirectory(resolve(root, "replacement"));
+    const restored = new DurablePrpControlPlane({ stateDirectory: resolve(root, "replacement", "control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest });
+    try {
+      expect(inspectStagedRunAttachment(restored.store.state, target)).toMatchObject({ runAttachTemplate: template });
+    } finally {
+      await restored.stop();
+    }
+  } finally {
+    await core.stop(); rmSync(root, { recursive: true, force: true });
   }
 });
 
