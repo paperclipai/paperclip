@@ -10,6 +10,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
+import { RecentItemsSetting } from "@/components/RecentItemsSetting";
 import { ProductAnalyticsSetting } from "@/components/ProductAnalyticsSetting";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
@@ -290,6 +291,8 @@ export function ProfileSettings() {
         </form>
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
+
+        <RecentItemsSetting companyId={selectedCompanyId} userId={sessionQuery.data.user.id} />
 
         <ProductAnalyticsSetting config={sessionQuery.data.browserAnalytics} />
       </section>

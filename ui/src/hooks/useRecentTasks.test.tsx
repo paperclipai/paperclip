@@ -35,8 +35,8 @@ describe("recent task synchronization", () => {
   let clients: QueryClient[];
   let renders: number;
 
-  function RecentTasks({ name, companyId = "company-1", userId = "user-1", pinnedTaskIds }: { name: string; companyId?: string; userId?: string; pinnedTaskIds?: string[] }) {
-    const { entries, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds });
+  function RecentTasks({ name, companyId = "company-1", userId = "user-1", pinnedTaskIds, limit }: { name: string; companyId?: string; userId?: string; pinnedTaskIds?: string[]; limit?: number }) {
+    const { entries, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds, limit });
     renders += 1;
     // Fail promptly if a regression restores the cross-cache render loop.
     if (renders > 100) throw new Error("Recent Tasks did not settle");
@@ -75,6 +75,35 @@ describe("recent task synchronization", () => {
     clients.forEach((value) => value.clear());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("does not fetch recent summaries at zero but still resolves pins", async () => {
+    const recent = task(10, "Recent task");
+    const pinned = { ...task(20, "Pinned task"), id: "pinned", isParticipantForMe: false };
+    recordRecentTask(recent, "user-1");
+    const cache = client();
+    summaries.mockResolvedValue([pinned]);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="off" limit={0} /></QueryClientProvider>));
+    await flush();
+    expect(summaries).not.toHaveBeenCalled();
+    expect(container.textContent).toBe("");
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="off" limit={0} pinnedTaskIds={[pinned.id]} /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledWith("company-1", [pinned.id], expect.anything());
+    expect(container.querySelector("[data-pins]")?.getAttribute("data-pins")).toBe("Pinned task");
+    expect(readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1")).toHaveLength(1);
+  });
+
+  it("bounds summary reads without deleting older saved history", async () => {
+    const tasks = Array.from({ length: 120 }, (_, i) => ({ ...task(i, `Task ${i}`), id: `issue-${i}` }));
+    for (const value of tasks) recordRecentTask(value, "user-1");
+    summaries.mockImplementation(async (_company, ids: string[]) => tasks.filter(value => ids.includes(value.id)));
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="limited" limit={5} /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(1);
+    expect(summaries.mock.calls[0][1]).toHaveLength(5);
+    expect(readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1")).toHaveLength(120);
   });
 
   it("restores readable task pins independently of participation and drops tasks omitted by authorization", async () => {

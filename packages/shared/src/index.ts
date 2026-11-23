@@ -3099,7 +3099,7 @@ export * from "./prompt-injection-prevention.js";
 
 export * from "./workspace-provider.js";
 export * from "./workflows.js";
-export { isValidIanaTimeZone, updateWorkspacePreferenceSchema, WORKSPACE_PREFERENCE_TIME_ZONE_MAX_LENGTH, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
+export { DEFAULT_RECENT_ITEMS_LIMIT, RECENT_ITEMS_LIMIT_OPTIONS, isValidIanaTimeZone, updateWorkspacePreferenceSchema, WORKSPACE_PREFERENCE_TIME_ZONE_MAX_LENGTH, type UpdateWorkspacePreference, type WorkspacePreference } from "./workspace-preferences.js";
 export * from "./agent-configuration.js";
 export {
   remoteWorkspaceSourceSchema,

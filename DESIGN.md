@@ -1245,3 +1245,13 @@ identity row, file management chips sit below filenames, runner upgrade actions
 sit below full-width copy, and runtime/trust panels stack. Task toolbar square
 controls occupy a second row. Connector Browse/Review links become top segments
 on their mobile collection surfaces; desktop navigation and layouts stay unchanged.
+
+## Personal Recents limit
+
+Profile settings offer 0, 5, 10, 20, 50, or 100 recent items, with a default of
+20. The choice belongs to the person across companies and browsers. The limit
+covers the combined recent tasks, chats, and projects. Pinned navigation stays
+independent. Zero hides Recents and disables its recent-task summary reads and
+chat preloads. Shared navigation reads, including chat unread state, remain
+available. Only tasks in the displayed Recents list are preloaded, and collapsing
+Recents suspends that preload. Classic task-only sidebars use the same limit.

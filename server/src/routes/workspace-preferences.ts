@@ -33,6 +33,7 @@ export function workspacePreferenceRoutes(db: Db) {
     res.json(await svc.set(companyId, req.actor.userId!, {
       coordinatorWorkspaceEnabled: req.body.coordinatorWorkspaceEnabled,
       timeZone: req.body.timeZone,
+      recentItemsLimit: req.body.recentItemsLimit,
     }));
   });
   return router;

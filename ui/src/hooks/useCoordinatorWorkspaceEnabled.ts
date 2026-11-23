@@ -1,3 +1,4 @@
+import type { WorkspacePreference } from "@paperclipai/shared";
 import { useContext } from "react";
 import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
 import { useAccountBoundMutation } from "./useAccountBoundMutation";
@@ -26,7 +27,8 @@ export function useCoordinatorWorkspaceEnabled() {
     },
     onSuccess: (result) => {
       // Only a response in its original verified account may update the cache.
-      client.setQueryData(queryKeys.workspacePreferences.mine(result.userId), result);
+      client.setQueryData<WorkspacePreference>(queryKeys.workspacePreferences.mine(result.userId),
+        current => current ? { ...current, coordinatorWorkspaceEnabled: result.coordinatorWorkspaceEnabled } : result);
     },
   }, client);
   const classicWorkspaceEnabled = !!userId && preference.isSuccess

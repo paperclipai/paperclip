@@ -4,6 +4,7 @@ import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { useRecentItemsLimit } from "@/hooks/useRecentItemsLimit";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
 import { useAccountIdentity } from "@/api/companies-query";
@@ -101,7 +102,8 @@ function RecentTasksList({
   userId: string | null;
   liveIssueIds: ReadonlySet<string>;
 }) {
-  const { entries, storageKey } = useRecentTasks({ companyId, userId });
+  const { limit } = useRecentItemsLimit(userId);
+  const { entries, storageKey } = useRecentTasks({ companyId, userId, limit });
   const { pathname } = useLocation();
   const queryClient = useQueryClient();
   const toastActions = useOptionalToastActions();

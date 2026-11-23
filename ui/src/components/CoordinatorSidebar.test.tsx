@@ -11,7 +11,9 @@ import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", search: "", userId: "reviewer" as string | null, chats: [] as Array<{ id?: string; conversationAgentId?: string; updatedAt?: string; isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, taskSummaries: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, enableResponsibilities: false, agents: [] as Agent[] }));
+  recentTasks: [] as Array<Record<string, unknown>>, taskSummaries: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), recentLimit: 10000, warmup: vi.fn(), enableCases: false, enableResponsibilities: false, agents: [] as Agent[] }));
+vi.mock("@/hooks/useRecentItemsLimit", () => ({ useRecentItemsLimit: () => ({ limit: fixture.recentLimit }) }));
+vi.mock("@/hooks/useRecentTaskOpenWarmup", () => ({ useRecentTaskOpenWarmup: fixture.warmup }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: fixture.userId }) }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
@@ -48,7 +50,7 @@ function summary(items: AttentionItem[], mineCount = items.length) {
 
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
-  vi.clearAllMocks(); localStorage.clear(); fixture.userId = "reviewer"; fixture.pathname = "/COO/issues"; fixture.search = "";
+  vi.clearAllMocks(); fixture.recentLimit = 10000; localStorage.clear(); fixture.userId = "reviewer"; fixture.pathname = "/COO/issues"; fixture.search = "";
   fixture.chats = []; fixture.recentTasks = []; fixture.taskSummaries = []; fixture.projects = []; fixture.enableCases = false; fixture.enableResponsibilities = false; fixture.agents = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
@@ -56,6 +58,20 @@ beforeEach(() => {
 });
 
 describe("Coordinator task creation", () => {
+  it("bounds the combined Recents list and warms only displayed tasks", async () => {
+    fixture.recentLimit = 5;
+    fixture.agents = [{ id: "agent", companyId: "company", name: "Alex", urlKey: "alex", status: "idle" } as Agent];
+    fixture.chats = Array.from({ length: 100 }, (_, i) => ({ id: `chat-${i}`, conversationAgentId: "agent", updatedAt: new Date(10000 + i).toISOString(), isUnreadForMe: false }));
+    fixture.recentTasks = Array.from({ length: 100 }, (_, i) => ({ id: `task-${i}`, companyId: "company", title: `Task ${i}`, identifier: null, status: "todo", recordedAt: i }));
+    await renderSidebar();
+    expect(container.querySelectorAll('[aria-label="Recents"] a')).toHaveLength(5);
+    expect(fixture.warmup.mock.lastCall?.[0].tasks).toHaveLength(0);
+    fixture.recentLimit = 0;
+    await renderSidebar();
+    expect(container.querySelector('[aria-label="Recents"]')).toBeNull();
+    expect(fixture.warmup.mock.lastCall?.[0].tasks).toHaveLength(0);
+  });
+
   it("shows opened parent and child tasks as independent rows in recent order", async () => {
     fixture.recentTasks = [
       { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 2 },

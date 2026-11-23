@@ -29,6 +29,7 @@ const mockIssuesApi = vi.hoisted(() => ({
 }));
 
 vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
+vi.mock("@/api/workspacePreferences", () => ({ workspacePreferencesApi: { get: async () => ({ userId: "user-1", recentItemsLimit: 20 }) } }));
 vi.mock("@/api/auth", () => ({ authApi: mockAuthApi }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("@/lib/router", () => ({
@@ -87,6 +88,7 @@ describe("SidebarRecentTasks", () => {
 
   async function render() {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.workspacePreferences.mine("user-1"), { userId: "user-1", recentItemsLimit: 20 });
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
