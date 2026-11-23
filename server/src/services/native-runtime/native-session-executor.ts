@@ -11728,7 +11728,11 @@ async function executePaperclipNativeSessionAttempt(
   let firstTokenRecorded = false;
   const observeDeliverableText = createNativeDeliverableTextObservation();
   let providerUsageLimitObserved = false;
-  const providerFailureObservation = createNativeProviderFailureObservation(input.execution.provider);
+  // Antigravity runs on a Gemini API key exactly when one is bound; otherwise
+  // on a Google sign-in (the same rule its credential preparation applies).
+  const providerFailureObservation = createNativeProviderFailureObservation(input.execution.provider,
+    input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity"
+      ? { antigravityRoute: input.runnerEnvironment?.GEMINI_API_KEY?.trim() ? "api_key" : "subscription" } : {});
   let turnCompletedAtMs: number | null = null;
   let runnerSessionStartupScope: NativeRunSpanScope | null = null;
   let agentTurnScope: NativeRunSpanScope | null = null;
