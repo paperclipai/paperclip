@@ -9,6 +9,7 @@ import { DecisionCard, type DecisionIssueRef } from "./DecisionCard";
 import type { Decision, DecisionEffectExecution } from "../api/decisions";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -128,13 +129,12 @@ afterEach(() => {
 });
 
 describe("DecisionCard", () => {
-  it("renders a pending decision with provenance, effect summary and dismiss", () => {
+  it("renders a pending decision with provenance and effect summary", () => {
     const el = render({});
     expect(el.textContent).toContain("Pending");
     expect(el.textContent).toContain("Gardener");
     expect(el.textContent).toContain("PAP-123");
     expect(el.textContent).toContain("Comment on PAP-456");
-    expect([...el.querySelectorAll("button")].some((b) => b.textContent?.includes("Dismiss"))).toBe(true);
   });
 
   it("links the target issue the decision applies to, not just the origin", () => {
@@ -192,11 +192,10 @@ describe("DecisionCard", () => {
     expect(onDecide).toHaveBeenCalledWith("comment", expect.any(Object));
   });
 
-  it("fires onDismiss from the always-present zero-effect dismiss", () => {
-    const onDismiss = vi.fn();
-    const el = render({ onDismiss });
-    clickButtonWithText(el, "Dismiss");
-    expect(onDismiss).toHaveBeenCalled();
+  it("offers no \"Dismiss — no effects\" verb; closing lives in the card's Close… menu (PAP-749 Rule 8)", () => {
+    const el = render({});
+    expect(el.textContent).not.toContain("Dismiss — no effects");
+    expect(el.textContent).not.toContain("Not now?");
   });
 
   it("warns and disables strict options when a target is stale", () => {
@@ -319,5 +318,17 @@ describe("DecisionCard", () => {
     });
     expect(expired.textContent).toContain("target issues were completed");
     expect(expired.textContent).not.toContain("expiry deadline");
+  });
+});
+
+describe("DecisionCard session replay", () => {
+  it("keeps agent-written option labels, descriptions and field labels out of session replay", () => {
+    const el = render({ decision: mkDecision({
+      options: [{ id: "reply", label: "Reply to Globex renewal", description: "Draft answer to jane@globex.com", effects: [{ type: "comment_on_issue", targetIssueId: "issue-target", staleness: "lenient", bodyMarkdown: "nudge" }] }],
+      inputs: [{ id: "note", label: "Note for jane@globex.com", type: "text" }] as unknown as Decision["inputs"],
+    }) });
+    expect(replayLeaks("Reply to Globex renewal", el)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Draft answer to jane@globex.com", el)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Note for jane@globex.com", el)).toEqual({ rendered: true, recorded: false });
   });
 });

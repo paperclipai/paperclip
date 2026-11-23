@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { ChatIdentityConfirm } from "./ChatIdentityConfirm";
 
 const mocks = vi.hoisted(() => ({
@@ -65,8 +66,16 @@ describe("self-service Slack identity confirmation", () => {
     expect(mocks.requestIdentityAccess).toHaveBeenCalledTimes(1);
   });
   it("does not allow requests using an expired or consumed link", async () => {
-    mocks.previewIdentityLink.mockRejectedValue(new Error("Expired")); render();
+    mocks.previewIdentityLink.mockRejectedValue(new ApiError("Identity-link request not found", 404, { error: "Identity-link request not found" })); render();
     await vi.waitFor(() => expect(container.textContent).toContain("This identity link is unavailable"));
     expect(container.querySelector("button")).toBeNull();
+  });
+  it("offers a retry instead of declaring the link unavailable when the preview fails unexpectedly", async () => {
+    mocks.previewIdentityLink.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" })); render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn't load the identity link"));
+    expect(container.textContent).not.toContain("This identity link is unavailable");
+    expect(container.textContent).not.toContain("internal_error");
+    button("Retry").click();
+    await vi.waitFor(() => expect(button("Confirm identity")).toBeTruthy());
   });
 });

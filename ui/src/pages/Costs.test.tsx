@@ -8,6 +8,9 @@ import { Costs } from "./Costs";
 import { CostByUserTable } from "../components/CostByUserTable";
 import { MemoryRouter } from "react-router-dom";
 
+const scopedAgentMock = vi.hoisted(() => vi.fn());
+vi.mock("../api/agents", () => ({ agentsApi: { get: scopedAgentMock } }));
+
 const resolveIncidentMock = vi.hoisted(() => vi.fn());
 const upsertPolicyMock = vi.hoisted(() => vi.fn());
 const budgetOverviewMock = vi.hoisted(() => vi.fn());
@@ -27,6 +30,8 @@ const costsApiMocks = vi.hoisted(() => ({
   byBiller: vi.fn(),
   windowSpend: vi.fn(),
   quotaWindows: vi.fn(),
+  dataQuality: vi.fn(),
+  retryAccounting: vi.fn(),
 }));
 const subscriptionsMocks = vi.hoisted(() => ({ report: vi.fn(), refresh: vi.fn(), update: vi.fn(), link: vi.fn() }));
 vi.mock("../api/subscriptions", () => ({ subscriptionsApi: subscriptionsMocks }));
@@ -50,6 +55,8 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: setBreadcrumbsMock }),
 }));
 
+vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
+
 vi.mock("../context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false }) }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -65,6 +72,7 @@ describe("Shared Costs surfaces", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    scopedAgentMock.mockReset();
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costCents: "0", eventCount: 0, estimatedEventCount: 0, unpricedEventCount: 0 };
     subscriptionsMocks.report.mockResolvedValue({ canRefresh: false, asOf: "2026-10-08T00:00:00Z", accounts: [], monthlyTotals: [], activeCount: 0, unknownPriceCount: 0, unidentifiedAccountCount: 0, api: usage, subscription: usage, unknown: usage, unattributedSubscription: usage });
     decisionHistoryMock.mockResolvedValue([]);
@@ -84,6 +92,32 @@ describe("Shared Costs surfaces", () => {
     act(() => root?.unmount());
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it.each(["overview", "budgets"] as const)("explains unavailable Muse accounting on its scoped %s page", async (tab) => {
+    scopedAgentMock.mockResolvedValue({ id: "muse-agent", name: "Researcher", adapterType: "paperclip_runner", adapterConfig: { provider: "muse" } });
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 0, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter initialEntries={["/?agentId=muse-agent"]}><QueryClientProvider client={queryClient}><Costs embedded initialTab={tab} lockTab /></QueryClientProvider></MemoryRouter>));
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Researcher's Muse activity has no reported usage or cost")); });
+    expect(scopedAgentMock).toHaveBeenCalledWith("muse-agent", "company-1");
+    expect(container.textContent).toContain("Totals below show recorded organization charges only");
+    expect(container.textContent).toContain("Paperclip cannot enforce a Muse spend ceiling");
+    queryClient.clear();
+  });
+
+  it("explains when scoped provider details cannot be loaded", async () => {
+    scopedAgentMock.mockRejectedValue(new Error("unavailable"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter initialEntries={["/?agentId=muse-agent"]}><QueryClientProvider client={queryClient}><Costs embedded initialTab="budgets" lockTab /></QueryClientProvider></MemoryRouter>));
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Could not load agent details. Totals below show recorded organization costs.")); });
+    expect(container.textContent).not.toContain("Muse activity has no reported");
+    queryClient.clear();
   });
 
   it.each([0, 125])("shows $%s of known user spend while retaining an unpriced warning", async (costCents) => {
@@ -109,7 +143,7 @@ describe("Shared Costs surfaces", () => {
     root = createRoot(container);
     await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>));
     await act(async () => vi.waitFor(() => expect(container.textContent).toContain(
-      "150 tokens have other or unknown billing types, with $6.00 in recorded charges. They remain in the inference ledger.",
+      "Other billing usage: 150 tokens · $6.00 in recorded charges, included in the inference ledger.",
     )));
     expect(container.textContent).not.toContain("tokens have an unknown billing type");
   });
@@ -136,6 +170,37 @@ describe("Shared Costs surfaces", () => {
     expect(container.querySelector('[role="tab"]')).toBeFalsy();
     expect(setBreadcrumbsMock).not.toHaveBeenCalled();
     for (const mock of Object.values(costsApiMocks)) expect(mock).not.toHaveBeenCalled();
+  });
+
+  it.each(surfaces)("shows unknown billing separately from complete prices only on the %s Overview", async (_name, props) => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 21, budgetCents: 0, pricingComplete: true, unknownBillingEventCount: 1, unpricedEventCount: 0, pendingRunCount: 0 });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    costsApiMocks.dataQuality.mockResolvedValue({ canRetry: true, events: [{ id: "event", runId: "run", agentId: "agent", agentName: "Codie", reason: "unknown_billing", occurredAt: "2026-10-09T12:00:00Z" }], runs: [], hasMoreEvents: false, hasMoreRuns: false });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>));
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain("1 billing type unknown")));
+    expect(container.textContent).not.toContain("Totals include known charges only.");
+    expect(costsApiMocks.dataQuality).not.toHaveBeenCalled();
+    const button = (label: string) => [...container.querySelectorAll("button")].find(row => row.textContent === label)!;
+    await act(async () => button("1 billing type unknown").click());
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain("Billing category unknown")));
+    const [, from, to] = costsApiMocks.dataQuality.mock.lastCall!;
+    expect(Number.isFinite(Date.parse(from))).toBe(true);
+    expect(Number.isFinite(Date.parse(to))).toBe(true);
+    await act(async () => button("Providers").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
+    expect(container.querySelector('[role="tab"][data-state="active"]')?.textContent).toBe("Providers");
+    expect(container.textContent).not.toContain("1 billing type unknown");
+    expect(container.textContent).not.toContain("Billing category unknown");
+    await act(async () => button("Overview").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
+    expect(button("1 billing type unknown")).toBeDefined();
+    await act(async () => button("All Time").click());
+    await act(async () => vi.waitFor(() => expect(button("1 billing type unknown")).toBeDefined()));
+    await act(async () => button("1 billing type unknown").click());
+    await act(async () => vi.waitFor(() => expect(costsApiMocks.dataQuality).toHaveBeenLastCalledWith("company-1", undefined, undefined)));
+    queryClient.clear();
   });
 
   it("opens linked decision history with real date bounds instead of report cache labels", async () => {
@@ -348,23 +413,23 @@ describe("Shared Costs surfaces", () => {
       root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>);
     });
     await act(async () => {
-      await vi.waitFor(() => expect(container.textContent).toContain("Costs are unavailable for 2 usage entries in this period. Totals include known costs only."));
+      await vi.waitFor(() => expect(container.textContent).toContain("3 run costs unavailable"));
     });
-    const notice = [...container.querySelectorAll('[role="status"]')].find(element => element.textContent?.includes("Costs are unavailable"))!;
+    const notice = [...container.querySelectorAll("button")].find(button => button.textContent === "3 run costs unavailable")!.parentElement!;
     expect(notice.classList.contains("text-muted-foreground")).toBe(true);
     expect(notice.querySelector(".text-destructive")).toBeNull();
     expect(notice.classList.contains("text-destructive")).toBe(false);
-    expect(notice.textContent).toContain("1 run is awaiting cost data.");
-    expect(notice.previousElementSibling?.textContent).toContain("API spend");
+    expect(notice.textContent).toBe("3 run costs unavailable");
+    expect(costsApiMocks.dataQuality).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Finance headline totals are USD only");
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: false, unpricedEventCount: 10, pendingRunCount: 0 });
     await act(async () => { await queryClient.invalidateQueries(); });
-    await vi.waitFor(() => expect(notice.textContent).toContain("Costs are unavailable for 10 usage entries"));
+    await vi.waitFor(() => expect(notice.textContent).toBe("10 run costs unavailable"));
     expect(notice.textContent).not.toContain("awaiting cost data");
     expect(notice.textContent).not.toContain("0 runs");
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: false, unpricedEventCount: 0, pendingRunCount: 1 });
     await act(async () => { await queryClient.invalidateQueries(); });
-    await vi.waitFor(() => expect(notice.textContent).toBe("1 run is awaiting cost data."));
+    await vi.waitFor(() => expect(notice.textContent).toBe("1 run cost unavailable"));
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: true, unpricedEventCount: 0, pendingRunCount: 0 });
     await act(async () => { await queryClient.invalidateQueries(); });
     await vi.waitFor(() => expect(container.contains(notice)).toBe(false));
@@ -410,6 +475,9 @@ describe("Shared Costs surfaces", () => {
     expect(projectBadge("Estimated project")?.textContent).toBe("Estimated");
     expect(projectBadge("Mixed project")?.textContent).toBe("Partially estimated");
     expect(projectBadge("Reported project")).toBeNull();
+    expect(container.textContent).not.toContain("Includes 3 estimated charges.");
+    expect(container.querySelector('button[aria-expanded]')).toBeNull();
+    expect(costsApiMocks.dataQuality).not.toHaveBeenCalled();
     await act(async () => card("Mixed").querySelector<HTMLElement>(".cursor-pointer")!.click());
     const breakdown = card("Mixed").querySelector(".border-l")!;
     expect(breakdown.textContent).toContain("gpt-6-astra");
@@ -439,7 +507,7 @@ describe("Shared Costs surfaces", () => {
       expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Costs" }]);
     }
     expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(
-      streamlined ? ["Overview", "Providers", "Billers", "Finance", "Decisions"] : ["Overview", "Budgets", "Providers", "Billers", "Finance", "Decisions"],
+      streamlined ? ["Overview", "Providers", "Billers", "Finance", "Decisions", "Fast responses"] : ["Overview", "Budgets", "Providers", "Billers", "Finance", "Decisions", "Fast responses"],
     );
   });
 

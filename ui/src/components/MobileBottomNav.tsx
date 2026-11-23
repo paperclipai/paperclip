@@ -1,4 +1,6 @@
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { useMemo } from "react";
+import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { NavLink, useLocation } from "@/lib/router";
 import {
   House,
@@ -15,6 +17,8 @@ import { cn } from "../lib/utils";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabled";
+import { useCompanyHomePath } from "@/hooks/useCompanyHomePath";
+import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { Badge } from "@/components/ui/badge";
 
 interface MobileBottomNavProps {
@@ -42,9 +46,15 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
-  const inboxBadge = useInboxBadge(selectedCompanyId);
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
+  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
+  const inboxBadge = useInboxBadge(coordinatorWorkspaceEnabled ? null : selectedCompanyId);
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
+  const attentionCount = useCoordinatorAttentionCount(selectedCompanyId, coordinatorWorkspaceEnabled);
+  // Home is the company home (Responsibilities when that experiment is on).
+  // Coordinator has no Home tab; it gains one only while Responsibilities is home.
+  const { path: homePath } = useCompanyHomePath();
+  const { enabled: responsibilitiesHome } = useResponsibilitiesEnabled();
 
   // PAP-670: with both flags off the bar is the original Home · Tasks · + ·
   // Agents · Inbox. Agent Chat adds Chat in the second slot (Home · Chat · + ·
@@ -52,8 +62,16 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   // it is a view inside Tasks, so its unread badge rides on Tasks. The grid
   // tracks the live count, so the bar stays evenly divided in every mix.
   const items = useMemo<MobileNavItem[]>(
-    () => !agentChatEnabled && !combinedInboxTasksEnabled ? [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
+    () => coordinatorWorkspaceEnabled ? [
+      ...(responsibilitiesHome
+        ? [{ type: "link", to: homePath, label: "Home", icon: House } as MobileNavItem]
+        : []),
+      { type: "link", to: "/chats", label: "Chat", icon: MessageCircle },
+      { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
+      { type: "link", to: "/decisions", label: "Inbox", icon: Inbox, badge: attentionCount },
+      { type: "action", label: "New task", icon: SquarePen, onClick: () => openNewIssue() },
+    ] : !agentChatEnabled && !combinedInboxTasksEnabled ? [
+      { type: "link", to: homePath, label: "Home", icon: House },
       { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
       { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
       { type: "link", to: "/agents/all", label: "Agents", icon: Users },
@@ -65,7 +83,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         badge: inboxBadge.inbox,
       },
     ] : [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
+      { type: "link", to: homePath, label: "Home", icon: House },
       ...(agentChatEnabled
         ? [{ type: "link", to: "/chats", label: "Chat", icon: MessageCircle } as MobileNavItem]
         : []),
@@ -82,7 +100,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         ? [{ type: "link", to: "/inbox", label: "Inbox", icon: Inbox, badge: inboxBadge.inbox } as MobileNavItem]
         : []),
     ],
-    [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled],
+    [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled, coordinatorWorkspaceEnabled, attentionCount, homePath, responsibilitiesHome],
   );
 
   return (

@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { heartbeatsApi, type ProviderTraceInspection } from "@/api/heartbeats";
 import { accessApi } from "@/api/access";
+import { QueryErrorState } from "@/components/QueryView";
+import { useResilientFetch } from "@/hooks/useResilientFetch";
 import { parsePaperclipRunnerStdoutLine } from "@/adapters/paperclip-runner";
 import { TaskChatProtocolCard } from "@/components/task-chat/TaskChatProtocolCard";
 import type { TaskChatProtocolItem } from "@/components/task-chat/task-chat-model";
@@ -55,6 +57,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import { useCopyAction } from "@/lib/use-copy-action";
 
 type TraceEntry = Record<string, unknown>;
@@ -487,7 +490,7 @@ function JsonNode({
 function JsonExplorer({ value, label = "Search this JSON" }: { value: unknown; label?: string }) {
   const [query, setQuery] = useState("");
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-muted/20">
+    <div className={cn("overflow-hidden rounded-md border border-border bg-muted/20", ANALYTICS_MASK_CLASS)}>
       <div className="relative border-b border-border bg-background/60">
         <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
         <Input
@@ -656,8 +659,7 @@ export function RunnerInspector({
 }) {
   const [inspection, setInspection] = useState<ProviderTraceInspection | null>(null);
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<unknown>(null);
   const [view, setView] = useState<InspectorView>("pipeline");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedFrameId, setSelectedFrameId] = useState<number | null>(null);
@@ -680,8 +682,7 @@ export function RunnerInspector({
     setRawTraceAccess(null);
     setInspection(null);
     setEvents([]);
-    setLoading(open);
-    setError(null);
+    setActionError(null);
     setSelectedKey(null);
     setSelectedFrameId(null);
     setRevealed({});
@@ -705,8 +706,7 @@ export function RunnerInspector({
     rawTraceAccessRef.current = deniedAccess;
     setRawTraceAccess(deniedAccess);
     setInspection({ trace: null, entries: [] });
-    setLoading(false);
-    setError(null);
+    setActionError(null);
     setSelectedKey(null);
     setSelectedFrameId(null);
     setRevealed({});
@@ -721,53 +721,51 @@ export function RunnerInspector({
     if (requestedOperation) setSelectedKey(requestedOperation);
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    const loadEpoch = rawTraceAccessEpochRef.current;
-    setLoading(true);
-    setError(null);
-    Promise.all([accessApi.getCurrentBoardAccess(), loadAllRunEvents(runId)])
-      .then(async ([boardAccess, nextEvents]) => {
-        if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
-        const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
-        const access: RawTraceAccess = {
-          runId,
-          allowed: canRaw,
-          epoch: rawTraceAccessEpochRef.current,
-          phase: canRaw ? "granted" : "denied",
-        };
-        rawTraceAccessRef.current = access;
-        setRawTraceAccess(access);
-        if (!canRaw) setRevealed({});
-        const trace = canRaw
-          ? await heartbeatsApi.providerTrace(runId)
-          : ({ trace: null, entries: [] } satisfies ProviderTraceInspection);
-        const currentAccess = rawTraceAccessRef.current;
-        if (
-          !active ||
-          currentAccess?.runId !== runId ||
-          currentAccess.epoch !== loadEpoch ||
-          currentAccess.allowed !== canRaw
-        ) {
-          return;
-        }
-        setInspection(trace);
-        setEvents(nextEvents);
-      })
-      .catch((cause) => {
-        if (!active || rawTraceAccessEpochRef.current !== loadEpoch) return;
-        setError(cause instanceof Error ? cause.message : "Runner inspection failed");
-      })
-      .finally(() => {
-        if (active && rawTraceAccessEpochRef.current === loadEpoch) {
-          setLoading(false);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [open, runId]);
+  // The initial load: the board's current access, every canonical event, and
+  // (only for an administrator) the redacted provider trace. The permission
+  // epoch fences it: a denial or deletion while it is in flight makes its
+  // result stale, and a stale result never reveals or restores raw access.
+  // Transient failures keep what is shown and retry; a real failure is
+  // rendered as readable copy with a Retry button.
+  const load = useResilientFetch({
+    key: ["runner-inspection", runId, open],
+    enabled: open,
+    fetcher: async () => {
+      const loadEpoch = rawTraceAccessEpochRef.current;
+      const [boardAccess, nextEvents] = await Promise.all([
+        accessApi.getCurrentBoardAccess(),
+        loadAllRunEvents(runId),
+      ]);
+      // Superseded by a newer denial or deletion: do not read the raw trace.
+      if (rawTraceAccessEpochRef.current !== loadEpoch || rawTraceAccessRef.current?.phase === "deleting") return null;
+      const canRaw = boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin;
+      const trace = canRaw
+        ? await heartbeatsApi.providerTrace(runId)
+        : ({ trace: null, entries: [] } satisfies ProviderTraceInspection);
+      return { loadEpoch, canRaw, trace, events: nextEvents };
+    },
+    onSuccess: (result) => {
+      if (!result || rawTraceAccessEpochRef.current !== result.loadEpoch || rawTraceAccessRef.current?.phase === "deleting") return;
+      const access: RawTraceAccess = {
+        runId,
+        allowed: result.canRaw,
+        epoch: result.loadEpoch,
+        phase: result.canRaw ? "granted" : "denied",
+      };
+      rawTraceAccessRef.current = access;
+      setRawTraceAccess(access);
+      if (!result.canRaw) setRevealed({});
+      setInspection(result.trace);
+      setEvents(result.events);
+    },
+  });
+  // Once access for this run is decided (a newer denial while the load is
+  // still in flight counts) the inspector is no longer loading: the pending
+  // result is stale and will be discarded.
+  const loading =
+    rawTraceAccess?.runId !== runId &&
+    (load.view.kind === "loading" || load.view.kind === "reconnecting");
+  const loadError = load.view.kind === "error" ? load.view.error : null;
 
   useEffect(() => {
     if (!open) return;
@@ -956,9 +954,7 @@ export function RunnerInspector({
       await heartbeatsApi.deleteProviderTrace(runId);
     } catch (cause) {
       if (rawTraceAccessRef.current?.epoch === deletionAccess.epoch) {
-        setError(
-          cause instanceof Error ? cause.message : "Raw trace deletion failed",
-        );
+        setActionError(cause);
       }
       return;
     }
@@ -1063,14 +1059,25 @@ export function RunnerInspector({
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {error ? <div className="m-4 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{error}</div> : null}
-          {!loading && !error && canInspectRaw === false ? (
+          {loadError ? (
+            <QueryErrorState
+              className="m-4"
+              error={loadError}
+              action="load the runner inspection"
+              onRetry={load.view.retry}
+              retrying={load.view.isFetching}
+            />
+          ) : null}
+          {actionError !== null && actionError !== undefined ? (
+            <QueryErrorState className="m-4" error={actionError} action="delete the raw trace" />
+          ) : null}
+          {!loading && !loadError && canInspectRaw === false ? (
             <div className="m-4 rounded-md border border-border bg-muted/20 p-4">
               <p className="font-medium">Raw provider traces require an instance administrator.</p>
               <p className="mt-1 text-sm text-muted-foreground">Canonical PRP events and presentation decisions remain inspectable below.</p>
             </div>
           ) : null}
-          {!loading && !error && canInspectRaw === true && !inspection?.trace ? (
+          {!loading && !loadError && canInspectRaw === true && !inspection?.trace ? (
             <div className="m-4 flex items-start justify-between gap-4 rounded-md border border-border bg-muted/20 p-4">
               <div>
                 <p className="font-medium">Raw provider capture was off for this run.</p>
@@ -1166,7 +1173,7 @@ export function RunnerInspector({
                             <JsonExplorer value={selectedFrame.parsed} />
                             {Array.isArray(selectedFrame.withheldPaths) && selectedFrame.withheldPaths.length > 0 ? <div className="flex items-start gap-2 rounded-md border border-border bg-accent/30 px-3 py-2 text-xs text-muted-foreground"><ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent-foreground" /><span>Withheld paths: {selectedFrame.withheldPaths.join(", ")}</span></div> : null}
                             {canInspectRaw === true ? <Button size="sm" variant="outline" onClick={() => void reveal(Number(selectedFrame.frameId))}><Eye className="mr-1.5 h-4 w-4" />Reveal exact frame</Button> : null}
-                            {revealedFrame ? <div className="rounded-md border border-destructive/30 p-2"><p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-destructive"><ShieldAlert className="h-3.5 w-3.5" />Exact unredacted frame</p><JsonExplorer value={decodeExactFrame(revealedFrame.rawBase64)} label="Search exact frame" /></div> : null}
+                            {revealedFrame ? <div className={cn("rounded-md border border-destructive/30 p-2", ANALYTICS_NO_CAPTURE_CLASS)}><p className="mb-2 flex items-center gap-1.5 text-xs font-medium text-destructive"><ShieldAlert className="h-3.5 w-3.5" />Exact unredacted frame</p><JsonExplorer value={decodeExactFrame(revealedFrame.rawBase64)} label="Search exact frame" /></div> : null}
                           </div>
                         ) : <p className="text-sm text-muted-foreground">This PRP event has no recoverable raw frame.</p>}
                       </section>
@@ -1220,7 +1227,7 @@ export function RunnerInspector({
           {view === "trace" ? (
             <div className="grid min-h-0 flex-1 md:grid-cols-(--gtc-runner-inspector-trace)">
               <ScrollArea className="border-r border-border"><div className="p-2">{frames.length ? [...frames].sort((left, right) => Number(left.frameId) - Number(right.frameId)).map((frame) => <button key={Number(frame.frameId)} type="button" onClick={() => { const operation = operations.find((candidate) => candidate.frames.some((candidateFrame) => Number(candidateFrame.frameId) === Number(frame.frameId))); if (operation) setSelectedKey(operation.key); setSelectedFrameId(Number(frame.frameId)); }} className={cn("mb-1 w-full rounded-md border px-3 py-2 text-left", Number(frame.frameId) === Number(selectedFrame?.frameId) ? "border-primary/40 bg-primary/10" : "border-transparent hover:bg-muted/50")}><span className="flex items-center gap-2 text-sm font-medium"><span className="font-mono text-xs text-muted-foreground">#{String(frame.frameId)}</span><span className="truncate">{frameMethod(frame) || text(frame.direction)}</span></span><span className="mt-1 block text-(length:--text-nano) text-muted-foreground">{text(frame.direction).replaceAll("_", " ")} · {formatBytes(Number(frame.byteLength) || 0)}</span></button>) : <p className="p-3 text-sm text-muted-foreground">No raw frames were captured for this run.</p>}</div></ScrollArea>
-              <ScrollArea><div className="space-y-3 p-5">{selectedFrame ? <><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">Exact trace frame #{String(selectedFrame.frameId)}</h3><Badge variant="outline">{frameMethod(selectedFrame) || text(selectedFrame.direction)}</Badge></div><JsonExplorer value={selectedFrame.parsed} />{canInspectRaw === true ? <Button size="sm" variant="outline" onClick={() => void reveal(Number(selectedFrame.frameId))}><Eye className="mr-1.5 h-4 w-4" />Reveal exact frame</Button> : null}{revealedFrame ? <JsonExplorer value={decodeExactFrame(revealedFrame.rawBase64)} label="Search exact frame" /> : null}</> : <p className="text-sm text-muted-foreground">Select a frame from the chronological trace.</p>}</div></ScrollArea>
+              <ScrollArea><div className="space-y-3 p-5">{selectedFrame ? <><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-semibold">Exact trace frame #{String(selectedFrame.frameId)}</h3><Badge variant="outline">{frameMethod(selectedFrame) || text(selectedFrame.direction)}</Badge></div><JsonExplorer value={selectedFrame.parsed} />{canInspectRaw === true ? <Button size="sm" variant="outline" onClick={() => void reveal(Number(selectedFrame.frameId))}><Eye className="mr-1.5 h-4 w-4" />Reveal exact frame</Button> : null}{revealedFrame ? <div className={ANALYTICS_NO_CAPTURE_CLASS}><JsonExplorer value={decodeExactFrame(revealedFrame.rawBase64)} label="Search exact frame" /></div> : null}</> : <p className="text-sm text-muted-foreground">Select a frame from the chronological trace.</p>}</div></ScrollArea>
             </div>
           ) : null}
 
