@@ -172,10 +172,14 @@ describe("combined Google Workspace consent", () => {
     expect(isGoogleWorkspaceToolGranted("gmail__send_message", profiles["workspace.all"].scopes)).toBe(false);
   });
 
-  it("sends every service to Google's MCP servers by default and reports the transport on each target", () => {
+  it("runs the six launch services on Paperclip's REST tools, keeps the others on Google's MCP servers, and reports the transport on each target", () => {
     expect(Object.keys(GOOGLE_WORKSPACE_TOOL_TRANSPORT).sort()).toEqual(Object.keys(GOOGLE_WORKSPACE_SERVICES).sort());
-    expect(new Set(Object.values(GOOGLE_WORKSPACE_TOOL_TRANSPORT))).toEqual(new Set(["google_mcp"]));
-    expect(googleWorkspaceToolTarget("gmail__get_message")?.transport).toBe("google_mcp");
+    expect(GOOGLE_WORKSPACE_TOOL_TRANSPORT).toEqual({
+      gmail: "paperclip_rest", drive: "paperclip_rest", docs: "paperclip_rest", sheets: "paperclip_rest",
+      slides: "paperclip_rest", calendar: "paperclip_rest", chat: "google_mcp", people: "google_mcp", search: "google_mcp",
+    });
+    expect(googleWorkspaceToolTarget("gmail__get_message")?.transport).toBe("paperclip_rest");
+    expect(googleWorkspaceToolTarget("chat__list_messages")?.transport).toBe("google_mcp");
     expect(googleWorkspaceServiceToolNames("docs")).toEqual(["read_doc", "update_doc"]);
   });
 

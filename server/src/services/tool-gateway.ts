@@ -34,6 +34,7 @@ import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notificatio
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
+import { paperclipDefinedTool } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
@@ -2019,13 +2020,15 @@ export function createToolGatewayService(
           ...(baseNameCounts.get(baseName)! > 1 ? [catalogEntry.id] : []),
         ]);
         const applicationKey = application.applicationKey ?? null;
+        const currentDefinition = paperclipDefinedTool(connection, catalogEntry.toolName);
         const inputSchema = projectedConnectionToolInputSchema(
           connection,
-          catalogEntry.inputSchema ?? {},
+          currentDefinition?.inputSchema ?? catalogEntry.inputSchema ?? {},
           catalogEntry.toolName,
         );
-        const outputSchema = catalogEntry.outputSchema ?? null;
-        const annotations = catalogEntry.annotations ?? {};
+        const outputSchema = currentDefinition?.outputSchema ?? catalogEntry.outputSchema ?? null;
+        const annotations = currentDefinition?.annotations ?? catalogEntry.annotations ?? {};
+        const description = currentDefinition?.description ?? catalogEntry.description;
         const risk = riskFromCatalogEntry(catalogEntry);
         const onDemandTools = readOnDemandToolsEnabled(connection);
         const providerMetadata: ConnectedMcpGatewayMetadata = {
@@ -2052,12 +2055,12 @@ export function createToolGatewayService(
         };
         return {
           name: gatewayToolName,
-          displayName: googleWorkspaceCatalogToolTitle(connection.config.sourceTemplateKey, catalogEntry.toolName, catalogEntry.title) ?? catalogEntry.toolName,
+          displayName: currentDefinition?.title ?? googleWorkspaceCatalogToolTitle(connection.config.sourceTemplateKey, catalogEntry.toolName, catalogEntry.title) ?? catalogEntry.toolName,
           description:
             gmailArchiveToolDescription(
               connection,
               catalogEntry.toolName,
-              googleChatToolDescription(connection, catalogEntry.toolName, catalogEntry.description),
+              googleChatToolDescription(connection, catalogEntry.toolName, description),
             ) ??
             `Connected MCP tool ${catalogEntry.toolName} from ${connection.name}.`,
           parametersSchema: inputSchema,

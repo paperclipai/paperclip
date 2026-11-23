@@ -69,6 +69,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { useGoogleMcpTransport } from "./helpers/google-workspace-transport.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -3308,6 +3309,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     ["people__get_user_profile", "userinfo.profile", "people"],
     ["search__search_corpus", null, "workspacemcp"],
   ] as const)("routes %s and denies cached actions after consent changes", async (toolName, permission, host) => {
+    useGoogleMcpTransport();
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "board", status: "active", membershipRole: "owner" });
     const { connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
