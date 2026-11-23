@@ -4113,6 +4113,10 @@ export function createPluginWorkerManager(
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  const stopRequests = new Map<string, number>();
+  const noteStopRequest = (pluginId: string) => {
+    stopRequests.set(pluginId, (stopRequests.get(pluginId) ?? 0) + 1);
+  };
   // The one shared, process-scoped aggregate route-slot controller. The manager
   // injects it into every worker handle, so the duplex route ceiling counts every
   // concurrent route across the process, not one agent's setting.
@@ -4188,9 +4192,14 @@ export function createPluginWorkerManager(
           "replacing a plugin worker handle that was left mid-transition",
         );
         startPromise = (async () => {
+          const stopRequestsBefore = stopRequests.get(pluginId) ?? 0;
           await trackIdleWork(existing.stop());
           retainStartupWorker(existing);
           if (workers.get(pluginId) === existing) workers.delete(pluginId);
+          if ((stopRequests.get(pluginId) ?? 0) !== stopRequestsBefore) {
+            log.info({ pluginId }, "worker replacement abandoned because a stop was requested while the previous handle was stopping");
+            throw new Error(`Worker for plugin "${pluginId}" was stopped before its replacement could start`);
+          }
           return spawnWorker(undefined);
         })();
       } else {
@@ -4252,6 +4261,7 @@ export function createPluginWorkerManager(
     },
 
     async stopWorker(pluginId: string): Promise<void> {
+      noteStopRequest(pluginId);
       const handle = workers.get(pluginId);
       if (!handle) {
         log.warn({ pluginId }, "no worker registered for plugin, nothing to stop");
@@ -4289,6 +4299,7 @@ export function createPluginWorkerManager(
     async stopAll(): Promise<void> {
       log.info({ count: workers.size }, "stopping all plugin workers");
       const promises = Array.from(workers.values()).map(async (handle) => {
+        noteStopRequest(handle.pluginId);
         try {
           await handle.stop();
         } catch (err) {

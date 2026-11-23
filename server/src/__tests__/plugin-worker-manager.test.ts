@@ -2675,6 +2675,56 @@ describe("startWorker with a handle left mid-transition", () => {
       await manager.stopAll();
     }
   }, 20_000);
+
+  const slowStopOptions = {
+    ...options,
+    entrypointPath: path.join(FIXTURES_DIR, "plugin-worker-slow-initialize.cjs"),
+    config: { shutdownDelayMs: 400 },
+  };
+
+  async function replacementInFlight(manager: ReturnType<typeof createPluginWorkerManager>) {
+    await manager.startWorker("test.plugin", slowStopOptions);
+    const stale = manager.getWorker("test.plugin")!;
+    const restart = stale.restart().then(() => "restarted", (error: Error) => error.message);
+    expect(stale.status).toBe("stopping");
+    const replacement = manager.startWorker("test.plugin", slowStopOptions)
+      .then(() => "replaced", (error: Error) => error.message);
+    return { stale, restart, replacement };
+  }
+
+  it("does not start the replacement when stopWorker arrives while the old handle stops", async () => {
+    const manager = createPluginWorkerManager();
+    try {
+      const { stale, restart, replacement } = await replacementInFlight(manager);
+
+      await manager.stopWorker("test.plugin");
+
+      expect(await replacement).toBe('Worker for plugin "test.plugin" was stopped before its replacement could start');
+      expect(await restart).toBe('Worker for plugin "test.plugin" was stopped before it could restart');
+      expect(stale.status).toBe("stopped");
+      expect(manager.getWorker("test.plugin")).toBeUndefined();
+      expect(manager.diagnostics()).toEqual([]);
+    } finally {
+      await manager.stopAll();
+    }
+  }, 20_000);
+
+  it("does not start the replacement when stopAll arrives while the old handle stops", async () => {
+    const manager = createPluginWorkerManager();
+    try {
+      const { stale, restart, replacement } = await replacementInFlight(manager);
+
+      await manager.stopAll();
+
+      expect(await replacement).toBe('Worker for plugin "test.plugin" was stopped before its replacement could start');
+      expect(await restart).toBe('Worker for plugin "test.plugin" was stopped before it could restart');
+      expect(stale.status).toBe("stopped");
+      expect(manager.getWorker("test.plugin")).toBeUndefined();
+      expect(manager.diagnostics()).toEqual([]);
+    } finally {
+      await manager.stopAll();
+    }
+  }, 20_000);
 });
 
 describe("a stop issued while a start is in flight", () => {
