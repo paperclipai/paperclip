@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -332,6 +333,7 @@ async function renderForm(
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
+    cloud?: boolean;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -341,6 +343,7 @@ async function renderForm(
   const root = createRoot(container);
   const onSave = vi.fn();
   const queryClient = createFormQueryClient();
+  if (options.cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
 
   await act(async () => {
     renderFormView(root, queryClient,
@@ -1459,6 +1462,20 @@ describe("AgentConfigForm environment selector", () => {
         provider: "acpx", acpxAgent: "antigravity", model: "manual-exact-google-model",
       }) }));
     } finally { accounts.mockRestore(); }
+  });
+
+  it.each(["antigravity", "copilot"])("honors Cloud availability during saved %s model discovery", async acpxAgent => {
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent, model: "source-model" },
+    }, { cloud: true });
+    roots.push(result.root);
+    await flushReact();
+    if (acpxAgent === "copilot") {
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent })));
+    } else {
+      expect(result.container.querySelector('[aria-label="Model"]')).toBeNull();
+      expect(mockAgentsApi.adapterModels).not.toHaveBeenCalled();
+    }
   });
 
   it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {

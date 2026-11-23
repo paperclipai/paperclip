@@ -132,7 +132,8 @@
               "api/tool-gateway-tokens",
               "api/tool-connections",
               "api/activity",
-              "api/dashboard"
+              "api/dashboard",
+              "api/cloud"
             ]
           }
         ]

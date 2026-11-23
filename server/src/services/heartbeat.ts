@@ -314,6 +314,7 @@ import {
   watchLegacyControllerLease,
 } from "./legacy-controller-lease.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
+import { awaitFailedChatRetrySourceStop } from "./chat-channels/failed-chat-retry-source-stop-wait.js";
 
 
 import {
@@ -2269,8 +2270,17 @@ export function heartbeatService(
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
       const context = parseObject(run.contextSnapshot);
+      // Workspace recovery can restart the failed run's sandbox to save its
+      // files while this replay prepares. Wait for that stop to settle; the
+      // retry authority still decides each attempt.
       const authorizeFailedChatRetryExecution = (stage?: "dispatching") =>
-        retryChatControlAdmission(async () => {
+        awaitFailedChatRetrySourceStop(db, {
+          companyId: run.companyId,
+          sourceRunId: Object.hasOwn(context, "chatFailedRunRetry") ? readNonEmptyString(context.retryOfRunId) : null,
+          signal: executionControl.controller.signal,
+          onWait: () => appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info",
+            message: "Waiting for the failed run's sandbox to stop before repeating the chat request" }),
+        }, () => retryChatControlAdmission(async () => {
           executionControl.controller.signal.throwIfAborted();
           await controllerLease.assertOwned(stage);
           return db.transaction((tx) =>
@@ -2283,7 +2293,7 @@ export function heartbeatService(
               runId: run.id,
               contextSnapshot: context,
             }));
-        });
+        }));
       const isFailedChatRunRetry = await timePreparation("chat_retry_admission", () => authorizeFailedChatRetryExecution());
       // Never adopt a chat-execution attestation supplied in a wake payload.
       // Reviewed chat turns rebuild it from the current durable owner below.
@@ -2365,7 +2375,13 @@ export function heartbeatService(
             .listDependencyReadiness(agent.companyId, [issueId])
             .then((rows) => rows.get(issueId) ?? null))
         : null;
-      const dependencyResponse = issueId && issueContext?.status === "blocked"
+      // A verified human answer on a task with open blockers is a bounded turn
+      // without checkout. A blocked task keeps that turn even if its last
+      // blocker finished during preparation. An active task (for example one
+      // waiting in review) checks out normally once its blockers are resolved;
+      // while they are open, checkout would refuse the answer with a 422.
+      const dependencyResponse = issueId && (issueContext?.status === "blocked"
+          || issueDependencyReadiness?.isDependencyReady === false)
         && context.dependencyBlockedInteraction === true
         && await isVerifiedDependencyInteractionResponse(db, { companyId: agent.companyId,
           issueId, agentId: agent.id, context });

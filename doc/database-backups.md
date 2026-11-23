@@ -81,6 +81,17 @@ Environment overrides:
   and publishes no partial backup. The whole restore, including local decrypt,
   digest and extraction, has a 30-minute outer limit
   (`native_harness_storage_restore_deadline_exceeded`). Stop ends the restore.
+  The per-turn backup that saves provider state after an accepted turn follows the
+  same rule. Its upload and its verifying read-back each have a five-minute idle
+  limit instead of a fixed five-minute total, so a large backup or a slow store
+  keeps saving while the store makes progress. For an upload, progress is a chunk
+  the store takes or, when the store sends the file itself (S3), a request it
+  answers, a part it takes or a resend that starts its wait. An upload with no
+  progress for five minutes fails with `native_harness_storage_upload_stalled`, a
+  stalled read-back with `native_harness_storage_download_stalled`, and neither
+  publishes a backup. The whole backup, including archive capture, encryption and
+  any storage-outage wait, has a 30-minute outer limit
+  (`native_harness_storage_persist_deadline_exceeded`).
 - `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS=<days>` sets how long native
   session continuity-break archives and quarantined session state are kept (see
   `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A

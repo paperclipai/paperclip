@@ -1,3 +1,4 @@
+import { dashboardActivityCondition, dashboardAuditConversationCondition } from "./responsibility-privacy.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
@@ -37,6 +38,7 @@ export interface ActivityFilters {
   limit?: number;
   readCondition?: SQL<boolean>;
   caseReadCondition?: SQL<boolean>;
+  dashboardUserId?: string | null;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -418,6 +420,7 @@ export function activityService(db: Db) {
   return {
     list: async (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
+        dashboardActivityCondition(filters.dashboardUserId), dashboardAuditConversationCondition(filters.dashboardUserId),
         filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       const limit = normalizeActivityLimit(filters.limit);
 

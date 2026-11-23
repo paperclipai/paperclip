@@ -2411,6 +2411,58 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     ).resolves.toBe(true);
   });
 
+  it("probes the plugin that recorded a failed creation when two plugins share its provider key", async () => {
+    // An interactive setup can create its sandbox through the second of two
+    // plugins with the same provider key, while the first is disabled. The
+    // cleanup must follow the recorded plugin, not the first one with the key.
+    const disabledPluginId = randomUUID();
+    const creatorPluginId = randomUUID();
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Shared Provider Key Cleanup",
+      config: { provider: "fake-plugin-shared", image: "fake:test", reuseLease: false },
+    });
+    const sharedDriver = [{ driverKey: "fake-plugin-shared", kind: "sandbox_provider", displayName: "Fake Shared", configSchema: { type: "object" } }];
+    await insertSandboxProviderPlugin(disabledPluginId, {
+      pluginKey: "paperclip.fake-shared-disabled", packageName: "@paperclipai/plugin-fake-shared-disabled",
+      environmentDrivers: sharedDriver, status: "disabled", installOrder: 1,
+    });
+    await insertSandboxProviderPlugin(creatorPluginId, {
+      pluginKey: "paperclip.fake-shared-creator", packageName: "@paperclipai/plugin-fake-shared-creator",
+      environmentDrivers: sharedDriver, status: "ready", installOrder: 2,
+    });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === creatorPluginId),
+      call: vi.fn(async () => {
+        throw new Error("call must not run during a readiness probe");
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const insertOrphan = async (providerLeaseId: string, metadata: Record<string, unknown>) => {
+      const orphan = await environmentService(db).insertPendingCleanupLease({
+        companyId, environmentId: environment.id, executionWorkspaceId: null, issueId: null, heartbeatRunId: runId,
+        provider: "fake-plugin-shared", providerLeaseId,
+        metadata: { provider: "fake-plugin-shared", driver: "sandbox", reuseLease: false, ...metadata },
+        failureReason: "interrupted_setup_creation",
+      });
+      return (await environmentService(db).getLeaseById(orphan.id))!;
+    };
+
+    const setupLease = await insertOrphan("paperclip-create-shared", {
+      pluginId: creatorPluginId,
+      failedCreateCleanup: {
+        providerLeaseId: "paperclip-create-shared", companyId, environmentId: environment.id,
+        attemptId: "attempt-shared", accountFingerprint: "account-shared", labels: {},
+      },
+    });
+    await expect(runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: setupLease })).resolves.toBe(true);
+
+    // The pinned plugin's worker is down: a transient window, not ready.
+    (workerManager.isRunning as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    await expect(runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: setupLease })).resolves.toBe(false);
+    expect((workerManager.call as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
   it("reports the plugin cleanup provider not ready while the plugin is not ready, then ready after it recovers", async () => {
     // A pending_cleanup orphan targets a plugin-backed provider. A plugin reload
     // or a plugin reinstall moves the plugin through a "not ready" status. The
