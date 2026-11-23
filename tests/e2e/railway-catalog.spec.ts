@@ -8,6 +8,7 @@ test("Railway is discoverable and opens its OAuth setup", async ({ page, request
   expect(response.ok()).toBe(true);
   const company = await response.json();
   await page.goto(`/${company.issuePrefix}/apps`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("searchbox", { name: "Search connectors" }).fill("Railway");
   const card = page.getByRole("list", { name: "Connector list" }).getByRole("listitem").filter({ has: page.getByRole("heading", { name: "Railway", exact: true }) });
   await expect(card).toBeVisible({ timeout: 30000 });
   await card.getByRole("button", { name: /Connect/ }).click();

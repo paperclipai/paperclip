@@ -401,6 +401,12 @@
       "darkAsset": "/brands/apps/posthog-dark.svg"
     },
     {
+      "slug": "postiz",
+      "provider": "Postiz",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/postiz.svg"
+    },
+    {
       "slug": "postman",
       "provider": "Postman",
       "catalogVisible": true,
