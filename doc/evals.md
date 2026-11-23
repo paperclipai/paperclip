@@ -40,7 +40,7 @@ scoped candidate admission and an encrypted Code credential. Registration does
 not establish a live pass, native question/plan support or usable cost accounting.
 
 The explicit-only [Google Antigravity qualification suite](../tests/runner-e2e/SUITES.md#google-antigravity-qualification)
-registers 22 Gemini API-key cells across local and Daytona, including the shared
+registers 24 Gemini API-key cells across local and Daytona, including the shared
 pending-permission Stop and provider-loss oracles. Separate
 [model-lineup suites](../tests/runner-e2e/SUITES.md#google-antigravity-model-lineups)
 check one exact-model receipt per model ID. Chat and instruction evals can run
