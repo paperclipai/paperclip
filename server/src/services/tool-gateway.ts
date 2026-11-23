@@ -7706,23 +7706,60 @@ export function createToolGatewayService(
 
   /** An undelivered task this exact call already started, for this grant, agent, and task. */
   async function findAttachableMcpTask(input: {
-    session: ToolGatewaySession; connectionId: string; grantId: string; requestHash: string; rowId?: string;
+    session: ToolGatewaySession; connectionId: string; grant: typeof connectionGrants.$inferSelect; requestHash: string; rowId?: string;
   }): Promise<McpTaskRow | null> {
+    const opener = input.session.createdByUserId ?? null;
+    const personalOwner = input.grant.kind === "user" ? input.grant.subjectUserId : null;
+    const sameOpener = opener ? eq(toolMcpTasks.createdByUserId, opener) : isNull(toolMcpTasks.createdByUserId);
+    const legacyForOwner = opener && opener === personalOwner ? isNull(toolMcpTasks.createdByUserId) : undefined;
     const [row] = await db.select().from(toolMcpTasks).where(and(
       eq(toolMcpTasks.companyId, input.session.companyId),
       ...(input.rowId ? [eq(toolMcpTasks.id, input.rowId)] : []),
       eq(toolMcpTasks.connectionId, input.connectionId),
       eq(toolMcpTasks.requestHash, input.requestHash),
-      input.session.createdByUserId
-        ? and(eq(toolMcpTasks.grantId, input.grantId), eq(toolMcpTasks.createdByUserId, input.session.createdByUserId))
-        : or(and(eq(toolMcpTasks.grantId, input.grantId), isNull(toolMcpTasks.createdByUserId)), isNotNull(toolMcpTasks.createdByUserId)),
+      eq(toolMcpTasks.grantId, input.grant.id),
+      ...(personalOwner ? [legacyForOwner ? or(sameOpener, legacyForOwner)! : sameOpener] : []),
       input.session.agentId ? eq(toolMcpTasks.agentId, input.session.agentId) : isNull(toolMcpTasks.agentId),
       input.session.issueId ? eq(toolMcpTasks.issueId, input.session.issueId) : isNull(toolMcpTasks.issueId),
       eq(toolMcpTasks.actorType, input.session.actorType ?? "agent"),
       input.session.actorId ? eq(toolMcpTasks.actorId, input.session.actorId) : isNull(toolMcpTasks.actorId),
       mcpTaskCollectable(),
-    )).orderBy(desc(sql`${toolMcpTasks.status} in ('completed', 'failed')`), desc(toolMcpTasks.createdAt)).limit(1);
+    )).orderBy(
+      desc(opener ? sql`${toolMcpTasks.createdByUserId} = ${opener}` : sql`${toolMcpTasks.createdByUserId} is null`),
+      desc(toolMcpTasks.createdAt),
+    ).limit(1);
     return row ?? null;
+  }
+
+  async function continuedMcpTask(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    requestHash: string,
+  ): Promise<McpTaskRow | null> {
+    if (session.createdByUserId || !session.runId || !session.agentId || !session.issueId) return null;
+    const [run] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, session.runId), eq(heartbeatRuns.companyId, session.companyId))).limit(1);
+    const taskRecordId = asRecord(asRecord(run?.contextSnapshot)?.toolTask)?.taskRecordId;
+    if (typeof taskRecordId !== "string" || !taskRecordId) return null;
+    const [row] = await db.select().from(toolMcpTasks).where(and(
+      eq(toolMcpTasks.id, taskRecordId),
+      eq(toolMcpTasks.companyId, session.companyId),
+      eq(toolMcpTasks.connectionId, connection.id),
+      eq(toolMcpTasks.requestHash, requestHash),
+      eq(toolMcpTasks.agentId, session.agentId),
+      eq(toolMcpTasks.issueId, session.issueId),
+      isNotNull(toolMcpTasks.createdByUserId),
+      mcpTaskCollectable(),
+    )).limit(1);
+    if (!row) return null;
+    const continued: ToolGatewaySession = { ...session, createdByUserId: row.createdByUserId };
+    try {
+      const grant = await resolveConnectionGrant(continued, connection, false);
+      return grant.id === row.grantId ? row : null;
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError) return null;
+      throw error;
+    }
   }
 
   /**
@@ -8552,10 +8589,11 @@ export function createToolGatewayService(
         deadline: controller.signal, runSignal: taskSignals.run, callerSignal: taskSignals.caller, execution,
       });
       if (taskIdentity) {
-        const attachable = await findAttachableMcpTask({
-          session, connectionId: connection.id, grantId: grant.id, requestHash: taskIdentity.requestHash,
-          rowId: taskSignals.attachToTaskRecordId ?? undefined,
-        });
+        const attachable = (taskSignals.attachToTaskRecordId ? null : await continuedMcpTask(session, connection, taskIdentity.requestHash))
+          ?? await findAttachableMcpTask({
+            session, connectionId: connection.id, grant, requestHash: taskIdentity.requestHash,
+            rowId: taskSignals.attachToTaskRecordId ?? undefined,
+          });
         const attachedTaskId = attachable ? openMcpTaskId(mcpTaskSecret(), mcpTaskScope(attachable), attachable.sealedProviderTaskId) : null;
         if (attachable && attachedTaskId) {
           // Only one caller collects a task at a time; another one waiting on
