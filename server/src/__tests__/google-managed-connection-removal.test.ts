@@ -48,6 +48,13 @@ import {
 import { secretService } from "../services/secrets.js";
 import { deleteCompany } from "../services/company-deletion.js";
 
+vi.mock("../services/paperclip-cloud-connector-status.js", () => ({
+  reconcilePaperclipCloudConnectorEnrollmentStatus: async (_env: unknown, _request: unknown, onRemoved?: () => Promise<unknown>) => {
+    await onRemoved?.();
+    return { configured: false, status: "not_configured", brokerBaseUrl: "https://broker.example", instanceId: null, environment: "development", origins: [] };
+  },
+}));
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -890,6 +897,31 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     await drain(fixture.connector, Date.now());
     expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
     expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+  });
+
+  it.each([
+    ["a board member", false, 0],
+    ["an instance admin", true, 1],
+  ] as const)("starts the removed-instance cleanup from the status check only for %s", async (_label, isInstanceAdmin, rows) => {
+    const fixture = await connectManagedGmail();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board", userId: fixture.userId, sessionId: `session-${randomUUID()}`, userName: "Owner", userEmail: null,
+        isInstanceAdmin, source: "session", companyIds: [fixture.company.id],
+        memberships: [{ companyId: fixture.company.id, membershipRole: "owner", status: "active" }],
+      };
+      next();
+    });
+    app.use("/api", toolAccessRoutes(db, { paperclipCloudConnector: fixture.connector as unknown as PaperclipCloudConnector }));
+    app.use(errorHandler);
+
+    const response = await request(app).get("/api/tools/oauth/cloud-connector/enrollment");
+
+    expect(response.status).toBe(200);
+    expect(await db.select().from(googlePendingRevocations)).toHaveLength(rows);
+    expect(await liveSecretCount(fixture.company.id)).toBe(rows === 1 ? 1 : 2);
   });
 
   it("keeps one company's pending revocation apart from another company's with the same token", async () => {
