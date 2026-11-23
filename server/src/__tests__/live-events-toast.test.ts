@@ -23,15 +23,19 @@ vi.mock("../services/case-access.js", () => ({
   canActorReadCase: async (_db: unknown, _actor: unknown, record: { id: string }) => record.id !== "hidden-case",
 }));
 function database(onPredicate: (kind: "where" | "join", condition: SQL) => void = () => {}) {
-  return { select: (fields: Record<string, unknown>) => {
+  return { select: (fields: Record<string, unknown> = {}) => {
     let table = "";
     const query = {
       from: (value: Parameters<typeof getTableName>[0]) => { table = getTableName(value); return query; },
       innerJoin: (_table: unknown, condition: SQL) => { onPredicate("join", condition); return query; },
       where: (condition: SQL) => { onPredicate("where", condition); return query; },
+      orderBy: () => query,
+      then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(table === "instance_settings"
+        ? [{ id: "settings", general: { censorUsernameInLogs: false }, experimental: {} }] : []).then(resolve),
       limit: async () => {
-        if (table === "issues") return [{ id: "task", identifier: "PAP-1234" }];
+        if (table === "issues") return [{ id: "task", identifier: "PAP-1234", title: "Fix task notifications" }];
         if (table === "company_memberships") return fields.name ? [{ name: "Alex Example", image: "/alex.png" }] : [{ id: "membership" }];
+        if (table === "issue_comments") return [{ body: "Ready for review" }];
         if (table === "agents") return [{ name: "Coder", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "bubblegum-sky" } }];
         return [];
       },
@@ -46,7 +50,7 @@ describe("authenticated activity notifications", () => {
     const pending = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
     const db = database(), select = db.select;
-    db.select = fields => {
+    db.select = (fields = {}) => {
       const query = select(fields);
       if (fields.identifier) {
         const limit = query.limit;
@@ -86,7 +90,7 @@ describe("authenticated activity notifications", () => {
     const db = database();
     const select = db.select;
     const identifierRead = vi.fn();
-    db.select = fields => {
+    db.select = (fields = {}) => {
       if (fields.identifier) {
         identifierRead();
         if (identifierRead.mock.calls.length <= 3) throw new Error("Identifier lookup unavailable");
@@ -132,6 +136,48 @@ describe("authenticated activity notifications", () => {
         expect(event.payload.taskIdentityChanged).toBe(false);
       }
       expect(messages[3].payload.issueIdentifier).toBe("PAP-1234");
+    } finally {
+      socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it.each(["authenticated", "local_trusted"] as const)("delivers useful task content through the real socket (%s)", async deploymentMode => {
+    const server = createServer();
+    setupLiveEventsWebSocketServer(server, database() as never, { deploymentMode,
+      resolveCloudActor: async () => ({ userId: "viewer", companyIds: ["company"] }) });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/companies/company/events/ws`);
+    try {
+      await once(socket, "open");
+      const messages: Array<{ payload: Record<string, unknown> }> = [];
+      socket.on("message", data => messages.push(JSON.parse(data.toString())));
+      const activity = (entityId: string, action: string, details: Record<string, unknown>) => publishLiveEvent({
+        companyId: "company", type: "activity.logged", payload: {
+          action, entityType: "issue", entityId, actorType: "system", issueTitle: "Spoofed title", details,
+          notificationDetails: { bodySnippet: "Spoofed preview" },
+        },
+      });
+      const changes = { status: { from: "in_progress", to: "done" }, description: { from: "private old", to: "private new" } };
+      if (deploymentMode === "authenticated") activity("hidden", "issue.comment_added", { bodySnippet: "Hidden comment" });
+      let delivery = once(socket, "message");
+      activity("visible", "issue.updated", { source: "comment", changes, secret: "private token" });
+      await delivery;
+      delivery = once(socket, "message");
+      activity("visible", "issue.comment_added", { commentId: "comment-1", bodySnippet: "Ready for review", changes, secret: "private token" });
+      await delivery;
+      expect(messages).toHaveLength(2);
+      expect(messages[0].payload).toMatchObject({ issueTitle: "Fix task notifications", notificationDetails: {
+        source: "comment", status: "done", statusFrom: "in_progress", descriptionChanged: true,
+      } });
+      expect(messages[1].payload).toMatchObject({ issueTitle: "Fix task notifications", notificationDetails: {
+        commentId: "comment-1", bodySnippet: "Ready for review", status: "done", statusFrom: "in_progress", descriptionChanged: true,
+      } });
+      if (deploymentMode === "authenticated") {
+        expect(messages[1].payload).not.toHaveProperty("details");
+        expect(JSON.stringify(messages)).not.toMatch(/private token|private old|private new|Spoofed|Hidden comment/);
+      }
     } finally {
       socket.terminate();
       await new Promise<void>(resolve => server.close(() => resolve()));
@@ -247,7 +293,7 @@ describe("authenticated activity notifications", () => {
       socket.on("message", (data) => messages.push(JSON.parse(data.toString())));
       const activity = (entityId: string, actorType = "user") => publishLiveEvent({ companyId: "company", type: "activity.logged", payload: {
         action: "issue.created", entityType: "issue", entityId, actorType, actorId: actorType === "user" ? "viewer" : "agent",
-        issueIdentifier: "SPOOF-1",
+        issueIdentifier: "SPOOF-1", issueTitle: "Untrusted title",
         details: { bodySnippet: "private comment", secret: "not for the socket" },
       } });
       if (deploymentMode === "authenticated") activity("hidden");
@@ -255,7 +301,7 @@ describe("authenticated activity notifications", () => {
       activity("visible");
       await first;
       expect(messages).toHaveLength(1);
-      expect(messages[0].payload).toMatchObject({ action: "issue.created", entityType: "issue", entityId: "visible", issueIdentifier: "PAP-1234", actorType: "user", actorId: "viewer", actorName: "Alex Example", actorImage: "/alex.png" });
+      expect(messages[0].payload).toMatchObject({ action: "issue.created", entityType: "issue", entityId: "visible", issueIdentifier: "PAP-1234", issueTitle: "Fix task notifications", notificationDetails: {}, actorType: "user", actorId: "viewer", actorName: "Alex Example", actorImage: "/alex.png" });
       if (deploymentMode === "authenticated") expect(messages[0].payload).not.toHaveProperty("details");
       const second = once(socket, "message");
       activity("visible", "agent");
@@ -269,8 +315,8 @@ describe("authenticated activity notifications", () => {
         details: { title: "Secret new title", hiddenAt: null },
       } });
       await third;
-      // A rename or hide is flagged with a closed boolean; its content stays off the socket.
       expect(messages[2].payload.taskIdentityChanged).toBe(true);
+      expect(messages[2].payload.notificationDetails).toEqual({ titleChanged: true });
       if (deploymentMode === "authenticated") expect(JSON.stringify(messages[2].payload)).not.toContain("Secret new title");
     } finally {
       socket.terminate();
@@ -290,9 +336,11 @@ describe("activity profile query boundaries", () => {
     expect(await activityToastIdentity(db as never, "company-A", {
       action: "issue.updated", entityType: "issue", entityId: "task-A", actorType: "system",
     })).toMatchObject({ issueIdentifier: "PAP-1234" });
-    expect(predicates).toEqual([
-      { sql: '("issues"."company_id" = $1 and "issues"."id" = $2)', params: ["company-A", "task-A"] },
-    ]);
+    expect(predicates[0]).toEqual({ sql: '("issues"."company_id" = $1 and "issues"."id" = $2)', params: ["company-A", "task-A"] });
+    expect(predicates).toHaveLength(4);
+    expect(predicates[1].params).toEqual(["company-A", "task-A"]);
+    expect(predicates[2].params).toEqual(["company-A", "task-A"]);
+    expect(predicates[3]).toEqual({ sql: '"instance_settings"."singleton_key" = $1', params: ["default"] });
   });
 
   it("requires the exact company, human actor, and active membership before reading a person profile", async () => {

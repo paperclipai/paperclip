@@ -119,6 +119,17 @@ describe("U1 liveness", () => {
     const samples = polls(0, 7 * 60 * SEC, at => sample(at, "in_progress", [run("r1", "running", 0)]));
     expect(gradeU1(record(samples, { restAt: null }), BOUNDS).verdict).toBe("fail");
   });
+
+  it("keeps a quiet run that waits on an active model request as its owner, within the provider-turn bound (rerun 11 t001)", () => {
+    const quiet = (untilMs: number) => [...polls(0, 60 * SEC, at => sample(at, "in_progress", [run("r1", "running", 0, null,
+      { lastEvidenceAt: iso(at), providerTurnActive: true })])),
+      ...polls(63 * SEC, untilMs, at => sample(at, "in_progress", [run("r1", "running", 0, null,
+        { lastEvidenceAt: iso(60 * SEC), providerTurnActive: true })], { interruption: { ...retryable, state: "working", canRetry: false } }))];
+    const waited = [...quiet(510 * SEC), sample(513 * SEC, "done", [run("r1", "succeeded", 0, 512 * SEC)])];
+    expect(gradeU1(record(waited), BOUNDS)).toMatchObject({ verdict: "pass", metrics: { ownerlessMs: 0 } });
+    expect(gradeU1(record(quiet(15 * 60 * SEC), { restAt: null }), BOUNDS)).toMatchObject({ verdict: "fail",
+      detail: expect.stringMatching(/^no_owner_no_action .* in in_progress \(interruption working\)/) });
+  });
 });
 
 describe("U2 retry loops", () => {

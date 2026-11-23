@@ -57,8 +57,10 @@ export async function wakeConnectionIntentAfterResolution(
       mutation: "interaction",
       wakeReason: "issue_commented",
       source: "connection_intent.resolved",
-      ...(input.actorType === "system" && input.loaded.interaction.addresseeUserId
-        ? { responsibleUserId: input.loaded.interaction.addresseeUserId, connectionIntentResolution: "existing_connection" }
+      // Automatic retirement observes access; it does not accept work as the
+      // addressee. Identity initialization retains the request's source context.
+      ...(input.actorType === "system"
+        ? { connectionIntentResolution: "existing_connection" }
         : {}),
       ...(interactionResolvedAt
         ? { interactionResolvedAt }

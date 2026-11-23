@@ -1,6 +1,7 @@
 import { providerTurnStartBefore, providerTurnToolCallSourceSeq } from "./provider-turn-tool-order.js";
 import type { RunnerAttachmentDownloadGrant } from "../contracts/harness-driver.js";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
+import { isSandboxDiskFullFailure } from "../contracts/sandbox-disk-full.js";
 import { confirmAntigravityProbeNativeRetirement } from "../drivers/acpx/antigravity-probe-retirement.js";
 import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../drivers/acpx/grok-web-search.js";
 import { PRP_COMPLETION_TOOL_NAME, PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA } from "../contracts/completion-result.js";
@@ -39,6 +40,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -234,6 +236,22 @@ function assertSuspendedRunnerState(
   }
 }
 
+export function isSettledReleasedRunnerCut(
+  state: Record<string, unknown>,
+  expected: DurableRecoveryIdentity,
+): boolean {
+  if (state.schema !== "paperclip.runner.durable.state.v1" || !recoveryIdentityMatches(state, expected)) return false;
+  if (state.lifecycle === "suspended") return true;
+  return state.lifecycle === "ready"
+    && Array.isArray(state.outbox) && state.outbox.length === 0
+    && Number.isSafeInteger(state.nextSourceSeq) && state.ackedSourceSeq === Math.max(0, Number(state.nextSourceSeq) - 1)
+    && state.warmTransition === undefined
+    && (state.pendingTerminalDelivery ?? null) === null
+    && (state.pendingProviderCleanup ?? null) === null
+    && Object.values(record(state.processedCommands)).every(command =>
+      !["pending", "indeterminate"].includes(String(record(command).status)));
+}
+
 function assertRealDirectory(path: string): void {
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -400,6 +418,7 @@ function latestArchivedControlPlaneState(
  * placement shares one rotation path.
  */
 interface RunnerStateArchive {
+  archivedByLaunch?: true;
   /** Read the live Runner state before its control plane is archived. */
   read: () => Promise<Record<string, unknown>>;
   /**
@@ -500,19 +519,45 @@ async function rotateAuthorityEpoch(
       priorIdentity,
     );
   } else {
-    assertSuspendedRunnerState(await runnerState.read(), priorIdentity);
+    if (!runnerState.archivedByLaunch) assertSuspendedRunnerState(await runnerState.read(), priorIdentity);
     if (!existsSync(activeControlPlane)) {
       throw new Error("native_runner_authority_archive_incomplete");
     }
     assertRealDirectory(activeControlPlane);
     renameSync(activeControlPlane, archivedControlPlane);
   }
+  if (runnerState.archivedByLaunch) return resumedState ?? controlPlaneState;
   const archivedRunnerState = await runnerState.archive({
     archiveKey: basename(archive).replace(/^epoch-/, ""),
     priorIdentity,
   });
   assertSuspendedRunnerState(archivedRunnerState, priorIdentity);
   return resumedState ?? controlPlaneState;
+}
+
+export function revertUnattachedRelaunchRotation(root: string, source: DurableRecoveryIdentity): boolean {
+  const epoch = authorityArchiveDirectory(root, source);
+  const archived = resolve(epoch, "control-plane");
+  const active = resolve(root, "control-plane");
+  if (!existsSync(resolve(archived, "control-plane-state.json")) || !existsSync(resolve(active, "control-plane-state.json"))) return false;
+  assertRealDirectory(epoch);
+  assertRealDirectory(archived);
+  assertRealDirectory(active);
+  if (existsSync(resolve(epoch, "runner-state.json"))) return false;
+  if (!recoveryIdentityMatches(controlPlaneIdentity(readControlPlaneState(archived)), source)) return false;
+  const target = readControlPlaneState(active);
+  const identity = controlPlaneIdentity(target);
+  const externallyPersisted = target.schema === "paperclip.runner.external-control-plane-state.v1";
+  if (identity.runnerInstanceId !== source.runnerInstanceId || identity.normalizedSessionId !== source.normalizedSessionId
+    || identity.runId === source.runId) return false;
+  if (!externallyPersisted && (target.connectionCount !== 0 || target.ackedSourceSeq !== 0
+    || !Array.isArray(target.committedEvents) || target.committedEvents.length !== 0
+    || Object.keys(record(target.leases)).length !== 0
+    || Object.values(record(target.tickets)).some(ticket => record(ticket).usedAt !== null))) return false;
+  rmSync(active, { recursive: true });
+  renameSync(archived, active);
+  if (readdirSync(epoch).length === 0) rmdirSync(epoch);
+  return true;
 }
 
 function projectCopilotRunGrant(
@@ -3973,7 +4018,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: Parameters<typ
   return applyProviderObservabilityEnvironment(createCapabilityRunnerdProviderEnvironmentBase(input), input.options.observability, input.provider === "acpx");
 }
 
-const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
+export const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
   "PAPERCLIP_AI_PROVIDER_KEY",
   "PAPERCLIP_AI_PROVIDER_URL",
   "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
@@ -4253,7 +4298,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #releaseEpisode: {
     source: DurableRecoveryIdentity; confirmed: boolean; claimed?: boolean;
     claimantRunId?: string; ticket?: string; ticketFlushed?: boolean; deadline?: number;
+    parked?: { version: string; digest: string } | null;
   } | null = null;
+  #relaunchedRunnerArtifact: { version: string; digest: string } | null = null;
   #startupDrainTimedOut = false;
   #controllerDetachedForRestart = false;
   #failure: Error | null = null;
@@ -4951,6 +4998,28 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return operation.finally(() => { if (this.#attachmentOperation === pending) this.#attachmentOperation = null; });
   }
 
+  retireReleasedController(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null> {
+    const episode = this.#releaseEpisode;
+    if (this.#detachPromise || this.#closePromise || this.#closed || this.#attachmentOperation !== null
+      || !episode?.confirmed || episode.claimed || episode.ticket !== undefined || !this.#core
+      || !recoveryIdentityMatches(episode.source, this.#core.store.state.identity)) return Promise.resolve(null);
+    const source = structuredClone(episode.source);
+    const runner = this.#core.expectedRunner();
+    const operation = (async () => {
+      const deadline = Date.now() + runnerCloseGraceMs(this.options);
+      this.#controllerDetachedForRestart = true;
+      this.#closed = true;
+      this.#resolveClosedSignal();
+      this.#turnStartAdmission?.resolve(false);
+      this.#controlPlaneCheckpoint = null;
+      await this.#retireControllerForRecovery(deadline, "keep_task");
+      this.#handle = null;
+      this.#diagnostic("released controller retired; the host keeps the stopped runner's task");
+    })();
+    this.#detachPromise = operation;
+    return operation.then(() => ({ source, runner }));
+  }
+
   async #claimReleasedRunner(claimantRunId: string): Promise<void> {
     const episode = this.#releaseEpisode;
     const pair = this.options.releaseResume;
@@ -4980,6 +5049,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       while (!episode.claimed) {
         assertPending();
         let outcome: "resumed" | "unavailable" | undefined;
+        let relaunched: { version: string; digest: string } | undefined;
+        let settled: (() => Promise<void>) | undefined;
         try {
           if (!episode.ticket) {
             episode.ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
@@ -4990,7 +5061,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             episode.ticketFlushed = true;
           }
           assertPending();
-          outcome = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
+          const result = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
+          outcome = typeof result === "string" ? result : result.outcome;
+          relaunched = typeof result === "string" ? undefined : result.runner;
+          settled = typeof result === "string" ? undefined : result.settled;
         } catch (error) {
           // A generic RPC error cannot prove refusal. Keep this exact pending claim quiet.
           assertPending();
@@ -5000,6 +5074,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         assertPending();
         if (outcome === "unavailable") throw new Error("native_runner_reuse_unavailable");
+        if (relaunched) {
+          try {
+            core.acceptRelaunchedRunner(episode.ticket!, relaunched, episode.parked);
+            this.#relaunchedRunnerArtifact = structuredClone(relaunched);
+            await Promise.race([core.flushCheckpoint(), deadline, closed]);
+            await Promise.race([settled?.(), deadline, closed]);
+          } catch (error) {
+            if (error instanceof Error && error.message === "native_runner_relaunched_build_unaccepted") {
+              throw new Error("native_runner_reuse_unavailable");
+            }
+            assertPending();
+            if (error === expired) throw error;
+            await Promise.race([new Promise(resolve => setTimeout(resolve, 250)), deadline, closed]);
+            continue;
+          }
+        }
         episode.claimed = true;
       }
     } finally {
@@ -5227,7 +5317,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (core.store.state.stagedRunAttachment && this.options.readRunnerState
         && (registration?.connection?.mode === "listen" || registration?.connection?.mode === "external")) {
         const deadline = Math.min(Date.now() + (this.options.runnerReconnectGraceMs ?? 5_000), this.#sourceAttachmentDeadline ?? Infinity);
-        const artifact = this.options.runnerArtifact ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
+        const artifact = this.#relaunchedRunnerArtifact ?? this.options.runnerArtifact
+          ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
         for (;;) {
           this.#assertStartupOpen();
           const physical = await this.options.readRunnerState();
@@ -5650,7 +5741,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
-  async #retireControllerForRecovery(deadline: number): Promise<void> {
+  async #retireControllerForRecovery(deadline: number, route: "detach" | "keep_task" = "detach"): Promise<void> {
     this.#stopPump();
     if (this.#adoptedRunnerMonitor !== null)
       clearInterval(this.#adoptedRunnerMonitor);
@@ -5658,7 +5749,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#core?.disconnectActiveRunner();
     const release = this.#controlPlaneRelease;
     this.#controlPlaneRelease = null;
-    await Promise.resolve(release?.("detach")).catch((error: unknown) => {
+    await Promise.resolve(route === "detach" ? release?.("detach") : release?.()).catch((error: unknown) => {
       this.#diagnostic(
         `controller route release failed during retirement: ${String(error)}`,
       );
@@ -6461,7 +6552,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   /** Runner state held by an external Runner host (a plugin task or a sandbox). */
-  #externalRunnerStateArchive(): RunnerStateArchive {
+  #externalRunnerStateArchive(source: Record<string, unknown>): RunnerStateArchive {
+    const relaunched = this.options.relaunchReleasedRunner;
+    if (relaunched) {
+      if (!this.options.runnerProcessLauncher || !recoveryIdentityMatches(controlPlaneIdentity(source), relaunched)) {
+        throw new Error("native_runner_released_source_mismatch");
+      }
+      const unavailable = () => Promise.reject(new Error("native_runner_released_state_archived_by_launch"));
+      return { archivedByLaunch: true, read: unavailable, archive: unavailable };
+    }
     const { readRunnerState, prepareExternalRunnerState, archiveExternalRunnerState } = this.options;
     if (readRunnerState === undefined || archiveExternalRunnerState === undefined) {
       throw new Error("native_runner_prp_run_rotation_unavailable");
@@ -6978,7 +7077,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#root,
           rotationSource,
           desiredIdentity,
-          localStateOwner ? localRunnerStateArchive(this.#root) : this.#externalRunnerStateArchive(),
+          localStateOwner ? localRunnerStateArchive(this.#root) : this.#externalRunnerStateArchive(rotationSource),
         );
       } catch (error) {
         // Locally owned state is preserved aside for operator recovery.
@@ -6994,7 +7093,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
-    const runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
+    let runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
     this.#durableTurnId = identity.turnId;
     this.#eventIdentity = structuredClone(identity);
     const provider = this.options.provider ?? "codex";
@@ -7421,8 +7520,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const source = this.options.releaseResume.releasedSource;
       if (!recoveryIdentityMatches(source, core.store.state.identity)) throw new Error("native_runner_released_source_mismatch");
       if (!this.#controlPlaneCheckpoint) throw new Error("native_runner_released_cleanup_unavailable");
-      this.#releaseEpisode = { source: structuredClone(source), confirmed: true };
+      this.#releaseEpisode = { source: structuredClone(source), confirmed: true,
+        parked: this.options.releaseResume.releasedSourceRunner ? structuredClone(this.options.releaseResume.releasedSourceRunner) : null };
       await this.#claimReleasedRunner(this.#authorityRunId() ?? "");
+      runnerArtifact = this.#relaunchedRunnerArtifact ?? runnerArtifact;
     }
     const bootstrapTicket = adoptedRunner
       ? null
@@ -9371,6 +9472,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               { cause: observationError },
             ),
           );
+          return;
+        }
+        // The launcher already released everything Paperclip holds on that
+        // disk. The same launch fails the same way for the rest of the grace.
+        if (isSandboxDiskFullFailure(observationError)) {
+          this.#failTransport(new Error(observationDetail.slice(0, 1_000), { cause: observationError }));
           return;
         }
         attempt += 1;

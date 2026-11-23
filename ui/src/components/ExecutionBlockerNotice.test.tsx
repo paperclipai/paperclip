@@ -38,6 +38,27 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector("a, details, input, textarea")).toBeNull();
     expect(container.textContent).not.toMatch(/service attention|process|receipt|workspace/i);
   });
+  it("does not report a failed attempt for a task the agent handed to a person", async () => {
+    await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "unblock" });
+    expect(container.textContent).toBe("");
+  });
+
+  it.each([false, true])("names the question without repeating a historical failure (manual Retry=%s)", async canRetry => {
+    const presentation = { ...failed, responsibility: "user" as const, state: "waiting_for_user" as const, userAction: "question" as const, canRetry,
+      providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+        category: "rate_limit", httpStatus: 429, retryability: "unknown", message: "API error: 429" } } satisfies TaskInterruptionPresentation;
+    await render(presentation);
+    expect(container.textContent).toContain("Respond to the pending question to continue.");
+    expect(container.textContent).not.toMatch(/429|rate limit|failed/i);
+    expect(Boolean(container.querySelector("button"))).toBe(canRetry);
+    if (canRetry) {
+      await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+      expect(retry).toHaveBeenCalledOnce();
+    }
+    await render(presentation, { canRetry: false });
+    expect(container.querySelector("button")).toBeNull();
+  });
+
   it("keeps the failure visible and names the gate while a saved Retry waits on the budget", async () => {
     await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "budget", canRetry: false });
     const notice = container.querySelector('[data-testid="task-execution-waiting"]');

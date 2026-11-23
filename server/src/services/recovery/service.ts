@@ -17,6 +17,7 @@ import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import { RUNNER_REVISION_MISMATCH_CODE } from "../runner-revision-mismatch.js";
+import { NATIVE_SANDBOX_DISK_FULL } from "../native-runtime/native-sandbox-disk-full.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
@@ -24,6 +25,7 @@ import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "../workspace-source-restriction.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
 import { hasCommittedNativePlanWait } from "../native-runtime/native-plan-wait.js";
 import { hasCommittedNativeConversationTurnWait, hasCommittedNativeResponseWakeWait } from "../native-runtime/native-response-wake-wait.js";
 import { listExternalReviewWaits } from "../native-runtime/external-review-wait.js";
@@ -41,7 +43,6 @@ import {
 } from "./legacy-continuation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController, legacyControllerBootId, liveLegacyControllerExpiresAt } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
-import { instanceSettingsService } from "../instance-settings.js";
 import { NATIVE_STATUS_COMMITTER_ACTOR_ID } from "../issue-rewake-throttle.js";
 import { isWaitingConversation, settleConversationTurnForRun, deliverConversationComments } from "../agent-conversations.js";
 import {
@@ -174,6 +175,7 @@ import {
 } from "./successful-run-handoff.js";
 import {
   SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
+  PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION,
   sandboxProviderPluginRemedy,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
@@ -617,6 +619,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "project_access_denied",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
+  NATIVE_SANDBOX_DISK_FULL,
   "adapter_engine_unavailable",
   "agent_not_invokable",
   "agent_not_found",
@@ -2803,6 +2806,8 @@ export function recoveryService(
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === RESTRICTED_WORKSPACE_SOURCE_REASON
                       ? "Retry the task."
+                      : readConfigurationIncompletePayload(input.latestRun)?.reason === PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE
+                      ? PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION
                       : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
                       ? `The plugin that starts this agent's sandbox is not running. To fix it, ${sandboxProviderPluginRemedy(
@@ -4257,6 +4262,18 @@ export function recoveryService(
         return null;
       }
 
+      if (input.recoveryCause === "configuration_incomplete" && input.latestRun) {
+        const [restored] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, current.companyId),
+          eq(issueRecoveryActions.sourceIssueId, current.id),
+          eq(issueRecoveryActions.cause, "configuration_incomplete"),
+          eq(issueRecoveryActions.status, "resolved"),
+          eq(issueRecoveryActions.outcome, "restored"),
+          sql`${issueRecoveryActions.evidence}->>'latestRunId' = ${input.latestRun.id}`,
+        )).limit(1);
+        if (restored) return null;
+      }
+
       // Acceptance holds the same issue lock before writing its successor.
       // An awaiting-release handoff need not change the issue's version or
       // owner, and generic recovery must not cancel that durable successor.
@@ -4906,7 +4923,6 @@ export function recoveryService(
             if (current) Object.assign(issue, current);
           }
         }
-        if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
           if (await deliverConversationComments(db, issue, deps.enqueueWakeup,
             { onDeferredDeadline: opts?.onDeferredDeadline }) === "deferred") {
@@ -6872,6 +6888,17 @@ export function recoveryService(
       if (!taskClosed && [issue.checkoutRunId, issue.executionRunId]
         .some(runId => runId !== null && pendingResumeRunIds.has(runId))) {
         continue;
+      }
+      if (!taskClosed) {
+        let settlingUntil: Date | null = null;
+        for (const runId of new Set([issue.checkoutRunId, issue.executionRunId])) {
+          const lockRun = runId ? runById.get(runId) : undefined;
+          if (lockRun && !settlingUntil) settlingUntil = await terminalRunSettlingUntil(issue.companyId, lockRun.id, lockRun);
+        }
+        if (settlingUntil) {
+          opts?.onDeferredDeadline?.(settlingUntil.getTime());
+          continue;
+        }
       }
 
       await deps.beforeStaleLockClear?.(issue.id);

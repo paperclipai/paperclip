@@ -5,7 +5,7 @@ import { readNativeWorkspaceSyncReference } from "../../../services/native-runti
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
 import { isAgentDirectoryPreparationWait } from "../../../services/pre-dispatch-execution-evidence.js";
 import { isUserCommentContinuationReason } from "../../../services/explicit-native-continuation.js";
-import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
+import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../lib/queued-comment-context.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
@@ -102,6 +102,7 @@ import type {
 } from "../application/types.js";
 import { RunDispatchApplicationError } from "../application/types.js";
 import { parkWorkspaceBusyRetryInTx } from "./workspace-busy-wait.js";
+import { parkEnvironmentProviderWaitInTx } from "./environment-provider-wait.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
@@ -180,7 +181,8 @@ function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if ((retryReason === "ai_connection_busy" || retryReason === "ai_connection_pool_wait")) return "ai_connection_wait";
-  if (["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker", "interrupted_preparation"].includes(retryReason ?? "")) return "native_safe_replacement";
+  if (["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker", "native_agent_blocker_continuation",
+    "interrupted_preparation"].includes(retryReason ?? "")) return "native_safe_replacement";
   return "other";
 }
 
@@ -1003,6 +1005,9 @@ export function createPostgresRunDispatchAdapter(
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
       if (await parkWorkspaceBusyRetryInTx(tx, run, now)) {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
+      if (await parkEnvironmentProviderWaitInTx(tx, run, now)) {
         return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
 

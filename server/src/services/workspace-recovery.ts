@@ -22,7 +22,8 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { confirmSandboxRecoveryRestart, hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, prepareStoppedSandboxForRecovery, restoreSandboxStopAfterFailedRestart, settleAbsentSandbox, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { requestSandboxAbsenceProof } from "./sandbox-absence-proof.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
-import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
+import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import { TRANSIENT_WORKSPACE_PREPARATION_CODES } from "./failed-preparation-retry.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery, type WorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd, resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
@@ -40,6 +41,7 @@ import { capturePolicyRearmDueCondition, retainedSourceFallbackDueCondition, sto
 import { rearmExhaustedCapturePolicy } from "./workspace-recovery-capture-policy.js";
 import { rearmExhaustedStopProof } from "./workspace-recovery-stop-proof.js";
 import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
+import { expediteFreshContinuationChecks, settleHoldIntoAbandonedEpochContinuation } from "./fresh-continuation-fallback.js";
 import { reusableSandboxNotKeptAfterReplacementSql } from "./reusable-sandbox-kept-marker.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
@@ -204,6 +206,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const { db } = input;
   await adoptSystemRecovery(db, input);
   let initial = await loadSystemRecovery(db, input);
+  if (initial?.state === "exhausted" && await settleHoldIntoAbandonedEpochContinuation(db, input)) return;
   // A hold whose files a sibling saved, or whose source is refused permanently
   // (including holds saved by older releases), settles without a person.
   // An adoptable native source keeps its retention path; only the sibling
@@ -472,6 +475,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         // A settled restore hold returns its warm sandbox to reuse. A hold that
         // fails any guard keeps its protection; the saved files still count.
         await settleRecoveredWorkspaceRestoreHolds(tx as unknown as Db, input);
+        await expediteFreshContinuationChecks(tx as unknown as Db, input);
         return persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
           action: "issue.workspace_recovered", entityType: "issue", entityId: input.issueId, runId: input.runId,
           details: { recoveryActionId: input.actionId, summary: "Saved work recovered." } });
@@ -507,6 +511,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         ...(cause ? { cause } : {}),
       });
       const recorded = await updateSystemRecovery(db, input, current!, failed);
+      if (recorded && failed.state === "exhausted" && await settleHoldIntoAbandonedEpochContinuation(db, input)) return;
       // A permanent refusal of the recorded source repeats on every retry.
       // Continue from the last save in this same pass, under this ownership.
       if (recorded && failed.state === "exhausted" && isUnverifiableSourceFailure(failed.failure)) {
@@ -630,7 +635,8 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     and ${agentWakeupRequests.payload}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text)`;
   const interruptedPreparation = sql`(${heartbeatRuns.runtimeMode} = 'legacy'
     and (${heartbeatRuns.status} = 'interrupted' or (${heartbeatRuns.status} = 'failed'
-      and ${heartbeatRuns.errorCode} = 'process_lost'
+      and (${heartbeatRuns.errorCode} = 'process_lost' or (${inArray(heartbeatRuns.errorCode, [...TRANSIENT_WORKSPACE_PREPARATION_CODES])}
+        and ${heartbeatRuns.resultJson}#>>'{workspaceRestoreRecovery,schema}' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}))
       and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'bootstrap'
       and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb))
     and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.executionStage} = 'preparing'

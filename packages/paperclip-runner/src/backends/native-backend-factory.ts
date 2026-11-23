@@ -15,7 +15,7 @@ import {
 } from "./codex-native-backend.js";
 import {
   createAcpxNativeSessionBackend,
-  type CodexAcpxNativeSessionBackendOptions,
+  type AcpxNativeSessionBackendOptions,
 } from "./codex-acpx-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
@@ -39,7 +39,7 @@ export interface NativeBackendFactoryOptions extends Omit<
   acpxRuntimeDirectory?: string;
   acpxEnvironment?: NodeJS.ProcessEnv;
   acpxManagedCodexCredentialSourcePath?: string;
-  acpxDynamicToolHandler?: CodexAcpxNativeSessionBackendOptions["dynamicToolHandler"];
+  acpxDynamicToolHandler?: AcpxNativeSessionBackendOptions["dynamicToolHandler"];
   opencodeRuntimeDirectory?: string;
   opencodeEnvironment?: NodeJS.ProcessEnv;
   opencodeCommand?: string;

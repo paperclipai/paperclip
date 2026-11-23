@@ -1,4 +1,4 @@
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentAcquireErrorDiagnostic, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
+import { isRetryableEnvironmentErrorCode, isRetryableEnvironmentHttpStatus, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentAcquireErrorDiagnostic, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
 import type { ProviderFailure } from "@paperclipai/shared";
 import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 
@@ -14,20 +14,12 @@ import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-d
  */
 export const ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE = "environment_provider_unavailable";
 
-const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
-// Connection-level failures only. ENOTFOUND (a wrong host) and ABORT_ERR (our
-// own cancellation) are excluded: retrying cannot repair either.
-const TRANSIENT_ERROR_CODES = new Set([
-  "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENETUNREACH",
-  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
-]);
-
 /**
  * `reason` names evidence that has neither a provider status nor a deadline:
  * the provider reported a provisional creation that did not finish, or a
  * control-plane database query failed while the lease was taken.
  */
-type TransientLeaseFailureReason = "acquisition_incomplete" | "database_error";
+type TransientLeaseFailureReason = "acquisition_incomplete" | "provider_start_failed" | "database_error";
 type TransientProviderEvidence = { httpStatus?: number; errorCode?: string; acquisitionTimedOut?: true; reason?: TransientLeaseFailureReason };
 
 function own(value: unknown, key: string): unknown {
@@ -50,8 +42,8 @@ export function readTransientEnvironmentProviderFailure(error: unknown): Transie
     const statusValue = envelope?.httpStatus ?? [own(cause, "status"), own(cause, "statusCode")]
       .find(value => Number.isInteger(value));
     const codeValue = envelope?.errorCode ?? own(cause, "code");
-    const httpStatus = typeof statusValue === "number" && TRANSIENT_HTTP_STATUSES.has(statusValue) ? statusValue : undefined;
-    const errorCode = typeof codeValue === "string" && TRANSIENT_ERROR_CODES.has(codeValue) ? codeValue : undefined;
+    const httpStatus = typeof statusValue === "number" && isRetryableEnvironmentHttpStatus(statusValue) ? statusValue : undefined;
+    const errorCode = typeof codeValue === "string" && isRetryableEnvironmentErrorCode(codeValue) ? codeValue : undefined;
     if (httpStatus !== undefined || errorCode !== undefined) {
       return { ...(httpStatus !== undefined ? { httpStatus } : {}), ...(errorCode !== undefined ? { errorCode } : {}) };
     }
@@ -61,12 +53,34 @@ export function readTransientEnvironmentProviderFailure(error: unknown): Transie
   return null;
 }
 
+/**
+ * A sandbox creation that a request started directly (an interactive setup or
+ * a login sandbox), refused by the provider with a transient status. Only the
+ * worker's validated RPC envelope on the error itself counts: a wrapper means
+ * that Paperclip failed afterwards, for example while recording cleanup, and
+ * must still be reported. Ownership of a provisional allocation stays with its
+ * creation-cleanup record; this only decides the HTTP answer.
+ */
+export function readTransientSandboxCreationRefusal(error: unknown): { message: string } | null {
+  if (!(error instanceof JsonRpcCallError)) return null;
+  const acquisition = readEnvironmentAcquisitionDiagnostic(error);
+  const envelope = readEnvironmentAcquireErrorDiagnostic(error);
+  const timedOut = acquisition !== null && acquisition.elapsedMs >= acquisition.budgetMs;
+  const httpStatus = envelope?.httpStatus !== undefined && isRetryableEnvironmentHttpStatus(envelope.httpStatus) ? envelope.httpStatus : undefined;
+  const errorCode = envelope?.errorCode !== undefined && isRetryableEnvironmentErrorCode(envelope.errorCode) ? envelope.errorCode : undefined;
+  if (!timedOut && httpStatus === undefined && errorCode === undefined) return null;
+  const evidence = httpStatus !== undefined ? ` (HTTP ${httpStatus})` : errorCode !== undefined ? ` (${errorCode})` : "";
+  return { message: evidence === ""
+    ? "The sandbox provider did not finish starting the sandbox in time. Try again in a few minutes."
+    : `The sandbox provider was temporarily unavailable${evidence}. Try again in a few minutes.` };
+}
+
 /** A definite non-transient HTTP status anywhere on the chain is authoritative: retrying cannot change it. */
 function definiteNonTransientStatus(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 5; cause = own(cause, "cause"), depth++) {
     const status = readEnvironmentAcquireErrorDiagnostic(cause)?.httpStatus
       ?? [own(cause, "status"), own(cause, "statusCode")].find(value => Number.isInteger(value));
-    if (typeof status === "number" && status >= 400 && !TRANSIENT_HTTP_STATUSES.has(status)) return true;
+    if (typeof status === "number" && status >= 400 && !isRetryableEnvironmentHttpStatus(status)) return true;
   }
   return false;
 }
@@ -112,7 +126,8 @@ export function readTransientLeaseAcquisitionFailure(
   for (let cause = error, depth = 0; cause && depth < 5; cause = own(cause, "cause"), depth++) {
     const acquisition = getEnvironmentAcquisitionDiagnostic(cause, run);
     if (acquisition) {
-      return acquisition.elapsedMs >= acquisition.budgetMs ? { acquisitionTimedOut: true } : { reason: "acquisition_incomplete" };
+      if (acquisition.elapsedMs >= acquisition.budgetMs) return { acquisitionTimedOut: true };
+      return { reason: acquisition.phase === "create" && acquisition.providerState === "error" ? "provider_start_failed" : "acquisition_incomplete" };
     }
     if (cause instanceof JsonRpcCallError && cause.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return { acquisitionTimedOut: true };
   }
@@ -121,6 +136,7 @@ export function readTransientLeaseAcquisitionFailure(
 
 const REASON_LABELS: Record<TransientLeaseFailureReason, string> = {
   acquisition_incomplete: "sandbox creation did not finish",
+  provider_start_failed: "the provider could not start the sandbox",
   database_error: "a database query failed while recording the lease",
 };
 
@@ -136,10 +152,12 @@ export class EnvironmentProviderUnavailableError extends Error {
   readonly code = ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
   readonly httpStatus: number | null;
   readonly errorCode: string | null;
+  readonly environmentId: string | null;
+  readonly environmentName: string;
   /** Read by the setup-failure path and shown on the task as the reason. */
   readonly providerFailure: ProviderFailure;
 
-  constructor(input: { environmentName: string; driver: string; evidence: TransientProviderEvidence; cause: unknown }) {
+  constructor(input: { environmentId?: string; environmentName: string; driver: string; evidence: TransientProviderEvidence; cause: unknown }) {
     const status = input.evidence.httpStatus !== undefined ? `HTTP ${input.evidence.httpStatus}`
       : input.evidence.errorCode ?? (input.evidence.reason ? REASON_LABELS[input.evidence.reason] : undefined);
     super(status
@@ -148,6 +166,8 @@ export class EnvironmentProviderUnavailableError extends Error {
     this.name = "EnvironmentProviderUnavailableError";
     this.httpStatus = input.evidence.httpStatus ?? null;
     this.errorCode = input.evidence.errorCode ?? null;
+    this.environmentId = input.environmentId ?? null;
+    this.environmentName = input.environmentName;
     const providerCode = input.evidence.errorCode ?? (input.evidence.httpStatus === undefined ? input.evidence.reason : undefined);
     this.providerFailure = {
       schema: "paperclip.provider-failure.v1",
@@ -157,7 +177,7 @@ export class EnvironmentProviderUnavailableError extends Error {
       message: (status
         ? `The provider for "${input.environmentName}" was temporarily unavailable while Paperclip was starting it (${status}). `
         : `The sandbox for "${input.environmentName}" did not finish starting in time. `)
-        + "No agent work had started. Paperclip retries automatically; if those retries are used up, use Retry once the provider is available.",
+        + "No agent work had started. Paperclip keeps retrying automatically until the provider is back; if it stays unavailable for 30 minutes, use Retry once it is available.",
       ...(input.evidence.httpStatus !== undefined ? { httpStatus: input.evidence.httpStatus } : {}),
       ...(providerCode !== undefined ? { providerCode } : {}),
       retryability: "transient",

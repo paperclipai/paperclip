@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -13,6 +14,7 @@ import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, ModelDropdown, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { AgentLifecycleStatus, useAgentLifecycleStatus } from "./AgentLifecycleStatus";
 import { queryKeys } from "../lib/queryKeys";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
@@ -331,6 +333,7 @@ async function renderForm(
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
+    cloud?: boolean;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -340,6 +343,7 @@ async function renderForm(
   const root = createRoot(container);
   const onSave = vi.fn();
   const queryClient = createFormQueryClient();
+  if (options.cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
 
   await act(async () => {
     renderFormView(root, queryClient,
@@ -1460,6 +1464,20 @@ describe("AgentConfigForm environment selector", () => {
     } finally { accounts.mockRestore(); }
   });
 
+  it.each(["antigravity", "copilot"])("honors Cloud availability during saved %s model discovery", async acpxAgent => {
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent, model: "source-model" },
+    }, { cloud: true });
+    roots.push(result.root);
+    await flushReact();
+    if (acpxAgent === "copilot") {
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent })));
+    } else {
+      expect(result.container.querySelector('[aria-label="Model"]')).toBeNull();
+      expect(mockAgentsApi.adapterModels).not.toHaveBeenCalled();
+    }
+  });
+
   it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {
     const binding = { mode: "responsible_user", provider: "github", method: "api_key" } as const;
     const account = { id: "copilot-account", grantId: "copilot-grant", companyId: "company-1", provider: "github", method: "api_key", name: "My Copilot", ownership: "personal", ownerUserId: "you", isDefault: true, status: "needs_attention" } as const;
@@ -2437,6 +2455,17 @@ describe("AgentConfigForm environment selector", () => {
     const urlIndex = result.container.textContent!.indexOf("https://auth.example.test/device");
     expect(codeIndex).toBeGreaterThan(-1);
     expect(urlIndex).toBeGreaterThan(codeIndex);
+  });
+
+  it("blocks the displayed login code from session replay", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(isBlockedFromReplay("WXYZ-1234", document.body)).toBe(true);
   });
 
   it("keeps the code and URL visible after a later poll returns no prompt", async () => {

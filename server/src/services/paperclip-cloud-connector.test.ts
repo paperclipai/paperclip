@@ -8,11 +8,17 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
-import { SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
+import {
+  APP_DEFINITIONS,
+  GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS,
+  GOOGLE_WORKSPACE_SUBMITTED_SCOPES,
+  SLACK_MANAGER_SCOPES,
+} from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
 import {
+  appWithPaperclipCloudConnectorAvailability,
   createPaperclipCloudConnector,
   invalidatePaperclipCloudConnectorCapabilities,
   GMAIL_CONNECTOR_SCOPES,
@@ -74,7 +80,7 @@ describe("Paperclip Cloud connector", () => {
     await expect(connector.claim({ subject, companyId, profile: "workspace.all", claimId: "test-claim", redemptionId: "test-state" })).resolves.toEqual(credentials);
     sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
     await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" })).resolves.toEqual(credentials);
-    for (const invalid of [[], [...scopes, "https://www.googleapis.com/auth/gmail.send"]]) {
+    for (const invalid of [[], ["https://www.googleapis.com/auth/gmail.send"]]) {
       credentials.scopes = invalid;
       sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "workspace.all");
       await expect(connector.claim({ subject, companyId, profile: "workspace.all", claimId: "test-claim", redemptionId: "test-state" })).rejects.toMatchObject({ code: "REAUTHORIZATION_REQUIRED" });
@@ -241,21 +247,87 @@ describe("Paperclip Cloud connector", () => {
     }
   });
 
-  it.each(["chat.read", "chat.write"] as const)("signs reduced Chat scopes for %s", async (profile) => {
+  it.each(["gmail.archive", "chat.read", "chat.write", "people.read", "workspace-search.read"] as const)(
+    "never asks Paperclip's Google client for %s, whose scopes were not submitted for verification", async (profile) => {
+      const request = vi.fn(async () => Response.json({ confirmationUrl: "https://my.example.test/connections/confirm?session=legacy", expiresAt: "2099-01-01T00:00:00Z" }));
+      const connector = createPaperclipCloudConnector({ config: config().config, request: request as typeof fetch });
+      await expect(connector.startAuthorization({ subject, companyId, profile,
+        returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback", returnState: "legacy-state" }))
+        .rejects.toMatchObject({ code: "CONNECTOR_CONFIG_INVALID" });
+      expect(request).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["calendar.readonly", "chat.messages.readonly", "contacts.readonly", "gmail.modify"])(
+    "rejects a unified Workspace request that adds %s before reaching the broker", async (extra) => {
+      const request = vi.fn(async () => Response.json({}));
+      const connector = createPaperclipCloudConnector({ config: config().config, request: request as typeof fetch });
+      await expect(connector.startAuthorization({ subject, companyId, profile: "workspace.all",
+        scopes: ["https://www.googleapis.com/auth/gmail.readonly", `https://www.googleapis.com/auth/${extra}`],
+        returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback", returnState: "workspace-state" }))
+        .rejects.toMatchObject({ code: "CONNECTOR_CONFIG_INVALID" });
+      expect(request).not.toHaveBeenCalled();
+    },
+  );
+
+  it("binds unified Workspace refresh to the submitted scopes and caps reported permissions to them", async () => {
     const keys = config();
-    const scopes = ["chat.spaces.readonly", "chat.messages.readonly", ...(profile === "chat.write" ? ["chat.messages.create"] : [])]
-      .map((scope) => `https://www.googleapis.com/auth/${scope}`);
+    const credentials = { v: 1, accessToken: "test-access", refreshToken: "test-refresh", tokenType: "Bearer",
+      accessTokenExpiresAt: null, refreshTokenExpiresAt: null, scopes: ["https://www.googleapis.com/auth/documents"], subject, companyId, instanceId,
+      environment: keys.config.environment, provider: "google", profile: "workspace.all" };
+    let sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
+    const signedScopes: unknown[] = [];
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
-      const claims = JSON.parse(Buffer.from(body.request.split(".")[1], "base64url").toString("utf8"));
-      expect(claims.prf).toBe(profile);
-      expect(claims.scp).toEqual(scopes);
-      return Response.json({ confirmationUrl: "https://my.example.test/connections/confirm?session=chat", expiresAt: "2099-01-01T00:00:00Z" });
+      signedScopes.push(JSON.parse(Buffer.from(body.request.split(".")[1], "base64url").toString("utf8")).scp);
+      return Response.json({ sealed });
     });
     const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
-    await connector.startAuthorization({ subject, companyId, profile,
-      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback", returnState: "chat-state" });
-    expect(request).toHaveBeenCalledOnce();
+    await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" })).resolves.toEqual(credentials);
+    expect([...signedScopes[0] as string[]].sort()).toEqual([...GOOGLE_WORKSPACE_SUBMITTED_SCOPES].sort());
+    for (const legacy of ["calendar.readonly", "chat.messages.readonly", "userinfo.profile", "gmail.send"]) {
+      credentials.scopes = ["https://www.googleapis.com/auth/documents", `https://www.googleapis.com/auth/${legacy}`];
+      sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
+      await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" }))
+        .resolves.toMatchObject({ scopes: ["https://www.googleapis.com/auth/documents"] });
+      sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "workspace.all");
+      await expect(connector.claim({ subject, companyId, profile: "workspace.all", claimId: "test-claim", redemptionId: "test-state" }))
+        .resolves.toMatchObject({ scopes: ["https://www.googleapis.com/auth/documents"] });
+      credentials.scopes = [`https://www.googleapis.com/auth/${legacy}`];
+      sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
+      await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" }))
+        .rejects.toMatchObject({ code: "REAUTHORIZATION_REQUIRED" });
+    }
+  });
+
+  it("offers new managed Google setup only for methods inside the submitted scopes", () => {
+    const submitted = new Set<string>(GOOGLE_WORKSPACE_SUBMITTED_SCOPES);
+    const savedConnectionsOnly = [
+      "gmail/paperclip-archive",
+      "google-chat/paperclip-read", "google-chat/paperclip-write",
+      "google-people/paperclip-read",
+      "google-workspace-search/paperclip-read",
+    ];
+    const managedGoogle = APP_DEFINITIONS.flatMap((app) => app.methods
+      .filter((method) => method.oauthStrategy === "paperclip_cloud_connector"
+        && (GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS as readonly string[]).includes(method.connectorProfile ?? ""))
+      .map((method) => ({ app, method, id: `${app.slug}/${method.key}` })));
+    expect(managedGoogle.length).toBeGreaterThan(savedConnectionsOnly.length);
+    expect(managedGoogle.filter(({ method }) => (method.defaults?.scopesHint ?? []).some((value) => !submitted.has(value)))
+      .map(({ id }) => id)).toEqual(savedConnectionsOnly);
+    for (const app of APP_DEFINITIONS) {
+      const offered = appWithPaperclipCloudConnectorAvailability(app, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS]);
+      for (const method of offered.methods.filter((candidate) => candidate.oauthStrategy === "paperclip_cloud_connector")) {
+        expect(savedConnectionsOnly).not.toContain(`${app.slug}/${method.key}`);
+        for (const value of method.defaults?.scopesHint ?? []) expect(submitted, `${app.slug}/${method.key}`).toContain(value);
+      }
+    }
+    const gmail = appWithPaperclipCloudConnectorAvailability(APP_DEFINITIONS.find((app) => app.slug === "gmail")!, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS]);
+    expect(gmail.methods.map((method) => method.key)).toEqual([
+      "paperclip-read", "customer-read-oauth", "paperclip-draft", "customer-draft-oauth", "customer-archive-oauth",
+    ]);
+    const chat = appWithPaperclipCloudConnectorAvailability(APP_DEFINITIONS.find((app) => app.slug === "google-chat")!, [...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS]);
+    expect(chat.ownershipAvailability?.platform_shared).toBe(false);
   });
 
   it("signs selected Workspace scopes without substituting the full profile", async () => {

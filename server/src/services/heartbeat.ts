@@ -38,6 +38,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness, verifyRetryWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
+import { responsibilitySummaryModelGenerator } from "./responsibility-summary-generator.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
@@ -313,6 +314,7 @@ import {
   watchLegacyControllerLease,
 } from "./legacy-controller-lease.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
+import { awaitFailedChatRetrySourceStop } from "./chat-channels/failed-chat-retry-source-stop-wait.js";
 
 
 import {
@@ -1031,6 +1033,7 @@ export function heartbeatService(
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
       promptInjectionPreventionService(db, { budgetHooks }).recoverInterrupted(),
+      responsibilitySummaryModelGenerator(db).recoverInterrupted(),
     ]);
     const failed = outcomes.find(outcome => outcome.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
@@ -2238,13 +2241,6 @@ export function heartbeatService(
         ? await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
           .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, dispatchIssueId))).then(rows => rows[0] ?? null)
         : null;
-      if (isConversation(conversationIdentity) && !(await instanceSettings.getExperimental()).enableAgentChat) {
-        await setRunStatus(run.id, "cancelled", { finishedAt: new Date(), error: "Agent Chat is disabled", errorCode: "agent_chat_disabled" });
-        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date() });
-        await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
-        await finalizeAgentStatus(agent.id, "cancelled");
-        return;
-      }
       if (await deferRunForProviderLimit(run, agent, {
         resumingAdmittedRun: !!runOptions.nativeLeaseOwner,
         conversation: isConversation(conversationIdentity),
@@ -2273,8 +2269,17 @@ export function heartbeatService(
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
       const context = parseObject(run.contextSnapshot);
+      // Workspace recovery can restart the failed run's sandbox to save its
+      // files while this replay prepares. Wait for that stop to settle; the
+      // retry authority still decides each attempt.
       const authorizeFailedChatRetryExecution = (stage?: "dispatching") =>
-        retryChatControlAdmission(async () => {
+        awaitFailedChatRetrySourceStop(db, {
+          companyId: run.companyId,
+          sourceRunId: Object.hasOwn(context, "chatFailedRunRetry") ? readNonEmptyString(context.retryOfRunId) : null,
+          signal: executionControl.controller.signal,
+          onWait: () => appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info",
+            message: "Waiting for the failed run's sandbox to stop before repeating the chat request" }),
+        }, () => retryChatControlAdmission(async () => {
           executionControl.controller.signal.throwIfAborted();
           await controllerLease.assertOwned(stage);
           return db.transaction((tx) =>
@@ -2287,7 +2292,7 @@ export function heartbeatService(
               runId: run.id,
               contextSnapshot: context,
             }));
-        });
+        }));
       const isFailedChatRunRetry = await timePreparation("chat_retry_admission", () => authorizeFailedChatRetryExecution());
       // Never adopt a chat-execution attestation supplied in a wake payload.
       // Reviewed chat turns rebuild it from the current durable owner below.
@@ -2369,7 +2374,13 @@ export function heartbeatService(
             .listDependencyReadiness(agent.companyId, [issueId])
             .then((rows) => rows.get(issueId) ?? null))
         : null;
-      const dependencyResponse = issueId && issueContext?.status === "blocked"
+      // A verified human answer on a task with open blockers is a bounded turn
+      // without checkout. A blocked task keeps that turn even if its last
+      // blocker finished during preparation. An active task (for example one
+      // waiting in review) checks out normally once its blockers are resolved;
+      // while they are open, checkout would refuse the answer with a 422.
+      const dependencyResponse = issueId && (issueContext?.status === "blocked"
+          || issueDependencyReadiness?.isDependencyReady === false)
         && context.dependencyBlockedInteraction === true
         && await isVerifiedDependencyInteractionResponse(db, { companyId: agent.companyId,
           issueId, agentId: agent.id, context });
@@ -3135,7 +3146,7 @@ export function heartbeatService(
         }
         const enforceContinuationOwnership = Boolean(issueId && (isFailedChatRunRetry || isResolvedInteractionContinuationWakeContext(context) ||
           typeof context.workspaceReconstructionActionId === "string" ||
-          ["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker"].includes(run.scheduledRetryReason ?? "")));
+          ["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker", "native_agent_blocker_continuation"].includes(run.scheduledRetryReason ?? "")));
         if (issueId && enforceContinuationOwnership) {
           await options.beforeResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
           await options.afterResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
@@ -3587,9 +3598,8 @@ export function heartbeatService(
           enabled:
             resolvedInstanceSettings.experimental.enableNativeRunner === true,
           museEnabled: resolvedInstanceSettings.experimental.enableMuse === true,
-          grokEnabled: resolvedInstanceSettings.experimental.enableGrokBot === true && resolvedInstanceSettings.experimental.enablePublicMcp === true,
-          dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true
-            && resolvedInstanceSettings.experimental.enablePublicMcp === true,
+          grokEnabled: resolvedInstanceSettings.experimental.enableGrokBot === true,
+          dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true,
           runtimeConfig: agent.runtimeConfig,
           adapterConfig: agent.adapterConfig,
           agent: {

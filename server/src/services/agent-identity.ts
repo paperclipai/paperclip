@@ -42,30 +42,31 @@ export function agentIdentityService(db: Db) {
 
     async ensureAgentIdentity(companyId: string, agentId: string) {
       return db.transaction(async (tx) => {
-        // Lock the parent even when there is no identity row yet. This also
-        // serializes deletion and works inside the agent-creation transaction.
         const [owner] = await tx.select({ id: agents.id }).from(agents)
-          .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
+          .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("key share");
         if (!owner) throw notFound("Agent not found");
-        let [row] = await tx.select().from(agentIdentityKeys).where(ownership(companyId, agentId));
-        if (!row) {
-          const keys = generateKeyPairSync("ed25519");
-          const publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
-          const keyId = fingerprint(keys.publicKey.export({ type: "spki", format: "der" }));
-          const privateKeyPem = keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
-          const encrypted = await localEncryptedProvider.createSecret({ value: privateKeyPem });
-          [row] = await tx.insert(agentIdentityKeys).values({
-            companyId, agentId, algorithm: "Ed25519", keyId, publicKeyPem,
-            privateKeyMaterial: encrypted.material,
-          }).returning();
-          await persistActivity(tx as unknown as Db, {
-            companyId, actorType: "system", actorId: "system",
-            action: "agent.identity.created", entityType: "agent", entityId: agentId,
-            details: { algorithm: "Ed25519", keyId },
-          });
+        const [existing] = await tx.select().from(agentIdentityKeys).where(ownership(companyId, agentId));
+        if (existing) return resolveIdentity(existing);
+        const keys = generateKeyPairSync("ed25519");
+        const publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
+        const keyId = fingerprint(keys.publicKey.export({ type: "spki", format: "der" }));
+        const privateKeyPem = keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+        const encrypted = await localEncryptedProvider.createSecret({ value: privateKeyPem });
+        const [created] = await tx.insert(agentIdentityKeys).values({
+          companyId, agentId, algorithm: "Ed25519", keyId, publicKeyPem,
+          privateKeyMaterial: encrypted.material,
+        }).onConflictDoNothing({ target: agentIdentityKeys.agentId }).returning();
+        if (!created) {
+          const [winner] = await tx.select().from(agentIdentityKeys).where(ownership(companyId, agentId));
+          if (!winner) throw new Error("Agent identity key belongs to another owner");
+          return resolveIdentity(winner);
         }
-        // Fail closed on corruption or a wrong master key; never replace a key.
-        return resolveIdentity(row);
+        await persistActivity(tx as unknown as Db, {
+          companyId, actorType: "system", actorId: "system",
+          action: "agent.identity.created", entityType: "agent", entityId: agentId,
+          details: { algorithm: "Ed25519", keyId },
+        });
+        return resolveIdentity(created);
       });
     },
   };

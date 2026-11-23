@@ -393,12 +393,6 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
     return map;
   }, [issues]);
 
-  const entityStatusMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.status);
-    return map;
-  }, [issues]);
-
   // Filter, tier, sort events
   const processedItems = useMemo(() => {
     const events = (activity ?? [])
@@ -526,7 +520,6 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
               agentMap={agentMap}
               entityNameMap={entityNameMap}
               entityTitleMap={entityTitleMap}
-              entityStatusMap={entityStatusMap}
               isActive={isActiveHeartbeat}
             />
           </div>
@@ -544,7 +537,6 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
             agentMap={agentMap}
             entityNameMap={entityNameMap}
             entityTitleMap={entityTitleMap}
-            entityStatusMap={entityStatusMap}
             isActive={isActiveHeartbeat}
             isMuted
           />

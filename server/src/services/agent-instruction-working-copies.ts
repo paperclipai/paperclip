@@ -22,7 +22,7 @@ import { conflict, notFound } from "../errors.js";
 import { agentInstructionsService, agentInstructionsBundleMode } from "./agent-instructions.js";
 import { agentInstructionRevisionService } from "./agent-instruction-revisions.js";
 import { resolveInstructionActor } from "./agent-instruction-authorization.js";
-import { assertInstructionPathSafe, instructionBytes, instructionPath, materializeInstructionBytes, MAX_INSTRUCTION_BYTES, readInstructionBytes, instructionGitExcludeProgram } from "./agent-instruction-files.js";
+import { assertInstructionPathSafe, instructionBytes, instructionPath, materializeInstructionBytes, MAX_INSTRUCTION_BYTES, readInstructionBytes, instructionGitExcludeProgram, excludeRuntimeFromRemoteGit } from "./agent-instruction-files.js";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -248,9 +248,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
         assets: [{ key: "instructions", localDir: localRoot, followSymlinks: false }],
       });
       if (staged.assetDirs.instructions !== executionRoot) throw new Error("Instruction copy staging path changed");
-      const excluded = await runAdapterExecutionTargetShellCommand(input.runId, target,
-        `node -e ${quote(instructionGitExcludeProgram)} ${quote(target.remoteCwd)}`, { cwd: target.remoteCwd, env: {}, timeoutSec: 15 });
-      if (excluded.exitCode !== 0 || excluded.timedOut) throw new Error("Could not exclude private instructions from Git staging");
+      await excludeRuntimeFromRemoteGit(input.runId, target, "Could not exclude private instructions from Git staging");
     }
     // A refresh does not supersede the completed turn until every local and
     // remote staging step succeeds. Keep its receipt and stop evidence intact

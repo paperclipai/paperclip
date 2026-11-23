@@ -643,7 +643,9 @@ A's SIGTERM to the next event of each run that was live across it and did not fa
 every grade, every failed run with its error code, message and last error events, each swap's run samples and
 probes, and the duplicates: two runs of one task executing at once, two Runner processes for one run, repeated
 identical agent comments and repeated subtask titles. The product's per-turn notice "Prepared <document> for this
-response." is not a duplicated comment; its repeats are counted on the same line as information only. The wave fails
+response." is not a duplicated comment, and neither is the loop-guard notice "Paperclip stopped a tool call that kept
+failing the same way. The task continues in a fresh session." when each copy came from a different run; their repeats
+are counted on the same line as information only. Two copies of the loop-guard notice from one run are a duplicate. The wave fails
 unless every task passed.
 
 **Swap moments.** Each swap has five moments, in the timeline as `swap_incoming_spawned`, `swap_incoming_ready`,
@@ -1686,6 +1688,8 @@ server's pid, start, exit and freezes). A violation fails the wave.
   `controller_lease_lost` counts only when no freeze past the lease came before it.
 - `MS_double_executor`: a run recorded a second local runner identity
   (`native.process_identity_recorded`) before the first was shown stopped (`native.local_process_stopped`).
+  Sandbox identities (`targetKind: "remote"`) are not graded: the server records stop evidence only for
+  local processes, so every in-run sandbox relaunch would look like a second executor.
 - Ownership failures whose owner is not a wave server (or is unknown) are listed as `unattributed`.
 
 The usual R1–R6, U1–U4 and T checks grade every task as before. In the speed grade, MS1 and MS2 take no

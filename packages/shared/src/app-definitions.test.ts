@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_DEFINITIONS } from "./app-definitions.generated.js";
+import { connectionMethodDefSchema } from "./validators/app-definition.js";
 import {
   APP_STORE_DEFINITIONS,
   APP_STORE_HIDDEN_SLUGS,
@@ -28,6 +29,7 @@ import {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 import { aiConnectionRouterAppDefinition } from "./ai-connection-router.js";
+import { aiConnectionCatalogSlug } from "./ai-provider-routing.js";
 import { appDefinitionSchema, appDefinitionsSchema } from "./validators/app-definition.js";
 
 const googleScope = (scope: string) =>
@@ -256,7 +258,7 @@ describe("AppDefinition catalog", () => {
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
   it("lists model providers as regular tagged catalog entries", () => {
-    const slugs = ["openai", "anthropic", "openrouter", "xai", "google", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
+    const slugs = ["openai", "anthropic", "openrouter", "xai", "google", "github-copilot", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
     expect(APP_STORE_DEFINITIONS.filter(app => app.tags?.includes("model-provider")).map(app => app.slug).sort()).toEqual(slugs.sort());
     for (const slug of slugs) {
       const app = APP_STORE_DEFINITIONS.find(app => app.slug === slug)!;
@@ -321,14 +323,31 @@ describe("AppDefinition catalog", () => {
   it("separates GitHub tools from the review bot without changing the provider identity", () => {
     const github = getConnectableAppDefinition("github")!;
     const bot = getConnectableAppDefinition("github-code-review-bot")!;
-    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key", "copilot-token"]);
-    expect(github.methods.filter((method) => method.purpose === "tool").map((method) => method.key)).toEqual(["managed", "mcp-key"]);
-    expect(github.methods.find((method) => method.key === "copilot-token")).toMatchObject({ purpose: "ai", transport: "runtime_auth" });
+    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key"]);
+    expect(github.methods.every((method) => method.purpose === "tool")).toBe(true);
     expect(bot.name).toBe("GitHub Code Review Bot");
     expect(bot.methods).toHaveLength(1);
     expect(bot.methods[0]).toMatchObject({ provider: "github", purpose: "channel", transport: "chat_sdk" });
     expect(bot.branding).toEqual(github.branding);
     expect(bot.urlPatterns).toEqual([]);
+  });
+  it("offers GitHub Copilot authentication as its own connector, separate from GitHub tools", () => {
+    const github = getAppStoreDefinition("github")!;
+    const copilot = getAppStoreDefinition("github-copilot")!;
+    expect(copilot.name).toBe("GitHub Copilot");
+    expect(copilot.categories).toEqual(["ai"]);
+    expect(copilot.methods.map((method) => method.key)).toEqual(["copilot-token"]);
+    expect(copilot.methods[0]).toMatchObject({
+      purpose: "ai",
+      transport: "runtime_auth",
+      ai: { provider: "github", method: "api_key" },
+      keyPlacement: { location: "env", name: "COPILOT_GITHUB_TOKEN" },
+    });
+    expect(copilot.branding.logoUrl).not.toBe(github.branding.logoUrl);
+    expect(copilot.urlPatterns).toEqual([]);
+    expect(github.categories).not.toContain("ai");
+    expect(github.description).not.toContain("Copilot");
+    expect(aiConnectionCatalogSlug("github")).toBe("github-copilot");
   });
   it("registers the five native chat providers with only required setup credentials", () => {
     const expected = {
@@ -905,7 +924,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(89);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(91);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1471,6 +1490,21 @@ describe("AppDefinition catalog", () => {
       expect.stringContaining("consume organization credits"),
     ]);
   });
+  it("mints AWS credentials instead of placing stored keys in headers", () => {
+    const aws = APP_DEFINITIONS.find((app) => app.slug === "aws")!;
+    expect(aws.experimentalFeatureKey).toBe("enableAwsConnector");
+    for (const method of aws.methods) {
+      expect(method).toMatchObject({ transport: "mcp_remote", auth: "api_key", credentialMinter: "aws_mcp" });
+      expect(method.keyPlacement).toBeUndefined();
+    }
+    const base = aws.methods[1]!;
+    expect(connectionMethodDefSchema.safeParse(base).success).toBe(true);
+    expect(connectionMethodDefSchema.safeParse({ ...base, keyPlacement: { location: "header", name: "Authorization" } }).success).toBe(false);
+    expect(connectionMethodDefSchema.safeParse({ ...base, auth: "oauth" }).success).toBe(false);
+    expect(connectionMethodDefSchema.safeParse({ ...base, transport: "local_stdio" }).success).toBe(false);
+    const { credentialMinter: _minter, ...withoutMinter } = base;
+    expect(connectionMethodDefSchema.safeParse(withoutMinter).success).toBe(false);
+  });
   it("requires only reviewed provider or safety-boundary configuration on the default path", () => {
     const required = APP_DEFINITIONS.flatMap((app) =>
       app.methods.flatMap((method) =>
@@ -1483,6 +1517,10 @@ describe("AppDefinition catalog", () => {
       ),
     ).sort();
     expect(required).toEqual([
+      "aws:aws-access-key:accessLevel",
+      "aws:aws-access-key:endpointRegion",
+      "aws:aws-role:accessLevel",
+      "aws:aws-role:endpointRegion",
       "clickhouse:mcp-oauth:serviceId",
       "honcho:mcp-api-key:workspaceId",
       "make:mcp-api-token:zone",
