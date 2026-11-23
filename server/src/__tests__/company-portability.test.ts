@@ -48,6 +48,7 @@ const projectSvc = {
   update: vi.fn(),
   createWorkspace: vi.fn(),
   listWorkspaces: vi.fn(),
+  updateWorkspace: vi.fn(),
 };
 
 const issueSvc = {
@@ -1546,6 +1547,153 @@ describe("company portability", () => {
         title: "Write launch task",
       }),
     ]), undefined, undefined);
+  });
+
+  it("re-imports a project whose package slug differs from its name into the same project and workspace", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    projectSvc.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Launch",
+        urlKey: "launch",
+        description: "Ship it",
+        leadAgentId: "agent-1",
+        targetDate: "2026-03-31",
+        color: "#123456",
+        icon: "rocket",
+        status: "planned",
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          defaultProjectWorkspaceId: "workspace-1",
+          workspaceStrategy: {
+            type: "project_primary",
+          },
+        },
+        workspaces: [
+          {
+            id: "workspace-1",
+            companyId: "company-1",
+            projectId: "project-1",
+            name: "Main Repo",
+            sourceType: "git_repo",
+            cwd: "/Users/dotta/paperclip",
+            repoUrl: "https://github.com/paperclipai/paperclip.git",
+            repoRef: "main",
+            defaultRef: "main",
+            visibility: "default",
+            setupCommand: "pnpm install",
+            cleanupCommand: "rm -rf .paperclip-tmp",
+            remoteProvider: null,
+            remoteWorkspaceRef: null,
+            sharedWorkspaceKey: null,
+            metadata: {
+              language: "typescript",
+            },
+            isPrimary: true,
+            createdAt: new Date("2026-03-01T00:00:00Z"),
+            updatedAt: new Date("2026-03-01T00:00:00Z"),
+          },
+          {
+            id: "workspace-2",
+            companyId: "company-1",
+            projectId: "project-1",
+            name: "Local Scratch",
+            sourceType: "local_path",
+            cwd: "/tmp/paperclip-local",
+            repoUrl: null,
+            repoRef: null,
+            defaultRef: null,
+            visibility: "advanced",
+            setupCommand: null,
+            cleanupCommand: null,
+            remoteProvider: null,
+            remoteWorkspaceRef: null,
+            sharedWorkspaceKey: null,
+            metadata: null,
+            isPrimary: false,
+            createdAt: new Date("2026-03-01T00:00:00Z"),
+            updatedAt: new Date("2026-03-01T00:00:00Z"),
+          },
+        ],
+        archivedAt: null,
+      },
+    ]);
+    issueSvc.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Write launch task",
+        description: "Task body",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        assigneeAgentId: "agent-1",
+        status: "todo",
+        priority: "medium",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: {
+          mode: "shared_workspace",
+        },
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: false,
+        projects: true,
+        issues: true,
+      },
+    });
+
+    // A hand-written package gives the project a slug that differs from the
+    // URL key its name derives.
+    const files = Object.fromEntries(Object.entries(exported.files).map(([path, body]) => {
+      if (typeof body !== "string") return [path, body];
+      if (path === "projects/launch/PROJECT.md") return [path, body.replace(/^---\n/, "---\nslug: launch-pkg\n")];
+      if (path === ".paperclip.yaml") return [path, body.replace(/^(\s+)launch:$/m, "$1launch-pkg:")];
+      return [path, body];
+    }));
+    expect(asTextFile(files["projects/launch/PROJECT.md"])).toContain("slug: launch-pkg");
+
+
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([{ id: "project-existing", name: "Launch", urlKey: "launch" }]);
+    projectSvc.update.mockImplementation(async (projectId: string, data: Record<string, unknown>) => ({
+      id: projectId,
+      name: "Launch",
+      urlKey: "launch",
+      ...data,
+    }));
+    projectSvc.listWorkspaces.mockResolvedValue([
+      { id: "workspace-existing", projectId: "project-existing", name: "Main Repo", repoUrl: "https://github.com/paperclipai/paperclip.git", isPrimary: true },
+    ]);
+    projectSvc.updateWorkspace.mockImplementation(async (projectId: string, workspaceId: string, data: Record<string, unknown>) => ({
+      id: workspaceId,
+      projectId,
+      ...data,
+    }));
+    projectSvc.createWorkspace.mockClear();
+    projectSvc.create.mockClear();
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Write launch task" });
+
+    await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files },
+      include: { company: false, agents: false, projects: true, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "replace",
+    }, "user-1");
+
+    expect(projectSvc.create).not.toHaveBeenCalled();
+    expect(projectSvc.update).toHaveBeenCalledWith("project-existing", expect.objectContaining({ name: "Launch" }));
+    expect(projectSvc.createWorkspace).not.toHaveBeenCalled();
+    expect(projectSvc.updateWorkspace).toHaveBeenCalledWith("project-existing", "workspace-existing", expect.objectContaining({
+      name: "Main Repo",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+    }));
   });
 
   it("normalizes invalid imported project icon names to null", async () => {

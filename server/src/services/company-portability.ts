@@ -5143,7 +5143,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     if (include.projects) {
       for (const manifestProject of manifest.projects) {
-        const existing = existingProjectSlugToProject.get(manifestProject.slug) ?? null;
+        // A package names a project by its directory slug; the instance keys
+        // it by the URL key derived from its name. Match either, so a
+        // re-import finds the project it created when the two differ.
+        const existing = existingProjectSlugToProject.get(manifestProject.slug)
+          ?? existingProjectSlugToProject.get(deriveProjectUrlKey(manifestProject.name, manifestProject.slug))
+          ?? null;
         if (!existing) {
           projectPlans.push({
             slug: manifestProject.slug,
@@ -6004,8 +6009,20 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             normalizedProjectEnv ?? {},
           );
 
+          // Replacing a project updates the workspaces it already has (matched
+          // by name, then repository URL) instead of adding another copy.
+          const reusableWorkspaces = planProject.action === "update"
+            ? [...await projects.listWorkspaces(projectId)]
+            : [];
           for (const workspace of manifestProject.workspaces) {
-            const createdWorkspace = await projects.createWorkspace(projectId, {
+            const matchIndex = reusableWorkspaces.findIndex((existing) => existing.name === workspace.name);
+            const index = matchIndex >= 0
+              ? matchIndex
+              : workspace.repoUrl
+                ? reusableWorkspaces.findIndex((existing) => existing.repoUrl === workspace.repoUrl)
+                : -1;
+            const reused = index >= 0 ? reusableWorkspaces.splice(index, 1)[0] : null;
+            const workspaceInput = {
               name: workspace.name,
               sourceType: workspace.sourceType ?? undefined,
               repoUrl: workspace.repoUrl ?? undefined,
@@ -6016,7 +6033,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               cleanupCommand: workspace.cleanupCommand ?? undefined,
               metadata: workspace.metadata ?? undefined,
               isPrimary: workspace.isPrimary,
-            });
+            };
+            const createdWorkspace = reused
+              ? await projects.updateWorkspace(projectId, reused.id, workspaceInput)
+              : await projects.createWorkspace(projectId, workspaceInput);
             if (!createdWorkspace) {
               warnings.push(`Project ${planProject.slug} workspace ${workspace.key} could not be created during import.`);
               continue;
