@@ -14931,6 +14931,14 @@ export async function stageRemoteRunnerDirectory(input: {
   }
 }
 
+/** The exact remote machine a pack sits on, when the target names one. */
+export function remoteProviderPackSeal(target: Extract<AdapterExecutionTarget, { kind: "remote" }>): { targetKey: string } | null {
+  const sandboxLease = "sandboxLeaseAcquisition" in target ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined;
+  const lease = sandboxLease ?? target.leaseId;
+  if (!lease || !target.environmentId) return null;
+  return { targetKey: `${target.transport}:${target.environmentId}:${lease}` };
+}
+
 /** The normal remote pack installer, without run/session/DB authority. Both
  * native execution and environment Test use the same admitted manifest and
  * complete archive/directory verification before a provider is invoked. */
@@ -14951,9 +14959,11 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   let activeRemoteProviderPackRoot: string | null = null;
   let preinstalledProviderPackRoots: string[] = [];
   let selectedProviderPackManifest = expectedProviderPackManifest;
+  const seal = remoteProviderPackSeal(remoteTarget);
   const verifyRemoteProviderPack = (packRoot: string, acceptProvenance = false) =>
     verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner, cwd: remoteTarget.remoteCwd, packRoot,
-      manifest: expectedProviderPackManifest, acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true });
+      manifest: expectedProviderPackManifest, acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true,
+      ...(seal ? { seal } : {}) });
   const discoverPreinstalledProviderPack = async () => {
     if (!remoteTarget || !remoteCommandRunner) return [];
     const result = await remoteCommandRunner.execute({
@@ -17428,8 +17438,9 @@ async function createRunnerdBackendWithinSessionClaim(
     if (providerPackVerified && packRoot === activeRemoteProviderPackRoot) return;
     if (!remoteTarget || !remoteCommandRunner || !expectedProviderPackManifest)
       return;
+    const seal = remoteProviderPackSeal(remoteTarget);
     await verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner,
-      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest });
+      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest, ...(seal ? { seal } : {}) });
     providerPackVerified = true;
   };
 
