@@ -4,13 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import type { StorageProvider } from "../storage/types.js";
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
 
 const objects = vi.hoisted(() => new Map<string, Buffer>());
+const mirrors = vi.hoisted(() => new Map<string, Buffer>());
 const etag = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const provider = vi.hoisted((): StorageProvider => {
   const digest = async (bytes: Buffer) => (await import("node:crypto")).createHash("sha256").update(bytes).digest("hex");
@@ -42,6 +43,18 @@ const provider = vi.hoisted((): StorageProvider => {
 vi.mock("./run-evidence-storage.js", () => ({
   resolveRunEvidenceStorage: () => ({ provider, keyPrefix: "run-logs", tracePrefix: "provider-traces" }),
 }));
+vi.mock("./run-log-store.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./run-log-store.js")>();
+  const { Readable } = await import("node:stream");
+  return {
+    ...actual,
+    openLegacyRunLogForMigration: async (logRef: string, options?: { requireCanonicalLocalFile?: boolean }) => {
+      const mirror = mirrors.get(logRef);
+      if (!mirror) return actual.openLegacyRunLogForMigration(logRef, options);
+      return { stream: Readable.from([mirror]), bytes: mirror.length, source: "mirror" as const };
+    },
+  };
+});
 
 const { migrateRunEvidence } = await import("./run-evidence-migration.js");
 const { migrateRunEvidencePage } = await import("./run-evidence-migration-page.js");
@@ -106,6 +119,39 @@ describe.skipIf(!support.supported)("run log migration after a retry appended to
       recorded: { bytes: Buffer.byteLength(first), sha256: etag(Buffer.from(first)) },
       bytes: full.length, sha256: etag(full),
     } }]);
+  });
+
+  it("keeps an extended log on the volume while the same run still has an attempt pending", async () => {
+    const first = "first attempt\n";
+    const f = await seed(first, `${first}retry output\n`, undefined, "native");
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Retrying" }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id }).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunFinalizations).values({ runId: f.runId, companyId: f.companyId, issueId: issue!.id,
+      phase: "retryable_failure", nextAttemptAt: new Date(Date.now() + 60_000) });
+    const online = await migrateRunEvidencePage(db, { kinds: ["log"], limit: 100 });
+    expect(online.items.filter(item => item.id === f.runId)).toEqual([expect.objectContaining({ state: "blocked", reason: "legacy_writer_retry_pending" })]);
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const offline = await migrateRunEvidence(db, { apply: true, companyId: f.companyId, kinds: ["log"], preserveHistoricalFiles: true })
+      .finally(() => vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "false"));
+    expect(offline.items).toEqual([expect.objectContaining({ id: f.runId, state: "blocked", reason: "legacy_writer_retry_pending" })]);
+    const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(row).toMatchObject({ logStore: "local_file", logRef: f.logRef, logBytes: Buffer.byteLength(first) });
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId))).toEqual([]);
+  });
+
+  it("does not treat a longer mirror copy as the complete log", async () => {
+    const first = "first attempt\n";
+    const f = await seed(first, first);
+    await fs.rm(path.join(directory, f.logRef));
+    mirrors.set(f.logRef, Buffer.from(`${first}partial retry`));
+    try {
+      const result = await migrateRunEvidence(db, { apply: true, companyId: f.companyId, kinds: ["log"] });
+      expect(result.items).toEqual([expect.objectContaining({ id: f.runId, state: "blocked", reason: "mirror_completeness_unproven" })]);
+      const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(row).toMatchObject({ logStore: "local_file", logRef: f.logRef });
+    } finally {
+      mirrors.delete(f.logRef);
+    }
   });
 
   it("keeps a log blocked under its own name when the recorded digest is not a prefix of the file", async () => {

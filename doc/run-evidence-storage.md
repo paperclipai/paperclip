@@ -298,7 +298,10 @@ update the run's size and SHA-256 to the archived bytes, and record the original
 prefix proof and the archived proof in a `run.historical_log_archived` activity
 entry in the same transaction. When the recorded proof matches no prefix of the
 file, the log stays on the volume and is reported as
-`legacy_recorded_log_not_a_prefix`.
+`legacy_recorded_log_not_a_prefix`. The longer bytes must come from the local file;
+a longer mirror copy stays blocked as `mirror_completeness_unproven`. While the
+run still has a pending or leased attempt, the log stays blocked as
+`legacy_writer_retry_pending`, and the publication rechecks this condition.
 
 An interrupted trace import keeps an `s3-import-v1:` reference: reads still use
 the original local sidecars, while deletion and expiry retain responsibility for
