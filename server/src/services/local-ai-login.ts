@@ -308,7 +308,7 @@ export function localAiLoginService(db: Db) {
     // transaction above and the launch. Read the row under its lock: a
     // retirement that still holds the lock stops the process itself, and one
     // that has committed is visible here.
-    const waiting = await db.transaction(async tx => (await tx.select({ status: adapterAuthSessions.status }).from(adapterAuthSessions)
+    const waiting = await db.transaction(async tx => (await tx.select().from(adapterAuthSessions)
       .where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update"))[0]?.status === "waiting_for_user");
     if (!waiting) {
       await stopBrowserLogin(attempt.sessionId);

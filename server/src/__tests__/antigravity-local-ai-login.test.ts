@@ -84,7 +84,7 @@ async function fixture() {
   mocks.credential.mockResolvedValue({ credential: "private-native-credential", accountLabel: "person@example.test" });
   mocks.save.mockResolvedValue({ connectionId: "connection-1", grantId: "grant-1" });
   const db = database(), service = localAiLoginService(db);
-  db.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }]);
+  db.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }], [{ status: "waiting_for_user" }]);
   const attempt = await service.start("company", "user", intent);
   const home = join(root, "ai-local-logins", attempt.sessionId);
   return { db, service, browser, attempt, home, release: release! };
@@ -129,7 +129,7 @@ describe("Google local sign-in service admission", () => {
     f.db.session.expiresAt = new Date(Date.now() - 1);
     const other = database(), otherService = localAiLoginService(other);
     other.expiredSessions = [f.db.session];
-    other.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }]);
+    other.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }], [{ status: "waiting_for_user" }]);
     mocks.browser.mockReturnValue({ abort: vi.fn() });
     let attempt: Awaited<ReturnType<typeof otherService.start>> | undefined;
     let failure: unknown;
@@ -165,7 +165,7 @@ describe("Google local sign-in service admission", () => {
     const retirement = new Promise<void>(resolve => { release = resolve; });
     const browser = { abort: vi.fn(() => retirement) };
     mocks.browser.mockReturnValue(browser);
-    f.db.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }]);
+    f.db.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }], [{ status: "waiting_for_user" }]);
     const second = await f.service.start("company", "another-user", { ...intent, provider: "openai" });
     first.expiresAt = f.db.session.expiresAt = new Date(Date.now() - 1);
     f.db.selections.push([{ id: first.id }, { id: second.sessionId }], [first], [f.db.session]);
@@ -272,7 +272,7 @@ describe("Google local sign-in service admission", () => {
       f.db.session.expiresAt = new Date(Date.now() - 1);
       f.db.selections.push([{ id: f.attempt.sessionId }], [f.db.session]); operation = f.service.reapExpired();
     } else if (action === "restart") {
-      f.db.selections.push([f.db.session], [f.db.session], [{ id: "local-environment", driver: "local", status: "active" }]);
+      f.db.selections.push([f.db.session], [f.db.session], [{ id: "local-environment", driver: "local", status: "active" }], [{ status: "waiting_for_user" }]);
       operation = f.service.start("company", "user", intent, true);
     } else {
       f.browser.outcome = "success";
