@@ -59,6 +59,28 @@ describe("parseFrontmatterMarkdown", () => {
     expect(parsed.frontmatter).toEqual({ name: "env-setup", description: "Set up the \"environment\". Don't use system Python." });
   });
 
+  it("folds the continuation lines of a multi-line plain scalar", () => {
+    const parsed = parseFrontmatterMarkdown([
+      "---",
+      "name: pdf-tools",
+      "description: Extract text and tables from PDF files. Use when the user",
+      "  asks to read, merge or split PDFs.",
+      "metadata:",
+      "  summary: First part",
+      "    second part",
+      "  owner: docs",
+      "---",
+      "",
+      "Body",
+    ].join("\n"));
+
+    expect(parsed.frontmatter).toEqual({
+      name: "pdf-tools",
+      description: "Extract text and tables from PDF files. Use when the user asks to read, merge or split PDFs.",
+      metadata: { summary: "First part second part", owner: "docs" },
+    });
+  });
+
   it("respects block-scalar chomping indicators", () => {
     const foldedStrip = parseFrontmatterMarkdown([
       "---",

@@ -543,7 +543,19 @@ function parseYamlBlock(
       index = block.nextIndex;
       continue;
     }
-    record[key] = parseYamlScalar(remainder);
+    let scalar = remainder;
+    if (!/^["'[{]/.test(remainder)) {
+      while (
+        index < lines.length
+        && !lines[index]!.isBlank
+        && !lines[index]!.isComment
+        && lines[index]!.indent > indentLevel
+      ) {
+        scalar += ` ${lines[index]!.content}`;
+        index += 1;
+      }
+    }
+    record[key] = parseYamlScalar(scalar);
   }
 
   return { value: record, nextIndex: index };
