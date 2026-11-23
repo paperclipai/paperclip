@@ -3,7 +3,7 @@ import { notifyDeferredWakesForIssue } from "./deferred-execution-notifications.
 import { notifyInstructionCollection, notifyInstructionCopyStopEvidence, notifyInstructionCopyStopEvidenceForRuns } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -432,10 +432,13 @@ export async function settledNativeProcessCandidates(db: Pick<Db, "execute">, in
 
 type SettledProcessFacts = {
   companyId: string; agentId: string; runtimeMode: string; status: string; finished: boolean;
-  nativeIssueId: string | null; processHostHash: string | null; finishedAt: Date;
+  nativeIssueId: string | null; processHostHash: string | null; finishedAt: Date | string;
   processPid: number | null; processGroupId: number | null; processStartedAt: string | null; apiDriver: boolean | null;
   hasSessionCheckpoint: boolean; phase: string | null; providerEvidence: boolean; remoteLeases: boolean;
   localLeasePending: boolean; identityMatches: boolean | null;
+  /** The run's finalization coordinator row, and whether this check could lock it (another writer holds it otherwise). */
+  coordinatorExists: boolean; coordinatorLocked: boolean; leaseOwner: string | null;
+  latestIdentity: { eventType: string; agentId: string | null; payload: Record<string, unknown> | null } | null;
 };
 
 function readSettledProcessFacts(tx: Db, runId: string) {
@@ -461,7 +464,17 @@ function readSettledProcessFacts(tx: Db, runId: string) {
             else coalesce(r.process_pid > 1 and r.process_group_id = r.process_pid, false) end
         from (select e.payload from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id
           and e.event_type = ${PROCESS_IDENTITY_RECORDED}::text and e.source_event_id is null order by e.seq desc limit 1) identity
-      ) as "identityMatches"
+      ) as "identityMatches",
+      exists (select 1 from native_run_finalizations f where f.run_id = r.id) as "coordinatorExists",
+      exists (select 1 from (select f.run_id from native_run_finalizations f where f.run_id = r.id
+        for update skip locked) locked) as "coordinatorLocked",
+      (select f.lease_owner from native_run_finalizations f where f.run_id = r.id limit 1) as "leaseOwner",
+      (select jsonb_build_object('eventType', e.event_type, 'agentId', e.agent_id, 'payload', e.payload)
+        from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id and e.source_event_id is null
+          and (e.event_type in (${PROCESS_START_REQUESTED}::text, ${PROCESS_IDENTITY_RECORDED}::text)
+            or (e.event_type = ${LOCAL_PROCESS_STOPPED}::text and r.process_pid is null
+              and r.process_group_id is null and r.process_started_at is null))
+        order by e.seq desc limit 1) as "latestIdentity"
     from heartbeat_runs r where r.id = ${runId}::uuid for update of r`) as unknown as Promise<SettledProcessFacts[]>;
 }
 
@@ -491,17 +504,12 @@ export async function inspectSettledNativeRunProcess(db: Db, runId: string, opti
     if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || !run.finished) return "skipped";
     const cleared = run.processPid === null && run.processGroupId === null && run.processStartedAt === null;
     if (cleared && !sameProcessSpace(run.processHostHash)) return "skipped";
-    const [coordinator] = await tx.select({ phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner })
-      .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)).for("update", { skipLocked: true }).limit(1);
-    if (!coordinator) {
-      const [busy] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
-        .where(eq(nativeRunFinalizations.runId, runId)).limit(1);
-      if (busy) {
-        options.onDeferredDeadline?.(Date.now() + 30_000);
-        return "pending";
-      }
+    // A coordinator row another writer holds is still finalizing: check again later.
+    if (run.coordinatorExists && !run.coordinatorLocked) {
+      options.onDeferredDeadline?.(Date.now() + 30_000);
+      return "pending";
     }
-    if (coordinator && (coordinator.leaseOwner || !SETTLED_COORDINATOR_PHASES.includes(coordinator.phase))) return "skipped";
+    if (run.coordinatorExists && (run.leaseOwner || !run.phase || !SETTLED_COORDINATOR_PHASES.includes(run.phase))) return "skipped";
     if (!run.hasSessionCheckpoint && !run.providerEvidence) return "skipped";
     if (run.remoteLeases) {
       if (cleared) return "skipped";
@@ -511,12 +519,7 @@ export async function inspectSettledNativeRunProcess(db: Db, runId: string, opti
       if (!leases.every(hasRemoteTerminationReceipt)) return "pending";
     } else {
       if (run.localLeasePending) return "pending";
-      const [identity] = await tx.select({ eventType: heartbeatRunEvents.eventType, agentId: heartbeatRunEvents.agentId,
-        payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
-        eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, runId),
-        inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
-          ...(cleared ? [LOCAL_PROCESS_STOPPED] : [])]), isNull(heartbeatRunEvents.sourceEventId),
-      )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+      const identity = run.latestIdentity;
       const proof = identity?.payload;
       if (identity?.eventType !== PROCESS_IDENTITY_RECORDED || identity.agentId !== run.agentId ||
           proof?.targetKind !== "local" || proof.hostname !== os.hostname()) return "skipped";
@@ -524,9 +527,9 @@ export async function inspectSettledNativeRunProcess(db: Db, runId: string, opti
       if (cleared) {
         const pid = proof.processPid, group = proof.processGroupId;
         const birth = typeof proof.processStartedAt === "string" ? new Date(proof.processStartedAt) : null;
-        if (!coordinator || !Number.isSafeInteger(pid) || typeof pid !== "number" || pid <= 1 ||
+        if (!run.coordinatorExists || !Number.isSafeInteger(pid) || typeof pid !== "number" || pid <= 1 ||
             (group !== null && group !== pid) || !birth || !Number.isFinite(birth.getTime()) ||
-            birth > run.finishedAt) return "skipped";
+            birth > new Date(run.finishedAt)) return "skipped";
         observed = { ...run, processPid: pid, processGroupId: group as number | null, processStartedAt: birth.toISOString() };
       } else if (run.identityMatches !== true) return "skipped";
       if ((!observed.processPid && !observed.processGroupId) || (observed.processPid && !absent(observed.processPid))
