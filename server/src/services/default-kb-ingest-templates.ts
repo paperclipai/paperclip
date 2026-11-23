@@ -2,7 +2,7 @@
  * Routine description templates for the default kb-ingest routines (TECH-9763).
  *
  * Verbatim copies of the text below the horizontal rule in `ROUTINE.md` and `HYGIENE.md` under
- * `runtime/routines/kb-ingest/` in redesignhealth/rh-paperclip (master at 68a9c104, PRs #378-#380). The
+ * `runtime/routines/kb-ingest/` in redesignhealth/rh-paperclip (master at 9e7a19f, PRs #378-#384). The
  * `{{PLACEHOLDER}}` tokens are filled by default-kb-ingest-routine.ts. A change to the master template is a
  * deliberate edit here; nothing is fetched at run time.
  */
@@ -64,6 +64,14 @@ per-run limit, and redact at read time. Comms board: \`comms_inbox\`; accept inv
 rules; \`comms_get_conversation(id, since_seq=lastSeq)\` with pagination. Sources fail independently: report
 a failed source and carry on; its cursor does not move.
 
+**Backlog: every source gets a turn.** When there is a backlog, take at most one chunk per enabled source per
+run. A chunk is up to that source's per-run limit in \`fetch-reference\` (item or page counts); it is not tied to
+a day. Work through the sources in the order of \`{{SOURCES}}\` (the "Enabled sources" line). Save each source's
+cursor after its chunk, and also after each internal batch where \`fetch-reference\` processes a source in
+batches, then move to the next source. Never spend a whole run on one source while others wait. Sources with
+nothing new are cheap, so always check all of them. Every enabled source moves forward each run, so the
+backlog shrinks on any schedule.
+
 ## 3. Judge (the analysis rules)
 
 For each unit (mail thread, Slack thread, doc, issue, PR, meeting, conversation):
@@ -102,9 +110,10 @@ redaction rules.
 
 {{ROUTING_TABLE}}
 
-**Oversized batch.** If one run's batch is too large to analyse in the run (for example a long backlog
-after a gap), do not fan out by default. Process what fits, leave the rest for the next run (the cursor
-simply stays at the last item you finished). Only when that cannot catch up, hand a child issue the
+**Oversized batch.** If one source's chunk (see section 2) is too large to analyse in the run, do not fan
+out by default. Process what fits and leave the rest for the next run (the cursor simply stays at the last
+item you finished). A long backlog after a gap is not a reason to stay on one source: take one chunk (up to
+the source's per-run limit) from each source per run, as in section 2. Only when that cannot catch up, hand a child issue the
 material as issue documents (one document per unit, redacted) and ask it to return a \`plan\` issue document
 with the entries it recommends (mem0 entries, Arcana proposals, commitments). Review the \`plan\`, write
 the knowledge yourself, then advance the cursor.

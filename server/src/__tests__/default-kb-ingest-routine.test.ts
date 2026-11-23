@@ -54,6 +54,17 @@ describe("buildDefaultKbIngestRoutineDescription", () => {
     expect(description).toContain("Work Pat Lee owes someone.");
   });
 
+  it("carries the section 2 backlog paragraph with the sources placeholder filled and no day-based wording", () => {
+    const description = buildDefaultKbIngestRoutineDescription({ ...input, sources: ["gmail", "slack"] });
+    expect(description).toContain("**Backlog: every source gets a turn.**");
+    expect(description).toContain("Work through the sources in the order of `gmail, slack` (the \"Enabled sources\" line).");
+    expect(description).toContain("Enabled sources: gmail, slack");
+    expect(description).toContain("**Oversized batch.** If one source's chunk (see section 2)");
+    expect(description).not.toContain("about one day");
+    expect(description).not.toContain("{{");
+    expect(buildDefaultKbIngestHygieneDescription(input)).not.toContain("{{");
+  });
+
   it("fetches no code and keeps nothing on local disk", () => {
     const description = buildDefaultKbIngestRoutineDescription(input);
     for (const stale of ["kbi/", "ANALYZER.md", "KB/", "git clone", "b1a387cda24a5b0ea3667c58c9da868bd7ae2782", "workorders", "kbi.cli"]) {
