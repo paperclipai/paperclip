@@ -86,7 +86,8 @@ export type SetAgentSetupChecklist = z.infer<typeof setAgentSetupChecklistSchema
 
 export const updateAgentSetupItemSchema = z.object({
   status: z.enum(AGENT_SETUP_PROGRESS_ITEM_STATUSES),
-  detail: text(AGENT_SETUP_PROGRESS_LIMITS.maxDetailLength).optional(),
+  /** Omit to keep the step's detail; send null to clear it (such as after a retry fixed an earlier error). */
+  detail: text(AGENT_SETUP_PROGRESS_LIMITS.maxDetailLength).nullable().optional(),
 }).strict();
 export type UpdateAgentSetupItem = z.infer<typeof updateAgentSetupItemSchema>;
 

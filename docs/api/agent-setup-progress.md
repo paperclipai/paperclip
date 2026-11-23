@@ -37,7 +37,7 @@ Each request sends `Authorization: Bearer <token>` and JSON.
 | Request | Body | Effect |
 | --- | --- | --- |
 | `PUT …/checklist` | `{ "items": [{ "key": "check-account", "title": "Check the AWS account" }] }` | Replaces the checklist: 1 to 20 items; keys are lowercase letters, numbers, `-` and `_` (up to 40); titles up to 120 characters. |
-| `POST …/items/{key}` | `{ "status": "in_progress", "detail": "…" }` | Sets one step's status (`pending`, `in_progress`, `done` or `failed`) and an optional detail (up to 500 characters). |
+| `POST …/items/{key}` | `{ "status": "in_progress", "detail": "…" }` | Sets one step's status (`pending`, `in_progress`, `done` or `failed`) and an optional detail (up to 500 characters); omit `detail` to keep it, or send `null` to clear it. |
 | `POST …/finish` | `{ "status": "done", "summary": "…" }` | Finishes the setup. `done` ticks off every step (the agent's verdict); `failed` keeps the steps as they were. The summary is shown on the page. After either, further updates get `409`. |
 
 The checklist stays `in_progress` until the agent finishes, even with every step done, because only the finish carries the summary. Each change is recorded on the activity history (never the token). The setup page keeps the same checklist if the person leaves the step and comes back, and offers to start again once a prompt expires.

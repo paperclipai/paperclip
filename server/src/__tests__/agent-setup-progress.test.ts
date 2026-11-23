@@ -83,6 +83,12 @@ describe("agent setup progress", () => {
       { key: "deploy-stack", status: "in_progress", detail: null },
     ] });
     // Every step ticked off is still in progress: only the finish carries the summary, and the page keeps refreshing until it.
+    // A detail is kept when omitted and cleared with null, so a retry can drop an earlier error.
+    const keptDetail = await request(server).post(item("check-account")).set(auth).send({ status: "done" }).expect(200);
+    expect(keptDetail.body.items[0].detail).toBe("Account 123456789012");
+    await request(server).post(item("deploy-stack")).set(auth).send({ status: "failed", detail: "Access denied" }).expect(200);
+    const cleared = await request(server).post(item("deploy-stack")).set(auth).send({ status: "in_progress", detail: null }).expect(200);
+    expect(cleared.body.items[1].detail).toBeNull();
     const ticked = await request(server).post(item("deploy-stack")).set(auth).send({ status: "done" }).expect(200);
     expect(ticked.body.status).toBe("in_progress");
     const finished = await request(server).post(path(handoff.urls.finish)).set(auth)
@@ -92,7 +98,7 @@ describe("agent setup progress", () => {
       items: [{ status: "done" }, { status: "done" }] });
     stop();
     const progressEvents = events.filter((event) => event.type === "agent_setup_progress.updated");
-    expect(progressEvents).toHaveLength(5);
+    expect(progressEvents).toHaveLength(8);
     expect(progressEvents.every((event) => event.payload.progressId === handoff.progress.id)).toBe(true);
 
     const read = await request(server).get(`/api/agent-setup-progress/${handoff.progress.id}`).expect(200);
@@ -101,6 +107,7 @@ describe("agent setup progress", () => {
     // Every change is on the activity history, and no entry holds the token.
     expect(actions).toEqual([
       "agent_setup_progress.created", "agent_setup_progress.finished",
+      "agent_setup_progress.item_updated", "agent_setup_progress.item_updated", "agent_setup_progress.item_updated",
       "agent_setup_progress.item_updated", "agent_setup_progress.item_updated", "agent_setup_progress.item_updated",
       "agent_setup_progress.started",
     ]);

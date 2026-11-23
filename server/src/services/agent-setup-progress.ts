@@ -164,7 +164,8 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
         throw notFound(`The checklist has no item "${key}". Set the checklist first, then update its items by key.`);
       }
       const items = row.items.map((item) => item.key === key
-        ? { ...item, status: input.status, detail: input.detail ?? item.detail }
+        // Omitted keeps the detail; null clears it.
+        ? { ...item, status: input.status, detail: input.detail === undefined ? item.detail : input.detail }
         : item);
       return save(row, { items }, { action: "agent_setup_progress.item_updated", details: { key, status: input.status } });
     },

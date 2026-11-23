@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AGENT_SETUP_PROGRESS_LIMITS } from "@paperclipai/shared";
 import type {
@@ -176,6 +176,7 @@ export interface AgentSetupProgressPanelProps {
 export function AgentSetupProgressPanel({
   progress, subject, expired = false, onRenew, refreshError = null, onRetryRefresh, className,
 }: AgentSetupProgressPanelProps) {
+  const headingId = useId();
   const [, setTick] = useState(0);
   // Keeps "Last update …" current while the panel is open.
   useEffect(() => {
@@ -194,12 +195,12 @@ export function AgentSetupProgressPanel({
   return (
     <section
       className={cn("space-y-3 rounded-lg border border-border p-4", className)}
-      aria-labelledby="agent-setup-progress-heading"
+      aria-labelledby={headingId}
       aria-live="polite"
       data-testid="agent-setup-progress"
     >
       <div className="space-y-1">
-        <h3 id="agent-setup-progress-heading" className="text-sm font-medium text-foreground">
+        <h3 id={headingId} className="text-sm font-medium text-foreground">
           {expired ? "This setup prompt expired" : heading}
         </h3>
         <p className="text-sm text-muted-foreground">
