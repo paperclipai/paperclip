@@ -1,6 +1,7 @@
 const readline = require("node:readline");
 
 let nextRequestId = 1;
+let previousInvocationId;
 const pendingNested = new Map();
 
 function send(message) {
@@ -69,10 +70,13 @@ function sendNestedHostRequest(originalRequest, invocationId) {
 
   if (mode === "echo") {
     nestedRequest.paperclipInvocationId = invocationId;
+  } else if (mode === "previous") {
+    nestedRequest.paperclipInvocationId = previousInvocationId;
   } else if (mode === "unknown") {
     nestedRequest.paperclipInvocationId = "unknown-invocation";
   }
 
+  previousInvocationId = invocationId;
   pendingNested.set(nestedId, {
     id: originalRequest.id,
     ...(hostMethod === "projects.resolveGitCredential" ? { identity: {

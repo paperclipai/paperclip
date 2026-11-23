@@ -728,6 +728,21 @@ The host provides:
 - run id
 - schedule metadata
 
+Each dispatch carries a host-issued invocation ID. Nested host calls echo this ID,
+so concurrent company-scoped work does not invalidate the job's calls.
+Jobs remain instance-scoped. A nested call that names a company resolves only if
+that company is in the worker's configured proactive company scopes. Calls that
+name another company are denied before the host service runs.
+
+The SDK's existing method rules still apply:
+
+- Calls with no company scope, such as instance-scoped `state.get`, remain unrestricted.
+- `companies.list` keeps its existing enumeration behavior. Other wildcard company
+  requests, such as company state without a `scopeId`, do not gain access.
+- `config.get` and `secrets.resolve` still require a company context. A job must
+  name a configured company explicitly; the empty job scope supplies no default.
+  Capability checks and service-level authorization still apply.
+
 ### 13.7 `handleWebhook`
 
 Receives inbound webhook payload routed by the host.
