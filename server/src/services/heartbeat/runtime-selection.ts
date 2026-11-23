@@ -1,4 +1,5 @@
 import { assertPaperclipRunnerBinaryConfiguration } from "../native-runtime/native-codex-runner.js";
+import { antigravityForcesSameSessionRecovery } from "../native-runtime/antigravity-release.js";
 import { readNativeWorkspaceMigration, migratedNativeExecutionCwd } from "../native-runtime/native-workspace-migration.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
@@ -951,8 +952,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       }
       nativeSessionId = nativeExecutionWithCheckpoint.normalizedSessionId;
     }
-    if (nativeResumeCheckpoint && nativeExecution.provider.kind === "acpx"
-      && nativeExecution.provider.agent === "antigravity") {
+    if (nativeResumeCheckpoint && antigravityForcesSameSessionRecovery(nativeExecution.provider)) {
       nativeResumeCheckpoint = { ...nativeResumeCheckpoint, providerRecoveryPolicy: "same_session_only" };
     }
     const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({

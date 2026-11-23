@@ -6,7 +6,8 @@ import { requestBreakdown, type HostedApi, type RequestRecord } from "./hosted-a
 import { hostedGate, hostedQueueWait, hostedR1, queuedBehindSlotCap, releaseOutages, slotQueuedRuns, subtaskRecord, type HostedAgentRow } from "./hosted-gate.js";
 import { trackBanner, type HostedTaskRecord, type RetryBanner } from "./hosted-workload.js";
 import { handsOffSummary, invariantLine, readAssignedWorkInvariant } from "./hosted-handsoff.js";
-import { releaseMarkdown, type ContinuityReport, type DetectedRelease } from "./hosted-release.js";
+import { failureLines, summarizeFailures, type FailureRecord } from "./hosted-diagnostics.js";
+import { continuity, detectReleases, releaseMarkdown, type ContinuityReport, type DetectedRelease, type HealthSample } from "./hosted-release.js";
 import {
   duplicateAgentComments, duplicateChildren, failureChain, firstEventAfter, gradeRuns, hostedCompanyRuns, hostedIssues, issueViewFields,
   pendingPersonItems, startedIssues, UNAVAILABLE_OVER_API, type HostedRunRow,
@@ -25,6 +26,9 @@ export interface HostedGradeInput {
   agentIds: string[];
   releases: DetectedRelease[];
   health: () => ContinuityReport;
+  healthSamples?: () => readonly HealthSample[];
+  stopHealthProbe?: () => Promise<void>;
+  settleDiagnostics?: (failures: ReadonlyArray<FailureRecord | undefined>) => Promise<number>;
   apiContinuity: () => ContinuityReport;
   stopObserver: () => Promise<void>;
   agentNames?: string[];
@@ -75,6 +79,11 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const { api, companyId, agentIds } = input;
   const now = input.now ?? Date.now;
   const drained = await drainHosted(input);
+  await input.stopHealthProbe?.();
+  const frozen = input.healthSamples ? [...input.healthSamples()] : null;
+  const unfinished = frozen && input.settleDiagnostics ? await input.settleDiagnostics(frozen.map(sample => sample.failure)) : 0;
+  if (unfinished) input.record("hosted_diagnoses_unfinished", { count: unfinished });
+  const releases = frozen ? detectReleases(frozen, { now: now() }) : input.releases;
   input.record("hosted_drained", drained);
   await input.stopObserver();
   const clicks = new Map<string, RetryClick[]>([...input.observedClicks()].map(([id, list]) => [id, [...list]]));
@@ -146,7 +155,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     pendingApproval: person.approvals.has(issue.id), pendingQuestion: person.questions.has(issue.id) }));
   const facts: SwapRunFact[] = runs.map(run => ({ runId: run.runId, issueId: run.issueId, status: run.status, errorCode: run.errorCode,
     startedAt: run.startedAt, finishedAt: run.finishedAt, ownerPidBeforeEnd: null }));
-  const windows = releaseWindows(input.releases);
+  const windows = releaseWindows(releases);
   const firstEvents = new Map<string, number>();
   for (const window of windows) {
     const stop = window.stopRequestedAt!;
@@ -167,10 +176,11 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const failedRuns = [];
   for (const run of failed) failedRuns.push({ ...run, release: swapForFailedRun(windows, facts.find(fact => fact.runId === run.runId)!),
     chain: await failureChain(api, run.runId) });
-  const health = input.health();
+  const health = frozen ? continuity(frozen) : input.health();
+  const healthClasses = frozen ? summarizeFailures(frozen) : undefined;
   const apiContinuity = input.apiContinuity();
   const handsOffPass = result.uncollected === 0 && result.stillRunning === 0 && result.started > 0 && result.completedWithoutHuman === result.started;
-  const outages = releaseOutages(input.releases);
+  const outages = releaseOutages(releases);
   const started = new Set(issues.filter(issue => !notGradedIds.has(issue.id)).map(issue => issue.id));
   const planned = input.tasks();
   const plannedIds = new Set(planned.flatMap(task => task.issueId ? [task.issueId] : []));
@@ -178,25 +188,29 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     identifier: issue.identifier }, clicks.get(issue.id) ?? []));
   const r1 = [...planned.filter(task => task.issueId && started.has(task.issueId)), ...subtasks].map(task => ({ identifier: task.identifier,
     result: hostedR1({ record: task, view: views.get(task.issueId!), runs: runsByIssue.get(task.issueId!) ?? [], queueWait: slotProof.queueWait, outages }) }));
-  const gate = hostedGate({ handsOffPass, wantedReleases: input.wantedReleases, slotEvidenceMissing: slotProof.missing, createErrors: planned.filter(task => task.createError).length, r1, bannersShown: handsOff.bannerShown, health, duplicates, releases: input.releases, metrics });
-  const releaseSpans = input.releases.map(release => ({ from: release.lastOldOnlyAt, to: Math.max(release.firstNewAt, release.lastOldAt) + 60_000 }));
-  const records = input.requests?.() ?? [];
+  const gate = hostedGate({ handsOffPass, wantedReleases: input.wantedReleases, slotEvidenceMissing: slotProof.missing, createErrors: planned.filter(task => task.createError).length, r1, bannersShown: handsOff.bannerShown, health, healthClasses, duplicates, releases, metrics });
+  const releaseSpans = releases.map(release => ({ from: release.lastOldOnlyAt, to: Math.max(release.firstNewAt, release.lastOldAt) + 60_000 }));
+  const records = [...input.requests?.() ?? []];
+  const unfinishedRequests = input.settleDiagnostics ? await input.settleDiagnostics(records.map(entry => entry.failure)) : 0;
+  if (unfinishedRequests) input.record("hosted_request_diagnoses_unfinished", { count: unfinishedRequests });
   const breakdown = { api: requestBreakdown(records.filter(record => record.kind === "api"), releaseSpans),
     health: requestBreakdown(records.filter(record => record.kind === "health"), releaseSpans) };
   const breakdownLine = (name: string, value: typeof breakdown.api) => `${name} failures by status: ${Object.entries(value.byStatus).map(([status, count]) => `${status} ${count}`).join(", ") || "none"}; `
-    + `inside release windows ${value.insideReleases}, outside ${value.outsideReleases}${value.outside.length ? ` (first: ${value.outside.slice(0, 3).map(item => `${item.at} ${item.method} ${item.path} ${item.status ?? "no answer"}`).join("; ")})` : ""}.`;
+    + `inside release windows ${value.insideReleases}, outside ${value.outsideReleases}${value.outside.length ? ` (first: ${value.outside.slice(0, 3).map(item => `${item.at} ${item.method} ${item.path} ${item.status ?? "no answer"}`).join("; ")})` : ""}; `
+    + `server-side ${value.byClass.server}, unclassified ${value.byClass.unclassified}, client-side ${value.byClass.client}.`;
   const markdown = [
     ...handsOff.lines,
     invariantLine(invariant),
     "",
     ...gate.lines,
+    ...(healthClasses ? failureLines("Health probe failures", healthClasses) : []),
     ...(notGraded.length ? [`Not graded: ${notGraded.length} task(s) still queued behind a full agent slot cap when the grade read the runs, proven by the agent's slot evidence `
       + `(${notGraded.map(entry => entry.identifier ?? entry.issueId).join(", ")}).`] : []),
     "",
     releaseSwapMarkdown(result, metrics, windows.map(() => null), duplicates, grades, failedOutsideSwaps(windows, facts)).trimEnd(),
     "",
     "Hosted mode: releases came from the instance's own deploys, detected by polling /api/health. Lost-while-old-alive and late/preparation probes are not measured (see Unavailable).",
-    ...releaseMarkdown(input.releases, health, apiContinuity),
+    ...releaseMarkdown(releases, health, apiContinuity),
     ...(records.length ? [breakdownLine("Health probe", breakdown.health), breakdownLine("API request", breakdown.api)] : []),
     "",
     "Unavailable over the API:",
@@ -204,7 +218,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     "",
   ].join("\n");
   await writeFile(path.join(input.dir, "hosted-release-swap.json"), `${JSON.stringify({ schema: "paperclip.restart-chaos.hosted-release-swap/v1", result, handsOff: { ...handsOff, banners: Object.fromEntries(banners) }, gate, r1, notGraded, invariant,
-    releases: input.releases, health, api: apiContinuity, requestBreakdown: breakdown, metrics, duplicates, failedRuns, grades, drained,
+    releases, health, healthFailures: healthClasses, api: apiContinuity, requestBreakdown: breakdown, metrics, duplicates, failedRuns, grades, drained,
     unavailable: UNAVAILABLE_OVER_API }, null, 2)}\n`, { mode: 0o600 });
   await writeFile(path.join(input.dir, "SUMMARY.md"), markdown, { mode: 0o600 });
   input.record("hosted_graded", { gate: gate.pass, r1Failed: gate.r1Failed.length, headline: result.headline, byVerdict: result.byVerdict, byLabel: result.byLabel, retry: result.retry,

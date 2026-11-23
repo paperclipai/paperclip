@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ANTIGRAVITY_ADMISSION_SCHEMA, createAntigravityAdmission } from "./antigravity-admission.js";
+import { ANTIGRAVITY_ADMISSION_SCHEMA, ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE, AntigravityAdmissionError, AntigravitySavedStateIncompatibleError, createAntigravityAdmission } from "./antigravity-admission.js";
 
 const content = "  Exact governance 🧷\n\n";
 const model = "caller/model-not-in-catalog";
-const initialize = { agentInfo: { name: "antigravity-acp", version: "1.4.3" }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } } };
+const initialize = { agentInfo: { name: "antigravity-acp", version: "1.5.2" }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } } };
 function fixture() {
   const admission = createAntigravityAdmission(content, model);
   const guard = admission.createGuard();
@@ -117,6 +117,32 @@ describe("Antigravity exact native admission", () => {
     expect(() => f.guard("outbound", { ...prompt(), params: { ...prompt().params, prompt: [{ type: "text", text: "Do the task" }, { type: "text", text: "/logout" }] } })).toThrow("slash commands");
   });
 
+  it.each([
+    ["a mismatched model receipt", (sent: ReturnType<typeof request>) => response(sent, { model: "another-model" })],
+    ["mismatched instruction bytes", (sent: ReturnType<typeof request>) => response(sent, { digest: `sha256:${"0".repeat(64)}` })],
+    ["no receipt", (sent: ReturnType<typeof request>) => ({ id: sent.id, result: { sessionId: "native-session" } })],
+    ["a managed-reload refusal", (sent: ReturnType<typeof request>) => ({ id: sent.id, error: { code: -32602,
+      message: "Paperclip admission: managed reload requires a fresh exact content acknowledgment", data: { paperclipAdmission: "refused" } } })],
+  ])("names %s on session/load as incompatible saved state", (_label, reply) => {
+    for (const method of ["session/load", "session/resume"]) {
+      const f = fixture(); const sent = request(f, method);
+      expect(() => f.guard("inbound", reply(sent))).toThrow(AntigravitySavedStateIncompatibleError);
+      expect(() => f.admission.assertReady()).toThrow(expect.objectContaining({ code: ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE, retryable: false }));
+      expect(() => f.guard("outbound", prompt())).toThrow();
+    }
+  });
+
+  it("keeps fresh-session refusals and ordinary reload errors out of the saved-state class", () => {
+    const fresh = fixture(); const sent = request(fresh);
+    let thrown: unknown;
+    try { fresh.guard("inbound", response(sent, { model: "another-model" })); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(AntigravityAdmissionError);
+    expect(thrown).not.toBeInstanceOf(AntigravitySavedStateIncompatibleError);
+    // A transient provider error on reload keeps its own typed form.
+    const reload = fixture(); const load = request(reload, "session/load");
+    expect(() => reload.guard("inbound", { id: load.id, error: { code: -32603, message: "Internal error" } })).not.toThrow();
+  });
+
   it("rejects unpatched native runtimes before creating a session", () => {
     const f = createAntigravityAdmission("", model); const guard = f.createGuard();
     guard("outbound", { id: 0, method: "initialize", params: {} });
@@ -129,7 +155,7 @@ describe("Antigravity native questions", () => {
     const f = fixture(); const sent = request(f); f.guard("inbound", response(sent)); return f;
   }
   const question = () => ({ id: 0, method: "session/request_permission", params: {
-    sessionId: "native-session", toolCall: { toolCallId: "interaction_123", title: "Choose a deployment" },
+    sessionId: "native-session", toolCall: { toolCallId: "interaction_1a2b3c4d", title: "Choose a deployment" },
     options: [{ optionId: "allow/weird:α", name: "Deploy", kind: "allow_once" }, { optionId: "deny", name: "Keep it local", kind: "reject_once" }],
   } });
 
@@ -166,12 +192,40 @@ describe("Antigravity native questions", () => {
     const f = admitted(); f.guard("inbound", question());
     const sent = request(f, "session/new", "new-session-request"), ack = response(sent, { sessionId: "new-native-session" });
     ack.result.sessionId = "new-native-session"; f.guard("inbound", ack);
-    const late = { id: 0, result: { action: "accept", content: { answer: "deny" } } };
-    expect(() => f.guard("outbound", late)).not.toThrow();
-    expect(late.result).toEqual({ action: "accept", content: { answer: "deny" } });
-    const next = question(); next.params.sessionId = "new-native-session";
+    const next = question(); next.params.sessionId = "new-native-session"; next.id = 1;
     expect(() => f.guard("inbound", next)).not.toThrow();
     expect(next.method).toBe("elicitation/create");
     expect(() => f.admission.assertReady()).not.toThrow();
+    // An answer to the replaced question is stale and never reaches 1.5.2.
+    const late = { id: 0, result: { action: "accept", content: { answer: "deny" } } };
+    expect(() => f.guard("outbound", late)).toThrow("stale or duplicate");
+  });
+
+  it.each(["decline", "cancel"])("delivers %s as a native cancelled outcome, never a selected choice", action => {
+    const f = admitted(); f.guard("inbound", question());
+    const answer = { id: 0, result: { action } as Record<string, unknown> };
+    f.guard("outbound", answer);
+    expect(answer.result).toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  it("settles a question that Stop answered with an error and rejects any later answer to it", () => {
+    const f = admitted(); f.guard("inbound", question());
+    const stopped = { id: 0, error: { code: -32800, message: "Request cancelled" } };
+    f.guard("outbound", stopped);
+    expect(stopped).toEqual({ id: 0, error: { code: -32800, message: "Request cancelled" } });
+    expect(() => f.guard("outbound", { id: 0, result: { action: "accept", content: { answer: "deny" } } })).toThrow("stale or duplicate");
+  });
+
+  it("rejects a duplicate answer after the first one settled the question", () => {
+    const f = admitted(); f.guard("inbound", question());
+    f.guard("outbound", { id: 0, result: { action: "accept", content: { answer: "deny" } } });
+    expect(() => f.guard("outbound", { id: 0, result: { action: "accept", content: { answer: "allow/weird:α" } } })).toThrow("stale or duplicate");
+  });
+
+  it("treats only 1.5.2's exact synthetic interaction identity as a question", () => {
+    for (const toolCallId of ["interaction_", "interaction_123", "interaction_1A2B3C4D", "interaction_1a2b3c4d5", "xinteraction_1a2b3c4d"]) {
+      const f = admitted(); const q = question(); q.params.toolCall.toolCallId = toolCallId;
+      const before = structuredClone(q); f.guard("inbound", q); expect(q).toEqual(before);
+    }
   });
 });
