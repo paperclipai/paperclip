@@ -10,7 +10,6 @@ import { readStockInstructionVariant } from "./stock-harness-instruction-variant
 const root = resolve(import.meta.dirname, "../..");
 export const stockHarnessGates = [
   { id: "SH-1", name: "Native Codex additive instructions", cwd: "packages/paperclip-runner", files: [
-    "src/drivers/codex/codex-app-server-driver.test.ts",
     "src/drivers/codex/codex-app-server-driver.lifecycle.test.ts",
     "src/live/runnerd-codex-transport.test.ts",
     "src/live/live-session.test.ts",

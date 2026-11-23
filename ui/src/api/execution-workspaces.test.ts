@@ -28,6 +28,13 @@ describe("executionWorkspacesApi.listSummaries", () => {
     );
   });
 
+  it("delegates task selection eligibility to the server", async () => {
+    await executionWorkspacesApi.listSummaries("company-1", { selectableForTask: true });
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/execution-workspaces?selectableForTask=true&summary=true",
+    );
+  });
+
   it("requests and normalizes the bounded overview payload", async () => {
     mockApi.get.mockResolvedValue({
       items: [
@@ -92,6 +99,31 @@ describe("executionWorkspacesApi.listSummaries", () => {
     expect(overview.items[0]!.lastUpdatedAt).toBeInstanceOf(Date);
     expect(overview.items[0]!.primaryService?.updatedAt).toBeInstanceOf(Date);
     expect(overview.items[0]!.linkedIssues[0]!.updatedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe("executionWorkspacesApi.listSummariesByIds", () => {
+  beforeEach(() => {
+    mockApi.get.mockReset();
+    mockApi.get.mockImplementation(async (path: string) => {
+      const ids = new URL(path, "http://localhost").searchParams.get("ids")?.split(",") ?? [];
+      return ids.map((id) => ({ id, name: id, mode: "isolated_workspace", projectWorkspaceId: null }));
+    });
+  });
+
+  it("reads id-filtered summaries in chunks the server accepts and concatenates them", async () => {
+    const ids = Array.from({ length: 205 }, (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+
+    const summaries = await executionWorkspacesApi.listSummariesByIds("company-1", ids);
+
+    const chunks = mockApi.get.mock.calls.map(([path]) => {
+      const url = new URL(String(path), "http://localhost");
+      expect(url.pathname).toBe("/companies/company-1/execution-workspaces");
+      expect(url.searchParams.get("summary")).toBe("true");
+      return url.searchParams.get("ids")?.split(",") ?? [];
+    });
+    expect(chunks.map((chunk) => chunk.length)).toEqual([100, 100, 5]);
+    expect(summaries.map((summary) => summary.id)).toEqual(ids);
   });
 });
 

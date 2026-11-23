@@ -14,6 +14,7 @@ export function classifyNativeWorkspaceFailure(error: unknown): {
   const message = error instanceof Error ? error.message.trim() : "";
   const code: NativeWorkspaceFailureCode =
     message === "workspace_sync_out_unrecoverable" || message.includes("daytona_sandbox_not_found")
+      || classifyWorkspaceRestoreFailure(error) === "restore_invalid_metadata"
       ? "workspace_sync_out_unrecoverable"
       : message === "workspace_sync_out_unsafe_archive" || classifyWorkspaceRestoreFailure(error) === "restore_unsafe_archive"
         ? "workspace_sync_out_unsafe_archive"

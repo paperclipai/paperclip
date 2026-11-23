@@ -5,6 +5,7 @@ import {
   getAvailableConnectionMethods,
   getAppStoreDefinition,
   getConnectableAppDefinition,
+  isPluginAppSlug,
   type AppDefinition,
 } from "@paperclipai/shared";
 
@@ -57,6 +58,7 @@ export function canEnterAppsConnect(
   searchParams: URLSearchParams,
   { chatConnectorsEnabled = false, githubReviewBotsEnabled = false }: { chatConnectorsEnabled?: boolean; githubReviewBotsEnabled?: boolean } = {},
 ): boolean {
+  if (searchParams.get("aiLogin")?.trim()) return true;
   if (searchParams.get("byo") === "1") {
     // The old BYO discovery page has moved to the Connectors list. Keep only
     // exact custom-connection reconnects using this legacy query contract.
@@ -73,11 +75,16 @@ export function canEnterAppsConnect(
   // before rendering the pool wizard; unknown/uninstalled routers show its
   // actionable unavailable state rather than bouncing back to the catalog.
   if (/^ai-router-(?:[a-f0-9]{2})+$/.test(source)) return true;
+  // Plugin-provided connectors are resolved the same way: AppsConnect loads
+  // the host gallery first and shows an unavailable state for a disabled
+  // plugin instead of bouncing back to the catalog.
+  if (isPluginAppSlug(source)) return true;
   const entry = getAppStoreDefinition(source);
   const channelEnabled = source === "github-code-review-bot" ? githubReviewBotsEnabled : chatConnectorsEnabled;
   if (
     !channelEnabled &&
-    entry?.methods.some((method) => method.transport === "chat_sdk") &&
+    source !== "agentmail" &&
+    entry?.methods.some((method) => method.purpose === "channel") &&
     !entry.methods.some((method) => (method.purpose ?? "tool") !== "channel" && method.transport !== "chat_sdk")
   ) return false;
   // A retained connection may belong to a provider hidden from fresh catalog

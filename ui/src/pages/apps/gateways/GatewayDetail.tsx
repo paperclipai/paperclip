@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Send } from "lucide-react";
@@ -9,11 +10,10 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { ErrorState } from "@/pages/tools/shared";
 import { GATEWAY_TABS, gatewayTabHref, isGatewayTabKey, type GatewayTabKey } from "./gateway-tabs";
 import { gatewaysQueryKey } from "./NewGatewayDialog";
 import { ConnectClientDialog } from "./ConnectClientDialog";
@@ -25,6 +25,7 @@ import { TokensPanel } from "./panels/TokensPanel";
 import { GatewayActivityPanel } from "./panels/GatewayActivityPanel";
 import { GatewayAdvancedPanel } from "./panels/GatewayAdvancedPanel";
 import { CopyableGatewayUrl } from "./CopyableGatewayUrl";
+import { describeError } from "@/api/errors";
 
 export function GatewayDetail() {
   const { gatewayId = "", tab } = useParams<{ gatewayId: string; tab?: string }>();
@@ -65,10 +66,10 @@ export function GatewayDetail() {
     enabled: !!selectedCompanyId,
   });
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId ?? "__none__", { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(selectedCompanyId ?? "__none__", { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
+  const gatewaysView = useQueryView(gatewaysQuery);
 
   const gateway = useMemo(
     () => (gatewaysQuery.data?.gateways ?? []).find((g) => g.id === gatewayId),
@@ -129,7 +130,7 @@ export function GatewayDetail() {
     onError: (error) =>
       pushToast({
         title: "Couldn't update the gateway",
-        body: error instanceof Error ? error.message : String(error),
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -140,7 +141,7 @@ export function GatewayDetail() {
   if (!activeTab) {
     return <Navigate replace to={gatewayTabHref(gatewayId, "overview")} />;
   }
-  if (gatewaysQuery.isLoading) {
+  if (gatewaysQuery.isLoading || gatewaysView.kind === "reconnecting") {
     return (
       <div className="max-w-4xl space-y-4">
         <Skeleton className="h-10 w-64" />
@@ -149,8 +150,16 @@ export function GatewayDetail() {
       </div>
     );
   }
-  if (gatewaysQuery.isError) {
-    return <ErrorState error={gatewaysQuery.error} onRetry={() => gatewaysQuery.refetch()} />;
+  if (gatewaysView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={gatewaysQuery.error}
+        action="load the gateway"
+        onRetry={gatewaysView.retry}
+        retrying={gatewaysView.isFetching}
+      />
+    );
   }
   if (!gateway) {
     return (
