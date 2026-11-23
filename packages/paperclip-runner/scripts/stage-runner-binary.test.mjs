@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { stageBuiltRunnerBinary, stageRunnerBinary } from "./stage-runner-binary.mjs";
+import { main as buildRunnerBinary, RELEASE_ARTIFACTS_VARIABLE, stageReleaseHostBinary } from "./build-runner-binary.mjs";
 import { RELEASE_RUNNER_TARGETS, releaseRunnerTargets, releaseDaemonManifest, verifyReleaseRunnerMetadata } from "./stage-release-runner-binaries.mjs";
 import { paperclipRunnerBinaryNeedsBuild, resolveNativeRunnerDevBinary } from "../../../scripts/dev-runner-native-binary.mjs";
 import { resolvePackagedRunnerBinary } from "../src/live/runner-binary.ts";
@@ -234,6 +235,63 @@ test("failed preparation preserves the published bytes and mode", async () => {
     assert.equal(after.ino, before.ino);
     assert.equal(after.mode, before.mode);
     assert.deepEqual(await readdir(root), ["paperclip-runnerd"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function writeReleaseDaemons(root, source) {
+  for (const target of RELEASE_RUNNER_TARGETS) {
+    await mkdir(path.join(root, target), { recursive: true });
+    const bytes = Buffer.alloc(64);
+    if (target.startsWith("linux-")) {
+      bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); bytes.writeUInt16LE(target === "linux-x64" ? 62 : 183, 18);
+    } else { bytes.writeUInt32LE(0xfeedfacf); bytes.writeUInt32LE(target === "darwin-x64" ? 0x01000007 : 0x0100000c, 4); }
+    await writeFile(path.join(root, target, "paperclip-runnerd"), bytes);
+    await writeFile(path.join(root, target, "receipt.json"), JSON.stringify({ schema: "paperclip.runner.release-artifact.v1", sourceRevision: source,
+      target, sha256: "sha256:" + createHash("sha256").update(bytes).digest("hex"), buildMetadata: metadata }));
+  }
+}
+
+test("a release build stages the verified exact-source host daemon instead of compiling it", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "runner-release-host-"))), source = "a".repeat(40);
+  const artifacts = path.join(root, "artifacts"), packageRoot = path.join(root, "package");
+  const verifyMetadata = value => verifyReleaseRunnerMetadata(value, contract);
+  const staged = [];
+  const stage = async (from, to) => { staged.push([from, to]); await mkdir(path.dirname(to), { recursive: true }); await copyFile(from, to); };
+  try {
+    await writeReleaseDaemons(artifacts, source);
+    for (const target of RELEASE_RUNNER_TARGETS) {
+      const result = await stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target, stage });
+      assert.equal(result.target, target);
+      const bytes = await readFile(path.join(packageRoot, "dist", "bin", "paperclip-runnerd"));
+      assert.deepEqual(bytes, await readFile(path.join(artifacts, target, "paperclip-runnerd")));
+      assert.deepEqual(staged.at(-1), [path.join(artifacts, target, "paperclip-runnerd"), path.join(packageRoot, "dist", "bin", "paperclip-runnerd")]);
+    }
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: "b".repeat(40), packageRoot, verifyMetadata, target: "linux-x64", stage }),
+      /source, digest or architecture/);
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target: "win32-x64", stage }),
+      /No exact-source release daemon for win32-x64/);
+    await writeFile(path.join(artifacts, "linux-x64", "paperclip-runnerd"), Buffer.alloc(64, 1));
+    await assert.rejects(stageReleaseHostBinary({ artifactDirectory: artifacts, sourceRevision: source, packageRoot, verifyMetadata, target: "linux-x64", stage }),
+      /digest or architecture/);
+    assert.equal(staged.length, RELEASE_RUNNER_TARGETS.length, "rejected artifacts are never staged");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a build without release daemons still compiles the Runner binary", async () => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "runner-local-build-")));
+  try {
+    const marker = path.join(root, "ran");
+    await writeFile(path.join(root, "build.cjs"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "yes");\n`);
+    await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "fixture", private: true, scripts: { "build:binary": "node build.cjs" } }));
+    const env = { ...process.env };
+    delete env[RELEASE_ARTIFACTS_VARIABLE];
+    const result = await buildRunnerBinary({ env, packageRoot: root, log: () => {} });
+    assert.deepEqual(result, { reused: false });
+    assert.equal(await readFile(marker, "utf8"), "yes");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

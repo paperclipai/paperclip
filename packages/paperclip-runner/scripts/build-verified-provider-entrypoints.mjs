@@ -21,6 +21,12 @@ export const verifiedProviderEntrypoints = Object.freeze([
     verifiedOutput: resolve(packageRoot, "dist/cli/kimi-metadata-probe.cjs"),
   }),
   Object.freeze({
+    name: "copilot-metadata-probe",
+    source: resolve(packageRoot, "src/cli/copilot-metadata-probe.ts"),
+    output: resolve(packageRoot, "dist/cli/copilot-metadata-probe.js"),
+    verifiedOutput: resolve(packageRoot, "dist/cli/copilot-metadata-probe.cjs"),
+  }),
+  Object.freeze({
     name: "provision-antigravity",
     source: resolve(packageRoot, "scripts/provision-antigravity.mjs"),
     output: resolve(packageRoot, "dist/cli/provision-antigravity.js"),

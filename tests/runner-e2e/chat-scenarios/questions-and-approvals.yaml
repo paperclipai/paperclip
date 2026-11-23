@@ -15,8 +15,9 @@ scenarios:
     expected_outcome: >-
       The agent asks a short, necessary question for the missing product name using the
       supported interaction. The person can enter a free-text answer; it is saved and delivered
-      to the right work once. The agent uses the answer in the resulting brief without making
-      the person fill in incidental implementation settings.
+      to the right work once. The answer shapes the resulting work: the agent uses the exact
+      answer in that work's saved brief or saved deliverable without making the person fill in
+      incidental implementation settings.
   - id: questions-and-approvals.multi-part-question
     capabilities:
       - questions-and-approvals/questions
@@ -24,7 +25,7 @@ scenarios:
       A bounded design request genuinely needs an audience, a tone and a custom headline; the
       fixture offers a paged form with choices and free text.
     query: >-
-      Help me choose the details for the launch page before you build it.
+      Walk me through the launch-page question form so I can choose the audience and tone and enter my own headline before you build anything.
     expected_outcome: >-
       The question flow retains earlier answers across pages, supports a custom answer and
       displays validation on missing required input. Only the submitted set resumes the work.

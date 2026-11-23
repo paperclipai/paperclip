@@ -104,14 +104,15 @@ describe("delegated chat completion provider accounting", () => {
     const workspaceOperations = [{ companyId: "company", heartbeatRunId: input.notification.id,
       phase: "workspace_finalize", status: "succeeded", command: null }];
     const requested: string[] = [];
-    const api = { async get<T>(path: string): Promise<T> {
+    async function read<T>(path: string): Promise<T> {
       requested.push(path);
       const url = new URL(path, "http://fixture.invalid");
       if (url.pathname.endsWith("/workspace-operations")) return workspaceOperations as T;
       if (url.pathname.endsWith("/log")) return { content: "recorded completion notification" } as T;
       if (url.pathname.endsWith("/events")) return recorded.events.filter(e => e.seq > Number(url.searchParams.get("afterSeq"))) as T;
       throw new Error("Unexpected evidence endpoint");
-    } };
+    }
+    const api = { get: read, getRunObservation: read };
     const collected = await collectChatRunEvidence(api, input.notification, false, true);
     expect(verifyChatCompletion(input.runs, { ...input.completionEvidence, runEvidence: [collected] }))
       .toMatchObject({ ordinaryProviderRuns: 2, totalProviderRuns: 3 });

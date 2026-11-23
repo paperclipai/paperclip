@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
   agents,
+  authUsers,
   companies,
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -68,6 +70,7 @@ describeEmbeddedPostgres("activity service", () => {
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agents);
@@ -106,6 +109,79 @@ describeEmbeddedPostgres("activity service", () => {
     const nextMode = workMode === "planning" ? "standard" : "planning";
     await service.update(task.id, { workMode: nextMode });
     expect((await service.getById(task.id))?.workMode).toBe(nextMode);
+  });
+
+  it("names each activity actor for the person instead of showing a raw id such as local-board", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), userId = `member-${companyId}`;
+    await db.insert(companies).values({ id: companyId, name: "Names", issuePrefix: `N${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Morgan", role: "engineer", status: "idle", adapterType: "codex_local" });
+    await db.insert(authUsers).values({ id: userId, name: "Sam Rivera", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    const base = { companyId, action: "issue.updated", entityType: "company", entityId: companyId };
+    await db.insert(activityLog).values([
+      { ...base, actorType: "user", actorId: "local-board" },
+      { ...base, actorType: "user", actorId: userId },
+      { ...base, actorType: "agent", actorId: agentId },
+      { ...base, actorType: "system", actorId: "system" },
+      { ...base, actorType: "agent", actorId: "external-agent" },
+    ]);
+    const named = await activityService(db).withActorNames(await activityService(db).list({ companyId }));
+    expect(Object.fromEntries(named.map(row => [row.actorId, row.actorName]))).toEqual({
+      "local-board": "Board", [userId]: "Sam Rivera", [agentId]: "Morgan", system: "Paperclip", "external-agent": "An agent",
+    });
+    await db.delete(authUsers).where(eq(authUsers.id, userId));
+  });
+
+  // Recorded in chat-eval cohort 13 (runs-adapters.inspect-failed-run): the
+  // agent told the person "Paperclip retried automatically" about a run the
+  // board started with Retry, because the run read gave only raw invocation
+  // fields (on_demand, manual) and an owner id.
+  it("says who started each retry run: a named person's Retry or automatic recovery", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), userId = `member-${companyId}`;
+    const failedRunId = randomUUID(), boardRetryId = randomUUID(), memberRetryId = randomUUID(), autoRetryId = randomUUID(), unknownRetryId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Retries", issuePrefix: `R${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Morgan", adapterType: "process" });
+    await db.insert(authUsers).values({ id: userId, name: "Sam Rivera", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Website", assigneeAgentId: agentId });
+    const wake = async (reason: string, requestedByActorType: string | null, requestedByActorId: string | null, source = "on_demand") => {
+      const [row] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source, triggerDetail: source === "automation" ? "system" : "manual",
+        reason, requestedByActorType, requestedByActorId, status: "completed", payload: { issueId } }).returning();
+      return row!.id;
+    };
+    const base = { companyId, agentId, issueId, scopeKind: "issue", contextSnapshot: { issueId } } as const;
+    const memberTaskRetryId = await wake("task_retry", "user", userId), inheritedRetryId = randomUUID();
+    const at = (seconds: number) => new Date(Date.UTC(2026, 10, 13, 18, 0, seconds));
+    await db.insert(heartbeatRuns).values([
+      { ...base, id: failedRunId, status: "failed", errorCode: "native_provider_model_rejected", invocationSource: "assignment", createdAt: at(0) },
+      { ...base, id: boardRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual", responsibleUserId: "local-board",
+        retryOfRunId: failedRunId, wakeupRequestId: await wake("retry_failed_run", "user", "local-board"), createdAt: at(1) },
+      // Task Retry, as the queue saves it: the person's request is linked from
+      // the run context with the source run as previousRunId, and retryOfRunId stays empty.
+      { ...base, id: memberRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual",
+        wakeupRequestId: await wake("issue_assigned", "user", userId),
+        contextSnapshot: { issueId, previousRunId: failedRunId, forceFreshSession: true, taskRetryRequestId: memberTaskRetryId }, createdAt: at(2) },
+      // Automatic recovery keeps the original responsible user; that is not who started it.
+      { ...base, id: autoRetryId, status: "succeeded", invocationSource: "automation", triggerDetail: "system", responsibleUserId: "local-board",
+        retryOfRunId: failedRunId, wakeupRequestId: await wake("transient_failure_retry", null, null, "automation"), createdAt: at(3) },
+      // Automatic recovery after that Task Retry inherits the person's request in its context.
+      { ...base, id: inheritedRetryId, status: "succeeded", invocationSource: "automation", triggerDetail: "system", retryOfRunId: memberRetryId,
+        wakeupRequestId: await wake("transient_failure_retry", null, null, "automation"),
+        contextSnapshot: { issueId, previousRunId: failedRunId, taskRetryRequestId: memberTaskRetryId }, createdAt: at(5) },
+      { ...base, id: unknownRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual", retryOfRunId: failedRunId, createdAt: at(4) },
+    ]);
+
+    const rows = await activityService(db).runsForIssue(companyId, issueId);
+    const byId = new Map(rows.map(row => [row.runId, row.retriedBy]));
+    expect(byId.get(failedRunId)).toBeNull();
+    expect(byId.get(boardRetryId)).toEqual({ kind: "person", personName: "Board",
+      summary: "Board pressed Retry on the failed run. Paperclip did not retry it automatically." });
+    expect(byId.get(memberRetryId)).toEqual({ kind: "person", personName: "Sam Rivera",
+      summary: "Sam Rivera pressed Retry on the failed run. Paperclip did not retry it automatically." });
+    expect(byId.get(autoRetryId)).toEqual({ kind: "automatic",
+      summary: "Paperclip retried the failed run automatically; no person pressed Retry." });
+    expect(byId.get(inheritedRetryId)).toMatchObject({ kind: "automatic" });
+    expect(byId.get(unknownRetryId)).toBeNull();
+    expect(JSON.stringify([...byId.values()])).not.toMatch(/local-board|member-/);
+    await db.delete(authUsers).where(eq(authUsers.id, userId));
   });
 
   it("limits company activity lists", async () => {
@@ -199,6 +275,45 @@ describeEmbeddedPostgres("activity service", () => {
     });
     expect(rows.map((row) => row.action)).toContain("open.changed");
     expect(rows.map((row) => row.action)).not.toContain("private.changed");
+  });
+
+  it("reports the queued messages a run's own accepted first turn took", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const acceptedRunId = randomUUID(), unacceptedRunId = randomUUID(), retryRunId = randomUUID();
+    const taken = [randomUUID(), randomUUID()], editedAfterSeal = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip",
+      issuePrefix: `F${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Runner", role: "engineer", status: "running",
+      adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "First turn", status: "in_progress",
+      priority: "medium", assigneeAgentId: agentId });
+    await db.insert(issueComments).values([...taken, editedAfterSeal].map((id, index) => ({
+      id, companyId, issueId, authorType: "user" as const, authorUserId: "board-user", body: `Message ${index}`,
+      createdAt: new Date("2026-11-14T23:59:00.000Z"),
+      // Edited after the run sealed its input: still waiting to be delivered.
+      updatedAt: new Date(id === editedAfterSeal ? "2026-11-15T00:00:05.000Z" : "2026-11-14T23:59:00.000Z"),
+    })));
+    const receipt = (runId: string) => ({ schema: "paperclip.first-turn-queued-input.v1", runId,
+      wakeupRequestIds: [], commentIds: [...taken, editedAfterSeal], claimedAt: "2026-11-15T00:00:00.000Z" });
+    await db.insert(heartbeatRuns).values([
+      { id: acceptedRunId, receiptRunId: acceptedRunId, status: "running" },
+      // Sealed its input, then failed to start: the receipt proves nothing.
+      { id: unacceptedRunId, receiptRunId: unacceptedRunId, status: "failed" },
+      // A retry copies its predecessor's context; that receipt is not its own.
+      { id: retryRunId, receiptRunId: acceptedRunId, status: "running" },
+    ].map((run, index) => ({
+      id: run.id, companyId, agentId, scopeKind: "issue" as const, issueId, invocationSource: "assignment",
+      status: run.status, createdAt: new Date(Date.now() - (3 - index) * 1000),
+      contextSnapshot: { issueId, firstTurnQueuedInput: receipt(run.receiptRunId) },
+    })));
+    await db.insert(heartbeatRunEvents).values([acceptedRunId, retryRunId].map(runId => ({
+      companyId, runId, agentId, seq: 1, eventType: "turn.accepted", stream: "system", level: "info",
+      message: "turn accepted" })));
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+    const ids = (runId: string) => runs.find(run => run.runId === runId)?.firstTurnCommentIds ?? null;
+    expect(ids(acceptedRunId)).toEqual(taken);
+    expect(ids(unacceptedRunId)).toBeNull();
+    expect(ids(retryRunId)).toBeNull();
   });
 
   it.each([null, "native_provider_model_rejected", "adapter_failed"])("returns compact issue runs with bounded model rejection details: %s", async (errorCode) => {
@@ -364,6 +479,28 @@ describeEmbeddedPostgres("activity service", () => {
       expect(JSON.stringify(rows)).not.toContain("private-stop-proof");
     },
   );
+
+  it.each([
+    ["recorded", "40001", "40001"],
+    ["legacy row without the field", undefined, null],
+    ["malformed", 'Failed query: select "secret" from x', null],
+    ["overlong", "X".repeat(81), null],
+    ["boolean", true, null],
+    ["number", 40001, null],
+  ] as const)("projects only a closed-shape failure cause in issue history: %s", async (_case, stored, expected) => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Failure cause", issuePrefix: `F${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Failing runner", adapterType: "process" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Fail with a cause", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, scopeKind: "issue", status: "failed",
+      errorCode: "adapter_failed", finishedAt: new Date(), contextSnapshot: { issueId }, livenessState: "failed",
+      resultJson: { stopReason: "adapter_failed", ...(stored === undefined ? {} : { failureCause: stored }) } });
+
+    const [row] = await activityService(db).runsForIssue(companyId, issueId);
+    expect(row).toMatchObject({ runId, errorCode: "adapter_failed", failureCause: expected });
+    expect(row!.resultJson).toEqual({ stopReason: "adapter_failed" });
+    expect(JSON.stringify(row)).not.toContain("secret");
+  });
 
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
     const companyId = randomUUID();
@@ -691,6 +828,100 @@ describeEmbeddedPostgres("activity service", () => {
       livenessState: "plan_only",
       livenessReason: "Run described runnable future work without concrete action evidence",
       lastUsefulActionAt: null,
+    });
+  });
+
+  describe("run liveness backfill", () => {
+    async function seedIssue() {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Backfill", issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}` });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Coder", role: "engineer", status: "idle", adapterType: "codex_local" });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Backfill target", status: "done", assigneeAgentId: agentId });
+      return { companyId, agentId, issueId };
+    }
+
+    async function insertMissingRun(companyId: string, agentId: string, contextSnapshot: Record<string, unknown>, status = "succeeded") {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status, contextSnapshot, livenessState: null });
+      return runId;
+    }
+
+    async function livenessOf(runIds: string[]) {
+      const rows = await db.select({ id: heartbeatRuns.id, livenessState: heartbeatRuns.livenessState }).from(heartbeatRuns);
+      return runIds.map((id) => rows.find((row) => row.id === id)?.livenessState ?? null);
+    }
+
+    async function waitForLiveness(service: ActivityService, companyId: string, issueId: string, runIds: string[]) {
+      const deadline = performance.now() + 3_000;
+      while (performance.now() < deadline) {
+        await service.runsForIssue(companyId, issueId);
+        if ((await livenessOf(runIds)).every((state) => state !== null)) {
+          // Let the pass finish its bookkeeping after the last update.
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(`Timed out waiting for liveness: ${JSON.stringify(await livenessOf(runIds))}`);
+    }
+
+    it("backfills only this issue's runs, found by context or by issue activity", async () => {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const viaContext = await insertMissingRun(companyId, agentId, { issueId });
+      const viaActivity = await insertMissingRun(companyId, agentId, {}, "failed");
+      await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentId, action: "issue.updated",
+        entityType: "issue", entityId: issueId, runId: viaActivity });
+      const running = await insertMissingRun(companyId, agentId, { issueId }, "running");
+      const otherIssueRun = await insertMissingRun(companyId, agentId, { issueId: randomUUID() });
+      const other = await seedIssue();
+      const otherCompanyRun = await insertMissingRun(other.companyId, other.agentId, { issueId });
+
+      await waitForLiveness(activityService(db), companyId, issueId, [viaContext, viaActivity]);
+
+      expect(await livenessOf([running, otherIssueRun, otherCompanyRun])).toEqual([null, null, null]);
+    });
+
+    it("does not repeat the lookup for a clean issue until the skip window ends", async () => {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const first = await insertMissingRun(companyId, agentId, { issueId });
+      const service = activityService(db);
+      await waitForLiveness(service, companyId, issueId, [first]);
+
+      const late = await insertMissingRun(companyId, agentId, { issueId });
+      for (let read = 0; read < 3; read++) {
+        await service.runsForIssue(companyId, issueId);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(await livenessOf([late])).toEqual([null]);
+
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now + 11 * 60_000);
+      try {
+        await waitForLiveness(service, companyId, issueId, [late]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("keeps backfilling on later reads while an issue has more than one batch", async () => {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const runIds: string[] = [];
+      for (let index = 0; index < 25; index++) runIds.push(await insertMissingRun(companyId, agentId, { issueId }));
+
+      await waitForLiveness(activityService(db), companyId, issueId, runIds);
+    });
+
+    it("leaves the backfill to the task page when a read skips it", async () => {
+      const { companyId, agentId, issueId } = await seedIssue();
+      const runId = await insertMissingRun(companyId, agentId, { issueId });
+      const service = activityService(db);
+      await service.runsForIssue(companyId, issueId, null, 2, undefined, { skipLivenessBackfill: true });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await livenessOf([runId])).toEqual([null]);
+
+      await waitForLiveness(service, companyId, issueId, [runId]);
     });
   });
 });

@@ -14,9 +14,10 @@ import type { Db } from "@paperclipai/db";
 import { companySecrets, toolAccessAuditEvents, toolCatalogEntries, toolConnectionAppSnapshots, toolConnectionAppSyncs, toolConnections } from "@paperclipai/db";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../../../errors.js";
 import { logActivity } from "../../activity-log.js";
-import { initializeMcpHttpSession, getMcpHttpSession, readMcpHttpResponse, mcpHttpRequestHeaders } from "../../mcp-http.js";
+import { initializeMcpHttpSession, getMcpHttpSession, isModernMcpProtocolVersion, readMcpHttpResponse, mcpHttpRequestInit } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
 import { writeConnectionCredential } from "../../connection-credentials.js";
+import { emitAggregatorAppsLinked, emitAggregatorAppsRequested, newlyLinkedToolkits } from "../../connector-telemetry.js";
 
 import type { ToolAccessAudit } from "../audit.js";
 import type { ConnectionCredentialAccess } from "../credential-access.js";
@@ -52,6 +53,16 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
   const composioSyncTtlMs = 5 * 60_000;
 
   const composioSyncLeaseMs = 4 * 60_000;
+
+  /** Stored app status per toolkit for one person, before a write replaces it (any credential key). */
+  async function snapshotStatuses(companyId: string, connectionId: string, userId: string, toolkits?: string[], executor: Pick<Db, "select"> = db) {
+    if (toolkits && !toolkits.length) return new Map<string, string>();
+    const rows = await executor.select({ toolkit: toolConnectionAppSnapshots.toolkit, status: toolConnectionAppSnapshots.status }).from(toolConnectionAppSnapshots).where(and(
+      eq(toolConnectionAppSnapshots.companyId, companyId), eq(toolConnectionAppSnapshots.connectionId, connectionId), eq(toolConnectionAppSnapshots.userId, userId),
+      ...(toolkits ? [inArray(toolConnectionAppSnapshots.toolkit, toolkits)] : []),
+    ));
+    return new Map(rows.map(row => [row.toolkit, row.status]));
+  }
 
   async function composioCredentialKey(connection: typeof toolConnections.$inferSelect, actor: ActorInfo) {
     const usesConnectionRefs = ["arcade", "executor"].includes(String(connection.config.sourceTemplateKey)) && connection.authKind !== "oauth" && connection.credentialPolicy === "shared";
@@ -109,14 +120,16 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
     const headers = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor)) };
     const credentialKey = await composioCredentialKey(await getConnectionRow(connectionId), actor);
     const send = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), { ...init, signal: AbortSignal.timeout(30_000) });
-    let sessionHeaders = connection.config.mcpSessionRequired === true
-      ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:app-setup:${actor.actorId}`, requestId: "paperclip-app-setup" }) : headers;
+    let sessionHeaders = isModernMcpProtocolVersion(connection.config.mcpProtocolVersion)
+      ? { ...headers, "MCP-Protocol-Version": connection.config.mcpProtocolVersion }
+      : connection.config.mcpSessionRequired === true
+        ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:app-setup:${actor.actorId}`, requestId: "paperclip-app-setup" }) : headers;
     async function manage(toolkits: { name: string; action: "list" | "add" | "rename" | "remove"; account_id?: string; alias?: string }[], tolerateToolkitErrors = false) {
       const checkedAt = new Date();
       const id = `paperclip-app-setup-${randomUUID()}`;
-      const request = () => send({ method: "POST", headers: mcpHttpRequestHeaders(sessionHeaders), body: JSON.stringify({
-        jsonrpc: "2.0", id, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: { toolkits } },
-      }) });
+      const request = () => send(mcpHttpRequestInit(sessionHeaders, {
+        id, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: { toolkits } },
+      }));
       const markFailed = async () => {
         const names = toolkits.filter(tool => tool.action === "list").map(tool => tool.name);
         if (names.length) await db.update(toolConnectionAppSnapshots).set({ errorAt: checkedAt }).where(and(
@@ -141,6 +154,8 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
         throw conflict("The Composio account changed while checking apps. Refresh to check the current account.");
       }
       const failedToolkits: string[] = [];
+      const listed = toolkits.filter(tool => tool.action === "list").map(tool => tool.name);
+      const previous = await snapshotStatuses(connection.companyId, connectionId, aggregatorUserId(actor), listed);
       for (const tool of toolkits.filter(tool => tool.action === "list")) {
         let accounts: ComposioAppAccount[];
         try {
@@ -159,10 +174,18 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
           continue;
         }
         const status = accounts.some(account => account.status === "ACTIVE") ? "connected" as const : "not_connected" as const;
-        await db.insert(toolConnectionAppSnapshots).values({ companyId: connection.companyId, connectionId, userId: aggregatorUserId(actor),
+        const written = await db.insert(toolConnectionAppSnapshots).values({ companyId: connection.companyId, connectionId, userId: aggregatorUserId(actor),
           credentialKey, toolkit: tool.name, accounts, status, checkedAt, errorAt: null,
         }).onConflictDoUpdate({ target: [toolConnectionAppSnapshots.companyId, toolConnectionAppSnapshots.connectionId, toolConnectionAppSnapshots.userId, toolConnectionAppSnapshots.toolkit],
-          set: { accounts, status, checkedAt, credentialKey, errorAt: null }, setWhere: lte(toolConnectionAppSnapshots.checkedAt, checkedAt) });
+          set: { accounts, status, checkedAt, credentialKey, errorAt: null }, setWhere: lte(toolConnectionAppSnapshots.checkedAt, checkedAt) })
+          .returning({ toolkit: toolConnectionAppSnapshots.toolkit });
+        // Emit per committed row: a later toolkit in this batch may still throw.
+        // A write that lost to a newer observation changed nothing and emits nothing.
+        if (written.length) {
+          emitAggregatorAppsLinked(connection.companyId, "composio", newlyLinkedToolkits(previous, [{ toolkit: tool.name, status }]));
+          // A repeated toolkit in the same batch compares against this write, not the stale read.
+          previous.set(tool.name, status);
+        }
       }
       return { payload, failedToolkits };
       } catch (error) { await markFailed(); throw error; }
@@ -315,11 +338,13 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
       } });
     }
     const send = (init: RequestInit) => requestRemoteHttpEndpoint(endpoint, { ...init, signal: AbortSignal.timeout(30_000) });
-    let sessionHeaders = connection.config.mcpSessionRequired === true ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:inventory:${actor.actorId}`, requestId: "paperclip-account-inventory" }) : headers;
+    let sessionHeaders = isModernMcpProtocolVersion(connection.config.mcpProtocolVersion)
+      ? { ...headers, "MCP-Protocol-Version": connection.config.mcpProtocolVersion }
+      : connection.config.mcpSessionRequired === true ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:inventory:${actor.actorId}`, requestId: "paperclip-account-inventory" }) : headers;
     return discoverExecutorApps({ toolNames: tools.map(tool => tool.name), managementUrl: typeof connection.config.managementUrl === "string" ? connection.config.managementUrl : null,
       call: async (name, args) => {
         const id = `paperclip-account-inventory-${randomUUID()}`;
-        const request = () => send({ method: "POST", headers: mcpHttpRequestHeaders(sessionHeaders), body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) });
+        const request = () => send(mcpHttpRequestInit(sessionHeaders, { id, method: "tools/call", params: { name, arguments: args } }));
         let response = await request();
         if (response.status === 400 || response.status === 404) {
           await response.body?.cancel(); sessionHeaders = await initializeMcpHttpSession({ send, headers, requestId: id }); response = await request();
@@ -356,12 +381,15 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
       const job = (async () => {
         try {
           const apps = await discoverAggregatorInventory(connection, actor);
+          let linked: string[] = [];
           await db.transaction(async tx => {
             const [current] = await tx.select().from(toolConnections).where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, connection.companyId))).for("update");
             const [active] = await tx.select().from(toolConnectionAppSyncs).where(and(eq(toolConnectionAppSyncs.id, lease.id), eq(toolConnectionAppSyncs.leaseId, leaseId))).for("update");
             if (!current || !active || current.status !== "active" || !current.enabled || Date.now() - startedAt.getTime() > composioSyncLeaseMs
               || await composioCredentialKey(current, actor) !== credentialKey) throw conflict("The gateway changed during account discovery");
             const checkedAt = new Date();
+            const previous = await snapshotStatuses(connection.companyId, connectionId, aggregatorUserId(actor), undefined, tx);
+            linked = newlyLinkedToolkits(previous, apps.map(app => ({ toolkit: app.toolkit, status: app.accounts.some(account => account.status === "ACTIVE") ? "connected" : "not_connected" })));
             // Commit the entire enumeration at once; a failed later page cannot delete accounts.
             await tx.update(toolConnectionAppSnapshots).set({ accounts: [], status: "not_connected", checkedAt, errorAt: null }).where(and(
               eq(toolConnectionAppSnapshots.companyId, connection.companyId), eq(toolConnectionAppSnapshots.connectionId, connectionId), eq(toolConnectionAppSnapshots.userId, aggregatorUserId(actor)), eq(toolConnectionAppSnapshots.credentialKey, credentialKey),
@@ -373,6 +401,7 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
             });
             await tx.update(toolConnectionAppSyncs).set({ status: "ready", checked: apps.length, total: apps.length, failed: 0, updatedAt: checkedAt, lastCompletedAt: checkedAt }).where(eq(toolConnectionAppSyncs.id, lease.id));
           });
+          emitAggregatorAppsLinked(connection.companyId, provider, linked);
         } catch (error) {
           await db.transaction(async tx => {
             const [active] = await tx.select().from(toolConnectionAppSyncs).where(and(eq(toolConnectionAppSyncs.id, lease.id), eq(toolConnectionAppSyncs.leaseId, leaseId))).for("update");
@@ -413,12 +442,25 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
     syncAggregatorApps, configureArcadeDiscovery,
     async setupComposioApp(connectionId: string, toolkit: string, input: ComposioAppSetupInput, actor: ActorInfo): Promise<ComposioAppSetupResult> {
       if (!findComposioCatalogApp(toolkit)) throw notFound("This Composio app is not in the catalog");
-      const { connection, manage } = await openComposioGateway(connectionId, actor);
-      let result = composioAppSetupResult(await manage([{ name: toolkit, action: "list" }]), toolkit);
-      if (input.action === "start" && result.status !== "connected") {
-        result = composioAppSetupResult(await manage([{ name: toolkit, action: "add" }]), toolkit);
-        if (result.status === "not_connected") throw unprocessable("Composio did not return a sign-in link for this app. Manage it in Composio to check its setup requirements.");
+      const companyId = input.action === "start" ? (await getConnectionRow(connectionId)).companyId : null;
+      const requested = (outcome: "succeeded" | "failed" | "needs_auth") => {
+        if (companyId) emitAggregatorAppsRequested(companyId, { provider: "composio", toolkits: [toolkit], origin: "user", outcome });
+      };
+      let connection: typeof toolConnections.$inferSelect;
+      let result: ComposioAppSetupResult;
+      try {
+        const opened = await openComposioGateway(connectionId, actor);
+        connection = opened.connection;
+        result = composioAppSetupResult(await opened.manage([{ name: toolkit, action: "list" }]), toolkit);
+        if (input.action === "start" && result.status !== "connected") {
+          result = composioAppSetupResult(await opened.manage([{ name: toolkit, action: "add" }]), toolkit);
+          if (result.status === "not_connected") throw unprocessable("Composio did not return a sign-in link for this app. Manage it in Composio to check its setup requirements.");
+        }
+      } catch (error) {
+        requested("failed");
+        throw error;
       }
+      requested(result.status === "connected" ? "succeeded" : "needs_auth");
       if (input.action === "complete") {
         if (result.status !== "connected") throw conflict("Finish connecting this app in Composio, then check again");
         const currentConnection = await getConnectionRow(connectionId);
@@ -478,17 +520,31 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
       const details = { toolkit, ...(input.action !== "add" ? { accountId: input.accountId } : {}) };
       await logActivity(db, { companyId: connection.companyId, ...(actor.managementContext?.audit ?? { actorType: "user" as const, actorId: actor.actorId! }),
         action: `tool_connection.upstream_account_${input.action}_requested`, entityType: "tool_connection", entityId: connectionId, details });
+      const requested = (outcome: "failed" | "needs_auth") => {
+        if (input.action === "add") emitAggregatorAppsRequested(connection.companyId, { provider: "composio", toolkits: [toolkit], origin: "user", outcome });
+      };
       let payload: unknown;
       try {
         payload = await manage([{ name: toolkit, action: input.action,
           ...(input.action !== "add" ? { account_id: input.accountId } : {}), ...(input.action === "rename" ? { alias: input.alias } : {}) }]);
       } catch (error) {
+        requested("failed");
         await audit({ companyId: connection.companyId, connectionId, actor, action: `tool_connection.upstream_account_${input.action}`,
           outcome: "failure", reasonCode: "provider_unconfirmed", details });
         throw error;
       }
-      const result = composioAppSetupResult(payload, toolkit); // Reject provider errors before reporting success.
-      if (input.action === "add" && !result.authorizationUrl) throw unprocessable("Composio did not return a sign-in link. Check the app in Composio.");
+      let result: ReturnType<typeof composioAppSetupResult>;
+      try {
+        result = composioAppSetupResult(payload, toolkit); // Reject provider errors before reporting success.
+      } catch (error) {
+        requested("failed");
+        throw error;
+      }
+      if (input.action === "add" && !result.authorizationUrl) {
+        requested("failed");
+        throw unprocessable("Composio did not return a sign-in link. Check the app in Composio.");
+      }
+      requested("needs_auth");
       if (input.action !== "add") {
         const after = composioAppAccounts(await manage([{ name: toolkit, action: "list" }]), toolkit);
         if (!after || (input.action === "remove" ? after.some(account => account.id === input.accountId)

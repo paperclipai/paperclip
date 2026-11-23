@@ -4,6 +4,7 @@ import {
   addIssueCommentSchema,
   paperclipQuestionSetPayloadSchema,
   issueCommentMetadataSchema,
+  issueDocumentBatchQuerySchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -16,6 +17,16 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("bounds document batches before deduplication and normalizes keys and IDs", () => {
+    const id = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+    expect(issueDocumentBatchQuerySchema.parse({ key: " SENTRY-CASE ", issueIds: ` ${id},${id} ` })).toEqual({
+      key: "sentry-case", issueIds: [id.toLowerCase()], includeBody: true,
+    });
+    expect(issueDocumentBatchQuerySchema.parse({ key: "notes", issueIds: Array(200).fill(id).join(","), includeBody: "false" }).includeBody).toBe(false);
+    expect(issueDocumentBatchQuerySchema.safeParse({ key: "notes", issueIds: Array(201).fill(id).join(",") }).success).toBe(false);
+    expect(issueDocumentBatchQuerySchema.safeParse({ key: "notes", issueIds: [id] }).success).toBe(false);
+  });
+
   it.each(["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"])("rejects task-owned managed shell selector %s", key => {
     for (const name of [key, key.toLowerCase()]) {
       const overrides = {adapterConfig:{env:{[name]:"/workspace/startup"}}};
@@ -368,6 +379,37 @@ describe("issue validators", () => {
       workspaceRepairEvidence: "Copied the retained source files and verified the restored files.",
     } }).success).toBe(true);
   });
+
+  it.each(["backlog", "in_progress", "blocked"] as const)("allows a complete controller containment request to retain %s status for locked route validation", sourceIssueStatus => {
+    const input = { actionId: "22222222-2222-4222-8222-222222222222", outcome: "restored", sourceIssueStatus,
+      executionReconciliation: { runId: "11111111-1111-4111-8111-111111111111", providerStopped: true,
+        controllerStopped: true, controllerAuthorityDigest: "a".repeat(64), actionOutcome: "mixed",
+        outcomeEvidence: "The original-host controller and provider stopped; action outcomes were reviewed." } };
+    // The real historical HTTP request failed here before its route could
+    // enforce same-status/current-authority checks. Syntax grants no authority.
+    expect(resolveIssueRecoveryActionSchema.parse(input)).toEqual(input);
+  });
+
+  it.each(["controller-only", "digest-only", "missing-action", "wrong-outcome", "partial-with-workspace-evidence"] as const)(
+    "rejects incomplete controller containment even when ordinary status validation would pass: %s", mode => {
+      const complete = { runId: "11111111-1111-4111-8111-111111111111", providerStopped: true,
+        controllerStopped: true, controllerAuthorityDigest: "a".repeat(64), actionOutcome: "mixed",
+        outcomeEvidence: "The original-host controller and provider stopped; action outcomes were reviewed." };
+      const ordinary = { runId: complete.runId, providerStopped: complete.providerStopped,
+        actionOutcome: complete.actionOutcome, outcomeEvidence: complete.outcomeEvidence };
+      const input = { actionId: mode === "missing-action" ? undefined : "22222222-2222-4222-8222-222222222222",
+        outcome: mode === "wrong-outcome" ? "blocked" : "restored",
+        sourceIssueStatus: mode === "wrong-outcome" ? "blocked" : "todo",
+        executionReconciliation: mode === "controller-only" ? { ...ordinary, controllerStopped: true }
+          : mode === "digest-only" ? { ...ordinary, controllerAuthorityDigest: complete.controllerAuthorityDigest }
+          : mode === "partial-with-workspace-evidence" ? { ...ordinary, controllerStopped: true,
+            workspaceRepairEvidence: "Retained workspace files were repaired and inspected separately." }
+          : complete };
+      const result = resolveIssueRecoveryActionSchema.safeParse(input);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues).toContainEqual(expect.objectContaining({ path: ["executionReconciliation"] }));
+    },
+  );
 
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(

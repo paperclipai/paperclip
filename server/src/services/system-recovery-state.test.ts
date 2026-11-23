@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
+import { createSystemRecovery, failSystemRecovery, isDeterministicRecoveryRefusal, readSystemRecovery, reserveSystemRecoveryAttempt, savedFilesUnrecoverable, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { exhaustedSystemRecoveryAction } from "./system-recovery.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 
@@ -59,17 +59,70 @@ describe("durable system recovery budget", () => {
       message: "Automatic recovery of saved work stopped after 1 attempts (last failure: allocation_ownership_ambiguous). "
         + "Retry recovery to export and merge from the retained sandbox again; no provider turn is submitted. "
         + "If Retry keeps failing, inspect the run and its environment." } }, runId);
-    expect(display?.message).toContain("Retry to try again");
+    expect(display?.message).toContain("Paperclip cannot recover the unsaved files from the previous run");
     expect(display?.message).not.toMatch(manual);
   });
 
-  it("names the last failure and its cause in the board handoff", () => {
+  it("states unrecoverable saved files plainly and says Retry continues from the recorded work", () => {
+    const refused = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+      new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required"), { now: 0 });
+    expect(refused).toMatchObject({ state: "exhausted", attempts: 1, retriesUsed: 0 });
+    expect(isDeterministicRecoveryRefusal(refused)).toBe(true);
+    expect(savedFilesUnrecoverable(refused)).toBe(true);
+    const text = exhaustedSystemRecoveryAction(refused);
+    expect(text).toContain("Paperclip cannot recover the unsaved files from the previous run: Paperclip cannot prove which runs used the sandbox that holds the saved files.");
+    expect(text).not.toContain("allocation_ownership_ambiguous");
+    expect(text).toContain("Retry continues the task in a new workspace from its recorded work, without those files");
+    expect(text).not.toMatch(/succeeds only after|Paperclip is updated|runs the check again|last saved version/);
+    expect(text).not.toMatch(/after automatic retries|stopped after|Retry to try again/);
+
+    const missing = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+      new SystemRecoveryFailure("historical_source_missing", "use_alternative_strategy"), { now: 0 });
+    expect(isDeterministicRecoveryRefusal(missing)).toBe(false);
+    expect(savedFilesUnrecoverable(missing)).toBe(true);
+    expect(exhaustedSystemRecoveryAction(missing)).toContain("Retry continues the task in a new workspace");
+
+    const transient = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+      new SystemRecoveryFailure("export_interrupted", "user_action_required"), { now: 0 });
+    expect(savedFilesUnrecoverable(transient)).toBe(false);
+    expect(exhaustedSystemRecoveryAction(transient)).toBe("Paperclip could not recover the agent's saved files. "
+      + "Press Retry to try again; the agent will not repeat its work.");
+    expect(exhaustedSystemRecoveryAction({ ...transient, attempts: 6 })).toContain("after 6 tries");
+
+    for (const code of ["archive_unsafe", "snapshot_verification_failed"] as const) {
+      const unsafe = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+        new SystemRecoveryFailure(code, "service_required"), { now: 0 });
+      expect(savedFilesUnrecoverable(unsafe)).toBe(false);
+      expect(exhaustedSystemRecoveryAction(unsafe)).toContain("Retry runs the check again");
+    }
+
+    const adoptable = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+      new SystemRecoveryFailure("source_binding_invalid", "service_required"), { now: 0 });
+    expect(savedFilesUnrecoverable(adoptable)).toBe(false);
+    expect(savedFilesUnrecoverable({ ...adoptable, attempts: 0 })).toBe(false);
+    expect(savedFilesUnrecoverable({ ...refused, freshAttemptRunId: randomUUID() })).toBe(false);
+  });
+
+  it("promises an automatic retry for an unproven stop only while a re-arm remains", () => {
+    const stop = { ...failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+      new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence"), { now: 0 }), state: "exhausted" as const };
+    const marker = (rearms: number) => ({ stopProofRecovery: { schema: "paperclip.stop-proof-recovery.v1", rearms, nextRearmAt: null } });
+    expect(exhaustedSystemRecoveryAction(stop, {})).toMatch(/tries again automatically/);
+    expect(exhaustedSystemRecoveryAction(stop, marker(3))).toMatch(/tries again automatically/);
+    // Spent re-arms, or no evidence to judge them, keep the Retry text.
+    expect(exhaustedSystemRecoveryAction(stop, marker(4))).toContain("Retry to try again");
+    expect(exhaustedSystemRecoveryAction(stop)).toContain("Retry to try again");
+  });
+
+  it("keeps the failure code and cause in the evidence, never in the text a person reads", () => {
     const state = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
     const withCause = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
       { now: 0, cause: { label: "sandbox_not_running", code: null, status: null } });
-    expect(exhaustedSystemRecoveryAction(withCause)).toContain("(last failure: provider_unavailable, cause: sandbox_not_running)");
+    expect(withCause.failure).toMatchObject({ code: "provider_unavailable", cause: { label: "sandbox_not_running" } });
+    expect(exhaustedSystemRecoveryAction(withCause)).not.toMatch(/provider_unavailable|sandbox_not_running|last failure/);
     const withoutCause = failSystemRecovery(state, new SystemRecoveryFailure("archive_unsafe", "service_required"), { now: 0 });
-    expect(exhaustedSystemRecoveryAction(withoutCause)).toContain("(last failure: archive_unsafe)");
+    expect(exhaustedSystemRecoveryAction(withoutCause)).not.toContain("archive_unsafe");
+    expect(exhaustedSystemRecoveryAction(withoutCause)).toContain("the saved file archive contains entries that are not safe to apply.");
   });
   it("reconciles a recorded attempt after restart without spending another retry", () => {
     const running = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;

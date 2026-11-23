@@ -40,6 +40,17 @@ export interface RunFailureReportOptions {
    * read, as closed labels and counts; its message and stack are never copied.
    */
   nativeCloseFailure?: unknown;
+  /**
+   * The bounded retry decision for a reviewed chat setup wait. The setup path
+   * writes the failed status while `pending`, then reports again with the
+   * decision; a scheduled retry owns recovery and reports its own outcome.
+   */
+  reviewedChatRetry?: "pending" | "scheduled" | "not_scheduled";
+  /**
+   * The bounded retry decision for a saved-sandbox resume that the provider
+   * answered with an HTTP 5xx, with the same `pending` handshake.
+   */
+  sandboxResumeRetry?: "pending" | "scheduled" | "not_scheduled";
 }
 
 export interface RunFailureException {
@@ -374,7 +385,10 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       break;
     }
     if (typeof error !== "object") break;
-    const acquisition = options.phase === "setup" && run.errorCode === "setup_failed"
+    // A lease acquisition timeout is retried as a transient provider failure;
+    // it needs the same phase and provider state as a plain setup failure.
+    const acquisition = options.phase === "setup" && (run.errorCode === "setup_failed"
+      || run.errorCode === "environment_provider_unavailable")
       ? getEnvironmentAcquisitionDiagnostic(error, run) : null;
     if (acquisition && execution.environmentAcquisitionPhase === undefined) {
       execution.environmentAcquisitionPhase = acquisition.phase;

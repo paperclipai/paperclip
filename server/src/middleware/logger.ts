@@ -10,6 +10,7 @@ import {
   isPrivateAgentObservabilityHttpRequest,
   isPrivateMuseHttpRequest,
   isPrivateDotPrincipalHttpRequest,
+  isPrivateToolCallHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
 import {
@@ -119,8 +120,14 @@ export function createHttpLogger(baseLogger: Logger) {
             url: privateWebhookLogUrl(req.url),
           };
         }
+        const headers = req.headers as Record<string, unknown> | undefined;
         return {
           ...req,
+          ...(headers ? { headers: {
+            ...headers,
+            ...Object.fromEntries(["referer", "referrer"].filter(key => typeof headers[key] === "string")
+              .map(key => [key, stripSecretBearingUrlParts(headers[key] as string)])),
+          } } : {}),
           url:
             typeof req.url === "string"
               ? stripSecretBearingUrlParts(req.url)
@@ -207,6 +214,7 @@ export function createHttpLogger(baseLogger: Logger) {
               : {}),
           };
         }
+        const toolCall = isPrivateToolCallHttpRequest(requestClassificationUrl(req));
         if (ctx) {
           const secretSensitiveRoute = isSecretSensitiveHttpRequest(
             req.method,
@@ -219,13 +227,16 @@ export function createHttpLogger(baseLogger: Logger) {
             errorContext: secretSensitiveRoute
               ? { name: "Error" }
               : redactSensitive(ctx.error),
-            reqBody: redactSensitive(ctx.reqBody),
+            reqBody: toolCall ? "[REDACTED]" : redactSensitive(ctx.reqBody),
             reqParams: redactSensitive(ctx.reqParams),
+            ...(toolCall && (req as any).route?.path ? { routePath: (req as any).route.path } : {}),
           };
         }
         const props: Record<string, unknown> = {};
         const { body, params } = req as any;
-        if (body && typeof body === "object" && Object.keys(body).length > 0) {
+        if (toolCall) {
+          props.reqBody = "[REDACTED]";
+        } else if (body && typeof body === "object" && Object.keys(body).length > 0) {
           props.reqBody = redactSensitive(body);
         }
         if (

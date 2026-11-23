@@ -1,24 +1,35 @@
 import { execFile, spawn } from "node:child_process";
-import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, verifyRemoteRunnerReattachment } from "./native-session-executor.js";
+import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, restoreRemoteSuspendedRunnerCheckpoint,
+  verifyRemoteRunnerReattachment } from "./native-session-executor.js";
 import { readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
+import { RunnerIngressConnectionError } from "../../realtime/runner-prp-outbound.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agentTaskSessions, agents, companies, controllerInstances, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { DurablePrpControlPlane, parseNativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
-import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
-import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
+import { assertNativeRunnerCheckpointOwner, loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
+import { assertNativeHarnessBackupOwner, nativeHarnessBackupOwner } from "./native-harness-backup-storage.js";
+import { assertNativeRetainedSandboxBinding, createNativeControllerRecovery, deferNativeControllerRecovery, deferNativeRunForBusyAgentDirectory, NATIVE_AGENT_DIRECTORY_BUSY_WAIT, importNativeControllerRecovery, NativeControllerRecoveryWaitingError, NATIVE_RETAINED_OWNER_WAIT, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
-import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "../heartbeat/agent-directory-busy.js";
+import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
 import { readNativeControllerRecoveryInventory } from "./native-controller-recovery-inventory.js";
-import { inspectRemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { inspectRemoteWarmSessionRecovery, waitForLiveWarmSessionOwner } from "./remote-warm-session-recovery.js";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
+import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../controller-instance-lease.js";
+import { readProcessStartedAt } from "../hot-restart.js";
+import { PROCESS_START_REQUESTED } from "../native-process-start-events.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 
 describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable discovery and import", () => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
@@ -191,6 +202,124 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       executionTargetKind: "local" })).toMatchObject({ recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true });
   });
 
+  it("retries a fresh launch whose provider pack could not be verified, and holds a reattachment", async () => {
+    const fixture = await seed(), runId = randomUUID(), runnerInstanceId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, runnerInstanceId, status: "running", runtimeMode: "native" });
+    const bootstrap = { binding: { companyId, issueId: fixture.scope.issueId, runId }, transientIngressFailure: false,
+      identity: { runId, normalizedSessionId: fixture.scope.normalizedSessionId, runnerInstanceId,
+        environmentLeaseId: fixture.native.environmentLeaseId, turnId: `turn-${runId}`, itemId: `item-${runId}` } };
+    const evidence = (fresh: boolean) => nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: "remote",
+      sourceFailureCode: "runner_remote_provider_verification_unavailable", ...(fresh ? { bootstrap } : {}) });
+    expect(await evidence(true)).toMatchObject({ recoveryMode: "bootstrap_retry", providerSessionEstablished: false,
+      providerEventsExist: false, checkpointExists: false });
+    expect((await evidence(false)).recoveryMode).toBe("ambiguous_state");
+  });
+
+  it("retries a remote follow-up whose own server stopped serving before its runner, carrying only the predecessor session", async () => {
+    // Daytona wave s9203: a graceful drain closed the runtime API listener while
+    // a follow-up was still preparing. Its only checkpoint was the settled
+    // predecessor's provider session, rebound at admission.
+    const fixture = await seed(), runId = randomUUID();
+    const checkpoint: PersistedNativeSession = { ...fixture.snapshot, backendKind: "runner", driverKind: "codex_app_server",
+      providerSessionId: "predecessor-thread", sessionId: "predecessor-thread", cursor: "predecessor-cursor",
+      activeTurnId: null, terminal: null, terminalTurns: [], pendingRuntimeRequests: [] };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...fixture.profile, sessionCheckpoint: checkpoint } })
+      .where(eq(heartbeatRuns.id, fixture.scope.runId));
+    const rebound = { ...checkpoint, cursor: null, identity: { ...checkpoint.identity, runId } };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: randomUUID(), status: "running", runtimeMode: "native",
+      createdAt: new Date(Date.now() + 1_000),
+      runnerProfileJson: { sessionCheckpoint: rebound, nativePreparationFencingVersion: 1 } });
+    const evidence = (sourceFailureCode: Parameters<typeof nativeProviderRecoveryEvidence>[0]["sourceFailureCode"],
+      executionTargetKind: "remote" | "local" = "remote") =>
+      nativeProviderRecoveryEvidence({ db, runId, executionTargetKind, sourceFailureCode });
+    expect(await evidence("local_runtime_api_listener_unavailable")).toMatchObject({ recoveryMode: "bootstrap_retry",
+      providerSessionEstablished: false, providerEventsExist: false, checkpointExists: true });
+    // Only this server's own shutdown proves the runner was never reached.
+    expect((await evidence("provider_process_exited")).recoveryMode).toBe("ambiguous_state");
+    // A provider session no settled predecessor saved could be this run's own.
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: { ...rebound, providerSessionId: "unknown-thread" },
+      nativePreparationFencingVersion: 1 } }).where(eq(heartbeatRuns.id, runId));
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+    // A turn of this run is provider work, whatever stopped it.
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: { ...rebound, cursor: "own-turn" },
+      nativePreparationFencingVersion: 1 } }).where(eq(heartbeatRuns.id, runId));
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: rebound, nativePreparationFencingVersion: 1 } })
+      .where(eq(heartbeatRuns.id, runId));
+    // Any Runner controller checkpoint of this run, even one whose identity
+    // no longer matches the run, proves a Runner was reached.
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, runId, "reached-runner"),
+      identity: { runId, normalizedSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: randomUUID(),
+        environmentLeaseId: fixture.native.environmentLeaseId, turnId: fixture.native.turnId, itemId: fixture.native.itemId },
+      expectedRunnerVersion: "discovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    const runnerOwner = { companyId, issueId: fixture.scope.issueId, runId, authorityRunId: runId,
+      bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed",
+      controllerBootId: runnerOwner.bootId, controllerGeneration: 1, leaseOwner: runnerOwner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) });
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, runnerOwner));
+    try {
+      await core.flushCheckpoint();
+      expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+    } finally { await core.stop(); }
+    await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, runId));
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("bootstrap_retry");
+    await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, stream: "system", level: "info",
+      eventType: "session.resumed" });
+    expect((await evidence("local_runtime_api_listener_unavailable")).recoveryMode).toBe("ambiguous_state");
+  });
+
+  it("retries a fresh remote start whose launched runner never authenticated through provider ingress", async () => {
+    const issueId = randomUUID(), runId = randomUUID(), runnerInstanceId = randomUUID();
+    const normalizedSessionId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Slow sandbox start", assigneeAgentId: agentId, status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
+      nativeIssueId: issueId, nativeSessionId: normalizedSessionId, runnerInstanceId,
+      runnerProfileJson: { nativePreparationFencingVersion: 1 } });
+    const identity = { runnerInstanceId, environmentLeaseId: randomUUID(), runId, normalizedSessionId,
+      turnId: `turn-${runId}`, itemId: `item-${runId}` };
+    const owner = { companyId, issueId, runId, authorityRunId: runId, bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "observed", controllerBootId: owner.bootId,
+      controllerGeneration: 1, leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, runId), identity,
+      expectedRunnerVersion: "discovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, owner));
+    const failure = new RunnerIngressConnectionError("runner_ingress_auth_failed",
+      "Runner ingress did not complete PRP authentication before the deadline.");
+    const bootstrap = { binding: { companyId, issueId, runId }, identity, transientIngressFailure: false };
+    const evidence = () => nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: "remote",
+      sourceFailureCode: nativeSessionFailureSourceCode(failure), bootstrap });
+    try {
+      const template = { provider: { provider: "codex", command: "fixture" }, authorizedTools: {} };
+      core.persistRunAttachTemplate(template);
+      core.queueCommand("run.prepare", template);
+      core.queueCommand("session.open", { reuse: "same_session" });
+      core.issueBootstrapTicket(60_000);
+      core.issueBootstrapTicket(60_000);
+      await core.flushCheckpoint();
+      expect(nativeSessionFailureSourceCode(failure)).toBe("runner_ingress_startup_failed");
+      expect(nativeSessionFailureSourceCode(new Error("runner_ingress_unavailable: runnerd exited unexpectedly with code 1")))
+        .toBe("native_runner_process_exited");
+      expect(await evidence()).toMatchObject({ recoveryMode: "bootstrap_retry", providerSessionEstablished: false,
+        providerEventsExist: false, checkpointExists: false });
+      expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_connection_lease_expired",
+        "The runner's connection lease expired before it was renewed.", { cause: failure }))).toBe("native_session_interrupted");
+      expect(nativeSessionFailureSourceCode(new RunnerIngressConnectionError("runner_ingress_auth_failed",
+        "Runner ingress connection failed."))).toBe("runner_ingress_startup_failed");
+      expect(await nativeProviderRecoveryEvidence({ db, runId, metadataOnly: true,
+        sourceFailureCode: "runner_ingress_startup_failed" })).toMatchObject({ recoveryMode: "bootstrap_retry",
+        providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false });
+      await db.update(heartbeatRuns).set({ runnerInstanceId: randomUUID() }).where(eq(heartbeatRuns.id, runId));
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+      await db.update(heartbeatRuns).set({ runnerInstanceId }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, stream: "system", level: "info",
+        eventType: "session.resumed" });
+      expect((await evidence()).recoveryMode).toBe("ambiguous_state");
+    } finally { await core.stop(); }
+  });
+
   it("uses the database clock when an import finds an expired owner", async () => {
     const fixture = await seed();
     const now = Date.now();
@@ -214,6 +343,83 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       expect(await resolveNativeControllerRecovery(db, { ...fixture.scope, currentRunId }))
         .toMatchObject({ kind: "missing_evidence", reason: "snapshot_digest_or_checkpoint_binding" });
     }
+  });
+
+  async function seedBusyDirectoryRun(input: { checkpoint?: boolean; resultJson?: Record<string, unknown> } = {}) {
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Busy agent directory", assigneeAgentId: agentId, status: "in_progress" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, status: "running", runtimeMode: "native",
+      resultJson: input.resultJson ?? null,
+      runnerProfileJson: { nativeExecutionInput: { binding: { companyId, agentId, issueId, runId } },
+        ...(input.checkpoint ? { sessionCheckpoint: { backendKind: "mock", sessionId: randomUUID(), providerSessionId: "provider-session",
+          identity: { companyId, agentId, issueId, runId } } } : {}) } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "retryable_failure", attempt: 3,
+      failureDetail: { recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true, providerEventsExist: true } });
+    const read = async () => (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]!;
+    const readRun = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
+    return { issueId, runId, read, readRun };
+  }
+
+  it("defers a resumed run whose agent directory is busy across repeated claims and stops at the bound", async () => {
+    const { runId, read, readRun } = await seedBusyDirectoryRun({ checkpoint: true });
+    let now = new Date();
+    for (let cycle = 1; cycle <= 3; cycle++) {
+      const [claim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now });
+      expect(claim).toBeDefined();
+      expect((await read()).failureDetail?.agentDirectoryBusyDeferrals).toBeUndefined();
+      const retryAt = new Date(now.getTime() + 10_000);
+      expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId, leaseOwner: claim!.leaseOwner, retryAt, maxDeferrals: 3 })).toBe("deferred");
+      expect(await read()).toMatchObject({ phase: "retryable_failure", attempt: 3, leaseOwner: null, nextAttemptAt: retryAt,
+        failureCode: NATIVE_AGENT_DIRECTORY_BUSY_WAIT, failureDetail: { recoveryMode: "same_session_resume" } });
+      expect(await readRun()).toMatchObject({ status: "running", errorCode: null, contextSnapshot: { agentDirectoryBusyDeferrals: cycle } });
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now })).toEqual([]);
+      now = retryAt;
+    }
+    const [claim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now });
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId, leaseOwner: claim!.leaseOwner,
+      retryAt: new Date(now.getTime() + 10_000), maxDeferrals: 3 })).toBe("refused");
+    expect(await read()).toMatchObject({ phase: "observed", leaseOwner: claim!.leaseOwner });
+  });
+
+  it("leaves a busy-directory run to normal settlement after Stop, a lost lease or a moved task", async () => {
+    const retryAt = new Date(Date.now() + 10_000);
+    const stopped = await seedBusyDirectoryRun({ checkpoint: true });
+    const [stoppedClaim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [stopped.runId] });
+    await db.update(heartbeatRuns).set({ resultJson: { cancellation: { source: "operator", expected: true, initiator: { type: "user", userId: "board" },
+      reason: "Stopped", recordedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, stopped.runId));
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId: stopped.runId, leaseOwner: stoppedClaim!.leaseOwner, retryAt, maxDeferrals: 30 })).toBe("refused");
+    expect((await stopped.read()).nextAttemptAt).toBeNull();
+    const foreign = await seedBusyDirectoryRun({ checkpoint: true });
+    await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [foreign.runId] });
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId: foreign.runId, leaseOwner: "another-controller", retryAt, maxDeferrals: 30 })).toBe("refused");
+    const moved = await seedBusyDirectoryRun({ checkpoint: true });
+    const [movedClaim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [moved.runId] });
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, moved.issueId));
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId: moved.runId, leaseOwner: movedClaim!.leaseOwner, retryAt, maxDeferrals: 30 })).toBe("refused");
+    const fresh = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: fresh, companyId, agentId, status: "running", runtimeMode: "native" });
+    expect(await deferNativeRunForBusyAgentDirectory(db, { companyId, runId: fresh, retryAt, maxDeferrals: 30 })).toBe("pre_admission");
+  });
+
+  it("defers only a busy agent directory met during preparation, never a busy collection after a turn", async () => {
+    const { runId, read } = await seedBusyDirectoryRun({ checkpoint: true });
+    const [claim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] });
+    const schedule = vi.fn(), record = vi.fn(async () => undefined);
+    const run = { id: runId, companyId };
+    expect(await deferRunForBusyAgentDirectory(db, { run, error: new AgentDirectoryOperationBusyError(), leaseOwner: claim!.leaseOwner, schedule, record })).toBe("not_applicable");
+    expect(await deferRunForBusyAgentDirectory(db, { run, error: new Error("unrelated"), leaseOwner: claim!.leaseOwner, schedule, record })).toBe("not_applicable");
+    expect(schedule).not.toHaveBeenCalled();
+    expect((await read()).phase).toBe("observed");
+    const deferral = await prepareWithAgentDirectoryDeferral(async () => { throw new AgentDirectoryOperationBusyError(); }).catch(error => error);
+    expect(deferral).toBeInstanceOf(AgentDirectoryPreparationDeferral);
+    expect(deferral.message).toBe("Another run of this agent is still using its files");
+    const started = Date.now();
+    expect(await deferRunForBusyAgentDirectory(db, { run, error: deferral, leaseOwner: claim!.leaseOwner, schedule, record, random: () => 0.5 })).toBe("deferred");
+    const [, retryAt] = schedule.mock.calls[0]! as [string, Date];
+    expect(record).toHaveBeenCalledWith(retryAt);
+    expect(retryAt.getTime() - started).toBeGreaterThanOrEqual(10_000);
+    expect(retryAt.getTime() - started).toBeLessThan(11_000);
   });
 
   it("keeps an unstarted follow-up on the same run until the retained owner's deadline", async () => {
@@ -242,6 +448,27 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect((await read())[0]).toMatchObject({ attempt: 0, leaseOwner: null, nextAttemptAt: nextDeadline });
     await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: nextDeadline })).toEqual([]);
+  });
+
+  it("keeps a warm follow-up that inherited its predecessor's process identity on the same run until the outgoing owner's deadline", async () => {
+    const fixture = await seed(), runId = randomUUID();
+    const scope = { ...fixture.scope, runId };
+    const deadline = new Date(Date.now() + 60_000);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: scope.issueId,
+      nativeSessionId: scope.normalizedSessionId, status: "running", runtimeMode: "native",
+      processPid: 609, processGroupId: 609, processStartedAt: new Date(Date.now() - 120_000),
+      runnerProfileJson: { nativeExecutionInput: { binding: scope }, inheritedProcessIdentityRunId: fixture.scope.runId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, scope.issueId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: scope.issueId, runId, phase: "observed" });
+    await deferNativeControllerRecovery(db, { ...scope, retryAt: deadline });
+    const [finalization] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect(finalization).toMatchObject({ phase: "retryable_failure", attempt: 0, leaseOwner: null,
+      nextAttemptAt: deadline, failureCode: NATIVE_RETAINED_OWNER_WAIT });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({ processPid: null, processGroupId: null, processStartedAt: null });
+    expect(run.runnerProfileJson).toMatchObject({ inheritedProcessIdentityRunId: fixture.scope.runId });
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] })).toEqual([]);
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: deadline })).toHaveLength(1);
   });
 
   it.each(["committed", "workspace_finalizing"])("defers a remote warm continuation while its %s predecessor has a finalization lease", async phase => {
@@ -294,18 +521,23 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       loadCheckpoint: () => checkpoint, canReuseProcess: () => true, ...overrides,
     });
     const denied = "runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate";
-    await expect(inspect({ execution: { ...current, binding: { ...current.binding, companyId: randomUUID() } } }))
-      .rejects.toThrow(denied);
-    await expect(inspect({ matchesExecution: () => false })).rejects.toThrow(denied);
+    const ordinary = async (attempt: Promise<unknown>) => {
+      const error = await attempt.then(() => null, failure => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(denied);
+      expect(error).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    };
+    await ordinary(inspect({ execution: { ...current, binding: { ...current.binding, companyId: randomUUID() } } }));
+    await ordinary(inspect({ matchesExecution: () => false }));
     await expect(readSandbox({ remoteCwd: "/unrelated" })).rejects.toThrow("retained_sandbox_binding");
     for (const leaseExpiresAt of [null, new Date(Date.now() - 1_000)]) {
       await db.update(nativeRunFinalizations).set({ leaseExpiresAt }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
-      await expect(inspect()).rejects.toThrow(denied);
+      await ordinary(inspect());
       await expect(readSandbox()).rejects.toThrow("retained_sandbox_binding");
     }
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: deadline }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
-    await expect(inspect()).rejects.toThrow(denied);
+    await ordinary(inspect());
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
     await expect(readSandbox()).rejects.toMatchObject({ retryAt: deadline });
     const waiting = await inspect().catch(error => error);
@@ -317,10 +549,25 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] })).toEqual([]);
     await db.update(nativeRunFinalizations).set({ phase: "committed", leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
-    await expect(readSandbox()).resolves.toBeUndefined();
-    await expect(inspect({ readControlState: () => ({ identity, commands: [{ status: "pending" }],
-      committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toThrow(denied);
-    const recovered = await inspect();
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: "/workspace" });
+    const readUnsettledControlState = () => ({ identity, commands: [{ status: "pending" }],
+      committedEvents: [{ eventType: "run.terminal", envelope: identity }] });
+    await expect(inspect({ readControlState: readUnsettledControlState }))
+      .rejects.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    const movedFailure = await inspect({
+      target: { ...target, sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "new-sandbox" } } as never,
+      portableSourceTaskId: "retained-sandbox", readControlState: readUnsettledControlState,
+    }).catch(error => error);
+    expect(movedFailure).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    expect(movedFailure.message).toBe(`${denied}; warm_recovery_refused=journal_unsettled`);
+    // A created or replacement sandbox holds no Runner to adopt. Live adoption
+    // steps aside so ordinary admission can retire the finished owner, instead
+    // of denying with prior_owner_terminal_state_indeterminate (Nov 10 staging).
+    for (const outcome of ["created", "replacement"] as const) {
+      await expect(inspect({ target: { ...target, sandboxLeaseAcquisition: { outcome, providerLeaseId: "new-sandbox" } } as never }))
+        .resolves.toBeNull();
+    }
+    const recovered = (await inspect())!;
     expect(recovered.identity).toEqual(identity);
     expect(recovered.checkpoint).toBe(checkpoint);
     expect(recovered.reuseProcess).toBe(true);
@@ -329,14 +576,886 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "duplicate", runIds: [runId], now: deadline })).toEqual([]);
   });
 
-  it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop"])("does not publish an admission wait after authority changes: %s", async scenario => {
+  async function seedWarmFollowUpOnOldServer() {
+    const fixture = await seed(), runId = randomUUID(), environmentId = randomUUID();
+    const previous = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId: fixture.scope.runId, executionWorkspaceId: randomUUID() },
+      task: { identifier: "NCD-9", title: "Answer the follow-up", description: null, prompt: "Continue.", workMode: "standard" },
+      workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 600_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue.", criteria: [{ id: "objective", requirement: "Save the result." }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    const current = { ...previous, binding: { ...previous.binding, runId } };
+    const checkpoint: PersistedNativeSession = { ...fixture.snapshot, driverKind: "codex_app_server",
+      providerSessionId: "warm-provider-session", activeTurnId: null, pendingRuntimeRequests: [] };
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(), runnerProfileJson: { ...fixture.profile, nativeExecutionInput: previous,
+      sessionCheckpoint: checkpoint, nativeControllerRecovery: createNativeControllerRecovery(checkpoint, compatibility,
+        { runId: fixture.scope.runId, runnerInstanceId: fixture.native.runnerInstanceId, normalizedSessionId: fixture.scope.normalizedSessionId }) } })
+      .where(eq(heartbeatRuns.id, fixture.scope.runId));
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, status: "running", runtimeMode: "native",
+      runnerProfileJson: { nativeExecutionInput: current, sessionCheckpoint: { ...checkpoint, identity: { ...checkpoint.identity, runId } } } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed" });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, fixture.scope.issueId));
+    await db.insert(environments).values({ id: environmentId, name: `Warm ${environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId: "warm-sandbox", status: "released",
+      metadata: { remoteCwd: "/workspace" } });
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const inspect = () => inspectRemoteWarmSessionRecovery({ db, execution: current, identity,
+      target: { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
+        remoteCwd: "/workspace", sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "warm-sandbox" } } as never,
+      readControlState: () => ({ identity, commands: [{ type: "turn.start", status: "completed" }],
+        committedEvents: [{ eventType: "run.terminal", envelope: identity }] }),
+      matchesExecution: saved => saved.binding.runId === fixture.scope.runId,
+      loadCheckpoint: () => checkpoint, canReuseProcess: () => true,
+    });
+    const recordOwner = (owner: Partial<typeof nativeRunFinalizations.$inferInsert>) => db.update(nativeRunFinalizations)
+      .set(owner).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    return { fixture, runId, current, identity, inspect, recordOwner };
+  }
+
+  it("waits while the outgoing server that ran the finished turn still holds its warm session, then takes it over once that server exits", async () => {
+    const oldServer = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], { stdio: "ignore" });
+    try {
+      await new Promise(resolve => oldServer.once("spawn", resolve));
+      const startedAt = await readProcessStartedAt(oldServer.pid!);
+      expect(startedAt).toBeTruthy();
+      const { inspect, recordOwner, runId, current, fixture } = await seedWarmFollowUpOnOldServer();
+      const outgoingBoot = randomUUID();
+      await recordOwner({ controllerBootId: outgoingBoot, controllerPid: oldServer.pid!, controllerHostHash: currentProcessSpaceHash(),
+        controllerProcessStartedAt: new Date(startedAt!), leaseOwner: null, leaseExpiresAt: null });
+      const before = Date.now();
+      const waiting = await inspect().catch(error => error);
+      expect(waiting).toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      expect(waiting.owner).toEqual({ runId: fixture.scope.runId, controllerBootId: outgoingBoot });
+      expect(waiting.retryAt.getTime()).toBeGreaterThan(before);
+      expect(waiting.retryAt.getTime()).toBeLessThanOrEqual(Date.now() + 10_000);
+      await deferNativeControllerRecovery(db, { ...current.binding, retryAt: waiting.retryAt, waitingForOwner: waiting.owner });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0])
+        .toMatchObject({ phase: "retryable_failure", attempt: 0, failureCode: NATIVE_RETAINED_OWNER_WAIT, resultId: null,
+          failureDetail: expect.objectContaining({ waitingForOwner: { runId: fixture.scope.runId, controllerBootId: outgoingBoot } }) });
+      const [task] = await db.select().from(issues).where(eq(issues.executionRunId, runId));
+      expect(task?.status).toBe("in_progress");
+
+      const exited = new Promise(resolve => oldServer.once("exit", resolve));
+      oldServer.kill("SIGKILL");
+      await exited;
+      const recovered = await inspect();
+      expect(recovered?.identity.runId).not.toBe(runId);
+      expect(recovered?.reuseProcess).toBe(true);
+    } finally {
+      oldServer.kill("SIGKILL");
+    }
+  });
+
+  it("waits for a live outgoing server in another process space until its controller lease ends", async () => {
+    const { inspect, recordOwner } = await seedWarmFollowUpOnOldServer();
+    const oldBoot = randomUUID();
+    await recordOwner({ controllerBootId: oldBoot, controllerPid: 7, controllerHostHash: "outgoing-container",
+      controllerProcessStartedAt: new Date(Date.now() - 600_000), leaseOwner: null, leaseExpiresAt: null });
+    await db.insert(controllerInstances).values({ bootId: oldBoot, processSpace: "outgoing-container", pid: 7,
+      leaseExpiresAt: new Date(Date.now() + 90_000) });
+    registerControllerInstanceDb(db);
+    try {
+      await expect(inspect()).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      await db.update(controllerInstances).set({ stoppedAt: new Date() }).where(eq(controllerInstances.bootId, oldBoot));
+      await expect(inspect()).resolves.not.toBeNull();
+    } finally { resetControllerInstanceLeaseForTests(); }
+  });
+
+  it("stops waiting for a live outgoing server once the finished turn's warm window has closed", async () => {
+    const oldServer = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], { stdio: "ignore" });
+    try {
+      await new Promise(resolve => oldServer.once("spawn", resolve));
+      const startedAt = await readProcessStartedAt(oldServer.pid!);
+      const { inspect, recordOwner, fixture } = await seedWarmFollowUpOnOldServer();
+      await recordOwner({ controllerBootId: randomUUID(), controllerPid: oldServer.pid!, controllerHostHash: currentProcessSpaceHash(),
+        controllerProcessStartedAt: new Date(startedAt!), leaseOwner: null, leaseExpiresAt: null });
+      await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 3_600_000) }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      await expect(inspect()).resolves.not.toBeNull();
+    } finally {
+      oldServer.kill("SIGKILL");
+    }
+  });
+
+  it("keeps a follow-up waiting for a live outgoing server until that server has checkpointed the session after the turn", async () => {
+    const { recordOwner, current, fixture } = await seedWarmFollowUpOnOldServer();
+    const oldBoot = randomUUID();
+    await recordOwner({ controllerBootId: oldBoot, controllerPid: 7, controllerHostHash: "outgoing-container",
+      controllerProcessStartedAt: new Date(Date.now() - 600_000), leaseOwner: null, leaseExpiresAt: null });
+    await db.insert(controllerInstances).values({ bootId: oldBoot, processSpace: "outgoing-container", pid: 7,
+      leaseExpiresAt: new Date(Date.now() + 90_000) });
+    registerControllerInstanceDb(db);
+    try {
+      const [prior] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      const wait = (checkpointedAt: Date | null) => waitForLiveWarmSessionOwner({ db, execution: current,
+        priorRunId: fixture.scope.runId, checkpointedAt: async () => checkpointedAt });
+      await expect(wait(null)).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      await expect(wait(new Date(prior!.finishedAt!.getTime() - 60_000))).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+      await expect(wait(new Date(prior!.finishedAt!.getTime() + 1_000))).resolves.toBeUndefined();
+      await db.update(controllerInstances).set({ stoppedAt: new Date() }).where(eq(controllerInstances.bootId, oldBoot));
+      await expect(wait(null)).resolves.toBeUndefined();
+    } finally { resetControllerInstanceLeaseForTests(); }
+  });
+
+  async function followUpBehindOutgoingServer() {
+    const seeded = await seedWarmFollowUpOnOldServer();
+    const { fixture, current, identity, recordOwner } = seeded;
+    const outgoingBoot = fixture.owner.bootId;
+    await recordOwner({ controllerBootId: outgoingBoot, controllerPid: 7, controllerHostHash: "outgoing-container",
+      controllerProcessStartedAt: new Date(Date.now() - 600_000), leaseOwner: null, leaseExpiresAt: null });
+    await db.insert(controllerInstances).values({ bootId: outgoingBoot, processSpace: "outgoing-container", pid: 7,
+      leaseExpiresAt: new Date(Date.now() + 90_000) });
+    const wait = (checkpointedAt: Date | null) => waitForLiveWarmSessionOwner({ db, execution: current,
+      priorRunId: fixture.scope.runId, checkpointedAt: async () => checkpointedAt });
+    const outgoingRoot = join(root, `${fixture.scope.runId}-outgoing`);
+    (await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId }))!
+      .restoreSessionDirectory(outgoingRoot);
+    const outgoing = new DurablePrpControlPlane({ stateDirectory: join(outgoingRoot, "control-plane"), identity,
+      expectedRunnerVersion: "discovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    outgoing.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, fixture.owner));
+    const fenceHarnessBackup = async () => assertNativeHarnessBackupOwner(db, await nativeHarnessBackupOwner(db, {
+      companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId, bootId: outgoingBoot }));
+    const saveSuspend = async () => {
+      outgoing.queueCommand("runner.suspend", {}, `idle-close-${randomUUID()}`);
+      await outgoing.flushCheckpoint();
+    };
+    const closeIdleSession = async () => {
+      await fenceHarnessBackup();
+      await saveSuspend();
+      return new Date();
+    };
+    const savedRecords = async () => (await loadNativeRunnerCheckpoint(db,
+      { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId }))?.records;
+    const savedCommands = async () => {
+      const restoredRoot = join(root, `${seeded.runId}-${randomUUID()}`);
+      (await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId }))!
+        .restoreSessionDirectory(restoredRoot);
+      return JSON.parse(await readFile(join(restoredRoot, "control-plane", "control-plane-state.json"), "utf8")).commands;
+    };
+    return { ...seeded, outgoingBoot, wait, outgoing, fenceHarnessBackup, saveSuspend, closeIdleSession, savedRecords, savedCommands };
+  }
+
+  async function parkFollowUpBehindOutgoingServer(waitingFor?: (owner: { runId: string; controllerBootId: string }) => { runId: string; controllerBootId: string } | undefined) {
+    const behind = await followUpBehindOutgoingServer();
+    const { fixture, current, runId, wait, outgoingBoot } = behind;
+    await db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID() }).where(eq(nativeRunFinalizations.runId, runId));
+    const waiting = await wait(null).catch(error => error);
+    expect(waiting).toBeInstanceOf(NativeControllerRecoveryWaitingError);
+    expect(waiting.owner).toEqual({ runId: fixture.scope.runId, controllerBootId: outgoingBoot });
+    const parkedAt = Date.now();
+    await deferNativeControllerRecovery(db, { ...current.binding, retryAt: waiting.retryAt,
+      waitingForOwner: waitingFor ? waitingFor(waiting.owner) : waiting.owner });
+    return { ...behind, waiting: waiting as NativeControllerRecoveryWaitingError, parkedAt };
+  }
+
+  async function prepareFollowUpOnIncomingServer(runId: string, issueId: string, run: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", issueId, nativeIssueId: null, nativeSessionId: null,
+      executionStage: "preparing", controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() + 60_000), ...run })
+      .where(eq(heartbeatRuns.id, runId));
+  }
+
+  it("the outgoing server checkpoints and closes its idle warm session while the incoming server still prepares the follow-up, before it selects native execution", async () => {
+    registerControllerInstanceDb(db);
+    const behind = await followUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, closeIdleSession, savedCommands } = behind;
+      await prepareFollowUpOnIncomingServer(runId, fixture.scope.issueId);
+      await closeIdleSession();
+      expect(await savedCommands()).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+    } finally {
+      await behind.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("holds the incoming server's native selection of the preparing follow-up until the outgoing server's save commits", async () => {
+    registerControllerInstanceDb(db);
+    const behind = await followUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, saveSuspend } = behind;
+      await prepareFollowUpOnIncomingServer(runId, fixture.scope.issueId);
+      let selection!: Promise<unknown>;
+      let selectionSettled = false;
+      await db.transaction(async tx => {
+        await assertNativeRunnerCheckpointOwner(tx, fixture.owner, false);
+        selection = db.transaction(async selectTx => {
+          await selectTx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+          await selectTx.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: fixture.scope.issueId,
+            nativeSessionId: fixture.scope.normalizedSessionId, executionStage: null, controllerBootId: null, controllerLeaseExpiresAt: null })
+            .where(eq(heartbeatRuns.id, runId));
+          await selectTx.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed" });
+        });
+        void selection.finally(() => { selectionSettled = true; }).catch(() => undefined);
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%heartbeat_runs%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
+        expect(selectionSettled).toBe(false);
+      });
+      await selection;
+      await expect(saveSuspend()).resolves.toBeUndefined();
+    } finally {
+      await behind.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("accepts the outgoing server's save that waited while the incoming server selected native execution for the preparing follow-up", async () => {
+    registerControllerInstanceDb(db);
+    const behind = await followUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, saveSuspend, savedCommands } = behind;
+      await prepareFollowUpOnIncomingServer(runId, fixture.scope.issueId);
+      let fence!: Promise<void>;
+      await db.transaction(async selectTx => {
+        await selectTx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+        fence = db.transaction(async fenceTx => assertNativeRunnerCheckpointOwner(fenceTx, fixture.owner, false));
+        void fence.catch(() => undefined);
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%heartbeat_runs%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
+        await selectTx.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: fixture.scope.issueId,
+          nativeSessionId: fixture.scope.normalizedSessionId, executionStage: null, controllerBootId: null, controllerLeaseExpiresAt: null })
+          .where(eq(heartbeatRuns.id, runId));
+        await selectTx.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed" });
+      });
+      await expect(fence).resolves.toBeUndefined();
+      await saveSuspend();
+      expect(await savedCommands()).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+    } finally {
+      await behind.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it.each(["expired-controller", "dispatching", "own-process", "own-process-event", "other-issue"] as const)(
+    "refuses the outgoing server's idle checkpoint when the incoming server's preparing follow-up is no longer unstarted: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const behind = await followUpBehindOutgoingServer();
+      try {
+        const { fixture, runId, fenceHarnessBackup, saveSuspend, savedRecords } = behind;
+        await prepareFollowUpOnIncomingServer(runId, fixture.scope.issueId, scenario === "expired-controller"
+          ? { controllerLeaseExpiresAt: new Date(Date.now() - 1_000) } : scenario === "dispatching" ? { executionStage: "dispatching" }
+            : scenario === "own-process" ? { processPid: 4242, processGroupId: 4242, processStartedAt: new Date() }
+              : scenario === "other-issue" ? { issueId: null } : {});
+        if (scenario === "own-process-event") {
+          await appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED });
+        }
+        const before = await savedRecords();
+        await expect(fenceHarnessBackup()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        await expect(saveSuspend()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        expect(await savedRecords()).toEqual(before);
+      } finally {
+        await behind.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it.each(["unclaimed", "inherited-process"] as const)(
+    "the outgoing server checkpoints and closes its idle warm session while the incoming server's follow-up is selected but has not checked the owner yet, and the follow-up continues at that check: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const behind = await followUpBehindOutgoingServer();
+      try {
+        const { fixture, runId, wait, closeIdleSession, savedCommands } = behind;
+        if (scenario === "inherited-process") {
+          const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+          await db.update(heartbeatRuns).set({ processPid: 4242, processGroupId: 4242, processStartedAt: new Date(),
+            runnerProfileJson: { ...successor!.runnerProfileJson, inheritedProcessIdentityRunId: fixture.scope.runId } })
+            .where(eq(heartbeatRuns.id, runId));
+        }
+        expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0])
+          .toMatchObject({ phase: "observed", attempt: 0, leaseOwner: null, resultId: null, failureCode: null, recoveryHistory: [] });
+        const checkpointedAt = await closeIdleSession();
+        expect(await savedCommands()).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+        await behind.outgoing.stop();
+        await expect(wait(checkpointedAt)).resolves.toBeUndefined();
+      } finally {
+        await behind.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it.each(["own-process", "other-run-process", "own-process-event", "own-checkpoint", "other-session", "admitted"] as const)(
+    "refuses the outgoing server's idle checkpoint when the selected follow-up is no longer unstarted: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const behind = await followUpBehindOutgoingServer();
+      try {
+        const { fixture, runId, fenceHarnessBackup, saveSuspend, savedRecords } = behind;
+        const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        if (scenario === "own-process") {
+          await db.update(heartbeatRuns).set({ processPid: 4242, processGroupId: 4242, processStartedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        } else if (scenario === "other-run-process") {
+          await db.update(heartbeatRuns).set({ processPid: 4242, processGroupId: 4242, processStartedAt: new Date(),
+            runnerProfileJson: { ...successor!.runnerProfileJson, inheritedProcessIdentityRunId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
+        } else if (scenario === "own-process-event") {
+          await appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED });
+        } else if (scenario === "own-checkpoint") {
+          await db.insert(nativeRunnerCheckpoints).values({ companyId, issueId: fixture.scope.issueId, runId, part: "header", material: {} });
+        } else if (scenario === "other-session") {
+          await db.update(heartbeatRuns).set({ nativeSessionId: randomUUID() }).where(eq(heartbeatRuns.id, runId));
+        } else {
+          await db.update(nativeRunFinalizations).set({ attempt: 1, leaseOwner: randomUUID(), controllerBootId: randomUUID(),
+            leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, runId));
+        }
+        const before = await savedRecords();
+        await expect(fenceHarnessBackup()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        await expect(saveSuspend()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        expect(await savedRecords()).toEqual(before);
+      } finally {
+        await behind.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it.each(["parked", "re-claimed", "re-claimed-by-previous-release"] as const)(
+    "the outgoing server checkpoints and closes its idle warm session while the follow-up waits without naming its owner: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const parked = await parkFollowUpBehindOutgoingServer(() => undefined);
+      try {
+        const { runId, waiting, closeIdleSession, savedCommands } = parked;
+        if (scenario !== "parked") {
+          expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+        }
+        if (scenario === "re-claimed-by-previous-release") {
+          await db.execute(sql`update native_run_finalizations set recovery_history = jsonb_set(recovery_history,
+            array[(jsonb_array_length(recovery_history) - 1)::text, 'evidence'], (recovery_history->-1->'evidence') - 'waitingForOwner')
+            where run_id = ${runId}`);
+        }
+        await closeIdleSession();
+        expect(await savedCommands()).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+      } finally {
+        await parked.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it("the outgoing server checkpoints and closes its idle warm session while the incoming server's follow-up waits for it, and the follow-up resumes within one recheck", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, wait, waiting, parkedAt, outgoing, closeIdleSession } = parked;
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0])
+        .toMatchObject({ phase: "retryable_failure", attempt: 0, leaseOwner: null, failureCode: NATIVE_RETAINED_OWNER_WAIT,
+          failureDetail: expect.objectContaining({ waitingForOwner: waiting.owner }) });
+      const [prior] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      const ownerExitDeadline = prior!.finishedAt!.getTime() + 600_000 + 120_000;
+
+      const checkpointedAt = await closeIdleSession();
+      const saved = await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId });
+      const restoredRoot = join(root, `${runId}-idle-close`);
+      saved!.restoreSessionDirectory(restoredRoot);
+      const restored = JSON.parse(await readFile(join(restoredRoot, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(restored.commands).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+      await outgoing.stop();
+
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId] })).toEqual([]);
+      const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt });
+      expect(claims).toHaveLength(1);
+      await expect(wait(checkpointedAt)).resolves.toBeUndefined();
+      const waitedMs = Math.max(waiting.retryAt.getTime(), checkpointedAt.getTime()) - parkedAt;
+      expect(waitedMs).toBeLessThanOrEqual(5_000);
+      expect(ownerExitDeadline - parkedAt).toBeGreaterThan(600_000);
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("holds a resumption claim of the parked follow-up until the outgoing server's save commits", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, waiting } = parked;
+      let claim!: Promise<Awaited<ReturnType<typeof claimNativeSessionResumptions>>>;
+      let claimSettled = false;
+      await db.transaction(async tx => {
+        await assertNativeRunnerCheckpointOwner(tx, fixture.owner, false);
+        claim = claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt });
+        void claim.finally(() => { claimSettled = true; });
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%native_run_finalizations%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
+        expect(claimSettled).toBe(false);
+      });
+      expect(await claim).toHaveLength(1);
+      await expect(parked.saveSuspend()).resolves.toBeUndefined();
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("the outgoing server checkpoints and closes its idle warm session while the follow-up is re-claimed for its next recheck, and the follow-up resumes within that recheck", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, wait, waiting, parkedAt, outgoing, closeIdleSession } = parked;
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+      const [claimed] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      expect(claimed).toMatchObject({ phase: "observed", attempt: 0, resultId: null, failureDetail: null });
+      expect(claimed!.leaseOwner).toBeTruthy();
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(successor).toMatchObject({ status: "running", processPid: null, processGroupId: null, processStartedAt: null });
+
+      const checkpointedAt = await closeIdleSession();
+      const saved = await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId });
+      const restoredRoot = join(root, `${runId}-claimed-idle-close`);
+      saved!.restoreSessionDirectory(restoredRoot);
+      const restored = JSON.parse(await readFile(join(restoredRoot, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(restored.commands).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+      await outgoing.stop();
+
+      await expect(wait(checkpointedAt)).resolves.toBeUndefined();
+      const waitedMs = Math.max(waiting.retryAt.getTime(), checkpointedAt.getTime()) - parkedAt;
+      expect(waitedMs).toBeLessThanOrEqual(5_000);
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("holds the re-claimed follow-up's process start until the outgoing server's save commits", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, waiting } = parked;
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+      let start!: Promise<unknown>;
+      let startSettled = false;
+      await db.transaction(async tx => {
+        await assertNativeRunnerCheckpointOwner(tx, fixture.owner, false);
+        start = appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED,
+          stream: "system", level: "info", message: "Native execution requested." });
+        void start.finally(() => { startSettled = true; }).catch(() => undefined);
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%heartbeat_runs%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
+        expect(startSettled).toBe(false);
+      });
+      await start;
+      await expect(parked.saveSuspend()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("lets a claim that holds the follow-up's finalization lock its run row while the outgoing server's save waits", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, waiting } = parked;
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+      let fence!: Promise<void>;
+      await db.transaction(async tx => {
+        await tx.execute(sql`select set_config('lock_timeout', '2000', true)`);
+        await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)).for("update");
+        fence = db.transaction(async fenceTx => assertNativeRunnerCheckpointOwner(fenceTx, fixture.owner, false));
+        void fence.catch(() => undefined);
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%native_run_finalizations%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
+        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+      });
+      await expect(fence).resolves.toBeUndefined();
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("refuses the outgoing server's save that waited on the re-claimed follow-up's uncommitted process start", async () => {
+    registerControllerInstanceDb(db);
+    const parked = await parkFollowUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, waiting } = parked;
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+      let release!: () => void;
+      const released = new Promise<void>(resolve => { release = resolve; });
+      let started!: () => void;
+      const startWritten = new Promise<void>(resolve => { started = resolve; });
+      const start = db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED,
+          stream: "system", level: "info", message: "Native execution requested." });
+        started();
+        await released;
+      });
+      await startWritten;
+      const fence = db.transaction(async tx => assertNativeRunnerCheckpointOwner(tx, fixture.owner, false));
+      void fence.catch(() => undefined);
+      await vi.waitFor(async () => {
+        const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query ilike '%heartbeat_runs%'`);
+        expect(blocked.count).toBeGreaterThan(0);
+      }, { timeout: 1_500, interval: 20 });
+      release();
+      await start;
+      await expect(fence).rejects.toThrow("native_runner_checkpoint_owner_lost");
+    } finally {
+      await parked.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it.each(["own-process", "own-process-event", "own-checkpoint", "other-owner-boot", "other-owner-run", "claim-expired", "attempt-started"] as const)(
+    "refuses the outgoing server's idle checkpoint when the re-claimed follow-up is no longer waiting on it: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const parked = await parkFollowUpBehindOutgoingServer(owner => scenario === "other-owner-boot"
+        ? { ...owner, controllerBootId: randomUUID() } : scenario === "other-owner-run" ? { ...owner, runId: randomUUID() } : owner);
+      try {
+        const { fixture, runId, waiting, fenceHarnessBackup, saveSuspend } = parked;
+        expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+        if (scenario === "own-process") {
+          await db.update(heartbeatRuns).set({ processPid: 4242, processGroupId: 4242, processStartedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        } else if (scenario === "own-process-event") {
+          await appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED });
+        } else if (scenario === "own-checkpoint") {
+          await db.insert(nativeRunnerCheckpoints).values({ companyId, issueId: fixture.scope.issueId, runId, part: "header", material: {} });
+        } else if (scenario === "claim-expired") {
+          await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(nativeRunFinalizations.runId, runId));
+        } else if (scenario === "attempt-started") {
+          await db.update(nativeRunFinalizations).set({ attempt: 1 }).where(eq(nativeRunFinalizations.runId, runId));
+        }
+        const before = await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId });
+        await expect(fenceHarnessBackup()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        await expect(saveSuspend()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        expect((await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId }))?.records)
+          .toEqual(before?.records);
+      } finally {
+        await parked.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it.each(["own-process", "own-process-event", "own-checkpoint", "other-owner-boot", "other-owner-run"] as const)(
+    "refuses the outgoing server's idle checkpoint when the parked follow-up is no longer waiting on it: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const parked = await parkFollowUpBehindOutgoingServer(owner => scenario === "other-owner-boot"
+        ? { ...owner, controllerBootId: randomUUID() } : scenario === "other-owner-run" ? { ...owner, runId: randomUUID() } : owner);
+      try {
+        const { fixture, runId, fenceHarnessBackup, saveSuspend } = parked;
+        if (scenario === "own-process") {
+          await db.update(heartbeatRuns).set({ processPid: 4242, processGroupId: 4242, processStartedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        } else if (scenario === "own-process-event") {
+          await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1, eventType: PROCESS_START_REQUESTED });
+        } else if (scenario === "own-checkpoint") {
+          await db.insert(nativeRunnerCheckpoints).values({ companyId, issueId: fixture.scope.issueId, runId, part: "header", material: {} });
+        }
+        const before = await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId });
+        await expect(fenceHarnessBackup()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        await expect(saveSuspend()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        expect((await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId }))?.records)
+          .toEqual(before?.records);
+      } finally {
+        await parked.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it("sends a re-wake after a crash restart to a fresh sandbox when the parked predecessor's warm Runner cannot be adopted", async () => {
+    const fixture = await seed(), runId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID();
+    const previous = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId: fixture.scope.runId, executionWorkspaceId: randomUUID() },
+      task: { identifier: "NCD-1", title: "Answer the parked question", description: null,
+        prompt: "Continue after the answer.", workMode: "standard" },
+      workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue after the answer.", criteria: [{ id: "objective", requirement: "Save the result." }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    const current = { ...previous, binding: { ...previous.binding, runId } };
+    const checkpoint: PersistedNativeSession = { ...fixture.snapshot, driverKind: "codex_app_server",
+      providerSessionId: "parked-provider-session", activeTurnId: null, pendingRuntimeRequests: [] };
+    const metadata = createNativeControllerRecovery(checkpoint, compatibility, { runId: fixture.scope.runId,
+      runnerInstanceId: fixture.native.runnerInstanceId, normalizedSessionId: fixture.scope.normalizedSessionId });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...fixture.profile, nativeExecutionInput: previous,
+      sessionCheckpoint: checkpoint, nativeControllerRecovery: metadata } }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+    await db.update(nativeRunFinalizations).set({ controllerPid: 2_147_483_000, controllerProcessStartedAt: new Date(Date.now() - 120_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    const controller = await currentNativeControllerIdentity();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, status: "running", runtimeMode: "native",
+      runnerProfileJson: { nativeExecutionInput: current } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed",
+      leaseOwner: "replacement-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+      controllerBootId: controller.bootId, controllerPid: controller.pid });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, fixture.scope.issueId));
+    await db.insert(environments).values({ id: environmentId, name: `Parked ${environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values([
+      { companyId, environmentId, issueId: fixture.scope.issueId, heartbeatRunId: fixture.scope.runId, provider: "daytona",
+        providerLeaseId: "warm-sandbox", status: "released", metadata: { remoteCwd: "/workspace" } },
+      { id: leaseId, companyId, environmentId, issueId: fixture.scope.issueId, heartbeatRunId: runId, provider: "daytona",
+        providerLeaseId: "warm-sandbox", status: "active", metadata: { remoteCwd: "/workspace" } },
+    ]);
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const parked = { identity, commands: [{ type: "turn.start", status: "completed" }], committedEvents: [
+      { eventType: "semantic_tool.input", sourceEventId: "question", envelope: identity },
+      { eventType: "run.terminal", envelope: identity }] };
+    const inspect = (readControlState: () => Record<string, unknown> = () => parked) => inspectRemoteWarmSessionRecovery({
+      db, execution: current, identity, readControlState,
+      target: { kind: "remote", transport: "sandbox", environmentId, leaseId, providerKey: "daytona", remoteCwd: "/workspace",
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "warm-sandbox" } } as never,
+      matchesExecution: saved => saved.binding.runId === fixture.scope.runId,
+      loadCheckpoint: () => checkpoint, canReuseProcess: () => true,
+    });
+    const fallback = (error: unknown, reason: string) => {
+      expect(error).toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+      expect(error).toMatchObject({ predecessorRunId: fixture.scope.runId, providerLeaseId: "warm-sandbox" });
+      expect((error as Error).message).toContain(`warm_recovery_refused=${reason}`);
+    };
+
+    fallback(await inspect(() => ({ ...parked, commands: [...parked.commands, { type: "runner.suspend", status: "pending" }] }))
+      .catch(error => error), "journal_unsettled");
+
+    for (const status of ["failed", "running"] as const) {
+      await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+      const unsettled = await inspect(() => ({ ...parked, commands: [...parked.commands, { type: "runner.suspend", status: "pending" }] }))
+        .catch(error => error);
+      expect(unsettled).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+      expect(unsettled.message).toBe("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; warm_recovery_refused=owner_unsettled");
+    }
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+
+    const recovered = (await inspect())!;
+    await expect(recovered.revalidate("replacement-controller")).resolves.toBeUndefined();
+    await db.update(nativeRunFinalizations).set({ leaseOwner: "native-finalizer:replacement", leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    fallback(await recovered.revalidate("replacement-controller").catch(error => error), "owner_changed");
+    await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
+    await db.update(environmentLeases).set({ status: "pending_cleanup" }).where(eq(environmentLeases.id, leaseId));
+    fallback(await recovered.revalidate("replacement-controller").catch(error => error), "current_lease_changed");
+    await db.update(environmentLeases).set({ status: "active" }).where(eq(environmentLeases.id, leaseId));
+
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, runId));
+    const stopped = await recovered.revalidate("replacement-controller").catch(error => error);
+    expect(stopped).not.toBeInstanceOf(NativePredecessorRetirementUnprovenError);
+    expect(stopped.message).toBe("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; warm_recovery_refused=current_run_not_admitted");
+  });
+
+  // The Nov 10 staging shape: a preparation-only run's epoch was abandoned, so
+  // the warm follow-up restored the last save into a new allocation of the same
+  // sandbox. The committed source's Runner state stays in its own directory.
+  it("binds a retained Runner read to the source's directory after the workspace moved within the same sandbox", async () => {
+    const fixture = await seed(), environmentId = randomUUID(), workspaceId = randomUUID();
+    const sourceLeaseId = randomUUID(), currentLeaseId = randomUUID(), providerLeaseId = randomUUID();
+    const allocations = "/home/daytona/paperclip-workspace/.paperclip-workspaces";
+    const sourceCwd = `${allocations}/${workspaceId}-1-${randomUUID()}`;
+    const movedCwd = `${allocations}/${workspaceId}-6-${currentLeaseId}`;
+    await db.insert(environments).values({ id: environmentId, name: `Moved ${environmentId}`, driver: "sandbox" });
+    // Saved by the source run (status expired after its reusable handoff).
+    await db.insert(environmentLeases).values({ id: sourceLeaseId, companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId, status: "expired",
+      leasePolicy: "reuse_by_environment", metadata: { remoteCwd: sourceCwd } });
+    const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: currentLeaseId, providerKey: "daytona",
+      remoteCwd: movedCwd, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId } } as const;
+    const readSandbox = (override: Record<string, unknown> = {}) => assertNativeRetainedSandboxBinding(db,
+      { ...fixture.scope, target: { ...target, ...override } as never });
+
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: sourceCwd });
+    await expect(readSandbox({ remoteCwd: sourceCwd })).resolves.toEqual({ remoteCwd: sourceCwd });
+    // A root published under the exact workspace ID is the same workspace too.
+    await expect(readSandbox({ remoteCwd: `${allocations}/${workspaceId}` })).resolves.toEqual({ remoteCwd: sourceCwd });
+    const exactRoot = `${allocations}/${workspaceId}`;
+    await db.update(environmentLeases).set({ metadata: { remoteCwd: exactRoot } }).where(eq(environmentLeases.id, sourceLeaseId));
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: exactRoot });
+    await db.update(environmentLeases).set({ metadata: { remoteCwd: sourceCwd } }).where(eq(environmentLeases.id, sourceLeaseId));
+    // Strict checks stay strict: another workspace's allocation, another
+    // parent, a non-canonical path or name, or another sandbox never bind.
+    for (const remoteCwd of [`${allocations}/${randomUUID()}-6-${currentLeaseId}`, `/elsewhere/${workspaceId}-6-${currentLeaseId}`,
+      `${allocations}/../.paperclip-workspaces/${workspaceId}-6-${currentLeaseId}`, `${allocations}/${workspaceId}-0-${currentLeaseId}`,
+      `${allocations}/${workspaceId}-6-${currentLeaseId}-extra`, "/unrelated"]) {
+      await expect(readSandbox({ remoteCwd })).rejects.toThrow("retained_sandbox_binding");
+    }
+    await expect(readSandbox({ sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: randomUUID() } }))
+      .rejects.toThrow("retained_sandbox_binding");
+  });
+
+  // The same move, driven through the changed read with sandbox confinement:
+  // the Runner command may touch only paths inside the sandbox's workspace base.
+  it.each(["suspended", "ready"] as const)("reads a moved source's %s Runner state from its own directory through a confined sandbox", async lifecycle => {
+    const fixture = await seed(), environmentId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
+    const providerLeaseId = randomUUID(), base = join(root, `sandbox-${runId}`, "paperclip-workspace");
+    const sourceCwd = join(base, ".paperclip-workspaces", `${workspaceId}-1-${randomUUID()}`);
+    const movedCwd = join(base, ".paperclip-workspaces", `${workspaceId}-6-${randomUUID()}`);
+    await mkdir(movedCwd, { recursive: true });
+    await db.insert(environments).values({ id: environmentId, name: `Confined ${environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId, status: "expired",
+      leasePolicy: "reuse_by_environment", metadata: { remoteCwd: sourceCwd } });
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const runnerDirectory = (cwd: string) => join(cwd, ".paperclip-runtime", "paperclip-runner", "sessions",
+      createHash("sha256").update(fixture.scope.normalizedSessionId).digest("hex"), "runner");
+    await mkdir(runnerDirectory(sourceCwd), { recursive: true });
+    await writeFile(join(runnerDirectory(sourceCwd), "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1",
+      ...identity, lifecycle, outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null }));
+    const commands: string[] = [];
+    const execute = (request: { command: string; args?: string[] }) => {
+      const script = (request.args ?? []).join(" ");
+      commands.push(script);
+      // Provider confinement: nothing outside the sandbox's workspace base.
+      const paths = script.match(/'(\/[^']*)'/g)?.map(path => path.slice(1, -1)) ?? [];
+      if (paths.some(path => !path.startsWith(`${base}/`))) {
+        return Promise.resolve({ stdout: "", stderr: "outside sandbox", exitCode: 126, timedOut: false });
+      }
+      return new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(resolve => {
+        execFile(request.command, request.args ?? [], { cwd: movedCwd }, (error, stdout, stderr) => resolve({ stdout, stderr,
+          exitCode: error ? typeof error.code === "number" ? error.code : 1 : 0, timedOut: false }));
+      });
+    };
+    const execution = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId, executionWorkspaceId: workspaceId },
+      task: { identifier: "NCD-1", title: "Continue retained work", description: null,
+        prompt: "Continue the saved work.", workMode: "standard" },
+      workspace: { cwd: movedCwd, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue the saved work", criteria: [{ id: "objective", requirement: "Save the result" }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    // The controller already restored the committed source's durable checkpoint.
+    const controller = join(root, `controller-${runId}`);
+    await mkdir(join(controller, "control-plane"), { recursive: true });
+    await writeFile(join(controller, "control-plane", "control-plane-state.json"),
+      JSON.stringify({ schema: "paperclip.runner.durable.control-plane-state.v2", identity }));
+    const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
+      remoteCwd: movedCwd, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId }, runner: { execute } } as const;
+    const restore = () => restoreRemoteSuspendedRunnerCheckpoint({ db, execution, runnerExecutionTarget: target as never }, controller);
+
+    if (lifecycle === "suspended") {
+      await restore();
+      expect(commands.some(script => script.includes(runnerDirectory(sourceCwd)))).toBe(true);
+      expect(commands.some(script => script.includes(movedCwd))).toBe(false);
+      expect(JSON.parse(await readFile(join(controller, "plugin-runner-state.json"), "utf8")))
+        .toMatchObject({ lifecycle: "suspended", ...identity });
+    } else {
+      // A Runner left in the abandoned allocation is never adopted live.
+      await expect(restore()).rejects.toThrow("native_controller_recovery_missing_evidence:runner_not_settled");
+      await expect(readFile(join(controller, "plugin-runner-state.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  // Nov 10 staging shape: a restart stopped the controller right after it sent
+  // runner.suspend to an idle warm Runner. The Runner saved `suspended` with a
+  // terminal fence for that result, which nobody acknowledged. The next warm
+  // run resumed the same sandbox and directory and failed with runner_not_settled.
+  it.each([
+    { name: "undelivered suspend receipt", accepted: true },
+    { name: "undelivered turn terminal", accepted: false, pending: { commandType: "turn.stop", lifecycle: "suspended" } },
+    { name: "suspend receipt with provider cleanup", accepted: false, runner: { pendingProviderCleanup: { commandType: "runner.suspend" } } },
+    { name: "suspend receipt with unsent events", accepted: false, runner: { outbox: [{ sourceSeq: 9 }] } },
+    { name: "suspend receipt behind a later command", accepted: false, runner: { lastControllerCommandSeq: 8 } },
+    { name: "journal names the command differently", accepted: false, journal: "turn.stop" },
+    { name: "journal without the suspend command", accepted: false, journalCommands: [] },
+    { name: "journal with a later command", accepted: false, laterCommand: true },
+  ] as const)("reads a resumed sandbox's suspended Runner with an $name", async variant => {
+    const fixture = await seed(), environmentId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
+    const providerLeaseId = randomUUID(), base = join(root, `sandbox-${runId}`, "paperclip-workspace");
+    const cwd = join(base, ".paperclip-workspaces", `${workspaceId}-1-${randomUUID()}`);
+    await mkdir(cwd, { recursive: true });
+    await db.insert(environments).values({ id: environmentId, name: `Suspended ${environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId, status: "expired",
+      leasePolicy: "reuse_by_environment", metadata: { remoteCwd: cwd } });
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const runnerDirectory = join(cwd, ".paperclip-runtime", "paperclip-runner", "sessions",
+      createHash("sha256").update(fixture.scope.normalizedSessionId).digest("hex"), "runner");
+    const suspend = { commandId: randomUUID(), controllerSeq: 7 };
+    await mkdir(runnerDirectory, { recursive: true });
+    await writeFile(join(runnerDirectory, "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1",
+      ...identity, lifecycle: "suspended", outbox: [], lastControllerCommandSeq: 7,
+      pendingTerminalDelivery: { ...suspend, commandType: "runner.suspend", lifecycle: "suspended", ...("pending" in variant ? variant.pending : {}) },
+      pendingProviderCleanup: null, warmTransition: null, ...("runner" in variant ? variant.runner : {}) }));
+    const execute = (request: { command: string; args?: string[] }) => {
+      const script = (request.args ?? []).join(" ");
+      const paths = script.match(/'(\/[^']*)'/g)?.map(path => path.slice(1, -1)) ?? [];
+      if (paths.some(path => !path.startsWith(`${base}/`))) {
+        return Promise.resolve({ stdout: "", stderr: "outside sandbox", exitCode: 126, timedOut: false });
+      }
+      return new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(resolve => {
+        execFile(request.command, request.args ?? [], { cwd }, (error, stdout, stderr) => resolve({ stdout, stderr,
+          exitCode: error ? typeof error.code === "number" ? error.code : 1 : 0, timedOut: false }));
+      });
+    };
+    const execution = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId, executionWorkspaceId: workspaceId },
+      task: { identifier: "NCD-1", title: "Continue retained work", description: null,
+        prompt: "Continue the saved work.", workMode: "standard" },
+      workspace: { cwd, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 900_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue the saved work", criteria: [{ id: "objective", requirement: "Save the result" }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    // The restored journal still holds the controller's unanswered suspend.
+    const controller = join(root, `controller-${runId}`);
+    await mkdir(join(controller, "control-plane"), { recursive: true });
+    await writeFile(join(controller, "control-plane", "control-plane-state.json"), JSON.stringify({
+      schema: "paperclip.runner.durable.control-plane-state.v2", identity,
+      commands: "journalCommands" in variant ? variant.journalCommands : [
+        { ...suspend, type: "journal" in variant ? variant.journal : "runner.suspend", status: "pending" },
+        ...("laterCommand" in variant ? [{ commandId: randomUUID(), controllerSeq: 8, type: "turn.stop", status: "pending" }] : []),
+      ] }));
+    const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
+      remoteCwd: cwd, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId }, runner: { execute } } as const;
+    const restore = () => restoreRemoteSuspendedRunnerCheckpoint({ db, execution, runnerExecutionTarget: target as never }, controller);
+
+    if (variant.accepted) {
+      await restore();
+      expect(JSON.parse(await readFile(join(controller, "plugin-runner-state.json"), "utf8")))
+        .toEqual({ schema: "paperclip.runner.durable.state.v1", lifecycle: "suspended", ...identity });
+    } else {
+      await expect(restore()).rejects.toThrow("native_controller_recovery_missing_evidence:runner_not_settled");
+      await expect(readFile(join(controller, "plugin-runner-state.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop", "own-process", "inherited-then-own-process", "inherited-then-own-identity"])("does not publish an admission wait after authority changes: %s", async scenario => {
     const fixture = await seed(), runId = randomUUID();
     const scope = { ...fixture.scope, runId };
+    const ownProcess = scenario.startsWith("own-process") || scenario.startsWith("inherited-then-own");
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: scope.issueId,
       status: scenario === "stopped" ? "cancelled" : "running", runtimeMode: "native",
       resultJson: scenario === "operator-stop" ? { cancellation: { source: "operator", expected: true,
         initiator: { type: "user" }, reason: "Stop", recordedAt: new Date().toISOString() } } : null,
-      runnerProfileJson: { nativeExecutionInput: { binding: scope } } });
+      ...(ownProcess ? { processPid: 4242, processGroupId: 4242, processStartedAt: new Date() } : {}),
+      runnerProfileJson: { nativeExecutionInput: { binding: scope },
+        ...(scenario.startsWith("inherited-then-own") ? { inheritedProcessIdentityRunId: fixture.scope.runId } : {}) } });
+    if (scenario.startsWith("inherited-then-own")) {
+      await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1,
+        eventType: scenario === "inherited-then-own-process" ? "native.process_start_requested" : "native.process_identity_recorded" });
+    }
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, scope.issueId));
     await db.insert(nativeRunFinalizations).values({ companyId, issueId: scope.issueId, runId, phase: "observed",
       attempt: scenario === "provider-attempt" ? 1 : 0,
@@ -347,6 +1466,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       retryAt: new Date(Date.now() + 60_000) }))
       .rejects.toThrow("wait_authority_changed");
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0].phase).toBe("observed");
+    if (ownProcess) {
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].processPid).toBe(4242);
+    }
   });
 
   it("reports bounded retained-pointer coverage without loading historical payloads", async () => {

@@ -58,7 +58,10 @@ it("uses the real official Playwright JSON producer with failed errors, user ste
   await promisify(execFile)(process.execPath, [path.join(path.dirname(pkg), "cli.js"), "test", "--config", config], { cwd: tests, env: { PATH: process.env.PATH, CI: "1", NODE_OPTIONS: "", NODE_PATH: "" }, timeout: 30000 }).then(() => { throw new Error("Original should fail"); }, error => { expect(error.code).toBe(1); });
   await rm(path.join(f.cell, "playwright-output"), { recursive: true });
   await cp(path.join(f.source, "playwright-output"), path.join(f.cell, "playwright-output"), { recursive: true });
+  const { sanitizePrivateReporterArtifacts } = await import("./private-reporter-artifacts.js");
   const produced = await readFile(path.join(f.source, "framework-report.json"));
+  expect(await sanitizePrivateReporterArtifacts(f.source, [])).toEqual([]);
+  expect(await readFile(path.join(f.source, "framework-report.json"))).toEqual(produced);
   await copyPrivateFrameworkReport(f.source, f.cell, []);
   expect(await readFile(path.join(f.cell, "snapshots/playwright-framework-original.txt"))).toEqual(produced);
   const retained = await validatePrivateFrameworkReport(f.cell), result = (retained.report.suites as any)[0].specs[0].tests[0].results[0];
@@ -103,7 +106,7 @@ it("keeps the unchanged 256MiB packaging/archive caps with one canonical large a
   const rawFramework = await readFile(path.join(f.cell, "snapshots/playwright-framework-original.txt"));
   const { redactText } = await import("./redaction.js"); expect(redactText(rawFramework.toString("utf8"), [])).not.toBe(rawFramework.toString("utf8"));
   const evidence = await packageEvidence(input); expect(evidence.leaks).toEqual([]);
-  expect(await readFile(path.join(upload, "snapshots/playwright-framework-original.txt"))).toEqual(rawFramework);
+  expect(await readFile(path.join(upload, "snapshots/playwright-framework-original.txt"))).toEqual(rawFramework); expect(evidence.budget?.bytesExamined).toBeLessThan(256 * 1024 * 1024);
   await sealStandardOriginalEvidence({ context, executionId: id, source: f.cell, evidence, secrets: [], expectPassScreenshot: false });
   const original = path.join(context.root, "originals", manualCellKind(id));
   await referenceSealedFrameworkAttachments(upload, original, id);
@@ -177,6 +180,35 @@ it("rejects a symbolic attachment and changed final framework outcome", async ()
   await expect(validatePrivateFrameworkReport(f.cell, original, "owned")).rejects.toThrow();
 });
 
+it("preserves exact registered official JSON whitespace through sanitizer and copier", async () => {
+  const f = await fixture(); const raw = Buffer.from("\n" + JSON.stringify(f.report) + "\n\n");
+  const trace = path.join(f.source, "playwright-output/owned/trace.zip");
+  const traceBytes = await readFile(trace); await rm(trace);
+  await writeFile(path.join(f.source, "framework-report.json"), raw);
+  const { sanitizePrivateReporterArtifacts } = await import("./private-reporter-artifacts.js");
+  expect(await sanitizePrivateReporterArtifacts(f.source, [])).toEqual([]);
+  expect(await readFile(path.join(f.source, "framework-report.json"))).toEqual(raw);
+  await writeFile(trace, traceBytes);
+  await copyPrivateFrameworkReport(f.source, f.cell, []);
+  expect(await readFile(path.join(f.cell, "snapshots/playwright-framework-original.txt"))).toEqual(raw);
+});
+
+it("rejects sensitive JSON keys in registered metadata and JSON attachments without rewriting them", async () => {
+  const f = await fixture(); (f.report.config as any).metadata = { password: "unrecognized-private-value" };
+  await writeFile(path.join(f.source, "framework-report.json"), JSON.stringify(f.report));
+  await expect(copyPrivateFrameworkReport(f.source, f.cell, [])).rejects.toThrow();
+  delete (f.report.config as any).metadata;
+  const file = path.join(f.cell, "snapshots/owned.json"); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, '{"password":"unrecognized-private-value"}');
+  f.report.suites[0]!.specs[0]!.tests[0]!.results[0]!.attachments[0]!.path = file;
+  await writeFile(path.join(f.source, "framework-report.json"), JSON.stringify(f.report));
+  await copyPrivateFrameworkReport(f.source, f.cell, []);
+  const { packageEvidence } = await import("./evidence.js");
+  const { inspectCellReportProducer, privateCellEvidenceOwner } = await import("./manual-private-report-assets.js");
+  const owner = await privateCellEvidenceOwner({ root: f.root, private: true, runId: "123", attempt: "1", executionIds: ["chat-features.runner-opencode.local.activity.agent-feedback"], cellReportProducer: await inspectCellReportProducer() }, "chat-features.runner-opencode.local.activity.agent-feedback");
+  await expect(packageEvidence({ privateDir: f.cell, uploadDir: path.join(f.root, "upload"), secrets: [], expectPassScreenshot: false, privateCell: { owner, layout: "original" } })).rejects.toThrow("requires redaction");
+  expect(await readFile(file, "utf8")).toBe('{"password":"unrecognized-private-value"}');
+});
+
 it("rejects unrecognized credentials in a decoded plain-text body", async () => {
   const f = await fixture(), attachment = f.report.suites[0]!.specs[0]!.tests[0]!.results[0]!.attachments[0]! as any;
   attachment.contentType = "text/plain"; attachment.body = Buffer.from('{"password":"opaque-value"}').toString("base64");
@@ -193,4 +225,36 @@ it("rejects unrecognized command credentials in a registered plain-text file", a
   const id = "chat-features.runner-opencode.local.activity.agent-feedback";
   const owner = await privateCellEvidenceOwner({ root: f.root, private: true, runId: "123", attempt: "1", executionIds: [id], cellReportProducer: await inspectCellReportProducer() }, id);
   await expect(packageEvidence({ privateDir: f.cell, uploadDir: path.join(f.root, "upload"), secrets: [], expectPassScreenshot: false, privateCell: { owner, layout: "original" } })).rejects.toThrow("requires redaction");
+});
+
+it.skipIf(!process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE)("seals an actual failed browser screenshot, trace and blob report without losing declared attachments", async () => {
+  const f = await fixture(), tests = path.join(f.root, "browser-tests"); await mkdir(tests);
+  const require = createRequire(import.meta.url), pkg = require.resolve("@playwright/test/package.json"), entry = require.resolve("@playwright/test");
+  await writeFile(path.join(tests, "failed.spec.cjs"), `const {test,expect}=require(${JSON.stringify(entry)});test('real failed browser result',async({page},info)=>{await page.setContent('<h1>Dummy retained page</h1>');await info.attach('dummy-content',{body:Buffer.from('nonprivate dummy attachment'),contentType:'text/plain'});await test.step('actual failed browser assertion',async()=>expect(await page.locator('h1').innerText()).toBe('different heading'));});`);
+  const config = path.join(tests, "config.cjs");
+  await writeFile(config, `module.exports=${JSON.stringify({ testDir: tests, testMatch: "failed.spec.cjs", workers: 1, outputDir: path.join(f.source, "playwright-output"), use: { launchOptions: { executablePath: process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE }, screenshot: "only-on-failure", trace: "retain-on-failure" }, reporter: [["json", { outputFile: path.join(f.source, "framework-report.json") }], ["html", { outputFolder: path.join(f.source, "html-report"), open: "never" }], ["blob", { outputDir: path.join(f.source, "blob-report") }]] })};`);
+  await promisify(execFile)(process.execPath, [path.join(path.dirname(pkg), "cli.js"), "test", "--config", config], { cwd: tests, env: { PATH: process.env.PATH, CI: "1", NODE_OPTIONS: "", NODE_PATH: "" }, timeout: 30000 }).then(() => { throw new Error("Original should fail"); }, error => { expect(error.code).toBe(1); });
+  await rm(path.join(f.cell, "playwright-output"), { recursive: true });
+  for (const folder of ["playwright-output", "html-report", "blob-report"]) await cp(path.join(f.source, folder), path.join(f.cell, folder), { recursive: true });
+  await copyPrivateFrameworkReport(f.source, f.cell, []);
+  const retained = await validatePrivateFrameworkReport(f.cell);
+  expect((retained.report.suites as any)[0].specs[0].tests[0].results[0].status).toBe("failed");
+  expect(retained.attachments.some(a => a.path.endsWith(".png"))).toBe(true);
+  expect(retained.attachments.some(a => a.path.endsWith("/trace.zip"))).toBe(true);
+  const { packageEvidence } = await import("./evidence.js");
+  const { inspectCellReportProducer, privateCellEvidenceOwner } = await import("./manual-private-report-assets.js");
+  const { sealStandardOriginalEvidence, sealManualResultEvidence } = await import("./manual-private-handoff.js");
+  const { validateSealedOriginals, validateSealedInventory } = await import("./manual-private-transfer.js");
+  const { MANUAL_PRIVATE_PROTOCOL, manualCellKind } = await import("./manual-private-retention.js");
+  const id = "chat-features.runner-opencode.local.questions-and-approvals.multi-part-question";
+  const context: ManualPrivateHandoff = { root: await realpath(f.root), private: true, protocol: MANUAL_PRIVATE_PROTOCOL, runId: "123", attempt: "1", workflowSha: "a".repeat(40), targetSha: "b".repeat(40), executionIds: [id], cellReportProducer: await inspectCellReportProducer() };
+  const owner = await privateCellEvidenceOwner(context, id), upload = path.join(context.root, "results", `gha-123-1-${id}/chat-features/runner-opencode/local/questions-and-approvals.multi-part-question/attempt-1`);
+  await writeFile(path.join(f.cell, "result.json"), '{"status":"failed","error":"actual failed browser assertion"}');
+  const evidence = await packageEvidence({ privateDir: f.cell, uploadDir: upload, secrets: [], expectPassScreenshot: false, privateCell: { owner, layout: "original" } });
+  expect(evidence.leaks).toEqual([]);
+  await sealStandardOriginalEvidence({ context, executionId: id, source: f.cell, evidence, secrets: [], expectPassScreenshot: false });
+  await referenceSealedFrameworkAttachments(upload, path.join(context.root, "originals", manualCellKind(id)), id);
+  await sealManualResultEvidence(context, []);
+  expect((await validateSealedOriginals(context.root, id, context)).complete).toBe(true);
+  expect((await validateSealedInventory(path.join(context.root, "sealed-results/html-report"), "../result-evidence-inventory.json", undefined, "standard", context)).complete).toBe(true);
 });

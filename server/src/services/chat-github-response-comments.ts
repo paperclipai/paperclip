@@ -7,13 +7,14 @@ import {
 } from "@paperclipai/db";
 import { registerGitHubTerminalResponseWork } from "./chat-channels/github/terminal-response-work.js";
 import { githubResponseExecution, githubResponseRunColumns as responseRunColumns } from "./chat-channels/github/response-execution.js";
+import { FINISHED_RUN_STATUSES, finishedRunStatusSql, runBoundToIssue, runWokeForComment } from "./chat-channels/github/response-run-state.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { registerGitHubAcknowledgementWork } from "./chat-channels/github/acknowledgement-work.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { conflict, forbidden, HttpError } from "../errors.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import { githubAutomaticAdmission } from "./chat-github-events.js";
-import { githubBotRepositoryToken, githubBotRequest } from "./chat-github-client.js";
+import { githubBotRepositoryClient } from "./chat-github-client.js";
 import { withGitHubPublicationLease } from "./chat-github-publication-lease.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import type { GitHubAutomaticPolicyContext } from "./chat-github-review-policy.js";
@@ -33,6 +34,15 @@ type Comment = { id: number; body?: string; html_url: string; user?: { login?: s
 const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0;
 const stoppedAcknowledgement = Symbol("stopped GitHub acknowledgement");
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
+const statusMarker = "<!-- paperclip-response-kind:status -->";
+// The complete status notices posted before the kind marker existed.
+const legacyStatusBodies = new Set(["Work is paused. Your request is saved. See the Paperclip task for details.",
+  "This turn ended without publishing a final response. See the Paperclip task for details.",
+  "This turn stopped before completing. See the Paperclip task for details.",
+  "This request has been handled. See the response in this conversation."]);
+/** A reply or review the agent published, as opposed to a placeholder or a Paperclip status notice. */
+export const holdsPublishedResponse = (body: string | undefined) => !!body?.includes("<!-- paperclip-response-state:final -->") &&
+  !body.includes(statusMarker) && !legacyStatusBodies.has(body.split("\n\n<!-- paperclip-")[0]!.trim());
 const responseMarker = (source: Source) => isMainPullResponse(source) ? pullResponseMarker(source) : requestResponseMarker(source);
 
 async function findResponseComment(source: Source, api: Api, legacyMarkers: string[] = []): Promise<Comment | null> {
@@ -79,7 +89,9 @@ async function stageResponse(db: Db, source: Source) {
 
 export async function writeGitHubResponseComment(
   db: Db, source: Source, api: Api, lease: Lease,
-  input: { body: string; final: boolean; versionAt?: Date; acknowledgement?: boolean; preserveFinal?: boolean; pausedVersion?: string },
+  input: { body: string; final: boolean; versionAt?: Date; acknowledgement?: boolean; preserveFinal?: boolean; pausedVersion?: string;
+    /** A Paperclip status notice (paused, stopped, no reply), not the agent's own words. */
+    status?: boolean },
   assertCurrent: () => Promise<void>,
 ) {
   await assertCurrent();
@@ -87,7 +99,20 @@ export async function writeGitHubResponseComment(
   const shared = isMainPullResponse(source);
   const target = shared ? await stagePullResponse(db, source) : response;
   const versionAt = input.versionAt ?? source.delivery.createdAt;
+  // The main PR comment is shared by every request. A status notice for one
+  // request never replaces a newer response or a published review: it settles
+  // that request against the comment as it stands, so nothing retries it later.
+  const settleStatus = async (current: { id: string; url: string }, code: string) => {
+    if (shared) await retireLegacyResponsePlaceholder(source, response.result, current, api, assertCurrent);
+    await lease.commit(async tx => { await tx.update(chatActions).set({ status: "processed", result: {
+      ...current, final: true, code, versionAt: versionAt.toISOString(),
+    }, updatedAt: new Date() }).where(and(eq(chatActions.id, response.id),
+      sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`)); });
+    return current;
+  };
   if (target.result?.id && Date.parse(String(target.result.versionAt)) > versionAt.getTime()) {
+    if (shared && input.status)
+      return settleStatus({ id: String(target.result.id), url: String(target.result.url) }, "status_superseded");
     if (!input.acknowledgement) throw conflict("A newer GitHub response has already been published");
     if (shared) await retireLegacyResponsePlaceholder(source, response.result,
       { id: String(target.result.id), url: String(target.result.url) }, api, assertCurrent);
@@ -126,10 +151,13 @@ export async function writeGitHubResponseComment(
   }
   await assertCurrent();
   const providerVersion = previous?.body?.match(/<!-- paperclip-response-version:([^ ]+) -->/)?.[1];
+  const keepsResponse = holdsPublishedResponse(previous?.body);
+  if (shared && input.status && previous && (keepsResponse || (providerVersion && Date.parse(providerVersion) > versionAt.getTime())))
+    return settleStatus({ id: String(previous.id), url: previous.html_url }, keepsResponse ? "published_response_kept" : "status_superseded");
   if (providerVersion && Date.parse(providerVersion) > versionAt.getTime()) throw conflict("A newer GitHub response has already been published");
   const sameRequest = !shared || previous?.body?.includes(requestResponseMarker(source)) === true;
   const alreadyFinal = sameRequest && previous?.body?.includes("<!-- paperclip-response-state:final -->") === true;
-  const body = `${projectSafeChatPublicationText(input.body)}\n\n${marker}${shared ? `\n${requestResponseMarker(source)}` : ""}\n<!-- paperclip-response-version:${versionAt.toISOString()} -->${input.final ? "\n<!-- paperclip-response-state:final -->" : ""}`;
+  const body = `${projectSafeChatPublicationText(input.body)}\n\n${marker}${shared ? `\n${requestResponseMarker(source)}` : ""}\n<!-- paperclip-response-version:${versionAt.toISOString()} -->${input.status ? `\n${statusMarker}` : ""}${input.final ? "\n<!-- paperclip-response-state:final -->" : ""}`;
   const preserved = previous && (previous.body === body || (input.acknowledgement && (sameRequest || (shared && previous.body?.includes("<!-- paperclip-response-state:final -->")))) || (alreadyFinal && !input.final) ||
     (input.preserveFinal && previous.body?.includes("<!-- paperclip-response-state:final -->"))) ? previous : null;
   const posted = preserved && (!shared || preserved.body?.includes(marker)) ? preserved : await api.request<Comment>(
@@ -220,7 +248,12 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
           sourceMessageId: source.sourceMessageId, issueStatus: source.issueStatus,
           deliveryCreatedAt: source.delivery.createdAt,
         });
-        if (execution.reply === "unsettled") throw conflict("GitHub reply is still being resolved");
+        if (execution.reply === "unsettled") {
+          // An acknowledged request waits for its reply to settle without
+          // spending delivery retries; the terminal sweep reads it again.
+          if (existing.status === "processed" && existing.result?.id) return { id: String(existing.result.id), url: String(existing.result.url) };
+          throw conflict("GitHub reply is still being resolved");
+        }
         if (execution.presentationPending) return;
         if (isMainPullResponse(source) && execution.passiveResponseWait) {
           // Preserve the shared assessment when this exact run intentionally waits
@@ -276,9 +309,9 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
                   ["pending", "retry"].includes(fast.publicationState ?? ""))))) return;
         }
       }
-      const token = await githubBotRepositoryToken(db, source.endpoint.companyId, source.endpoint.id, source.repositoryId, lease.fetch);
+      const github = await githubBotRepositoryClient(db, source.endpoint.companyId, source.endpoint.id, source.repositoryId, lease.fetch);
       const prefix = `/repos/${source.repository.split("/").map(encodeURIComponent).join("/")}`;
-      const api: Api = { request: (path, options) => githubBotRequest(lease.fetch, token, `${prefix}${path}`, options) };
+      const api: Api = { request: (path, options) => github(`${prefix}${path}`, options) };
       if (onlyExisting && !(await findResponseComment(source, api))) {
         const existing = await stageResponse(db, source);
         await lease.commit(async tx => { await tx.update(chatActions).set({ status: "cancelled", result: { final: true, code: "run_already_answered" }, updatedAt: new Date() }).where(eq(chatActions.id, existing.id)); });
@@ -286,7 +319,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       }
       return writeGitHubResponseComment(db, source, api, lease,
         { body: finalBody ?? (isMainPullResponse(source) && !requestRunning ? "Review queued…" : "Working on this…"), final: finalBody !== undefined && !requestPaused,
-          acknowledgement: finalBody === undefined, preserveFinal, pausedVersion,
+          acknowledgement: finalBody === undefined, status: finalBody !== undefined, preserveFinal, pausedVersion,
           ...(finalBody !== undefined ? { versionAt: finalVersionAt ?? new Date() } : {}) }, assertCurrent);
     });
   }
@@ -366,7 +399,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         const source = await context(link.deliveryId!);
         const [current] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId)));
         if (!current || current.agentId !== source.endpoint.assignedAgentId ||
-            !["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(current.status) ||
+            !(FINISHED_RUN_STATUSES as readonly string[]).includes(current.status) ||
             source.endpoint.id !== input.endpointId || source.conversation.issueId !== input.issueId ||
             boundRunIssueId(current) !== input.issueId)
           throw forbidden("GitHub failure authority changed");
@@ -414,16 +447,19 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         sql`exists (select 1 from ${heartbeatRuns} r where r.company_id = ${chatActions.companyId}
           and r.agent_id = ${chatEndpoints.assignedAgentId}
           and coalesce(r.native_issue_id::text, r.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
-          and r.status in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled')
+          and ${finishedRunStatusSql(sql`r.status`)}
           and not exists (select 1 from ${heartbeatRuns} newer where newer.company_id = r.company_id
             and newer.agent_id = r.agent_id
             and coalesce(newer.native_issue_id::text, newer.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
             and (newer.created_at, newer.id) > (r.created_at, r.id))
           and (${issues.status} = 'blocked' or r.active_identity_context_id is not null or exists (select 1 from ${chatMessageLinks} l
+            join ${heartbeatRuns} q on q.company_id = r.company_id and q.agent_id = r.agent_id
+              and ${runBoundToIssue(sql`q`, sql`${chatConversations.issueId}`)}
+              and ${finishedRunStatusSql(sql`q.status`)}
             where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
               and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound'
-              and (l.comment_id::text = r.context_snapshot->>'wakeCommentId'
-                or coalesce(r.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))))`,
+              -- The run that woke for this request; a newer run may follow it.
+              and ${runWokeForComment(sql`q`, sql`l.comment_id`)})))`,
       )).orderBy(asc(chatActions.updatedAt)).limit(limit);
     for (const row of stopped) if (row.deliveryId) await tryAcknowledge(row.deliveryId);
     return stopped.length;

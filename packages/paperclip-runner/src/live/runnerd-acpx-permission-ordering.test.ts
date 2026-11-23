@@ -21,6 +21,11 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
       readonly recoveredSourceSeq = 0;
       store: TestPeer["store"];
       connectUrl = "ws://fixture.invalid";
+      readers = new Set<() => void>();
+      onReadableStateChange(reader: () => void) {
+        this.readers.add(reader);
+        return () => { this.readers.delete(reader); };
+      }
       constructor(options: { identity: DurableRecoveryIdentity }) {
         this.store = { state: { identity: options.identity, committedEvents: [], commands: [] } };
         peer.current = this;
@@ -51,6 +56,7 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
           priority: 0, deliveryCount: 1, logicalEffectCount: 1,
           envelope: { turnId: this.store.state.identity.turnId, payload: { payload } },
         });
+        for (const reader of this.readers) reader();
       }
     },
   };

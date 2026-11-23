@@ -127,44 +127,30 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
         and ${budgetReservations.runId} = ${heartbeatRuns.id} and ${budgetReservations.state} = 'held')`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
-    // "Usage with no reliable price" means observed usage that could not be
-    // priced. These unpriced charges are not that, so they never trip the
-    // blocking policy (they stay visible in Costs):
-    // - a receipt lost with its stopped provider (restart-derived, any usage);
+    // "Usage with no reliable price" means usage from a complete receipt that
+    // could not be priced. These unpriced charges are not that, so they never
+    // trip the blocking policy (they stay visible in Costs):
+    // - a final charge accounting settled without its receipt: lost with a
+    //   stopped provider, closure evidence that never arrived, or a failed
+    //   capture (its receipt is never certified complete, even if a later
+    //   report adds usage). Accounting is never a company gate (plan decision 1); its
+    //   exposure is recorded, and the activity entry is the board's notice;
     // - a charge that carries a known partial cost;
     // - metered API or subscription billing with no observed tokens.
     // Unknown billing with no tokens (for example Cursor Cloud) still counts.
-    // The lost-receipt exemption covers only that run's settled final charge;
-    // later growth from a complete receipt is ordinary usage.
-    // A final charge settled only because closure evidence never arrived is
-    // genuinely unknown spend (its provider may still have run), so none of
-    // these exemptions apply to it, unless a control-plane restart caused it.
-    // A restart-derived receipt never trips the blocking policy, whatever its
-    // token count: the run replaced its receipt source, recovered from the
-    // restart, or lost a provider turn on restore. Its activity entry and
-    // provenance remain the board's notice.
+    // The receipt-unavailable exemption covers only that run's settled final
+    // charge; later growth from a complete receipt is ordinary usage.
     const finalCharge = sql`${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'`;
-    // Every usage recorder binds an empty fence map; only a replaced receipt
-    // source (a non-empty map) is restart evidence.
-    const restartDerived = (alias: string) => sql.raw(`(coalesce(${alias}.usage_json->'accountingReceiptSourceFences', '{}'::jsonb) <> '{}'::jsonb
-        or coalesce(${alias}.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%'
-        or exists (select 1 from heartbeat_run_events restart_event where restart_event.run_id = ${alias}.id
-          and restart_event.company_id = ${alias}.company_id and restart_event.event_type = 'native.recovery.transition'
-          and restart_event.payload->>'trigger' is distinct from 'same_run_retry'))`);
-    const closureTimedOutCharge = sql`(${finalCharge}
-      and exists (select 1 from ${heartbeatRuns} timed_out_run where timed_out_run.id = ${costEvents.heartbeatRunId}
-        and timed_out_run.company_id = ${costEvents.companyId}
-        and timed_out_run.usage_json->>'accountingClosureTimedOut' = 'true'
-        -- A failed capture is unknown spend whatever its source history.
-        and (timed_out_run.usage_json->>'accountingCaptureFailed' = 'true' or not ${restartDerived("timed_out_run")})))`;
-    const exemptFromUnpricedBlock = sql`(not ${closureTimedOutCharge} and ((${finalCharge}
+    const exemptFromUnpricedBlock = sql`((${finalCharge}
         and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
           and lost_receipt_run.company_id = ${costEvents.companyId}
           and (lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'
+            or lost_receipt_run.usage_json->>'accountingClosureTimedOut' = 'true'
+            or lost_receipt_run.usage_json->>'accountingCaptureFailed' = 'true'
             or coalesce(lost_receipt_run.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%')))
       or ${costEvents.costCents} > 0
       or (${costEvents.billingType} in ('metered_api', 'api', 'subscription') and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
-        and ${costEvents.outputTokens} = 0)))`;
+        and ${costEvents.outputTokens} = 0))`;
     ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
       and not ${exemptFromUnpricedBlock})::int`;
     runColumns[`live${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and ${inWindow}), 0)::text`;

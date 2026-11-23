@@ -15,7 +15,6 @@ import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
-import { projectsApi } from "../api/projects";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -59,6 +58,8 @@ import {
   FileTree,
 } from "../components/FileTree";
 import { describeError } from "@/api/errors";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
@@ -572,7 +573,7 @@ function ExportPreviewPane({
             <img src={imageSrc} alt={selectedFile} className="max-h-(--sz-480px) max-w-full object-contain" />
           </div>
         ) : textContent !== null ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{textContent}</code>
           </pre>
         ) : (
@@ -643,8 +644,7 @@ export function CompanyExport() {
     enabled: !!selectedCompanyId,
   });
   const { data: projects = [] } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const { data: fidelityReport } = useQuery({

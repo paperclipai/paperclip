@@ -1,10 +1,48 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { createNativeRunTrace } from "./native-run-trace.js";
+import { COPILOT_CLOSURE_SHA256 } from "../../vendor/paperclip-runner/index.js";
+import { readFileSync } from "node:fs";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, COPILOT_PROVIDER_PACK_CLOSURES, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, type RemoteProviderPackRelease, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
+  it("lets a transient gateway failure recover before spending the final verification attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const availableAt = Date.now() + 1_000;
+      const execute = vi.fn(async () => {
+        if (Date.now() < availableAt) throw new Error("Request failed with status code 502");
+        return ok;
+      });
+      const result = runRemoteProviderVerification(execute, "pack").then(
+        value => ({ value }), error => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(999);
+      expect(execute).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toEqual({ value: ok });
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("still holds after two gateway failures without scheduling another attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const execute = vi.fn().mockRejectedValue(new Error("Request failed with status code 502"));
+      const result = runRemoteProviderVerification(execute, "pack").catch(error => error);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await result).toMatchObject({ message: "runner_remote_provider_verification_unavailable: pack unavailable after 2 verification attempts (Request failed with status code 502)" });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each([
     { ...ok, exitCode: null, timedOut: true },
     { ...ok, exitCode: null },
@@ -96,12 +134,47 @@ describe("remote provider pack reuse", () => {
     stageAndVerify.mockResolvedValue(undefined);
     await expect(prepareVerifiedRemoteProviderPack(input)).resolves.toBe("uploaded");
   });
+
+  it("records on the selection span why the image pack was not reused", async () => {
+    const trace = createNativeRunTrace({ runId: "provider-pack-select-run", startedAtMs: Date.now() });
+    const annotate = vi.spyOn(trace, "annotate");
+    const rejected = Object.assign(new Error("runner_remote_provider_artifact_incompatible: provider pack verification failed"),
+      { failureCheck: "manifest_mismatch:runnerSourceRevision" });
+    await expect(prepareVerifiedRemoteProviderPack({
+      trace,
+      verifyStaged: async () => { throw new Error("missing"); },
+      usePreinstalled: onRejected => useVerifiedPreinstalledRemoteProviderPack({
+        candidates: ["/opt/paperclip-runner/provider-pack", "/home/operator/.local/share/paperclip-runner/provider-pack"], onRejected,
+        verifyAndLink: async root => {
+          throw root.startsWith("/opt/") ? rejected : Object.assign(new Error("missing"), { failureCheck: "manifest_unreadable" });
+        },
+      }),
+      stageAndVerify: async () => {},
+    })).resolves.toBe("uploaded");
+    expect(annotate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      stateSource: "uploaded", reason: "cached_packs_unverified", check: "manifest_mismatch:runnerSourceRevision" }));
+    annotate.mockClear();
+    await prepareVerifiedRemoteProviderPack({ trace, verifyStaged: async () => { throw new Error("missing"); },
+      usePreinstalled: async () => false, stageAndVerify: async () => {} });
+    expect(annotate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ check: "no_preinstalled_pack" }));
+  });
 });
 
 
+describe("same-content pack reuse across builds", () => {
+  it.each([
+    [{ retainProviderPack: false, explicitProviderPackSelection: false, authoritySelectable: true }, true],
+    [{ retainProviderPack: true, explicitProviderPackSelection: false, authoritySelectable: true }, false],
+    [{ retainProviderPack: false, explicitProviderPackSelection: true, authoritySelectable: true }, false],
+    [{ retainProviderPack: false, explicitProviderPackSelection: false, authoritySelectable: false }, false],
+  ])("allows provenance-only differences only for an unbound run: %j", (input, allowed) => {
+    expect(providerPackProvenanceReuseAllowed(input)).toBe(allowed);
+  });
+});
+
 describe("ordinary ACPX image artifacts", () => {
   const provider = (agent: string) => ({ kind: "acpx", agent, model: "selected-model" } as Parameters<typeof shouldUseBundledAcpxImageAssets>[0]["provider"]);
-  it.each(["cursor", "copilot"])("selects bundled artifacts for remote %s without an operator override", agent => {
+  it.each(["cursor", "copilot", "kimi", "antigravity"])("selects bundled artifacts for remote %s without an operator override", agent => {
     expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(true);
     expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: false, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(false);
     expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: "/explicit/pack", provider: provider(agent) })).toBe(false);
@@ -111,6 +184,98 @@ describe("ordinary ACPX image artifacts", () => {
   });
   it("does not admit a non-ACPX provider through bundled image selection", () => {
     expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: { kind: "codex", model: null } })).toBe(false);
+  });
+});
+
+describe("Google Antigravity image pack identity", () => {
+  const distributions = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
+  const profile = { agentServerVersion: "1.4.3", commandDigest: `sha256:${"c".repeat(64)}` };
+  const patchedClosures = { "linux-x64": "d".repeat(64) };
+  const entry = { version: profile.agentServerVersion, profileDigest: profile.commandDigest, closureDigest: `sha256:${"d".repeat(64)}` };
+  const base = { inventory: "providers" as const, target: { platform: "linux", architecture: "x64" }, inBoth: false,
+    entry, releasePending: false, profile, patchedClosures };
+
+  it("admits exactly the patched closures pinned in antigravity-distributions.json, never a vendor closure", () => {
+    const verified = Object.fromEntries(Object.entries(distributions.platforms as Record<string, { provisioning: string; closureSha256?: string }>)
+      .filter(([, platform]) => platform.provisioning === "verified-closure").map(([key, platform]) => [key, platform.closureSha256]));
+    expect(ANTIGRAVITY_PATCHED_CLOSURE_SHA256).toEqual(verified);
+    for (const [key, closure] of Object.entries(ANTIGRAVITY_PATCHED_CLOSURE_SHA256)) {
+      expect(closure).not.toBe(distributions.platforms[key].vendorClosureSha256);
+    }
+  });
+
+  it("admits the real linux-x64 image pack closure and refuses its vendor closure", () => {
+    const linux = distributions.platforms["linux-x64"];
+    const real = { ...base, patchedClosures: undefined, entry: { ...entry, closureDigest: `sha256:${linux.closureSha256}` } };
+    expect(antigravityProviderPackEntryRefusal(real)).toBeNull();
+    expect(antigravityProviderPackEntryRefusal({ ...real, entry: { ...real.entry, closureDigest: `sha256:${linux.vendorClosureSha256}` } }))
+      .toMatch(/patched closure/);
+    expect(antigravityProviderPackEntryRefusal({ ...real, entry: { ...real.entry, closureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}` } }))
+      .toMatch(/patched closure/);
+  });
+
+  it("lists the qualified entry under providers and the pending one under candidateProviders, never both", () => {
+    expect(antigravityProviderPackEntryRefusal(base)).toBeNull();
+    expect(antigravityProviderPackEntryRefusal({ ...base, releasePending: true, inventory: "candidateProviders" })).toBeNull();
+    expect(antigravityProviderPackEntryRefusal({ ...base, inventory: "candidateProviders" })).toMatch(/wrong pack inventory/);
+    expect(antigravityProviderPackEntryRefusal({ ...base, releasePending: true })).toMatch(/wrong pack inventory/);
+    expect(antigravityProviderPackEntryRefusal({ ...base, inBoth: true })).toMatch(/wrong pack inventory/);
+  });
+
+  it.each([
+    ["the vendor closure", { entry: { ...entry, closureDigest: `sha256:${"e".repeat(64)}` } }],
+    ["an unpinned Linux closure", { patchedClosures: {} }],
+    ["another target", { target: { platform: "linux", architecture: "arm64" } }],
+    ["an older profile", { entry: { ...entry, profileDigest: `sha256:${"f".repeat(64)}` } }],
+    ["an older runtime version", { entry: { ...entry, version: "1.4.2" } }],
+  ])("refuses %s", (_name, change) => {
+    expect(antigravityProviderPackEntryRefusal({ ...base, ...change })).not.toBeNull();
+  });
+});
+
+describe("remote provider pack entry expectation", () => {
+  const digest = (char: string) => `sha256:${char.repeat(64)}`;
+  const profile = (version: string, char: string) => ({ agentServerVersion: version, commandDigest: digest(char) });
+  const release: RemoteProviderPackRelease = {
+    profiles: { cursor: profile("c1", "1"), copilot: profile("p1", "2"), kimi: { ...profile("k1", "3"), qualificationStatus: "pending" }, antigravity: profile("a1", "4") },
+    cursorClosures: { "linux-x64": { closureSha256: "5".repeat(64) } },
+    kimiLinuxX64Closure: "6".repeat(64),
+    antigravityReleasePending: true,
+    antigravityPatchedClosures: { "linux-x64": "7".repeat(64) },
+  };
+  const target = { platform: "linux", architecture: "x64" };
+  const all = ["pi", "cursor", "copilot", "kimi", "antigravity"];
+  const entry = (provider: string, qualification: string, version: string, profileDigest: string, closure: string) => ({
+    version, profileDigest, closureDigest: `sha256:${closure}`, qualification, path: `provider-assets/${provider}/linux-x64`, sha256: digest("9"),
+  });
+  const check = (provider: string, inventory: "providers" | "candidateProviders", value: unknown, listed = { providers: inventory === "providers", candidateProviders: inventory === "candidateProviders" }) =>
+    remoteProviderPackEntryRefusal({ provider, inventory, allowedProviders: all, target, entry: value, listed, release });
+
+  it("checks Copilot against the Runner's canonical closure pins", () => {
+    expect(COPILOT_PROVIDER_PACK_CLOSURES).toEqual(COPILOT_CLOSURE_SHA256);
+    expect(Object.keys(COPILOT_PROVIDER_PACK_CLOSURES).sort()).toEqual(["darwin-arm64", "darwin-x64", "linux-x64"]);
+  });
+
+  it("admits each provider's entry only with this release's inventory, qualification, profile and closure", () => {
+    expect(check("pi", "providers", entry("pi", "qualified", "any", digest("8"), "8".repeat(64)))).toBeNull();
+    expect(check("cursor", "providers", entry("cursor", "qualified", "c1", digest("1"), "5".repeat(64)))).toBeNull();
+    expect(check("copilot", "providers", entry("copilot", "qualified", "p1", digest("2"), COPILOT_PROVIDER_PACK_CLOSURES["linux-x64"]!))).toBeNull();
+    expect(check("copilot", "candidateProviders", entry("copilot", "pending", "p1", digest("2"), COPILOT_PROVIDER_PACK_CLOSURES["linux-x64"]!))).toBeNull();
+    expect(check("kimi", "candidateProviders", entry("kimi", "pending", "k1", digest("3"), "6".repeat(64)))).toBeNull();
+    expect(check("antigravity", "candidateProviders", entry("antigravity", "pending", "a1", digest("4"), "7".repeat(64)))).toBeNull();
+  });
+
+  it("refuses with the same reasons the pack verifier reports", () => {
+    expect(check("grok", "providers", entry("grok", "qualified", "g", digest("1"), "1".repeat(64)))).toBe("invalid candidate identity");
+    expect(check("antigravity", "providers", entry("antigravity", "qualified", "a1", digest("4"), "7".repeat(64)))).toBe("invalid candidate identity");
+    expect(check("cursor", "providers", { ...entry("cursor", "qualified", "c1", digest("1"), "5".repeat(64)), extra: true })).toBe("invalid candidate identity");
+    expect(check("cursor", "providers", entry("cursor", "qualified", "c0", digest("1"), "5".repeat(64)))).toBe("Cursor profile or closure does not match this release");
+    expect(check("copilot", "providers", entry("copilot", "qualified", "p1", digest("2"), COPILOT_PROVIDER_PACK_CLOSURES["linux-x64"]!), { providers: true, candidateProviders: true }))
+      .toBe("Copilot profile or closure does not match this release");
+    expect(check("kimi", "candidateProviders", entry("kimi", "pending", "k1", digest("3"), "6".repeat(64)), { providers: true, candidateProviders: true }))
+      .toBe("Kimi profile or closure does not match this release");
+    expect(check("antigravity", "candidateProviders", entry("antigravity", "pending", "a1", digest("4"), "e".repeat(64))))
+      .toBe("Antigravity closure is not this release's patched closure");
   });
 });
 

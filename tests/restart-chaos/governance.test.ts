@@ -6,7 +6,7 @@ import { BUDGET_PAUSE_HOLD_MS, BUDGET_RESUME_HEADROOM_CENTS, REST_CONFIRM_MS, Ta
 import { planTasks, replayOnCurrentBuild, triggerFitsWorkload } from "./scheduler.js";
 import type { ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
-import type { OracleArtifacts, TaskPlan, TaskRecord, TaskSample, WavePlan } from "./types.js";
+import type { FaultReceipt, OracleArtifacts, TaskPlan, TaskRecord, TaskSample, WavePlan } from "./types.js";
 import { g1ApprovalTitle, g1ChildTitle, g1Decision, workloadDefinitions } from "./workloads.js";
 
 process.env.RESTART_CHAOS_QUIET = "1";
@@ -127,6 +127,9 @@ describe("G1: approval-gated action across a restart", () => {
       createdAt: 0, restAt: 60_000, samples: [] } as unknown as TaskRecord;
     expect(gradeR1(record, 15 * 60_000, []).verdict).toBe("pass");
     expect(gradeR1({ ...record, finalStatus: "done" }, 15 * 60_000, []).verdict).toBe("fail");
+    const unrested = gradeR1({ ...record, timedOut: true, restAt: null }, 15 * 60_000,
+      [{ startedAt: 1_000, readyAt: null, healthyAt: null } as unknown as FaultReceipt]);
+    expect(unrested).toEqual({ verdict: "fail", detail: "no_rest_within_budget (last status cancelled)" });
   });
 
   it("counts a redacted approval title as the task's own", () => {

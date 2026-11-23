@@ -1104,27 +1104,42 @@ async function syncInDirectoryMapping(input: {
         // A resumed sandbox can already contain these immutable 0444/0555
         // assets. Repack a private extraction as the sandbox user: tar --diff
         // otherwise rejects identical bytes because the host UID/GID differ.
-        // Compare content and modes, never chmod the live bundle or skip
-        // unverified old files. Extra user files in the target stay untouched.
+        // Compare content and modes, never skip unverified old files. A
+        // recovery re-materializes the same admitted bytes on the host with
+        // new timestamps, so a timestamp-only difference is still a match.
+        // Extra user files in the target stay untouched.
         ...(immutable ? [
           `compare_dir=${shellQuote(`${remoteTar}.compare`)};`,
           `compare_tar=${shellQuote(`${remoteTar}.normalized`)};`,
           `compare_list=${shellQuote(`${remoteTar}.members`)};`,
-          'cleanup_compare() { if [ -d "$compare_dir" ]; then find "$compare_dir" -type d -exec chmod u+w {} +; rm -rf "$compare_dir"; fi; rm -f "$compare_tar" "$compare_list"; };',
+          `compare_out=${shellQuote(`${remoteTar}.differences`)};`,
+          'cleanup_compare() { if [ -d "$compare_dir" ]; then find "$compare_dir" -type d -exec chmod u+w {} +; rm -rf "$compare_dir"; fi; rm -f "$compare_tar" "$compare_list" "$compare_out"; };',
           "trap cleanup_compare EXIT;",
           'mkdir -m 700 "$compare_dir" || exit 43;',
           `tar -xf ${shellQuote(remoteTar)} --no-same-owner --delay-directory-restore -C "$compare_dir" || exit 43;`,
           '(cd "$compare_dir" && find . -mindepth 1 -maxdepth 1 -print0) > "$compare_list" || exit 43;',
           'tar -cf "$compare_tar" --format=pax -C "$compare_dir" --null -T "$compare_list" || exit 43;',
-          `if tar -df "$compare_tar" -C ${shellQuote(mapping.targetPath)} >/dev/null 2>&1; then rm -f ${shellQuote(remoteTar)}; exit 0; fi;`,
+          `LC_ALL=C tar -df "$compare_tar" -C ${shellQuote(mapping.targetPath)} > "$compare_out" 2>&1; compare_status=$?;`,
+          `if [ "$compare_status" -le 1 ] && ! grep -v ': Mod time differs$' "$compare_out" >/dev/null; then rm -f ${shellQuote(remoteTar)}; exit 0; fi;`,
           "cleanup_compare;",
           "trap - EXIT;",
+          // The old copy really differs (a changed or damaged file). Its
+          // read-only directories would make tar fail with "Cannot open: File
+          // exists", so reopen them; the extract restores the archived modes.
+          // Record exactly which ones were reopened so a failed repair re-seals
+          // only those and never touches writable user directories. A reopen
+          // that fails part-way (an unreadable directory) re-seals the same way.
+          `reopened_list=${shellQuote(`${remoteTar}.reopened`)};`,
+          'reseal_reopened() { if [ -s "$reopened_list" ]; then xargs -0 chmod u-w < "$reopened_list"; fi; rm -f "$reopened_list"; };',
+          `find ${shellQuote(mapping.targetPath)} -mindepth 1 -type d ! -perm -u+w -print0 -exec chmod u+w {} + > "$reopened_list" || { reseal_reopened; echo "reopen failed"; exit 43; };`,
         ] : []),
         // BSD archives may revisit a directory after its parent's files. Keep
         // GNU tar from restoring a read-only skill directory's mode before all
         // of its children are extracted; final permissions remain unchanged.
-        `tar -xf ${shellQuote(remoteTar)} --delay-directory-restore -C ${shellQuote(mapping.targetPath)} || { echo "extract failed"; exit 43; };`,
-        `rm -f ${shellQuote(remoteTar)};`,
+        // A failed repair must not leave the read-only bundle writable.
+        `tar -xf ${shellQuote(remoteTar)} --delay-directory-restore -C ${shellQuote(mapping.targetPath)} || { ${immutable
+          ? "reseal_reopened; " : ""}echo "extract failed"; exit 43; };`,
+        `rm -f ${shellQuote(remoteTar)}${immutable ? ' "$reopened_list"' : ""};`,
       ].join("\n");
       // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and
       // remove the scratch tarball.

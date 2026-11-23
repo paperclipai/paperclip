@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createRunLogWriterAuthority } from "../services/heartbeat/run-log-authority.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { spawn } from "node:child_process";
@@ -383,6 +384,17 @@ describe("P6-25 pre-result native session recovery", () => {
     ]);
   });
 
+  it("judges another owner's lease by the database clock, not a server clock that runs fast", async () => {
+    await db.update(nativeRunFinalizations).set({
+      leaseOwner: "other-server:resume:live", leaseExpiresAt: new Date(Date.now() + 2 * 60_000), nextAttemptAt: null,
+    }).where(eq(nativeRunFinalizations.runId, runId));
+    await expect(claimNativeSessionResumptions({ db, runnerInstanceId: "fast-clock", runIds: [runId],
+      now: new Date(Date.now() + 10 * 60_000) })).resolves.toEqual([]);
+    await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).resolves.toEqual([
+      expect.objectContaining({ leaseOwner: "other-server:resume:live", nextAttemptAt: null }),
+    ]);
+  });
+
   it("dispatches the persisted run id and lease to the live same-run resume consumer", async () => {
     await db.update(nativeRunFinalizations).set({
       phase: "retryable_failure",
@@ -400,6 +412,24 @@ describe("P6-25 pre-result native session recovery", () => {
     expect(dispatched).toEqual([{ runId, leaseOwner: expect.stringContaining("heartbeat-reaper:resume:"), attempt: 1 }]);
     await expect(db.select().from(heartbeatRuns)).resolves.toHaveLength(8);
     await expect(db.select().from(nativeRunFinalizations)).resolves.toHaveLength(8);
+  });
+
+  it("lets a resume claimed by a restarted process write the run's existing log (storage chaos ST2 t01)", async () => {
+    await db.update(nativeRunFinalizations).set({
+      phase: "retryable_failure", leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: new Date(0),
+      controllerBootId: "previous-process-boot",
+    }).where(eq(nativeRunFinalizations.runId, runId));
+    await db.update(heartbeatRuns).set({ status: "failed", logStore: "s3_segments", logRef: `${companyId}/run-log` })
+      .where(eq(heartbeatRuns.id, runId));
+    const dispatched: Array<{ runId: string; leaseOwner: string; attempt: number }> = [];
+    await dispatchNativeSessionResumptions({ db, runnerInstanceId: "heartbeat-restarted", runIds: [runId],
+      dispatch: (claim) => dispatched.push(claim) });
+    expect(dispatched).toHaveLength(1);
+    const [resumed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await expect(createRunLogWriterAuthority(db, resumed!, dispatched[0]!.leaseOwner)()).resolves.toBeUndefined();
+    const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect(owner).toMatchObject({ controllerPid: process.pid, leaseOwner: dispatched[0]!.leaseOwner });
+    expect(owner!.controllerBootId).not.toBe("previous-process-boot");
   });
 
   it("uses provider-neutral checkpoint-free bootstrap retry only when durable evidence proves no session existed", async () => {

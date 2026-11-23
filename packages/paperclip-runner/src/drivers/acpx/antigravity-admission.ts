@@ -1,13 +1,25 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createAntigravityQuestionBridge } from "./antigravity-questions.js";
+import { ANTIGRAVITY_RUNTIME_VERSION } from "./generated-profiles.js";
 
 export const ANTIGRAVITY_ADMISSION_SCHEMA = "paperclip.antigravity.admission.v1";
 const SESSION_METHODS = new Set(["session/new", "session/load", "session/resume"]);
 
 export class AntigravityAdmissionError extends Error {
-  readonly code = "ANTIGRAVITY_ADMISSION_FAILED";
+  readonly code: string = "ANTIGRAVITY_ADMISSION_FAILED";
   readonly retryable = false;
   constructor(detail: string) { super(`Antigravity admission failed: ${detail}`); this.name = "AntigravityAdmissionError"; }
+}
+
+/** The sidecar code the Runner names `provider_state_incompatible` on a recovering open. */
+export const ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE = "ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE";
+
+/** A saved native conversation cannot be reopened with this exact model and
+ * instructions. Reloading again fails the same way, so the server opens a
+ * replacement conversation instead of showing Retry. */
+export class AntigravitySavedStateIncompatibleError extends AntigravityAdmissionError {
+  override readonly code = ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE;
+  constructor(detail: string) { super(`the saved conversation cannot be reopened: ${detail}`); this.name = "AntigravitySavedStateIncompatibleError"; }
 }
 
 export function antigravityInstructionBinding(content: string) {
@@ -98,22 +110,34 @@ export function createAntigravityAdmission(content: string, model: string) {
             const request = pending.get(id);
             if (request) {
               pending.delete(id);
-              if (message.error !== undefined) return; // Keep the provider's typed error.
+              const reload = request.method === "session/load" || request.method === "session/resume";
+              if (message.error !== undefined) {
+                // The native patch marks its own admission refusals as data. On a
+                // reload that names saved state this build cannot reopen; every
+                // other provider error keeps its typed form.
+                if (reload && record(record(message.error).data).paperclipAdmission === "refused") {
+                  throw new AntigravitySavedStateIncompatibleError("the runtime refused its native admission");
+                }
+                return;
+              }
               const result = record(message.result);
               if (request.method === "initialize") {
                 const info = record(result.agentInfo);
                 const native = record(record(record(result.agentCapabilities)._meta).antigravity);
-                if (info.name !== "antigravity-acp" || info.version !== "1.4.3" || native.paperclipAdmission !== 1) fail("runtime identity or native admission patch is unavailable");
+                if (info.name !== "antigravity-acp" || info.version !== ANTIGRAVITY_RUNTIME_VERSION || native.paperclipAdmission !== 1) fail("runtime identity or native admission patch is unavailable");
                 initialized = true;
               } else if (request.nonce) {
                 const ack = record(record(result._meta).paperclipAntigravityAdmission);
                 const sessionId = request.sessionId ?? result.sessionId;
+                const refuse = (detail: string): never => {
+                  throw reload ? new AntigravitySavedStateIncompatibleError(detail) : new AntigravityAdmissionError(detail);
+                };
                 if (typeof sessionId !== "string" || !sessionId || ack.schema !== ANTIGRAVITY_ADMISSION_SCHEMA
                   || ack.nonce !== request.nonce || ack.sessionId !== sessionId || ack.model !== model
                   || ack.digest !== binding.digest || ack.byteLength !== binding.byteLength
-                  || typeof ack.connectionId !== "string" || !ack.connectionId || ack.connectionId.length > 256) fail("native configuration receipt is missing, stale, or mismatched");
+                  || typeof ack.connectionId !== "string" || !ack.connectionId || ack.connectionId.length > 256) refuse("native configuration receipt is missing, stale, or mismatched");
                 const selected = selectedModel(result);
-                if (selected !== undefined && selected !== model) fail("provider acknowledged a different model");
+                if (selected !== undefined && selected !== model) refuse("provider acknowledged a different model");
                 const mode = record(result.modes).currentModeId;
                 if (mode !== undefined && mode !== "default") fail("native permissions are outside the admitted default mode");
                 nativeSelection = selectionValues(result);
@@ -161,15 +185,20 @@ function selectionValues(value: Record<string, unknown>): Map<string, string> {
 }
 
 /** Native model options group variants into a family plus thinking level.
- * ACPX treats currentValue as a concrete model ID. Project only after the
- * native receipt binds the actual initialized variant; keep the native values
- * above so subsequent family/thinking changes cannot inherit that authority.
+ * ACPX treats currentValue as a concrete model ID and accepts only listed
+ * values. Project only after the native receipt binds the actual initialized
+ * variant; keep the native values above so subsequent family/thinking changes
+ * cannot inherit that authority.
  */
 function projectConcreteModel(value: Record<string, unknown>, model: string): void {
   if (!Array.isArray(value.configOptions)) return;
   for (const entry of value.configOptions) {
     const option = record(entry);
-    if (option.id === "model") option.currentValue = model;
+    if (option.id !== "model") continue;
+    option.currentValue = model;
+    if (Array.isArray(option.options) && !option.options.some(choice => record(choice).value === model)) {
+      option.options = [...option.options, { value: model, name: model }];
+    }
   }
 }
 
@@ -178,6 +207,16 @@ function selectedModel(value: Record<string, unknown>): unknown {
   // family. The exact initialized model is bound by the native receipt;
   // only models.currentModelId is an additional concrete-model assertion.
   return record(value.models).currentModelId;
+}
+
+/** ACPX wraps a refused reload as a retryable "resume required" error. Resuming
+ * the same saved state cannot succeed, so the typed refusal is the outcome. */
+export function antigravitySavedStateIncompatible(error: unknown): AntigravitySavedStateIncompatibleError | null {
+  for (let current = error, depth = 0; current && typeof current === "object" && depth < 8; depth++) {
+    if (current instanceof AntigravitySavedStateIncompatibleError) return current;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
 }
 
 function record(value: unknown): Record<string, unknown> {

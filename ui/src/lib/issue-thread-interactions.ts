@@ -57,6 +57,7 @@ import type {
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
+import { safeExternalHttpUrl, safeNavigableUrl } from "./safe-url";
 
 export function isInteractionPreparingApproval(interaction: IssueThreadInteraction): boolean {
   return interaction.status === "pending"
@@ -194,9 +195,9 @@ export function getCheckboxConfirmationSelectedLabels(args: {
 
 export function normalizeRequestConfirmationTargetHref(href: string) {
   const value = href.trim();
-  if (value.startsWith("#")) return value;
-  if (value.startsWith("/")) return value.startsWith("//") ? null : value;
-  return /^https?:\/\//i.test(value) ? value : null;
+  if (value.startsWith("//")) return null;
+  if (value.startsWith("#") || value.startsWith("/")) return safeNavigableUrl(value);
+  return safeExternalHttpUrl(value);
 }
 
 export function getRequestConfirmationTargetHref({
@@ -292,6 +293,37 @@ export function buildIssueThreadInteractionSummary(
         : `${interaction.payload.serviceName} request expired`;
     }
     return `Connect ${interaction.payload.serviceName}`;
+  }
+
+  if (interaction.kind === "suggest_routine") {
+    if (interaction.status === "accepted") return `Routine set up: ${interaction.payload.title}`;
+    if (interaction.status === "rejected") return "Routine offer declined";
+    if (interaction.status !== "pending") return "Routine offer closed";
+    return `Repeat ${interaction.payload.title}?`;
+  }
+
+  if (interaction.kind === "propose_responsibility_bar") {
+    if (interaction.status === "accepted") return `Bar set: ${interaction.payload.bar.standard}`;
+    if (interaction.status === "rejected") return "Proposed bar: not right";
+    if (interaction.result?.outcome === "replaced") return "Proposed bar replaced";
+    if (interaction.status !== "pending") return "Proposed bar closed";
+    return `Proposed bar: ${interaction.payload.bar.standard}`;
+  }
+
+  if (interaction.kind === "propose_automation") {
+    if (interaction.status === "accepted") return `Automation set up: ${interaction.payload.title}`;
+    if (interaction.status === "rejected") return "Proposed automation: not right";
+    if (interaction.result?.outcome === "replaced") return "Proposed automation replaced";
+    if (interaction.status !== "pending") return "Proposed automation closed";
+    return `Proposed automation: ${interaction.payload.title}`;
+  }
+
+  if (interaction.kind === "propose_dashboard_changes") {
+    if (interaction.status === "accepted") return `Dashboard changed${interaction.result?.summary ? `: ${interaction.result.summary}` : ""}`;
+    if (interaction.status === "rejected") return "Proposed dashboard changes: not right";
+    if (interaction.result?.outcome === "replaced") return "Proposed dashboard changes replaced";
+    if (interaction.status !== "pending") return "Proposed dashboard changes closed";
+    return "Proposed dashboard changes";
   }
 
   const count = interaction.payload.questions.length;

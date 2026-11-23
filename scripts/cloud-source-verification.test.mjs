@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createActionsReader, readSourceVerification, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
+import { createActionsReader, readSourceVerification, runnerChaosEvalsJob, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
 
 import { releaseAdmitted, deferredProducer, requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
@@ -378,6 +378,27 @@ describe("image build source monitor", () => {
     assert.deepEqual(f.cancellations, ["/repos/paperclipai/paperclip/actions/runs/99/cancel", `/repos/paperclipai/paperclip/actions/runs/${runId}/cancel`]);
   });
 
+  // Owner decision 2026-11-12: Runner chaos evals run and report, but do not
+  // gate image publication or the exact-source proof.
+  const chaosJob = { ...proof, id: 112, name: `${runnerChaosEvalsJob} / Restart, replay, trace, and recovery faults` };
+
+  test("a failed Runner chaos eval neither cancels image work nor blocks the source proof", async () => {
+    const f = fixture({ jobs: [{ ...chaosJob, conclusion: "failure" }, proof] });
+    assert.equal((await watchReleaseSource(f)).jobId, proof.id);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a failed Runner chaos eval while the proof is pending keeps waiting instead of failing", async () => {
+    const f = fixture({ jobs: [{ ...chaosJob, conclusion: "failure" }, { ...proof, status: "in_progress", conclusion: null }] });
+    assert.equal(await readSourceVerification(sha, f.api, { failFast: true }), undefined);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a required check that only resembles the chaos job name still fails fast", async () => {
+    const f = fixture({ jobs: [{ ...proof, name: "Runner chaos evals / Restart", conclusion: "failure" }] });
+    await assert.rejects(watchReleaseSource(f), /Runner chaos evals \/ Restart/);
+  });
+
   test("a superseded readiness attempt cancels image work with no deployable future", async () => {
     const f = fixture({ jobs: [], run: { ...sourceRun, status: "completed", conclusion: "cancelled" } });
     await assert.rejects(watchReleaseSource(f), /did not pass/);
@@ -719,4 +740,53 @@ describe("release candidate admission", () => {
     assert.equal(calls[0].options.method, "POST");
     assert.equal(calls[0].options.redirect, "error");
   });
+});
+
+function etagServer(resources) {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    const path = url.replace("https://api.github.com", "");
+    const sent = init.headers["If-None-Match"] ?? null;
+    requests.push({ path, sent });
+    const { etag, body } = resources[path];
+    const notModified = sent === etag;
+    return {
+      ok: !notModified, status: notModified ? 304 : 200,
+      headers: { get: (name) => (name.toLowerCase() === "etag" ? etag : null) },
+      json: async () => (notModified ? assert.fail("a 304 has no body") : structuredClone(body)),
+    };
+  };
+  return { requests, fetchImpl };
+}
+
+test("a repeated read sends its ETag and reuses the body when GitHub answers 304", async () => {
+  const resources = { "/repos/x": { etag: '"v1"', body: { id: 1 } } };
+  const { requests, fetchImpl } = etagServer(resources);
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+
+  assert.deepEqual(await api("/repos/x"), { id: 1 });
+  assert.deepEqual(await api("/repos/x"), { id: 1 });
+  assert.deepEqual(requests, [{ path: "/repos/x", sent: null }, { path: "/repos/x", sent: '"v1"' }]);
+
+  resources["/repos/x"] = { etag: '"v2"', body: { id: 2 } };
+  assert.deepEqual(await api("/repos/x"), { id: 2 }, "a changed resource replaces the cached body");
+  assert.deepEqual(await api("/repos/x"), { id: 2 });
+  assert.equal(requests.at(-1).sent, '"v2"');
+});
+
+test("a cached body cannot be changed by the caller that received it", async () => {
+  const { fetchImpl } = etagServer({ "/repos/x": { etag: '"v1"', body: { jobs: [1] } } });
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+  (await api("/repos/x")).jobs.push(2);
+  assert.deepEqual(await api("/repos/x"), { jobs: [1] });
+});
+
+test("ETags are kept per path", async () => {
+  const { requests, fetchImpl } = etagServer({
+    "/repos/a": { etag: '"a"', body: { id: "a" } }, "/repos/b": { etag: '"b"', body: { id: "b" } },
+  });
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+  await api("/repos/a");
+  assert.deepEqual(await api("/repos/b"), { id: "b" });
+  assert.deepEqual(requests.map((r) => r.sent), [null, null]);
 });

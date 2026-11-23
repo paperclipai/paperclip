@@ -284,6 +284,10 @@ export async function probeEnvironment(
     });
   }
 
+  if (parsed.config.network === "tailscale" && !parsed.config.tailscaleSocket) {
+    return { ok: false, driver: "ssh", summary: "Save the Tailscale environment before testing its connection.", details: null };
+  }
+
   try {
     const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
 

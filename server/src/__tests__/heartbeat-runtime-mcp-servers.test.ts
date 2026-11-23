@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
-import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq, like, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   activityLog,
@@ -273,6 +273,78 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     }
     return seeded;
   }
+
+  it("waits for the complete native profile when two runs first use the same assignment", async () => {
+    const [owner] = await seedAssignedAgents(1);
+    const [next] = await db.insert(heartbeatRuns).values({
+      companyId: owner!.agent.companyId,
+      agentId: owner!.agent.id,
+      status: "running",
+    }).returning();
+    const locked = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const blocker = db.transaction(async (tx) => {
+      await tx.execute(sql`lock table tool_profile_entries in share mode`);
+      locked.resolve();
+      await release.promise;
+    });
+    blocker.catch(locked.reject);
+    const pending: ReturnType<typeof buildPaperclipRuntimeMcpServers>[] = [];
+    const start = (runId: string) => {
+      const admission = buildPaperclipRuntimeMcpServers({ db, agent: owner!.agent, runId });
+      pending.push(admission);
+      void admission.catch(() => {});
+    };
+    try {
+      await locked.promise;
+      start(owner!.run.id);
+      await vi.waitFor(async () => {
+        const waits = await db.execute(sql`select 1 from pg_stat_activity where datname = current_database()
+          and wait_event_type = 'Lock' and query like 'insert into "tool_profile_entries"%'`);
+        expect(waits.length).toBe(1);
+      });
+      start(next.id);
+      await vi.waitFor(async () => {
+        const waits = await db.execute(sql`select 1 from pg_stat_activity where datname = current_database()
+          and wait_event_type = 'Lock' and query like 'insert into "tool_profiles"%'`);
+        expect(waits.length).toBe(1);
+      });
+      expect(await db.select().from(toolProfiles).where(like(toolProfiles.profileKey, "native:%"))).toEqual([]);
+      expect(await db.select().from(toolMcpGateways)).toEqual([]);
+      expect(await db.select().from(toolMcpGatewayTokens)).toEqual([]);
+    } finally {
+      release.resolve();
+      await blocker;
+      await Promise.allSettled(pending);
+    }
+    const [[first], [second]] = await Promise.all(pending);
+    expect(first!.url).toBe(second!.url);
+    expect(first!.token).not.toBe(second!.token);
+    const profiles = await db.select().from(toolProfiles).where(like(toolProfiles.profileKey, "native:%"));
+    expect(profiles).toHaveLength(1);
+    expect(await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profiles[0]!.id))).toHaveLength(1);
+    expect(await db.select().from(toolMcpGateways)).toHaveLength(1);
+    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
+  });
+
+  it("rolls back native profile creation when writing its entries fails and retries cleanly", async () => {
+    const [owner] = await seedAssignedAgents(1);
+    const build = () => buildPaperclipRuntimeMcpServers({ db, agent: owner!.agent, runId: owner!.run.id });
+    await db.execute(sql`alter table tool_profile_entries add constraint fixture_reject_new_profile_entries check (false) not valid`);
+    try {
+      await expect(build()).rejects.toMatchObject({ cause: { constraint_name: "fixture_reject_new_profile_entries" } });
+      expect(await db.select().from(toolProfiles).where(like(toolProfiles.profileKey, "native:%"))).toEqual([]);
+      expect(await db.select().from(toolMcpGateways)).toEqual([]);
+      expect(await db.select().from(toolMcpGatewayTokens)).toEqual([]);
+    } finally {
+      await db.execute(sql`alter table tool_profile_entries drop constraint fixture_reject_new_profile_entries`);
+    }
+    expect(await build()).toHaveLength(1);
+    const profiles = await db.select().from(toolProfiles).where(like(toolProfiles.profileKey, "native:%"));
+    expect(profiles).toHaveLength(1);
+    expect(await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profiles[0]!.id))).toHaveLength(1);
+    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(1);
+  });
 
   it("rejects another agent's run token on a run-scoped gateway", async () => {
     const [owner, other] = await seedAssignedAgents(2);

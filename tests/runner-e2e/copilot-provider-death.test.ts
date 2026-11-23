@@ -5,7 +5,7 @@ import { canonicalRemoteCopilotCommand, copilotDeathArguments, selectOwnedCopilo
 
 describe("owned Copilot provider death selector", () => {
   const root = { pid: 10, parent: 1 }, sidecar = { pid: 11, parent: 10 }, native = { pid: 12, parent: 11 };
-  const argv = ["/private/paperclip-acpx-native-owned/distribution/copilot", ...copilotDeathArguments];
+  const argv = ["/private/paperclip-verified-native-501/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/distribution/copilot", ...copilotDeathArguments];
   it("selects only the native child of the live owned run", () => {
     expect(selectOwnedCopilotProcess(10, [root, sidecar, native], [10, 11, 12], new Map([[12, argv]]))).toEqual(native);
   });
@@ -25,6 +25,11 @@ describe("owned Copilot provider death selector", () => {
     ] as const) {
       const canonical = canonicalRemoteCopilotCommand(command, executable!, { dev: "1", ino: "2" }, descriptor as any);
       expect(() => selectOwnedCopilotProcess(10, [root, sidecar, native], [10, 11, 12], new Map([[12, canonical]]))).toThrow();
+    }
+  });
+  it("targets only Copilot from the sealed verified store, not a per-launch or foreign copy", () => {
+    for (const executable of ["/private/paperclip-acpx-native-owned/distribution/copilot", "/private/paperclip-verified-native-501/short/distribution/copilot", "/private/elsewhere/distribution/copilot"]) {
+      expect(() => selectOwnedCopilotProcess(10, [root, sidecar, native], [10, 11, 12], new Map([[12, [executable, ...copilotDeathArguments]]]))).toThrow();
     }
   });
   it("refuses foreign, retired, ambiguous and caller-selected processes", () => {

@@ -30,7 +30,7 @@ await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
 const address = server.address();
 if (!address || typeof address === "string") throw new Error("TCP listener missing");
 process.env.PAPERCLIP_API_URL = `http://127.0.0.1:${address.port}`;
-setupRunnerPrpWebSocketServer(server, { apiUrl: process.env.PAPERCLIP_API_URL });
+setupRunnerPrpWebSocketServer(server);
 const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
 const heartbeat = heartbeatService(db);
 const lifecycle = startAgentLifecycle(db, createLifecycleDriver(db, createPluginWorkerManager()), () => true);

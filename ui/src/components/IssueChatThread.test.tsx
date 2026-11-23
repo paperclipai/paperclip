@@ -459,6 +459,25 @@ describe("IssueChatThread", () => {
     markdownBodyRenderMock.mockClear();
   });
 
+  it("offers Stop for a run still waiting in line and calls the task's stop action", async () => {
+    const root = createRoot(container);
+    const onCancelRun = vi.fn(async () => {});
+    const waitingRun = {
+      id: "waiting-run", issueId: "issue-1", status: "queued", invocationSource: "assignment", triggerDetail: null,
+      startedAt: null, finishedAt: null, createdAt: "2026-11-13T12:00:00.000Z",
+      agentId: "agent-1", agentName: "Codie", adapterType: "codex_local",
+    };
+    act(() => renderIssueThread(root, { liveRuns: [waitingRun], issueStatus: "todo", onCancelRun }));
+    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
+    expect(stop).not.toBeNull();
+    await act(async () => { stop!.click(); });
+    expect(onCancelRun).toHaveBeenCalledOnce();
+
+    act(() => renderIssueThread(root, { liveRuns: [], issueStatus: "todo", onCancelRun }));
+    expect(container.querySelector('button[aria-label="Stop"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
   it("drops the count heading and does not use an internal scrollbox", () => {
     const root = createRoot(container);
 
@@ -2984,7 +3003,8 @@ describe("IssueChatThread", () => {
     } finally { act(() => root.unmount()); client.clear(); }
   });
 
-  it("resends an unconfirmed comment with the same request ID and keeps the next draft", async () => {
+  it.each(["secure context", "plain HTTP"])("resends an unconfirmed comment with the same request ID and keeps the next draft on %s", async (context) => {
+    if (context === "plain HTTP") vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
     const key = "resend-unconfirmed-comment";
     let rejectSend!: (error: Error) => void;
     const onAdd = vi.fn()
@@ -3007,6 +3027,7 @@ describe("IssueChatThread", () => {
       type("Typed during the outage");
       await act(async () => button("Send").click());
       type("Next thought");
+      expect(onAdd).toHaveBeenCalledOnce();
       await act(async () => rejectSend(new CommentSubmissionUnknownError()));
       expect(container.textContent).toContain("Sending when reconnected…");
       expect(JSON.parse(localStorage.getItem(`${key}:submission:v1`)!).request.body).toBe("Typed during the outage");
@@ -3019,6 +3040,7 @@ describe("IssueChatThread", () => {
       expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
     } finally {
       await act(async () => root.unmount());
+      vi.unstubAllGlobals();
     }
   });
 
@@ -4470,6 +4492,15 @@ describe("IssueAssigneePausedNotice", () => {
     });
     expect(onResume).toHaveBeenCalledTimes(1);
 
+    act(() => root.unmount());
+  });
+
+  it.each(["preparing", "verifying", "resuming"])("leaves %s recovery to the task setup status and inline connection card", lifecycleState => {
+    const root = createRoot(container);
+    const agent = { ...pausedAgent(""), pauseReason: null, lifecycleState, lifecycleError: "Connect an account" } as Agent;
+    act(() => root.render(<IssueAssigneePausedNotice agent={agent} issueStatus="todo" onResume={vi.fn()} />));
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
+    expect(container.textContent).not.toContain("is paused");
     act(() => root.unmount());
   });
 

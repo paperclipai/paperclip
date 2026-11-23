@@ -25,6 +25,7 @@ import { beginWorkspaceSnapshot, uploadWorkspaceSnapshot } from "../services/rem
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { createSavedWorkspaceLoader } from "../services/remote-workspaces.js";
+import { createSavedWorkspaceArchiveOpener } from "../services/saved-workspace-archive.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const execFileAsync = promisify(execFile);
@@ -328,8 +329,9 @@ describeDatabase("remote workspace ordinary file routes", () => {
       { workspace: "execution", path: "docs/result.md" })).rejects.toMatchObject({ status: 422, details: { code: "file_changed" } });
   });
 
-  async function savedFileFixture(keepLocation = false) {
+  async function savedFileFixture(keepLocation = false, populate?: (root: string) => Promise<void>) {
     const f = await fixture(), storageRoot = await fs.mkdtemp(path.join(os.tmpdir(), "saved-file-budget-"));
+    await populate?.(f.root);
     directories.push(storageRoot);
     const storage = createStorageService(createLocalDiskStorageProvider(path.join(storageRoot, "objects")));
     const archivePath = path.join(storageRoot, "saved.pcws"), archive = await captureRemoteWorkspaceDirectory({ cwd: f.root, archivePath });
@@ -345,6 +347,277 @@ describeDatabase("remote workspace ordinary file routes", () => {
     return { ...f, storage, saved, input: { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: snapshot.id } };
   }
 
+  const richWorkspace = async (root: string) => {
+    await fs.mkdir(path.join(root, "docs", "deep", "deeper"), { recursive: true });
+    await fs.mkdir(path.join(root, "node_modules", "pkg"), { recursive: true });
+    await fs.mkdir(path.join(root, "src"));
+    await fs.writeFile(path.join(root, "docs", "deep", "notes.txt"), "nested notes\n");
+    await fs.writeFile(path.join(root, "docs", "deep", "deeper", "leaf.md"), "leaf\n");
+    await fs.writeFile(path.join(root, "docs", "binary.bin"), Buffer.from([0, 1, 2, 3, 255, 0, 7]));
+    await fs.writeFile(path.join(root, "docs", "big.bin"), Buffer.alloc(256 * 1024, 7));
+    await fs.writeFile(path.join(root, "node_modules", "pkg", "index.js"), "module.exports = 1;\n");
+    await fs.writeFile(path.join(root, "server.key"), "secret");
+    for (let index = 0; index < 12; index++) await fs.writeFile(path.join(root, "src", `file-${index}.ts`), `export const v${index} = ${index};\n`);
+    await fs.symlink("result.md", path.join(root, "docs", "link.md"));
+  };
+
+  it("reads a saved workspace above the extraction cap in place, one verified file at a time", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const capped = createSavedWorkspaceLoader(db, f.storage, { limits: { maxArchiveBytes: 1024 } });
+    const base = `/api/issues/${f.ids.issue}/file-resources`;
+    const extractOnly = filesApp(f.ids.company, createRemoteWorkspaceFiles(db, { loadSavedWorkspace: capped }));
+    const refused = await request(extractOnly).get(`${base}/content`).query({ workspace: "execution", path: "docs/result.md" }).expect(422);
+    expect(refused.body.details.code).toBe("too_large");
+
+    const getObject = f.storage.getObject.bind(f.storage), ranges: Array<{ start: number; end: number } | undefined> = [];
+    vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => { ranges.push(args[2]?.range); return getObject(...args); });
+    const tmpBefore = (await fs.readdir(os.tmpdir())).filter(name => name.startsWith("pc-workspace-files-")).length;
+    const app = filesApp(f.ids.company, createRemoteWorkspaceFiles(db, { loadSavedWorkspace: capped,
+      openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, f.storage) }));
+    const preview = await request(app).get(`${base}/content`).query({ workspace: "execution", path: "docs/result.md" }).expect(200);
+    expect(preview.body).toMatchObject({ content: { data: "Remote useful result\n" }, resource: { source: { kind: "saved", snapshotId: f.saved.id } } });
+    const listed = await request(app).get(`${base}/list`).query({ workspace: "execution", path: "docs" }).expect(200);
+    expect(listed.body.items.map((item: { relativePath: string }) => item.relativePath)).toEqual(expect.arrayContaining(["docs/big.bin", "docs/result.md"]));
+    const download = await request(app).get(`${base}/content`).query({ workspace: "execution", path: "docs/big.bin", download: true })
+      .buffer(true).parse((response, done) => { const chunks: Buffer[] = []; response.on("data", (chunk: Buffer) => chunks.push(chunk)); response.on("end", () => done(null, Buffer.concat(chunks))); })
+      .expect(200);
+    expect(Buffer.compare(download.body as Buffer, Buffer.alloc(256 * 1024, 7))).toBe(0);
+    expect(ranges.length).toBeGreaterThan(0);
+    expect(ranges.every(range => range !== undefined)).toBe(true);
+    const fetched = ranges.reduce((total, range) => total + range!.end - range!.start + 1, 0);
+    expect(fetched).toBeLessThan(f.saved.byteSize + 64 * 1024);
+    expect((await fs.readdir(os.tmpdir())).filter(name => name.startsWith("pc-workspace-files-")).length).toBe(tmpBefore);
+  });
+
+  it("answers saved stat and list exactly like the extracted helper", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const extracted = createRemoteWorkspaceFiles(db, { loadSavedWorkspace: createSavedWorkspaceLoader(db, f.storage) });
+    const archived = createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, f.storage) });
+    const scope = { companyId: f.ids.company, workspaceId: f.ids.workspace };
+    const outcome = async (work: () => Promise<unknown>) => {
+      try {
+        const value = JSON.parse(JSON.stringify(await work()));
+        const strip = (entry: Record<string, unknown>) => { delete entry.modifiedAt; return entry; };
+        if (Array.isArray(value?.entries)) value.entries.forEach(strip); else if (value && typeof value === "object") strip(value);
+        return { value };
+      } catch (error) { return { status: (error as { status?: number }).status, code: (error as { details?: { code?: string } }).details?.code }; }
+    };
+    const [left, right] = [await extracted.open(scope), await archived.open(scope)];
+    try {
+      for (const relative of ["docs/result.md", "docs", "docs/binary.bin", "docs/big.bin", "docs/deep/deeper/leaf.md", "missing.md",
+        "docs/result.md/inner", "docs/link.md", ".env", "server.key", "node_modules/pkg/index.js", "../outside", "docs//x"]) {
+        expect(await outcome(() => right!.stat(relative)), relative).toEqual(await outcome(() => left!.stat(relative)));
+      }
+      const lists = [
+        { mode: "all", limit: 100, offset: 0, maxScannedEntries: 5000, maxDepth: 20 },
+        { mode: "all", relativePath: "docs", limit: 100, offset: 0, maxScannedEntries: 5000, maxDepth: 20 },
+        { mode: "all", relativePath: "src", limit: 5, offset: 3, maxScannedEntries: 5000, maxDepth: 20 },
+        { mode: "all", query: "leaf", limit: 100, offset: 0, maxScannedEntries: 5000, maxDepth: 20 },
+        { mode: "all", query: "file", limit: 100, offset: 0, maxScannedEntries: 7, maxDepth: 20 },
+        { mode: "recent", limit: 100, offset: 0, maxScannedEntries: 5000, maxDepth: 1 },
+        { mode: "recent", limit: 4, offset: 2, maxScannedEntries: 5000, maxDepth: 20 },
+        { mode: "all", relativePath: "docs/result.md", limit: 100, offset: 0, maxScannedEntries: 5000, maxDepth: 20 },
+        { mode: "all", relativePath: "node_modules", limit: 100, offset: 0, maxScannedEntries: 5000, maxDepth: 20 },
+      ] as const;
+      for (const list of lists) {
+        const [expected, actual] = [await outcome(() => left!.list({ ...list })), await outcome(() => right!.list({ ...list }))];
+        if (list.mode === "recent" && list.limit === 100) {
+          const byPath = (value: { value?: { entries?: Array<{ relativePath: string }> } }) =>
+            [...(value.value?.entries ?? [])].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+          expect(byPath(actual), JSON.stringify(list)).toEqual(byPath(expected));
+          expect(byPath(actual).map(entry => entry.relativePath))
+            .toEqual((actual.value as { entries: Array<{ relativePath: string }> }).entries.map(entry => entry.relativePath));
+        } else if (list.mode !== "recent") {
+          expect(actual, JSON.stringify(list)).toEqual(expected);
+        }
+      }
+    } finally { await left?.close(); await right?.close(); }
+  });
+
+  it("refuses a saved file whose stored bytes no longer match its verified manifest", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const getObject = f.storage.getObject.bind(f.storage);
+    vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      const object = await getObject(...args);
+      if (!args[2]?.range || args[2].range.end - args[2].range.start < 1024) return object;
+      const { Transform } = await import("node:stream");
+      return { ...object, stream: object.stream.pipe(new Transform({ transform(bytes: Buffer, _encoding, callback) {
+        const tampered = Buffer.from(bytes); tampered[0] ^= 0xff; callback(null, tampered);
+      } })) };
+    });
+    const archived = createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, f.storage) });
+    const access = await archived.open({ companyId: f.ids.company, workspaceId: f.ids.workspace });
+    try {
+      await expect(access!.download("docs/big.bin")).rejects.toMatchObject({ status: 422, details: { code: "file_changed" } });
+    } finally { await access?.close(); }
+  });
+
+  it("keeps changed files on bounded extraction and names its limit for a saved workspace above the cap", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const opener = createSavedWorkspaceArchiveOpener(db, f.storage), scope = { companyId: f.ids.company, workspaceId: f.ids.workspace };
+    const changed = { mode: "changed", limit: 100, offset: 0, maxScannedEntries: 5000, maxDepth: 20 } as const;
+    const capped = createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: opener,
+      loadSavedWorkspace: createSavedWorkspaceLoader(db, f.storage, { limits: { maxArchiveBytes: 1024 } }) });
+    const cappedAccess = await capped.open(scope);
+    try { await expect(cappedAccess!.list({ ...changed })).rejects.toMatchObject({ status: 422, details: { code: "changed_unavailable" } }); }
+    finally { await cappedAccess?.close(); }
+    const bounded = createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: opener, loadSavedWorkspace: createSavedWorkspaceLoader(db, f.storage) });
+    const boundedAccess = await bounded.open(scope);
+    try {
+      await expect(boundedAccess!.list({ ...changed })).rejects.toMatchObject({ details: { code: "changed_unavailable" } });
+      expect(await boundedAccess!.stat("docs/result.md")).toMatchObject({ kind: "file", byteSize: 21 });
+    } finally { await boundedAccess?.close(); }
+  });
+
+  it("reserves bounded temporary disk for saved downloads and releases it after each one", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const scope = { companyId: f.ids.company, workspaceId: f.ids.workspace }, opener = createSavedWorkspaceArchiveOpener(db, f.storage);
+    const files = (limits: NonNullable<Parameters<typeof createRemoteWorkspaceFiles>[1]>["savedFileDownloadLimits"]) =>
+      createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: opener, savedFileDownloadLimits: limits });
+    const attempt = async (limits: Parameters<typeof files>[0]) => {
+      const access = await files(limits).open(scope);
+      try {
+        const download = await access!.download("docs/big.bin");
+        let size = 0; for await (const chunk of download.stream) size += chunk.length; await download.cleanup();
+        return size;
+      } finally { await access?.close(); }
+    };
+    await expect(attempt({ maxReservedBytes: 1024 })).rejects.toMatchObject({ status: 422, details: { code: "too_large" } });
+    await expect(attempt({ availableBytes: async () => 0n })).rejects.toMatchObject({ status: 422, details: { code: "workspace_unavailable" } });
+    const fitsOne = { maxReservedBytes: 256 * 1024, freeSpaceMarginBytes: 0 };
+    expect(await attempt(fitsOne)).toBe(256 * 1024);
+    expect(await attempt(fitsOne)).toBe(256 * 1024);
+    const access = await files(fitsOne).open(scope);
+    try {
+      const held = await access!.download("docs/big.bin");
+      await expect(access!.download("docs/big.bin")).rejects.toMatchObject({ status: 422, details: { code: "workspace_unavailable" } });
+      held.stream.destroy(); await held.cleanup();
+    } finally { await access?.close(); }
+    const preview = await (await files(fitsOne).open(scope))!.read("docs/result.md", { maxBytes: 1024 });
+    expect(preview.toString()).toBe("Remote useful result\n");
+    let freeSpaceChecked!: () => void;
+    const checking = new Promise<void>(resolve => { freeSpaceChecked = resolve; });
+    const slow = { ...fitsOne, availableBytes: async () => { await checking; return 1n << 40n; } };
+    const [first, second] = [await files(slow).open(scope), await files(slow).open(scope)];
+    try {
+      const together = Promise.allSettled([first!.download("docs/big.bin"), second!.download("docs/big.bin")]);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      freeSpaceChecked();
+      const outcomes = await together;
+      expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.find(outcome => outcome.status === "rejected")).toMatchObject({ reason: { status: 422, details: { code: "workspace_unavailable" } } });
+      for (const outcome of outcomes) if (outcome.status === "fulfilled") { outcome.value.stream.destroy(); await outcome.value.cleanup(); }
+    } finally { await first?.close(); await second?.close(); }
+  });
+
+  it("closes the storage stream when a saved range read is abandoned or stalls", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const getObject = f.storage.getObject.bind(f.storage), sources: Array<import("node:stream").Readable> = [];
+    let stall = false;
+    vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      const object = await getObject(...args);
+      if (stall && args[2]?.range && args[2].range.end - args[2].range.start > 1024) {
+        object.stream.destroy();
+        const { PassThrough } = await import("node:stream");
+        const silent = new PassThrough();
+        sources.push(silent);
+        return { ...object, stream: silent };
+      }
+      sources.push(object.stream);
+      return object;
+    });
+    const opener = createSavedWorkspaceArchiveOpener(db, f.storage, { idleTimeoutMs: 100 });
+    const archive = await opener({ companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id });
+    try {
+      const entry = archive.entry("docs/big.bin")!;
+      const abandoned = await archive.read(entry, 0, entry.size);
+      await new Promise(resolve => abandoned.once("readable", resolve));
+      abandoned.destroy();
+      await vi.waitFor(() => expect(sources.at(-1)!.destroyed).toBe(true));
+      stall = true;
+      const stalled = await archive.read(entry, 0, entry.size);
+      await expect((async () => { for await (const chunk of stalled) void chunk; })()).rejects.toThrow("remote_workspace_snapshot_download_stalled");
+      await vi.waitFor(() => expect(sources.at(-1)!.destroyed).toBe(true));
+    } finally { archive.close(); }
+  });
+
+  it("charges one cached index for overlapping cold opens and names an oversized manifest", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const input = { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id };
+    const single = createSavedWorkspaceArchiveOpener(db, f.storage);
+    const once = await single(input); const charge = once.cachedIndexBytes(); once.close();
+    const getObject = f.storage.getObject.bind(f.storage), manifestReads: unknown[] = [];
+    const spy = vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      if (args[2]?.range?.start === 19) manifestReads.push(args[2].range);
+      return getObject(...args);
+    });
+    const overlapping = createSavedWorkspaceArchiveOpener(db, f.storage);
+    const opened = await Promise.all([overlapping(input), overlapping(input), overlapping(input)]);
+    spy.mockRestore();
+    expect(manifestReads).toHaveLength(2);
+    expect(opened.map(archive => archive.cachedIndexBytes())).toEqual([charge, charge, charge]);
+    for (const archive of opened) archive.close();
+    const capped = createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, f.storage, { maxIndexEntries: 3 }) });
+    await expect(capped.open({ companyId: f.ids.company, workspaceId: f.ids.workspace }))
+      .rejects.toMatchObject({ status: 422, details: { code: "too_large" } });
+  });
+
+  it("lets a cancelled saved open stop waiting for a busy manifest build", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const held = async () => {
+      const f = await savedFileFixture(false);
+      const getObject = f.storage.getObject.bind(f.storage);
+      vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+        if (args[2]?.range?.start === 19) await gate;
+        return getObject(...args);
+      });
+      const opener = createSavedWorkspaceArchiveOpener(db, f.storage);
+      return { opener, input: { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id } };
+    };
+    const [first, second, third] = [await held(), await held(), await held()];
+    const busy = [first.opener(first.input), second.opener(second.input)];
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const queued = new AbortController(), sharing = new AbortController();
+    const queuedOpen = third.opener({ ...third.input, signal: queued.signal });
+    const sharedOpen = first.opener({ ...first.input, signal: sharing.signal });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const started = performance.now();
+    queued.abort(new Error("request closed")); sharing.abort(new Error("request closed"));
+    await expect(queuedOpen).rejects.toThrow("request closed");
+    await expect(sharedOpen).rejects.toThrow("request closed");
+    expect(performance.now() - started).toBeLessThan(1000);
+    release();
+    for (const archive of await Promise.all(busy)) { expect(archive.entry("docs/result.md")).toBeDefined(); archive.close(); }
+    const reopened = await third.opener(third.input);
+    expect(reopened.entry("docs/result.md")).toBeDefined(); reopened.close();
+  });
+
+  it("retries a failed shared manifest build once for all of its waiters", async () => {
+    const f = await savedFileFixture(false);
+    const getObject = f.storage.getObject.bind(f.storage);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let manifestReads = 0, failed = false;
+    vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      if (args[2]?.range?.start === 19) {
+        manifestReads++;
+        if (!failed) { failed = true; await gate; throw new Error("transient storage failure"); }
+      }
+      return getObject(...args);
+    });
+    const opener = createSavedWorkspaceArchiveOpener(db, f.storage);
+    const input = { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id };
+    const first = opener(input);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const waiters = [opener(input), opener(input), opener(input)];
+    await new Promise(resolve => setTimeout(resolve, 50));
+    release();
+    await expect(first).rejects.toThrow("transient storage failure");
+    for (const archive of await Promise.all(waiters)) { expect(archive.entry("docs/result.md")).toBeDefined(); archive.close(); }
+    expect(manifestReads).toBe(3);
+  });
+
   it("keeps a production saved preview available when cleanup clears its location during archive loading", async () => {
     const f = await savedFileFixture(true);
     const requestTemp = await fs.mkdtemp(path.join(os.tmpdir(), "saved-file-location-request-"));
@@ -356,15 +629,12 @@ describeDatabase("remote workspace ordinary file routes", () => {
       managedPluginAutoInstall: [], decisionServiceOptions: { wakeOriginAgent: async () => null } });
     const originalTmpdir = process.env.TMPDIR;
     process.env.TMPDIR = requestTemp;
-    let extractedCopy: string | undefined;
+    let cleared = false;
     const getObject = f.storage.getObject.bind(f.storage);
     const retrieve = vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
       const object = await getObject(...args);
-      const copies = (await fs.readdir(requestTemp)).filter(name => name.startsWith("pc-workspace-files-"));
-      expect(copies).toHaveLength(1);
-      extractedCopy = path.join(requestTemp, copies[0]!);
-      // The committed bytes and writer epoch remain unchanged. Only the
-      // allocation cleanup recorded by production has finished meanwhile.
+      if (cleared) return object;
+      cleared = true;
       await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: {
         ...f.authority, snapshotId: f.saved.id, location: null,
       } } }).where(eq(executionWorkspaces.id, f.ids.workspace));
@@ -379,9 +649,9 @@ describeDatabase("remote workspace ordinary file routes", () => {
       expect({ status: response.status, code: response.body.details?.code }).toEqual({ status: 200, code: undefined });
       expect(response.body).toMatchObject({ resource: { source: { kind: "saved", snapshotId: f.saved.id } },
         content: { encoding: "utf8", data: "Remote useful result\n" } });
-      expect(retrieve).toHaveBeenCalledTimes(1);
-      expect(extractedCopy).toBeDefined();
-      await expect(fs.stat(extractedCopy!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(retrieve).toHaveBeenCalled();
+      expect(retrieve.mock.calls.every(call => call[2]?.range !== undefined)).toBe(true);
+      expect(await fs.readdir(requestTemp)).toEqual([]);
     } finally {
       retrieve.mockRestore();
       try { await app.locals.paperclipShutdown(); }

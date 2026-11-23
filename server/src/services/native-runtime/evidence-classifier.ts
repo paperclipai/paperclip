@@ -1,5 +1,6 @@
 import { and, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { nativeBlockerUserId } from "./native-blocker-owner.js";
 import {
   approvals,
   caseHandoffs,
@@ -25,6 +26,14 @@ export interface NativeEvidenceRefAssessment {
   outcome: NativeEvidenceOutcome;
   reasonCode: string;
   durableRecordId: string | null;
+}
+
+export type NativeBlockerOwnerKind = "agent" | "user" | "system" | "external" | "board" | "unspecified";
+
+export function nativeBlockerOwnerKind(owner: Record<string, unknown>): NativeBlockerOwnerKind {
+  if (owner.owner === "board") return "board";
+  return ["agent", "user", "system", "external", "board"].includes(String(owner.kind))
+    ? owner.kind as NativeBlockerOwnerKind : "unspecified";
 }
 
 export interface NativeEvidenceAssessment {
@@ -65,6 +74,8 @@ export interface NativeEvidenceAssessment {
   blocker: {
     unblockAction: string;
     boardOwned: boolean;
+    ownerKind?: NativeBlockerOwnerKind;
+    ownerUserId?: string;
     scope: "current_track" | "task_wide";
   } | null;
   continuation: {
@@ -277,6 +288,8 @@ export async function classifyNativeEvidence(input: {
   const reported = input.result.reportedWorkDisposition;
   const blocker = record(input.result.blocker);
   const blockerOwner = record(blocker.owner);
+  const ownerUserId = reported === "blocked" && typeof blocker.unblockAction === "string"
+    ? await nativeBlockerUserId({ ...input, owner: blockerOwner }) : null;
   const continuation = record(input.result.continuation);
   if (!["done", "blocked", "needs_review", "yielded"].includes(String(reported))) {
     throw new Error("native_result_invalid_disposition");
@@ -417,7 +430,9 @@ export async function classifyNativeEvidence(input: {
     blocker: reported === "blocked" && typeof blocker.unblockAction === "string"
       ? {
           unblockAction: blocker.unblockAction,
-          boardOwned: blockerOwner.kind === "board" || blockerOwner.owner === "board",
+          boardOwned: ["board", "user"].includes(String(blockerOwner.kind)) || blockerOwner.owner === "board",
+          ...(ownerUserId ? { ownerUserId } : {}),
+          ownerKind: nativeBlockerOwnerKind(blockerOwner),
           scope: blocker.scope === "task_wide" ? "task_wide" : "current_track",
         }
       : null,

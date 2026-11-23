@@ -12,11 +12,11 @@ import { callbacks as controlCallbacks } from "./__tests__/run-control-fixtures.
 import { objectLogFixture } from "./__tests__/object-log-fixture.js";
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, approvals, issueApprovals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, approvals, issueApprovals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -26,16 +26,19 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
-import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
-import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_HELD_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
+import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
+import { ACCOUNTING_CONTENTION_MESSAGE, AccountingContentionError } from "../accounting-transaction.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -61,7 +64,11 @@ const diagnosticNativeFixture = vi.hoisted(() => ({
 }));
 vi.mock("../native-runtime/native-codex-runner.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../native-runtime/native-codex-runner.js")>();
-  return { ...actual, resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary() };
+  return {
+    ...actual,
+    resolvePaperclipRunnerBinary: () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinary(),
+    resolvePaperclipRunnerBinaryAsync: async () => diagnosticNativeFixture.enabled ? process.execPath : actual.resolvePaperclipRunnerBinaryAsync(),
+  };
 });
 vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
@@ -481,6 +488,10 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     { hold: "finished turn", reasonCode: "conversation_turn_finished", replies: true },
     { hold: "own question card", reasonCode: "governed_response_waiting", replies: false },
     { hold: "execution stage and own question card", reasonCode: "governed_response_waiting", replies: false },
+    // A card the board addressed to someone else holds the task, but this run
+    // did not create it, so it cannot be the turn's response.
+    { hold: "someone else's confirmation card", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "earlier turn's question card", reasonCode: "governed_response_waiting", replies: true },
   ] as const)("posts a waiting conversation turn's accepted answer: $hold", async ({ hold, reasonCode, replies }) => {
     const f = await fixture({ runtimeMode: "native" }, `CNV${randomUUID().slice(0, 6)}`);
     const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Chat with CEO",
@@ -500,6 +511,22 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
         continuationPolicy: "wake_assignee", payload: { version: 1, questions: [{ id: "model", prompt: "Which model?",
           selectionMode: "single", required: true, options: [{ id: "flash", label: "Flash" }] }] } },
         { agentId: f.agent.id, runId: f.run.id });
+    }
+    if (hold === "someone else's confirmation card") {
+      // Saved as the board's create route saves it: no source run.
+      await db.insert(issueThreadInteractions).values({ companyId: f.run.companyId, issueId: issue.id,
+        kind: "request_confirmation", status: "pending", continuationPolicy: "none", title: "Riley's website proposal",
+        requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
+        addresseeUserId: "riley", createdByUserId: "local-board",
+        payload: { version: 1, prompt: "Riley: approve creating the website implementation task?" } });
+    }
+    if (hold === "earlier turn's question card") {
+      const [earlier] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+        status: "succeeded", runtimeMode: "native", responsibleUserId: "local-board" }).returning();
+      await issueThreadInteractionService(db).create(issue, { kind: "request_confirmation", sourceRunId: earlier.id,
+        resolverPolicy: "human_only", continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Create the website implementation task?" } },
+        { agentId: f.agent.id, runId: earlier.id });
     }
     const answer = "Resubmitted the hire with the cheaper model. [Review the pending approval](/CNV/approvals/a1).";
     f.input.issueId = issue.id;
@@ -528,6 +555,9 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect((await read(f.run.id)).resultJson).toMatchObject({ presentationDecision: replies
       ? { chosenSource: "final_agent_message", commentAction: "create", commentId: posted[0]?.id }
       : { chosenSource: "none", commentAction: "none" } });
+    // The posted answer (or the run's own card) is the turn's response: the
+    // conversation waits for the person.
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].conversationState).toBe("waiting");
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("settles the accepted native exact rate-card price without replacing it with zero", async () => {
@@ -612,6 +642,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
   });
 
+  it.each(["completeRun", "failRun"] as const)("finalizes the run log in %s only after a reattach's deferred log recovery settles", async operation => {
+    const f = await fixture();
+    let finishRecovery!: () => void;
+    const recovery = new Promise<void>(resolve => { finishRecovery = resolve; });
+    let recovered = false;
+    const output = { ...f.input.output, settleDeferredLogRecovery: () => recovery.then(() => { recovered = true; }) };
+    const finalizedAfterRecovery: boolean[] = [];
+    f.deps.runLogStore.finalize.mockImplementation(async () => {
+      finalizedAfterRecovery.push(recovered);
+      return { bytes: 123, sha256: "log-hash", compressed: true };
+    });
+    const completion = operation === "completeRun" ? f.completion.completeRun({ ...f.input, output })
+      : f.completion.failRun({ ...f.failure(new Error("reattach preparation failed")), output });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const finalizedEarly = f.deps.runLogStore.finalize.mock.calls.length;
+    finishRecovery();
+    await completion;
+    expect(finalizedEarly).toBe(0);
+    expect(finalizedAfterRecovery).toEqual([true]);
+  });
+
   it("attributes an adapter stop caused by a lost controller lease", async () => {
     const f = await fixture();
     Object.assign(f.input.adapterResult, { exitCode: null, errorCode: "cancelled", errorMessage: "Grok execution was cancelled" });
@@ -692,6 +743,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.updateRuntimeState).toHaveBeenCalledOnce();
   });
 
+  it("keeps the committed native finalization record when the stored result is larger than the read projection", async () => {
+    const decisionId = randomUUID();
+    const diagnostics = randomBytes(120_000).toString("base64");
+    const f = await fixture({ runtimeMode: "native", resultJson: { finalizationPhase: "committed",
+      finalizationReasonCode: "conversation_turn_finished", decisionId, diagnostics } });
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, f.agent.id));
+    f.agent.adapterType = "paperclip_runner";
+    f.input.sessionCodec = getAdapterSessionCodec(f.agent.adapterType);
+    const nativeSessionId = randomUUID(), providerSessionId = randomUUID();
+    f.input.adapterResult.sessionId = nativeSessionId;
+    delete f.input.adapterResult.sessionParams;
+    f.input.adapterResult.sessionDisplayId = providerSessionId;
+    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id, companyId: f.run.companyId, issueId: "unused", result: {}, terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "yielded" }, turnId: null, sourceInstanceId: "test", normalizedSessionId: nativeSessionId, providerSessionId, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
+    expect((await f.deps.getRun(f.run.id))?.resultJson).toMatchObject({ truncated: true });
+    await f.completion.completeRun(f.input);
+    const completed = await read(f.run.id);
+    expect(completed.status).toBe("succeeded");
+    expect(completed.resultJson).toMatchObject({ finalizationReasonCode: "conversation_turn_finished", decisionId, diagnostics });
+    expect(completed.resultJson).not.toHaveProperty("truncated");
+  });
+
   it("reports trace completion before a later write throws and reads output after log finalization", async () => {
     const f = await fixture();
     let excerpt = "before finalize";
@@ -710,6 +782,39 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.completeRun(f.input);
     expect((await read(f.run.id)).status).toBe("succeeded");
     expect(f.input.onProviderTraceFinalized).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { runtimeMode: "native" as const, conversation: true, createsFinal: true },
+    { runtimeMode: "native" as const, conversation: false, createsFinal: false },
+    { runtimeMode: "legacy" as const, conversation: true, createsFinal: false },
+  ])("scopes final-response precedence to native standing conversations: %j", async ({ runtimeMode, conversation, createsFinal }) => {
+    const f = await fixture({ runtimeMode });
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Conversation reply",
+      ...(conversation ? { assigneeAgentId: f.agent.id, conversationAgentId: f.agent.id,
+        conversationUserId: "board-person", conversationState: "active" } : {}),
+    }).returning();
+    const [earlier] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId: issue.id,
+      authorAgentId: f.agent.id, createdByRunId: f.run.id, body: "Checking the request.",
+    }).returning();
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.input.issueContext = await createHeartbeatRunPreparation(db).getIssueExecutionContext(f.run.companyId, issue.id);
+    f.input.adapterResult.resultJson = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "The complete answer" } };
+    f.deps.findRunIssueComment.mockResolvedValue(earlier);
+    f.deps.issuesSvc.addComment.mockImplementation(async (issueId, body) => {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId,
+        authorAgentId: f.agent.id, authorType: "agent", createdByRunId: f.run.id, body }).returning();
+      return { ...comment, authorType: "agent" as const };
+    });
+    await f.completion.completeRun(f.input);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id));
+    expect(comments.some(comment => comment.id === earlier.id && comment.body === earlier.body)).toBe(true);
+    expect(comments.filter(comment => comment.body === "The complete answer")).toHaveLength(createsFinal ? 1 : 0);
+    expect((await read(f.run.id)).resultJson).toMatchObject({ presentationDecision: {
+      chosenSource: createsFinal ? "semantic_result_summary" : "existing_issue_comment",
+      commentAction: createsFinal ? "create" : "reuse",
+    } });
   });
 
   it("keeps completion and session persistence moving after a response comment fails", async () => {
@@ -761,6 +866,158 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     else await f.completion.failRun(f.failure(error));
     expect(await read(f.run.id)).toMatchObject({ status: "failed", error: "PRP command session.open failed",
       resultJson: { providerFailure } });
+  });
+
+  it.each(["run", "setup", "restore"] as const)("waits a minute and suppresses rapid recovery when %s fails because storage is unavailable (storage chaos ST1)", async phase => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable",
+        $fault: "server", $metadata: { httpStatusCode: 503, attempts: 3 } });
+    }).catch(error => error as Error);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled", run: { id: "wait" } } as never);
+    if (phase === "restore") await f.completion.failRunSetup(f.setup(new RemoteWorkspaceRestoreError("snapshot_download", true, outage)));
+    else if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE, error: STORAGE_UNAVAILABLE_MESSAGE });
+    expect(failed.error).not.toContain("Injected storage outage");
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it.each(["run", "setup"] as const)("ends the task's automatic recovery once its storage wait is exhausted (%s)", async phase => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+    }).catch(error => error as Error);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "retry_exhausted", attempt: 11, maxAttempts: 10 } as never);
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE,
+      error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE });
+  });
+
+  // Staging incident shape: a server restart reattached a remote native runner whose turn was
+  // still in flight. A storage outage then failed the reattachment, restart
+  // recovery kept the workspace under a no-replay hold, and the run reported
+  // "Paperclip will retry automatically when storage is back" with no storage
+  // wait scheduled. The task sat blocked for 15 hours behind a false promise.
+  it.each([
+    ["an outage", "ServiceUnavailable", 503, STORAGE_UNAVAILABLE_HELD_MESSAGE],
+    ["rejected credentials", "ExpiredToken", 403, STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE],
+  ] as const)("never promises a storage retry when native recovery holds the run after %s", async (_label, name, status, expected) => {
+    const f = await fixture({ runtimeMode: "native" });
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Daily staging review",
+      assigneeAgentId: f.agent.id, status: "in_progress" }).returning();
+    await db.update(agentWakeupRequests).set({ runId: f.run.id, reason: "issue_monitor_due", requestedByActorType: "system" })
+      .where(eq(agentWakeupRequests.id, f.wake.id));
+    const [run] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id,
+      contextSnapshot: { issueId: issue.id, wakeReason: "issue_monitor_due", wakeSource: "automation" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
+      eventType: "turn.started", stream: "system", level: "info", message: "Provider turn started" });
+    // Restart recovery's workspace preservation already settled the coordinator.
+    await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: issue.id, runId: run.id,
+      phase: "terminal_failure", attempt: 1, controllerGeneration: 3, recoveryState: "blocked",
+      failureCode: "native_continuation_requires_reconciliation" });
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name, $metadata: { httpStatusCode: status, attempts: 3 } });
+    }).catch(error => error as Error);
+    await f.completion.failRun({ ...f.failure(outage), run, issueId: issue.id, requiredWorkspaceRestoreEvidence: {}, legacyAdapterEntered: false });
+    const failed = await read(run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "native_continuation_requires_reconciliation", error: expected });
+    expect(failed.error).not.toMatch(/retry automatically/i);
+    expect(failed.error).toContain("Retry");
+    // No storage wait is created for a run native recovery owns: it could only be refused.
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id),
+      eq(heartbeatRunEvents.eventType, "error")));
+    expect(events.map(event => event.message)).toEqual([expected]);
+  });
+
+  it.each([
+    ["run", "not scheduled"], ["setup", "not scheduled"], ["run", "scheduling failed"], ["setup", "scheduling failed"],
+  ] as const)("withdraws the storage retry promise when no storage wait could be scheduled (%s, %s)", async (phase, mode) => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+    }).catch(error => error as Error);
+    if (mode === "not scheduled") f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled",
+      reason: "Scheduled retry suppressed because the agent is not invokable", errorCode: "agent_not_invokable", issueId: null } as never);
+    else f.deps.scheduleBoundedRetryForRun.mockRejectedValueOnce(new Error("retry write failed"));
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE,
+      error: STORAGE_UNAVAILABLE_HELD_MESSAGE });
+    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.run.id),
+      eq(heartbeatRunEvents.eventType, "error")));
+    expect(events.map(event => event.message)).toEqual([STORAGE_UNAVAILABLE_HELD_MESSAGE]);
+  });
+
+  it.each(["execution", "setup"] as const)("names the nested cause of a generic %s failure and keeps SQL text off the board", async phase => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driver = Object.assign(new Error("could not serialize access due to concurrent update"), { code: "40001" });
+    const query = new Error('Failed query: update "heartbeat_runs" set "usage_json" = $1 where "id" = $2\nparams: {"apiKey":"sk-live-secret"},run-1',
+      { cause: new Error("transaction aborted", { cause: driver }) });
+    const error = new Error(`Usage write failed: ${query.message}`, { cause: query });
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
+    else await f.completion.failRun(f.failure(error));
+    const run = await read(f.run.id);
+    expect(run).toMatchObject({ status: "failed", errorCode: phase === "setup" ? "setup_failed" : "adapter_failed",
+      error: "Usage write failed: Database query failed (40001)", resultJson: { failureCause: "40001" } });
+    expect(JSON.stringify(run.resultJson)).not.toMatch(/heartbeat_runs|sk-live-secret|params/);
+    expect(logged).toHaveBeenCalledWith(expect.objectContaining({ runId: f.run.id, failureCause: "40001" }), expect.any(String));
+  });
+
+  it("bounds the failure cause to a closed-shape token and falls back to the error class", async () => {
+    const f = await fixture();
+    class QueryTimeoutError extends Error { override name = "QueryTimeoutError"; }
+    const unsafe = Object.assign(new QueryTimeoutError("timed out"), { code: `${"X".repeat(81)}` },
+      { cause: { code: "select * from users" } });
+    await f.completion.failRun(f.failure(unsafe));
+    expect((await read(f.run.id)).resultJson).toMatchObject({ failureCause: "QueryTimeoutError" });
+  });
+
+  it("names why an adapter result failed without a code", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 137, signal: null, errorMessage: null } });
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: "Adapter failed",
+      resultJson: { stopReason: "adapter_failed", failureCause: "exit_code_137" } });
+  });
+
+  it("keeps SQL text out of a cancelled adapter result's error", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1,
+      errorMessage: 'Failed query: select "secret_value" from x where id = $1\nparams: sk-secret', resultJson: { status: "cancelled" } } });
+    const run = await read(f.run.id);
+    expect(run.status).toBe("cancelled");
+    expect(run.error).toBe("Database query failed");
+  });
+
+  it("records no failure cause when the failure already has a named code", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1, errorCode: "provider_quota", errorMessage: "quota" } });
+    const run = await read(f.run.id);
+    expect(run.errorCode).toBe("provider_quota");
+    expect(run.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps an ordinary adapter failure on the normal recovery path", async () => {
+    const f = await fixture();
+    await f.completion.failRun(f.failure(new Error("adapter crashed")));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: false }));
   });
 
   it("still records failure and releases issue ownership when log finalization and progress flushing fail", async () => {
@@ -872,6 +1129,41 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
     expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("names a full sandbox disk that the sandbox provider reported during setup", async () => {
+    const f = await fixture();
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "internal server error: failed to create session config directory: "
+        + "mkdir /home/daytona/.daytona/sessions/paperclip-78f6ce53: no space left on device" });
+    await f.completion.failRunSetup(f.setup(new Error("Could not reconnect to the running agent", { cause: refusal })));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full" });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it.each([
+    ["the save", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)],
+    ["the save and its read-only fallback", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL, { cause: new Error(
+      "remote_workspace_readonly_capture_failed: stage=transfer reason=operation_failed transport=unknown") })],
+  ])("names a full sandbox disk that stopped %s of the workspace during setup", async (_name, failure) => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(failure()));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full", error: REMOTE_WORKSPACE_SANDBOX_DISK_FULL });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps another failed workspace save as a setup failure", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(new Error("remote_workspace_archive_changed")));
+    expect((await read(f.run.id))?.errorCode).toBe("setup_failed");
+  });
+
+  it("keeps a full disk on the Paperclip host out of the sandbox disk code", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" })));
+    expect((await read(f.run.id))?.errorCode).not.toBe("sandbox_disk_full");
   });
 
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {
@@ -1113,6 +1405,18 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
+  it.each(["before_adapter", "adapter_entered", "untrusted", "native"] as const)("names a remote preparation timeout raised %s during execution", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "native" ? "native" : "legacy" });
+    const cause = new RemoteWorkspaceOperationTimeoutError("prepare", 30_000);
+    const message = "Could not exclude agent files from task Git staging (reason=timed_out)";
+    const error = scenario === "untrusted" ? new Error(message) : new RemoteWorkspacePreparationTimeoutError(cause, message);
+    await f.completion.failRun({ ...f.failure(error), requiredWorkspaceRestoreEvidence: {}, legacyAdapterEntered: scenario === "adapter_entered" });
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", error: message,
+      errorCode: scenario === "before_adapter" ? "remote_workspace_prepare_timeout" : expect.not.stringMatching(/^remote_workspace_prepare_timeout$/) });
+    if (scenario === "before_adapter") expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+  });
+
   it.each(["fresh", "started", "untrusted", "retained"] as const)("routes a %s preserved sandbox resume failure through bounded bootstrap recovery", async scenario => {
     const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
     const providerError = Object.assign(new Error("Sandbox abc is not in a valid state: stopping /home/daytona/secret"), { statusCode: 400 });
@@ -1184,6 +1488,33 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     if (retried) {
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         providerFailure: { provider: "sandbox", phase: "startup", category: "overloaded", httpStatus: 502, retryability: "transient" } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  // Staging run f41857b6: the Daytona create was still pending at the
+  // acquisition deadline, so the worker returned the cleanup envelope with a
+  // create-phase diagnostic and no provider status.
+  const daytonaLeaseTimeout = (elapsedMs: number) => new JsonRpcCallError({ code: -32000,
+    message: "Daytona lease acquisition timed out; allocation cleanup is pending",
+    data: { schema: "paperclip/environment-creation-cleanup/v1",
+      cleanup: { providerLeaseId: "paperclip-create-05f81d77", companyId: "company", environmentId: "environment",
+        runId: "f41857b6", attemptId: "05f81d77", accountFingerprint: "a".repeat(64),
+        labels: { "paperclip-provider": "daytona", "paperclip-create-attempt": "05f81d77" } },
+      acquisitionDiagnostic: { phase: "create", elapsedMs, budgetMs: 300_000, providerState: "creating" } } });
+
+  it.each(["fresh", "started", "early_failure"] as const)("routes a %s sandbox create that timed out through bounded bootstrap recovery", async scenario => {
+    const f = await fixture();
+    const error = await acquireThroughOrchestrator(daytonaLeaseTimeout(scenario === "early_failure" ? 100 : 300_004));
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null });
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    const retried = scenario === "fresh";
+    expect(failed).toMatchObject({ status: "failed", errorCode: retried ? "environment_provider_unavailable" : "setup_failed" });
+    expect(failed.error).toContain("Daytona lease acquisition timed out");
+    if (retried) {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        providerFailure: { provider: "sandbox", phase: "startup", category: "timeout", retryability: "transient" } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
@@ -1293,6 +1624,128 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "runner_revision_mismatch" });
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it("saves a bounded cause and keeps the retryable generic code when accounting retries are exhausted", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driverError = Object.assign(new Error("could not serialize access due to concurrent update"),
+      { name: "PostgresError", code: "40001" });
+    const queryError = new Error("Failed query: select \"id\" from \"heartbeat_runs\" where \"id\" = $1 for update\nparams: secret-run-id",
+      { cause: driverError });
+    await f.completion.failRun(f.failure(new AccountingContentionError(queryError, 4)));
+    const failed = await read(f.run.id);
+    // adapter_failed keeps chat and recovery retry paths that key on it.
+    expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: ACCOUNTING_CONTENTION_MESSAGE,
+      resultJson: { failureCause: "40001" } });
+    expect(JSON.stringify(failed)).not.toMatch(/heartbeat_runs|secret-run-id|Failed query/);
+    const failureLog = logged.mock.calls.find(call => call[1] === "heartbeat execution failed");
+    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "adapter_failed", failureCause: "40001" });
+  });
+
+  describe("a native run that fails before provider work", () => {
+    const contention = () => new AccountingContentionError(Object.assign(new Error("deadlock detected"),
+      { name: "PostgresError", code: "40P01" }), 4);
+    const nativeFixture = async () => {
+      const f = await fixture({ runtimeMode: "native" }, `NPD${randomUUID().slice(0, 6)}`);
+      f.deps.scheduleBoundedRetryForRun.mockResolvedValue({ outcome: "scheduled", run: f.run } as never);
+      return { ...f, preDispatch: (err: unknown, nativeDispatchMayHaveStarted?: boolean) =>
+        ({ ...f.failure(err), legacyAdapterEntered: false, nativeDispatchMayHaveStarted }) };
+    };
+
+    it("records that no provider work started and re-queues itself in the uncharged preparation lane", async () => {
+      const f = await nativeFixture();
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      const failed = await read(f.run.id);
+      expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed",
+        resultJson: { failureCause: "40P01", nativePreDispatchFailure: { version: 1, providerWorkStarted: false } } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent,
+        { retryReason: "interrupted_preparation" });
+      expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+        expect.objectContaining({ suppressImmediateRecovery: true }));
+    });
+
+    it("re-queues a setup failure on a transient database fault", async () => {
+      const f = await nativeFixture();
+      await f.completion.failRunSetup({ ...f.setup(Object.assign(new Error("could not serialize access"),
+        { name: "PostgresError", code: "40001" })), nativeDispatchMayHaveStarted: false });
+      expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "setup_failed",
+        resultJson: { failureCause: "40001", nativePreDispatchFailure: { version: 1, providerWorkStarted: false } } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent,
+        { retryReason: "interrupted_preparation" });
+    });
+
+    it("keeps the hold once the run's history shows a native process start", async () => {
+      const f = await nativeFixture();
+      await appendHeartbeatRunEvent(db, { companyId: f.run.companyId, runId: f.run.id, agentId: f.run.agentId,
+        eventType: "native.process_start_requested", stream: "system", level: "info", message: "Native execution requested",
+        payload: { providerAttempt: 1 } });
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      const failed = await read(f.run.id);
+      expect(failed.resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a dispatch that may have started", true],
+      ["a caller that does not report dispatch", undefined],
+    ] as const)("keeps the hold for %s", async (_label, mayHaveStarted) => {
+      const f = await nativeFixture();
+      await f.completion.failRun(f.preDispatch(contention(), mayHaveStarted));
+      expect((await read(f.run.id)).resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it("keeps the hold when a native coordinator was claimed", async () => {
+      const f = await nativeFixture();
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Claimed native run" }).returning();
+      await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed", attempt: 1, leaseOwner: "executor-lease" });
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it("re-queues when runtime selection created the coordinator but no executor claimed it", async () => {
+      const f = await nativeFixture();
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Unclaimed native run" }).returning();
+      await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed" });
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).toMatchObject({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+      // The unclaimed coordinator is closed so it cannot hold the successor as pending cleanup.
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0])
+        .toMatchObject({ phase: "terminal_failure", failureCode: "native_pre_dispatch_failure" });
+    });
+
+    it.each([
+      ["a recorded process", { processPid: 4242 }],
+      ["a provider session", { sessionIdAfter: "provider-session" }],
+    ] as const)("keeps the hold when the run carries %s", async (_label, patch) => {
+      const f = await nativeFixture();
+      await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.run.id));
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it("re-queues a follow-up whose process identity was inherited from its warm predecessor", async () => {
+      const f = await nativeFixture();
+      await db.update(heartbeatRuns).set({ processPid: 4242, runnerProfileJson: { inheritedProcessIdentityRunId: randomUUID() } })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).toMatchObject({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+    });
+
+    it("records the proof but does not re-queue a failure that is not a transient database fault", async () => {
+      const f = await nativeFixture();
+      await f.completion.failRun(f.preDispatch(new Error("adapter crashed"), false));
+      expect((await read(f.run.id)).resultJson).toMatchObject({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
   });
 
   it("records a workspace provider's reason on the run and in the setup failure log without retrying", async () => {
@@ -1407,7 +1860,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(actions[0]).toMatchObject({ status: "active", ownerType: "board", cause: "remote_workspace_restore_failed",
       kind: "stranded_assigned_issue", returnOwnerAgentId: f.agent.id });
     expect(actions[0]!.evidence).toMatchObject({ runId: f.run.id, restoreFailure: failed.error });
-    expect(actions[0]!.nextAction).toContain("saved workspace version was kept");
+    expect(actions[0]!.nextAction).toContain("The saved version was kept");
   });
 
   it("keeps an active recovery action that another writer created for the task", async () => {
@@ -1445,6 +1898,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.failRunSetup(f.setup(new Error("environment acquisition aborted")));
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost",
       resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
+  it.each([
+    { name: "a rejected AI selection keeps its owner action", selectionFailure: "ai_connection_credential_not_shared", errorCode: "configuration_incomplete" },
+    { name: "an unclassified AI preparation error stays a retryable lease loss", selectionFailure: undefined, errorCode: "controller_lease_lost" },
+  ] as const)("records a lease lost during AI selection: $name", async ({ selectionFailure, errorCode }) => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 37_725, renewalPendingMs: 29_418, deadlineLateMs: 52, renewalCount: 2 }));
+    await f.completion.failRunSetup(f.setup(new ConfigurationIncompleteFailure("This credential is not shared with the responsible user", {
+      configurationIncomplete: { reason: "ai_connection_unavailable", ...(selectionFailure ? { selectionFailure } : {}) } })));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode,
+      error: "This credential is not shared with the responsible user", resultJson: {
+        configurationIncomplete: { reason: "ai_connection_unavailable" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        controllerLeaseLoss: { cause: "renewal_deadline", renewalPendingMs: 29_418, renewalCount: 2 },
+        cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
   });
 
   it("does not make a lease loss retryable once provider work has started", async () => {
