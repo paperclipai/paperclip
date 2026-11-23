@@ -43,6 +43,7 @@ Last updated: November 23, 2026.
 | Nov 23 | **All six launch services switched to REST now** | Gmail, Drive, Docs, Sheets, Slides and Calendar are `paperclip_rest`. This replaces the Nov 17 "one service at a time after a live test" rule: live testing happens on the staging tester right after the switch deploys, and problems are fixed forward. Chat, People and Search stay on `google_mcp`. |
 | Nov 23 | **Write actions default to "Allowed"** | No approval step by default, including actions labelled destructive. Operators can still set Ask first per action. |
 | Nov 23 | **Images by public web address are allowed in Docs and Slides** | `insertInlineImage`, `replaceImage`, `createImage` and `replaceAllShapesWithImage` may use any public link. Links to Drive or Docs files stay refused (Nov 17 rule). Accepted risk: Google, not Paperclip, fetches the address, and Paperclip's own requests still go only to the allowed Google hosts. What remains is that an agent could put data in the address it chooses. Owner decision; do not restrict it. |
+| Nov 23 | **Unconfirmed Google revocation is retried by the app, not Cloud** | When access must end and Google cannot be reached or confirm, the app keeps the token in `google_pending_revocations` and retries (1 minute up to 6 hours backoff, 30-day hard stop). Cloud still never stores provider tokens. Company deletion and a Cloud-removed instance queue the same way. The broker lets a removed instance sign a Google revoke (Cloud broker change, November 23). See [connector doc](../connections/GOOGLE-WORKSPACE.md), "Pending revocation". |
 | Nov 23 | **Paperclip's Google sign-in is for Paperclip Cloud only** | Self-hosted instances bring their own Google OAuth client. Google's restricted-scope verification and security assessment cover Paperclip's infrastructure, so the broker does not give restricted-scope Google tokens to servers Paperclip does not run. The app hides the method on self-hosted instances and refuses to start it; the broker refuses it too (`PROVIDER_CLOUD_ONLY`). Google connections a self-hosted instance already has keep refreshing until a sunset date the owner will set on the broker; after it, the app asks the user to reconnect with their own Google client. |
 
 ## What has shipped
@@ -276,6 +277,12 @@ Changes made in the broker (staging):
 | Keep accepting the old 21-scope refresh binding until older app versions are gone | Older apps still sign 21 scopes on refresh. |
 | Stop offering Chat, People and Search for new sessions on the verified client | They are outside the 14. Keep refresh for saved grants. |
 | Do not merge the branch that adds a Gmail archive profile | `gmail.modify` is restricted and not in the submission. |
+
+Pending revocation (November 23): the app retries an unconfirmed Google
+revoke in the background and handles both brokers. With the old broker, a
+removed instance's revoke is refused (`403`) and retried until the 30-day hard
+stop; once that broker change is deployed, those revokes succeed. Either
+deploy order is safe.
 
 Deploy order: **app first, then broker.** If the broker narrows first, refresh
 from app versions that still sign 21 scopes fails.
