@@ -365,6 +365,56 @@ describe("agy-local execute (remote execution)", () => {
     expect(captured.stagedSettings?.modelProvider).toBe("gemini");
   });
 
+  it("never installs a sandbox OAuth token for an unmanaged API-key remote run with no host token", async () => {
+    const rootDir = await makeTmpDir();
+    const workspaceDir = path.join(rootDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+
+    // Deliberately NO host token file: the operator never logged in via
+    // OAuth, so ~/.gemini/antigravity-cli/antigravity-oauth-token is absent.
+    const hostHome = path.join(rootDir, "home");
+    const hostTokenPath = path.join(hostHome, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+    expect(existsSync(hostTokenPath)).toBe(false);
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-remote-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Remote Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        env: {
+          HOME: hostHome,
+          GEMINI_API_KEY: "test-api-key",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+        },
+      },
+      executionTarget: makeSandboxTarget(),
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+
+    // The sandbox presented a refreshed-looking token at teardown (the
+    // beforeEach restoreWorkspace mock), but this API-key run staged no
+    // host token, so nothing may be installed as the host credential.
+    expect(existsSync(hostTokenPath)).toBe(false);
+  });
+
   it("starts Paperclip bridge and injects bridge environment into the process", async () => {
     const rootDir = await makeTmpDir();
     const workspaceDir = path.join(rootDir, "workspace");

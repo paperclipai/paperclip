@@ -544,16 +544,33 @@ export interface CopyBackAgyAuthInput {
   hostTokenPath: string;
   log: (line: string) => void | Promise<void>;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Whether the run staged a host OAuth token into the sandbox. Defaults
+   * to true. Remote callers must pass false when the run authenticates
+   * another way (an API key): with no staged token there is no first-sync
+   * bootstrap to perform, and a missing host destination would otherwise
+   * let sandbox-written bytes be installed as the host credential.
+   */
+  stagedTokenPresent?: boolean;
 }
 
 /**
  * Guards, locks, and atomically installs a strictly-newer sandbox Antigravity
- * OAuth token onto the host credential at teardown.
+ * OAuth token onto the host credential at teardown. When no host token was
+ * staged for the run (stagedTokenPresent: false), nothing is copied back:
+ * the sandbox never held a host credential to refresh.
  */
 export async function copyBackAgyAuth(
   input: CopyBackAgyAuthInput,
 ): Promise<CopyBackAgyAuthOutcome> {
-  const { readSandboxAuth, hostTokenPath, log, env = process.env } = input;
+  const { readSandboxAuth, hostTokenPath, log, env = process.env, stagedTokenPresent = true } = input;
+
+  if (!stagedTokenPresent) {
+    await log(
+      "[paperclip] Antigravity auth copy-out: no host token was staged for this run; kept host.",
+    );
+    return "kept-host";
+  }
 
   let sandboxAuthBytes: Buffer;
   try {

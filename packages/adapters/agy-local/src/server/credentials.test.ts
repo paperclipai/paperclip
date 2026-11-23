@@ -719,4 +719,70 @@ describe("copyBackAgyAuth", () => {
     const retained = JSON.parse(fs.readFileSync(hostTokenPath, "utf8"));
     expect(retained.access_token).toBe("host-token");
   });
+
+  it("never installs sandbox bytes when no host token was staged (stagedTokenPresent: false)", async () => {
+    const dir = makeTmpDir();
+    const hostTokenPath = path.join(dir, "antigravity-oauth-token");
+    const now = Date.now();
+    const sandboxToken = Buffer.from(
+      JSON.stringify({
+        access_token: "attacker-access-token",
+        refresh_token: "attacker-refresh-token",
+        expiry: new Date(now + 7200000).toISOString(),
+      }),
+    );
+
+    const reads = { count: 0 };
+    const logs: string[] = [];
+    const outcome = await copyBackAgyAuth({
+      readSandboxAuth: async () => {
+        reads.count++;
+        return sandboxToken;
+      },
+      hostTokenPath,
+      stagedTokenPresent: false,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+
+    // An API-key run staged no host token, so there is no first-sync
+    // bootstrap to perform: the sandbox's bytes are never even read, and
+    // the host credential path stays absent. Otherwise a file-capable
+    // sandbox run could plant its own OAuth token as the host credential.
+    expect(outcome).toBe("kept-host");
+    expect(reads.count).toBe(0);
+    expect(fs.existsSync(hostTokenPath)).toBe(false);
+    expect(logs.some((l) => l.includes("no host token was staged"))).toBe(true);
+  });
+
+  it("installs the sandbox token when the host has none but one was staged (stagedTokenPresent: true)", async () => {
+    const dir = makeTmpDir();
+    const hostTokenPath = path.join(dir, "antigravity-oauth-token");
+    const now = Date.now();
+    const sandboxToken = Buffer.from(
+      JSON.stringify({
+        access_token: "sandbox-refreshed-token",
+        refresh_token: "sandbox-refresh-token",
+        expiry: new Date(now + 7200000).toISOString(),
+      }),
+    );
+
+    const logs: string[] = [];
+    const outcome = await copyBackAgyAuth({
+      readSandboxAuth: async () => sandboxToken,
+      hostTokenPath,
+      stagedTokenPresent: true,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+
+    // First-sync bootstrap, preserved: the staged token was refreshed in
+    // the sandbox, and the host has no working credential to keep.
+    expect(outcome).toBe("copied");
+    const installed = JSON.parse(fs.readFileSync(hostTokenPath, "utf8"));
+    expect(installed.access_token).toBe("sandbox-refreshed-token");
+    expect(logs.some((l) => l.includes("updated host credential from sandbox"))).toBe(true);
+  });
 });

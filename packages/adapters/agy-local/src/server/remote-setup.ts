@@ -286,15 +286,20 @@ export async function prepareAgyRemoteRun(
     const hostTokenPath =
       resolveAgyOAuthTokenPath(runtimeEnv.HOME || os.homedir(), runtimeEnv) ??
       path.join(runtimeEnv.HOME || os.homedir(), ".gemini", "antigravity-cli", "antigravity-oauth-token");
+    // Whether a host OAuth token is staged into the sandbox. An API-key
+    // run authenticates with the key, so the operator's personal OAuth
+    // token must not be copied into the tenant sandbox, where agent code
+    // could read it even though the CLI never uses it. The same flag gates
+    // the copy-back: with no staged token there is nothing to refresh, and
+    // a missing host destination must not let sandbox bytes become the
+    // host credential.
+    const stagedToken = !resolveAgyApiKey(runtimeEnv);
     stagedAgyHomeDir = await stageAgyHomeForSync({
       homedir: runtimeEnv.HOME || os.homedir(),
       env: runtimeEnv,
       runId,
       conversationIds: input.resumeConversationIds,
-      // An API-key run authenticates with the key, so the operator's
-      // personal OAuth token must not be copied into the tenant sandbox,
-      // where agent code could read it even though the CLI never uses it.
-      includeOAuthToken: !resolveAgyApiKey(runtimeEnv),
+      includeOAuthToken: stagedToken,
     });
 
     if (runtimeMcpServers.length > 0) {
@@ -340,6 +345,7 @@ export async function prepareAgyRemoteRun(
               readSandboxAuth: () =>
                 readFile(path.posix.join(assetDir, "antigravity-oauth-token")),
               hostTokenPath,
+              stagedTokenPresent: stagedToken,
               log: (line) => onLog("stdout", `${line}\n`),
               env: process.env,
             });
