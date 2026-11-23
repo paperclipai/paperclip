@@ -841,6 +841,23 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "ended" }]);
   });
 
+  it("stops without revoking when the grant was signed in again and its own secret holds the same token", async () => {
+    const fixture = await connectManagedGmail();
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    const [secret] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
+    await queueGoogleRevocationFromSecret(db, {
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, subject: fixture.userId,
+      profile: "gmail.draft", secretId: refreshSecretId, version: secret!.latestVersion, reason: "grant_revoked",
+    });
+    const [pending] = await db.select().from(googlePendingRevocations);
+
+    await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+
+    expect(fixture.connector.revoke).not.toHaveBeenCalled();
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+    expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "other_connections_remain" }]);
+  });
+
   it("keeps one company's pending revocation apart from another company's with the same token", async () => {
     const first = await connectManagedGmail();
     const second = await connectManagedGmail();

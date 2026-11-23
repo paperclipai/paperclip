@@ -331,9 +331,11 @@ Cloud still stores no provider token.
 - The `google-pending-revocation` delivery queue drains due rows. Each attempt
   takes a 2-minute lease on the row, then calls the broker with a 15-second
   timeout. Backoff is 1, 2, 4 ... minutes, capped at 6 hours. A row stops
-  without a call when another company secret holds the same token and a live
-  grant or connection uses it. The row's own source secret, which a restart can
-  leave behind, never counts. After 30 days
+  without a call when a company secret holds the same token and a live grant
+  or connection uses it (for example, the user signed in again and Google
+  returned the same token). A source secret that a restart left behind on a
+  revoked grant does not count. A row queued for a removed instance skips this
+  check: no connection may use the token then. After 30 days
   the row is deleted without a call (`gave_up`). Google already expires a
   refresh token unused for six months, and only the broker can refresh this one,
   so the 30-day hard stop limits how long Paperclip holds a token nobody uses.
@@ -344,8 +346,9 @@ Cloud still stores no provider token.
   writes only a server log line.
 - Company deletion queues every managed Google refresh token of the company in
   the delete transaction (`reason = company_deleted`), before the secrets go.
-- When the Cloud connection status check gets a signed answer that the
-  instance is `removed` (a `401` alone does not count), the app
+- When an instance admin's Cloud connection status check gets a signed answer
+  that the instance is `removed` (a `401` alone does not count), the app, in
+  the background and one sweep at a time,
   queues every managed Google refresh token (`reason = instance_removed`), then
   deletes each connection secret. Those connections need a reconnect after a new
   enrollment. The broker accepts a Google revoke from a removed instance after

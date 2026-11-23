@@ -186,6 +186,7 @@ export function createGooglePendingRevocation(db: Db, deps: {
   const timeoutMs = deps.timeoutMs ?? GOOGLE_REVOCATION_TIMEOUT_MS;
 
   async function heldByLiveSecret(row: PendingRow) {
+    if (row.reason === "instance_removed") return false;
     const rows = await db.select({ id: companySecrets.id }).from(companySecrets)
       .innerJoin(companySecretVersions, and(
         eq(companySecretVersions.secretId, companySecrets.id),
@@ -196,7 +197,6 @@ export function createGooglePendingRevocation(db: Db, deps: {
         isNull(companySecrets.deletedAt),
         ne(companySecrets.status, "deleted"),
         eq(companySecretVersions.valueSha256, row.tokenSha256),
-        ...(row.sourceSecretId ? [ne(companySecrets.id, row.sourceSecretId)] : []),
         liveSecretReference(sql`${companySecrets.id}`, sql`${companySecrets.companyId}`),
       ))
       .limit(1);
@@ -327,7 +327,16 @@ export function createGooglePendingRevocation(db: Db, deps: {
   return { drain, nextDeadline };
 }
 
-export async function revokeGoogleAccessForRemovedInstance(db: Db, removeSecret: (secretId: string, expectedVersion: number) => Promise<unknown>) {
+let removedInstanceSweep: Promise<number> | null = null;
+
+export function revokeGoogleAccessForRemovedInstance(db: Db, removeSecret: (secretId: string, expectedVersion: number) => Promise<unknown>): Promise<number> {
+  removedInstanceSweep ??= sweepRemovedInstance(db, removeSecret).finally(() => {
+    removedInstanceSweep = null;
+  });
+  return removedInstanceSweep;
+}
+
+async function sweepRemovedInstance(db: Db, removeSecret: (secretId: string, expectedVersion: number) => Promise<unknown>) {
   const owners = await db.selectDistinct({ companyId: toolConnections.companyId }).from(toolConnections)
     .where(eq(toolConnections.authKind, "oauth"));
   let queued = 0;
