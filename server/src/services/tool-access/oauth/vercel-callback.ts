@@ -170,6 +170,11 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
     };
     const activating = connection;
     [connection] = await writeToolConnectionHealthChange(db, connection, async tx => {
+      if (existingGrant) {
+        await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+          .where(eq(connectionGrants.id, existingGrant.id))
+          .for("update");
+      }
       await lockConnectionForSignIn(tx, activating);
       if (existingGrant) {
         await tx

@@ -205,6 +205,16 @@ describe("cancelling an unfinished first sign-in", () => {
     await request(app).post(`/api/tool-connections/${connectionId}/sign-in/cancel`).expect(200).expect(({ body }) => expect(body).toMatchObject({ abandoned: true, connection: { status: "archived" } }));
   });
 
+  it("keeps a saved machine sign-in draft listed and in place", async () => {
+    const { app, connect, listed } = await setup();
+    const { connectionId } = await connect();
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    const config = { ...row.config, oauth: { ...(row.config.oauth as Record<string, unknown>), grantType: "client_credentials" } };
+    await db.update(toolConnections).set({ config, transportConfig: config }).where(eq(toolConnections.id, connectionId));
+    expect((await listed()).find((connection) => connection.id === connectionId)?.firstSignInPending).toBeUndefined();
+    await request(app).post(`/api/tool-connections/${connectionId}/sign-in/cancel`).expect(200).expect(({ body }) => expect(body.abandoned).toBe(false));
+  });
+
   it("treats a legacy draft with an inline token as a real connection", async () => {
     const { app, connect } = await setup();
     const { connectionId } = await connect();

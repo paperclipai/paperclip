@@ -45,6 +45,7 @@ export function connectionAwaitsFirstSignIn(connection: ConnectionRow, grants: G
   if (signInCancelled(connection)) return true;
   return connection.status === "draft"
     && connection.authKind === "oauth"
+    && oauthConfig(connection).grantType !== "client_credentials"
     && connection.lastError !== "connection_identity_rollback_failed"
     && !connectionHasOAuthCredential(connection, grants);
 }
