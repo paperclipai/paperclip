@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure } from "../services/mcp-connection-failure.js";
+import { ObjectJournalBusyError } from "../services/object-byte-journal.js";
 
 const recordResponsibleUserDenialOnActiveRunMock = vi.hoisted(() => vi.fn());
 const captureExceptionMock = vi.hoisted(() => vi.fn());
@@ -115,6 +116,23 @@ describe("errorHandler", () => {
     expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
   });
 
+  it("answers a shed object-storage read with a retryable 503 without reporting it", () => {
+    const res = { ...makeRes(), set: vi.fn() } as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new ObjectJournalBusyError(), makeReq(), res, next);
+
+    expect(res.set).toHaveBeenCalledWith("Retry-After", "2");
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Object storage is busy; retry shortly",
+      code: "object_journal_io_busy",
+    });
+    expect(res.err).toBeUndefined();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
+  });
+
   it("only ends the response when headers were already sent during database shutdown", () => {
     const req = { ...makeReq(), app: { locals: { paperclipDatabaseClosing: true } } } as unknown as Request;
     const res = { ...makeRes(), end: vi.fn(), headersSent: true } as any;
@@ -221,12 +239,16 @@ describe("errorHandler", () => {
     expect(telemetryMocks.trackErrorHandlerCrash).toHaveBeenCalledTimes(2);
   });
 
-  it("sanitizes chat setup errors before logs and crash reporting", () => {
+  it.each([
+    { name: "chat setup", method: "POST", path: "/api/chat-endpoints/endpoint-1/setup", body: { credentials: { botToken: "setup-error-token-canary" } } },
+    { name: "observability API keys", method: "PUT", path: "/api/companies/company/observability", body: { credentials: { mode: "replace", apiKey: "setup-error-token-canary" } } },
+    { name: "arbitrary OTLP headers", method: "PUT", path: "/api/companies/company/observability", body: { credentials: { mode: "replace", headers: [{ name: "x-custom", value: "setup-error-token-canary" }] } } },
+  ])("sanitizes $name errors before logs and crash reporting", ({ method, path, body }) => {
     const req = {
       ...makeReq(),
-      method: "POST",
-      originalUrl: "/api/chat-endpoints/endpoint-1/setup",
-      body: { credentials: { botToken: "setup-error-token-canary" } },
+      method,
+      originalUrl: path,
+      body,
     } as unknown as Request;
     const res = makeRes() as any;
     const next = vi.fn() as unknown as NextFunction;

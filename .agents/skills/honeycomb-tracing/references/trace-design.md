@@ -2,9 +2,9 @@
 
 Read this when adding, reorganizing, or reviewing a waterfall's hierarchy.
 The goal is to understand the work at a glance, then expand the slow phase to
-find its cause. Follow the current
-[Observability contract](../../../../doc/observability.md) for exact names,
-roots, lifecycle boundaries, sampling, and allowed attributes.
+find its cause. Follow the code that
+opens the nearest existing span for exact names, roots, lifecycle boundaries,
+sampling, and allowed attributes.
 
 ## Organize by the work being done
 

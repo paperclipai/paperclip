@@ -24,12 +24,12 @@ describe("personal AI credential preflight recovery", () => {
     expect(isAiAuthenticationBlocked({ ...run, livenessState: "blocked" })).toBe(true);
   });
 
-  it.each([
+  it.each<[string, unknown]>([
     ["tool credential", [{ ...missingClaudeKey, envKey: "GITHUB_TOKEN", configPath: "env.GITHUB_TOKEN" }]],
     ["company secret", [{ ...missingClaudeKey, bindingType: "secret_ref" }]],
     ["unknown error", [{ ...missingClaudeKey, errorCode: "user_secret_definition_missing" }]],
     ["adapter field", [{ ...missingClaudeKey, configPath: "apiKey" }]],
-    ...["project", "environment", "routine", "plugin"].map(consumerType => [
+    ...["project", "environment", "routine", "plugin"].map((consumerType): [string, unknown] => [
       `${consumerType} binding`, [{ ...missingClaudeKey, consumerType }],
     ]),
     ["different agent", [{ ...missingClaudeKey, consumerId: "another-agent" }]],
@@ -44,7 +44,7 @@ describe("personal AI credential preflight recovery", () => {
   });
 
   it("only classifies a failed preflight as an inline wait after the card is persisted", () => {
-    const input = { ...failure([missingClaudeKey]), runStatus: "failed", issue: { status: "blocked" },
+    const input = { ...failure([missingClaudeKey]), runStatus: "failed", issue: { status: "blocked", title: "Blocked task", description: null },
       stdoutExcerpt: null, stderrExcerpt: null, error: null, continuationAttempt: 0, evidence: null };
     expect(classifyRunLiveness(input).livenessState).toBe("failed");
     expect(classifyRunLiveness({ ...input, authenticationRepairRequested: true })).toMatchObject({

@@ -6,28 +6,35 @@ navigation: {"section":"Automation and structured work","sectionOrder":60,"order
 
 Operators define repeatable work, configure its inputs and triggers, run it on demand or automatically, and inspect the execution history and resulting tasks.
 
-Implementation: [routine list](../../ui/src/pages/Routines.tsx), [routine detail](../../ui/src/pages/RoutineDetail.tsx), [trigger editor](../../ui/src/components/routine-triggers/TriggerWizard.tsx).
+Feature ID: `routines`.
+
+Implementation: [routine list](../../ui/src/pages/Routines.tsx), [routine detail](../../ui/src/pages/RoutineDetail.tsx), [routine page](../../ui/src/components/routine-page/RoutinePage.tsx), [edit dialog](../../ui/src/components/routine-page/RoutineEditDialog.tsx), [webhook dialog](../../ui/src/components/routine-page/RoutineWebhookDialog.tsx).
 
 Agent access: [companion](../agent-access-map/routines.md).
 
 ## Sub-features
 
-- `definition`: save the request, agent, project, variables, and execution context.
-- `triggers`: configure supported schedules/webhooks or other offered triggers.
-- `run-now`: supply inputs and create an observable routine execution.
-- `history`: inspect resulting tasks and past outcomes.
-- `management`: organize, pause/disable, archive, and distinguish plugin-managed routines.
+- `definition`: `routines/definition` — save the request, agent, project, variables, and execution context.
+- `triggers`: `routines/triggers` — configure supported schedules/webhooks or other offered triggers.
+- `run-now`: `routines/run-now` — supply inputs and create an observable routine execution.
+- `history`: `routines/history` — inspect resulting tasks and past outcomes.
+- `management`: `routines/management` — organize, pause/disable, archive, and distinguish plugin-managed routines.
 
 ## How to get to it (user POV)
 
 ### `routine-editor`
 
-Open `/routines`, create one, and inspect `/routines/:routineId` and its edit sections.
+Open `/routines`, create one (New routine opens the edit dialog), and inspect
+`/routines/:routineId`. Edit opens the same dialog; older section addresses
+redirect to the page.
 
 ### `trigger-history`
 
-Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
-offer Run now. **History** records configuration versions, not executions.
+Schedules and webhooks are listed under Repeats on the routine page; a webhook
+opens its dialog there, and both are added or changed in the Edit dialog. Tasks
+the routine created are under History on the page. The page menu leads to
+**Version history** (`/routines/:routineId/history`, configuration versions, not
+executions) and **Audit log** (`/routines/:routineId/activity`). Lists also offer Run now.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -35,7 +42,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `routine-editor`
 
-Automated: [routine detail helper](../../ui/src/pages/RoutineDetail.test.tsx) tests project-selector options, not the rendered editor. [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts. Saving and running through the editor remain manual checks.
+Automated: [routed routine page tests](../../ui/src/pages/RoutineDetail.test.tsx) cover old-address redirects, History paging, the status switch, saving edits against the opened revision, the save-conflict state, webhook test mode and the responsibility flag gate; [routine form tests](../../ui/src/components/routine-page/routine-form.test.ts) cover schedule and responsibility sync. [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts. Running a routine through the page remains a manual check.
 
 Manual: Save an agent, request, project, and a required variable. Reload and inspect the saved definition. Run now with a distinguishable input, follow the resulting task, and verify its output and history entry. Check a missing required input.
 
@@ -46,9 +53,14 @@ complete the generated task or establish a useful task output.
 
 ### `trigger-history`
 
-Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWizard.test.tsx) is component coverage; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
+Automated: [webhook instructions](../../ui/src/components/routine-triggers/webhook-instructions.test.ts) and [webhook fields](../../ui/src/components/routine-triggers/WebhookFields.test.tsx) are component coverage; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
+
+Sentry alerts use the ordinary
+`/api/routine-triggers/public/:publicId/fire` webhook and its trigger authentication.
+Configure loop-prevention filters in Sentry as described in the
+[Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
 
 ## Gotchas
 
@@ -71,6 +83,8 @@ for both the agent and its responsible person.
 ### Storybook verification
 
 #### `run-now`
+
+Capability ID: `routines/run-now`.
 
 Scope: ui
 Storybook: Mount RoutineRunVariablesDialog through actual RoutineDetail with required/default inputs, project/workspace overrides, pending, blocked and failed submission. RunButton-only no-op examples do not supply/run inputs.

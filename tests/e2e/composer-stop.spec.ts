@@ -380,7 +380,16 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         ).toEqual([]);
       }
       await menu(page, "Resume subtree");
-      await page.getByRole("dialog").getByRole("checkbox").check();
+      const resumeWake = page.getByRole("dialog").getByRole("checkbox");
+      if (adapter === "process") {
+        // Stopped legacy work is blocked pending reconciliation. Removing the
+        // pause must not promise or request a wake through that recovery gate.
+        await expect(resumeWake).toHaveAccessibleName("Wake affected agents (0)");
+        await expect(resumeWake).toBeDisabled();
+        await expect(resumeWake).not.toBeChecked();
+      } else {
+        await resumeWake.check();
+      }
       await page
         .getByRole("dialog")
         .getByRole("button", { name: "Resume subtree", exact: true })
