@@ -1,5 +1,6 @@
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { publishLiveEvent } from "./live-events.js";
 import { logger } from "../middleware/logger.js";
 
@@ -23,18 +24,14 @@ export async function deliverExecutionStatuses(
       executionStatusDeliveryId: heartbeatRuns.executionStatusDeliveryId,
     })
     .from(heartbeatRuns)
-    // Match terminalization's native-first association, but expose only an
-    // existing same-company canonical task ID. Compare text so malformed
-    // context values cannot cause a UUID cast error or escape onto the wire.
     .leftJoin(
       issues,
       and(
         eq(issues.companyId, heartbeatRuns.companyId),
-        sql`${issues.id}::text = coalesce(
-        ${heartbeatRuns.nativeIssueId}::text,
-        case when jsonb_typeof(${heartbeatRuns.contextSnapshot} -> 'issueId') = 'string'
-          then ${heartbeatRuns.contextSnapshot} ->> 'issueId' end
-      )`,
+        eq(issues.id, sql`coalesce(
+          ${heartbeatRuns.nativeIssueId},
+          ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
+        )`),
       ),
     )
     .where(isNotNull(heartbeatRuns.executionStatusDeliveryId))

@@ -15,7 +15,7 @@ function providerStatus(error: unknown): number | undefined {
 }
 
 /** Automatic access considers only this caller's grants, never connection management visibility. */
-export function skillSourceGitHubReader(db: Db, companyId: string, actor: Request['actor'], connectionId: string | null): GitHubRead {
+export function skillSourceGitHubReader(db: Db, companyId: string, actor: Request['actor'], connectionId: string | null, options: { grantId?: string | null } = {}): GitHubRead {
   let chosen: Authorization | undefined;
   const access = toolAccessService(db);
   const localTrusted = actor.type === 'board' && actor.source === 'local_implicit';
@@ -44,7 +44,10 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
     const ids = connectionId ? [connectionId] : await access.githubReadConnectionIds(companyId, actor.userId ?? null, localTrusted);
     const result: Authorization[] = [];
     for (const id of ids) {
-      for (const grantId of await access.githubReadGrantIds(companyId, id, actor.userId ?? null, localTrusted)) result.push({ connectionId: id, grantId });
+      for (const grantId of await access.githubReadGrantIds(companyId, id, actor.userId ?? null, localTrusted)) {
+        if (options.grantId && options.grantId !== grantId) continue;
+        result.push({ connectionId: id, grantId });
+      }
     }
     result.sort((a, b) => Number(b.connectionId === chosen?.connectionId && b.grantId === chosen?.grantId) - Number(a.connectionId === chosen?.connectionId && a.grantId === chosen?.grantId));
     if (!connectionId) result.push({ connectionId: null });
@@ -96,11 +99,19 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
       });
       if (!response.ok) {
         const limited = response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0');
-        const message = limited ? 'GitHub request limit reached. Try again after the limit resets or use another GitHub connection.'
+        const missingRef = response.status === 422 && /^\/repos\/[^/]+\/[^/]+\/commits\/[^/]+$/.test(apiPath);
+        const message = missingRef ? 'The tracked GitHub branch or revision is unavailable. Use the repository’s default branch or update its configured ref.'
+          : limited ? 'GitHub request limit reached. Try again after the limit resets or use another GitHub connection.'
           : response.status === 404 ? 'Repository, branch, or file is unavailable. Check the URL and GitHub repository access.'
           : [401, 403].includes(response.status) ? 'GitHub denied repository access. Reconnect GitHub or choose an authorized connection.'
           : 'GitHub could not complete the read. Try again.';
-        throw unprocessable(message, { code: limited ? 'skill_source_github_rate_limited' : 'skill_source_github_read_failed', status: response.status });
+        const retryAfter = response.headers.get('retry-after');
+        const resetAt = Number(response.headers.get('x-ratelimit-reset')) * 1_000;
+        const retryAfterMs = retryAfter && /^\d+$/.test(retryAfter)
+          ? Number(retryAfter) * 1_000
+          : retryAfter ? Date.parse(retryAfter) - Date.now() : resetAt - Date.now();
+        throw unprocessable(message, { code: missingRef ? 'skill_source_ref_unavailable' : limited ? 'skill_source_github_rate_limited' : 'skill_source_github_read_failed', status: response.status,
+          ...(limited && Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? { retryAfterMs } : {}) });
       }
       return response.json();
     }, signal);
@@ -129,6 +140,7 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
       throw error;
     }
   };
+  Object.defineProperty(read, 'grantId', { get: () => chosen?.grantId ?? null });
   Object.defineProperty(read, 'connectionId', { get: () => chosen?.connectionId ?? null });
   return read;
 }

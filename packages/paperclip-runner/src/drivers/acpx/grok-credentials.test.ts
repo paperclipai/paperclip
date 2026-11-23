@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
 import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
@@ -74,6 +75,19 @@ describe("Grok isolated credentials", () => {
     await rm(join(directory, "auth.json"));
     await writeFile(join(directory, "auth.json"), credential, { mode: 0o600 });
     await lease.close();
+  });
+  it("retries a scrub failure without overwriting the completed handoff with a successor", async () => {
+    const directory = await home();
+    await writeFile(join(directory, "auth.json"), credential, { mode: 0o600 });
+    const close = vi.fn().mockRejectedValueOnce(new Error("scrub failed")).mockResolvedValue(undefined);
+    const lease = await retainAcpxCredentialRefresh({ agentHomeDirectory: directory, retainRefresh: () => true,
+      lease: { lifetimeFenceCandidates: [49152, 49153, 49154], lifetimeFenceFds: [1, 2], activateLifetimeOwner: async () => {}, close } });
+    await expect(lease.close()).rejects.toThrow("scrub failed");
+    const successor = credential.replace("test-token", "successor-token");
+    await writeFile(join(directory, "auth.json"), successor, { mode: 0o600 });
+    await lease.close();
+    expect(await readFile(join(directory, "auth-refresh.json"), "utf8")).toBe(credential);
+    expect(await readFile(join(directory, "auth.json"), "utf8")).toBe(successor);
   });
   it("never passes other providers, host homes or the inline credential to Grok", () => {
     const result = createSanitizedAcpxSpawnInput({ XAI_API_KEY: "selected", HOME: "/host", GROK_HOME: "/host/.grok", OPENAI_API_KEY: "other", PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: credential }, "grok");
