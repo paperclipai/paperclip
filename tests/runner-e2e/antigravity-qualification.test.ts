@@ -138,6 +138,9 @@ describe("Antigravity model lineups", () => {
       expect(lineup.every(cell => cell.environment.id === "local" && cell.task.id === "model-receipt" && cell.id === `${suite}.${antigravityLineupProfileId(cell.profile.model)}.local.model-receipt`)).toBe(true);
       expect(lineup.every(cell => cell.id.split(".").length === 4)).toBe(true);
       expect(select("--suite", suite)).toHaveLength(models.length);
+      expect(lineup.every(isAntigravityAdmittedExecution)).toBe(true);
+      expect(() => buildRunnerE2EProcessEnvironment({}, lineup)).not.toThrow();
+      expect(buildMatrixJobs(lineup).every(job => job.credentialName === "GEMINI_API_KEY" && !job.needsDaytona)).toBe(true);
     }
     expect(ANTIGRAVITY_API_KEY_LINEUP).toHaveLength(25);
     expect(ANTIGRAVITY_API_KEY_LINEUP).toContain("gemini-3.8-flash-low");
