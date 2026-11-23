@@ -415,6 +415,100 @@ describe("agy-local execute (remote execution)", () => {
     expect(existsSync(hostTokenPath)).toBe(false);
   });
 
+  it("saves the resumed conversation under the host CLI home, not the remote asset path", async () => {
+    const rootDir = await makeTmpDir();
+    const workspaceDir = path.join(rootDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+
+    const hostHome = path.join(rootDir, "home");
+    const hostBrainFile = path.join(
+      hostHome,
+      ".gemini",
+      "antigravity-cli",
+      "brain",
+      "conv-remote-1",
+      "session.json",
+    );
+    // The remote asset dir, as seen from the controller: the buggy restore
+    // resolved the host CLI home to this path and wrote the brain/ tree
+    // under it instead of under the real host CLI home.
+    const wrongRemoteBrainFile = "/remote/runtime/assets/agy-home/brain/conv-remote-1/session.json";
+
+    // Capture the agy-home restore callback: the beforeEach mock's
+    // restoreWorkspace invokes it with a token-only readFile, which cannot
+    // carry a brain/ manifest, so the callback is invoked directly below
+    // with a path-aware readFile.
+    const captured: { restore: ((ctx: any) => Promise<void>) | null } = { restore: null };
+    const baseImpl = vi
+      .mocked(prepareAdapterExecutionTargetRuntime)
+      .getMockImplementation() as ((input: any) => Promise<any>) | undefined;
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockImplementation(async (input: any) => {
+      const agyHome = input.assets?.find((a: any) => a.key === "agy-home");
+      if (agyHome?.restore) captured.restore = agyHome.restore;
+      return baseImpl!(input);
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-remote-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Remote Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        env: {
+          HOME: hostHome,
+          GEMINI_API_KEY: "test-api-key",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+        },
+      },
+      executionTarget: makeSandboxTarget(),
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(captured.restore).toBeTypeOf("function");
+
+    const tokenBuffer = Buffer.from(
+      JSON.stringify({
+        access_token: "remote-token",
+        refresh_token: "remote-refresh-token",
+        expiry: new Date(Date.now() + 86400000).toISOString(),
+      }),
+    );
+    const readFile = async (p: string): Promise<Buffer> => {
+      if (p.endsWith(".paperclip-brain-manifest")) {
+        return Buffer.from("11\t./conv-remote-1/session.json\0");
+      }
+      if (p.endsWith("antigravity-oauth-token")) return tokenBuffer;
+      if (p.includes("brain/conv-remote-1/session.json")) return Buffer.from("brain-bytes");
+      const err = new Error("File not found") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    };
+    try {
+      await captured.restore!({ assetDir: "/remote/runtime/assets/agy-home", readFile });
+      expect(existsSync(hostBrainFile)).toBe(true);
+      expect(readFileSync(hostBrainFile, "utf8")).toBe("brain-bytes");
+      expect(existsSync(wrongRemoteBrainFile)).toBe(false);
+    } finally {
+      await fs.rm("/remote", { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
   it("starts Paperclip bridge and injects bridge environment into the process", async () => {
     const rootDir = await makeTmpDir();
     const workspaceDir = path.join(rootDir, "workspace");

@@ -1,3 +1,7 @@
+import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -183,6 +187,48 @@ describe("agy-local testEnvironment (remote execution)", () => {
 
     // Verify workspace restoration ran in finally
     expect(restoreWorkspaceSpy).toHaveBeenCalled();
+  });
+
+  it("never installs a sandbox OAuth token for an unmanaged API-key remote probe with no host token", async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "agy-probe-copyback-test-"));
+    try {
+      // Deliberately NO host token file: the operator never logged in via
+      // OAuth, so ~/.gemini/antigravity-cli/antigravity-oauth-token is absent.
+      const hostHome = path.join(rootDir, "home");
+      const hostTokenPath = path.join(hostHome, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+      expect(existsSync(hostTokenPath)).toBe(false);
+
+      const ctx: AdapterEnvironmentTestContext = {
+        companyId: "company-1",
+        adapterType: "agy_local",
+        config: { command: "agy", env: { HOME: hostHome, GEMINI_API_KEY: "test-api-key" } },
+        executionTarget: sandboxTarget(),
+        environmentName: "Daytona",
+      };
+
+      const result = await testEnvironment(ctx);
+      expect(result.status).toBe("pass");
+
+      const agyHomeAsset = (capturedAssets.value ?? []).find((a: any) => a.key === "agy-home");
+      expect(agyHomeAsset?.restore).toBeTypeOf("function");
+      const plantedToken = Buffer.from(
+        JSON.stringify({
+          access_token: "planted-access-token",
+          refresh_token: "planted-refresh-token",
+          expiry: new Date(Date.now() + 7200000).toISOString(),
+        }),
+      );
+      await agyHomeAsset.restore({
+        assetDir: "/remote/runtime/assets/agy-home",
+        readFile: async () => plantedToken,
+      });
+
+      // The probe staged no host token, so the sandbox's token must never
+      // be installed as the host credential.
+      expect(existsSync(hostTokenPath)).toBe(false);
+    } finally {
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   it("emits ADAPTER_AUTH_MISSING_CHECK_CODE when hello probe fails with unauthenticated status on sandbox target", async () => {

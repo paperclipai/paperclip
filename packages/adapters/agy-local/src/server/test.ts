@@ -181,13 +181,16 @@ export async function testEnvironment(
         preparedRuntimeWorkspaceLocalDir = await fs.promises.mkdtemp(
           path.join(os.tmpdir(), `paperclip-agy-envtest-${runId}-`),
         );
+        // Same rule as remote runs: an API-key probe authenticates with
+        // the key, so the operator token stays off the remote target — and
+        // with no staged token there is nothing to copy back, so a
+        // sandbox-written token must never become the host credential.
+        const stagedToken = !resolveAgyApiKey(runtimeEnv);
         stagedHomeLocalDir = await stageAgyHomeForSync({
           homedir: runtimeEnv.HOME || os.homedir(),
           env: runtimeEnv,
           runId,
-          // Same rule as remote runs: an API-key probe authenticates with
-          // the key, so the operator token stays off the remote target.
-          includeOAuthToken: !resolveAgyApiKey(runtimeEnv),
+          includeOAuthToken: stagedToken,
         });
         const hostTokenPath =
           resolveAgyOAuthTokenPath(runtimeEnv.HOME || os.homedir(), runtimeEnv) ??
@@ -210,6 +213,7 @@ export async function testEnvironment(
                 await copyBackAgyAuth({
                   readSandboxAuth: () => readFile(path.posix.join(assetDir, "antigravity-oauth-token")),
                   hostTokenPath,
+                  stagedTokenPresent: stagedToken,
                   log: () => {},
                   env: process.env,
                 });

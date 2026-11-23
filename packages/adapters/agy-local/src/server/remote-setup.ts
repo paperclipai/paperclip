@@ -286,6 +286,12 @@ export async function prepareAgyRemoteRun(
     const hostTokenPath =
       resolveAgyOAuthTokenPath(runtimeEnv.HOME || os.homedir(), runtimeEnv) ??
       path.join(runtimeEnv.HOME || os.homedir(), ".gemini", "antigravity-cli", "antigravity-oauth-token");
+    // Capture the host CLI home NOW: remote setup below replaces the
+    // CLI-home variables in `env` with remote paths and then copies them
+    // into `runtimeEnv`, so resolving it again inside the restore callback
+    // would point the conversation copy-back at the remote asset dir on
+    // the controller instead of the real host CLI home.
+    const hostCliHomeDir = resolveAgyCliHomeDir(runtimeEnv.HOME || os.homedir(), runtimeEnv);
     // Whether a host OAuth token is staged into the sandbox. An API-key
     // run authenticates with the key, so the operator's personal OAuth
     // token must not be copied into the tenant sandbox, where agent code
@@ -354,7 +360,7 @@ export async function prepareAgyRemoteRun(
             // can resume the same conversation instead of starting fresh.
             await copyBackAgyConversationState({
               assetDir,
-              hostCliHomeDir: resolveAgyCliHomeDir(runtimeEnv.HOME || os.homedir(), runtimeEnv),
+              hostCliHomeDir,
               runRemoteCommand: (command) =>
                 runAdapterExecutionTargetShellCommand(runId, executionTarget, command, {
                   cwd: assetDir,
