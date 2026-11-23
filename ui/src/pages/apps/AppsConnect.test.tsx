@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition, pluginAppDefinition, pluginAppSlug, setPluginAppDefinitions } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition, pluginAppDefinition, pluginAppSlug, setPluginAppDefinitions } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RequestOptions } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -349,6 +349,14 @@ function unconfiguredConnectorEnrollment() {
     environment: "staging",
     origins: [],
   };
+}
+
+function cloudQueryClient(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+  client.setQueryData(queryKeys.health, {
+    deploymentMode: "authenticated",
+    cloud: { managed: true, managedBy: "paperclip-cloud", stackSlug: "stack-fixture", cloudBaseUrl: "https://my-staging.paperclip.app" },
+  });
+  return client;
 }
 
 function customerOwnedApp(app: typeof GMAIL) {
@@ -1803,7 +1811,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     getCloudConnectorEnrollmentMock.mockResolvedValueOnce(unconfiguredConnectorEnrollment());
 
-    await render();
+    await render(cloudQueryClient());
     await passAccessStep();
 
     expect(container.textContent).toContain("Connect with Paperclip");
@@ -1829,8 +1837,39 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("offers only the customer's own Google client on a self-hosted instance and explains why", async () => {
+    mockParams.appKey = "gmail";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GMAIL)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(unconfiguredConnectorEnrollment());
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(getCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+    const notice = Array.from(container.querySelectorAll('[role="note"]'))
+      .find((element) => element.textContent?.includes(GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE));
+    expect(notice).toBeDefined();
+    const guide = notice!.querySelector<HTMLAnchorElement>("a");
+    expect(guide?.textContent).toBe("How to set up a Google OAuth client");
+    expect(guide?.href).toMatch(/^https:\/\/developers\.google\.com\//);
+    expect(container.textContent).toContain("Client ID");
+  });
+
+  it("never shows the self-hosted Google notice on Paperclip Cloud", async () => {
+    mockParams.appKey = "gmail";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
+
+    await render(cloudQueryClient());
+    await passAccessStep();
+
+    expect(container.textContent).not.toContain(GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE);
+    expect(buttonByText("Continue to sign in")).toBeDefined();
+  });
+
   it.each([false, true])("retains task access and interaction through enrollment (popup blocked: %s)", async (popupBlocked) => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = cloudQueryClient();
     const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     const open = vi.spyOn(window, "open").mockReturnValue(popupBlocked ? null : popup as unknown as Window);
     listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GMAIL)] });
@@ -1880,7 +1919,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         verificationUrl: failure === "missing-url" ? undefined : "javascript:alert(1)",
       });
     }
-    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
+    await render(cloudQueryClient(), false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
     await passAccessStep();
     await act(async () => buttonByText("Connect with Paperclip")?.click());
     await flushReact();

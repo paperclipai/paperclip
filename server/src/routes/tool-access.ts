@@ -88,6 +88,7 @@ import {
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
+import { paperclipGoogleSignInAvailable } from "../services/google-sign-in-availability.js";
 import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
@@ -951,6 +952,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       if (details?.code !== "oauth_redirect_origin_unsupported") throw error;
     }
     const pluginApps = (await loadPluginAppCatalog(db)).definitions;
+    const cloudHosted = paperclipGoogleSignInAvailable();
     res.json({
       ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
       // Full definitions of plugin-provided connectors. Like the built-in
@@ -973,9 +975,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
       },
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
         && isConnectorFeatureEnabled(app, settings)).map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles, cloudHosted)
       ), ...pluginApps.map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles, cloudHosted)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
   });

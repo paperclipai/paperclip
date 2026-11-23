@@ -28,6 +28,8 @@ import {
   REFRESH_TOKEN,
 } from "./helpers/managed-google-connection.js";
 
+vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => true }));
+
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
