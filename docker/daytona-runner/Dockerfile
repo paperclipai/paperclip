@@ -45,6 +45,9 @@ COPY cli/package.json ./cli/package.json
 ARG PAPERCLIP_RUNNER_LOCK_SHA256
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 # Optional qualification assets; this never promotes candidate profiles.
+# `antigravity` downloads its pinned ~274 MB archive into memory, patches it
+# (about 2.4 GB peak, outside the JS heap bound below) and keeps only the
+# ~850 MB patched closure in /provider-pack; the archive never touches disk.
 ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
 # pnpm 9 subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
 # Subtract all available CPUs to select its minimum (one tarball worker).
