@@ -64,6 +64,64 @@ describe("login cleanup lifecycle", () => {
     release(); await vi.advanceTimersByTimeAsync(30_000);
     expect(run).toHaveBeenCalledTimes(3); expect(c.nextWakeAt()).toBeNull();
   });
+  it("honors setup-token backoff across notifications, then becomes quiet", async () => {
+    vi.useFakeTimers();
+    const owner = fakeOwner();
+    const c = coordinator(owner);
+    let failures = 0;
+    let pending = true;
+    const reaper = createSetupTokenReaper({
+      store: {
+        listReapable: async () => pending ? [{ sessionId: "retry", companyId: "company", ownerUserId: "user", adapterType: "claude_local", environmentId: "env", leaseId: "lease", state: "failed", deadline: 0, boundAt: null }] : [],
+        remove: async () => { pending = false; },
+      },
+      leases: { releaseById: async () => { failures += 1; if (failures < 3) throw new Error("provider down"); } },
+    });
+    const run = vi.fn(reaper.sweep);
+    await registerLoginCleanupWork(c, [{ queue: DELIVERY_QUEUES.setupTokenCleanup, run, next: async () => pending ? Date.now() : null, retryDelayMs: reaper.retryDelayMs }], () => true).ready;
+    expect(run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(run).toHaveBeenCalledTimes(2);
+    await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.setupTokenCleanup));
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(run).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(c.nextWakeAt()).toBeNull();
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+  it("backs off a setup-token sweep that throws through the worker, then becomes quiet", async () => {
+    vi.useFakeTimers();
+    const owner = fakeOwner();
+    const failures: unknown[] = [];
+    const c = coordinator(owner, () => true, error => failures.push(error));
+    let outages = 2;
+    const reaper = createSetupTokenReaper({
+      store: {
+        listReapable: async () => { if (outages > 0) { outages -= 1; throw new Error("database unavailable"); } return []; },
+        remove: async () => {},
+      },
+      leases: { releaseById: async () => {} },
+    });
+    const started = Date.now();
+    const attempts: number[] = [];
+    const run = vi.fn(async () => { attempts.push(Date.now() - started); return reaper.sweep(); });
+    await registerLoginCleanupWork(c, [{ queue: DELIVERY_QUEUES.setupTokenCleanup, run, next: async () => outages > 0 ? Date.now() : null, retryDelayMs: reaper.retryDelayMs }], () => true).ready;
+    expect(attempts).toEqual([0]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(attempts).toEqual([0, 30_000]);
+    await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.setupTokenCleanup));
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(attempts).toEqual([0, 30_000]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual([0, 30_000, 90_000]);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(attempts).toHaveLength(3);
+    expect(reaper.retryDelayMs()).toBe(0);
+    expect(failures).toHaveLength(2);
+    expect(c.nextWakeAt()).toBeNull();
+  });
   it("does not block another cleanup worker and awaits in-flight work on shutdown", async () => {
     vi.useFakeTimers(); const c = coordinator(fakeOwner()); let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
