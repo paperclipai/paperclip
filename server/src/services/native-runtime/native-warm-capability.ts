@@ -22,6 +22,13 @@ export function supportsNativeWarmFiles(profile: WarmProviderSelection): boolean
     (profile.backend === "acpx_runtime" && profile.acpxAgent === "copilot");
 }
 
+/** Google Antigravity runs turn by turn with any credential, as Kimi does with a
+ * managed key. A warm owner needs its own proof that a credential change retires
+ * it and refreshes its native home on attach, so no choice selects warm yet. */
+export function requiresPerTurnNativeSession(profile: WarmProviderSelection): boolean {
+  return profile.backend === "acpx_runtime" && profile.acpxAgent === "antigravity";
+}
+
 /** Copilot carries a token in its fenced session environment, not a temporary auth file.
  * Credential generation changes still retire the exact warm owner before attachment. */
 export function supportsManagedNativeWarmSession(
