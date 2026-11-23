@@ -211,6 +211,50 @@ export function readActiveStopSettlement(input: { events: readonly unknown[]; ru
   fail(proof.rows.filter(x => x.event.eventType.startsWith("tool.execution.")
     || (x.event.eventType === "provider.notice.recorded" && ["cursor_tool_evidence_v1", "copilot_tool_evidence_v1"].includes(rec(x.event.payload).category)))
     .every(x => x.event.sourceSeq < t.event.sourceSeq), "native operation after provider cancellation");
+  const stop = assertStopAcknowledged(run, issue, before);
+  return { schema: "paperclip.e2e.native-active-stop-settlement.v2", pending: before, dispatchMonotonicNs: input.dispatchMonotonicNs,
+    branch: "pending_permission_cancelled" as const, closedRequestSourceSeq: c.event.sourceSeq, terminalSourceSeq: t.event.sourceSeq,
+    closedRequestRowSha256: hash(c.row), terminalRowSha256: hash(t.row), intentId: stop.intentId as string,
+    intentAuditId: stop.intentAuditId as string, acknowledgementAuditId: stop.acknowledgementAuditId as string,
+    taskStillInProgress: true, normalCompletionAccepted: false, replayAllowed: false };
+}
+/**
+ * Playbook section 13, "Permission denial": the operator denies the one real
+ * native permission in the browser, then stops the task. The denial must reach
+ * the provider as a `decline` resolution of that exact request before the
+ * turn ends; the mutation never completes; nothing runs after the terminal;
+ * and Stop is acknowledged for this run. If the provider already ended its
+ * turn after the denial, the run must not claim the task done.
+ */
+export function readDeniedPermissionSettlement(input: { events: readonly unknown[]; run: Row; issue: Row; pending: ActiveStopPending; stopDispatched: boolean }) {
+  const before = input.pending, { run, issue } = input;
+  fail(before?.schema === "paperclip.e2e.native-active-stop-pending.v2" && isActiveStopCaller(before.caller), "pre-denial pending observation missing");
+  const proof = origin(input.events, before.scope);
+  fail(hash(proof.created.row) === before.requestRowSha256 && proof.notice.requestId === before.requestId && proof.notice.turnId === before.turnId
+    && proof.notice.toolCallId === before.toolCallId, "observed pending request changed");
+  const closed = proof.rows.filter(x => closures.has(x.event.eventType)), terminal = proof.rows.filter(x => terminals.has(x.event.eventType));
+  fail(closed.length === 1 && terminal.length === 1, "one closed request and one terminal required");
+  const c = closed[0]!, t = terminal[0]!, cp = rec(c.event.payload);
+  fail(proof.stream(c.event) && proof.stream(t.event) && c.event.eventType === "runtime_request.resolved" && cp.requestId === before.requestId
+    && cp.turnId === before.turnId && cp.action === "decline" && c.event.sourceSeq > before.requestSourceSeq && t.event.sourceSeq > c.event.sourceSeq,
+  "denial was not delivered to the exact native request before the turn ended");
+  fail(proof.rows.filter(x => x.event.eventType.startsWith("tool.execution.")).every(x => x.event.sourceSeq < t.event.sourceSeq
+    && !(x.event.eventType === "tool.execution.completed" && rec(x.event.payload).status === "completed" && MUTATIONS.has(rec(x.event.payload).operation))),
+  "native mutation completed or ran after the terminal");
+  fail(run.id === before.scope.runId && run.companyId === before.scope.companyId && run.nativeIssueId === before.scope.issueId && run.runtimeMode === "native",
+    "foreign run");
+  if (t.event.eventType === "turn.cancelled") {
+    fail(input.stopDispatched, "turn cancelled without the operator's Stop");
+    const stop = assertStopAcknowledged(run, issue, before);
+    return { schema: "paperclip.e2e.native-permission-denial.v1", branch: "denied_then_stopped" as const, requestId: before.requestId,
+      resolvedSourceSeq: c.event.sourceSeq, terminalSourceSeq: t.event.sourceSeq, intentId: stop.intentId as string, replayAllowed: false };
+  }
+  fail(["succeeded", "failed"].includes(run.status) && issue.id === before.scope.issueId && issue.status !== "done",
+    "provider finished after the denial but the task claims completion");
+  return { schema: "paperclip.e2e.native-permission-denial.v1", branch: "denied_then_finished" as const, requestId: before.requestId,
+    resolvedSourceSeq: c.event.sourceSeq, terminalSourceSeq: t.event.sourceSeq, replayAllowed: false };
+}
+function assertStopAcknowledged(run: Row, issue: Row, before: ActiveStopPending): Row {
   const stop = rec(rec(run.resultJson).nativeCancellation), startup = rec(rec(run.resultJson).startupCancellation);
   fail(run.id === before.scope.runId && run.companyId === before.scope.companyId && run.nativeIssueId === before.scope.issueId && run.runtimeMode === "native" && run.status === "cancelled"
     && issue.id === before.scope.issueId && issue.companyId === before.scope.companyId && issue.status === "in_progress"
@@ -221,11 +265,7 @@ export function readActiveStopSettlement(input: { events: readonly unknown[]; ru
     && Array.isArray(stop.effects) && stop.effects.length === 1 && stop.effects[0] === "release_run_resources"
     && id(stop.intentAuditId) && id(stop.acknowledgementAuditId) && stop.intentAuditId !== stop.acknowledgementAuditId,
   "same-scope caller Stop acknowledgement missing");
-  return { schema: "paperclip.e2e.native-active-stop-settlement.v2", pending: before, dispatchMonotonicNs: input.dispatchMonotonicNs,
-    branch: "pending_permission_cancelled" as const, closedRequestSourceSeq: c.event.sourceSeq, terminalSourceSeq: t.event.sourceSeq,
-    closedRequestRowSha256: hash(c.row), terminalRowSha256: hash(t.row), intentId: stop.intentId as string,
-    intentAuditId: stop.intentAuditId as string, acknowledgementAuditId: stop.acknowledgementAuditId as string,
-    taskStillInProgress: true, normalCompletionAccepted: false, replayAllowed: false };
+  return stop;
 }
 
 export interface ActiveStopRemoteObservation {

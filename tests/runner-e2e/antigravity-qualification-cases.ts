@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import { ANTIGRAVITY_THINKING_LEVELS, antigravityFamilyModelIds } from "../../packages/shared/src/antigravity-models.js";
 import { ANTIGRAVITY_GENERATED_MODEL_CATALOG } from "../../packages/shared/src/antigravity-models.generated.js";
+import { nativePermissionDenialTasks } from "./native-active-stop-tasks.js";
 import type { EnvironmentFixture, RunnerProfileFixture, RunnerSuiteFixture, RunnerTaskFixture } from "./types.js";
 
 /** Unattended Google API-key route. The acceptance model is repeatable on a free-tier key. */
@@ -91,7 +92,7 @@ export function buildAntigravityProfile(deps: Pick<AntigravitySuiteDependencies,
 }
 
 /** Lifecycle cases that need one owned process tree per run use per-turn Daytona leases. */
-const LIFECYCLE_CASES = ["pending-permission-stop", "pending-permission-provider-loss"] as const;
+const LIFECYCLE_CASES = ["pending-permission-stop", "permission-deny-stop", "pending-permission-provider-loss"] as const;
 
 function definitionDigest(extra: unknown): string {
   const hash = createHash("sha256").update(JSON.stringify(extra));
@@ -111,6 +112,7 @@ export function buildAntigravityQualificationSuite(deps: AntigravitySuiteDepende
     ...deps.runnerTasks, ...deps.localIntegrityTasks, deps.extendedHarnessFileTask, deps.warmFollowupTask,
     ...deps.chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
     ...deps.nativeActiveStopTasks.filter(task => task.id === "pending-permission-stop"),
+    ...nativePermissionDenialTasks,
     ...deps.nativeProviderLossTasks,
   ].map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const }));
   if (tasks.filter(task => (LIFECYCLE_CASES as readonly string[]).includes(task.id)).length !== LIFECYCLE_CASES.length) {
@@ -124,12 +126,12 @@ export function buildAntigravityQualificationSuite(deps: AntigravitySuiteDepende
     environments: [deps.localEnvironment, deps.daytonaWarmEnvironment],
     environmentOverrides: Object.fromEntries(LIFECYCLE_CASES.map(id => [id, { daytona: deps.daytonaEnvironment }])),
     tasks, expectedMatrixSize: tasks.length * 2,
-    definitionMetadata: { version: 1, digest: definitionDigest(tasks.map(task => task.id)), runtime: QUALIFIED_ACPX_PROFILES.antigravity.agentServerVersion,
+    definitionMetadata: { version: 2, digest: definitionDigest(tasks.map(task => task.id)), runtime: QUALIFIED_ACPX_PROFILES.antigravity.agentServerVersion,
       model: ANTIGRAVITY_ACCEPTANCE_MODEL, authentication: "gemini-api-key", qualification: antigravityQualificationStatus(),
       candidateAdmission: "company-bound-grant-staged-at-company-creation-while-pending-none-once-qualified-v1",
       profileVersion: QUALIFIED_ACPX_PROFILES.antigravity.agentProfileVersion,
       scheduling: "explicit-only", maximumAttemptsPerCell: 1, repetitionsRequired: 1,
-      permissionDenial: "not-yet-covered", nativeQuestions: "not-claimed", accounting: "usage-and-cost-unavailable",
+      permissionDenial: "browser-deny-then-stop-canonical-v1", nativeQuestions: "not-claimed", accounting: "usage-and-cost-unavailable",
       lifecycleEvidence: "canonical-runtime-request-and-tool-execution-without-provider-notices-v1",
       artifactOracle: "independent-workspace-and-public-download-bytes", stopBoundary: "provider-turn-started" },
   };

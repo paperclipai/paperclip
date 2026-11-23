@@ -1665,7 +1665,7 @@ pnpm test:e2e:runner -- --id kimi-qualification.runner-acpx-kimi.local.message-m
 
 `antigravity-qualification` is the explicit-only, unattended suite for the
 native Runner Antigravity harness with a Gemini API key. It follows the Kimi
-template: eleven journeys on local and on Daytona (22 cells), one attempt each,
+template: twelve journeys on local and on Daytona (24 cells), one attempt each,
 profile `runner-acpx-antigravity`, credential `GEMINI_API_KEY`, acceptance model
 `gemini-3.8-flash-low`. It is not part of `--all`, `extended-harnesses` or the
 attended [Antigravity journey](ANTIGRAVITY-AGENT-JOURNEY.md), which stays a
@@ -1694,6 +1694,7 @@ Each case maps to one row of the
 | `stop-new-resume` | chat hardening | Stop (active real work) |
 | `continuity-restart` | chat hardening | Continuity after controller restart |
 | `pending-permission-stop` | shared `native_active_stop` (Cursor/Copilot) | Stop (pending native permission) |
+| `permission-deny-stop` | shared `native_active_stop` with a browser Deny first | Permission denial |
 | `pending-permission-provider-loss` | shared `native_provider_loss` (Cursor) | Provider death |
 
 Antigravity emits no provider tool-evidence notice, so the shared Stop and loss
@@ -1702,6 +1703,15 @@ permission card with the native ACPX origin, its tool execution (an edit or
 write on the exact target, never completed), only completed read/search
 operations before it, then a cancelled (Stop) or expired (loss) closure and one
 turn terminal. A stale Allow must return 409 in both cases.
+
+`permission-deny-stop` follows the same pending boundary, then the operator
+clicks Deny in the browser and stops the task. It passes only when the browser's
+POST declines that exact run, turn and request; the canonical stream records a
+`runtime_request.resolved` `decline` for it before the one turn terminal; the
+mutation never completes and nothing runs after the terminal; the target stays
+absent through cleanup; and there is one run. When Stop wins (the expected
+branch) the run is cancelled with the caller's acknowledged Stop; when the
+provider ended its turn after the denial first, the task must not be done.
 
 Instructions and assigned skills use the shared `native-completion` cells; the
 Antigravity profile there is opt-in (`--profile runner-acpx-antigravity`).

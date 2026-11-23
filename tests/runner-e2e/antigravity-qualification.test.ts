@@ -8,7 +8,7 @@ import { ANTIGRAVITY_API_KEY_LINEUP, ANTIGRAVITY_GEMINI4_LINEUP, antigravityLine
 import { runnerMatrix, runnerSuites } from "./catalog.js";
 import { buildRunnerE2EProcessEnvironment, buildPaperclipServerEnvironment } from "./harness-env.js";
 import { evaluateMatchers } from "./matchers.js";
-import { observeActiveStopPending, readActiveStopCaller, readActiveStopSettlement } from "./native-active-stop-evidence.js";
+import { observeActiveStopPending, readActiveStopCaller, readActiveStopSettlement, readDeniedPermissionSettlement } from "./native-active-stop-evidence.js";
 import { assertProviderLossSettlement } from "./native-provider-loss-flow.js";
 import { buildMatrixJobs, daytonaCandidateProviders, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { readRestartRequest } from "./server-restart-request.js";
@@ -20,14 +20,14 @@ const companyId = "11111111-1111-4111-8111-111111111111";
 const select = (...args: string[]) => selectRunnerExecutions(parseRunnerSelectors(args));
 
 describe("Google Antigravity explicit Product qualification", () => {
-  it("lists eleven journeys in local and Daytona without entering --all", () => {
-    expect(cells).toHaveLength(22);
+  it("lists twelve journeys in local and Daytona without entering --all", () => {
+    expect(cells).toHaveLength(24);
     expect(new Set(cells.map(cell => cell.environment.id))).toEqual(new Set(["local", "daytona"]));
     expect(new Set(cells.map(cell => cell.task.id))).toEqual(new Set([
       "message-marker", "plan-revise-accept", "ask-question", "structured-question-resume", "structured-question-restart-resume",
-      "file-edit-validate", "warm-three-turn", "stop-new-resume", "continuity-restart", "pending-permission-stop", "pending-permission-provider-loss",
+      "file-edit-validate", "warm-three-turn", "stop-new-resume", "continuity-restart", "pending-permission-stop", "permission-deny-stop", "pending-permission-provider-loss",
     ]));
-    expect(select("--suite", suiteId)).toHaveLength(22);
+    expect(select("--suite", suiteId)).toHaveLength(24);
     expect(select("--all").some(cell => cell.profile.qualificationCandidate === "antigravity")).toBe(false);
     expect(() => select("--profile", "runner-acpx-antigravity")).toThrow("zero executions");
     expect(runnerSuites.find(suite => suite.id === suiteId)?.definitionMetadata).toMatchObject({
@@ -38,7 +38,7 @@ describe("Google Antigravity explicit Product qualification", () => {
 
   it("reuses the shared lifecycle fixtures on per-turn Daytona leases", () => {
     const lifecycle = cells.filter(cell => cell.task.flow === "native_active_stop" || cell.task.flow === "native_provider_loss");
-    expect(lifecycle.map(cell => cell.task.id).sort()).toEqual(["pending-permission-provider-loss", "pending-permission-provider-loss", "pending-permission-stop", "pending-permission-stop"]);
+    expect(lifecycle.map(cell => cell.task.id).sort()).toEqual(["pending-permission-provider-loss", "pending-permission-provider-loss", "pending-permission-stop", "pending-permission-stop", "permission-deny-stop", "permission-deny-stop"]);
     const cursorLoss = runnerMatrix.find(cell => cell.suite.id === "native-provider-loss" && cell.environment.id === "local")!;
     expect(cells.find(cell => cell.task.id === "pending-permission-provider-loss")!.task.buildPrompt("n")).toBe(cursorLoss.task.buildPrompt("n"));
     for (const cell of lifecycle.filter(cell => cell.environment.id === "daytona")) expect(cell.environment.configurationKey).toBeUndefined();
@@ -63,9 +63,9 @@ describe("Google Antigravity explicit Product qualification", () => {
 
   it("admits CI matrix jobs for unattended cells but still refuses the attended journey", () => {
     const jobs = buildMatrixJobs(select("--suite", suiteId));
-    expect(jobs).toHaveLength(22);
+    expect(jobs).toHaveLength(24);
     expect(new Set(jobs.map(job => job.credentialName))).toEqual(new Set(["GEMINI_API_KEY"]));
-    expect(jobs.filter(job => job.needsDaytona)).toHaveLength(11);
+    expect(jobs.filter(job => job.needsDaytona)).toHaveLength(12);
     expect(() => buildMatrixJobs(select("--suite", "antigravity-agent-journey"))).toThrow("Attended connection journeys");
   });
 
@@ -253,5 +253,46 @@ describe("Antigravity pending-permission lifecycle evidence", () => {
     expect(assertProviderLossSettlement(loss.run, loss.issue, loss.events, lost)).toMatchObject({ requestClosure: "runtime_request.expired", replayAllowed: false });
     loss.push("tool.execution.completed", loss.tool("write-1", "edit", loss.scope.target, "completed"));
     expect(() => assertProviderLossSettlement(loss.run, loss.issue, loss.events, lost)).toThrow(/completed mutation/);
+  });
+
+  it("requires a delivered decline of the exact request, no completed mutation and the operator's Stop", () => {
+    const acknowledged = (run: Row) => Object.assign(run, { status: "cancelled", resultJson: {
+      startupCancellation: { cancellationRequestId, requestedBy: { type: "board", userId: "local-board" } }, nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", intentId: `native-cancellation:${cancellationRequestId}`, companyId: "company", runId: "run", issueId: "issue", scope: "run",
+        dispatched: true, dispatchState: "acknowledged", reasonCode: "cancellation_run_only", effects: ["release_run_resources"], intentAuditId: "intent", acknowledgementAuditId: "ack" } } });
+    const denied = () => {
+      const f = fixture(), pending = f.observe();
+      f.push("runtime_request.resolved", { requestId: "request", requestKind: "permission_approval", turnId: "turn", itemId: "item", action: "decline" });
+      f.push("tool.execution.completed", f.tool("write-1", "edit", f.scope.target, "failed"));
+      return { ...f, pending };
+    };
+    const stopped = denied();
+    stopped.push("turn.cancelled", { status: "cancelled", error: null }); acknowledged(stopped.run);
+    expect(readDeniedPermissionSettlement({ events: stopped.events, run: stopped.run, issue: stopped.issue, pending: stopped.pending, stopDispatched: true }))
+      .toMatchObject({ branch: "denied_then_stopped", requestId: "request", replayAllowed: false });
+    // A cancellation nobody asked for is not this journey.
+    expect(() => readDeniedPermissionSettlement({ events: stopped.events, run: stopped.run, issue: stopped.issue, pending: stopped.pending, stopDispatched: false })).toThrow(/without the operator's Stop/);
+
+    const finished = denied();
+    finished.push("turn.completed", { status: "completed" }); finished.run.status = "succeeded";
+    expect(readDeniedPermissionSettlement({ events: finished.events, run: finished.run, issue: finished.issue, pending: finished.pending, stopDispatched: false }))
+      .toMatchObject({ branch: "denied_then_finished" });
+    finished.issue.status = "done";
+    expect(() => readDeniedPermissionSettlement({ events: finished.events, run: finished.run, issue: finished.issue, pending: finished.pending, stopDispatched: false })).toThrow(/claims completion/);
+
+    const accepted = fixture(), acceptedPending = accepted.observe();
+    accepted.push("runtime_request.resolved", { requestId: "request", requestKind: "permission_approval", turnId: "turn", itemId: "item", action: "accept" });
+    accepted.push("turn.cancelled", { status: "cancelled", error: null }); acknowledged(accepted.run);
+    expect(() => readDeniedPermissionSettlement({ events: accepted.events, run: accepted.run, issue: accepted.issue, pending: acceptedPending, stopDispatched: true })).toThrow(/denial was not delivered/);
+
+    const cancelledOnly = fixture(), cancelledPending = cancelledOnly.observe();
+    cancelledOnly.push("runtime_request.cancelled", { requestId: "request", requestKind: "permission_approval", turnId: "turn", itemId: "item", reason: "turn_terminal" });
+    cancelledOnly.push("turn.cancelled", { status: "cancelled", error: null }); acknowledged(cancelledOnly.run);
+    expect(() => readDeniedPermissionSettlement({ events: cancelledOnly.events, run: cancelledOnly.run, issue: cancelledOnly.issue, pending: cancelledPending, stopDispatched: true })).toThrow(/denial was not delivered/);
+
+    const written = denied();
+    written.events.pop(); written.push("tool.execution.completed", written.tool("write-1", "edit", written.scope.target, "completed"));
+    written.push("turn.cancelled", { status: "cancelled", error: null }); acknowledged(written.run);
+    expect(() => readDeniedPermissionSettlement({ events: written.events, run: written.run, issue: written.issue, pending: written.pending, stopDispatched: true })).toThrow();
   });
 });
