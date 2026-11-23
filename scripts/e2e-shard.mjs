@@ -31,9 +31,13 @@ export const SERIAL_SPECS = [
   "smoke-lab-p5-p7.spec.ts",
 ];
 
-// Matches the CI worker count in tests/e2e/playwright.config.ts for shards
-// that contain only parallel-safe specs.
+// Matches the 4-vCPU CI worker count in tests/e2e/playwright.config.ts for
+// shards that contain only parallel-safe specs. Empirical wall-clock speedup
+// on 4-vCPU runners with 2 Chromium workers sharing one server + Postgres is
+// ~1.5x (measured on run 45245582904); using the empirical factor avoids
+// under-allocating shards to parallel specs.
 export const DEFAULT_PARALLEL_WORKERS = 2;
+export const EFFECTIVE_PARALLEL_SPEEDUP = 1.5;
 
 export function isSerialE2eSpec(file) {
   return SERIAL_SPECS.includes(path.posix.basename(file.split(path.sep).join("/")));
@@ -56,7 +60,7 @@ export function partitionE2eShards(
   files,
   shardCount,
   durations = {},
-  { parallelWorkers = DEFAULT_PARALLEL_WORKERS } = {},
+  { parallelWorkers = EFFECTIVE_PARALLEL_SPEEDUP } = {},
 ) {
   const serialFiles = files.filter(isSerialE2eSpec);
   const parallelFiles = files.filter((file) => !isSerialE2eSpec(file));

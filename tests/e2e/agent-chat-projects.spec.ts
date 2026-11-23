@@ -219,24 +219,25 @@ test("split handoff commits relevant plans before execution and never creates ch
   }
 });
 
-for (const bad of [
-  { ids: ["987654321"] },
-  { urls: ["https://user:password@github.com/org/repo"] },
-  {
-    urls: ["https://github.com/org/repo"],
-    workspace: { name: "Conflicting", repoUrl: "https://github.com/org/repo" },
-  },
-])
-  test(`failed project creation has no success card or partial state: ${JSON.stringify(bad)}`, async ({
-    page,
-    request,
-  }) => {
-    const f = await setup(request);
-    try {
-      await page.goto(f.route);
+test("failed project creation has no success card or partial state", async ({
+  page,
+  request,
+}) => {
+  const invalidPayloads = [
+    { ids: ["987654321"] },
+    { urls: ["https://user:password@github.com/org/repo"] },
+    {
+      urls: ["https://github.com/org/repo"],
+      workspace: { name: "Conflicting", repoUrl: "https://github.com/org/repo" },
+    },
+  ];
+  const f = await setup(request);
+  try {
+    await page.goto(f.route);
+    for (const [index, bad] of invalidPayloads.entries()) {
       await send(page, { action: "project", ...bad });
-      await idle(request, f.chatPath);
-      await expect(page.getByText(/Expected tool result:/)).toBeVisible();
+      await idle(request, f.chatPath, index + 1);
+      await expect(page.getByText(/Expected tool result:/)).toHaveCount(index + 1);
       await expect(
         page.getByRole("article", { name: /Project created:/ }),
       ).toHaveCount(0);
@@ -248,10 +249,11 @@ for (const bad of [
       expect(
         await json(await request.get(`/api/companies/${f.company.id}/issues`)),
       ).toHaveLength(0);
-    } finally {
-      await f.restore();
     }
-  });
+  } finally {
+    await f.restore();
+  }
+});
 
 test("first upload creates the chat without invoking its agent; shared attachments persist", async ({
   page,
