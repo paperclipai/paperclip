@@ -257,6 +257,11 @@ the local result. See "Removing a managed Google connection" in
 
 ### Configure each originating Paperclip instance
 
+These steps apply to Paperclip Cloud workspaces. Paperclip's own Google
+sign-in is not available on a self-hosted Paperclip; a self-hosted instance
+connects Gmail with its own Google OAuth client. See
+[Self-hosted instances: use your own Google client](GOOGLE-WORKSPACE.md#self-hosted-instances-use-your-own-google-client).
+
 Generate the two long-lived instance keys once. PEM-encoded PKCS#8 keys work
 directly with Paperclip:
 

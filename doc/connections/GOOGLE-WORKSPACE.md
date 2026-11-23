@@ -451,14 +451,12 @@ OAuth client ID and secret and stores them through the normal instance-vault
 path.
 
 Cloud-hosted stacks receive these values through the existing per-stack secret
-delivery path. A self-hosted instance creates its keys during enrollment and
-stores them with owner-only permissions in the instance's ignored secret
-directory. The setup page supplies its authenticated same-origin HTTPS address
-to enrollment, so a normal Tailscale-hosted self-hoster does not need to edit
-`config.json` or set `PAPERCLIP_PUBLIC_URL`; the enrolled origin becomes the
-durable callback binding. The former `PAPERCLIP_ID_CONNECTOR_*` values use an incompatible
-Paperclip ID protocol and are not read aliases. Enroll with Paperclip Cloud and
-reconnect legacy grants before their old access tokens expire.
+delivery path. A self-hosted instance does not enroll with Paperclip Cloud
+for Google: it uses its own Google OAuth client (see
+[Self-hosted instances: use your own Google client](#self-hosted-instances-use-your-own-google-client)).
+Enrollment of a self-hosted instance still serves other Paperclip-managed
+providers, such as GitHub and Asana. The former `PAPERCLIP_ID_CONNECTOR_*`
+values use an incompatible Paperclip ID protocol and are not read aliases.
 
 The gallery requests the broker capability document with a short cache. A
 Paperclip-managed method is omitted unless its exact profile is enabled at the
