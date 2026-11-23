@@ -121,8 +121,11 @@ export async function assertEphemeralServerData(db: Db) {
 }
 
 const failedCheckCode = (error: unknown) => {
-  const code = error instanceof Error ? error.message : "";
-  return /^[a-z_]{1,80}$/.test(code) ? `:${code}` : "";
+  const message = error instanceof Error ? error.message : "";
+  if (/^[a-z_]{1,80}$/.test(message)) return `:${message}`;
+  if (error instanceof SyntaxError) return ":invalid_source_json";
+  const errno = (error as { code?: unknown } | null)?.code;
+  return typeof errno === "string" && /^E[A-Z]{2,20}$/.test(errno) ? `:source_${errno.toLowerCase()}` : "";
 };
 
 export async function readEphemeralServerDataEligibility(db: Db, options: { purpose?: "migration" | "startup" } = {}) {

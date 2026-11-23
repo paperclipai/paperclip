@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
@@ -107,6 +107,14 @@ describeEmbeddedPostgres.each(["volume_free_owner", "eligibility_unreadable", "a
     expect(online.blockers).toContain(failed);
     expect(online.blockers).not.toContain("native_controllers_require_migration");
     expect(await readFile(f.file, "utf8")).toBe(f.source);
+    await rm(`${f.file}.alias`);
+    if (process.getuid?.() !== 0) {
+      await chmod(f.file, 0o000);
+      try {
+        expect((await readEphemeralServerDataEligibility(f.db, { purpose: "startup" })).blockers)
+          .toContain("native_controllers_check_failed:source_eacces");
+      } finally { await chmod(f.file, 0o600); }
+    }
   });
   if (scenario === "volume_free_owner") it("starts a volume-free server over controller state it wrote itself and keeps unmarked state blocked", async () => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
