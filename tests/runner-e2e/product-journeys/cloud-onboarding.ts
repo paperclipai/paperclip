@@ -28,9 +28,16 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   const firstRunName = page.getByLabel("Name", { exact: true });
   const organizationName = page.getByLabel("Organization name", { exact: true });
   const createLink = page.getByRole("link", { name: /^(Create (?:a new )?organization|\+ New organization)$/ }).first();
+  const betaConnection = page.getByRole("checkbox", { name: "OpenAI Codex", exact: true });
   // The first organization uses the signup Name/Next form. Later organizations
   // use Organization name/Create organization, reached from the managed portfolio.
-  await expect(firstRunName.or(organizationName).or(createLink).first()).toBeVisible();
+  await expect(betaConnection.or(firstRunName).or(organizationName).or(createLink).first()).toBeVisible();
+  if (await betaConnection.isVisible()) {
+    await betaConnection.check();
+    await page.getByRole("checkbox", { name: "I intend to provide feedback on the Paperclip closed beta.", exact: true }).check();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(firstRunName).toBeVisible();
+  }
   if (!await firstRunName.isVisible() && !await organizationName.isVisible()) {
     await createLink.click();
     await expect(organizationName).toBeVisible();
