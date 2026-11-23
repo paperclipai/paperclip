@@ -171,6 +171,46 @@ describe("saved first chat frame of a recently opened task", () => {
       expect(page(storage).client.getQueryData(commentsKey("ABC-1"))).toBeDefined();
     });
 
+    it("ranks a task opened by a lowercase identifier as opened", () => {
+      const storage = new MemoryStorage();
+      const first = page(storage);
+      signIn(first.client);
+      const opened = task(1);
+      first.client.setQueryData(coreKey("abc-1"), opened, { updatedAt: Date.now() - 30_000 });
+      first.client.setQueryData(commentsKey("abc-1"), recentComments(1), { updatedAt: Date.now() - 30_000 });
+      recordTaskOpen(first.client, opened);
+      for (let n = 100; n < 125; n += 1) openTask(first.client, n);
+      first.handle.flush();
+      expect(page(storage).client.getQueryData(commentsKey("abc-1"))).toBeDefined();
+    });
+
+    it("never carries one user's opened tasks into another user's record", async () => {
+      const storage = new MemoryStorage();
+      const { client, handle } = page(storage);
+      signIn(client, "alice");
+      recordTaskOpen(client, openTask(client, 1));
+      handle.flush();
+      expect(JSON.parse(storage.getItem(`${QUERY_CACHE_PREFIX}alice:${COMPANY}`)!).visits).toHaveProperty(task(1).id);
+      await client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: async () => session("bob") });
+      signIn(client, "bob");
+      openTask(client, 1);
+      handle.flush();
+      expect(JSON.parse(storage.getItem(`${QUERY_CACHE_PREFIX}bob:${COMPANY}`)!).visits).toEqual({});
+    });
+
+    it("forgets when a refused task was opened", async () => {
+      const storage = new MemoryStorage();
+      const { client, handle } = page(storage);
+      signIn(client);
+      recordTaskOpen(client, openTask(client, 1));
+      recordTaskOpen(client, openTask(client, 2));
+      await client.fetchQuery({ queryKey: coreKey("ABC-1"), queryFn: async () => { throw new ApiError("Forbidden", 403, null); } }).catch(() => {});
+      handle.flush();
+      const visits = JSON.parse(storage.getItem(`${QUERY_CACHE_PREFIX}alice:${COMPANY}`)!).visits;
+      expect(visits).not.toHaveProperty(task(1).id);
+      expect(visits).toHaveProperty(task(2).id);
+    });
+
     it("skips a task whose chat exceeds the per-task budget and keeps its record", () => {
       const huge = recentComments(1, 3, "x".repeat(SAVED_TASK_CHAT_MAX_TASK_BYTES));
       const storage = savedPage((client) => { openTask(client, 1, { comments: huge }); openTask(client, 2); });

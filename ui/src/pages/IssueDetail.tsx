@@ -3491,10 +3491,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       ? issue
       : null;
   const openedIssueId = loadedIssue ? loadedIssue.id : null;
-  const openedIssueIdentifier = loadedIssue ? loadedIssue.identifier : null;
   useEffect(() => {
-    if (openedIssueId) recordTaskOpen(queryClient, { id: openedIssueId, identifier: openedIssueIdentifier });
-  }, [queryClient, openedIssueId, openedIssueIdentifier]);
+    if (openedIssueId) recordTaskOpen(queryClient, { id: openedIssueId });
+  }, [queryClient, openedIssueId]);
   const loadedIssueCompany = loadedIssue
     ? companies.find((company) => company.id === loadedIssue.companyId)
     : undefined;
