@@ -60,7 +60,7 @@ import { githubChatReviewService } from "./chat-github-reviews.js";
 import { runIdentityContexts } from "@paperclipai/db";
 import { executeSpekoVoiceTool, spekoToolsForSession } from "./voice/speko-agent-tools.js";
 import { captureRunIdentity } from "./run-identity.js";
-import { emitConnectionInvoked } from "./connector-telemetry.js";
+import { emitAggregatorAppRequestsFromToolCall, emitConnectionInvoked } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import {
@@ -8820,6 +8820,15 @@ export function createToolGatewayService(
       // The older app finished the call: the answers it used are spent.
       for (const used of legacyAnswered.splice(0)) await settleElicitationRound(used.row, elicitationCall!, used.responses, invocationId);
       const upstreamPending = extractRemoteMcpPending(payloadRecord, String(connection.config.sourceTemplateKey ?? ""), entry.toolName);
+      emitAggregatorAppRequestsFromToolCall({
+        companyId: session.companyId,
+        provider: connection.config.sourceTemplateKey,
+        toolName: entry.toolName,
+        parameters,
+        response: payloadRecord,
+        origin: session.agentId ? "agent" : session.actorType === "user" ? "user" : null,
+        pendingAuthorization: upstreamPending?.kind === "authorization",
+      });
       if (upstreamPending) {
         await retainUpstreamHandoff(invocationId, upstreamPending);
         throw new ToolGatewayHttpError(409, "Complete the provider's authorization or approval before continuing. The original call has not been replayed.", "provider_interaction_required", { upstreamPending, invocationId });
