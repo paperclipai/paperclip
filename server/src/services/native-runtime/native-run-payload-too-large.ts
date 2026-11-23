@@ -1,9 +1,9 @@
 export const NATIVE_RUN_PAYLOAD_TOO_LARGE = "native_run_payload_too_large" as const;
 
 export const NATIVE_RUN_PAYLOAD_TOO_LARGE_ACTION =
-  "This agent's run setup is too large to start, usually because it has too many connected tools. "
-  + "Paperclip does not repeat this automatically, because the same setup would fail again. "
-  + "Turn off connectors this agent does not need, then press Retry.";
+  "This agent's run setup is too large to start. Its connected tools, its instructions or its skills and context "
+  + "together exceed what one run can carry. Paperclip does not repeat this automatically, because the same setup "
+  + "would fail again. Turn off connectors or skills this agent does not need, or shorten its instructions, then press Retry.";
 
 const RUN_PAYLOAD_TOO_LARGE = /durable_prp_canonical_json_too_large|command_payload_too_large/;
 

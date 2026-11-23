@@ -279,7 +279,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     const now = new Date("2026-04-20T12:00:00.000Z");
     await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "native_run_payload_too_large" });
     expect(await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 }))
-      .toMatchObject({ outcome: "not_scheduled", reason: expect.stringContaining("too many connected tools") });
+      .toMatchObject({ outcome: "not_scheduled", reason: expect.stringContaining("too large to start") });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
   });
 
