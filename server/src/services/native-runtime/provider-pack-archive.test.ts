@@ -16,8 +16,6 @@ const exec = promisify(execFile);
 const hasZstd = spawnSync("zstd", ["--version"]).status === 0;
 const roots: string[] = [];
 const digest = `sha256:${"a".repeat(64)}`;
-// Compare files by digest: `toEqual` on megabyte Buffers walks them byte by
-// byte and took seconds per file, enough to time these tests out on CI.
 const fileDigest = async (file: string) => createHash("sha256").update(await fs.readFile(file)).digest("hex");
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
 
