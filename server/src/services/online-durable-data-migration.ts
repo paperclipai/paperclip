@@ -216,7 +216,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           const result = await owners.runtimeSkillAssets(db, { apply: true, after, limit, signal }, storage);
           for (const row of result.results) {
             if (row.status === "preserved") add(counts, "runtimeSkillRuns");
-            else if (row.status === "unsaved") add(deferred, `runtime_skill_assets:${row.code}`);
+            else if (row.status === "unsaved") defer(`runtime_skill_assets:${row.code}`);
           }
           return result.inspected < limit || !result.after ? null : result.after;
         }
