@@ -5234,7 +5234,7 @@ export function issueThreadInteractionService(
                 source: "wake_assignee_interaction_adoption",
                 _previous: { assigneeAgentId: null, assigneeUserId: null },
               },
-            });
+            }, postCommitActivityPublications);
           }
           if (data.addresseeUserId) {
             await assertInteractionAddresseeUserAvailable(tx as unknown as Db, issue, issueRow, data.addresseeUserId);

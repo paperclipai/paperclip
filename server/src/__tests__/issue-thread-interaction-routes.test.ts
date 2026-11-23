@@ -2657,7 +2657,7 @@ describe("issue thread interaction routes", () => {
       action: "tasks:assign",
       resource: expect.objectContaining({ assigneeAgentId: CREATED_AGENT_ID, assigneeUserId: null }),
     }));
-    mockAccessDecide.mockResolvedValueOnce({ allowed: false, explanation: "no assign grant", reasons: [] });
+    mockAccessDecide.mockResolvedValueOnce({ allowed: false, action: "tasks:assign", reason: "denied", explanation: "no assign grant" });
     await expect(options.authorizeWakeTargetAdoption()).rejects.toMatchObject({ status: 403 });
   });
 

@@ -44,6 +44,7 @@ import {
 } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import * as productTelemetry from "../services/product-telemetry.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { agentService } from "../services/agents.js";
@@ -359,6 +360,34 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         assigneeAgentId: fixture.agentId,
         _previous: { assigneeAgentId: null, assigneeUserId: null },
       });
+    });
+
+    it("publishes the ownership change only after commit, never for a rolled-back creation", async () => {
+      const adoptionEvents = (events: Array<{ payload: Record<string, unknown> }>) =>
+        events.filter((event) => (event.payload.details as Record<string, unknown> | undefined)?.source === "wake_assignee_interaction_adoption");
+
+      // The undelivered newer human comment rejects the creation after the adoption step.
+      const rejected = await ownerless({ paperclipWake: { comments: [] } });
+      await db.insert(issueComments).values({
+        id: randomUUID(), companyId: rejected.companyId, issueId: rejected.issueId, authorType: "user",
+        authorUserId: "board-user", body: "Scope is already specified.",
+        createdAt: new Date("2026-07-25T12:01:00.000Z"), updatedAt: new Date("2026-07-25T12:01:00.000Z"),
+      });
+      const rolledBack: Array<{ payload: Record<string, unknown> }> = [];
+      const unsubscribeRolledBack = subscribeCompanyLiveEvents(rejected.companyId, (event) => rolledBack.push(event as never));
+      await expect(interactionsSvc.create({ id: rejected.issueId, companyId: rejected.companyId },
+        questionCreateInput(rejected.runId), { agentId: rejected.agentId, runId: rejected.runId })).rejects.toMatchObject({ status: 409 });
+      unsubscribeRolledBack();
+      expect(await assigneeOf(rejected.issueId)).toEqual({ a: null, u: null });
+      expect(adoptionEvents(rolledBack)).toHaveLength(0);
+
+      const committed = await ownerless({});
+      const delivered: Array<{ payload: Record<string, unknown> }> = [];
+      const unsubscribeCommitted = subscribeCompanyLiveEvents(committed.companyId, (event) => delivered.push(event as never));
+      await interactionsSvc.create({ id: committed.issueId, companyId: committed.companyId },
+        questionCreateInput(committed.runId), { agentId: committed.agentId });
+      unsubscribeCommitted();
+      expect(adoptionEvents(delivered)).toHaveLength(1);
     });
 
     it("lets the caller deny the adoption, persisting no assignee and no interaction", async () => {
