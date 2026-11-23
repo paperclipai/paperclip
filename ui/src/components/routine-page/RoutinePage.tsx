@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { AgentAvatar, type AvatarAgent } from "@/components/AgentAvatar";
 import { RunButton } from "@/components/AgentActionButtons";
+import { isExternalRoutineItem, routineSourceLabel } from "@/lib/routineSource";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { ScheduleEditor } from "@/components/ScheduleEditor";
 import { TaskSummaryList } from "@/components/TaskSummaryList";
