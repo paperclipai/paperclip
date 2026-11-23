@@ -378,9 +378,11 @@ export class RemoteSkillSourceUnavailableError extends HttpError {
   constructor(message: string) { super(422, message); }
 }
 
-type SkillMissingSourceMarker = {
-  reason: "local_source_missing" | "remote_source_unavailable";
-  sourceType: string;
+export const REMOTE_SKILL_SOURCE_UNAVAILABLE = "remote_source_unavailable";
+
+export type SkillMissingSourceMarker = {
+  reason: "local_source_missing" | typeof REMOTE_SKILL_SOURCE_UNAVAILABLE;
+  sourceType: CompanySkillSourceType;
   sourceLocator: string | null;
   sourcePath: string | null;
   detectedAt: string;
@@ -2424,8 +2426,8 @@ async function resolveExistingSkillDirectory(skillDir: string | null) {
   return dirStat?.isDirectory() && skillFileStat?.isFile() ? skillDir : null;
 }
 
-function remoteSourceUnavailable(skill: Pick<CompanySkill, "metadata">) {
-  return getMissingSourceMarker(skill.metadata)?.reason === "remote_source_unavailable";
+export function remoteSourceUnavailable(skill: { metadata: Record<string, unknown> | null }) {
+  return getMissingSourceMarker(skill.metadata)?.reason === REMOTE_SKILL_SOURCE_UNAVAILABLE;
 }
 
 function buildMissingRuntimeSourceDetail(skill: Pick<CompanySkill, "name" | "sourceLocator" | "metadata">) {
@@ -6569,9 +6571,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         if (!owner || !repo || !isPinnedCommitRef(skill.sourceRef)) throw unprocessable("Repository revision is not pinned.");
         const dir = typeof metadata.repoSkillDir === "string" ? normalizeGitHubSkillDirectory(metadata.repoSkillDir, "") : skill.slug;
         const url = resolveRawGitHubUrl(asString(metadata.hostname) ?? "github.com", owner, repo, skill.sourceRef!, path.posix.join(dir, entry.path));
-        const response = await ghFetch(url).catch(error => {
-          throw new RemoteSkillSourceUnavailableError(`Could not reach installed file ${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
-        });
+        const response = await ghFetch(url);
         if (response.status === 404 || response.status === 410) throw new RemoteSkillSourceUnavailableError(`Installed file ${entry.path} no longer exists at its source: ${response.status}`);
         if (!response.ok) throw unprocessable(`Could not acquire installed file ${entry.path}: ${response.status}`);
         if (!response.body) throw unprocessable("Installed file response has no body.");

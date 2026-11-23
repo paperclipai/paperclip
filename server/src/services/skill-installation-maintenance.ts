@@ -5,7 +5,8 @@ import { companySkills, companySkillVersions, type Db } from "@paperclipai/db";
 import { parseFrontmatterMarkdown, type CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { classifyInventoryKind, companySkillService, RemoteSkillSourceUnavailableError } from "./company-skills.js";
+import { classifyInventoryKind, companySkillService, REMOTE_SKILL_SOURCE_UNAVAILABLE, RemoteSkillSourceUnavailableError,
+  remoteSourceUnavailable as skillSourceUnavailable, type SkillMissingSourceMarker } from "./company-skills.js";
 import { managedSkillContent } from "./managed-skill-content.js";
 import { skillPackageStore, skillVersionMetadataColumns } from "./skill-package-store.js";
 import { skillPackageMaintenance } from "./skill-package-maintenance.js";
@@ -17,12 +18,7 @@ import { getStorageService, type StorageService } from "../storage/index.js";
 
 type Page = { companyId?: string; after?: string; id?: string; limit?: number; signal?: AbortSignal };
 type Conversion = Page & { apply?: boolean; writersStopped?: boolean; settleUnavailableSources?: boolean };
-export const SKILL_SOURCE_UNAVAILABLE = "remote_source_unavailable";
-export const RECONSTRUCTED_FROM_STORED_CONTENT_LABEL = "Rebuilt from saved instructions";
-export function skillSourceUnavailable(skill: Pick<typeof companySkills.$inferSelect, "metadata">) {
-  const marker = skill.metadata?.missingSource;
-  return Boolean(marker && typeof marker === "object" && (marker as Record<string, unknown>).reason === SKILL_SOURCE_UNAVAILABLE);
-}
+const RECONSTRUCTED_FROM_STORED_CONTENT_LABEL = "Rebuilt from saved instructions";
 const limit = (options: Page) => Math.min(50, Math.max(1, options.limit ?? 10));
 const legacyManaged = (skill: typeof companySkills.$inferSelect) => skill.sourceType === "local_path" && skill.metadata?.sourceKind === "managed_local";
 const linkedLocal = (skill: typeof companySkills.$inferSelect) => skill.sourceType === "local_path"
@@ -126,8 +122,9 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
     const publications: ActivityPublication[] = [];
     await db.transaction(async tx => {
       const [row] = await tx.update(companySkills).set({
-        metadata: { ...(skill.metadata ?? {}), missingSource: { reason: SKILL_SOURCE_UNAVAILABLE, sourceType: skill.sourceType,
-          sourceLocator: skill.sourceLocator ?? null, sourcePath: null, detectedAt: new Date().toISOString() } },
+        metadata: { ...(skill.metadata ?? {}), missingSource: { reason: REMOTE_SKILL_SOURCE_UNAVAILABLE,
+          sourceType: skill.sourceType as SkillMissingSourceMarker["sourceType"], sourceLocator: skill.sourceLocator ?? null,
+          sourcePath: null, detectedAt: new Date().toISOString() } satisfies SkillMissingSourceMarker },
         updatedAt: new Date(),
       }).where(and(eq(companySkills.companyId, skill.companyId), eq(companySkills.id, skill.id),
         skill.sourceLocator ? eq(companySkills.sourceLocator, skill.sourceLocator) : isNull(companySkills.sourceLocator),
@@ -183,7 +180,7 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
           const remoteFiles = local ?? completeSaved ?? ((skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url")
             ? await companySkillService(db).captureLegacyInstallation(skill.companyId, skill.id).catch(error => {
               if (options.signal?.aborted) throw error;
-              if (!options.settleUnavailableSources || !(error instanceof RemoteSkillSourceUnavailableError)) throw blocked(SKILL_SOURCE_UNAVAILABLE, error instanceof Error ? error.message : "Remote source is unavailable");
+              if (!options.settleUnavailableSources || !(error instanceof RemoteSkillSourceUnavailableError)) throw blocked(REMOTE_SKILL_SOURCE_UNAVAILABLE, error instanceof Error ? error.message : "Remote source is unavailable");
               remoteUnavailable = true;
               return null;
             })
@@ -348,7 +345,7 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
         } else {
           const [unavailableHead] = await db.select({ id: companySkills.id }).from(companySkills).where(and(
             eq(companySkills.companyId, version.companyId), eq(companySkills.id, version.companySkillId),
-            eq(companySkills.currentVersionId, version.id), sql`${companySkills.metadata}->'missingSource'->>'reason' = ${SKILL_SOURCE_UNAVAILABLE}`));
+            eq(companySkills.currentVersionId, version.id), sql`${companySkills.metadata}->'missingSource'->>'reason' = ${REMOTE_SKILL_SOURCE_UNAVAILABLE}`));
           const files = await store.versionFiles(version, false, options.signal);
           const complete = files.some(file => file.path === "SKILL.md" && file.encoding !== "base64");
           if (unavailableHead && (!complete || !files.length)) {
