@@ -718,6 +718,17 @@ describe("Paperclip Cloud connector", () => {
     });
 
     await expect(connector.getInstanceStatus()).resolves.toBe("removed");
+    await expect(connector.getConfirmedInstanceStatus()).resolves.toBe("unknown_instance");
+  });
+
+  it("confirms a removal only when Cloud answers that the instance is removed", async () => {
+    const keys = config();
+    const connector = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({ active: false, status: "removed" })) as typeof fetch,
+    });
+
+    await expect(connector.getConfirmedInstanceStatus()).resolves.toBe("removed");
   });
 
   it("does not expose a broker response body when a request fails", async () => {

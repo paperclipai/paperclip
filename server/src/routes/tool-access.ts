@@ -73,6 +73,9 @@ import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService } from "../services/mcp-app-views.js";
 import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { revokeGoogleAccessForRemovedInstance } from "../services/tool-access/connections/google-pending-revocation.js";
+import { secretService } from "../services/secrets.js";
+import { logger } from "../middleware/logger.js";
 import { getRunLogStore } from "../services/run-log-store.js";
 import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { mcpAppToolCallSchema } from "@paperclipai/shared";
@@ -1063,9 +1066,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
           // client they registered themselves. Report that instead of a 4xx so
           // the wizard can ask for it rather than losing the draft.
           const code = error instanceof HttpError ? String((error.details as { code?: unknown })?.code ?? "") : "";
-          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required") throw error;
+          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required"
+            && code !== "oauth_instance_client_endpoint_mismatch") throw error;
+          const reason = (error as HttpError).details as { reason?: unknown } | undefined;
           result.auth.startUrl = null;
           result.auth.manualClientRequired = true;
+          result.auth.manualClientReason = typeof reason?.reason === "string"
+            ? reason.reason
+            : code === "oauth_instance_client_endpoint_mismatch" ? (error as HttpError).message : null;
         }
       }
       await logActivity(db, {
@@ -1235,7 +1243,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   router.get("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
     assertBoard(req);
-    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus());
+    const canEndInstanceAccess = req.actor.type === "board" && (req.actor.isInstanceAdmin || req.actor.source === "local_implicit");
+    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus(process.env, fetch, canEndInstanceAccess ? async () => {
+      try {
+        await revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secretService(db).remove(secretId, { expectedVersion }));
+      } catch (error) {
+        logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, "Could not queue ending Google access after Paperclip Cloud removed this instance");
+      }
+    } : undefined));
   });
 
   router.post("/tools/oauth/cloud-connector/enrollment", async (req, res) => {

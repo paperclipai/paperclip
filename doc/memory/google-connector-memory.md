@@ -12,7 +12,7 @@ Related: [production checklist](../plans/2026-11-17-google-workspace-production-
 [code-fix plan](../plans/2026-11-17-google-workspace-code-fixes.md),
 [connector doc](../connections/GOOGLE-WORKSPACE.md).
 
-Last updated: November 18, 2026.
+Last updated: November 23, 2026.
 
 ## Decisions
 
@@ -40,6 +40,10 @@ Last updated: November 18, 2026.
 | Nov 17 | **Deleting a whole recurring series is refused** | Same rule as the `delete_event` decision above. |
 | Nov 17 | **A service is switched to REST only after a live test on the staging tester** | One service at a time. |
 | Nov 17 | **The gateway sets the REST result size limit** | The REST tools enforce the number the gateway passes: the gateway's MCP response limit less framing, 999,885 bytes. A result Google's MCP server could deliver is also delivered over REST. See the folder README's "Result size". |
+| Nov 23 | **All six launch services switched to REST now** | Gmail, Drive, Docs, Sheets, Slides and Calendar are `paperclip_rest`. This replaces the Nov 17 "one service at a time after a live test" rule: live testing happens on the staging tester right after the switch deploys, and problems are fixed forward. Chat, People and Search stay on `google_mcp`. |
+| Nov 23 | **Write actions default to "Allowed"** | No approval step by default, including actions labelled destructive. Operators can still set Ask first per action. |
+| Nov 23 | **Images by public web address are allowed in Docs and Slides** | `insertInlineImage`, `replaceImage`, `createImage` and `replaceAllShapesWithImage` may use any public link. Links to Drive or Docs files stay refused (Nov 17 rule). Accepted risk: Google, not Paperclip, fetches the address, and Paperclip's own requests still go only to the allowed Google hosts. What remains is that an agent could put data in the address it chooses. Owner decision; do not restrict it. |
+| Nov 23 | **Unconfirmed Google revocation is retried by the app, not Cloud** | When access must end and Google cannot be reached or confirm, the app keeps the token in `google_pending_revocations` and retries (1 minute up to 6 hours backoff, 30-day hard stop). Cloud still never stores provider tokens. Company deletion and a Cloud-removed instance queue the same way. The broker lets a removed instance sign a Google revoke (Cloud broker change, November 23). See [connector doc](../connections/GOOGLE-WORKSPACE.md), "Pending revocation". |
 
 ## What has shipped
 
@@ -59,21 +63,21 @@ Last updated: November 18, 2026.
 | [#22029](https://github.com/paperclipai/paperclip/pull/22029) | Docs and Slides tools in the REST tool set (Docs 2 of 2, Slides 2 of 2). Also marks Calendar `update_event` destructive. | `f61b919701` |
 | [#22028](https://github.com/paperclipai/paperclip/pull/22028) | Eight Drive tools in the REST tool set (Drive 8 of 8). Also limits the Gmail host to its API path prefix (before, any path was accepted there) and requires a path prefix for every allowed host. | `ceaf574421` |
 
-The REST tool set now covers all 36 actions. No service is switched to it.
+The REST tool set covers all 36 actions, and all six services are switched to it.
 
 ### REST tools status
 
 | Service | Implemented | Switched on |
 | --- | --- | --- |
-| Gmail | 9 of 9 | No |
-| Calendar | 9 of 9 | No |
-| Drive | 8 of 8 | No |
-| Docs | 2 of 2 | No |
-| Sheets | 6 of 6 | No |
-| Slides | 2 of 2 | No |
+| Gmail | 9 of 9 | Yes (Nov 23) |
+| Calendar | 9 of 9 | Yes (Nov 23) |
+| Drive | 8 of 8 | Yes (Nov 23) |
+| Docs | 2 of 2 | Yes (Nov 23) |
+| Sheets | 6 of 6 | Yes (Nov 23) |
+| Slides | 2 of 2 | Yes (Nov 23) |
 
 "Switched on" means the service is `paperclip_rest` in
-`GOOGLE_WORKSPACE_TOOL_TRANSPORT`. Today every service is `google_mcp`.
+`GOOGLE_WORKSPACE_TOOL_TRANSPORT`. Chat, People and Search stay `google_mcp`.
 
 ### Known differences from Google's tools
 
@@ -91,11 +95,6 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 
 ## Still open
 
-- **Images by public web address in Docs and Slides.** An edit may insert an
-  image from any public link, and Google then fetches that address. The
-  address is chosen by the agent, so it can carry data out (a leak path).
-  Allowed today. Recommendation: refuse it before Docs or Slides is switched
-  to REST.
 - **What we send to the reviewers.** Not decided: the new staging tester or
   something else. Whatever it is must use the separate Google app (below).
 - **Reviewer login on staging.** The broker now allows the scoped reviewer
@@ -103,8 +102,9 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
   broker change is needed.
 - **AI-agent client and REST.** Whether an OAuth client marked for AI agents
   may call the REST APIs rather than MCP. The tester's client is marked for
-  AI agents and is wired, but it has only been used through MCP. Check on the
-  tester before any service is switched to REST.
+  AI agents and is wired, but it has only been used through MCP. The services
+  are switched (Nov 23); this is the first thing the live test on the tester
+  answers.
 - **Three Gmail tools are inferred.** Google's MCP reference does not list
   `get_draft`, `list_threads` and `search_messages`; their schemas copy the
   sibling tools (#22014).
@@ -129,11 +129,11 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
    waits for Dotta.
 2. Confirm the consent screen on the staging tester with a fresh Google
    account, and set the reviewer login secret.
-3. Finish live acceptance on the staging tester.
-4. Switch services to REST one at a time, each after its live test.
-5. Revoke at Google when the last connection is removed.
-6. Security scans.
-7. Request revocation at Google when a company with Google connections is
+3. Live-test all six services on REST on the staging tester and fix forward
+   (switched Nov 23).
+4. Revoke at Google when the last connection is removed.
+5. Security scans.
+6. Request revocation at Google when a company with Google connections is
    deleted.
 
 ## Environments
@@ -180,7 +180,8 @@ Found while testing:
   tester; `gmail__list_threads` and `gmail__search_messages` were missing.
   `gmail__get_draft` was offered live even though Google's published
   reference does not list it, so the reference and the live server differ.
-- Write actions default to "Allowed" with no approval step. Dotta to decide.
+- Write actions default to "Allowed" with no approval step. Decided Nov 23:
+  keep it (see "Decisions").
 - The connection audit page shows internal tool names and raw ids.
 - The REST tools have not been run against real Google yet.
 
@@ -276,6 +277,12 @@ Changes made in the broker (staging):
 | Stop offering Chat, People and Search for new sessions on the verified client | They are outside the 14. Keep refresh for saved grants. |
 | Do not merge the branch that adds a Gmail archive profile | `gmail.modify` is restricted and not in the submission. |
 
+Pending revocation (November 23): the app retries an unconfirmed Google
+revoke in the background and handles both brokers. With the old broker, a
+removed instance's revoke is refused (`403`) and retried until the 30-day hard
+stop; once that broker change is deployed, those revokes succeed. Either
+deploy order is safe.
+
 Deploy order: **app first, then broker.** If the broker narrows first, refresh
 from app versions that still sign 21 scopes fails.
 
@@ -306,8 +313,10 @@ Task and company deletion are hard deletes. A task deletion queues an
 `issue_connection_content_deletions` job that records the task's runs
 (including runs still working), calls and call events, including calls made
 without a run, before the task row goes, and runs the same steps as "Delete data". It
-waits for runs and approvals that are still open, rechecking every one to
-five minutes for up to a day, and then finishes on its own. It writes
+waits for runs and approvals that are still open, and finishes on its own. While
+it waits it only rechecks open work, every one to five minutes for up to a day;
+it then runs the content steps once more. A task whose only trace is an audit
+entry also gets a job. It writes
 `issue.connection_content_deleted` only when it deleted something, and
 `issue.connection_content_deletion_incomplete` when it stopped waiting with
 items still open. The ledger lives in `stored-object-deletion.ts` and the task

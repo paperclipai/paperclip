@@ -741,3 +741,52 @@ describe("release candidate admission", () => {
     assert.equal(calls[0].options.redirect, "error");
   });
 });
+
+function etagServer(resources) {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    const path = url.replace("https://api.github.com", "");
+    const sent = init.headers["If-None-Match"] ?? null;
+    requests.push({ path, sent });
+    const { etag, body } = resources[path];
+    const notModified = sent === etag;
+    return {
+      ok: !notModified, status: notModified ? 304 : 200,
+      headers: { get: (name) => (name.toLowerCase() === "etag" ? etag : null) },
+      json: async () => (notModified ? assert.fail("a 304 has no body") : structuredClone(body)),
+    };
+  };
+  return { requests, fetchImpl };
+}
+
+test("a repeated read sends its ETag and reuses the body when GitHub answers 304", async () => {
+  const resources = { "/repos/x": { etag: '"v1"', body: { id: 1 } } };
+  const { requests, fetchImpl } = etagServer(resources);
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+
+  assert.deepEqual(await api("/repos/x"), { id: 1 });
+  assert.deepEqual(await api("/repos/x"), { id: 1 });
+  assert.deepEqual(requests, [{ path: "/repos/x", sent: null }, { path: "/repos/x", sent: '"v1"' }]);
+
+  resources["/repos/x"] = { etag: '"v2"', body: { id: 2 } };
+  assert.deepEqual(await api("/repos/x"), { id: 2 }, "a changed resource replaces the cached body");
+  assert.deepEqual(await api("/repos/x"), { id: 2 });
+  assert.equal(requests.at(-1).sent, '"v2"');
+});
+
+test("a cached body cannot be changed by the caller that received it", async () => {
+  const { fetchImpl } = etagServer({ "/repos/x": { etag: '"v1"', body: { jobs: [1] } } });
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+  (await api("/repos/x")).jobs.push(2);
+  assert.deepEqual(await api("/repos/x"), { jobs: [1] });
+});
+
+test("ETags are kept per path", async () => {
+  const { requests, fetchImpl } = etagServer({
+    "/repos/a": { etag: '"a"', body: { id: "a" } }, "/repos/b": { etag: '"b"', body: { id: "b" } },
+  });
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+  await api("/repos/a");
+  assert.deepEqual(await api("/repos/b"), { id: "b" });
+  assert.deepEqual(requests.map((r) => r.sent), [null, null]);
+});
