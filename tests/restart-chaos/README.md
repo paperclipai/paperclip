@@ -322,13 +322,19 @@ connect, TLS and first-byte times where they are cheap to read. Every failed req
 counts for `UND_ERR_SOCKET`). It also records the client clock: how late an abort fired (`timerLagMs`), how far the
 wall clock moved past the monotonic clock, the event loop's longest delay (`monitorEventLoopDelay`), and the pause
 before the probe. Right after any failure the harness requests `https://www.cloudflare.com/cdn-cgi/trace` (the control
-probe) and, for a GET, retries the same URL once, and records both outcomes and timings. Neither counts as a request.
+probe) and, for a GET that did not time out, retries the same URL once with a 2 s limit, and records both outcomes and
+timings. Neither counts as a request. The failure is recorded at once and this evidence is attached in the background,
+so neither the health probe loop nor the API client's own retries wait for it; the grade waits for it before it
+classifies. A failed probe's line goes into `health.jsonl` when its evidence is complete. The health client follows up to
+three same-origin redirects. If an answer is cut short, its status, headers and partial body are kept with the error.
+Only the live entry point (`hosted-main.ts`) turns the control probe on; unit tests never reach the network for it.
 
 Each failure gets a class. Server-side: any HTTP answer that is not a readable 2xx; a reset or refused connection
 while the control probe succeeded; a timeout while the control probe succeeded and the client did not stall.
 Client-side: a `client_stall` (an abort more than 1 s late, a clock jump over 1 s, an event-loop delay over 1 s, or a
 pause before the probe longer than twice the interval); a control probe that failed too; a client DNS failure
-(`EAI_AGAIN`, or `ENOTFOUND` that the immediate retry did not repeat). Anything else is unclassified.
+(`EAI_AGAIN`, or `ENOTFOUND` that the immediate retry did not repeat). Anything else is unclassified. Release
+detection skips client-side failures, so a client-side failure in a swap gap does not make a release stop-then-start.
 
 **Gate D verdict** (`hosted-gate.ts`). A run exits 0 only when every check in the `Gate D` block of `SUMMARY.md` holds:
 every started task completed hands-off; every task the harness launched was created; every started task passes the local waves'

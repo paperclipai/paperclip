@@ -6,8 +6,9 @@ import { ChaosApiError, rateLimitDelayMs } from "./api.js";
 import { assertSameOrigin, type HostedTarget } from "./hosted-guard.js";
 import type { HealthSample } from "./hosted-release.js";
 import {
-  answerEvidence, CONTROL_TIMEOUT_MS, CONTROL_URL, classifyFailure, connections, errorCause, followUp, freshConnectionFetch, isAbort, newRequestId, readClock, REQUEST_ID_HEADER,
-  resetEventLoopDelay, startClock, summarizeFailures, watchEventLoop, type AnswerEvidence, type ClockStart, type ConnectionInfo, type FailureClassSummary, type FailureRecord,
+  answerEvidence, CONTROL_TIMEOUT_MS, CONTROL_URL, classifyFailure, connections, errorCause, followUp, freshConnectionFetch, isAbort, newRequestId, partialAnswerOf, readClock,
+  REQUEST_ID_HEADER, resetEventLoopDelay, RETRY_TIMEOUT_MS, startClock, summarizeFailures, watchEventLoop, type AnswerEvidence, type ClockStart, type ConnectionInfo,
+  type FailureClassSummary, type FailureRecord,
   type FollowUp, type ProbeContext,
 } from "./hosted-diagnostics.js";
 
@@ -38,9 +39,14 @@ export function hostedToken(target: HostedTarget, env: NodeJS.ProcessEnv = proce
 export interface RequestRecord { at: number; ok: boolean; reachable: boolean; status: number | null; ms: number; method: string; kind: "health" | "api"; path: string;
   connection?: ConnectionInfo | null; failure?: FailureRecord }
 
-export interface HostedProbes { health?: typeof fetch; control?: typeof fetch | null; controlUrl?: string }
+export interface HostedProbes { live?: boolean; health?: typeof fetch; control?: typeof fetch; controlUrl?: string }
 
 interface OnceResult { status: number | null; text: string; retryAfterMs: number | null; record: RequestRecord; clock: ClockStart; url: string; headers: Headers | null }
+
+function failureText(error: unknown, failure: FailureRecord): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return failure.cause?.code ? `${message} (${failure.cause.code})` : message;
+}
 
 export function pathClass(route: string): string {
   return route.split("?")[0]!.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ":id");
@@ -52,12 +58,13 @@ export class HostedApi {
   private readonly controlFetcher: typeof fetch | null;
   private readonly controlUrl: string;
   private control: { at: number; outcome: Promise<FollowUp> } | null = null;
+  private readonly pending = new Set<Promise<void>>();
+  private readonly diagnosing = new WeakMap<FailureRecord, Promise<void>>();
 
   constructor(readonly target: HostedTarget, private readonly token: string, private readonly timeoutMs = 20_000,
     private readonly fetcher: typeof fetch = fetch, probes: HostedProbes = {}) {
-    const live = fetcher === globalThis.fetch;
-    this.healthFetcher = probes.health ?? (live ? freshConnectionFetch : fetcher);
-    this.controlFetcher = probes.control !== undefined ? probes.control : live ? freshConnectionFetch : null;
+    this.healthFetcher = probes.health ?? (probes.live ? freshConnectionFetch : fetcher);
+    this.controlFetcher = probes.control ?? (probes.live ? freshConnectionFetch : null);
     this.controlUrl = probes.controlUrl ?? CONTROL_URL;
     connections.subscribe();
     watchEventLoop();
@@ -77,25 +84,37 @@ export class HostedApi {
     const id = newRequestId();
     const started = Date.now();
     const clock = startClock();
+    const base = { at: started, method, kind, path: pathClass(route) } as const;
+    let response: Response;
     try {
-      const response = await fetcher(url, { method, cache: "no-store", signal: AbortSignal.timeout(timeoutMs), headers: { ...this.headers(body), [REQUEST_ID_HEADER]: id },
+      response = await fetcher(url, { method, cache: "no-store", signal: AbortSignal.timeout(timeoutMs), headers: { ...this.headers(body), [REQUEST_ID_HEADER]: id },
         body: body === undefined ? undefined : JSON.stringify(body) });
-      const text = await response.text();
-      const record: RequestRecord = { at: started, ok: response.ok || (kind === "api" && ANSWERED_REFUSALS.has(response.status)), reachable: response.status < 500, status: response.status,
-        ms: Date.now() - started, method, kind, path: pathClass(route), connection: connections.take(id) };
-      this.requests.push(record);
-      if (!record.ok) record.failure = await this.diagnose({ method, url, timeoutMs, clock, probe, answer: answerEvidence(response.status, response.headers, text), error: null,
-        connection: record.connection ?? null });
-      return { status: response.ok ? 200 : response.status, text, retryAfterMs: rateLimitDelayMs(response, text), record, clock, url, headers: response.headers };
     } catch (error) {
-      const record: RequestRecord = { at: started, ok: false, reachable: false, status: null, ms: Date.now() - started, method, kind, path: pathClass(route),
+      const partial = partialAnswerOf(error);
+      const record: RequestRecord = { ...base, ok: false, reachable: partial !== null && partial.status < 500, status: partial?.status ?? null, ms: Date.now() - started,
         connection: connections.take(id) };
       this.requests.push(record);
-      record.failure = await this.diagnose({ method, url, timeoutMs, clock, probe, answer: null, error, connection: record.connection ?? null });
-      const message = error instanceof Error ? error.message : String(error);
-      const code = record.failure.cause?.code;
-      return { status: null, text: code ? `${message} (${code})` : message, retryAfterMs: null, record, clock, url, headers: null };
+      record.failure = this.diagnose({ method, url, timeoutMs, clock, probe, error, connection: record.connection ?? null,
+        answer: partial ? answerEvidence(partial.status, partial.headers, partial.body) : null });
+      const answered = partial !== null && (partial.status < 200 || partial.status >= 300) ? partial.status : null;
+      return { status: answered, text: failureText(error, record.failure), retryAfterMs: null, record, clock, url, headers: partial?.headers ?? null };
     }
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      const record: RequestRecord = { ...base, ok: false, reachable: response.status < 500, status: response.status, ms: Date.now() - started, connection: connections.take(id) };
+      this.requests.push(record);
+      record.failure = this.diagnose({ method, url, timeoutMs, clock, probe, error, connection: record.connection ?? null,
+        answer: answerEvidence(response.status, response.headers, "") });
+      return { status: response.ok ? null : response.status, text: failureText(error, record.failure), retryAfterMs: null, record, clock, url, headers: response.headers };
+    }
+    const record: RequestRecord = { ...base, ok: response.ok || (kind === "api" && ANSWERED_REFUSALS.has(response.status)), reachable: response.status < 500, status: response.status,
+      ms: Date.now() - started, connection: connections.take(id) };
+    this.requests.push(record);
+    if (!record.ok) record.failure = this.diagnose({ method, url, timeoutMs, clock, probe, answer: answerEvidence(response.status, response.headers, text), error: null,
+      connection: record.connection ?? null });
+    return { status: response.ok ? 200 : response.status, text, retryAfterMs: rateLimitDelayMs(response, text), record, clock, url, headers: response.headers };
   }
 
   private controlProbe(): Promise<FollowUp> | null {
@@ -105,16 +124,29 @@ export class HostedApi {
     return this.control.outcome;
   }
 
-  private async diagnose(input: { method: string; url: string; timeoutMs: number; clock: ClockStart; probe: ProbeContext | undefined; answer: AnswerEvidence | null;
-    error: unknown; connection: ConnectionInfo | null }): Promise<FailureRecord> {
+  private diagnose(input: { method: string; url: string; timeoutMs: number; clock: ClockStart; probe: ProbeContext | undefined; answer: AnswerEvidence | null;
+    error: unknown; connection: ConnectionInfo | null }): FailureRecord {
     const aborted = input.error !== null && isAbort(input.error);
-    const clock = readClock(input.clock, input.timeoutMs, aborted, input.probe);
+    const failure: FailureRecord = { url: input.url.slice(this.target.baseUrl.length), method: input.method, aborted, answer: input.answer,
+      cause: input.error === null ? null : errorCause(input.error), connection: input.connection, clock: readClock(input.clock, input.timeoutMs, aborted, input.probe),
+      control: null, retry: null, class: "unclassified", reason: "diagnosis pending" };
     const fetcher = input.url.endsWith("/api/health") ? this.healthFetcher : this.fetcher;
-    const retry = this.controlFetcher !== null && input.method === "GET" ? followUp(fetcher, input.url, this.headers(undefined), Math.min(input.timeoutMs, HEALTH_TIMEOUT_MS)) : null;
-    const [control, retried] = await Promise.all([this.controlProbe(), retry]);
-    const diagnosis = { url: input.url.slice(this.target.baseUrl.length), method: input.method, aborted, answer: input.answer,
-      cause: input.error === null ? null : errorCause(input.error), connection: input.connection, clock, control, retry: retried };
-    return { ...diagnosis, ...classifyFailure(diagnosis) };
+    const retry = this.controlFetcher !== null && input.method === "GET" && !aborted ? followUp(fetcher, input.url, this.headers(undefined), RETRY_TIMEOUT_MS) : null;
+    const task = Promise.all([this.controlProbe(), retry]).then(([control, retried]) => {
+      Object.assign(failure, { control, retry: retried });
+      Object.assign(failure, classifyFailure(failure));
+    }).finally(() => this.pending.delete(task));
+    this.pending.add(task);
+    this.diagnosing.set(failure, task);
+    return failure;
+  }
+
+  async settleDiagnostics(): Promise<void> {
+    for (let round = 0; round < 3 && this.pending.size; round += 1) await Promise.all([...this.pending]);
+  }
+
+  diagnosed(failure: FailureRecord | undefined): Promise<void> {
+    return (failure && this.diagnosing.get(failure)) ?? Promise.resolve();
   }
 
   private async request<T>(method: string, route: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
@@ -150,7 +182,7 @@ export class HostedApi {
       return { at, ok: true, status: 200, ms, processStartedAt: body.serverInfo?.processStartedAt ?? null, commit: body.commit ?? null, connection };
     } catch (error) {
       result.record.ok = false;
-      result.record.failure = await this.diagnose({ method: "GET", url: result.url, timeoutMs: HEALTH_TIMEOUT_MS, clock: result.clock, probe,
+      result.record.failure = this.diagnose({ method: "GET", url: result.url, timeoutMs: HEALTH_TIMEOUT_MS, clock: result.clock, probe,
         answer: answerEvidence(200, result.headers ?? new Headers(), result.text), error: null, connection });
       return { at, ok: false, status: 200, ms, processStartedAt: null, commit: null, error: `unparseable health: ${String(error)}`, connection, failure: result.record.failure };
     }

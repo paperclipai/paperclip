@@ -10,6 +10,7 @@ export const CONTROL_URL = "https://www.cloudflare.com/cdn-cgi/trace";
 export const CONTROL_TIMEOUT_MS = 5_000;
 export const STALL_MS = 1_000;
 export const BODY_EXCERPT_BYTES = 512;
+export const RETRY_TIMEOUT_MS = 2_000;
 export const EVIDENCE_HEADERS = ["x-paperclip-status", "retry-after", "server", "via", "x-railway-request-id", "x-railway-edge", "cf-ray", "date", "content-type",
   "cache-control", "connection"] as const;
 
@@ -186,22 +187,44 @@ export const newRequestId = () => randomUUID();
 
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
-export const freshConnectionFetch = (async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
-  const url = new URL(input instanceof Request ? input.url : String(input));
+export interface PartialAnswer { status: number; headers: Headers; body: string }
+export const MAX_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+export function partialAnswerOf(error: unknown): PartialAnswer | null {
+  for (let current = error, depth = 0; current && typeof current === "object" && depth < 3; current = (current as { cause?: unknown }).cause, depth += 1) {
+    const answer = (current as { answer?: PartialAnswer }).answer;
+    if (answer && typeof answer.status === "number") return answer;
+  }
+  return null;
+}
+
+function answerHeaders(raw: http.IncomingHttpHeaders): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(raw)) if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+  return headers;
+}
+
+function freshHop(url: URL, init: RequestInit, headers: Record<string, string>, id: string | null): Promise<Response> {
   const client = url.protocol === "http:" ? http : https;
-  const headers: Record<string, string> = { ...Object.fromEntries(new Headers(init.headers).entries()), connection: "close" };
-  const id = headers[REQUEST_ID_HEADER] ?? null;
   const info = emptyInfo();
   info.reused = false;
   const started = performance.now();
   const since = () => Math.round(performance.now() - started);
-  return await new Promise<Response>((resolve, reject) => {
+  return new Promise<Response>((resolve, reject) => {
     let settled = false;
-    const failed = (error: Error) => new TypeError("fetch failed", { cause: Object.assign(error, { socket: socketSnapshot({ localAddress: info.localAddress, localPort: info.localPort,
-      remoteAddress: info.remoteAddress, remotePort: info.remotePort, bytesWritten: request.socket?.bytesWritten, bytesRead: request.socket?.bytesRead }) }) });
-    const finish = (outcome: () => void) => { if (settled) return; settled = true; if (id) connections.report(id, info); outcome(); };
+    let answered: { response: http.IncomingMessage; chunks: Buffer[] } | null = null;
+    const partial = (): PartialAnswer | undefined => answered ? { status: answered.response.statusCode ?? 0, headers: answerHeaders(answered.response.headers),
+      body: Buffer.concat(answered.chunks).toString("utf8") } : undefined;
+    const failed = (error: Error) => new TypeError("fetch failed", { cause: Object.assign(error, { answer: partial(), socket: socketSnapshot({ localAddress: info.localAddress,
+      localPort: info.localPort, remoteAddress: info.remoteAddress, remotePort: info.remotePort, bytesWritten: request.socket?.bytesWritten, bytesRead: request.socket?.bytesRead }) }) });
+    const finish = (outcome: () => void) => { if (settled) return; settled = true; init.signal?.removeEventListener("abort", onAbort); if (id) connections.report(id, info); outcome(); };
     const request = client.request(url, { method: init.method ?? "GET", headers, agent: false });
-    const onAbort = () => { request.destroy(); finish(() => reject(init.signal!.reason)); };
+    const onAbort = () => {
+      request.destroy();
+      const reason = init.signal!.reason as Error;
+      finish(() => reject(answered ? Object.assign(new Error(reason.message), { name: reason.name, answer: partial() }) : reason));
+    };
     if (init.signal?.aborted) { onAbort(); return; }
     init.signal?.addEventListener("abort", onAbort, { once: true });
     request.on("socket", socket => {
@@ -212,35 +235,55 @@ export const freshConnectionFetch = (async (input: string | URL | Request, init:
     });
     request.on("response", response => {
       info.ttfbMs = since();
-      const chunks: Buffer[] = [];
-      response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+      answered = { response, chunks: [] };
+      response.on("data", chunk => answered!.chunks.push(Buffer.from(chunk)));
       response.on("error", error => finish(() => reject(failed(error))));
+      response.on("aborted", () => finish(() => reject(failed(Object.assign(new Error("the answer was cut short"), { code: "ECONNRESET" })))));
       response.on("end", () => finish(() => {
-        init.signal?.removeEventListener("abort", onAbort);
-        const answerHeaders = new Headers();
-        for (const [name, value] of Object.entries(response.headers)) if (value !== undefined) answerHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
         const status = response.statusCode ?? 0;
-        resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(chunks), { status, statusText: response.statusMessage, headers: answerHeaders }));
+        resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(answered!.chunks), { status, statusText: response.statusMessage,
+          headers: answerHeaders(response.headers) }));
       }));
     });
-    request.on("error", error => finish(() => {
-      init.signal?.removeEventListener("abort", onAbort);
-      reject(failed(error));
-    }));
+    request.on("error", error => finish(() => reject(failed(error))));
     request.end(typeof init.body === "string" ? init.body : undefined);
   });
+}
+
+export const freshConnectionFetch = (async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+  const origin = new URL(input instanceof Request ? input.url : String(input));
+  const headers: Record<string, string> = { ...Object.fromEntries(new Headers(init.headers).entries()), connection: "close" };
+  const id = headers[REQUEST_ID_HEADER] ?? null;
+  let url = origin;
+  let hopInit = init;
+  for (let hop = 0; ; hop += 1) {
+    const response = await freshHop(url, hopInit, headers, id);
+    const location = response.headers.get("location");
+    if (!REDIRECT_STATUSES.has(response.status) || !location || hop >= MAX_REDIRECTS || init.redirect === "manual") return response;
+    const next = new URL(location, url);
+    if (next.origin !== origin.origin) return response;
+    url = next;
+    if (response.status === 303) hopInit = { ...hopInit, method: "GET", body: undefined };
+  }
 }) as typeof fetch;
 
 export async function followUp(fetcher: typeof fetch, url: string, headers: Record<string, string>, timeoutMs: number): Promise<FollowUp> {
   const id = newRequestId();
   const started = Date.now();
+  const outcome = (fields: Pick<FollowUp, "ok" | "status" | "error">): FollowUp => ({ url, ...fields, ms: Date.now() - started,
+    remoteAddress: connections.take(id)?.remoteAddress ?? null });
+  let response: Response;
   try {
-    const response = await fetcher(url, { method: "GET", cache: "no-store", signal: AbortSignal.timeout(timeoutMs), headers: { ...headers, [REQUEST_ID_HEADER]: id } });
-    await response.arrayBuffer().catch(() => undefined);
-    return { url, ok: response.ok, status: response.status, ms: Date.now() - started, error: null, remoteAddress: connections.take(id)?.remoteAddress ?? null };
+    response = await fetcher(url, { method: "GET", cache: "no-store", signal: AbortSignal.timeout(timeoutMs), headers: { ...headers, [REQUEST_ID_HEADER]: id } });
   } catch (error) {
-    return { url, ok: false, status: null, ms: Date.now() - started, error: errorCause(error), remoteAddress: connections.take(id)?.remoteAddress ?? null };
+    return outcome({ ok: false, status: partialAnswerOf(error)?.status ?? null, error: errorCause(error) });
   }
+  try {
+    await response.arrayBuffer();
+  } catch (error) {
+    return outcome({ ok: false, status: response.status, error: errorCause(error) });
+  }
+  return outcome({ ok: response.ok, status: response.status, error: null });
 }
 
 export function clientStall(clock: ClientClock): string | null {
@@ -258,8 +301,10 @@ const followUpText = (name: string, outcome: FollowUp | null) => outcome === nul
 
 export function classifyFailure(diagnosis: FailureDiagnosis | null | undefined): Classified {
   if (!diagnosis) return { class: "unclassified", reason: "no diagnosis recorded" };
-  if (diagnosis.answer) return { class: "server", reason: diagnosis.answer.status >= 200 && diagnosis.answer.status < 300
-    ? `HTTP ${diagnosis.answer.status} with an unreadable body` : `HTTP ${diagnosis.answer.status}` };
+  const answered = diagnosis.answer?.status ?? null;
+  const success = answered !== null && answered >= 200 && answered < 300;
+  if (answered !== null && !success) return { class: "server", reason: `HTTP ${answered}` };
+  if (success && !diagnosis.cause) return { class: "server", reason: `HTTP ${answered} with an unreadable body` };
   const stall = clientStall(diagnosis.clock);
   if (stall) return { class: "client", reason: `client_stall: ${stall}` };
   const { control, retry } = diagnosis;
@@ -312,8 +357,9 @@ export function failureEvidence(diagnosis: FailureDiagnosis | null | undefined):
 export interface ClassifiedFailure extends Classified { at: number; evidence: string }
 export interface FailureClassSummary { client: number; server: number; unclassified: number; failures: ClassifiedFailure[] }
 
-export function summarizeFailures(entries: ReadonlyArray<{ at: number; ok: boolean; failure?: FailureDiagnosis | null }>): FailureClassSummary {
-  const failures = entries.filter(entry => !entry.ok).map(entry => ({ at: entry.at, ...classifyFailure(entry.failure), evidence: failureEvidence(entry.failure) }));
+export function summarizeFailures(entries: ReadonlyArray<{ at: number; ok: boolean; failure?: FailureRecord | null }>): FailureClassSummary {
+  const failures = entries.filter(entry => !entry.ok).map((entry): ClassifiedFailure => ({ at: entry.at, class: entry.failure?.class ?? "unclassified",
+    reason: entry.failure?.reason ?? "no diagnosis recorded", evidence: failureEvidence(entry.failure) }));
   return { client: failures.filter(entry => entry.class === "client").length, server: failures.filter(entry => entry.class === "server").length,
     unclassified: failures.filter(entry => entry.class === "unclassified").length, failures };
 }

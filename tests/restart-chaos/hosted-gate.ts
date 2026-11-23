@@ -121,12 +121,10 @@ export function hostedGate(input: { handsOffPass: boolean; wantedReleases: numbe
   const stopThenStart = input.releases.filter(release => release.shape === "stop_then_start").map(release => release.index);
   const unloaded = input.metrics.filter(metric => metric.survivors.length === 0).map(metric => metric.index);
   const classes = input.healthClasses;
-  const clientSide = classes ? Math.min(classes.client, input.health.failures) : 0;
-  const serverSide = classes ? Math.min(classes.server, input.health.failures - clientSide) : 0;
-  const unclassified = input.health.failures - clientSide - serverSide;
-  const healthFailures = serverSide + unclassified;
+  const clientSide = classes?.client ?? 0;
+  const healthFailures = classes ? classes.server + classes.unclassified : input.health.failures;
   const healthDetail = `${input.health.failures} of ${input.health.requests} failed`
-    + (classes ? ` (${serverSide} server-side, ${unclassified} unclassified, ${clientSide} client-side, informational)` : "");
+    + (classes ? ` (${classes.server} server-side, ${classes.unclassified} unclassified, ${clientSide} client-side, informational)` : "");
   const checks: Array<[string, boolean, string]> = [
     ["hands-off", input.handsOffPass, input.handsOffPass ? "every started task done without a person" : "a task did not finish hands-off"],
     ["R1", r1Failed.length === 0, r1Failed.length ? `${r1Failed.length} failed (${r1Failed.slice(0, 3).map(entry => `${entry.identifier ?? "?"}: ${entry.detail}`).join("; ")})`

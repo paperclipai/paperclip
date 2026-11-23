@@ -27,6 +27,7 @@ export interface HostedGradeInput {
   releases: DetectedRelease[];
   health: () => ContinuityReport;
   healthSamples?: () => readonly HealthSample[];
+  settleDiagnostics?: () => Promise<void>;
   apiContinuity: () => ContinuityReport;
   stopObserver: () => Promise<void>;
   agentNames?: string[];
@@ -180,6 +181,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     identifier: issue.identifier }, clicks.get(issue.id) ?? []));
   const r1 = [...planned.filter(task => task.issueId && started.has(task.issueId)), ...subtasks].map(task => ({ identifier: task.identifier,
     result: hostedR1({ record: task, view: views.get(task.issueId!), runs: runsByIssue.get(task.issueId!) ?? [], queueWait: slotProof.queueWait, outages }) }));
+  await input.settleDiagnostics?.();
   const healthClasses = summarizeFailures(input.healthSamples?.() ?? []);
   const gate = hostedGate({ handsOffPass, wantedReleases: input.wantedReleases, slotEvidenceMissing: slotProof.missing, createErrors: planned.filter(task => task.createError).length, r1, bannersShown: handsOff.bannerShown, health, healthClasses, duplicates, releases: input.releases, metrics });
   const releaseSpans = input.releases.map(release => ({ from: release.lastOldOnlyAt, to: Math.max(release.firstNewAt, release.lastOldAt) + 60_000 }));

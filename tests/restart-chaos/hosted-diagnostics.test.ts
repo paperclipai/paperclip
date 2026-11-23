@@ -1,13 +1,17 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo, Socket } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HealthProbe, HostedApi } from "./hosted-api.js";
 import {
-  classifyFailure, connections, freshConnectionFetch, newRequestId, REQUEST_ID_HEADER, summarizeFailures, failureLines, type ClientClock, type FailureDiagnosis,
+  classifyFailure, connections, failureLines, followUp, freshConnectionFetch, newRequestId, REQUEST_ID_HEADER, summarizeFailures, type ClientClock, type FailureDiagnosis,
 } from "./hosted-diagnostics.js";
 import { hostedGate } from "./hosted-gate.js";
 import { hostedTarget } from "./hosted-guard.js";
-import type { HealthSample } from "./hosted-release.js";
+import { watchIdentity } from "./hosted-main.js";
+import { detectReleases, type HealthSample } from "./hosted-release.js";
 
 const host = "release-proof-1.staging.paperclip.app";
 const target = hostedTarget(`https://${host}`, host);
@@ -74,6 +78,17 @@ describe("gate D failure classifier", () => {
     expect(gate.lines).toContain("- FAIL health probes: 1 of 2 failed (0 server-side, 1 unclassified, 0 client-side, informational)");
   });
 
+  it("does not call a release stop-then-start for a client-side failure in the swap gap", () => {
+    const answer = (at: number, processStartedAt: string): HealthSample => ({ at, ok: true, status: 200, ms: 40, processStartedAt, commit: "c" });
+    const withGapFailure = (failure: FailureDiagnosis) => [answer(0, "old"), answer(2_000, "old"), sample(4_000, failure), answer(6_000, "new"), answer(8_000, "new")];
+    const client = detectReleases(withGapFailure(diagnosis({ control: down })), { now: 600_000 });
+    expect(client).toHaveLength(1);
+    expect(client[0]).toMatchObject({ shape: "clean_switch", failedRequests: 0, firstFailureAt: null });
+    expect(detectReleases(withGapFailure(diagnosis()), { now: 600_000 })[0]).toMatchObject({ shape: "stop_then_start", failedRequests: 1 });
+    const unclassified = diagnosis({ cause: { name: "TypeError", message: "fetch failed" }, control: null, retry: null });
+    expect(detectReleases(withGapFailure(unclassified), { now: 600_000 })[0]!.shape).toBe("stop_then_start");
+  });
+
   it("passes gate D with only client-side failures and keeps them visible as informational lines", () => {
     const samples = [sample(Date.parse("2026-11-23T08:05:35.000Z"), diagnosis({ control: down })), sample(Date.parse("2026-11-23T08:05:37.000Z"), null)];
     const gate = hostedGate(gateInput(samples));
@@ -97,6 +112,7 @@ describe("hosted request failure recording", () => {
     const api = new HostedApi(target, "t", 1_000, (async () => new Response(body, { status: 503, headers })) as unknown as typeof fetch,
       { control: (async (url: string) => { controlCalls.push(url); return new Response("ok", { status: 200 }); }) as unknown as typeof fetch });
     const health = await api.health();
+    await api.settleDiagnostics();
     expect(health).toMatchObject({ ok: false, status: 503 });
     const failure = health.failure!;
     expect(failure).toMatchObject({ class: "server", reason: "HTTP 503", url: "/api/health", method: "GET" });
@@ -115,12 +131,15 @@ describe("hosted request failure recording", () => {
     const reset = new HostedApi(target, "t", 1_000, (async () => { throw resetError(); }) as unknown as typeof fetch,
       { control: (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch });
     const sampleOk = await reset.health();
+    await reset.settleDiagnostics();
     expect(sampleOk.error).toBe("fetch failed (UND_ERR_SOCKET)");
     expect(sampleOk.failure).toMatchObject({ class: "server", cause: { code: "UND_ERR_SOCKET", message: "fetch failed: other side closed",
       socket: { localAddress: "192.168.1.20", localPort: 51799, remoteAddress: "66.33.22.11", remotePort: 443, bytesWritten: 612, bytesRead: 0 } } });
     const flaky = new HostedApi(target, "t", 1_000, (async () => { throw resetError(); }) as unknown as typeof fetch,
       { control: (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ENETUNREACH"), { code: "ENETUNREACH", syscall: "connect" }) }); }) as unknown as typeof fetch });
-    expect((await flaky.health()).failure).toMatchObject({ class: "client", control: { ok: false, error: { code: "ENETUNREACH", syscall: "connect" } } });
+    const flakySample = await flaky.health();
+    await flaky.settleDiagnostics();
+    expect(flakySample.failure).toMatchObject({ class: "client", control: { ok: false, error: { code: "ENETUNREACH", syscall: "connect" } } });
   });
 
   it("does not repeat a failed non-GET request as the immediate retry", async () => {
@@ -128,8 +147,66 @@ describe("hosted request failure recording", () => {
     const api = new HostedApi(target, "t", 1_000, (async () => { calls += 1; throw resetError(); }) as unknown as typeof fetch,
       { control: (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch });
     await expect(api.post("/api/companies/c1/issues", { title: "x" })).rejects.toThrow(/unreachable: fetch failed \(UND_ERR_SOCKET\)/);
+    await api.settleDiagnostics();
     expect(calls).toBe(1);
     expect(api.requests[0]!.failure).toMatchObject({ retry: null, control: { ok: true }, class: "server" });
+  });
+
+  it("returns a failed probe without waiting for the control probe and attaches its evidence later", async () => {
+    let release: (response: Response) => void = () => {};
+    const control = (() => new Promise<Response>(resolve => { release = resolve; })) as unknown as typeof fetch;
+    const api = new HostedApi(target, "t", 1_000, (async () => { throw resetError(); }) as unknown as typeof fetch, { control });
+    const health = await api.health();
+    expect(health.failure).toMatchObject({ class: "unclassified", reason: "diagnosis pending", control: null });
+    await expect(api.post("/api/companies/c1/issues", {})).rejects.toThrow(/unreachable/);
+    let written = false;
+    const done = api.diagnosed(health.failure).then(() => { written = true; });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(written).toBe(false);
+    release(new Response("ok", { status: 200 }));
+    await api.settleDiagnostics();
+    await done;
+    expect(health.failure).toMatchObject({ class: "server", control: { ok: true } });
+    expect(api.requests[1]!.failure).toMatchObject({ class: "server", control: { ok: true } });
+  });
+
+  it("skips the same-URL retry after a timeout", async () => {
+    let calls = 0;
+    const api = new HostedApi(target, "t", 1_000, (async () => { calls += 1; throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); }) as unknown as typeof fetch,
+      { control: (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch });
+    const health = await api.health();
+    await api.settleDiagnostics();
+    expect(calls).toBe(1);
+    expect(health.failure).toMatchObject({ aborted: true, retry: null, control: { ok: true }, class: "server" });
+  });
+
+  it("runs no control probe unless the live entry point or a test asks for one", async () => {
+    const api = new HostedApi(target, "t", 1_000, (async () => { throw resetError(); }) as unknown as typeof fetch);
+    const health = await api.health();
+    await api.settleDiagnostics();
+    expect(health.failure).toMatchObject({ control: null, retry: null, class: "unclassified" });
+  });
+
+  it("records a retry whose body cannot be read as failed", async () => {
+    const broken = new ReadableStream({ start(controller) { controller.error(Object.assign(new Error("terminated"), { code: "UND_ERR_SOCKET" })); } });
+    const outcome = await followUp((async () => new Response(broken, { status: 200 })) as unknown as typeof fetch, "https://example.test/api/health", {}, 1_000);
+    expect(outcome).toMatchObject({ ok: false, status: 200, error: { code: "UND_ERR_SOCKET" } });
+  });
+
+  it("writes a failed probe to health.jsonl only after its diagnosis, with the class", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "hosted-diag-"));
+    const file = path.join(dir, "health.jsonl");
+    const api = new HostedApi(target, "t", 1_000, (async () => { throw resetError(); }) as unknown as typeof fetch,
+      { control: (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch });
+    const events: string[] = [];
+    const onSample = watchIdentity({ add: kind => { events.push(kind); } }, file, api);
+    onSample(await api.health());
+    await api.settleDiagnostics();
+    await new Promise(resolve => setImmediate(resolve));
+    const saved = JSON.parse(await readFile(file, "utf8"));
+    await rm(dir, { recursive: true, force: true });
+    expect(saved.failure).toMatchObject({ class: "server", control: { ok: true } });
+    expect(events).toEqual(["hosted_health_failed", "hosted_health_failure_classified"]);
   });
 
   it("passes the gap before each probe to the health check", async () => {
@@ -174,6 +251,33 @@ describe("connection evidence", () => {
     }
     expect(tags).toEqual([false, true]);
     expect(new Set(ports).size).toBe(1);
+  });
+
+  it("follows a same-origin redirect on a fresh connection and stops at a cross-origin one", async () => {
+    const { url } = await listen((request, response) => {
+      if (request.url === "/api/health") { response.writeHead(308, { location: "/api/health/" }).end(); return; }
+      if (request.url === "/away") { response.writeHead(302, { location: "https://elsewhere.example/" }).end(); return; }
+      response.end("{\"status\":\"ok\"}");
+    });
+    const followed = await freshConnectionFetch(url);
+    expect(followed.status).toBe(200);
+    expect(await followed.text()).toBe("{\"status\":\"ok\"}");
+    expect((await freshConnectionFetch(url.replace("/api/health", "/away"))).status).toBe(302);
+  });
+
+  it("keeps the status, headers and partial body when an answer is cut short, and counts the 503 server-side", async () => {
+    const { url } = await listen((_request, response) => {
+      response.writeHead(503, { "content-type": "application/json", "x-paperclip-status": "draining", "content-length": "500" });
+      response.write("{\"error\":\"draining\"");
+      setTimeout(() => response.socket?.destroy(), 20);
+    });
+    const api = new HostedApi(target, "t", 1_000, fetch, { health: ((_input: string, init: RequestInit) => freshConnectionFetch(url, init)) as unknown as typeof fetch,
+      control: (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch });
+    const health = await api.health();
+    await api.settleDiagnostics();
+    expect(health).toMatchObject({ ok: false, status: 503 });
+    expect(health.failure).toMatchObject({ class: "server", reason: "HTTP 503", cause: { code: "ECONNRESET" },
+      answer: { status: 503, headers: { "x-paperclip-status": "draining" }, bodyExcerpt: "{\"error\":\"draining\"" } });
   });
 
   it("reports a reset on a fresh connection with the socket's addresses and byte counts", async () => {
