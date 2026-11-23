@@ -1,13 +1,13 @@
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import {
   chatActions, chatConversations, chatDeliveries, chatEndpoints,
-  chatEndpointResources, chatGitHubConfigurations, chatMessageLinks, heartbeatRuns, issues, runIdentityContexts,
+  chatEndpointResources, chatGitHubConfigurations, chatMessageLinks, heartbeatRuns, issues,
   fastResponseRequests, chatPublications,
   type Db,
 } from "@paperclipai/db";
 import { registerGitHubTerminalResponseWork } from "./chat-channels/github/terminal-response-work.js";
 import { githubResponseExecution, githubResponseRunColumns as responseRunColumns } from "./chat-channels/github/response-execution.js";
-import { FINISHED_RUN_STATUSES, finishedRunStatusSql } from "./chat-channels/github/response-run-state.js";
+import { FINISHED_RUN_STATUSES, finishedRunStatusSql, runBoundToIssue, runWokeForComment } from "./chat-channels/github/response-run-state.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { registerGitHubAcknowledgementWork } from "./chat-channels/github/acknowledgement-work.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -454,15 +454,12 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
             and (newer.created_at, newer.id) > (r.created_at, r.id))
           and (${issues.status} = 'blocked' or r.active_identity_context_id is not null or exists (select 1 from ${chatMessageLinks} l
             join ${heartbeatRuns} q on q.company_id = r.company_id and q.agent_id = r.agent_id
-              and coalesce(q.native_issue_id::text, q.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
+              and ${runBoundToIssue(sql`q`, sql`${chatConversations.issueId}`)}
               and ${finishedRunStatusSql(sql`q.status`)}
             where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
               and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound'
               -- The run that woke for this request; a newer run may follow it.
-              and (l.comment_id::text = q.context_snapshot->>'wakeCommentId'
-                or coalesce(q.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text
-                or exists (select 1 from ${runIdentityContexts} c where c.id = q.active_identity_context_id
-                  and c.run_id = q.id and c.company_id = q.company_id and c.status = 'accepted' and c.message_id = l.comment_id)))))`,
+              and ${runWokeForComment(sql`q`, sql`l.comment_id`)})))`,
       )).orderBy(asc(chatActions.updatedAt)).limit(limit);
     for (const row of stopped) if (row.deliveryId) await tryAcknowledge(row.deliveryId);
     return stopped.length;

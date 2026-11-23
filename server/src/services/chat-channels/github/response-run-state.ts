@@ -100,14 +100,23 @@ const wokeForRequest = (of: Of) => requestLink(of, commentId => wokeFor(sql`${he
  * request's comment. Null while that run is still queued or running. A newer
  * run woken by another request can follow it within seconds, so the task's
  * latest run alone cannot say how this request ended. */
+/** Whether the run aliased `run` is bound to the issue: its native issue, else
+ * its context snapshot's issue. Index-friendly form of
+ * coalesce(native_issue_id, context_snapshot->>'issueId'). */
+export const runBoundToIssue = (run: SQL, issueId: Value) => sql`(${run}.native_issue_id = ${issueId}::uuid
+  or (${run}.native_issue_id is null and ${run}.context_snapshot->>'issueId' = ${issueId}::text))`;
+/** Whether the run aliased `run` woke for the comment: by a wake comment, or by
+ * an accepted identity context for that comment. */
+export const runWokeForComment = (run: SQL, commentId: SQL) => sql`(${wokeFor(sql`${run}.context_snapshot`, commentId)}
+  or exists (select 1 from ${runIdentityContexts} c where c.id = ${run}.active_identity_context_id
+    and c.run_id = ${run}.id and c.company_id = ${run}.company_id and c.status = 'accepted' and c.message_id = ${commentId}))`;
+
 const finishedRequestRunId = (of: Of) => sql<string | null>`(select case
     when ${finishedRunStatusSql(sql`q.status`)} then q.id end
   from ${heartbeatRuns} q
   where q.company_id = ${of.companyId}::uuid and q.agent_id = ${of.agentId}::uuid
-    and (q.native_issue_id = ${of.issueId}::uuid or (q.native_issue_id is null and q.context_snapshot->>'issueId' = ${of.issueId}::text))
-    and ${requestLink(of, commentId => sql`${wokeFor(sql`q.context_snapshot`, commentId)}
-      or exists (select 1 from ${runIdentityContexts} c where c.id = q.active_identity_context_id
-        and c.run_id = q.id and c.company_id = q.company_id and c.status = 'accepted' and c.message_id = ${commentId})`)}
+    and ${runBoundToIssue(sql`q`, of.issueId)}
+    and ${requestLink(of, commentId => runWokeForComment(sql`q`, commentId))}
   order by q.created_at desc, q.id desc limit 1)`;
 
 const request = sql.identifier("github_response_request");
