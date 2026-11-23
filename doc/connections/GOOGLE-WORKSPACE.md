@@ -68,9 +68,20 @@ Each service has a tool transport, set in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`
 to Google's hosted MCP server for that service. `paperclip_rest` runs Paperclip's
 own tools over Google's REST APIs, in the server process
 (`server/src/google-workspace-rest-tools/`), with the same tool names, inputs
-and results. Every service is on `google_mcp` today. A service can move to
+and results. Gmail, Drive, Docs, Sheets, Slides and Calendar run on
+`paperclip_rest` (since 2026-11-23), so the combined connection lists all 36
+allowlisted actions for a full read and write grant. Chat, People and Search,
+which new setup does not offer, stay on `google_mcp`. A service can move to
 `paperclip_rest` only when Paperclip implements every tool on its allowlist; a
-test enforces that. On either transport, the same grant scope checks, approvals,
+test enforces that. Actions of a service on `paperclip_rest` are Paperclip's
+own definitions. Agents receive them at once, also for a connection saved
+before the switch, and the next catalog refresh saves them without holding
+any for review. That refresh also clears the review hold of held actions,
+without enabling them: actions turned Off stay Off and Ask first settings
+stay, also for a held action. Only the two Gmail actions the connection never
+had get the default for new actions. The setting applies only to the combined `google-workspace`
+connection; saved individual product connections (for example the Gmail app)
+still call Google's MCP servers directly. On either transport, the same grant scope checks, approvals,
 audit, token refresh and reconnection, prompt-injection screening, cancellation
 and experimental-feature gate apply. On `paperclip_rest`, discovery and health
 checks prove the token with one cheap REST read per service that the granted

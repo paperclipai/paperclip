@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { LiveEvent } from "@paperclipai/shared";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
@@ -2230,6 +2230,173 @@ rl.on("line", (line) => {
       expect(headers).toEqual(["Bearer personal-remote-test-token"]);
     },
   );
+
+  it("acts as the person who opened a session and never uses another member's personal grant", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    for (const userId of ["alice", "bob", "carol"]) await createActiveMember(db, company.id, userId);
+    await db.update(heartbeatRuns).set({ responsibleUserId: "alice" }).where(eq(heartbeatRuns.id, run.id));
+    const secrets = secretService(db);
+    const definition = await secrets.createUserSecretDefinition(company.id, {
+      name: "Personal mail token",
+      key: `personal_mail_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+    });
+    const personal = await createRemoteMcpTool(db, company.id, { toolName: "read_mail" });
+    await secrets.syncUserSecretDeclarationsForTarget(company.id,
+      { targetType: "tool_connection", targetId: personal.connection.id },
+      [{ definitionKey: definition.key, configPath: "credentials.authorization", envKey: "Authorization", versionSelector: "latest", required: true }],
+      { replaceAll: true });
+    const personalSecrets = new Map<string, string>();
+    for (const userId of ["alice", "bob"]) {
+      const secret = await secrets.createCurrentUserSecretValue(company.id, userId, {
+        definitionId: definition.id, value: `${userId}-personal-token`,
+      });
+      personalSecrets.set(userId, secret.id);
+      await db.insert(connectionGrants).values({
+        companyId: company.id, connectionId: personal.connection.id, kind: "user", subjectUserId: userId,
+        credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.authorization", versionSelector: "latest" }],
+        status: "active", isDefault: false,
+      });
+    }
+    await db.update(toolConnections).set({
+      credentialPolicy: "per_user",
+      credentialRefs: [{ name: "credentials.authorization", secretId: personalSecrets.get("alice")!, placement: "header", key: "Authorization", prefix: "Bearer " }],
+    }).where(eq(toolConnections.id, personal.connection.id));
+    const shared = await createRemoteMcpTool(db, company.id, { toolName: "shared_lookup" });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const authorizations: string[] = [];
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+      authorizations.push(new Headers(init.headers).get("authorization") ?? "");
+      const body = JSON.parse(String(init.body)) as { id: string };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id,
+        result: { content: [{ type: "text", text: "synthetic result" }] } }),
+      { headers: { "content-type": "application/json" } });
+    } });
+    const boardActor = (userId: string): Express.Request["actor"] => ({
+      type: "board",
+      userId,
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "member", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    const openSession = async (userId: string) => {
+      const response = await request(createGatewayRouteApp(db, gateway, boardActor(userId)))
+        .post("/api/tool-gateway/sessions")
+        .send({ companyId: company.id, agentId: agent.id, runId: run.id });
+      expect(response.status).toBe(201);
+      return response.body.token as string;
+    };
+    const callTool = async (token: string, connectionId: string) => {
+      const tool = (await gateway.listToolsForSession(token)).find((item) => item.connectionId === connectionId)!;
+      return request(createGatewayRouteApp(db, gateway))
+        .post("/api/tool-gateway/tools/call")
+        .set("x-paperclip-tool-gateway-token", token)
+        .send({ tool: tool.name, parameters: { key: "test", value: randomUUID() } });
+    };
+    const lastAuthorization = () => authorizations.at(-1);
+    const callWith = async (token: string, connectionId: string, parameters: Record<string, unknown>) => {
+      const tool = (await gateway.listToolsForSession(token)).find((item) => item.connectionId === connectionId)!;
+      return request(createGatewayRouteApp(db, gateway))
+        .post("/api/tool-gateway/tools/call")
+        .set("x-paperclip-tool-gateway-token", token)
+        .send({ tool: tool.name, parameters });
+    };
+
+    const bobToken = await openSession("bob");
+    expect((await callTool(bobToken, personal.connection.id)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer bob-personal-token");
+    expect((await callTool(bobToken, shared.connection.id)).body.status).toBe("completed");
+
+    const aliceToken = await openSession("alice");
+    expect((await callTool(aliceToken, personal.connection.id)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer alice-personal-token");
+
+    const sameWrite = { key: "same", value: randomUUID() };
+    expect((await callWith(bobToken, personal.connection.id, sameWrite)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer bob-personal-token");
+    const aliceSameWrite = await callWith(aliceToken, personal.connection.id, sameWrite);
+    expect(aliceSameWrite.body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer alice-personal-token");
+    const bobRetry = await callWith(bobToken, personal.connection.id, sameWrite);
+    expect(bobRetry.body.status).toBe("replayed");
+
+    const savedBeforeUpgrade = async (parameters: Record<string, unknown>, recordedActor: { actorType: string; actorId: string } | null) => {
+      expect((await callWith(bobToken, personal.connection.id, parameters)).body.status).toBe("completed");
+      const [row] = await db.select().from(toolInvocations)
+        .where(and(eq(toolInvocations.companyId, company.id), sql`${toolInvocations.idempotencyKey} like '%:opened_by:%'`))
+        .orderBy(desc(toolInvocations.createdAt)).limit(1);
+      const { sessionOpenedByUserId: _opener, ...explanation } = (row!.policyExplanation ?? {}) as Record<string, unknown>;
+      await db.update(toolInvocations).set({
+        idempotencyKey: row!.idempotencyKey!.split(":opened_by:")[0],
+        policyExplanation: explanation,
+        ...(recordedActor ?? {}),
+      }).where(eq(toolInvocations.id, row!.id));
+      return authorizations.length;
+    };
+    const attributedWrite = { key: "upgrade-attributed", value: randomUUID() };
+    let providerCalls = await savedBeforeUpgrade(attributedWrite, { actorType: "user", actorId: "bob" });
+    expect((await callWith(bobToken, personal.connection.id, attributedWrite)).body.status).toBe("replayed");
+    expect(authorizations).toHaveLength(providerCalls);
+    expect((await callWith(aliceToken, personal.connection.id, attributedWrite)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer alice-personal-token");
+
+    const unattributedWrite = { key: "upgrade-unattributed", value: randomUUID() };
+    providerCalls = await savedBeforeUpgrade(unattributedWrite, null);
+    const unattributedRetry = await callWith(bobToken, personal.connection.id, unattributedWrite);
+    expect(unattributedRetry.status).toBe(409);
+    expect(authorizations).toHaveLength(providerCalls);
+
+    const agentSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, actorType: "agent", actorId: agent.id });
+    expect((await callTool(agentSession.token, personal.connection.id)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer alice-personal-token");
+
+    const callsBeforeCarol = authorizations.length;
+    const carol = await callTool(await openSession("carol"), personal.connection.id);
+    expect(carol.status).toBe(409);
+    expect(carol.body.reasonCode).toBe("user_authorization_required");
+    expect(authorizations).toHaveLength(callsBeforeCarol);
+    const prompts = await db.select({ addresseeUserId: issueThreadInteractions.addresseeUserId })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+    expect(prompts.map((prompt) => prompt.addresseeUserId)).toEqual(["carol"]);
+
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review personal mail",
+      policyType: "require_approval",
+      selectors: { connectionId: personal.connection.id },
+      priority: 10,
+    });
+    const reviewed = await callTool(bobToken, personal.connection.id);
+    expect(reviewed.status).toBe(409);
+    expect(reviewed.body.reasonCode).toBe("approval_required");
+    const [pending] = await db.select().from(toolActionRequests)
+      .where(and(eq(toolActionRequests.companyId, company.id), eq(toolActionRequests.status, "pending")));
+    await gateway.approveActionRequest({ companyId: company.id, actionRequestId: pending!.id, actor: { userId: "bob" } });
+    expect(lastAuthorization()).toBe("Bearer bob-personal-token");
+  });
+
+  it("refuses a person-created session when the person may not act on the agent", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await db.insert(companyMemberships).values({
+      companyId: company.id, principalType: "user", principalId: "viewer-user", status: "active", membershipRole: "viewer",
+    });
+    const response = await request(createGatewayRouteApp(db, createTestToolGatewayService(db), {
+      type: "board",
+      userId: "viewer-user",
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "member", status: "active" }],
+      isInstanceAdmin: false,
+    }))
+      .post("/api/tool-gateway/sessions")
+      .send({ companyId: company.id, agentId: agent.id, runId: run.id });
+    expect(response.status).toBe(403);
+  });
 
   it("passes only the selected grant identity to local stdio MCP processes", async () => {
     const company = await createCompany(db);

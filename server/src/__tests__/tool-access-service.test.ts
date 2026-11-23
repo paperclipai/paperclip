@@ -11,6 +11,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
@@ -79,6 +80,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { useGoogleMcpTransport } from "./helpers/google-workspace-transport.js";
 import {
   classifyRisk,
   normalizeConnectionMethodConfig,
@@ -2999,6 +3001,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ["with", ["calendar.calendarlist.readonly", "calendar.events", "calendar.events.freebusy"]],
     ["without", ["calendar.calendarlist.readonly", "calendar.events"]],
   ] as const)("asks for free/busy with read and write Calendar and keeps Calendar working %s it", async (_label, granted) => {
+    useGoogleMcpTransport();
     const company = await createCompany(db);
     const userId = `workspace-calendar-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -8846,6 +8849,7 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it.each(["user", "organization"] as const)("builds one Workspace catalog from actual partial consent for a %s grant", async (grantKind) => {
+    useGoogleMcpTransport();
     const company = await createCompany(db);
     const userId = `workspace-member-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -8884,6 +8888,7 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   describe("combined Workspace service isolation and refresh consent", () => {
+    beforeEach(() => useGoogleMcpTransport());
     async function connectWorkspace(mode: "managed" | "customer", permissions = ["documents.readonly", "gmail.readonly"]) {
       const company = await createCompany(db);
       const userId = `workspace-refresh-${randomUUID()}`;

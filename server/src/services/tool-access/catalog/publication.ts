@@ -12,6 +12,7 @@ import { connectionMethodForConnection } from "../connection-methods.js";
 import { stableHash, descriptorHash } from "../../tool-catalog-hash.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
+import { paperclipDefinedTool } from "../../connectors/paperclip-defined-tools.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
@@ -185,6 +186,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
     }
     const catalogValues: Array<typeof toolCatalogEntries.$inferInsert> = [];
     let quarantinedCount = 0;
+    const releasedNames = new Set<string>();
     const sourceTemplateKey =
       typeof asRecord(connection.config).sourceTemplateKey === "string"
         ? String(asRecord(connection.config).sourceTemplateKey)
@@ -232,8 +234,11 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       const changed =
         existing &&
         (existing.versionHash !== hash || existing.schemaHash !== schemaHash);
+      const paperclipDefined = paperclipDefinedTool(connection, descriptor.name) !== null;
+      if (paperclipDefined && existing?.status === "quarantined") releasedNames.add(descriptor.name);
       const shouldQuarantine =
         quarantineOnRefresh &&
+        !paperclipDefined &&
         (!existing || changed) &&
         existing?.status !== "disabled" &&
         (!safeDefault || riskLevel !== "read" || nativeProvider);
@@ -247,7 +252,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
           ? "quarantined"
           : existing?.status === "disabled" && existing.quarantineReason !== "mcp_tool_removed"
             ? "disabled"
-            : quarantineOnRefresh && existing?.status === "quarantined"
+            : quarantineOnRefresh && existing?.status === "quarantined" && !paperclipDefined
               ? "quarantined"
               : "active";
       if (shouldQuarantine && !providerPermanentlyBlocked) quarantinedCount += 1;
@@ -285,7 +290,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
             versionHash: sql`excluded.version_hash`, schemaHash: sql`excluded.schema_hash`, lastSeenAt: sql`excluded.last_seen_at`,
             quarantinedAt: sql`excluded.quarantined_at`, quarantineReason: sql`excluded.quarantine_reason`, updatedAt: sql`excluded.updated_at`,
           } }).returning();
-        for (const row of rows) if (!existingNonQuarantinedNames.has(row.name)) newCatalogEntryIds.add(row.id);
+        for (const row of rows) if (!existingNonQuarantinedNames.has(row.name) && !releasedNames.has(row.name)) newCatalogEntryIds.add(row.id);
         return rows;
       }));
     }
