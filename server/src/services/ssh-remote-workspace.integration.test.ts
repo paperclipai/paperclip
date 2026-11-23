@@ -16,7 +16,6 @@ import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/nativ
 import * as recoverySnapshots from "./workspace-recovery-snapshot.js";
 import { sshWorkspaceTestsSupported, useSshWorkspaceFixture } from "./__tests__/ssh-remote-workspace-fixture.js";
 
-// The heartbeat runs for each harness live in ssh-remote-workspace-heartbeat-*.integration.test.ts.
 describe.skipIf(!sshWorkspaceTestsSupported)("Cloud SSH durable workspace with a real SSH server", () => {
   const fixture = useSshWorkspaceFixture("cloud-ssh-workspace-");
 

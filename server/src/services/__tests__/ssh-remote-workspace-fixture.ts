@@ -1,9 +1,3 @@
-// Shared setup for the Cloud SSH durable workspace integration suites
-// (ssh-remote-workspace.integration and ssh-remote-workspace-heartbeat-*). They
-// were split from one file because every heartbeat run takes 15-50s against the
-// real SSH server, so the combined file took over 300s on one CI worker and set
-// the wall-clock time of its general server shard. Each suite gets its own
-// embedded Postgres, temporary root and SSH server.
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -40,8 +34,6 @@ export interface SshWorkspaceFixture {
   sshd: SshEnvLabFixtureState | undefined;
 }
 
-// Call inside the suite's top-level describe. The returned object is filled in
-// by beforeAll; a suite may replace `db` to simulate a controller replacement.
 export function useSshWorkspaceFixture(prefix: string): SshWorkspaceFixture {
   const fixture = { sshd: undefined } as SshWorkspaceFixture;
   beforeAll(async () => {
@@ -81,8 +73,6 @@ export const sshHeartbeatRuns = sshHeartbeatHarnesses.flatMap(harness =>
 
 type SshHeartbeatAdapterType = (typeof sshHeartbeatHarnesses)[number]["adapterType"];
 
-// Defines one suite that runs the selected harnesses through heartbeat over SSH.
-// Use `exclude` for the catch-all suite so a newly added harness is always covered.
 export function describeSshHeartbeatRuns(title: string,
   selection: { include: readonly SshHeartbeatAdapterType[] } | { exclude: readonly SshHeartbeatAdapterType[] }) {
   const runs = sshHeartbeatRuns.filter(run => "include" in selection
