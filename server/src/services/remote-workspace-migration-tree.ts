@@ -85,7 +85,29 @@ export async function requiresOnlineOrdinarySource(workspace: Workspace): Promis
   return false;
 }
 
-export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<Omit<WorkspaceSourceScope, "importedChildren"> | null> {
+type OrdinarySource = Omit<WorkspaceSourceScope, "importedChildren">;
+
+export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<OrdinarySource | null> {
+  const result = await explainOnlineOrdinarySource(db, workspace);
+  return result && !("unproven" in result) ? result : null;
+}
+
+function ordinaryMemberUnproven(row: { cwd: string | null; providerRef: string | null; providerType: string; repoUrl: string | null;
+  branchName: string | null; sourceIssueId: string | null; strategyType: string; mode: string; status: string;
+  metadata: Record<string, unknown> | null }, root: string, isolatedIssueId: string | null) {
+  if (row.cwd?.startsWith(`${root}/`)) return "ordinary_member_nested";
+  if (row.cwd !== root || row.providerRef && row.providerRef !== root) return "ordinary_member_locator_mismatch";
+  if (row.providerType !== "local_fs" || row.repoUrl || row.branchName) return "ordinary_member_git";
+  if (!row.sourceIssueId || isolatedIssueId && row.sourceIssueId !== isolatedIssueId) return "ordinary_member_task_binding";
+  if (row.strategyType !== "project_primary" || !["isolated_workspace", "shared_workspace"].includes(row.mode)) return "ordinary_member_strategy_unsupported";
+  if (!["active", "idle", "in_review", "archived"].includes(row.status)) return "member_status_unsupported";
+  if (row.metadata?.remoteWorkspace) return "member_already_remote";
+  if (row.metadata?.gitCacheRestoration || row.metadata?.nestedCloneMigrationPending) return "ordinary_member_restoration_pending";
+  return null;
+}
+
+export async function explainOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<OrdinarySource | { unproven: string } | null> {
+  const unproven = (code: string) => ({ unproven: code });
   if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return null;
   const root = await physicalPath(workspace.cwd);
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
@@ -96,11 +118,11 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
       || parts[0] === "isolated-workspace-attempts" && parts.length === 4 && /^[a-zA-Z0-9_-]+$/.test(parts[3]));
   const projectId = await managedProjectSourceIdentity(workspace.companyId, root);
   if (root !== workspace.cwd || !(isolated || projectId && path.dirname(root) === path.join(
-    instance, "projects", workspace.companyId, projectId))) return null;
+    instance, "projects", workspace.companyId, projectId))) return unproven("ordinary_root_unmanaged");
   const entry = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null; throw error;
   });
-  if (!entry?.isDirectory() || entry.isSymbolicLink()) return null;
+  if (!entry?.isDirectory() || entry.isSymbolicLink()) return unproven("ordinary_root_missing");
   const columns = { id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
     cwd: executionWorkspaces.cwd, providerRef: executionWorkspaces.providerRef, providerType: executionWorkspaces.providerType,
     repoUrl: executionWorkspaces.repoUrl, branchName: executionWorkspaces.branchName, sourceIssueId: executionWorkspaces.sourceIssueId,
@@ -113,19 +135,15 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
   const rows = await db.select(columns).from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, workspace.companyId),
     inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]))).limit(1001);
-  if (rows.length > 1000) return null;
+  if (rows.length > 1000) return unproven("company_records_exceeded");
   const aliases: typeof rows = [];
   for (const row of rows) {
     const paths = localWorkspaceSourcePaths(row);
     let physical: string[];
-    try { physical = await Promise.all(paths.map(physicalPath)); } catch { return null; }
+    try { physical = await Promise.all(paths.map(physicalPath)); } catch { return unproven("member_unreadable"); }
     if (!physical.some(cwd => overlaps(root, cwd))) continue;
-    if (row.cwd !== root || row.providerRef && row.providerRef !== root
-      || row.providerType !== "local_fs" || row.repoUrl || row.branchName || !row.sourceIssueId
-      || isolated && row.sourceIssueId !== workspace.sourceIssueId
-      || row.strategyType !== "project_primary" || !["isolated_workspace", "shared_workspace"].includes(row.mode)
-      || !["active", "idle", "in_review", "archived"].includes(row.status) || row.metadata?.remoteWorkspace
-      || row.metadata?.gitCacheRestoration || row.metadata?.nestedCloneMigrationPending) return null;
+    const member = ordinaryMemberUnproven(row, root, isolated ? workspace.sourceIssueId : null);
+    if (member) return unproven(member);
     aliases.push(row);
   }
   let after: string | undefined;
@@ -138,14 +156,15 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
     )).orderBy(executionWorkspaces.id).limit(256);
     for (const row of foreign) {
       for (const cwd of localWorkspaceSourcePaths(row)) {
-        try { if (overlaps(root, await physicalPath(cwd))) return null; } catch { return null; }
+        try { if (overlaps(root, await physicalPath(cwd))) return unproven("foreign_alias"); } catch { return unproven("foreign_unreadable"); }
       }
     }
     if (foreign.length < 256) break;
-    if (page === 39) return null;
+    if (page === 39) return unproven("foreign_records_exceeded");
     after = foreign.at(-1)!.id;
   }
-  if (!aliases.some(row => row.id === workspace.id) || aliases.length > 64) return null;
+  if (!aliases.some(row => row.id === workspace.id)) return unproven("self_excluded");
+  if (aliases.length > 64) return unproven("members_exceeded");
   return { root, projectId, device: entry.dev, inode: entry.ino,
     issueIds: [...new Set(aliases.map(row => row.sourceIssueId!))].sort(), workspaceIds: aliases.map(row => row.id).sort() };
 }

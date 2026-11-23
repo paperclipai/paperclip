@@ -134,6 +134,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
     const client = await oauthClientForConnection(
       connection,
       endpoints.provider,
+      endpoints.tokenUrl,
       input.actor,
     );
     if (!client.clientId)

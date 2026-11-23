@@ -2,7 +2,7 @@ import { SCREENSHOT_PRIVACY_REASONS } from "./screenshot-privacy.js";
 import { POSTGRES_IMAGE, POSTGRES_IMAGE_ID, POSTGRES_AMD64_IMAGE, POSTGRES_AMD64_IMAGE_IDS, reviewedPostgresReceiptIdentity } from "./docker-postgres.js";
 import { agentJourneyRuns, agentJourneyRunCountValid, journeyRequiredChecks } from "./product-journeys/success-contract.js";
 import { validateWorkerTiming } from "./worker-timing.js";
-import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
+import { connectionCreationFailureCodes, connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
 import { githubJourneyCheckpoints, gradeGitHubReviewJourney } from "./github-review-evidence.js";
 import { gradeAntigravityJourney, validateAntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
 import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_REASONS } from "../../packages/adapter-utils/src/startup-reuse.js";
@@ -395,7 +395,7 @@ const fields = {
     inputTransport: optional(oneOf("prompt_base64")),
     setupChecks: optional(array(shape({ code: string, level: oneOf("info", "warn", "error") }))),
     runDiagnostics: optional(array(shape({ runId: string, status: oneOf("succeeded", "failed", "cancelled", "interrupted", "timed_out", "unknown"), signals: array(oneOf(...connectionRunSignals)), logAvailable: boolean }))),
-    creationFailure: optional(shape({ status: integer, code: oneOf("ai_connection_api_key_rejected", "ai_connection_verification_failed", "connection_request_rejected") })),
+    creationFailure: optional(shape({ status: integer, code: oneOf(...connectionCreationFailureCodes) })),
     connectionId: optional(string), agentId: optional(string), companyId: optional(string), artifactSha256: optional(string), model: optional(string), cleanupRetained: optional(boolean), companyArchived: optional(boolean),
   })),
   completionQuality: optional(array(shape({

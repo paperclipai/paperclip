@@ -3501,6 +3501,13 @@
       "when": 1795444424088,
       "tag": "0501_charming_living_lightning",
       "breakpoints": true
+    },
+    {
+      "idx": 502,
+      "version": "7",
+      "when": 1795451480643,
+      "tag": "0502_dapper_hedge_knight",
+      "breakpoints": true
     }
   ]
 }

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
-import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults,
+import { activityLog, agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults,
   nativeProviderArtifacts, nativeProviderArtifactReferences, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { afterEach, expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
@@ -609,11 +609,14 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     expect(put).not.toHaveBeenCalled();
     expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
   });
-  it("defers failed history without treating pre-copy as offline authority", async () => {
+  it("preserves settled failed history of an unselected session through the settled-source owner, never offline authority", async () => {
     const [f] = await offlineFixtures(1);
     expect(await prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: AbortSignal.timeout(15_000) }))
-      .toEqual({ inspected: 1, published: 0, current: 0, deferred: { source_session_not_selected: 1 } });
-    expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
+      .toEqual({ inspected: 1, published: 1, current: 0, deferred: {} });
+    expect((await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest)))[0].status).toBe("current");
+    const [preserved] = await f.db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+      eq(activityLog.action, "native_harness_backup_preserved"), eq(activityLog.runId, f.runId)));
+    expect(preserved).toMatchObject({ actorId: "native-harness-preservation", details: { scopeDigest: f.scopeDigest, originalFilesRetained: true } });
   });
   it("defers a source being replaced online while offline migration still refuses it", async () => {
     const f = await inactiveFixture();
