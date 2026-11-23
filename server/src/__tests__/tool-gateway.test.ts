@@ -5837,6 +5837,40 @@ rl.on("line", (line) => {
     await expect(gateway.approveActionRequest({
       companyId: company.id, actionRequestId: settled.id, actor: { userId: "alice" }, recoveringApprovedReview: true,
     })).resolves.toBeDefined();
+
+    const unverifiable = await requestReview();
+    await db.update(toolActionRequests).set({ signedArguments: "unverifiable" }).where(eq(toolActionRequests.id, unverifiable.id));
+    const outsiderOnUnverifiable = await direct("bob", unverifiable.id, "approve");
+    if (!outsiderAllowed) {
+      expect(outsiderOnUnverifiable.status).toBe(outsiderStatus);
+      const [untouched] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
+        .where(eq(toolActionRequests.id, unverifiable.id));
+      expect(untouched!.status).toBe("pending");
+      const expired = await requestReview();
+      await db.update(toolActionRequests).set({ expiresAt: new Date(Date.now() - 60_000) }).where(eq(toolActionRequests.id, expired.id));
+      const outsiderOnExpired = await direct("bob", expired.id, "approve");
+      expect(outsiderOnExpired.status).toBe(outsiderStatus);
+      expect(JSON.stringify(outsiderOnExpired.body)).not.toMatch(/expire|approvalId|target_changed/i);
+      await db.update(toolActionRequests).set({ status: "expired" }).where(eq(toolActionRequests.id, expired.id));
+    }
+    await db.update(toolActionRequests).set({ status: "expired" }).where(eq(toolActionRequests.id, unverifiable.id));
+
+    const anonymous = await requestReview();
+    await expect(gateway.approveActionRequest({ companyId: company.id, actionRequestId: anonymous.id, actor: { userId: null } }))
+      .rejects.toMatchObject({ status: 403 });
+    await expect(gateway.declineActionRequest({ companyId: company.id, actionRequestId: anonymous.id, actor: { userId: null } }))
+      .rejects.toMatchObject({ status: 403 });
+    const [stillPending] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
+      .where(eq(toolActionRequests.id, anonymous.id));
+    expect(stillPending!.status).toBe("pending");
+    await db.update(toolActionRequests).set({ status: "expired" }).where(eq(toolActionRequests.id, anonymous.id));
+
+    const detached = await requestReview();
+    expect((await direct("alice", detached.id, "approve")).status).toBe(200);
+    await db.update(toolActionRequests).set({ issueId: null, interactionId: null, requestedByUserId: "alice", decidedByUserId: null, resolvedByUserId: null })
+      .where(eq(toolActionRequests.id, detached.id));
+    expect((await direct("bob", detached.id, "approve")).status).toBe(404);
+    expect((await direct("alice", detached.id, "approve")).status).toBe(200);
   });
 
   it("denies agents without responsible-user authority from runtime control and gateway audit routes", async () => {
