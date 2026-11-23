@@ -164,6 +164,24 @@ describe("agent-named chats", () => {
     expect((await current(f)).title).toBe("My own title");
   });
 
+  it("keeps a chat's final title when its agent sends a title through a task update", async () => {
+    const f = await chatFixture();
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const patch = (title: string) => fetch(`${server.apiUrl}/api/issues/${f.issueId}`, { method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Paperclip-Run-Id": f.runId },
+      body: JSON.stringify({ title }) });
+    // While the title is provisional the agent may still name the chat this way.
+    expect((await patch("Agent named it")).status).toBe(200);
+    expect(await current(f)).toEqual({ title: "Agent named it", titleNeedsGeneration: false });
+    // Once named, the title is final for the agent, as with set_task_title.
+    expect((await patch("Renamed again")).status).toBe(200);
+    expect((await current(f)).title).toBe("Agent named it");
+    // A person's rename still stands, and the agent cannot replace it either.
+    await issueService(server.db).update(f.issueId, { title: "My own title" });
+    expect((await patch("Agent title")).status).toBe(200);
+    expect(await current(f)).toEqual({ title: "My own title", titleNeedsGeneration: false });
+  });
+
   it("refuses titles from other agents and other companies", async () => {
     const f = await chatFixture();
     const other = await server.fixture();

@@ -11757,6 +11757,12 @@ export function issueService(db: Db) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
       }
       if (existing.conversationAgentId) {
+        // An agent names its chat only while the title is provisional, as set_task_title does: once
+        // named, or renamed by the person, the title stands against a task update too.
+        if (data.actorAgentId && data.title !== undefined && !existing.titleNeedsGeneration) {
+          const { title: _finalTitle, ...rest } = data;
+          data = rest;
+        }
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
           || data.assigneeUserId || data.conversationAgentId !== undefined || data.conversationUserId !== undefined || data.conversationDefault !== undefined
           || data.conversationState !== undefined || data.conversationSessionGeneration !== undefined
