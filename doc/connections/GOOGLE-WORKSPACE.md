@@ -313,9 +313,63 @@ distinct tokens sent:
 | Outcomes | `result` | Message |
 | --- | --- | --- |
 | Every token `revoked` | `ended` | Access was ended at Google |
-| Any other code (failure, not known, unavailable, error) | `not_ended` | Could not end access; link to https://myaccount.google.com/connections |
+| Any retryable code (`provider_revocation_failed`, `revocation_in_progress`, `broker_unavailable`, `broker_error`, `unexpected_error`) and the token was kept for a retry | `retrying` | Google has not confirmed yet; Paperclip keeps trying automatically. No link, no action. |
+| Any other code (`binding_not_known`, `provider_revocation_disabled`, `revocation_not_available`, `credential_unavailable`), or a retryable code whose token could not be kept | `not_ended` | Could not end access; link to https://myaccount.google.com/connections |
 | Only `other_connections_remain` | `other_connections_remain` | Other connections keep access |
 | At least one `revoked`, the rest `other_connections_remain` | `ended_unconfirmed` | Access was ended; check Google if more than one account was connected; link to the same page |
+
+### Pending revocation (retry until Google answers)
+
+Owner decision, 2026-11-23: when access must end and Google cannot be reached
+or does not confirm, the app keeps the refresh token and retries. Paperclip
+Cloud still stores no provider token.
+
+- Before the broker call, the app copies the sent token version's encrypted
+  material (the same `local_encrypted` ciphertext as the connection secret) into
+  `google_pending_revocations`, keyed by company and the token's SHA-256 (one
+  row per token in a company).
+  The row is not a company secret: it is not listed, cannot be bound to an agent
+  or environment, and no route reads it. `company_id` has no foreign key, so the
+  row outlives a deleted company. The first `next_attempt_at` is 2 minutes out,
+  so a restart during the call is retried by the worker.
+- After the call: a final outcome (`revoked`, `other_connections_remain`,
+  `binding_not_known`, `provider_revocation_disabled`,
+  `revocation_not_available`) deletes the row. A retryable outcome keeps it and
+  the result is `retrying`. If a live grant or connection still selects the
+  same token after the conditional delete, the row is deleted. A sign-in during
+  the call that writes a new token keeps the row: the broker's last-binding rule
+  answers `other_connections_remain` for the old token while the new sign-in is
+  live. Cleanup for a removed instance moves an existing row to
+  `instance_removed`.
+- The `google-pending-revocation` delivery queue drains due rows. Each attempt
+  takes a 2-minute lease on the row, then calls the broker with a 15-second
+  timeout. Backoff is 1, 2, 4 ... minutes, capped at 6 hours. A row stops
+  without a call when a company secret holds the same token and a live grant
+  or connection uses it (for example, the user signed in again and Google
+  returned the same token). A source secret that a restart left behind on a
+  revoked grant does not count. A row queued for a removed instance skips this
+  check: no connection may use the token then. After 30 days
+  the row is deleted without a call (`gave_up`). Google already expires a
+  refresh token unused for six months, and only the broker can refresh this one,
+  so the 30-day hard stop limits how long Paperclip holds a token nobody uses.
+- When a retry ends, the connection gets a `connection.google_access_retry`
+  audit event (`reasonCode` `ended`, `other_connections_remain`, `not_ended` or
+  `gave_up`) and an activity entry `tool_connection.google_access_ended` or
+  `tool_connection.google_access_not_ended`. A row whose company was deleted
+  writes only a server log line.
+- Company deletion queues every managed Google refresh token of the company in
+  the delete transaction (`reason = company_deleted`), before the secrets go.
+- When an instance admin's Cloud connection status check gets a signed answer
+  that the instance is `removed` (a `401` alone does not count), the app, in
+  in one transaction for all companies (so the work is saved before any token
+  is dropped),
+  queues every managed Google refresh token (`reason = instance_removed`), then
+  deletes each connection secret. Those connections need a reconnect after a new
+  enrollment. The broker accepts a Google revoke from a removed instance after
+  the November 23 broker release; an older broker answers `403
+  INSTANCE_SUSPENDED`, which the app retries until the hard stop.
+- The worker does no work and holds no deadline when the table is empty, and
+  nothing here runs on turn start or on a tool call.
 
 The last row is the sequence the broker returns for two tokens of one Google
 grant sent one at a time, but two different Google accounts can return it too.

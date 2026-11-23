@@ -142,6 +142,8 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "tool_connection.grant_audience_replaced": "changed human access for",
   "tool_connection.grant_added": "added credentials to",
   "tool_connection.grant_revoked": "revoked credentials from",
+  "tool_connection.google_access_ended": "confirmed Google access ended for",
+  "tool_connection.google_access_not_ended": "stopped trying to end Google access for",
   "tool_connection.grant_delegated": "delegated credentials for",
   "tool_connection.grant_delegation_revoked": "revoked credential delegation for",
   "tool_connection.content_deletion_requested": "asked to delete stored content from",

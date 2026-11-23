@@ -73,6 +73,9 @@ import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService } from "../services/mcp-app-views.js";
 import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { revokeGoogleAccessForRemovedInstance } from "../services/tool-access/connections/google-pending-revocation.js";
+import { secretService } from "../services/secrets.js";
+import { logger } from "../middleware/logger.js";
 import { getRunLogStore } from "../services/run-log-store.js";
 import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { mcpAppToolCallSchema } from "@paperclipai/shared";
@@ -1240,7 +1243,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   router.get("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
     assertBoard(req);
-    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus());
+    const canEndInstanceAccess = req.actor.type === "board" && (req.actor.isInstanceAdmin || req.actor.source === "local_implicit");
+    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus(process.env, fetch, canEndInstanceAccess ? async () => {
+      try {
+        await revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secretService(db).remove(secretId, { expectedVersion }));
+      } catch (error) {
+        logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, "Could not queue ending Google access after Paperclip Cloud removed this instance");
+      }
+    } : undefined));
   });
 
   router.post("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
