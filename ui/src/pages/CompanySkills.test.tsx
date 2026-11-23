@@ -19,7 +19,7 @@ import {
 } from "./CompanySkills";
 import { ApiError } from "../api/client";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
-import { CompanySkills as ProductionCompanySkills } from "./CompanySkills.production";
+import { CompanySkills as ProductionCompanySkills, DiscoveryGrid as ProductionDiscoveryGrid } from "./CompanySkills.production";
 import { queryKeys } from "../lib/queryKeys";
 
 const readVersion = vi.hoisted(() => vi.fn());
@@ -289,14 +289,17 @@ async function renderSkillDetail(
   return container;
 }
 
-async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof DiscoveryGrid>> = {}) {
+async function renderDiscoveryGrid(
+  props: Partial<ComponentProps<typeof DiscoveryGrid>> = {},
+  Grid: typeof DiscoveryGrid = DiscoveryGrid,
+) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
 
   await act(async () => {
     root?.render(
-      <DiscoveryGrid
+      <Grid
         tab="installed"
         categories={[]}
         categoryTotal={0}
@@ -693,6 +696,198 @@ describe("DiscoveryGrid IA presentation", () => {
     expect(node.querySelector('[aria-label="More actions for Bundled Skill"]')).toBeNull();
     expect(node.querySelector('input[type="checkbox"]')).toBeNull();
     expect(node.textContent).not.toContain("Move to folder");
+  });
+});
+
+describe("DiscoveryGrid list layout", () => {
+  const listCard = {
+    key: "demo-skill",
+    skillId: "skill-1",
+    folderId: null,
+    catalogRef: null,
+    name: "Demo Skill",
+    slug: "demo-skill",
+    author: "Paperclip",
+    version: "v1.2.0",
+    tagline: "Summarize pull requests.",
+    description: null,
+    categories: ["engineering"],
+    iconUrl: null,
+    color: null,
+    starCount: 3,
+    agentCount: 2,
+    forkCount: 0,
+    installed: true,
+    required: false,
+    forkedFrom: false,
+    updatedAt: 0,
+    sourceBadge: "github" as const,
+    sourceLabel: "GitHub",
+  };
+
+  it("keeps cards as the default layout and switches through the toolbar", async () => {
+    const onLayoutChange = vi.fn();
+    const node = await renderDiscoveryGrid({ cards: [listCard], totalCount: 1, onLayoutChange });
+
+    expect(node.querySelector('[data-skills-layout="cards"]')).not.toBeNull();
+    expect(node.querySelector('[data-skills-layout="list"]')).toBeNull();
+    expect(node.querySelector('[aria-label="Card view"]')?.getAttribute("aria-pressed")).toBe("true");
+
+    await click(node.querySelector<HTMLButtonElement>('[aria-label="List view"]')!);
+    expect(onLayoutChange).toHaveBeenCalledWith("list");
+  });
+
+  it("renders one compact row per skill with the card's content and opens it", async () => {
+    const onOpenCard = vi.fn();
+    const node = await renderDiscoveryGrid({
+      cards: [listCard],
+      totalCount: 1,
+      layout: "list",
+      onLayoutChange: vi.fn(),
+      onOpenCard,
+    });
+    const rows = node.querySelectorAll<HTMLElement>("[data-skill-row]");
+
+    expect(node.querySelector('[data-skills-layout="cards"]')).toBeNull();
+    expect(node.querySelector('[aria-label="List view"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.textContent).toContain("Demo Skill");
+    expect(row.textContent).toContain("Summarize pull requests.");
+    expect(row.textContent).toContain("by Paperclip · v1.2.0");
+    expect(row.textContent).toContain("Enabled for 2 agents");
+    expect(row.textContent).toContain("Installed");
+    expect(row.textContent).toContain("GitHub");
+    expect(row.textContent).toContain("engineering");
+
+    await act(async () => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onOpenCard).toHaveBeenCalledWith(listCard);
+  });
+
+  it("supports select mode, move to folder and the folder badge in list layout", async () => {
+    const onSelectCard = vi.fn();
+    const onOpenMoveCard = vi.fn();
+    const node = await renderDiscoveryGrid({
+      cards: [{ ...listCard, folderId: "project-folder" }],
+      totalCount: 1,
+      layout: "list",
+      search: "demo",
+      selectMode: true,
+      onSelectCard,
+      onOpenMoveCard,
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+      onMoveSelected: vi.fn(),
+      onCreateFolderAndMoveSelected: vi.fn(),
+      onClearSelected: vi.fn(),
+      folderResult: projectFolderResult,
+    });
+    const row = node.querySelector<HTMLElement>("[data-skill-row]")!;
+
+    expect(row.textContent).toContain("Acme");
+    await click(row.querySelector<HTMLInputElement>('input[aria-label="Select Demo Skill"]')!);
+    expect(onSelectCard).toHaveBeenCalledWith(expect.objectContaining({ key: "demo-skill" }), true);
+
+    await click(buttonsNamed(row, "Move to folder…")[0]!);
+    expect(onOpenMoveCard).toHaveBeenCalledWith(expect.objectContaining({ key: "demo-skill" }));
+  });
+});
+
+// The production grid also needs tab counts; the helper's defaults cover every other prop.
+const productionGridDefaults = { tabCounts: { all: 0, installed: 0, catalog: 0, bundled: 0 } };
+
+describe.each([
+  ["current", DiscoveryGrid, {}],
+  ["production", ProductionDiscoveryGrid as unknown as typeof DiscoveryGrid, productionGridDefaults],
+] as const)("%s DiscoveryGrid at realistic size", (_name, Grid, gridDefaults) => {
+  const SKILL_COUNT = 300;
+  const FOLDER_COUNT = 30;
+  // Lookups per render must not grow with the number of skills.
+  const LOOKUP_LIMIT = 40;
+
+  // Counts scans of a collection and throws as soon as they pass the limit,
+  // so a per-item scan fails at once instead of stalling the worker.
+  function countScans<T>(items: T[], counter: { calls: number }): T[] {
+    for (const method of ["find", "findIndex", "some", "every", "filter", "includes", "indexOf"] as const) {
+      const original = Array.prototype[method] as (...args: unknown[]) => unknown;
+      Object.defineProperty(items, method, {
+        value(...args: unknown[]) {
+          counter.calls += 1;
+          if (counter.calls > LOOKUP_LIMIT) throw new Error(`more than ${LOOKUP_LIMIT} collection scans in one render`);
+          return original.apply(this, args);
+        },
+      });
+    }
+    return items;
+  }
+
+  it("keeps folder and selection lookups bounded with search, folders and select mode on", async () => {
+    const folderScans = { calls: 0 };
+    const selectionScans = { calls: 0 };
+    const folders = countScans(
+      Array.from({ length: FOLDER_COUNT }, (_, index) => ({
+        ...projectFolderResult.folders[0]!,
+        id: `folder-${index}`,
+        name: `Folder ${index}`,
+        slug: `folder-${index}`,
+        systemKey: null,
+        path: `folder-${index}`,
+      })),
+      folderScans,
+    );
+    const cards = Array.from({ length: SKILL_COUNT }, (_, index) => ({
+      key: `skill-${index}`,
+      skillId: `skill-id-${index}`,
+      folderId: `folder-${index % FOLDER_COUNT}`,
+      catalogRef: null,
+      name: `Skill ${index}`,
+      slug: `skill-${index}`,
+      author: "Paperclip",
+      version: null,
+      tagline: "Demo skill",
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+    }));
+    const selectedSkillIds = countScans(
+      cards.filter((_, index) => index % 2 === 0).map((card) => card.skillId),
+      selectionScans,
+    );
+
+    const node = await renderDiscoveryGrid({
+      ...(gridDefaults as Partial<ComponentProps<typeof DiscoveryGrid>>),
+      cards,
+      totalCount: SKILL_COUNT,
+      layout: "list",
+      onLayoutChange: vi.fn(),
+      search: "skill",
+      selectMode: true,
+      selectedSkillIds,
+      onSelectCard: vi.fn(),
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+      onMoveSelected: vi.fn(),
+      onCreateFolderAndMoveSelected: vi.fn(),
+      onClearSelected: vi.fn(),
+      folderResult: { kind: "skill", folders, allCount: SKILL_COUNT, unfiledCount: 0 },
+    }, Grid);
+
+    expect(node.querySelectorAll("[data-skill-row]")).toHaveLength(SKILL_COUNT);
+    expect(node.querySelector('[data-skill-row="skill-7"]')?.textContent).toContain("Folder 7");
+    expect(node.querySelector<HTMLInputElement>('input[aria-label="Select Skill 4"]')?.checked).toBe(true);
+    expect(node.querySelector<HTMLInputElement>('input[aria-label="Select Skill 5"]')?.checked).toBe(false);
+    expect(folderScans.calls).toBeLessThanOrEqual(LOOKUP_LIMIT);
+    expect(selectionScans.calls).toBeLessThanOrEqual(LOOKUP_LIMIT);
   });
 });
 
@@ -1280,6 +1475,39 @@ describe("CompanySkills page read resilience", () => {
   afterEach(() => {
     queryClient.clear();
     vi.unstubAllGlobals();
+  });
+
+  describe.each([["current", CompanySkills], ["production", ProductionCompanySkills]] as const)("%s skills layout", (_name, Page) => {
+    afterEach(() => {
+      localStorage.clear();
+      editorRoute.path = undefined;
+      editorRoute.search = "";
+    });
+
+    it("defaults to cards, then follows the saved choice, and lets the URL win", async () => {
+      editorRoute.path = undefined;
+      editorRoute.search = "";
+      let node = await renderPage(Page);
+      expect(node.querySelector('[data-skills-layout="cards"]')).not.toBeNull();
+      await act(async () => root?.unmount());
+
+      localStorage.setItem("paperclip:skills-layout", "list");
+      node = await renderPage(Page);
+      expect(node.querySelector('[data-skills-layout="list"]')?.textContent).toContain("Demo Skill");
+      await act(async () => root?.unmount());
+
+      editorRoute.search = "layout=cards";
+      node = await renderPage(Page);
+      expect(node.querySelector('[data-skills-layout="cards"]')).not.toBeNull();
+    });
+
+    it("saves the chosen layout in the browser", async () => {
+      editorRoute.path = undefined;
+      editorRoute.search = "";
+      const node = await renderPage(Page);
+      await click(node.querySelector<HTMLButtonElement>('[aria-label="List view"]')!);
+      expect(localStorage.getItem("paperclip:skills-layout")).toBe("list");
+    });
   });
 
   describe.each([["current", CompanySkills], ["production", ProductionCompanySkills]] as const)("%s file editor baseline", (_name, Page) => {
