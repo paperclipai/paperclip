@@ -14,6 +14,7 @@ import { StatusIcon } from "@/components/StatusIcon";
 import { timeAgo } from "@/lib/timeAgo";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { agentSetupHandoffStorageKey, storeAgentSetupHandoff, storedAgentSetupHandoff } from "@/lib/agent-setup-handoff-storage";
 
 /**
  * Live setup progress from a person's own agent. A page that offers "Set it up
@@ -37,28 +38,6 @@ export interface AgentSetupStep {
   title: string;
 }
 
-/**
- * The handoff for one setup, kept in this tab so a reload follows the checklist the copied prompt writes to.
- * Session storage stays in this tab only; the token can do nothing but update this checklist until it expires.
- */
-function storedHandoff(key: string): AgentSetupProgressHandoff | null {
-  try {
-    const value = window.sessionStorage.getItem(key);
-    const parsed = value ? JSON.parse(value) as AgentSetupProgressHandoff : null;
-    return parsed && Date.parse(parsed.progress.expiresAt) > Date.now() ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function storeHandoff(key: string, handoff: AgentSetupProgressHandoff | null) {
-  try {
-    if (handoff) window.sessionStorage.setItem(key, JSON.stringify(handoff));
-    else window.sessionStorage.removeItem(key);
-  } catch {
-    // Storage can be unavailable (private windows); the checklist then lasts until the page reloads.
-  }
-}
-
 /** While the agent is working, a slow check backs up the live updates in case the page missed one. */
 const SAFETY_REFETCH_MS = 20_000;
 
@@ -77,13 +56,13 @@ export function useAgentSetupProgress({
 }: CreateAgentSetupProgress & { companyId: string | null | undefined; enabled?: boolean; client?: AgentSetupProgressClient }) {
   const queryClient = useQueryClient();
   const handoffKey = ["agent-setup-progress-handoff", companyId ?? null, purpose, subjectId ?? null] as const;
-  const storageKey = `paperclip:agent-setup-progress:${companyId ?? ""}:${purpose}:${subjectId ?? ""}`;
+  const storageKey = agentSetupHandoffStorageKey(companyId, purpose, subjectId);
   const handoffQuery = useQuery({
     queryKey: handoffKey,
     queryFn: async () => {
-      const created = storedHandoff(storageKey)
+      const created = storedAgentSetupHandoff(storageKey)
         ?? await client.create(companyId!, { purpose, ...(subjectId ? { subjectId } : {}) });
-      storeHandoff(storageKey, created);
+      storeAgentSetupHandoff(storageKey, created);
       return created;
     },
     enabled: Boolean(companyId) && enabled,
@@ -113,14 +92,14 @@ export function useAgentSetupProgress({
   const finished = progress?.status === "done" || progress?.status === "failed";
   const expired = Boolean(progress && !finished && Date.parse(progress.expiresAt) <= Date.now());
   const renew = () => {
-    storeHandoff(storageKey, null);
+    storeAgentSetupHandoff(storageKey, null);
     void handoffQuery.refetch();
   };
 
   // A finished checklist takes no more updates, so it is never handed to another attempt: a reload
   // stops reusing it, and opening the step again later (such as a reconnect) starts a fresh one.
   useEffect(() => {
-    if (finished) storeHandoff(storageKey, null);
+    if (finished) storeAgentSetupHandoff(storageKey, null);
   }, [finished, storageKey]);
   // Only a checklist the page opened with (from an earlier visit) is replaced: one that finishes while
   // this page is open stays on screen.
