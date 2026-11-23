@@ -264,7 +264,7 @@ describe("IssueThreadInteractionCard", () => {
     );
 
     const radios = [...host.querySelectorAll('[role="radio"]')];
-    expect(radios).toHaveLength(2);
+    expect(radios).toHaveLength(3);
     expect(radios[0]?.getAttribute("aria-checked")).toBe("false");
 
     act(() => {
@@ -278,13 +278,55 @@ describe("IssueThreadInteractionCard", () => {
     expect(multiGroup?.getAttribute("aria-labelledby")).toBe(
       "interaction-questions-default-post-submit-summary-prompt",
     );
-    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(3);
+    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(4);
 
-    const otherLink = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent === "Other",
-    );
-    expect(otherLink?.getAttribute("role")).toBeNull();
-    expect(otherLink?.className).toContain("underline");
+    const otherOption = radios.find((button) => button.textContent === "Other");
+    expect(otherOption?.closest('[role="radiogroup"]')).toBe(singleGroup);
+  });
+
+  it("renders block Markdown in compact question labels without paragraph nesting", () => {
+    const question = { ...pendingAskUserQuestionsInteraction.payload.questions[0]!, prompt: "**Which option?**\n\n- First consideration\n- Second consideration" };
+    const interaction = { ...pendingAskUserQuestionsInteraction, payload: { ...pendingAskUserQuestionsInteraction.payload, questions: [question] } };
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction });
+    const group = host.querySelector('[role="radiogroup"]')!;
+    const label = host.querySelector(`#${group.getAttribute("aria-labelledby")}`)!;
+    expect(label.querySelector("strong")?.textContent).toBe("Which option?");
+    expect(label.querySelectorAll("li")).toHaveLength(2);
+    expect(label.querySelector("div")?.closest("p")).toBeNull();
+  });
+
+  it.each(["default", "coordinator-decision"] as const)("treats Other as a radio choice that reveals its text field (%s)", async (presentationVariant) => {
+    const question = { ...pendingAskUserQuestionsInteraction.payload.questions[0]!, required: true };
+    const interaction = { ...pendingAskUserQuestionsInteraction, payload: { ...pendingAskUserQuestionsInteraction.payload, questions: [question] } };
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+    const host = renderCard({ presentationVariant, interaction, onSubmitInteractionAnswers });
+    const group = host.querySelector('[role="radiogroup"]')!;
+    const radios = [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    const other = radios.find(button => button.textContent === "Other")!;
+    expect(other).toBeTruthy();
+    expect(host.querySelector("textarea")).toBeNull();
+
+    await act(async () => radios[0]!.click());
+    await act(async () => other.click());
+    expect(other.getAttribute("aria-checked")).toBe("true");
+    expect(radios[0]!.getAttribute("aria-checked")).toBe("false");
+    const input = host.querySelector("textarea")!;
+    const submit = [...host.querySelectorAll("button")].find(button => button.textContent?.includes("Send answers"))!;
+    expect(input).not.toBeNull();
+    expect(submit.disabled).toBe(true);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "My alternative");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(submit.disabled).toBe(false);
+    await act(async () => other.click());
+    expect(other.getAttribute("aria-checked")).toBe("true");
+    expect(host.querySelector("textarea")?.value).toBe("My alternative");
+    await act(async () => radios[0]!.click());
+    expect(other.getAttribute("aria-checked")).toBe("false");
+    expect(host.querySelector("textarea")).toBeNull();
+    await act(async () => submit.click());
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(interaction, [{ questionId: question.id, optionIds: [question.options[0]!.id] }]);
   });
 
   it("keeps Coordinator decision questions focused while preserving answers and accessible requirements", async () => {
@@ -314,29 +356,43 @@ describe("IssueThreadInteractionCard", () => {
     ]);
   });
 
-  it("keeps Coordinator confirmation details collapsed while preserving context, exact target, and approval", async () => {
+  it("shows a Coordinator card's responder clause when it is addressed elsewhere", () => {
+    const interaction = { ...pendingRequestConfirmationInteraction, addresseeAgentId: "agent-nap" };
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction });
+    expect(host.querySelector('[data-testid="interaction-audience"]')?.parentElement?.className ?? "").not.toContain("sr-only");
+  });
+
+  it("keeps that clause for screen readers when the card's audience line states it (PAP-767)", () => {
+    const interaction = { ...pendingRequestConfirmationInteraction, addresseeAgentId: "agent-nap" };
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction, audienceStated: true });
+    expect(host.querySelector('[data-testid="interaction-audience"]')?.parentElement?.className).toContain("sr-only");
+  });
+
+  it("puts a Coordinator confirmation's target and details in its context panel, approve on the right", async () => {
     const onAcceptInteraction = vi.fn(async () => undefined);
     const interaction = { ...pendingRequestConfirmationInteraction, title: "Repeated approval context", summary: "Repeated approval context", payload: { ...pendingRequestConfirmationInteraction.payload, prompt: "Repeated approval context", detailsMarkdown: "Revision proof: sha256-test-proof" } };
     const host = renderCard({ presentationVariant: "coordinator-decision", interaction, onAcceptInteraction });
     expect(host.textContent?.split("Repeated approval context")).toHaveLength(2);
     expect(host.querySelector('[data-testid="interaction-status-badge"]')).toBeNull();
-    const documentLink = host.querySelector('a[href*="#document-"]');
+    const panel = host.querySelector("[data-needs-you-panel]")!;
+    const documentLink = panel.querySelector('a[href*="#document-"]');
     expect(documentLink?.getAttribute("href")).toContain("revision=11111111-1111-4111-8111-111111111111");
     expect(documentLink?.getAttribute("href")).toContain(`interaction=${interaction.id}`);
-    const details = host.querySelector("details")!;
-    expect(details.open).toBe(false);
-    expect(details.querySelector("summary")?.textContent?.trim()).toBe("Details");
-    expect(details.textContent).toContain("Revision proof: sha256-test-proof");
-    expect(documentLink?.closest("details")).toBeNull();
-    expect(host.querySelector("[data-decision-prompt]")?.closest("details")).toBeNull();
-    await act(() => details.querySelector("summary")!.click());
-    expect(details.open).toBe(true);
-    await act(() => details.querySelector("summary")!.click());
-    expect(details.open).toBe(false);
-    const approve = [...host.querySelectorAll("button")].find(button => button.textContent?.includes(interaction.payload.acceptLabel ?? "Approve"))!;
-    expect(approve.closest("details")).toBeNull();
-    await act(() => approve.click());
+    expect(panel.textContent).toContain("Revision proof: sha256-test-proof");
+    expect(host.querySelector("details")).toBeNull();
+    expect(host.querySelector("[data-decision-prompt]")?.closest("[data-needs-you-panel]")).toBeNull();
+    const actions = [...host.querySelectorAll('[data-testid="confirmation-actions"] button')];
+    const approve = actions.at(-1)!;
+    expect(approve.textContent).toContain(interaction.payload.acceptLabel ?? "Approve plan");
+    await act(() => (approve as HTMLButtonElement).click());
     expect(onAcceptInteraction).toHaveBeenCalledWith(interaction);
+  });
+
+  it("renders the Needs You artifact row first in a compact confirmation's panel", () => {
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction: pendingRequestConfirmationInteraction, artifactRow: <div data-testid="artifact-row">Plan</div> });
+    const panel = host.querySelector("[data-needs-you-panel]")!;
+    expect(panel.firstElementChild?.getAttribute("data-testid")).toBe("artifact-row");
+    expect(panel.querySelector('a[href*="#document-"]')).toBeNull();
   });
 
   it("retains inline confirmation details in the Classic presentation", () => {
@@ -678,7 +734,7 @@ describe("IssueThreadInteractionCard", () => {
     interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
     const host = renderCard({ interaction, presentationVariant });
 
-    const link = host.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    const link = host.querySelector('a[href="/PAP/issues/PAP-42#document-preview"]');
     expect(link?.textContent).toBe("two screenshots");
     const prompt = link?.closest(".paperclip-markdown");
     expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
@@ -692,6 +748,28 @@ describe("IssueThreadInteractionCard", () => {
     expect(prompt?.querySelector(".paperclip-mermaid")).toBeNull();
     expect(prompt?.querySelectorAll("li")).toHaveLength(2);
     expect(prompt?.textContent).not.toContain("[two screenshots]");
+  });
+
+  it.each([
+    ["checkbox", false, "coordinator-decision"], ["checkbox", true, "coordinator-decision"],
+    ["items", false, "coordinator-decision"], ["items", true, "coordinator-decision"],
+    ["items", false, "default"], ["items", true, "default"],
+  ] as const)("renders %s Markdown prompts with a separate title %s in %s", (kind, separateTitle, presentationVariant) => {
+    const interaction = structuredClone(kind === "checkbox" ? pendingRequestCheckboxConfirmationInteraction : pendingRequestItemVerdictsInteraction);
+    interaction.title = separateTitle ? "Review this request" : null;
+    interaction.payload.prompt = "Review **carefully** and [read the plan](https://example.com/plan).\n\n- Verify the work\n- Check the result\n\n![Reference](https://example.com/reference.png)";
+    const host = renderCard({ interaction, presentationVariant });
+    const prompt = host.querySelector('a[href="https://example.com/plan"]')?.closest('.paperclip-markdown');
+    expect(prompt?.querySelector('strong')?.textContent).toBe('carefully');
+    expect(prompt?.querySelectorAll('li')).toHaveLength(2);
+    expect(prompt?.querySelector('[data-markdown-image-reference]')).not.toBeNull();
+    expect(prompt?.querySelector('img')).toBeNull();
+    expect(host.querySelector('h2 .paperclip-markdown')).toBeNull();
+    if (presentationVariant === "coordinator-decision") {
+      const heading = host.querySelector('[data-decision-prompt]');
+      expect(heading?.getAttribute('role')).toBe('heading');
+      expect(heading?.getAttribute('aria-level')).toBe('2');
+    }
   });
 
   it("requires a revision note when the request confirmation payload asks for one", async () => {
@@ -1326,11 +1404,11 @@ describe("IssueThreadInteractionCard tool-action card", () => {
       .toContain("Reconnect");
   });
 
-  it("renders only the server-redacted proposal as plain text when inspected", async () => {
+  it.each(["default", "coordinator-decision"] as const)("renders the full redacted proposal as plain text before approval (%s)", async (presentationVariant) => {
     const interaction = structuredClone(pendingToolActionWriteInteraction);
     interaction.payload.toolAction!.argumentsSummaryJson = JSON.stringify({ text: '<img src="x" onerror="alert(1)">', apiKey: "[redacted]" });
     const accept = vi.fn();
-    const host = renderCard({ interaction, onAcceptInteraction: accept });
+    const host = renderCard({ interaction, onAcceptInteraction: accept, presentationVariant });
     const details = host.querySelector("details")!;
     expect(details.open).toBe(false);
     await act(async () => details.querySelector("summary")!.click());

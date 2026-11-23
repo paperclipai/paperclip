@@ -1,9 +1,9 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
-import { endStorageOutageWaitOn, isStorageUnavailableError, retryThroughStorageOutage, runInOwnStorageScope, runSharedStorageWork, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { endStorageOutageWaitOn, isStorageUnavailableError, reportStorageOutageWaitsTo, retryThroughStorageOutage, runInOwnStorageScope, runSharedStorageWork, storageOutageWaitFor, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { RemoteWorkspaceRestoreError } from "../services/remote-workspace-transport.js";
 
 const OUTAGE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -202,6 +202,43 @@ describe("the shared storage outage wait", () => {
     setTimeout(() => stopA.abort(new Error("Stopped by a board operator")), 30);
     await expect(runA).rejects.toMatchObject({ name: "AbortError" });
     await expect(shared).resolves.toBe("shared");
+  });
+
+  it("tells the run's wait observer about each wait and reports one end per wait", async () => {
+    const wide = { budgetMs: 2_000, firstDelayMs: 20, maxDelayMs: 40 };
+    const waiting = vi.fn(), ended = vi.fn();
+    const endsAt = Date.now() + 150;
+    const send = async () => (Date.now() < endsAt ? outage() : "ok");
+    await runInOwnStorageScope(async () => {
+      reportStorageOutageWaitsTo({ waiting, ended });
+      await expect(storageOutageWaitFor("restoring the workspace",
+        () => retryThroughStorageOutage(() => retryThroughStorageOutage(send, undefined, wide), undefined, wide))).resolves.toBe("ok");
+      await expect(retryThroughStorageOutage(async () => "no wait", undefined, wide)).resolves.toBe("no wait");
+    });
+    expect(waiting.mock.calls.length).toBeGreaterThan(1);
+    expect(waiting).toHaveBeenCalledWith({ purpose: "restoring the workspace", waitedMs: expect.any(Number) });
+    expect(ended).toHaveBeenCalledTimes(1);
+    expect(ended).toHaveBeenCalledWith({ purpose: "restoring the workspace", waitedMs: expect.any(Number), recovered: true });
+  });
+
+  it("reports a wait that gave up, and keeps waiting when the observer throws", async () => {
+    const ended = vi.fn();
+    await runInOwnStorageScope(async () => {
+      reportStorageOutageWaitsTo({ waiting: () => { throw new Error("status unavailable"); }, ended });
+      await expect(retryThroughStorageOutage(outage, undefined, policy)).rejects.toMatchObject({ name: "ServiceUnavailable" });
+    });
+    expect(ended).toHaveBeenCalledWith({ purpose: "continuing", waitedMs: expect.any(Number), recovered: false });
+  });
+
+  it("keeps a run's wait observer when its Stop signal is attached", async () => {
+    const waiting = vi.fn();
+    let calls = 0;
+    await runInOwnStorageScope(async () => {
+      reportStorageOutageWaitsTo({ waiting, ended: vi.fn() });
+      endStorageOutageWaitOn(new AbortController().signal);
+      await retryThroughStorageOutage(async () => (++calls < 2 ? outage() : "ok"), undefined, policy);
+    });
+    expect(waiting).toHaveBeenCalledTimes(1);
   });
 
   it("never retries a failure that is not an outage", async () => {

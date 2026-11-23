@@ -116,6 +116,11 @@ export type InboxKeyboardNavEntry =
       issue: Issue;
     };
 
+/** The task an Inbox row shows, or null for a group header or a row that is not a task. */
+export function inboxNavEntryTask(entry: InboxKeyboardNavEntry) {
+  return entry.type === "child" ? entry.issue : entry.type === "top" && entry.item.kind === "issue" ? entry.item.issue : null;
+}
+
 export interface InboxProjectWorkspaceLookup {
   name: string;
   projectId?: string | null;

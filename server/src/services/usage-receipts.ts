@@ -568,6 +568,9 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     state?.accountingReceiptSourceId, state?.accountingReceiptSequence, state?.accountingReceiptId,
   ]);
   const pending = await readPendingRunUsageReceipts(input, directory);
+  // READ COMMITTED under the run-row lock, like persistUsageReceipt: every
+  // mutable read below follows that lock, so a run-log append committed after
+  // the company check cannot make the handoff's snapshot stale.
   const bound = await withOperationAccountingTransaction(db, input.companyId, async tx => {
     const [run] = await tx.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId,
       usageJson: heartbeatRuns.usageJson, costAccountedAt: heartbeatRuns.costAccountedAt }).from(heartbeatRuns)
@@ -587,7 +590,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     return tx.update(heartbeatRuns).set({ usageJson: { ...old, accountingReceiptSourceFences: fences,
       accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false } })
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id, runtimeMode: heartbeatRuns.runtimeMode, usageJson: heartbeatRuns.usageJson });
-  });
+  }, { isolationLevel: "read committed" });
   for (const item of pending) await fs.rm(item.file, { force: true });
   if (bound.length !== 1) throw conflict("Run cannot accept a new usage recorder");
   let sequence = 0;
@@ -630,7 +633,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       }).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
         isNull(heartbeatRuns.costAccountedAt), sql`${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}`)).returning({ id: heartbeatRuns.id });
       return rows.length === 1;
-    });
+    }, { isolationLevel: "read committed" }); // Run-row lock first, as above.
     if (persisted) { finishFailedCapture?.(); finishFailedCapture = undefined; }
   }
   function enqueue(action: () => Promise<AdapterUsageCheckpoint>) {

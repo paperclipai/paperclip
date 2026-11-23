@@ -10,6 +10,7 @@ import { ExternallyConnectedTaskBanner } from "./ExternallyConnectedTaskBanner";
 import { boardSendDraftKey, readBoardSendDraft } from "./board-send-draft";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 const mockSession = vi.hoisted(() => ({ userId: "user-1" }));
 vi.mock("@/api/auth", () => ({
   authApi: { getSession: vi.fn(async () => ({ user: { id: mockSession.userId } })) },
@@ -175,6 +176,12 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
     container.remove();
     vi.restoreAllMocks();
     autoResendOverride.stalled = false;
+  });
+
+  it("keeps the connected channel label out of session replay", async () => {
+    const client = await renderBanner();
+    expect(replayLeaks("#paperclip", container)).toEqual({ rendered: true, recorded: false });
+    client.clear();
   });
 
   it("cancels an automatic resend and hides its draft after an account change", async () => {

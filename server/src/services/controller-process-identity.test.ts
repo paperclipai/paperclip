@@ -1,10 +1,22 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { processExists, processStartsDefinitelyDiffer } from "./controller-process-identity.js";
+import { currentControllerBootId, processExists, processStartsDefinitelyDiffer, serverDatabaseClientOptions } from "./controller-process-identity.js";
 import { isPidAlive, isProcessGroupAlive } from "./local-service-supervisor.js";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { recoveryProcessMayBeAlive } from "./native-runtime/native-session-executor.js";
+
+describe("server database client options", () => {
+  it("names the main pool after this boot so its database sessions can be told apart from an earlier server's", () => {
+    const options = serverDatabaseClientOptions({ DATABASE_POOL_MAX: "12" });
+    expect(options).toEqual({ applicationName: `paperclip:${currentControllerBootId()}`, maxConnections: 12 });
+    expect(options.applicationName!.length).toBeLessThanOrEqual(63);
+  });
+
+  it("keeps an operator's DATABASE_APPLICATION_NAME", () => {
+    expect(serverDatabaseClientOptions({ DATABASE_APPLICATION_NAME: "paperclip-web" }).applicationName).toBe("paperclip-web");
+  });
+});
 
 describe("shared process identity proof", () => {
   afterEach(() => vi.restoreAllMocks());

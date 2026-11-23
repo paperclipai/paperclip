@@ -5,6 +5,14 @@ built-in catalog. The operator owns the image and trusts its plugin code.
 This is packaging and activation policy, not a sandbox or entitlement system.
 Ordinary self-hosted images need no catalog and keep their existing behavior.
 
+Built-in Core plugins also refresh stored display descriptions at startup when
+the installed version matches the image. This covers the plugin description,
+environment-driver descriptions, and direct config-property help text. All other
+manifest fields must match, including permissions, entrypoints, schema rules,
+and default values. Pending approval and uninstall states retain their existing
+behavior. This refresh updates metadata without restarting a worker. Volume-free
+qualification still requires the complete stored manifest to match the image.
+
 ## Image layout
 
 Use `distribution/catalog.json` beneath `PAPERCLIP_BUNDLED_PLUGIN_ROOT`
@@ -40,6 +48,26 @@ the catalog and bundles atomically as part of the image; keep them read-only
 in operation. This detects packaging errors but does not authenticate an
 untrusted image builder. Image provenance and signatures remain deployment
 responsibilities.
+
+### Provider credentials
+
+An image author can set `workerCredentialEnv` on a distribution catalog
+entry to pass provider API keys from the host environment. For example,
+`"workerCredentialEnv": ["EXAMPLE_API_KEY"]` lets the worker receive
+`EXAMPLE_API_KEY` when the deployment sets it. List 1 to 16 distinct
+uppercase environment variable names ending in `_API_KEY`, each at most
+128 characters. Store the names in the catalog and set the values through
+the deployment.
+
+Core grants these variables to the selected, digest-verified worker when
+it declares `environment.drivers.register`. This grant is available through
+managed image activation. The ordinary `plugins.workerEnv` credential
+restriction applies independently.
+
+Before emitting this field, image builders can check for
+`workerCredentialEnv` in the capability list at
+`server/src/services/distribution-plugin-catalog-capabilities.json` in the
+target Core source revision. Older versions reject the unknown catalog field.
 
 ## Selection, upgrades and rollback
 

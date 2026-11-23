@@ -40,6 +40,13 @@
       "localAsset": "/brands/apps/asana.svg"
     },
     {
+      "slug": "aws",
+      "provider": "Amazon Web Services",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/aws.svg",
+      "darkAsset": "/brands/apps/aws-dark.svg"
+    },
+    {
       "slug": "bedrock",
       "provider": "Amazon Bedrock",
       "catalogVisible": true,
@@ -82,6 +89,12 @@
       "provider": "Candid",
       "catalogVisible": false,
       "localAsset": "/brands/apps/candid.png"
+    },
+    {
+      "slug": "circleback",
+      "provider": "Circleback",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/circleback.png"
     },
     {
       "slug": "clickhouse",
@@ -179,6 +192,13 @@
       "catalogVisible": true,
       "localAsset": "/brands/apps/github.svg",
       "darkAsset": "/brands/apps/github-dark.svg"
+    },
+    {
+      "slug": "github-copilot",
+      "provider": "GitHub Copilot",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/github-copilot.svg",
+      "darkAsset": "/brands/apps/github-copilot-dark.svg"
     },
     {
       "slug": "gmail",
@@ -715,6 +735,12 @@
       "provider": "Unikraft",
       "catalogVisible": true,
       "localAsset": "/brands/apps/unikraft.svg"
+    },
+    {
+      "slug": "tailscale",
+      "provider": "Tailscale",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/tailscale.png"
     }
   ]
 }

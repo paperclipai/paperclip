@@ -1,5 +1,8 @@
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
-import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
+import { antigravityModelRefusalMessage, readProviderFailure, type AntigravityAuthRoute, type ProviderFailure } from "@paperclipai/shared";
+
+/** The runner driver's provider code for a model Google refused for the connection. */
+const ANTIGRAVITY_MODEL_UNAVAILABLE_CODE = "antigravity_model_unavailable";
 
 // Shared by every provider whose selected model is rejected, so it names no specific connection.
 export const NATIVE_MODEL_REJECTION_MESSAGE =
@@ -27,13 +30,36 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Classify only a committed provider terminal, never model prose or tool output. */
+export function nativeProviderUsageLimitFromEvent(
+  event: Pick<PrpEvent, "sourceKind" | "eventType" | "payload">,
+): boolean {
+  const payload = record(event.payload);
+  if (event.sourceKind !== "runner" || event.eventType !== "turn.failed" || payload.status !== "failed") return false;
+  const error = record(payload.error);
+  if (error.codexErrorInfo === "usageLimitExceeded") return true;
+  // ACP harnesses type the same exhausted allowance as a provider failure.
+  // Context, turn and configured budget limits stay ordinary terminals.
+  const category = readProviderFailure(error.providerFailure)?.category;
+  return category === "quota_exhausted" || category === "rate_limit";
+}
+
+/** An API-key Codex turn whose configured model the Responses API answers with 404. */
+export const NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC = {
+  provider: "codex",
+  category: "model_not_found",
+  status: 404,
+  authMode: "api_key",
+} as const;
+
 /** Reconstruct only the closed diagnostic vocabulary, never provider text. */
 export function readNativeModelRejectionDiagnostic(value: unknown) {
   try {
     const entry = record(value);
-    return Object.entries(NATIVE_MODEL_REJECTION_DIAGNOSTIC).every(([key, expected]) => entry[key] === expected)
-      ? { ...NATIVE_MODEL_REJECTION_DIAGNOSTIC }
-      : null;
+    for (const diagnostic of [NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC]) {
+      if (Object.entries(diagnostic).every(([key, expected]) => entry[key] === expected)) return { ...diagnostic };
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -211,8 +237,17 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
 }
 
 /** Observe only events accepted by the bound control-plane persistence port. */
-export function createNativeProviderFailureObservation(provider: { kind: string; model?: string | null }) {
+export function createNativeProviderFailureObservation(
+  provider: { kind: string; model?: string | null; agent?: string },
+  options: {
+    /** Google Antigravity's connection route, known only where the run's credentials were resolved. */
+    antigravityRoute?: AntigravityAuthRoute;
+  } = {},
+) {
+  const antigravity = provider.kind === "acpx" && provider.agent === "antigravity";
   let rejectedTurnId: string | null = null;
+  /** A Codex API-key turn whose configured model the Responses API does not serve (404). */
+  let missingModelTurnId: string | null = null;
   let overloadedTurnId: string | null = null;
   const failedTurns = new Map<string, NativeTurnFailureDiagnostic>();
   const providerFailures = new Map<string, ProviderFailure>();
@@ -227,6 +262,11 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
         && event.payload.status === "failed") {
         const failure = readProviderFailure(record(event.payload.error).providerFailure);
         if (failure && !providerFailures.has(event.turnId)) providerFailures.set(event.turnId, failure);
+        // Antigravity's owned patch types Google's 503 as a transient overload:
+        // it takes the same bounded capacity retry as Codex's serverOverloaded.
+        if (antigravity && failure?.category === "overloaded" && failure.retryability === "transient") {
+          overloadedTurnId = event.turnId;
+        }
       }
       if ((provider.kind !== "codex" && provider.kind !== "opencode") ||
           event.sourceKind !== "runner" || event.eventType !== "turn.failed" || !event.turnId) return;
@@ -251,6 +291,16 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       }
       if (!provider.model || payload.status !== "failed" || payload.recoverable === true || failure.recoverable === true ||
           typeof failure.message !== "string" || failure.message.length > 4_096) return;
+      // With an API key, Codex retries the Responses API 404 and then fails the turn with this
+      // terminal text (codex 0.160.0). Bind it to the configured model; store neither name nor text.
+      const info = record(failure.codexErrorInfo);
+      const infoKinds = Object.keys(info);
+      // Its retried 404s arrive as responseStreamDisconnected with willRetry; only the terminal kind counts.
+      if (infoKinds.length === 1 && infoKinds[0] === "httpConnectionFailed" && record(info.httpConnectionFailed).httpStatusCode === 404 &&
+          failure.message.startsWith(`unexpected status 404 Not Found: The model \`${provider.model}\` does not exist or you do not have access to it.`)) {
+        missingModelTurnId = event.turnId;
+        return;
+      }
       let response: Record<string, unknown>;
       try { response = record(JSON.parse(failure.message)); } catch { return; }
       const error = record(response.error);
@@ -270,29 +320,30 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       if (turnId === overloadedTurnId) return {
         errorCode: NATIVE_PROVIDER_OVERLOADED_CODE,
         errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
-        diagnostic: { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
+        diagnostic: antigravity ? { provider: "antigravity", category: "server_overloaded" } : { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
       };
-      if (turnId !== rejectedTurnId) {
-        // A driver's closed category marks a rejected model for any provider. Only an
-        // action-required rejection qualifies; a transient one may succeed on retry.
-        if (!modelUnavailableTurn(turnId)) return null;
-        const failure = providerFailures.get(turnId)!;
-        return {
-          errorCode: "native_provider_model_rejected" as const,
-          errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
-          diagnostic: failedTurns.get(turnId) ?? { provider: failure.provider, category: failure.category },
-        };
-      }
-      return {
-        errorCode: "native_provider_model_rejected" as const,
-        errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
-        diagnostic: { ...NATIVE_MODEL_REJECTION_DIAGNOSTIC },
-      };
+      // Every model rejection shares one result; only its closed diagnostic differs.
+      const modelRejection = <T>(diagnostic: T, errorMessage: string = NATIVE_MODEL_REJECTION_MESSAGE) => ({
+        errorCode: "native_provider_model_rejected" as const, errorMessage, diagnostic,
+      });
+      if (turnId === missingModelTurnId) return modelRejection({ ...NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC });
+      if (turnId === rejectedTurnId) return modelRejection({ ...NATIVE_MODEL_REJECTION_DIAGNOSTIC });
+      // A driver's closed category marks a rejected model for any provider. Only an
+      // action-required rejection qualifies; a transient one may succeed on retry.
+      if (!modelUnavailableTurn(turnId)) return null;
+      const failure = providerFailures.get(turnId)!;
+      // Antigravity's typed refusal names the configured model and the fix for
+      // its connection route. Without the route (a run recovered after a
+      // restart), the shared message stays accurate.
+      const message = antigravity && failure.providerCode === ANTIGRAVITY_MODEL_UNAVAILABLE_CODE && provider.model && options.antigravityRoute
+        ? antigravityModelRefusalMessage(provider.model, options.antigravityRoute) : undefined;
+      return modelRejection(failedTurns.get(turnId) ?? { provider: failure.provider, category: failure.category }, message);
     },
     /** Diagnostics only: the failed turn that `forTerminal` did not classify. */
     unclassifiedTurnFailure(turnId: string | null | undefined, terminal: PrpTerminalState) {
       if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed" ||
-          turnId === overloadedTurnId || turnId === rejectedTurnId || modelUnavailableTurn(turnId)) return null;
+          turnId === overloadedTurnId || turnId === rejectedTurnId || turnId === missingModelTurnId ||
+          modelUnavailableTurn(turnId)) return null;
       const diagnostic = failedTurns.get(turnId);
       return diagnostic ? { ...diagnostic } : null;
     },

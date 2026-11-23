@@ -1,4 +1,4 @@
-// Compares the plugin lifecycle inbox page query before and after a change.
+// Compares the plugin lifecycle inbox page, idle probe and acknowledgment before and after a change.
 // Usage: pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts \
 //   --baseline-ref=<sha> [--agents=40] [--per-agent=2500] [--acked=2000] [--samples=5] [--treatment-only]
 import assert from "node:assert/strict";
@@ -74,7 +74,15 @@ try {
       FROM resource_lifecycle_events WHERE company_id = $2::uuid) e
     WHERE resource_type = 'agent' OR (resource_type = 'project' AND rank = 1) OR (resource_type = 'agent_runtime' AND rank <= $3)`,
     [plugin.id, companyId, acked]);
-  await client.unsafe("ANALYZE");
+  // Upgrade path: carry the acknowledgment rows into resource cursors as the migration does.
+  const cursorMigration = await fs.readFile(new URL("../packages/db/src/migrations/0462_plugin_lifecycle_resource_cursors.sql", import.meta.url), "utf8");
+  const backfill = cursorMigration.split("--> statement-breakpoint").find(statement => statement.includes('INSERT INTO "plugin_lifecycle_resource_cursors"'));
+  assert.ok(backfill, "cursor backfill statement not found");
+  const backfillStart = performance.now();
+  await client.unsafe(backfill);
+  const backfillMs = Math.round(performance.now() - backfillStart);
+  // Hosted tables are autovacuumed, so index-only scans skip most heap visits.
+  await client.unsafe("VACUUM ANALYZE");
   const [{ events }] = await client.unsafe(`SELECT count(*)::int AS events FROM resource_lifecycle_events`);
   const [{ acks }] = await client.unsafe(`SELECT count(*)::int AS acks FROM plugin_lifecycle_acknowledgments`);
   const [{ server_version: version }] = await client.unsafe(`SHOW server_version`);
@@ -116,11 +124,39 @@ try {
     results.push({ case: c.name, rows: (treatRows as unknown[]).length, equal: !treatmentOnly, baselineMs: b, treatmentMs: t, speedup: b ? Math.round(b.median / t.median * 10) / 10 : undefined,
       baselinePlan: await explain(baseQuery), treatmentPlan: await explain(treatQuery) });
   }
+  // Acknowledge one resource's head, then undo it, so every sample sees the same state.
+  {
+    const ackSamples = { baseline: [] as number[], treatment: [] as number[] };
+    const [head] = await current.pluginLifecycleInbox(db, plugin.id).list(companyId, 1, undefined, ["agent_runtime"]);
+    // A fresh plugin (--acked=0) has no cursor row; restore that absence between samples.
+    const [cursorRow] = await client.unsafe(`SELECT acknowledged_through_id::text AS through FROM plugin_lifecycle_resource_cursors
+      WHERE plugin_id = $1 AND company_id = $2 AND resource_type = 'agent_runtime' AND resource_id = $3`, [plugin.id, companyId, head.resourceId]);
+    const through: string | undefined = cursorRow?.through;
+    for (let n = 0; n <= sampleCount; n++) {
+      const order = n % 2 === 0 ? (["baseline", "treatment"] as const) : (["treatment", "baseline"] as const);
+      for (const which of order.filter(w => !treatmentOnly || w === "treatment")) {
+        const start = performance.now();
+        await (which === "baseline" ? baseline : current.pluginLifecycleInbox)(db, plugin.id).acknowledge(companyId, head.id);
+        if (n > 0) ackSamples[which].push(performance.now() - start);
+        await client.unsafe(`DELETE FROM plugin_lifecycle_acknowledgments WHERE plugin_id = $1 AND event_id = $2`, [plugin.id, head.id]);
+        if (through === undefined) {
+          await client.unsafe(`DELETE FROM plugin_lifecycle_resource_cursors
+            WHERE plugin_id = $1 AND company_id = $2 AND resource_type = 'agent_runtime' AND resource_id = $3`, [plugin.id, companyId, head.resourceId]);
+        } else {
+          await client.unsafe(`UPDATE plugin_lifecycle_resource_cursors SET acknowledged_through_id = $4
+            WHERE plugin_id = $1 AND company_id = $2 AND resource_type = 'agent_runtime' AND resource_id = $3`, [plugin.id, companyId, head.resourceId, through]);
+        }
+      }
+    }
+    const stats = (s: number[]) => { const v = [...s].sort((a, b) => a - b); return { median: v[Math.floor(v.length / 2)], min: v[0], max: v.at(-1), samples: s.map(x => Math.round(x * 10) / 10) }; };
+    const b = treatmentOnly ? undefined : stats(ackSamples.baseline), t = stats(ackSamples.treatment);
+    results.push({ case: "acknowledge-head", rows: 1, equal: !treatmentOnly, baselineMs: b, treatmentMs: t, speedup: b ? Math.round(b.median / t.median * 10) / 10 : undefined, baselinePlan: "", treatmentPlan: "" });
+  }
   // Control: the agent runtime revision read (plugin-agent-runtime-state.ts, agent-file-store.ts) is unchanged.
   const revisionPlan = (await client.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT id FROM resource_lifecycle_events
     WHERE company_id = $1 AND resource_type = 'agent_runtime' AND resource_id = $2 ORDER BY id DESC LIMIT 1`, [companyId, agentIds[0]]))
     .map(r => r["QUERY PLAN"]).join("\n");
-  console.log(JSON.stringify({ revisionPlan, baselineRevision, postgres: version, agents: agentCount, perAgent, acked, events, acks, samples: sampleCount, results }, null, 2));
+  console.log(JSON.stringify({ revisionPlan, baselineRevision, postgres: version, agents: agentCount, perAgent, acked, events, acks, backfillMs, samples: sampleCount, results }, null, 2));
 } finally {
   try { await client?.end({ timeout: 0 }); await database?.cleanup(); if (baselineDir) await fs.rm(baselineDir, { recursive: true, force: true }); }
   finally { clearInterval(keepAlive); }

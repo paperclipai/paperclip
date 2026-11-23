@@ -12,6 +12,14 @@ export interface LocalEnvironmentConfig {
 }
 
 export interface SshEnvironmentConfig {
+  useHostAuth?: boolean;
+  tailscaleConnectionId?: string;
+  tailscaleDeviceId?: string;
+  network?: "direct" | "tailscale";
+  tailscaleAuthKey?: null;
+  tailscaleAuthKeySecretRef?: EnvSecretRefBinding | null;
+  tailscaleSocket?: string;
+  tailscaleIdentity?: string;
   host: string;
   port: number;
   username: string;
@@ -87,6 +95,8 @@ export interface Environment {
   driver: EnvironmentDriver;
   status: EnvironmentStatus;
   config: Record<string, unknown>;
+  /** Driver identity from the read API, including when config is redacted. */
+  pluginDriver?: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">;
   envVars: AgentEnvConfig;
   metadata: Record<string, unknown> | null;
   createdAt: Date;

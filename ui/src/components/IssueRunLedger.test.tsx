@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue } from "../api/heartbeats";
 import { IssueRunLedgerContent } from "./IssueRunLedger";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => (
@@ -319,6 +320,7 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("Retry exhausted");
     expect(container.textContent).toContain("no further automatic retry will be queued");
     expect(container.textContent).toContain("Manual intervention required");
+    expect(replayLeaks("Bounded retry exhausted after 4 scheduled attempts", container)).toEqual({ rendered: true, recorded: false });
   });
 
   it("labels max-turn stops and continuation retries without confusing them with per-run turns", () => {
@@ -394,6 +396,39 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("budget paused");
     expect(container.textContent).toContain("unmanaged background task stopped");
     expect(container.textContent).toContain("paused by board");
+  });
+
+  it("names the recorded cause of an adapter failure and keeps the plain label for older runs", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-adapter-cause",
+          status: "failed",
+          errorCode: "adapter_failed",
+          failureCause: "40001",
+          resultJson: { stopReason: "adapter_failed" },
+        }),
+        createRun({
+          runId: "run-adapter-legacy",
+          status: "failed",
+          errorCode: "adapter_failed",
+          resultJson: { stopReason: "adapter_failed" },
+          createdAt: "2026-04-18T19:57:00.000Z",
+        }),
+        createRun({
+          runId: "run-adapter-malformed",
+          status: "failed",
+          errorCode: "adapter_failed",
+          failureCause: "select * from secrets",
+          resultJson: { stopReason: "adapter_failed" },
+          createdAt: "2026-04-18T19:56:00.000Z",
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("adapter failed (40001)");
+    expect(container.textContent?.match(/adapter failed(?! \()/g)).toHaveLength(2);
+    expect(container.textContent).not.toContain("secrets");
   });
 
   it("surfaces active and completed child issue summaries", () => {

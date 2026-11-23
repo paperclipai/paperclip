@@ -106,6 +106,38 @@ describe("cli auth routes", () => {
     await Promise.all([import("../routes/access.js"), import("../middleware/index.js")]);
   });
 
+  it.each([
+    [true, false],
+    [false, true],
+  ])("reports effective Cloud owner access when actor admin=%s and stored admin=%s", async (effectiveAdmin, storedAdmin) => {
+    mockBoardAuthService.resolveBoardAccess.mockResolvedValue({
+      user: { id: "user-1", name: "User One", email: "user@example.com" },
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: storedAdmin,
+    });
+    const app = await createApp({ type: "board", source: "cloud_tenant", userId: "user-1", isInstanceAdmin: effectiveAdmin });
+    const res = await request(app).get("/api/cli-auth/me");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ source: "cloud_tenant", isInstanceAdmin: effectiveAdmin, companyIds: ["company-1"] });
+  });
+
+  it.each(["session", "board_key"])("keeps the fresh stored access snapshot for %s authentication", async source => {
+    mockBoardAuthService.resolveBoardAccess.mockResolvedValue({ user: null, companyIds: [], isInstanceAdmin: false });
+    const app = await createApp({ type: "board", source, userId: "user-1", isInstanceAdmin: true });
+    const res = await request(app).get("/api/cli-auth/me");
+    expect(res.status).toBe(200);
+    expect(res.body.isInstanceAdmin).toBe(false);
+  });
+
+  it.each([{ type: "none", source: "none" }, { type: "agent", source: "agent_key", agentId: "agent-1" }])(
+    "denies the board access summary to $type callers", async actor => {
+      const app = await createApp(actor);
+      expect((await request(app).get("/api/cli-auth/me")).status).toBe(401);
+      expect(mockBoardAuthService.resolveBoardAccess).not.toHaveBeenCalled();
+    },
+  );
+
   it("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {

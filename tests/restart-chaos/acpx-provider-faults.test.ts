@@ -235,14 +235,31 @@ describe("provider faults across a restart", () => {
     }
   });
 
+  it("cycles K1, K2 and K4 restarts across PV tasks and gives each workload its own message", () => {
+    const command = parseCommand(["--adapters", "codex", "--workloads", "S1,Q1", "--faults", "PV1,PV2", "--provider-fault-restart", "K2,K4,K1",
+      "--provider-fault-message", "S1=interrupt_ack,terminal", "--tasks", "4", "--concurrency", "1", "--seed", "9"]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options).toMatchObject({ providerFaultRestart: "K2", providerFaultRestartKinds: ["K2", "K4", "K1"],
+      providerFaultMessage: "terminal", providerFaultMessageByWorkload: { S1: "interrupt_ack" } });
+    const plan = planWave("w-20261110T000000-s9", command.options);
+    expect(plan.tasks.map(planned => planned.providerFault?.restart?.kind)).toEqual(["K2", "K4", "K1", "K2"]);
+    for (const planned of plan.tasks) {
+      expect(planned.providerFault?.message).toBe(planned.workload === "S1" ? "interrupt_ack" : "terminal");
+      const restart = planned.providerFault!.restart!;
+      expect(taskFaultSchedule(planned)).toEqual([{ kind: restart.kind, holdMs: restart.kind === "K4" ? 120_000 : 0, atMs: 0, trigger: "provider", delayMs: 3_000 }]);
+    }
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-message", "Q2=terminal"])).toThrow(/not one of/);
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-message", "terminal,interrupt_ack"])).toThrow(/one default/);
+  });
+
   it("rejects restarts that cannot straddle the fault", () => {
     expect(() => parseCommand(["--adapters", "claude", "--workloads", "Q1", "--faults", "PV3", "--provider-fault-restart", "K1"])).toThrow(/PV1 or PV2/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV1", "--provider-fault-delays", "5",
       "--provider-fault-restart", "K1", "--provider-fault-restart-after-seconds", "6"])).toThrow(/shorter than every PV1 delay/);
-    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K2"])).toThrow(/K1/);
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K6"])).toThrow(/K1, K2, K4/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "K1", "--provider-fault-restart", "K1"])).toThrow(/provider fault/);
-    expect(() => parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2"])).toThrow(/G1 grades the board decision after a restart/);
-    expect(parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "1"]).mode).toBe("wave");
+    // G1's agent ends its own turn after asking for approval: no interrupt, so no provider rule can apply.
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "1"])).toThrow(/remove G1/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "2"])).toThrow(/--concurrency 1/);
     expect(parseProviderFaultRestart(undefined, undefined, ["PV2"], undefined)).toEqual({});
     expect(() => parseProviderFaultRestart(undefined, "3", ["PV2"], undefined)).toThrow(/needs --provider-fault-restart/);
@@ -257,6 +274,17 @@ describe("provider faults across a restart", () => {
     expect(withProviderFaultCheck(pass, task("aa", rule), [applied, { ...applied, event: "released", at: 2_000 }], 4_000).checks.at(-1))
       .toMatchObject({ ok: false, detail: expect.stringContaining("releasedBeforeRestart") });
     expect(withProviderFaultCheck(pass, task("aa", rule), [applied], 500).verdict).toBe("fail");
+    // K2: a release inside the graceful drain (after the SIGTERM, before the old process stopped) reached
+    // the old control plane, so the message straddled nothing.
+    const k2: ProviderFaultRule = { ...rule, restart: { kind: "K2", afterAppliedMs: 3_000 } };
+    expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "released", at: 10_000 }], 4_000, 20_000).checks.at(-1))
+      .toMatchObject({ ok: false, detail: expect.stringContaining("releasedBeforeRestart") });
+    expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "released", at: 25_000 }], 4_000, 20_000).verdict).toBe("pass");
+    // A discard inside the K2 shutdown is its cleanup stopping the provider with the message still held:
+    // that straddles. Only a provider that exited before the restart started took the message first.
+    expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "held_message_discarded", at: 10_000 }], 4_000, 20_000).verdict).toBe("pass");
+    expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "held_message_discarded", at: 2_000 }], 4_000, 20_000).checks.at(-1))
+      .toMatchObject({ ok: false, detail: expect.stringContaining("discardedBeforeRestart") });
     // A provider that closed first took the held message with it before the K1: nothing straddled the restart.
     expect(withProviderFaultCheck(pass, task("aa", rule), [applied, { ...applied, event: "held_message_discarded", at: 3_000 }], 4_000).checks.at(-1))
       .toMatchObject({ ok: false, detail: expect.stringContaining("discardedBeforeRestart") });

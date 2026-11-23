@@ -1,26 +1,56 @@
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
-import { parseAcpxCandidateAdmission, QUALIFIED_ACPX_PROFILES, type AcpxCandidateAdmission, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { isAntigravityNativeTarget, parseAcpxCandidateAdmission, QUALIFIED_ACPX_PROFILES, type AcpxCandidateAdmission, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 /** Trusted operator startup authority, separate from saved agent configuration. */
 export const ANTIGRAVITY_CANDIDATE_ADMISSION_ENV = "PAPERCLIP_ACPX_CANDIDATE_ADMISSION";
 
+/** The only target a cloud environment runs Antigravity on: the remote pack's patched linux-x64 closure. */
+export const ANTIGRAVITY_REMOTE_TARGET = Object.freeze({ platform: "linux", architecture: "x64" });
+
+/** True when the operator granted this company and exact model a cloud (linux-x64) candidate. */
+export function antigravityRemoteCandidateAdmitted(input: { companyId?: string; model?: string }, hostEnvironment: NodeJS.ProcessEnv = process.env): boolean {
+  try { return Boolean(input.model && resolveAntigravityCandidateAdmission({ ...input, target: ANTIGRAVITY_REMOTE_TARGET }, hostEnvironment)); }
+  catch { return false; }
+}
+
+/**
+ * The operator's candidate grant for one company and exact model. With a
+ * `target`, the grant must name that execution target (this host, or
+ * `ANTIGRAVITY_REMOTE_TARGET` for a cloud environment) and its patched
+ * closure. Without one (availability surfaces) a grant for this host or for
+ * the cloud target is accepted. Other companies get nothing.
+ */
 export function resolveAntigravityCandidateAdmission(
-  input: { companyId?: string; model?: string },
+  input: { companyId?: string; model?: string; target?: { platform: string; architecture: string } },
   hostEnvironment: NodeJS.ProcessEnv = process.env,
 ): AcpxCandidateAdmission | undefined {
   const encoded = hostEnvironment[ANTIGRAVITY_CANDIDATE_ADMISSION_ENV];
-  if (!encoded || !input.companyId || process.platform !== "darwin" || process.arch !== "arm64") return undefined;
+  if (!encoded || !input.companyId) return undefined;
+  const hostNative = isAntigravityNativeTarget(process.platform, process.arch);
+  // Only a target with a verified, patched closure can run the native candidate.
+  if (input.target && !isAntigravityNativeTarget(input.target.platform, input.target.architecture)) return undefined;
   let value: unknown;
   try { value = JSON.parse(encoded); } catch { throw new Error("Invalid Antigravity candidate admission"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Antigravity candidate admission");
   const record = value as Record<string, unknown>;
   // Other companies receive no candidate surface or execution authority.
   if (record.companyId !== input.companyId) return undefined;
-  return parseAcpxCandidateAdmission(value, {
+  const admission = parseAcpxCandidateAdmission(value, {
     companyId: input.companyId,
     agent: "antigravity",
     model: input.model ?? (typeof record.model === "string" ? record.model : ""),
   });
+  const names = (target: { platform: string; architecture: string }) => admission.platform === target.platform && admission.architecture === target.architecture;
+  if (input.target) {
+    if (!names(input.target)) throw new Error("Antigravity candidate admission does not match the execution target");
+  } else if (!names(ANTIGRAVITY_REMOTE_TARGET) && !names({ platform: process.platform, architecture: process.arch })) {
+    // A host without a verified closure has no local surface to refuse.
+    if (!hostNative) return undefined;
+    throw new Error("Antigravity candidate admission does not match this host");
+  } else if (!names(ANTIGRAVITY_REMOTE_TARGET) && !hostNative) {
+    return undefined;
+  }
+  return admission;
 }
 
 export function resolveKimiCandidateAdmission(

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -238,8 +238,7 @@ describe("heartbeat retry module callbacks", () => {
     await extracted.createHeartbeatRetries(database.db, spawnDeps)
       .scheduleInteractionContinuationInfrastructureRetryIfEligible(spawnFailure, { adapterType: "codex_local" } as Agent);
     expect(spawnDeps.appendRunEvent).toHaveBeenCalledWith(spawnFailure, exhaustion);
-    expect(database.access).not.toHaveBeenCalled();
-  });
+    expect(database.access).not.toHaveBeenCalled();  });
 });
 
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -261,6 +260,7 @@ describePostgres("heartbeat retry module database wiring", () => {
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -331,6 +331,27 @@ describePostgres("heartbeat retry module database wiring", () => {
     }
   });
 
+  // A run that could not retire its predecessor re-queues in the uncharged lane
+  // with the answered interaction's own wake, so the retry still carries it.
+  it("keeps an answered interaction in an uncharged interrupted-preparation retry that keeps its wake", async () => {
+    const { run, agent, companyId } = await fixture();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: agent.id,
+      runId: run.id, source: "automation", status: "failed" }).returning();
+    const contextSnapshot = { ...run.contextSnapshot, interactionId: randomUUID(), interactionStatus: "answered",
+      interactionKind: "ask_user_questions", mutation: "interaction", wakeReason: "issue_commented" };
+    const [failed] = await db.update(heartbeatRuns).set({ wakeupRequestId: wake!.id, runtimeMode: "native",
+      errorCode: "adapter_failed", contextSnapshot }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const { retries } = boundRetries();
+    expect(isResolvedInteractionContinuationWakeContext(failed!.contextSnapshot)).toBe(true);
+    const scheduled = await retries.scheduleBoundedRetryForRun(failed!, agent,
+      { now, retryReason: "interrupted_preparation", wakeReason: "issue_commented" });
+    expect(scheduled.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    expect(successor!.contextSnapshot).toMatchObject({ interactionId: contextSnapshot.interactionId,
+      retryReason: "interrupted_preparation", executionRetryAccounting: { failureRetries: 0 } });
+  });
+
   it("bounds answered chat attestation retries across restarts and escalates their exhaustion", async () => {
     const { run, agent, companyId } = await fixture();
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: agent.id,
@@ -365,6 +386,50 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(deps.escalatePlanApprovalResumeFailureNeedsAttention)
       .toHaveBeenCalledWith(expect.objectContaining({ attempt: 2, maxAttempts: 2, run: predecessor }));
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+  });
+
+  it("a lasting outage gets at most the task's hourly cap of automatic attempts across the sweep and the transient lane", async () => {
+    const { run, agent, issue, companyId } = await fixture();
+    const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+    const failed = { ...run, errorCode: "repository_catalog_unavailable",
+      resultJson: { errorFamily: "transient_upstream", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+    const priorTransient = (minutes: number) => db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue",
+      issueId: issue.id, status: "failed", errorCode: "repository_catalog_unavailable", scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 1, contextSnapshot: { issueId: issue.id }, createdAt: minutesAgo(minutes), finishedAt: minutesAgo(minutes) });
+    for (const minutes of [50, 40, 30, 20, 10]) await priorTransient(minutes);
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 }))
+      .toMatchObject({ outcome: "scheduled" });
+    await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, run.id)));
+    await db.insert(activityLog).values({ companyId, actorType: "system", actorId: "system", action: "issue.continued_automatically",
+      entityType: "issue", entityId: issue.id, details: {}, createdAt: minutesAgo(55) });
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 }))
+      .toMatchObject({ outcome: "retry_exhausted" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
+  });
+
+  it("re-checks the task's hourly cap under the task lock when the sweep records an attempt while the retry is being prepared", async () => {
+    const { run, agent, issue, companyId } = await fixture();
+    const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+    const failed = { ...run, errorCode: "repository_catalog_unavailable",
+      resultJson: { errorFamily: "transient_upstream", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+    for (const minutes of [50, 40, 30, 20]) await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue",
+      issueId: issue.id, status: "failed", errorCode: "repository_catalog_unavailable", scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 1, contextSnapshot: { issueId: issue.id }, createdAt: minutesAgo(minutes), finishedAt: minutesAgo(minutes) });
+    const sweepContinuation = (createdAt: Date) => db.insert(activityLog).values({ companyId, actorType: "system", actorId: "system",
+      action: "issue.continued_automatically", entityType: "issue", entityId: issue.id, details: {}, createdAt });
+    await sweepContinuation(minutesAgo(55));
+    const { deps } = boundRetries();
+    const racing = extracted.createHeartbeatRetries(db, { ...deps, getAgentInvokability: async (target: Agent | null | undefined) => {
+      await db.transaction(async tx => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issue.id)).for("update");
+        await tx.insert(activityLog).values({ companyId, actorType: "system", actorId: "system",
+          action: "issue.continued_automatically", entityType: "issue", entityId: issue.id, details: {}, createdAt: minutesAgo(1) });
+      });
+      return deps.getAgentInvokability(target);
+    } });
+    expect(await racing.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 }))
+      .toMatchObject({ outcome: "retry_exhausted" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
   });
 
   it("keeps the accepted interaction owner and its catalog provider deadline", async () => {

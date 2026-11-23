@@ -5,11 +5,23 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
+import { Layout as ProductionLayout } from "./Layout.production";
+import { existsSync, readFileSync } from "node:fs";
+import { act as reactAct } from "react";
+import type { ReactNode } from "react";
 
 const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
+vi.mock("./Sidebar.production", async () => await import("./Sidebar"));
+vi.mock("./CompanySettingsSidebar.production", async () => await import("./CompanySettingsSidebar"));
+vi.mock("./AppsSidebar.production", async () => await import("./AppsSidebar"));
+vi.mock("./AppConnectionSidebar.production", async () => await import("./AppConnectionSidebar"));
+vi.mock("./BreadcrumbBar.production", async () => await import("./BreadcrumbBar"));
+vi.mock("./SidebarAccountMenu.production", async () => await import("./SidebarAccountMenu"));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
   useCoordinatorWorkspaceEnabled: () => ({ enabled: !classicWorkspace.enabled, loaded: true, userId: "viewer" }),
 }));
+const browserTimeZoneSync = vi.hoisted(() => vi.fn());
+vi.mock("@/hooks/useBrowserTimeZoneSync", () => ({ useBrowserTimeZoneSync: browserTimeZoneSync }));
 
 const mockDesignSandbox = vi.hoisted(() => ({ enabled: false }));
 vi.mock("@/context/DesignSandboxContext", () => ({ useDesignSandbox: () => mockDesignSandbox.enabled }));
@@ -39,14 +51,11 @@ const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 const mockPluginSlotContexts = vi.hoisted(
   () => [] as Array<Record<string, unknown>>,
 );
-const mockSetPeeking = vi.hoisted(() => vi.fn());
-const mockSetForceCollapsed = vi.hoisted(() => vi.fn());
 const mockSidebarState = vi.hoisted(() => ({
   sidebarOpen: true,
   isMobile: false,
-  collapsed: false,
-  peeking: false,
 }));
+const mockPanelState = vi.hoisted(() => ({ visible: false, showsArtifact: false, content: null as ReactNode, setVisible: vi.fn() }));
 let currentPathname = "/PAP/dashboard";
 
 vi.mock("@/lib/router", () => ({
@@ -86,17 +95,12 @@ vi.mock("./CompanySettingsSidebar", () => ({
 
 vi.mock("./AppsSidebar", () => ({
   AppsSidebar: () => <div>Apps sidebar</div>,
+  AppsMobileNav: () => <nav aria-label="Mobile connectors">Browse Review</nav>,
 }));
 
 vi.mock("./AgentContextualSidebar", () => ({
   AgentContextualSidebar: ({ agentRef }: { agentRef: string }) => (
     <div>Agent sidebar {agentRef}</div>
-  ),
-}));
-
-vi.mock("./RoutineContextualSidebar", () => ({
-  RoutineContextualSidebar: ({ routineId }: { routineId: string }) => (
-    <div>Routine sidebar {routineId}</div>
   ),
 }));
 
@@ -119,7 +123,10 @@ vi.mock("./AppConnectionSidebar", () => ({
 }));
 
 vi.mock("./BreadcrumbBar", () => ({
-  BreadcrumbBar: () => <div>Breadcrumbs</div>,
+  BreadcrumbBar: ({ toolbarAction }: { toolbarAction?: ReactNode }) => <div>Breadcrumbs{toolbarAction}</div>,
+}));
+vi.mock("./AgentConversationsSidebar", () => ({
+  AgentConversationsSidebar: ({ compact }: { compact?: boolean }) => compact ? <button>Browse chats</button> : <aside aria-label="Chat contacts" />,
 }));
 
 vi.mock("./PropertiesPanel", () => ({
@@ -232,8 +239,11 @@ vi.mock("../context/DialogContext", () => ({
 
 vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
+    panelVisible: mockPanelState.visible,
+    panelShowsArtifact: mockPanelState.showsArtifact,
+    panelContent: mockPanelState.content,
     togglePanelVisible: vi.fn(),
-    setPanelVisible: vi.fn(),
+    setPanelVisible: mockPanelState.setVisible,
   }),
 }));
 
@@ -253,14 +263,7 @@ vi.mock("../context/SidebarContext", () => ({
     sidebarOpen: mockSidebarState.sidebarOpen,
     setSidebarOpen: mockSetSidebarOpen,
     toggleSidebar: vi.fn(),
-    toggleCollapsed: vi.fn(),
-    collapsed: mockSidebarState.collapsed,
-    peeking: mockSidebarState.peeking,
-    setPeeking: mockSetPeeking,
-    setForceCollapsed: mockSetForceCollapsed,
     isMobile: mockSidebarState.isMobile,
-    routeRequestsCollapsed: false,
-    setRouteRequestsCollapsed: vi.fn(),
   }),
 }));
 
@@ -321,6 +324,64 @@ function renderLayoutView(root: ReturnType<typeof createRoot>, queryClient: Quer
 describe("Layout", () => {
   let container: HTMLDivElement;
 
+  it.each([
+    { ShellLayout: Layout, width: 1024 },
+    { ShellLayout: Layout, width: 1366 },
+    { ShellLayout: ProductionLayout, width: 1024 },
+    { ShellLayout: ProductionLayout, width: 1366 },
+  ])("sizes a desktop-width conversation above the keyboard (%#)", async ({ ShellLayout, width }) => {
+    const viewport = Object.assign(new EventTarget(), { height: 1024, scale: 1, offsetTop: 0 });
+    vi.stubGlobal("visualViewport", viewport);
+    vi.stubGlobal("innerWidth", width);
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 1024 });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await reactAct(async () => root.render(<QueryClientProvider client={queryClient}><ShellLayout /></QueryClientProvider>));
+      const shell = container.querySelector(".paperclip-app-shell") as HTMLElement;
+      const conversation = document.createElement("div");
+      conversation.dataset.taskChatShell = "";
+      shell.querySelector("#main-content")!.append(conversation);
+      viewport.height = 600;
+      viewport.dispatchEvent(new Event("resize"));
+      expect(shell.dataset.mobile).toBeUndefined();
+      expect(shell.dataset.keyboardOpen).toBe("true");
+      expect(shell.style.getPropertyValue("--mobile-chat-viewport-height")).toBe("600px");
+
+      const style = document.createElement("style");
+      const css = readFileSync(existsSync("ui/src/index.css") ? "ui/src/index.css" : "src/index.css", "utf8");
+      style.textContent = css.slice(css.indexOf("html:has(.paperclip-app-shell"), css.indexOf("@media (prefers-reduced-motion: reduce)", css.indexOf("html:has(.paperclip-app-shell")));
+      document.head.append(style);
+      try {
+        expect(getComputedStyle(shell).position).toBe("fixed");
+        const sizingRule = Array.from(style.sheet!.cssRules).find((rule) =>
+          "selectorText" in rule && shell.matches((rule as CSSStyleRule).selectorText) && (rule as CSSStyleRule).style.height,
+        ) as CSSStyleRule;
+        expect(sizingRule.style.height).toBe("var(--mobile-chat-viewport-height)");
+        expect(getComputedStyle(shell.querySelector(".app-main-row")!).minHeight).toBe("0px");
+        expect(getComputedStyle(shell.querySelector("#main-content")!).overflow).toBe("hidden");
+        viewport.scale = 2;
+        viewport.height = 300;
+        viewport.dispatchEvent(new Event("resize"));
+        expect(shell.style.getPropertyValue("--mobile-chat-viewport-height")).toBe("600px");
+        viewport.scale = 1;
+        viewport.height = 1024;
+        viewport.dispatchEvent(new Event("resize"));
+        expect(shell.dataset.keyboardOpen).toBeUndefined();
+        expect(getComputedStyle(shell).position).not.toBe("fixed");
+        viewport.height = 600;
+        viewport.dispatchEvent(new Event("resize"));
+        conversation.remove();
+        expect(getComputedStyle(shell).position).not.toBe("fixed");
+      } finally { style.remove(); }
+    } finally {
+      await reactAct(async () => root.unmount());
+      queryClient.clear();
+      Reflect.deleteProperty(document.documentElement, "clientHeight");
+      vi.unstubAllGlobals();
+    }
+  });
+
   beforeEach(() => {
     classicWorkspace.enabled = true;
     mockDesignSandbox.enabled = false;
@@ -352,10 +413,9 @@ describe("Layout", () => {
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
     mockSidebarState.isMobile = false;
-    mockSidebarState.collapsed = false;
-    mockSidebarState.peeking = false;
-    mockSetPeeking.mockClear();
-    mockSetForceCollapsed.mockClear();
+    mockPanelState.visible = false;
+    mockPanelState.showsArtifact = false;
+    mockPanelState.content = null;
   });
 
   afterEach(() => {
@@ -376,6 +436,67 @@ describe("Layout", () => {
       await act(async () => renderLayoutView(root, queryClient));
       expect(container.querySelector(".coordinator-workspace")).toBeNull();
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
+  });
+
+  it("collapses the mounted chat list only when an artifact crowds the conversation", async () => {
+    classicWorkspace.enabled = false;
+    currentPathname = "/PAP/chats/planner";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const style = document.createElement("style");
+    style.textContent = ":root { --sz-280px: 280px; --sz-420px: 420px; }";
+    document.head.append(style);
+    let readingWidth = 416;
+    let measure: ResizeObserverCallback | undefined;
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => readingWidth);
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { measure = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const render = () => reactAct(async () => renderLayoutView(root, queryClient));
+    try {
+      await render();
+      const list = container.querySelector('[aria-label="Chat contacts"]')?.closest("[data-secondary-sidebar]");
+      expect(list?.classList.contains("hidden")).toBe(false);
+      expect(container.textContent).not.toContain("Browse chats");
+
+      mockPanelState.visible = true;
+      mockPanelState.content = <div>Tasks</div>;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+
+      mockPanelState.showsArtifact = true;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(true);
+      expect(container.textContent).toContain("Browse chats");
+
+      mockPanelState.showsArtifact = false;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+      mockPanelState.showsArtifact = true;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(true);
+
+      readingWidth = 700;
+      await reactAct(async () => measure?.([], {} as ResizeObserver));
+      expect(list?.classList.contains("hidden")).toBe(false);
+
+      readingWidth = 699;
+      await reactAct(async () => measure?.([], {} as ResizeObserver));
+      expect(list?.classList.contains("hidden")).toBe(true);
+
+      mockPanelState.visible = false;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+      expect(container.textContent).not.toContain("Browse chats");
+    } finally {
+      await reactAct(async () => root.unmount());
+      queryClient.clear();
+      width.mockRestore();
+      vi.unstubAllGlobals();
+      style.remove();
+    }
   });
 
   it("does not render the deployment explainer in the shared layout", async () => {
@@ -443,102 +564,6 @@ describe("Layout", () => {
     expect(
       container.querySelector("#main-content")?.classList.contains("md:pr-0"),
     ).toBe(false);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("collapses atomically when the pointer is still over the sidebar (no re-peek) — PAP-10676", async () => {
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    const renderLayout = async () => {
-      await act(async () => {
-        renderLayoutView(root, queryClient);
-      });
-      await flushReact();
-    };
-
-    // The SidebarShell overlay panel carries the peek mouse handlers.
-    const panel = () =>
-      [...container.querySelectorAll<HTMLElement>("div")].find(
-        (el) =>
-          el.className.includes("inset-y-0") &&
-          el.className.includes("overflow-hidden"),
-      );
-    const hover = (el: HTMLElement) => {
-      // React derives onMouseEnter from a mouseover crossing in from outside.
-      el.dispatchEvent(
-        new MouseEvent("mouseover", {
-          bubbles: true,
-          relatedTarget: document.body,
-        }),
-      );
-    };
-
-    // Expanded, then hover the panel so the pointer is registered as inside.
-    await renderLayout();
-    const expandedPanel = panel();
-    expect(expandedPanel).toBeTruthy();
-    await act(async () => {
-      hover(expandedPanel!);
-    });
-
-    // Collapse while the pointer is still over the panel.
-    mockSidebarState.collapsed = true;
-    await renderLayout();
-    // The peek is cancelled atomically on collapse.
-    expect(mockSetPeeking).toHaveBeenCalledWith(false);
-
-    // A lingering/spurious hover while collapsed must NOT re-open the peek.
-    mockSetPeeking.mockClear();
-    const railPanel = panel();
-    await act(async () => {
-      hover(railPanel!);
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 80));
-    });
-    expect(mockSetPeeking).not.toHaveBeenCalledWith(true);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("opens the peek when hovering a collapsed rail (positive control for the hover sim)", async () => {
-    mockSidebarState.collapsed = true;
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    await act(async () => {
-      renderLayoutView(root, queryClient);
-    });
-    await flushReact();
-
-    const panel = [...container.querySelectorAll<HTMLElement>("div")].find(
-      (el) =>
-        el.className.includes("inset-y-0") &&
-        el.className.includes("overflow-hidden"),
-    );
-    expect(panel).toBeTruthy();
-    await act(async () => {
-      panel!.dispatchEvent(
-        new MouseEvent("mouseover", {
-          bubbles: true,
-          relatedTarget: document.body,
-        }),
-      );
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 80));
-    });
-    // A normal collapsed-rail hover (not just-collapsed) opens the peek.
-    expect(mockSetPeeking).toHaveBeenCalledWith(true);
 
     await act(async () => {
       root.unmount();
@@ -629,11 +654,24 @@ describe("Layout", () => {
 
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).toContain("Company settings sidebar");
-    expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+    expect(container.querySelector<HTMLElement>(".sidebar-shell-panel")?.style.width).toBe("240px");
 
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it.each(["/PAP/apps", "/PAP/apps/review"])("shows top connector segments without a side rail on mobile: %s", async (path) => {
+    currentPathname = path;
+    mockSidebarState.isMobile = true;
+    mockSidebarState.sidebarOpen = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => renderLayoutView(root, queryClient));
+    await flushReact();
+    expect(container.querySelector('#main-content [aria-label="Mobile connectors"]')).not.toBeNull();
+    expect(container.querySelector('.app-content-row [data-secondary-sidebar]')).toBeNull();
+    await act(async () => root.unmount());
   });
 
   it("renders a mobile company settings selector on company settings routes", async () => {
@@ -913,7 +951,7 @@ describe("Layout", () => {
     });
   });
 
-  it("keeps global navigation beside Agent and Routine details", async () => {
+  it("keeps global navigation beside Agent details", async () => {
     async function renderAt(pathname: string) {
       currentPathname = pathname;
       const root = createRoot(container);
@@ -935,7 +973,6 @@ describe("Layout", () => {
         "/PAP/agents/briefing-analyst/runs/run-1",
         "Agent sidebar briefing-analyst",
       ],
-      ["/PAP/routines/routine-1/overview", "Routine sidebar routine-1"],
     ] as const) {
       const root = await renderAt(pathname);
       expect(container.textContent).toContain(sidebarText);
@@ -985,7 +1022,7 @@ describe("Layout", () => {
       expect(container.textContent).toContain("Main company nav");
       if (pathname.includes("/agents/")) expect(container.textContent).toContain("Agent sidebar");
       else expect(container.textContent).not.toContain("Agent sidebar");
-      expect(container.textContent).not.toContain("Routine sidebar");
+      if (pathname.includes("/routines/")) expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
 
       await act(async () => {
         root.unmount();
@@ -1009,7 +1046,7 @@ describe("Layout", () => {
     }
   });
 
-  it("keeps the global rail beside Skills navigation in the legacy shell", async () => {
+  it("keeps the global sidebar beside Skills navigation in the legacy shell", async () => {
     currentPathname = "/PAP/skills/studio";
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: true,
@@ -1028,7 +1065,7 @@ describe("Layout", () => {
 
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).toContain("Skills sidebar");
-    expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+    expect(container.querySelector<HTMLElement>(".sidebar-shell-panel")?.style.width).toBe("240px");
 
     await act(async () => {
       root.unmount();
@@ -1055,7 +1092,7 @@ describe("Layout", () => {
 
       expect(container.textContent).toContain("Main company nav");
       expect(container.textContent).not.toContain("Agent sidebar");
-      expect(container.textContent).not.toContain("Routine sidebar");
+      if (pathname.includes("/routines/")) expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
 
       await act(async () => {
         root.unmount();

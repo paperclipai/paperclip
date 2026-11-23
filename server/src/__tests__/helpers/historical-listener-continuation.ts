@@ -103,7 +103,7 @@ export async function completeHistoricalListenerSuccessor(input: { db: Db; runId
   await new Promise<void>(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("TCP listener required");
-  setupRunnerPrpWebSocketServer(server, { apiUrl: `http://127.0.0.1:${address.port}` });
+  setupRunnerPrpWebSocketServer(server);
   const bundle = createRunnerdCodexTransport({ runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-codex-app-server"),
     codexArgs: ["--state-file", join(input.root, "provider.json"), "--terminal-result-file", report, "--call-log", calls, "--record-process-start"],

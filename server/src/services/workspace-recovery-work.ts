@@ -3,7 +3,7 @@ import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { executionControlSchedule, registerExecutionControlWork } from "./execution-control-work.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
-import { reconcileRetainedWorkspaces } from "./workspace-recovery.js";
+import { reconcileRetainedWorkspaces, type PassiveSweep } from "./workspace-recovery.js";
 
 export function registerWorkspaceRecoveryWork(db: Db, coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   runtime: EnvironmentRuntimeService, onRecovered: Parameters<typeof reconcileRetainedWorkspaces>[2],
@@ -12,15 +12,17 @@ export function registerWorkspaceRecoveryWork(db: Db, coordinator: ReturnType<ty
   let stopped = false;
   let scan: Promise<void> | undefined;
   let wakeWhileBusy = false;
-  let passiveSweep: { cursor?: string } = {};
+  const passiveSweep: PassiveSweep = {};
   const schedule = executionControlSchedule(db);
   const worker = registerExecutionControlWork(coordinator, [{
     queue: DELIVERY_QUEUES.workspaceRecovery,
-    onSettled: () => { passiveSweep = {}; if (pending.size >= 2) wakeWhileBusy = true; },
+    onSettled: () => { passiveSweep.restart = true; if (pending.size >= 2) wakeWhileBusy = true; },
     run: () => scan = (async () => {
+      const sweep = passiveSweep, cursor = sweep.cursor;
       const work = await reconcileRetainedWorkspaces(db, runtime, onRecovered, true, continueSweep => {
         if (!stopped && (continueSweep || wakeWhileBusy)) { wakeWhileBusy = false; worker.wake(); }
-      }, passiveSweep);
+      }, sweep);
+      if (sweep.restart && !sweep.complete && sweep.cursor !== cursor && !stopped) worker.wake();
       for (const job of work ?? []) {
         pending.add(job);
         const settled = () => { pending.delete(job); };

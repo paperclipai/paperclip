@@ -13,6 +13,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  isNull,
   or,
   sql,
 } from "drizzle-orm";
@@ -57,6 +58,7 @@ import {
 import { isUuidLike } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
 import { isUnsafeSessionWorkspaceCwd } from "../session-workspace-cwd.js";
+import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
   "execution_review_participant_recovery";
@@ -1233,8 +1235,8 @@ export function createHeartbeatRunState(db: Db) {
     }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
   }
 
-  async function getRuntimeState(agentId: string) {
-    return db
+  async function getRuntimeState(agentId: string, reader: Pick<Db, "select"> = db) {
+    return reader
       .select()
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId))
@@ -1271,8 +1273,9 @@ export function createHeartbeatRunState(db: Db) {
     agentId: string,
     adapterType: string,
     taskKey: string,
+    reader: Pick<Db, "select"> = db,
   ) {
-    return db
+    return reader
       .select()
       .from(agentTaskSessions)
       .where(
@@ -1505,6 +1508,7 @@ export function createHeartbeatRunState(db: Db) {
   async function resolveSessionBeforeForWakeup(
     agent: typeof agents.$inferSelect,
     taskKey: string | null,
+    reader: Pick<Db, "select"> = db,
   ) {
     if (taskKey) {
       const codec = getAdapterSessionCodec(agent.adapterType);
@@ -1513,6 +1517,7 @@ export function createHeartbeatRunState(db: Db) {
         agent.id,
         agent.adapterType,
         taskKey,
+        reader,
       );
       const parsedParams = normalizeSessionParams(
         codec.deserialize(existingTaskSession?.sessionParamsJson ?? null),
@@ -1524,7 +1529,7 @@ export function createHeartbeatRunState(db: Db) {
       );
     }
 
-    const runtimeForRun = await getRuntimeState(agent.id);
+    const runtimeForRun = await getRuntimeState(agent.id, reader);
     return runtimeForRun?.sessionId ?? null;
   }
 
@@ -1868,6 +1873,8 @@ export function createHeartbeatRunState(db: Db) {
 
         return {
           ...rest,
+          // Saved runs from earlier releases may promise a storage retry no wait owns.
+          ...("error" in rest ? { error: presentStorageFailureMessage(rest) ?? null } : {}),
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,
@@ -2051,6 +2058,18 @@ export function createHeartbeatRunState(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
+      return run ?? null;
+    },
+
+    getQueuedAssignmentRunForIssue: async (input: { companyId: string; agentId: string; issueId: string }) => {
+      const [run] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.status, "queued"),
+        isNull(heartbeatRuns.startedAt),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`,
+        sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'issue_assigned'`,
+      )).orderBy(asc(heartbeatRuns.createdAt)).limit(1);
       return run ?? null;
     },
 

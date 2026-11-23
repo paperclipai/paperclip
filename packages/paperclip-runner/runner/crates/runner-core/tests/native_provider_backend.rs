@@ -153,6 +153,7 @@ fn config(state_dir: &Path) -> DurableRunnerConfig {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(60),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     }
 }
 
@@ -177,7 +178,13 @@ fn acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
     config
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
 fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
     use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
     let profiles: Value =
@@ -185,11 +192,18 @@ fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
     let distributions: Value =
         serde_json::from_str(include_str!("../../../../antigravity-distributions.json")).unwrap();
     let profile = &profiles["profiles"]["antigravity"];
+    let (platform, architecture) = if cfg!(target_os = "macos") {
+        ("darwin", "arm64")
+    } else if cfg!(target_arch = "x86_64") {
+        ("linux", "x64")
+    } else {
+        ("linux", "arm64")
+    };
     let admission = AcpxCandidateAdmission::parse_json(&json!({
         "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1",
         "agent":"antigravity", "model":"explicit-test-model", "profileDigest":profile["commandDigest"],
-        "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
-        "platform":"darwin", "architecture":"arm64", "expiresAt":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+        "nativeClosureDigest":format!("sha256:{}",distributions["platforms"][format!("{platform}-{architecture}")]["closureSha256"].as_str().unwrap()),
+        "platform":platform, "architecture":architecture, "expiresAt":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
         "runId":"run-1", "normalizedSessionId":"session-1"
     }).to_string()).unwrap();
     let mut config = acpx_config(directory, "turns-reserved-result-terminal");
@@ -213,7 +227,13 @@ fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
 fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
     let directory = temporary_directory("candidate-provider-authority");
     let (config, mut payload) = candidate_fixture(&directory);
@@ -261,7 +281,13 @@ fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+))]
 fn candidate_verified_cold_session_retires_on_suspend_instead_of_warm_adoption() {
     let directory = temporary_directory("candidate-cold-session");
     let (config, payload) = candidate_fixture(&directory);
@@ -439,7 +465,7 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
     let (runtime_package, runtime_version) = if agent == "codex" {
-        (json!("@openai/codex"), json!("0.160.0"))
+        (json!("@openai/codex"), json!("0.170.0"))
     } else {
         (Value::Null, Value::Null)
     };
@@ -454,10 +480,10 @@ fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value
             "kind": "acpx",
             "provider": "acpx",
             "driver": "acpx_runtime",
-            "providerVersion": "0.13.1",
+            "providerVersion": "0.22.0",
             "agent": agent,
             "model": "explicit-test-model",
-            "acpxVersion": "0.13.1",
+            "acpxVersion": "0.22.0",
             "agentServerPackage": "@agentclientprotocol/codex-acp",
             "agentServerVersion": "1.6.2",
             "agentRuntimePackage": runtime_package,
@@ -522,7 +548,7 @@ fn pending_acpx_runtime_request(
         provider["agentServerPackage"] = json!("@agentclientprotocol/claude-agent-acp");
         provider["agentServerVersion"] = json!("0.73.0");
         provider["agentRuntimePackage"] = json!("@anthropic-ai/claude-agent-sdk");
-        provider["agentRuntimeVersion"] = json!("0.3.286");
+        provider["agentRuntimeVersion"] = json!("0.3.328");
         provider["commandDigest"] = json!(digest);
         provider["sidecarArgs"][3] = json!(digest);
     } else {

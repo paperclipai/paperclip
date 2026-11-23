@@ -1,13 +1,18 @@
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import * as nativeRuntimeMode from "../services/native-runtime/runtime-mode.js";
+import * as aiRuntime from "../services/ai-connection-runtime.js";
+import { aiConnectionService } from "../services/ai-connections.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, executionWorkspaces, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
-import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
+import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, executionWorkspaces, environments, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
+import { getServerAdapter, registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { requestTaskRetry } from "../services/task-retry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import * as environmentOrchestrator from "../services/environment-run-orchestrator.js";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
@@ -56,7 +61,7 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Session reader", adapterType, status: "idle", adapterConfig: { model: "model-a" }, runtimeConfig });
     await db.insert(issues).values({ id: issueId, companyId, title: "Session fixture", status: "todo", assigneeAgentId: agentId, responsibleUserId: userId, issueNumber: 1 });
-    return { companyId, agentId, issueId };
+    return { companyId, agentId, issueId, userId };
   }
 
   async function execute(f: Awaited<ReturnType<typeof seed>>, context: Record<string, unknown> = {}) {
@@ -113,33 +118,80 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
   });
 
   it.each([
-    null,
-    { mode: "isolated_workspace" },
-    { workspaceStrategy: { type: "git_worktree", branchTemplate: "work" } },
-  ])("keeps a default-attached repository policy stable through binding with settings %j and retains the provider on policy changes", async (settings) => {
+    { settings: null, retry: false },
+    { settings: { mode: "isolated_workspace" }, retry: false },
+    { settings: { workspaceStrategy: { type: "git_worktree", branchTemplate: "work" } }, retry: false },
+    { settings: null, retry: true },
+    { settings: null, retry: true, refuse: true },
+  ])("keeps a default-attached repository policy stable through binding ($settings, Retry: $retry, refusal: $refuse)", async ({ settings, retry, refuse }) => {
     const f = await seed();
     const storage = await createPluginWorkspaceFixture(db, f.companyId);
     const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
-    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, workspaceProvider: {
-      ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
-    } } }).where(eq(plugins.id, storage.pluginId));
+    const [environment] = await db.insert(environments).values({ name: `Storage tasks ${storage.pluginId}`, driver: "plugin", status: "active",
+      config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+      capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+      environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" },
+        ...(refuse ? { freshWorkspaceVersion: 1 as const } : {}) }],
+      workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
+        ...(retry ? { workspaceVerificationVersion: 1 as const } : {}),
+        ...(refuse ? { freshWorkspaceVersion: 1 as const } : {}) },
+    } }).where(eq(plugins.id, storage.pluginId));
+    await db.update(agents).set({ defaultEnvironmentId: environment.id }).where(eq(agents.id, f.agentId));
     await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: storage.pluginId } }).where(eq(projects.id, storage.input.projectId));
     await db.update(issues).set({ projectId: storage.input.projectId, projectWorkspaceId: storage.input.projectWorkspaceId,
       executionWorkspaceSettings: settings,
     }).where(eq(issues.id, f.issueId));
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true, enableIsolatedWorkspacesByDefault: true });
     const cwd = await mkdtemp(join(tmpdir(), "session-provider-fixture-"));
+    const realizedBase = new Map<string, string | null | undefined>();
     const createOrchestrator = environmentOrchestrator.environmentRunOrchestrator;
     const realization = vi.spyOn(environmentOrchestrator, "environmentRunOrchestrator").mockImplementation((...args) => ({
       ...createOrchestrator(...args),
+      // These tests dispatch a synthetic adapter; substitute only the provider
+      // transport while preserving the configured storage/task-driver identity.
+      acquireForRun: async input => createOrchestrator(...args).acquireForRun({ ...input, selectedEnvironmentId: input.localEnvironmentId }),
       realizeForRun: async input => {
+        realizedBase.set(input.heartbeatRunId, input.executionWorkspace.baseRefSha);
         input.executionWorkspace.cwd = cwd;
         return { lease: input.lease, persistedExecutionWorkspace: input.persistedExecutionWorkspace,
           workspaceRealization: {}, executionTarget: null, remoteExecution: null };
       },
     }));
+    const mode = refuse ? vi.spyOn(nativeRuntimeMode, "resolveHeartbeatNativeRuntimeMode").mockReturnValue({
+      kind: "legacy", reason: "persisted_legacy_selection", resolverVersion: nativeRuntimeMode.NATIVE_RUNTIME_PROFILE_RESOLVER_VERSION,
+    }) : undefined;
+    const credentialAcquisition = vi.spyOn(aiRuntime, "prepareManagedAiRuntime");
+    if (refuse) {
+      const account = await aiConnectionService(db).save(f.companyId, f.userId, {
+        provider: "openai", method: "api_key", ownership: "personal", name: "Retry fixture",
+        apiKey: "fixture-key", agentIds: [], allAgents: true,
+      }, "fixture-key");
+      await db.update(agents).set({ adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "model-a" },
+        runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "delegated",
+          connectionId: account.connectionId, grantId: account.grantId } },
+      }).where(eq(agents.id, f.agentId));
+      registerServerAdapter({ ...getServerAdapter(adapterType), type: "paperclip_runner" });
+    }
     const originalHeartbeat = heartbeat;
-    heartbeat = heartbeatService(db, { pluginWorkerManager: storage.workers as PluginWorkerManager });
+    const storageWorkers = {
+      ...storage.workers,
+      call: async (...args: Parameters<typeof storage.workers.call>) => {
+        const result = await storage.workers.call(...args) as Record<string, unknown>;
+        const request = storage.calls.at(-1)!;
+        if (request.operation.verifyExisting) {
+          if (refuse) throw new JsonRpcCallError({
+            code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "Checkout unavailable",
+            data: workspaceOperationErrorData(new PluginWorkspaceOperationError("binding_mismatch")),
+          });
+          return { ...result, created: false };
+        }
+        if (refuse && result.kind === "prepared" && request.operation.fresh) return { ...result, branchName: "work" };
+        return result;
+      },
+    };
+    heartbeat = heartbeatService(db, { pluginWorkerManager: storageWorkers as PluginWorkerManager });
     try {
       const first = await execute(f);
       const [bound] = await db.select().from(issues).where(eq(issues.id, f.issueId));
@@ -149,6 +201,45 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, bound.executionWorkspaceId!));
       expect([...captured.values()].filter(input => input.context.issueId === f.issueId)).toHaveLength(1);
       expect(workspace).toMatchObject({ providerType: "plugin", strategyType: "git_worktree" });
+      if (retry) {
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: "setup_failed" })
+          .where(eq(heartbeatRuns.id, first.finished.id));
+        await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
+        const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+          actorId: f.userId, actorSource: "local_implicit", observedRunId: first.finished.id, idempotencyKey: randomUUID() });
+        expect(receipt.accepted).toBe(true);
+        credentialAcquisition.mockClear();
+        await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
+        await heartbeat.drainActiveRunExecutions();
+        const [resumed] = [...captured.values()].filter(input => input.context.issueId === f.issueId && input.runId !== first.finished.id);
+        if (refuse) {
+          expect(resumed?.runtime.sessionId).toBeNull();
+          const finished = await heartbeat.getRun(resumed.runId);
+          expect(finished?.status, finished?.error ?? undefined).toBe("succeeded");
+          expect(credentialAcquisition).toHaveBeenCalledTimes(1);
+          const [afterRetry] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+          expect(afterRetry.executionWorkspaceId).not.toBe(workspace.id);
+          const [fresh] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, afterRetry.executionWorkspaceId!));
+          expect(fresh).toMatchObject({ mode: "isolated_workspace", metadata: {
+            workspaceProviderFresh: { previousWorkspaceId: workspace.id, sourceRunId: first.finished.id },
+          } });
+          expect(storage.calls.filter(call => call.runId === resumed.runId && call.operation.kind === "prepare"))
+            .toMatchObject([{ executionWorkspaceId: workspace.id, operation: { verifyExisting: true } },
+              { executionWorkspaceId: fresh.id, operation: { fresh: { previousWorkspaceId: workspace.id } } }]);
+          return;
+        }
+        expect(resumed?.context.paperclipWorkspace).toMatchObject({ branchName: workspace.branchName });
+        expect(realizedBase.get(first.finished.id)).toBe("a".repeat(40));
+        expect(realizedBase.get(resumed.runId)).toBe(realizedBase.get(first.finished.id));
+        const preparations = storage.calls.filter(call => call.runId === resumed.runId && call.operation.kind === "prepare");
+        expect(preparations).toHaveLength(2);
+        expect(preparations[0]).toMatchObject({ executionWorkspaceId: workspace.id, operation: { verifyExisting: true } });
+        expect(preparations[1]).toMatchObject({ executionWorkspaceId: workspace.id });
+        expect(preparations[1].operation.verifyExisting).toBeUndefined();
+        const [afterRetry] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+        expect(afterRetry.executionWorkspaceId).toBe(workspace.id);
+        return;
+      }
       for (let turn = 0; turn < 2; turn++) {
         const next = await execute(f);
         expect(next.input.runtime.sessionId).toBe("saved-session");
@@ -168,6 +259,9 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
       await heartbeat.drainActiveRunExecutions();
       heartbeat = originalHeartbeat;
       realization.mockRestore();
+      credentialAcquisition.mockRestore();
+      mode?.mockRestore();
+      if (refuse) unregisterServerAdapter("paperclip_runner");
       await rm(cwd, { recursive: true, force: true });
       await db.delete(plugins).where(eq(plugins.id, storage.pluginId));
       await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false, enableIsolatedWorkspacesByDefault: false });

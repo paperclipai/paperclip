@@ -38,6 +38,8 @@ import { verifyDurableNativeHarnessBackup } from "./native-harness-backup-storag
 const KEY = "nativeHarnessFilesystemIndependence";
 const SCHEMA = "paperclip.native-harness-filesystem-independence.v1";
 const WEB_SCHEMA = "paperclip.native-harness-web-evidence.v1";
+const CODEX_WEB_PROFILE_BEFORE_AUTH_REFRESH = "6f10c4b4424e84defcdb4c7e932921d09ea73dc0f39c96e61777c8b20c5f637b";
+const CODEX_WEB_PROFILE_WITH_AUTH_REFRESH = "e5248e68685fb06ae32336d9517d7054e8aff785bdfb220b4481823a82ff8e78";
 const terminal = ["succeeded", "failed", "cancelled", "interrupted", "timed_out"];
 const sha = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 const digest = (value: unknown) => nativeSha256(JSON.parse(JSON.stringify(value)));
@@ -495,8 +497,12 @@ function validWebBinding(facts: Awaited<ReturnType<typeof databaseFacts>>, web: 
     if (!web || typeof web.rootPresent !== "boolean" || typeof web.controllerAbsent !== "boolean" || !Array.isArray(web.entries)
       || !Array.isArray(web.skills) || !Array.isArray(web.excluded)
       || web.entries.length + web.excluded.length > NATIVE_CONTROLLER_WEB_LIMITS.entries
-      || web.profileDigest !== digest(webProfile(facts)) || digest(web.skills) !== digest(webSkills(facts))) return false;
+      || digest(web.skills) !== digest(webSkills(facts))) return false;
     const profiles = webProfile(facts), manifests = new Map(web.skills.map(skill => [skill.bundleDigest, skill.manifestDigest]));
+    const profileDigest = digest(profiles);
+    if (web.profileDigest !== profileDigest && !(resolveNativeHarnessPersistenceProfile(facts.execution).providerKind === "codex"
+      && profileDigest === CODEX_WEB_PROFILE_WITH_AUTH_REFRESH
+      && web.profileDigest === CODEX_WEB_PROFILE_BEFORE_AUTH_REFRESH)) return false;
     for (const [bundle, manifest] of manifests) if (!web.entries.some(entry => entry.path === `web-manifests/${bundle}.json`
       && entry.type === "file" && entry.sha256 === manifest)) return false;
     if (web.entries.some(entry => {

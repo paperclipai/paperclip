@@ -168,6 +168,46 @@ export async function runFastResponseProvider(
   },
   options: { fetch?: typeof fetch } = {},
 ): Promise<FastResponseOutcome> {
+  return runTextGenerationProvider({
+    ...input,
+    system: SYSTEM,
+    prompt: input.prompt.startsWith(SYSTEM + "\n\n")
+      ? input.prompt.slice(SYSTEM.length + 2)
+      : input.prompt,
+    maxOutputTokens: 256,
+    accept: (text, finishReason) => !(
+      /^(?:\{|\[)/.test(text) ||
+      /[?？]/.test(text) ||
+      text.length > FAST_RESPONSE_MAX_CHARACTERS ||
+      finishReason === "length" ||
+      /<\/?(?:thinking|analysis|reasoning)\b|```|https?:\/\/|@(everyone|here|channel)\b/i.test(
+        text,
+      )
+    ),
+  }, options);
+}
+
+/**
+ * One short text generation with a saved API connection: the connection's
+ * routing, minimal reasoning, no tools or retries, SDK telemetry off, and a
+ * receipt captured before output validation (so discarded output is still
+ * billed). Fast responses and responsibility summaries use it with their own
+ * system prompt and output check; provider errors become closed codes.
+ */
+export async function runTextGenerationProvider(
+  input: {
+    metadata: AiConnectionMetadata;
+    credential: string;
+    model: string;
+    system: string;
+    prompt: string;
+    maxOutputTokens: number;
+    signal: AbortSignal;
+    /** False discards the text as `invalid_output`; usage is still returned. */
+    accept: (text: string, finishReason: string) => boolean;
+  },
+  options: { fetch?: typeof fetch } = {},
+): Promise<FastResponseOutcome> {
   let receipt = fastResponseReceipt();
   try {
     const native = fastResponseModel(input, options.fetch);
@@ -214,11 +254,9 @@ export async function runFastResponseProvider(
     const result = await generateText({
       model,
       providerOptions,
-      system: SYSTEM,
-      prompt: input.prompt.startsWith(SYSTEM + "\n\n")
-        ? input.prompt.slice(SYSTEM.length + 2)
-        : input.prompt,
-      maxOutputTokens: 256,
+      system: input.system,
+      prompt: input.prompt,
+      maxOutputTokens: input.maxOutputTokens,
       maxRetries: 0,
       abortSignal: input.signal,
       telemetry: {
@@ -276,16 +314,7 @@ export async function runFastResponseProvider(
         };
     }
     const text = result.text.trim();
-    if (
-      !text ||
-      /^(?:\{|\[)/.test(text) ||
-      /[?？]/.test(text) ||
-      text.length > FAST_RESPONSE_MAX_CHARACTERS ||
-      result.finishReason === "length" ||
-      /<\/?(?:thinking|analysis|reasoning)\b|```|https?:\/\/|@(everyone|here|channel)\b/i.test(
-        text,
-      )
-    )
+    if (!text || !input.accept(text, result.finishReason))
       return { errorCode: "invalid_output", receipt };
     return { text, receipt };
   } catch (error) {

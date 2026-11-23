@@ -1,5 +1,5 @@
 import { photonAnswersMatch } from "../photon/interactions.js";
-import { and, or, eq, lte, inArray, notExists, sql } from "drizzle-orm";
+import { and, or, eq, lte, inArray, not, notExists, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -714,6 +714,10 @@ async function resolveQuestionResponseChain(
                   "question_answer",
                   "question_form_submit",
                 ]),
+                not(and(
+                  eq(chatActions.status, "expired"),
+                  sql`${chatActions.result}->>'code' = 'interaction_resolved_elsewhere'`,
+                )!),
               ),
             ),
         ),
@@ -787,13 +791,42 @@ async function resolveQuestionResponseChain(
   if (!action) {
     const card = record(record(publication.payload).card);
     const links = Array.isArray(card.actions) ? card.actions.map(record) : [];
+    const supersededActionIds = new Set(
+      provider === "slack" && links.some((link) => link.type === "callback")
+        ? (
+            await tx
+              .select({ providerActionId: chatActions.providerActionId })
+              .from(chatActions)
+              .where(
+                and(
+                  eq(chatActions.companyId, binding.companyId),
+                  eq(chatActions.endpointId, endpoint.id),
+                  eq(chatActions.conversationId, conversation.id),
+                  inArray(chatActions.kind, ["question_answer", "question_form_open"]),
+                  eq(chatActions.status, "expired"),
+                  sql`${chatActions.result}->>'code' = 'interaction_resolved_elsewhere'`,
+                  sql`${chatActions.payload}->>'interactionId' = ${interaction.id}`,
+                  sql`${chatActions.payload}->>'publicationId' = ${publication.id}::text`,
+                ),
+              )
+          ).map((row) => row.providerActionId)
+        : [],
+    );
     if (
       !boardAnswer ||
       interaction.resolvedByRunId !== null ||
       publication.payload.progressState !== "waiting_for_input" ||
       card.kind !== "question" ||
       (card.actions !== undefined && !Array.isArray(card.actions)) ||
-      links.some((link) => link.type !== "link") ||
+      links.some(
+        (link) =>
+          link.type !== "link" &&
+          !(
+            link.type === "callback" &&
+            typeof link.actionId === "string" &&
+            supersededActionIds.has(link.actionId)
+          ),
+      ) ||
       !publication.publishedAt ||
       publication.publishedAt > interaction.resolvedAt ||
       (provider === "github" && (

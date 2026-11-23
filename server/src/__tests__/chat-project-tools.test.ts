@@ -38,6 +38,32 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     }
   });
 
+  it("links another task's bound workspace page from get_task and call_api reads only while the page exists", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const [{ issuePrefix }] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
+    const settings = instanceSettingsService(server.db);
+    const previous = await settings.getExperimental();
+    const [workspace] = await server.db.insert(executionWorkspaces).values({ companyId: f.companyId,
+      mode: "shared_workspace", strategyType: "project_primary", name: "Website files" }).returning();
+    const website = await issueService(server.db).create(f.companyId, { title: "Website task", status: "todo" });
+    await server.db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, website.id));
+    const href = `/${issuePrefix}/execution-workspaces/${workspace!.id}`;
+    const read = async () => {
+      const task = await call(f, "get_task", { taskId: website.id }) as { data: { currentExecutionWorkspace: { id: string; href?: string } } };
+      const view = await call(f, "call_api", { operationId: "GET /api/issues/{id}/workspace", pathParams: { id: website.id } }) as { data: { workspace: { href?: string } } };
+      expect(task.data.currentExecutionWorkspace.id).toBe(workspace!.id);
+      return [task.data.currentExecutionWorkspace.href, view.data.workspace.href];
+    };
+    try {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+      expect(await read()).toEqual([href, href]);
+      await settings.updateExperimental({ enableIsolatedWorkspaces: false });
+      expect(await read()).toEqual([undefined, undefined]);
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+    }
+  });
+
   it("pages only visible projects and prefilters low-trust agent and run scopes", async () => {
     const f = await server.fixture({ disableWakeOnDemand: true });
     const ids = Array.from({ length: 53 }, (_, i) => `abcdefab-0000-4000-8000-${String(i).padStart(12, "0")}`);

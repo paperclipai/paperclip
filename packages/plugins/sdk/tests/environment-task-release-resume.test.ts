@@ -17,7 +17,45 @@ const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runI
   normalizedSessionId: "session", turnId: "turn", itemId: "item" };
 const release = { kind: "release", identity } as const;
 const resume = { kind: "resume", identity, bootstrapTicket: "fixture-ticket" } as const;
+const ownership = {
+  kind: "ensure_ownership", operationId: "9df4526f-36c5-4fba-9cf6-3c4fd317f531", identity,
+  sourceTaskId: "source-task", sourceGeneration: "source-generation", targetGeneration: "target-generation", policy: "reclaim_if_needed",
+} as const;
 const description = { kind: "description", taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+const submit = { kind: "submit", projectIds: [], bootstrapTicket: "fixture-ticket", runner: { harness: "claude", protocolMin: 1, protocolMax: 3,
+  runnerId: "runner", leaseId: "lease", runId: "run", sessionId: "session", turnId: "turn", itemId: "item" } } as const;
+const credentials: [string, unknown, boolean][] = [
+  ["a Claude OAuth token", { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth" } }, true],
+  ["a Claude API key", { type: "claude-env", environment: { ANTHROPIC_API_KEY: "fixture-key" } }, true],
+  ["a Codex auth file", { type: "codex-auth-json", authJson: "{\"tokens\":{}}" }, true],
+  ["two Claude credentials", { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "a", ANTHROPIC_API_KEY: "b" } }, false],
+  ["no Claude credential", { type: "claude-env", environment: {} }, false],
+  ["an unsupported Claude variable", { type: "claude-env", environment: { ANTHROPIC_BASE_URL: "https://example.test" } }, false],
+  ["an empty value", { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "" } }, false],
+  ["a NUL byte", { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "a\0b" } }, false],
+  ["an oversized value", { type: "codex-auth-json", authJson: "x".repeat(65_537) }, false],
+  ["an unknown type", { type: "gemini-env", environment: { GEMINI_API_KEY: "fixture" } }, false],
+  ["an extra field", { type: "codex-auth-json", authJson: "{}", path: "/home/agent/.codex" }, false],
+  ["an xAI API key for Grok", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai" } }, true],
+  ["a Copilot token", { type: "provider-env", provider: "copilot", environment: { COPILOT_GITHUB_TOKEN: "fixture-copilot" } }, true],
+  ["an OpenRouter key for OpenCode", { type: "provider-env", provider: "opencode", environment: { OPENROUTER_API_KEY: "fixture-openrouter" } }, true],
+  ["an OpenCode gateway", { type: "provider-env", provider: "opencode",
+    environment: { PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" } }, true],
+  ["half of an OpenCode gateway", { type: "provider-env", provider: "opencode", environment: { PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1" } }, false],
+  ["a mixed OpenCode set", { type: "provider-env", provider: "opencode",
+    environment: { OPENROUTER_API_KEY: "fixture-openrouter", PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" } }, false],
+  ["two OpenCode sets", { type: "provider-env", provider: "opencode", environment: { OPENROUTER_API_KEY: "fixture-openrouter",
+    PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" } }, false],
+  ["another provider's variable", { type: "provider-env", provider: "grok", environment: { COPILOT_GITHUB_TOKEN: "fixture-copilot" } }, false],
+  ["an extra provider variable", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai", XAI_BASE_URL: "https://router.example.test" } }, false],
+  ["no provider variable", { type: "provider-env", provider: "copilot", environment: {} }, false],
+  ["an empty provider value", { type: "provider-env", provider: "copilot", environment: { COPILOT_GITHUB_TOKEN: "" } }, false],
+  ["a NUL byte in a provider value", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "a\0b" } }, false],
+  ["an oversized provider value", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "x".repeat(65_537) } }, false],
+  ["an unsupported provider", { type: "provider-env", provider: "gemini", environment: { GEMINI_API_KEY: "fixture-gemini" } }, false],
+  ["a provider credential without a provider", { type: "provider-env", environment: { XAI_API_KEY: "fixture-xai" } }, false],
+  ["an extra provider credential field", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai" }, home: "/home/agent" }, false],
+];
 
 async function invoke(operation: unknown, handler: (params: PluginEnvironmentTaskParams) => Promise<PluginEnvironmentTaskResult>) {
   const stdin = new PassThrough(), stdout = new PassThrough(), lines = createInterface({ input: stdout });
@@ -40,6 +78,54 @@ describe("release and resume task contract", () => {
       expect(environmentTaskResultSchema.parse({ ...description, ...capabilities })).toEqual({ ...description, ...capabilities });
     }
     expect(environmentTaskResultSchema.safeParse({ ...description, releaseResumeVersion: 2 }).success).toBe(false);
+    expect(environmentTaskResultSchema.parse({ ...description, resumeLaunchInputsVersion: 1 })).toEqual({ ...description, resumeLaunchInputsVersion: 1 });
+    expect(environmentTaskResultSchema.safeParse({ ...description, resumeLaunchInputsVersion: 2 }).success).toBe(false);
+    expect(environmentTaskResultSchema.parse({ ...description, resumeRelaunchedRunnerVersion: 1 })).toEqual({ ...description, resumeRelaunchedRunnerVersion: 1 });
+    expect(environmentTaskResultSchema.safeParse({ ...description, resumeRelaunchedRunnerVersion: 2 }).success).toBe(false);
+  });
+
+  it("reports the Runner build a resume relaunched on only when asked", () => {
+    expect(environmentTaskOperationSchema.parse({ ...resume, relaunchedRunnerVersion: 1 })).toEqual({ ...resume, relaunchedRunnerVersion: 1 });
+    expect(environmentTaskOperationSchema.safeParse({ ...resume, relaunchedRunnerVersion: 2 }).success).toBe(false);
+    const runner = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
+    const result = { kind: "resume", taskId: "task", outcome: "resumed", runner };
+    expect(parseEnvironmentTaskResult(resume, "task", result)).toEqual(result);
+    expect(environmentTaskResultSchema.safeParse({ ...result, runner: { ...runner, digest: "sha256:short" } }).success).toBe(false);
+    expect(environmentTaskResultSchema.safeParse({ ...result, runner: { ...runner, extra: true } }).success).toBe(false);
+  });
+
+  it("relaunches as the claimant's identity only when asked, and reports the archived state", () => {
+    expect(environmentTaskResultSchema.parse({ ...description, resumeIdentityVersion: 1 })).toEqual({ ...description, resumeIdentityVersion: 1 });
+    expect(environmentTaskResultSchema.safeParse({ ...description, resumeIdentityVersion: 2 }).success).toBe(false);
+    const runner = { runId: "claimant-run", turnId: "turn-claimant-run", itemId: "item-claimant-run" };
+    const relaunch = { ...resume, runner };
+    expect(environmentTaskOperationSchema.parse(relaunch)).toEqual(relaunch);
+    for (const changed of [{ ...runner, sessionId: "other" }, { ...runner, runId: undefined }, { ...runner, turnId: "" }]) {
+      expect(environmentTaskOperationSchema.safeParse({ ...resume, runner: changed }).success).toBe(false);
+    }
+    const build = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
+    const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
+    const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState };
+    expect(parseEnvironmentTaskResult(relaunch, "task", resumed)).toEqual(resumed);
+    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState: undefined })).toThrow();
+    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, runner: undefined })).toThrow();
+    expect(() => parseEnvironmentTaskResult(resume, "task", resumed)).toThrow();
+    expect(parseEnvironmentTaskResult(relaunch, "task", { kind: "resume", taskId: "task", outcome: "unavailable" }))
+      .toEqual({ kind: "resume", taskId: "task", outcome: "unavailable" });
+  });
+
+  it.each(credentials)("validates %s on resume as on submit", (_label, credential, valid) => {
+    expect(environmentTaskOperationSchema.safeParse({ ...submit, credential }).success).toBe(valid);
+    expect(environmentTaskOperationSchema.safeParse({ ...resume, credential }).success).toBe(valid);
+  });
+
+  it("dispatches a resume credential through the serialized worker RPC", async () => {
+    const operation = { ...resume, credential: { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth" } } } as const;
+    const result = { kind: "resume", taskId: "task", outcome: "resumed" } as const;
+    expect(await invoke(operation, async params => {
+      expect(params.operation).toEqual(operation);
+      return result;
+    })).toMatchObject({ result });
   });
 
   it.each([release, resume])("requires the exact durable identity for $kind", operation => {
@@ -87,6 +173,24 @@ describe("release and resume task contract", () => {
   it("passes known absence through RPC without treating it as a successful reservation", async () => {
     expect(await invoke(resume, async () => ({ kind: "resume", taskId: "task", outcome: "unavailable" })))
       .toMatchObject({ result: { kind: "resume", taskId: "task", outcome: "unavailable" } });
+  });
+
+  it("binds a declarative ownership response to the exact worker request", async () => {
+    for (const status of ["pending", "ready"] as const) {
+      const result = { kind: "ownership", status, taskId: "task", operationId: ownership.operationId,
+        targetGeneration: ownership.targetGeneration } as const;
+      expect(await invoke(ownership, async params => {
+        expect(params.operation).toEqual(ownership);
+        return result;
+      })).toMatchObject({ result });
+      for (const changes of [
+        { taskId: "another-task" },
+        { operationId: "1f083ad0-a357-4f14-ad46-e9df981845b5" },
+        { targetGeneration: "stale-generation" },
+      ]) {
+        expect(await invoke(ownership, async () => ({ ...result, ...changes }))).toHaveProperty("error");
+      }
+    }
   });
 
   it.each(["source mismatch", "claim conflict", "authentication failed", "transport timeout"])("keeps %s as an RPC error", async message => {

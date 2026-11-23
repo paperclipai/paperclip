@@ -1,5 +1,5 @@
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
-import { agentWakeupRequests, issueComments, issues, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { agentWakeupRequests, budgetPolicies, issueComments, issues, type Db } from "@paperclipai/db";
 import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
 import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.js";
 import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
@@ -65,12 +65,20 @@ const DEFERRED_RETRY_BACKOFF = sql`interval '30 seconds'`;
  * issue by id. All notifications publish on commit.
  */
 export async function promoteDeferredWorkIntents(tx: object, input: {
-  companyId: string; trigger: WorkIntentHoldTrigger; issueId?: string | null;
+  companyId: string; trigger: WorkIntentHoldTrigger; issueId?: string | null; runId?: string | null;
 }) {
+  const hardStop = input.trigger === "accounting_settled" && input.runId ? (await (tx as Pick<Db, "select">)
+    .select({ id: budgetPolicies.id }).from(budgetPolicies).where(and(eq(budgetPolicies.companyId, input.companyId),
+      eq(budgetPolicies.isActive, true), eq(budgetPolicies.hardStopEnabled, true))).limit(1)).length > 0 : true;
+  const scope = input.trigger === "lock_released" && input.issueId ? { companyId: input.companyId, issueId: input.issueId }
+    : input.trigger === "lock_released" && input.runId ? { companyId: input.companyId, runId: input.runId }
+    : input.trigger === "accounting_settled" && input.runId && !hardStop ? { companyId: input.companyId, runId: input.runId } : null;
   // Register the work signals before the write they announce.
-  await notifyRunDispatch(tx, { companyId: input.companyId });
+  // A lifted pause or tree hold makes tasks eligible without changing their rows.
+  const liftsHold = input.trigger === "pause_lifted" || input.trigger === "tree_hold_released";
+  await notifyRunDispatch(tx, scope ?? { companyId: input.companyId, everyTask: liftsHold });
   await notifyDeferredExecutionEligibility(tx, { companyId: input.companyId });
-  await notifyIssueRecovery(tx, { companyId: input.companyId });
+  if (!scope) await notifyIssueRecovery(tx, { companyId: input.companyId, everyTask: liftsHold });
   if (input.issueId) await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
   const db = tx as Pick<Db, "update">;
   await db.update(agentWakeupRequests).set({
@@ -105,6 +113,13 @@ export function taskClosedByAgentSql(companyId: unknown, issueId: unknown) {
  * caller allows (for example `done`, which the release drain reopens for a
  * user's message) gate it. Normal admission and the release drain deliver
  * the receipt once. Returns the receipt id, or null when nothing is owed.
+ *
+ * `explicitResumeCommentIds` also admits those comments of another agent: each
+ * was posted with `resume: true`, which reopens finished work as a person's
+ * comment does. When only such comments remain, the receipt names the latest
+ * one's author as requester and keeps the explicit resume intent, so the
+ * release drain's existing agent-resume rule reopens the task. The assignee's
+ * own comments never qualify.
  */
 export async function saveUndeliveredUserComments(db: Db, input: {
   companyId: string; issueId: string; agentId: string; commentIds: string[];
@@ -113,6 +128,7 @@ export async function saveUndeliveredUserComments(db: Db, input: {
   /** Names why the receipt waits and what promotes it. */
   executionWait?: Record<string, unknown>;
   reopenAgentClosedDone?: boolean;
+  explicitResumeCommentIds?: readonly string[];
 }): Promise<string | null> {
   if (input.commentIds.length === 0) return null;
   let publication: ActivityPublication | undefined;
@@ -128,27 +144,36 @@ export async function saveUndeliveredUserComments(db: Db, input: {
       const [closed] = await tx.execute<{ byAgent: boolean }>(sql`select ${taskClosedByAgentSql(input.companyId, input.issueId)} as "byAgent"`);
       if (closed?.byAgent !== true) return null;
     }
-    const live = await tx.select({ id: issueComments.id, authorUserId: issueComments.authorUserId }).from(issueComments).where(and(
+    const resumeIds = input.explicitResumeCommentIds?.filter(id => input.commentIds.includes(id)) ?? [];
+    // A direct human comment: no agent author and no creating run.
+    const human = and(isNotNull(issueComments.authorUserId), isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId));
+    const live = await tx.select({ id: issueComments.id, authorUserId: issueComments.authorUserId,
+      authorAgentId: issueComments.authorAgentId }).from(issueComments).where(and(
       eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
-      inArray(issueComments.id, input.commentIds), isNotNull(issueComments.authorUserId), isNull(issueComments.deletedAt),
-      // A direct human comment: no agent author and no creating run.
-      isNull(issueComments.authorAgentId), isNull(issueComments.createdByRunId)));
+      inArray(issueComments.id, input.commentIds), isNull(issueComments.deletedAt),
+      resumeIds.length ? or(human, and(inArray(issueComments.id, resumeIds), isNotNull(issueComments.authorAgentId),
+        ne(issueComments.authorAgentId, input.agentId))) : human));
     const delivered = await deliveredQueuedCommentIds(tx as unknown as Db, { companyId: input.companyId,
       issueId: input.issueId, agentId: input.agentId, commentIds: live.map(row => row.id) });
     const remaining = input.commentIds.filter(id => live.some(row => row.id === id) && !delivered.has(id));
     if (remaining.length === 0) return null;
     const latest = remaining.at(-1)!;
+    const resumingAgentId = live.find(row => row.id === latest)?.authorAgentId ?? null;
+    const agentResume = resumingAgentId !== null && remaining.every(id => live.find(row => row.id === id)?.authorAgentId);
+    const resumeIntent = agentResume ? { resumeIntent: true, followUpRequested: true } : {};
     await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
     await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
     const [saved] = await tx.insert(agentWakeupRequests).values({
       companyId: input.companyId, agentId: input.agentId, source: input.source ?? "automation",
       triggerDetail: input.triggerDetail ?? "system", reason: "issue_commented", status: "deferred_issue_execution",
-      requestedByActorType: "user",
-      requestedByActorId: input.requestedByActorId ?? live.find(row => row.id === latest)?.authorUserId ?? null,
+      requestedByActorType: agentResume ? "agent" : "user",
+      requestedByActorId: agentResume ? resumingAgentId : input.requestedByActorId
+        ?? [...remaining].reverse().map(id => live.find(row => row.id === id)?.authorUserId).find(Boolean) ?? null,
       payload: withQueuedCommentIdsInWakePayload({ issueId: input.issueId, mutation: "comment", commentId: latest,
+        ...resumeIntent,
         ...(input.executionWait ? { executionWait: input.executionWait } : {}),
         [DEFERRED_WAKE_CONTEXT_KEY]: { issueId: input.issueId, taskId: input.issueId, wakeReason: "issue_commented",
-          source: "issue.comment", wakeCommentIds: remaining, wakeCommentId: latest } }, remaining),
+          source: "issue.comment", wakeCommentIds: remaining, wakeCommentId: latest, ...resumeIntent } }, remaining),
     }).returning({ id: agentWakeupRequests.id });
     if (saved && issue.status === "done" && input.reopenAgentClosedDone) {
       const { issueService } = await import("./issues.js");

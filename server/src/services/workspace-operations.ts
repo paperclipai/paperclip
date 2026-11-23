@@ -17,6 +17,7 @@ import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.j
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { retryTransientLockContention } from "./transient-lock-contention.js";
 
 type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
 
@@ -583,7 +584,7 @@ export function workspaceOperationService(db: Db) {
         async recordOperation(recordInput) {
           async function writeState<T>(write: (database: Db) => Promise<T>): Promise<T> {
             if (recordInput.phase !== "workspace_finalize" || (!input.heartbeatRunId && !executionWorkspaceId && !input.issueId)) return write(db);
-            return db.transaction(async tx => {
+            return retryTransientLockContention(() => db.transaction(async tx => {
               if (executionWorkspaceId) await notifyTerminalWorkspaceWork(tx, `workspace:${executionWorkspaceId}`);
               else if (input.issueId) await notifyTerminalWorkspaceWork(tx, `issue:${input.issueId}`);
               if (!input.heartbeatRunId) {
@@ -599,7 +600,7 @@ export function workspaceOperationService(db: Db) {
               await notifyNativeStatusReassessment(tx, { companyId: input.companyId,
                 runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
               return write(tx as unknown as Db);
-            });
+            }));
           }
           const currentUserRedactionOptions = {
             enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,

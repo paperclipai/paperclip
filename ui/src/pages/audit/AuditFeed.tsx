@@ -2,7 +2,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
-import type { Agent, CaseWorkflowTransition } from "@paperclipai/shared";
+import type { Agent, CaseWorkflowTransition, ManagedGoogleAccessRemoval } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,7 +18,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Identity } from "@/components/Identity";
 import { cn, relativeTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
-import { formatActivityVerb } from "@/lib/activity-format";
+import { formatActivityEntityLabel, formatActivityOutcome, formatActivityVerb } from "@/lib/activity-format";
 import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/company-members";
 import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api/audit";
 import { agentsApi } from "@/api/agents";
@@ -28,6 +28,7 @@ import { describeError } from "@/api/errors";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useToastActions } from "@/context/ToastContext";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { googleAccessRemovalNotice } from "@/features/connections/googleAccessRemoval";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -200,12 +201,22 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
   if (connectionId) {
     return (
       <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
-        the connection
+        {formatActivityEntityLabel("tool_connection", record.details)}
       </Link>
     );
   }
   // Non-linkable entities (company, agent, goal, …) — show a plain descriptor.
-  return <span className="text-muted-foreground">{record.entityType}</span>;
+  return <span className="text-muted-foreground">{formatActivityEntityLabel(record.entityType, record.details)}</span>;
+}
+
+function auditOutcome(record: AuditActionRecord): string | null {
+  if (record.action === "tool_connection.archived" || record.action === "tool_connection.grant_revoked") {
+    return googleAccessRemovalNotice(
+      record.details?.providerAccess as ManagedGoogleAccessRemoval | undefined,
+      record.action === "tool_connection.grant_revoked" ? "credentials" : "connection",
+    )?.body ?? null;
+  }
+  return formatActivityOutcome(record.action, record.details);
 }
 
 function AuditRow({
@@ -220,6 +231,7 @@ function AuditRow({
   casesEnabled: boolean;
 }) {
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
+  const outcome = auditOutcome(record);
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
   // Suppress the "on behalf of" chip when the human actor *is* the responsible user.
   const showOnBehalf = Boolean(
@@ -242,6 +254,7 @@ function AuditRow({
             <span className="text-muted-foreground">{verb}</span>
             <AuditEntityNode record={record} />
           </div>
+          {outcome ? <p className="text-muted-foreground">{outcome}</p> : null}
           {excerpt ? (
             <p className="line-clamp-2 border-l-2 border-border pl-2 text-muted-foreground">
               “{excerpt}”

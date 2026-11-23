@@ -5,12 +5,11 @@ import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-lo
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
   type Db,
   authUsers,
   adapterAuthSessions,
-  aiConnectionDefaults,
   aiProviderDefaults,
   agents,
   heartbeatRuns,
@@ -50,6 +49,7 @@ import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
 import { probeAiAccountIdentity } from "./ai-account-identity.js";
+import { emitModelConnectedAfterCommit } from "./product-telemetry.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -211,13 +211,6 @@ export function aiConnectionService(db: Db) {
         );
       const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
       if (metadata.routing) throw unprocessable("Custom providers use an explicit connection selection on the agent.");
-      // Keep old servers' method preferences intact during an additive rollout.
-      await tx.insert(aiConnectionDefaults)
-        .values({ companyId, userId, ...metadata, grantId })
-        .onConflictDoUpdate({
-          target: [aiConnectionDefaults.companyId, aiConnectionDefaults.userId, aiConnectionDefaults.provider, aiConnectionDefaults.method],
-          set: { grantId, updatedAt: new Date() },
-        });
       await tx.insert(aiProviderDefaults)
         .values({ companyId, userId, provider: metadata.provider, grantId })
         .onConflictDoUpdate({
@@ -263,7 +256,7 @@ export function aiConnectionService(db: Db) {
         errorCode: "connection_unavailable", message: "Reconnect or enable this connection to check its account details." };
     }
     // Unsupported methods must not open their credentials just to report this limit.
-    const value = metadata.provider === "anthropic" && metadata.method === "subscription" && !metadata.routing
+    const value = ["anthropic", "openai"].includes(metadata.provider) && metadata.method === "subscription" && !metadata.routing
       ? await credential(row, 0, { actorType: "user", actorId: userId, ...audit, responsibleUserId: userId }) : "";
     return { ...identity, ...await probeAiAccountIdentity(metadata, value) };
   }
@@ -615,11 +608,12 @@ export function aiConnectionService(db: Db) {
     } else {
       value = await secrets.resolveSecretValue(row.connection.companyId, secret.id, "latest", context);
     }
-    // Resolution records lastResolvedAt and can wait behind a rotating writer.
-    // Re-read after that wait instead of handing a run the pre-rotation token.
+    // Wait behind a rotating writer (the share lock), then re-read instead of
+    // handing a run the pre-rotation token. A lock takes no new row version,
+    // so it never aborts a concurrent REPEATABLE READ admission.
     const [latest] = await db.select().from(companySecrets).where(and(
       eq(companySecrets.id, secret.id), eq(companySecrets.companyId, row.connection.companyId),
-    ));
+    )).for("share");
     if (!latest || latest.status !== "active") throw unprocessable("Reconnect this AI account");
     if (latest.latestVersion !== secret.latestVersion) {
       if (retry >= 2) throw unprocessable("AI credentials are changing. Retry this execution.", { code: "ai_connection_busy" });
@@ -922,16 +916,6 @@ export function aiConnectionService(db: Db) {
         .where(eq(toolConnections.id, id));
       await syncConnectionCredentialBindings(tx, savedConnection, refs);
       if (input.ownership === "personal" && !routing) {
-        await tx
-          .insert(aiConnectionDefaults)
-          .values({
-            companyId,
-            userId,
-            provider: input.provider,
-            method: input.method,
-            grantId,
-          })
-          .onConflictDoNothing();
         await tx.insert(aiProviderDefaults).values({ companyId, userId, provider: input.provider, grantId }).onConflictDoNothing();
       }
       if (!reconnect) {
@@ -976,6 +960,22 @@ export function aiConnectionService(db: Db) {
         entityId: id,
         details: { provider: input.provider, method: input.method, grantId },
       });
+      if (!reconnect) {
+        const [earlierModel] = await tx
+          .select({ id: toolConnections.id })
+          .from(toolConnections)
+          .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.connectionPurpose, "ai"), ne(toolConnections.id, id)))
+          .limit(1);
+        emitModelConnectedAfterCommit({
+          companyId,
+          provider: input.provider,
+          method: input.method,
+          ownership: input.ownership,
+          routingKind: routing?.kind,
+          firstForCompany: !earlierModel,
+          ownerUserId: userId,
+        });
+      }
       return { connectionId: id, grantId };
     }));
     // Quota refresh can hold this lock through a 60-second token exchange.

@@ -17,7 +17,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -49,6 +49,7 @@ import * as copilotProbe from "../services/copilot-connection-probe.js";
 import * as settingsModule from "../services/instance-settings.js";
 import { agentRoutes } from "../routes/agents.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
 vi.mock("../services/local-ai-browser-login.js", () => ({
   startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
 }));
@@ -717,8 +718,10 @@ describe("managed AI connections", () => {
     try {
       const first = await fetchCompanyQuotaWindows(db, companyId, owner);
       const [after] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
-      expect(after.lastResolvedAt).not.toBeNull();
-      expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+      // A read is recorded as an access event, never written to the row that
+      // admissions share-lock to fence rotation.
+      expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+      expect(await db.select().from(secretAccessEvents).where(and(eq(secretAccessEvents.secretId, secretId), eq(secretAccessEvents.outcome, "success")))).not.toHaveLength(0);
       expect(first[0].ok).toBe(true);
       expect(await fetchCompanyQuotaWindows(db, companyId, owner)).toEqual(first);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -1553,11 +1556,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { fetchSpy.mockRestore(); }
   });
 
-  it("reads provider identity only for an authorized credential and preserves connected state when profile access is denied", async () => {
-    const owner = "identity-owner";
+  it.each(["anthropic", "openai"] as const)("reads %s identity only for an authorized credential and preserves connected state when profile access is denied", async provider => {
+    const owner = `identity-owner-${provider}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
-    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "identity-selected-secret");
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } }));
+    const credential = provider === "openai" ? JSON.stringify({ tokens: { access_token: "identity-selected-secret", account_id: "private-account-id" } }) : "identity-selected-secret";
+    const account = await service.save(companyId, owner, { provider, method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, credential);
+    const profile = provider === "openai" ? { accounts: [{ id: "private-account-id", name: "Example team", structure: "workspace" }] }
+      : { account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(profile));
     const app = express();
     app.use((req, _res, next) => {
       req.actor = req.header("x-test-anonymous") ? { type: "none" }
@@ -1572,8 +1578,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const result = await request(app).get(url);
       expect(result.status).toBe(200);
       expect(result.headers["cache-control"]).toBe("no-store");
-      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: "avery@example.test", organizationLabel: "Example team" });
-      expect(fetchSpy).toHaveBeenCalledWith("https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
+      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: provider === "openai" ? null : "avery@example.test", organizationLabel: "Example team" });
+      expect(fetchSpy).toHaveBeenCalledWith(provider === "openai" ? "https://chatgpt.com/backend-api/wham/accounts/check" : "https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
       for (const value of ["identity-selected-secret", "private-account-id", "private-org-id"]) expect(JSON.stringify(result.body)).not.toContain(value);
       fetchSpy.mockReset();
       expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
@@ -1668,6 +1674,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       if (inherited === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
       else process.env.ANTHROPIC_CUSTOM_HEADERS = inherited;
     }
+  });
+
+  it("files Copilot accounts under the GitHub Copilot connector, not GitHub", async () => {
+    const saved = await service.save(companyId, "alice", { provider: "github", method: "api_key", ownership: "personal", name: "Copilot catalog", apiKey: "github_pat_fixture_catalog", agentIds: [], allAgents: false }, "github_pat_fixture_catalog");
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    expect(stored!.config.sourceTemplateKey).toBe("github-copilot");
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, stored!.applicationId));
+    expect(application).toMatchObject({ applicationKey: "app-gallery:github-copilot", name: "GitHub Copilot", metadata: { sourceTemplateKey: "github-copilot" } });
   });
 
   it("reconnects JSONB routing without changing its identity or access", async () => {
@@ -1896,6 +1910,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await create(userId, "Another API");
     await expect(service.select({ ...input, userId })).rejects.toThrow("Reconnect");
     await service.setDefault(companyId, userId, subscription.grantId);
+    expect(await db.select().from(aiConnectionDefaults).where(eq(aiConnectionDefaults.userId, userId))).toEqual([]);
     expect((await service.select({ ...input, userId })).attribution).toMatchObject({ method: "subscription", grantId: subscription.grantId });
     expect((await service.list(companyId, userId)).filter(account => account.isDefault)).toHaveLength(1);
     await expect(service.select({ ...input, userId, binding: { ...binding, mode: "delegated", ...subscription } })).rejects.toThrow("incompatible");
@@ -1907,7 +1922,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const api = await create(userId, "Migration API");
     const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Migration subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-migration-subscription");
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, api.grantId));
-    await db.update(aiConnectionDefaults).set({ updatedAt: new Date("2030-01-01") }).where(eq(aiConnectionDefaults.grantId, api.grantId));
+    await db.insert(aiConnectionDefaults).values([
+      { companyId, userId, provider: "anthropic", method: "api_key", grantId: api.grantId, updatedAt: new Date("2030-01-01") },
+      { companyId, userId, provider: "anthropic", method: "subscription", grantId: subscription.grantId },
+    ]);
     await db.delete(aiProviderDefaults).where(and(eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId)));
     const legacyRows = await db.select().from(aiConnectionDefaults).where(eq(aiConnectionDefaults.userId, userId));
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0277_uneven_lady_deathstrike.sql", import.meta.url), "utf8");
@@ -1924,6 +1942,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const api = await create(userId, "Rolling API");
     const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Rolling subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-rolling-subscription");
     expect((await service.select({ ...input, userId })).grant.id).toBe(api.grantId);
+    await db.insert(aiConnectionDefaults).values([
+      { companyId, userId, provider: "anthropic", method: "api_key", grantId: api.grantId },
+      { companyId, userId, provider: "anthropic", method: "subscription", grantId: subscription.grantId },
+    ]);
     // An older server updates only the legacy per-method row on Make default.
     await db.update(aiConnectionDefaults).set({ grantId: subscription.grantId, updatedAt: new Date() })
       .where(and(eq(aiConnectionDefaults.userId, userId), eq(aiConnectionDefaults.method, "subscription")));
@@ -1983,6 +2005,23 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({}, "openai", target)).rejects.toThrow("cannot validate");
       expect(execute).not.toHaveBeenCalled();
     } finally { execute.mockRestore(); }
+  });
+  it("defers new and retained plugin task capability checks to native launch", async () => {
+    const runnerTask = vi.fn().mockResolvedValue({ kind: "description", taskId: "task", projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } });
+    const target = { kind: "remote", transport: "sandbox", providerKey: "plugin", remoteCwd: ".", runnerTask,
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "task" } } as const;
+    const options = { deferRunnerTaskCapabilityCheck: true };
+
+    await expect(assertManagedAiProjectAuth({}, "openai", target, options)).resolves.toBeUndefined();
+    await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "openai", target, options)).rejects.toThrow("overrides");
+    expect(runnerTask).not.toHaveBeenCalled();
+
+    const retained = { ...target, sandboxLeaseAcquisition: { ...target.sandboxLeaseAcquisition, outcome: "resumed" as const } };
+    await expect(assertManagedAiProjectAuth({}, "openai", retained, options)).resolves.toBeUndefined();
+    expect(runnerTask).not.toHaveBeenCalled();
+    await expect(assertManagedAiProjectAuth({}, "openai", retained)).resolves.toBeUndefined();
+    expect(runnerTask).toHaveBeenCalledExactlyOnceWith({ kind: "describe" });
   });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
@@ -2500,6 +2539,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await db.insert(toolConnections).values(ids.map(id => ({ ...connection, id, uid: id, name: `Cost ${id}` })));
       await db.insert(connectionGrants).values(ids.map(connectionId => ({ ...grant, id: randomUUID(), connectionId })));
       selects.mockClear();
+      invalidateInstanceSettingsCache();
       const large = await request(app).get(url);
       largeQueries = selects.mock.calls.length;
       expect(large.status).toBe(200);

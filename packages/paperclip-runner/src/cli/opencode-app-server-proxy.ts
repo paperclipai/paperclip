@@ -24,6 +24,7 @@ import {
   shouldForwardOpenCodeProxyItem,
 } from "./opencode-proxy-events.js";
 import { enqueueOpenCodeProxyInput, openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
+import { createOpenCodeFinishDiagnosticForwarder } from "./opencode-proxy-finish-diagnostics.js";
 import { createBackpressuredFrameWriter, createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
 import { createOpenCodeProxyControllerRequests } from "./opencode-proxy-controller.js";
 import {
@@ -35,7 +36,7 @@ import {
   trustedOpenCodeLaunchBinding,
   withoutAmbientOpenCodeCommand,
 } from "./opencode-proxy-command.js";
-import { OpenCodeProxyUsageLedger } from "./opencode-proxy-usage.js";
+import { OpenCodeProxyUsageLedger, openCodeProxyUpstreamUsage } from "./opencode-proxy-usage.js";
 import { parseProviderPerformanceSpans, PROVIDER_PERFORMANCE_DIAGNOSTIC } from "../contracts/provider-performance.js";
 
 type RpcMessage = {
@@ -113,6 +114,7 @@ async function open(
         JSON.parse(readFileSync(runtimeContextPath, "utf8")),
       )
     : null;
+  const finishDiagnostics = createOpenCodeFinishDiagnosticForwarder(send);
   driver = new OpenCodeServerDriver({
     model,
     permissionMode: parseOpenCodeProxyPermissionMode(
@@ -146,7 +148,10 @@ async function open(
         tool: call.tool,
         arguments: call.arguments,
       }, false, call.signal),
-    onDiagnostic: (message) => process.stderr.write(`[opencode] ${message}\n`),
+    onDiagnostic: (message) => {
+      process.stderr.write(`[opencode] ${message}\n`);
+      finishDiagnostics.diagnostic(message);
+    },
     // runnerd gives this proxy its own process group. Keep `opencode serve` in
     // that same group so runnerd's TERM/KILL fallback cannot orphan it.
     isolateProcessGroup: false,
@@ -175,6 +180,7 @@ async function open(
       workingDirectory: cwd,
     });
   }
+  finishDiagnostics.bind(session.ids().driverSessionId);
   activeCompletionContract = openCodeProxyCompletionContract(params.completionContract);
   eventPump = pumpEvents(session);
   void eventPump.catch((error) => failProxy(error));
@@ -236,11 +242,14 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
         }),
       );
       if (payload.kind === "usage") {
-        const usage = usageLedger.update({
-          turnId: text(event.turnId),
-          messageId: text(payload.usageMessageId),
-          usage: payload.usage,
-        });
+        const usage = {
+          ...usageLedger.update({
+            turnId: text(event.turnId),
+            messageId: text(payload.usageMessageId),
+            usage: payload.usage,
+          }),
+          ...openCodeProxyUpstreamUsage(payload.usage),
+        };
         send({
           method: "thread/tokenUsage/updated",
           params: {

@@ -6,6 +6,10 @@ export function githubLauncherSource(options: { brokerFile?: boolean; interprete
     || !isAbsolute(options.interpreterPath) || /[\s\0]/u.test(options.interpreterPath))) {
     throw new Error("GitHub launcher interpreter must be an absolute path without whitespace");
   }
+  // A controller restart stops a task's broker while its provider keeps running,
+  // then publishes a replacement to broker.json. Only that file can change, so
+  // only broker-file launchers wait for it; an inherited URL never recovers.
+  const brokerRecoveryMs = options.brokerFile ? 60_000 : 0;
   return String.raw`#!${options.interpreterPath ?? "/usr/bin/env node"}
 const fs = require('node:fs');
 const path = require('node:path');
@@ -58,14 +62,22 @@ ${options.brokerFile ? String.raw`
   delete env.PAPERCLIP_GITHUB_BRIDGE_TOKEN;
   env.PAPERCLIP_GITHUB_BROKER_URL = '';
   env.PAPERCLIP_GITHUB_BROKER_TOKEN = '';
-  try {
-    const broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8'));
-    if (typeof broker.url === 'string' && typeof broker.token === 'string') {
-      env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
-      env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
-    }
-  } catch {}
-` : ''}
+  // An unreadable file (for example during a rewrite) keeps the last location.
+  // Only a missing file, or one without a usable broker, means the task's access ended.
+  const readBroker = () => {
+    let broker;
+    try { broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8')); }
+    catch (error) { return error && error.code === 'ENOENT' ? 'absent' : 'unreadable'; }
+    // A failed replacement bridge publishes empty values, which also means no broker.
+    if (!broker || typeof broker.url !== 'string' || typeof broker.token !== 'string' || !broker.url || !broker.token) return 'absent';
+    env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
+    env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
+    return 'present';
+  };
+  readBroker();
+` : String.raw`
+  const readBroker = () => 'present';
+`}
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   let connected = false;
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
@@ -102,20 +114,30 @@ ${options.brokerFile ? String.raw`
     try {
     let response;
     if (askBroker && base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
-      const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
       // A slow or restarting control plane must not cost the operation its
       // managed identity, so a failed request is retried before giving up.
       // Busy (409) responses and transport failures keep separate budgets, and
       // the body is read inside the retry so a failed read is retried too.
+      // Transport failures and 503 responses retry until the recovery deadline,
+      // reading the broker location again so a replacement is used once published.
+      // Authentication denials (401/403) still end the request at once.
+      const recoveryDeadline = Date.now() + ${brokerRecoveryMs};
       let transportFailures = 0, conflicts = 0, result;
       for (;;) {
         try {
+          const url = (env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL).replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
           response = await fetch(url, {
             method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
             headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
               'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
             body: '{}',
           });
+          // A sandbox gateway that outlived its controller answers 503 until
+          // the replacement broker is published, so it waits like a refusal.
+          if (response.status === 503 && Date.now() < recoveryDeadline) {
+            await response.arrayBuffer().catch(() => {});
+            throw new Error('broker unavailable');
+          }
           if (response.status === 409 && conflicts < 29) {
             conflicts += 1;
             await response.arrayBuffer();
@@ -126,8 +148,14 @@ ${options.brokerFile ? String.raw`
           break;
         } catch (error) {
           transportFailures += 1;
-          if (transportFailures >= 3) throw error;
-          await new Promise(resolve => setTimeout(resolve, 500 * transportFailures));
+          if (transportFailures >= 3 && Date.now() >= recoveryDeadline) throw error;
+          if (transportFailures === 3) {
+            process.stderr.write('Paperclip: GitHub credential service is not reachable; waiting up to ' +
+              Math.ceil((recoveryDeadline - Date.now()) / 1000) + ' seconds for it to return.\n');
+          }
+          await new Promise(resolve => setTimeout(resolve, Math.min(500 * transportFailures, 2000)));
+          // A removed broker file means the task's access ended; nothing will return.
+          if (readBroker() === 'absent') throw error;
         }
       }
       if (!response.ok) {

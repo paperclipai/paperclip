@@ -31,7 +31,7 @@ describe("paperclip-board skill web UI guidance", () => {
 
   it("keeps the overlay promise to the shortcut and describes the sidebar Search item as full search", () => {
     // The classic sidebar Search item is a link to the full search page, not the overlay.
-    expect(read("ui/src/components/Sidebar.tsx")).toMatch(/<SidebarNavItem to="\/search" label="Search"/);
+    expect(read("ui/src/components/Sidebar.tsx")).toMatch(/<SidebarNavItem\b[^>]*\bto="\/search" label="Search"/);
     expect(section).toMatch(/sidebar \*\*Search\*\* item[^\n]*opens the full search page/);
     expect(section).not.toMatch(/search icon[^\n]*opens over the current page/i);
   });

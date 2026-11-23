@@ -1,10 +1,15 @@
+import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issueExecutionDecisions, issues, issueThreadInteractions, issueTreeHolds, issueDocuments } from "@paperclipai/db";
+import { eq, sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { agents, approvals, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issueExecutionDecisions, issues, issueApprovals, issueThreadInteractions, issueTreeHolds, issueDocuments, issueWorkProducts } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { documentService } from "../documents.js";
+import * as pullRequestMerge from "../github-pull-request-merge.js";
+import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
+import { nativePullRequestCompletionReferences, verifyNativePullRequestCompletion } from "./native-pull-request-completion.js";
+import { workProductService } from "../work-products.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { executionStageApprovedByRun } from "./native-run-finalizer.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -44,6 +49,193 @@ describe("native final-response feedback", () => {
     } }) as { downloadPath: string };
     return { ...done, evidence: [{ ref: `${receipt.downloadPath}#download` }] };
   }
+  it("refuses to finish a task while its PR deliverable is open, even if metadata claims merged", async () => {
+    const value = await fixture();
+    const resolve = vi.fn().mockResolvedValue("open");
+    const spy = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(resolve);
+    try {
+      await db.insert(issueWorkProducts).values({ companyId: value.companyId, issueId: value.issueId,
+        createdByRunId: value.runId, type: "pull_request", provider: "github", title: "Task fix",
+        url: "https://github.com/example/project/pull/42", status: "active", metadata: { state: "merged" } });
+      await expect(nativeCompletionFeedback(db, value.runId, done)).rejects.toThrow(/pull request.*merged/i);
+      expect(resolve).toHaveBeenCalledWith(value.companyId, expect.objectContaining({ owner: "example", repo: "project", number: 42 }), expect.anything());
+      resolve.mockResolvedValue("merged");
+      await expect(nativeCompletionFeedback(db, value.runId, done)).resolves.toContain("Completion report accepted");
+    } finally { spy.mockRestore(); }
+  });
+
+  it("checks a PR artifact without a registered work product and preserves monitor waits", async () => {
+    const value = await fixture();
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver")
+      .mockReturnValue(vi.fn().mockResolvedValue("unknown"));
+    const report = { ...done, artifacts: [{ kind: "pull_request", ref: "https://github.com/example/project/pull/42" }] };
+    try {
+      await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow(/verified as merged/);
+      await expect(nativeCompletionFeedback(db, value.runId, { ...report, reportedWorkDisposition: "yielded",
+        completionClaim: { ...report.completionClaim, objectiveSatisfied: false,
+          remainingWork: [{ description: "Wait for the PR merge", blocksCompletion: true }] },
+        continuation: { kind: "same_agent", summary: "Continue review", idempotencyKey: "pr-review" },
+      })).resolves.toContain("report accepted");
+    } finally { resolve.mockRestore(); }
+  });
+
+  it("does not gate a chat response or a PR mentioned only as review input", async () => {
+    const value = await fixture();
+    const lookup = vi.fn();
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(lookup);
+    try {
+      await expect(nativeCompletionFeedback(db, value.runId, { ...done,
+        summary: "Reviewed https://github.com/example/project/pull/42; findings are attached." })).resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, value.runId, { ...done,
+        artifacts: [{ kind: "review_comment", ref: "https://github.com/example/project/pull/42#issuecomment-123" }] }))
+        .resolves.toContain("Completion report accepted");
+      await db.update(issues).set({ conversationAgentId: value.agentId, conversationUserId: "operator", conversationState: "active" }).where(eq(issues.id, value.issueId));
+      await expect(nativeCompletionFeedback(db, value.runId, { ...done,
+        artifacts: [{ kind: "pull_request", ref: "https://github.com/example/project/pull/42" }] })).resolves.toContain("Completion report accepted");
+      expect(lookup).not.toHaveBeenCalled();
+    } finally { resolve.mockRestore(); }
+  });
+
+  it.each([
+    "https://github.com/example/project/pull/not-a-number",
+    "https://github.com/example/project/pull/0",
+    "https://github.com/example/project/pull/9007199254740992",
+    "https://example.test/example/project/pull/42",
+  ])("rejects an explicitly declared PR artifact with an unreadable identity: %s", async ref => {
+    const value = await fixture();
+    const lookup = vi.fn();
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(lookup);
+    const report = { ...done, artifacts: [{ kind: "pull_request", ref }] };
+    try {
+      await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow("PR artifact has no verifiable GitHub identity");
+      await expect(db.transaction(tx => validateNativeDeliverableEvidence(tx as unknown as typeof db,
+        { ...value, objective: "Deliver the implementation.", semanticToolReceipts: {}, lockSources: true,
+          authoritativeDone: true, verifiedMergedPullRequests: new Set<string>() }, report)))
+        .rejects.toThrow("PR artifact has no verifiable GitHub identity");
+      expect(lookup).not.toHaveBeenCalled();
+    } finally { resolve.mockRestore(); }
+  });
+
+  it.each([
+    "https://github.com/example/project/pull/42/files#r123",
+    "https://github.com/example/project/pull/42/files?diff=split#r123",
+    "https://github.com/example/project/pull/42/changes#r123",
+    "https://github.com/example/project/pull/42#discussion_r123",
+  ])("does not treat a file-level review comment as delivery of the reviewed PR: %s", async ref => {
+    const value = await fixture();
+    const lookup = vi.fn().mockResolvedValue("open");
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(lookup);
+    try {
+      await expect(nativeCompletionFeedback(db, value.runId, { ...done,
+        artifacts: [{ kind: "review_comment", ref }] })).resolves.toContain("Completion report accepted");
+      expect(lookup).not.toHaveBeenCalled();
+      await expect(nativeCompletionFeedback(db, value.runId, { ...done,
+        artifacts: [{ kind: "pull_request", ref }] })).rejects.toThrow("not been verified as merged");
+    } finally { resolve.mockRestore(); }
+  });
+
+  it("rechecks current deliverables under the commit lock without making network calls", async () => {
+    const value = await fixture();
+    const lookup = vi.fn().mockResolvedValue("merged");
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(lookup);
+    try {
+      const report = { ...done, artifacts: [{ kind: "pull_request", ref: "https://github.com/example/project/pull/42" }] };
+      const proof = await verifyNativePullRequestCompletion(db, value, report);
+      await db.insert(issueWorkProducts).values({ companyId: value.companyId, issueId: value.issueId,
+        type: "pull_request", provider: "github", title: "Another delivery PR", status: "ready_for_review",
+        url: "https://github.com/example/project/pull/43" });
+      await expect(db.transaction(tx => validateNativeDeliverableEvidence(tx as unknown as typeof db,
+        { ...value, objective: "Deliver the implementation.", semanticToolReceipts: {},
+          lockSources: true, authoritativeDone: true, verifiedMergedPullRequests: proof }, report)))
+        .rejects.toThrow("deliverables changed before completion");
+      expect(lookup).toHaveBeenCalledTimes(1);
+    } finally { resolve.mockRestore(); }
+  });
+
+  it("serializes human restoration of an archived PR with the completion task lock", async () => {
+    const value = await fixture();
+    const [product] = await db.insert(issueWorkProducts).values({ companyId: value.companyId, issueId: value.issueId,
+      type: "pull_request", provider: "github", title: "Archived delivery", status: "archived",
+      url: "https://github.com/example/project/pull/42" }).returning();
+    let acquired!: (pid: number) => void;
+    const locked = new Promise<number>(resolve => { acquired = resolve; });
+    let release!: () => void;
+    const unlocked = new Promise<void>(resolve => { release = resolve; });
+    const completion = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, value.issueId)).for("update");
+      expect(await nativePullRequestCompletionReferences(tx as unknown as typeof db, { ...value, lockSources: true }, done)).toEqual([]);
+      const [owner] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+      acquired(owner.pid);
+      await unlocked;
+    });
+    const ownerPid = await locked;
+    let restored = false;
+    const restoration = workProductService(db).update(product.id, { status: "active", url: "https://github.com/example/project/pull/43" }, null)
+      .then(row => { restored = true; return row; });
+    try {
+      await vi.waitFor(async () => {
+        const [wait] = await db.execute(sql`select exists(select 1 from pg_stat_activity activity
+          where ${ownerPid} = any(pg_blocking_pids(activity.pid))) as blocked`) as unknown as Array<{ blocked: boolean }>;
+        expect(restored).toBe(false);
+        expect(wait.blocked).toBe(true);
+      }, { timeout: 1500 });
+    } finally { release(); await completion; await restoration; }
+    expect(restored).toBe(true);
+  });
+
+  it("aborts a stalled provider body without holding the task lock or completing the task", async () => {
+    const value = await fixture();
+    let observed!: () => void;
+    const requested = new Promise<void>(resolve => { observed = resolve; });
+    let disconnected!: () => void;
+    const closed = new Promise<void>(resolve => { disconnected = resolve; });
+    const server = createServer((_request, response) => {
+      response.on("close", disconnected);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"merged":');
+      observed();
+    });
+    await new Promise<void>(resolve => { server.listen(0, "127.0.0.1", resolve); });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected loopback address");
+    const original = pullRequestMerge.createPullRequestMergeStateResolver;
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockImplementation(database => original(database, {
+      tokenProvider: () => null, requestTimeoutMs: 1500,
+      fetch: (url, init) => fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, init),
+    }));
+    try {
+      const finished = nativeCompletionFeedback(db, value.runId, { ...done,
+        artifacts: [{ kind: "pull_request", ref: "https://github.com/example/project/pull/42" }] })
+        .then(() => "unexpected completion", error => String(error));
+      await requested;
+      await db.update(issues).set({ title: "Still reviewing the implementation" }).where(eq(issues.id, value.issueId));
+      expect(await finished).toContain("not been verified as merged");
+      await closed;
+      expect((await db.select().from(issues).where(eq(issues.id, value.issueId)))[0]!.status).toBe("in_progress");
+    } finally {
+      resolve.mockRestore(); server.closeAllConnections();
+      await new Promise<void>(resolve => { server.close(() => resolve()); });
+    }
+  });
+
+  // Cohort 15 (agents.hire-needs-approval): the agent copied "/approvals/<id>" from this feedback into its reply.
+  // Board routes live under the company prefix, so the feedback gives the canonical prefixed links.
+  it("links pending approvals and the task on their company-prefixed board routes", async () => {
+    const value = await fixture(); const prefix = `FB${value.companyId.slice(0, 8).toUpperCase()}`;
+    const [approval] = await db.insert(approvals).values({ companyId: value.companyId, type: "hire_agent", status: "pending", payload: {} }).returning();
+    await db.insert(issueApprovals).values({ companyId: value.companyId, issueId: value.issueId, approvalId: approval!.id });
+    const waiting = await nativeCompletionFeedback(db, value.runId, done);
+    expect(waiting).toContain(`[the pending approval](/${prefix}/approvals/${approval!.id})`);
+    expect(waiting).not.toContain("](/approvals/");
+    await db.update(approvals).set({ status: "approved" }).where(eq(approvals.id, approval!.id));
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId: value.companyId, name: "Reviewer", adapterType: "paperclip_runner", status: "active" });
+    await db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: otherAgentId }, returnAssignee: { type: "agent", agentId: value.agentId }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(eq(issues.id, value.issueId));
+    const review = await nativeCompletionFeedback(db, value.runId, done);
+    expect(review).toContain(`[this task](/${prefix}/issues/${prefix}-1)`);
+    expect(review).not.toContain("](/issues/");
+  });
   it("sends the active review participant to record its stage decision before reporting", async () => {
     const value = await fixture(), stageId = randomUUID(), otherAgentId = randomUUID();
     await db.insert(agents).values({ id: otherAgentId, companyId: value.companyId, name: "Implementer", adapterType: "paperclip_runner", status: "active" });
@@ -303,6 +495,27 @@ describe("native final-response feedback", () => {
     await expect(nativeCompletionFeedback(db, value.runId, { ...done, evidence: [{ ref: value.saved.documentHref }] }))
       .rejects.toThrow("no accessible delivery evidence");
   });
+  it("guides ordinary resource reports to use returned hrefs as Markdown links without inventing them", async () => {
+    const value = await fixture();
+    await db.delete(issueDocuments).where(eq(issueDocuments.issueId, value.issueId));
+    await db.update(issues).set({ title: "Install the accepted team", description: "Install the accepted team." }).where(eq(issues.id, value.issueId));
+    const feedback = await nativeCompletionFeedback(db, value.runId, { ...done, summary: "Team installed." });
+    expect(feedback).toContain("usable Markdown links [name](href)");
+    expect(feedback).toContain("resourceLinks or resource hrefs actually returned by tools");
+    expect(feedback).toContain("not only backtick-wrapped paths");
+    expect(feedback).toContain("Do not guess routes or invent links");
+    expect(feedback).not.toContain("/agents/");
+    expect(feedback).not.toContain(value.saved.documentHref);
+  });
+  it("keeps an exact requested final format ahead of conditional resource-link guidance", async () => {
+    const value = await fixture();
+    await db.update(issues).set({ description: "Reply with exactly OK." }).where(eq(issues.id, value.issueId));
+    const report = { ...done, summary: "OK" };
+    const feedback = await nativeCompletionFeedback(db, value.runId, report);
+    expect(feedback).toContain("Follow the user's explicitly requested final-response format, including an exact response when requested");
+    expect(feedback).toContain("When compatible with the requested response format, present any created or updated Paperclip resources you cite");
+    expect(report.summary).toBe("OK");
+  });
   it("does not link stale saved revisions", async () => {
     const value = await fixture();
     await documentService(db).upsertIssueDocument({ format: "markdown", issueId: value.issueId, key: "output", title: "Updated", body: "New version",
@@ -389,13 +602,43 @@ describe("native final-response feedback", () => {
     await db.update(issues).set({ status: "in_progress", executionRunId: newerRunId }).where(eq(issues.id, value.issueId));
     await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("newer run owns");
   });
+  it("asks once to re-check Paperclip instead of resting blocked on its own stall", async () => {
+    // Chaos run 2b600576: a SIGSTOPped server left write_document/read_document
+    // unanswered; the agent reported the Paperclip document service as an
+    // external outage and the task rested blocked with no Retry.
+    const value = await fixture();
+    const report: PrpStructuredRunResult = { ...done, reportedWorkDisposition: "blocked",
+      completionClaim: { ...done.completionClaim, objectiveSatisfied: false },
+      blocker: { reasonCode: "external_service_unavailable", owner: { kind: "system", name: "Paperclip document service" },
+        scope: "task_wide", unblockAction: "Restore document API responsiveness" } };
+    await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow(/Paperclip answered this report[\s\S]*same idempotencyKey/);
+    // Once per run: a Paperclip failure that persists after the re-check rests blocked.
+    await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("Blocker report accepted");
+    // Concatenated names such as "PaperclipAI document service" also name a Paperclip service.
+    const concatenated = await fixture();
+    await expect(nativeCompletionFeedback(db, concatenated.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "PaperclipAI document service" } } }))
+      .rejects.toThrow("Paperclip answered this report");
+    const runnerNamed = await fixture();
+    await expect(nativeCompletionFeedback(db, runnerNamed.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "paperclip_runner" } } }))
+      .rejects.toThrow("Paperclip answered this report");
+    // A genuinely external service, a non-system owner, or a finished run is not re-checked.
+    const other = await fixture();
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "GitHub API" } } }))
+      .resolves.toContain("Blocker report accepted");
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "user", name: "Paperclip admin" } } }))
+      .resolves.toContain("Blocker report accepted");
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, reasonCode: "missing_access" } }))
+      .resolves.toContain("Blocker report accepted");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other.runId));
+    await expect(nativeCompletionFeedback(db, other.runId, report)).resolves.toContain("Blocker report accepted");
+  });
   it("asks a blocked provider to explain the cause and action instead of describing completed work", async () => {
     const value = await fixture();
     const feedback = await nativeCompletionFeedback(db, value.runId, { ...done, reportedWorkDisposition: "blocked",
       completionClaim: { ...done.completionClaim, objectiveSatisfied: false },
       blocker: { reasonCode: "missing_access", reason: "Missing release access", owner: { name: "Release Owner", kind: "user" }, unblockAction: "Grant deployment access", scope: "task_wide" },
     });
-    expect(feedback).toContain("Explain why work cannot continue");
+    expect(feedback).toBe("Blocker report accepted. Explain why work cannot continue, name the blocker owner and give the unblock action in your final response; do not describe the task as completed.");
     expect(feedback).not.toContain("Describe the completed work");
   });
 });

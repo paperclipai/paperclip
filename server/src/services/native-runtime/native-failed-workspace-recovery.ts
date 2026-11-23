@@ -9,6 +9,7 @@ import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recov
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { logActivity } from "../activity-log.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import { nativeRunNeverLaunchedRunner, settleUnchangedNativeWorkspace } from "../environment-lease-release-deferral.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
 import { hasAcknowledgedNativeRunStopRequest } from "../acknowledged-native-stop.js";
@@ -19,6 +20,7 @@ import { pinFailedObservedWorkspace } from "./native-observed-workspace-preserva
 import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
 import { preparedRemoteWorkspaceSource } from "../remote-workspace-lifecycle.js";
 import { releaseUnchangedRemoteWorkspaceWriterById } from "../remote-workspaces.js";
+import { isSupersededWorkspaceExport, markSupersededWorkspaceExportHold } from "./native-superseded-workspace-export.js";
 
 const reusableLeasePolicies = ["reuse_by_environment", "reuse_by_execution_workspace"];
 
@@ -103,8 +105,12 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       && (claim.kind !== "reattach_remote_runner" || (claim.remote.kind !== "plugin_task" && claim.remote.providerLeaseId === reference.providerLeaseId
         && claim.remote.remoteCwd === reference.remoteCwd)));
     if ((coordinator?.leaseOwner || (claim && coordinator?.phase === "observed")) && !ownsClaim) throw new NativeWorkspaceFinalizationBusyError();
+    // A result retired as superseded after its workspace export failed owes
+    // the same files as an exhausted copy-back: nothing else exports them, and
+    // its writer keeps the workspace until they are saved or set aside.
+    const supersededExport = Boolean(coordinator && isSupersededWorkspaceExport(coordinator));
     const exhaustedAcceptedCopyback = Boolean(coordinator?.resultId && coordinator.phase === "terminal_failure"
-      && coordinator.failureCode === "native_workspace_sync_out_retry_exhausted");
+      && coordinator.failureCode === "native_workspace_sync_out_retry_exhausted") || supersededExport;
     if (!coordinator || (coordinator.resultId && !exhaustedAcceptedCopyback
       && !(options.requireCancelledStop && stoppedAcceptedCopyback(coordinator)))
       || !(options.allowPreterminal ? ["observed", "terminal_failure"] : ["terminal_failure"]).includes(coordinator.phase)) return;
@@ -156,7 +162,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     let retained = !retainFiles || alreadyRetained ? run : await recordRequiredWorkspaceRestoreFailure(tx as unknown as Db, run, { workspaceRestoreFailure: "restore_failed" }, source);
     if (!retained || retainFiles && !hasRequiredWorkspaceRecovery(retained.resultJson)) return;
     if (options.allowPreterminal && coordinator.phase === "observed") {
-      await notifyExecutionRunWork(tx, { companyId: run.companyId });
+      await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
       const [settled] = await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure",
         leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, nextAttemptAt: null,
         recoveryState: "blocked", failureCode: coordinator.failureCode ?? "native_continuation_requires_reconciliation", updatedAt: new Date(),
@@ -170,6 +176,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       [retained] = await tx.update(heartbeatRuns).set({ nativePhase: "terminal_failure", nativePhaseUpdatedAt: new Date() })
         .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId))).returning();
     }
+    if (supersededExport && retainFiles) await markSupersededWorkspaceExportHold(tx as unknown as Db, retained);
     if (retainFiles && !alreadyRetained) await logActivity(tx as unknown as Db, {
       companyId: run.companyId, actorType: "system", actorId: "native-workspace-recovery",
       action: "issue.workspace_recovery_required", entityType: "issue",
@@ -323,9 +330,16 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
       eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
     ));
     if (finalization?.resultId && !stoppedAcceptedCopyback(finalization)) return null;
-    if (finalization?.phase !== "terminal_failure" || finalization.leaseOwner)
+    if (finalization?.phase !== "terminal_failure" || finalization.leaseOwner) {
+      const ownerDeadline = finalization?.leaseOwner ? finalization.leaseExpiresAt?.getTime() ?? null : null;
+      if (ownerDeadline && ownerDeadline > Date.now()) return { ...entry, dueAt: ownerDeadline };
+      if (await nativeRunNeverLaunchedRunner(db, run.id, run.companyId)
+        && await settleUnchangedNativeWorkspace(db, run.id, run.companyId)) return null;
       return { ...entry, dueAt: Date.now() + 30_000 };
+    }
     if (await cancelledWorkspaceSource(db, run)) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
+    else if (await nativeRunNeverLaunchedRunner(db, run.id, run.companyId)
+      && await settleUnchangedNativeWorkspace(db, run.id, run.companyId)) return null;
     const [current] = await db.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
     const currentControllerDeadline = current?.controllerLeaseExpiresAt?.getTime();

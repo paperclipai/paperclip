@@ -21,7 +21,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
-import { decideNativeReplacement } from "./native-replacement-evidence.js";
+import { decideNativeReplacement, type NativeReplacementDecision } from "./native-replacement-evidence.js";
+import { freshSessionRetryContext } from "./fresh-session-retry-context.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
@@ -30,6 +31,8 @@ import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js"
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
 import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
 import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
+import { verifiedWorkspaceSnapshotReuse } from "../remote-workspace-snapshot-reuse-receipt.js";
+import { RECOVERY_CONTINUATION_MAX_HOLD_MS } from "../recovery-continuation-pacing.js";
 
 export const NATIVE_SAFE_REPLACEMENT_REASON = "native_safe_replacement";
 const record = (v: unknown): Record<string, unknown> =>
@@ -169,7 +172,7 @@ async function preClaimFailureEvidence(db: ReplacementDb, run: typeof heartbeatR
 }
 
 /** A saved remote source is proved by its current ledger, never a controller path. */
-async function remoteWorkspaceReplacementEvidence(
+export async function remoteWorkspaceReplacementEvidence(
   db: ReplacementDb,
   run: typeof heartbeatRuns.$inferSelect,
   issueId: string,
@@ -215,11 +218,11 @@ async function remoteWorkspaceReplacementEvidence(
   const snapshotQuery = db.select().from(executionWorkspaceSnapshots).where(and(
     eq(executionWorkspaceSnapshots.companyId, run.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id),
     eq(executionWorkspaceSnapshots.id, reference.snapshotId!), eq(executionWorkspaceSnapshots.status, "committed"),
-    eq(executionWorkspaceSnapshots.epoch, reference.epoch), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
   ));
   const [snapshot] = await (lock ? snapshotQuery.for("update") : snapshotQuery);
   if (!snapshot?.sha256 || !snapshot.objectKey || !snapshot.key || !snapshot.manifestDigest || !snapshot.byteSize) return denied;
-  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+  const [operation] = snapshot.sourceRunId === run.id && snapshot.epoch === reference.epoch
+    ? await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.id, snapshot.sourceOperationId), eq(workspaceOperations.companyId, run.companyId),
     eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.heartbeatRunId, run.id),
     eq(workspaceOperations.issueId, issueId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
@@ -228,13 +231,19 @@ async function remoteWorkspaceReplacementEvidence(
     sql`${workspaceOperations.metadata}->>'epoch' = ${String(reference.epoch)}`,
     sql`${workspaceOperations.metadata}->>'snapshotId' = ${snapshot.id}`,
     sql`${workspaceOperations.metadata}->>'sha256' = ${snapshot.sha256}`,
-  ));
-  return { workspacePreserved: Boolean(operation), providerStopped };
+  )) : [];
+  const reused = operation ? null : await verifiedWorkspaceSnapshotReuse(db, {
+    companyId: run.companyId, issueId, runId: run.id, reference, snapshot });
+  return { workspacePreserved: Boolean(operation || reused), providerStopped };
 }
 
 export function nativeReplacementPending() {
   return and(
     eq(heartbeatRuns.status, "failed"),
+    // An exact chat Retry is authorized only through its own chat action and
+    // the user's Retry intent. A system successor cannot hold that authority,
+    // so admission would always refuse it. Keep the task's hold for the user.
+    sql`not (coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) ? 'chatFailedRunRetry')`,
     eq(nativeRunFinalizations.phase, "terminal_failure"),
     or(inArray(
       nativeRunFinalizations.failureCode,
@@ -244,6 +253,45 @@ export function nativeReplacementPending() {
     sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
     sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') = ''`,
   );
+}
+
+export const NATIVE_OWNERSHIP_PROOF_BOUND_MS = RECOVERY_CONTINUATION_MAX_HOLD_MS;
+const OWNERSHIP_UNVERIFIED = "provider_ownership_unverified";
+const ownershipProofDeadline = () => sql`(coalesce(${heartbeatRuns.finishedAt}, ${nativeRunFinalizations.updatedAt})
+  + ${NATIVE_OWNERSHIP_PROOF_BOUND_MS}::integer * interval '1 millisecond')`;
+const ownershipProofWaiting = () => and(
+  eq(nativeRunFinalizations.failureCode, "native_provider_terminal_failed"), isNull(nativeRunFinalizations.leaseOwner));
+
+async function ownershipProofExpired(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  const [row] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id)).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), nativeReplacementPending(),
+      ownershipProofWaiting(), sql`${ownershipProofDeadline()} <= now()`,
+    )).limit(1);
+  return Boolean(row);
+}
+
+async function markOwnershipProofWaiting(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  await db.update(nativeRunFinalizations).set({
+    failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb)
+      || jsonb_build_object('ownershipUnverifiedAt', now())`,
+  }).where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+    ownershipProofWaiting(), sql`not (coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) ? 'ownershipUnverifiedAt')`));
+}
+
+async function releaseOwnershipProofWake(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  await db.update(nativeRunFinalizations).set({
+    failureDetail: sql`${nativeRunFinalizations.failureDetail} - 'ownershipUnverifiedAt'`,
+  }).where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+    sql`${nativeRunFinalizations.failureDetail} ? 'ownershipUnverifiedAt'`));
+}
+
+export async function nextNativeOwnershipProofDeadlineAt(db: Db): Promise<number | null> {
+  const [row] = await db.select({ at: sql<number | null>`(extract(epoch from min(${ownershipProofDeadline()})) * 1000)::float8` })
+    .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+    .where(and(nativeReplacementPending(), ownershipProofWaiting(),
+      sql`${nativeRunFinalizations.failureDetail} ? 'ownershipUnverifiedAt'`));
+  return row?.at == null ? null : Math.ceil(Number(row.at));
 }
 
 const REPLACEMENT_SCAN_LIMIT = 100;
@@ -380,17 +428,27 @@ export async function reconcileSafeNativeReplacements(
             eq(environmentLeases.heartbeatRunId, run.id),
           ),
         );
+      let overdue: boolean | undefined;
+      const ownershipOverdue = async () => overdue ??= await ownershipProofExpired(db, run);
+      const leaseHeld = leases.some((lease) => lease.releasedAt === null);
       // Teardown is still in progress. The next sweep rechecks its durable outcome.
-      if (leases.some((lease) => lease.releasedAt === null)) continue;
+      if (leaseHeld && !await ownershipOverdue()) {
+        if (coordinator.failureCode === "native_provider_terminal_failed") await markOwnershipProofWaiting(db, run);
+        continue;
+      }
       const historicalListener = coordinator.failureCode === "native_session_interrupted";
       if (historicalListener && !await historicalListenerGuardEvidence(db, run)) continue;
       const preClaim = coordinator.failureCode === NATIVE_PRE_CLAIM_FAILURE_CODE;
       if (preClaim && !await preClaimFailureEvidence(db, run)) continue;
-      const stoppedSession = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim
-        ? await options.verifyStoppedSession?.(run) ?? null : null;
+      const needsStopProof = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim;
+      const stoppedSession = needsStopProof ? await options.verifyStoppedSession?.(run) ?? null : null;
       // A transport label alone is not evidence. Keep inspecting these candidates
       // as process cleanup and the final transcript become durable.
-      if (coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim && !stoppedSession) continue;
+      const providerKind = record(execution.provider).kind;
+      const stopProofUnavailable = needsStopProof && !stoppedSession
+        && ((typeof providerKind === "string" && providerKind !== "codex")
+          || leases.some(lease => lease.provider !== null && lease.provider !== "local"));
+      if (needsStopProof && !stoppedSession && !stopProofUnavailable) continue;
       const invocations = await db
         .select()
         .from(toolInvocations)
@@ -480,7 +538,10 @@ export async function reconcileSafeNativeReplacements(
           : [];
       });
       const history = await replacementHistoryReady(db, run, coordinator.issueId);
-      if (history === false) continue;
+      if (history === false) {
+        if (await ownershipOverdue()) await releaseOwnershipProofWake(db, run);
+        continue;
+      }
       const historyComplete = history === true;
       const remoteWorkspace = await remoteWorkspaceReplacementEvidence(db, run, coordinator.issueId, leases);
       if (historicalListener && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped || invocations.length)) continue;
@@ -488,7 +549,40 @@ export async function reconcileSafeNativeReplacements(
         && run.runnerProfileJson?.nativeWorkspaceSync == null && nativeRunHasNoWorkspaceAccess(run);
       if (preClaim && (invocations.length || !noWorkspaceToSave
         && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped))) continue;
-      const decision = decideNativeReplacement({
+      const completedInvocation = (row: typeof invocations[number]) =>
+        row.status === "succeeded" && Boolean(row.completedAt) && Boolean(row.resultHash);
+      const executions = stopProofUnavailable ? (await db
+        .select({ seq: heartbeatRunEvents.seq, eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+        .from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+          inArray(heartbeatRunEvents.eventType, ["tool.execution.started", "tool.execution.completed"]))))
+        .map(event => {
+          const envelope = record(event.payload);
+          return { seq: event.seq, eventType: event.eventType,
+            payload: envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope };
+        }) : [];
+      const unconfirmedActions = stopProofUnavailable ? [...new Set([
+        ...invocations.filter(row => row.riskLevel !== "read" && !completedInvocation(row)).map(row => row.toolName),
+        ...uncertainProviderActions.flatMap(action => {
+          const started = executions.find(event => event.eventType === "tool.execution.started"
+            && String(event.payload.executionId ?? event.payload.name) === action);
+          const executionId = started?.payload.executionId;
+          if (started && executionId != null && executions.some(event => event.eventType === "tool.execution.completed"
+            && event.seq > started.seq && event.payload.executionId === executionId && event.payload.status === "completed"
+            && (event.payload.exitCode == null || event.payload.exitCode === 0) && event.payload.error == null))
+            return [];
+          if (started && started.payload.transport !== "process" && invocations.some(row => completedInvocation(row)
+            && (row.id === executionId || row.correlationId === executionId))) return [];
+          return [typeof started?.payload.name === "string" ? started.payload.name : action];
+        }),
+      ])] : [];
+      const unprovenAction = unconfirmedActions[0];
+      const decision: NativeReplacementDecision = stopProofUnavailable ? unprovenAction ? { allowed: false,
+        cause: "uncertain_external_action",
+        nextAction: `Reconcile ${unprovenAction} and preserve its result before continuing. Do not repeat it automatically.` }
+        : { allowed: false, cause: "provider_failure_meaning_unverified",
+          nextAction: "The previous session could not be confirmed stopped and recorded no unconfirmed action, so the task continues in a fresh run from its saved work." }
+        : decideNativeReplacement({
         failedSession: true,
         // A facade transport failure can conceal an authoritative protocol
         // rejection. A stopped process and read receipts do not resolve that.
@@ -505,7 +599,7 @@ export async function reconcileSafeNativeReplacements(
         providerStopped:
           !processAlive(run.processPid) &&
           !processAlive(run.processGroupId ? -run.processGroupId : null) &&
-          (remoteWorkspace?.providerStopped ?? true),
+          (remoteWorkspace?.providerStopped ?? true) && !leaseHeld,
         workspacePreserved: noWorkspaceToSave || (remoteWorkspace ? remoteWorkspace.workspacePreserved :
           typeof workspace.cwd === "string" &&
           (await stat(workspace.cwd).then(
@@ -523,7 +617,14 @@ export async function reconcileSafeNativeReplacements(
       });
       if (!decision.allowed) {
         // Lack of containment can be temporary; do not prevent the next proof.
-        if (decision.cause === "provider_ownership_unverified") continue;
+        const ownershipBound = decision.cause === OWNERSHIP_UNVERIFIED;
+        if (ownershipBound && !await ownershipOverdue()) {
+          await markOwnershipProofWaiting(db, run);
+          continue;
+        }
+        const nextAction = ownershipBound
+          ? "The previous session could not be confirmed stopped, so the task continues in a fresh run with its own workspace."
+          : decision.nextAction;
         await db.transaction(async (tx) => {
           await tx.execute(
             sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -547,17 +648,19 @@ export async function reconcileSafeNativeReplacements(
             !current ||
             current.phase !== "terminal_failure" ||
             current.failureDetail?.successorRunId ||
-            current.failureDetail?.replacementDenied
+            current.failureDetail?.replacementDenied ||
+            (ownershipBound && !await ownershipProofExpired(tx, run))
           )
             return;
-          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
           await tx
             .update(nativeRunFinalizations)
             .set({
               failureDetail: {
                 ...current.failureDetail,
                 replacementDenied: decision.cause,
-                nextAction: decision.nextAction,
+                nextAction,
+                ...(unconfirmedActions.length ? { unconfirmedActions } : {}),
               },
               updatedAt: now,
             })
@@ -580,7 +683,7 @@ export async function reconcileSafeNativeReplacements(
             cause: decision.cause,
             fingerprint: `native-replacement:${run.id}`,
             evidence: { runId: run.id, attempts: coordinator.attempt },
-            nextAction: decision.nextAction,
+            nextAction,
             wakePolicy: null,
             maxAttempts: 3,
             supersedeOnIdentityChange: true,
@@ -680,17 +783,8 @@ export async function reconcileSafeNativeReplacements(
         }
         const successorRunId = randomUUID();
         const dueAt = new Date(now.getTime() + 30_000);
-        const predecessorContext = { ...record(run.contextSnapshot) };
-        // History comes from the failed source run. Consumed wake fields must
-        // not grant this automatic retry fresh comment/resume authority.
-        for (const key of [
-          "explicitUserContinuation", "wakeCommentId", "wakeCommentIds", "commentId",
-          "commentIds", "latestCommentId", "resumeIntent", "followUpRequested",
-          "paperclipWake", "paperclipWakeComment", "paperclipTaskMarkdown", "paperclipTaskMarkdownCompact",
-          "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact", "paperclipTurnContext",
-        ]) delete predecessorContext[key];
         const context = {
-          ...predecessorContext,
+          ...freshSessionRetryContext(record(run.contextSnapshot)),
           issueId: task.id,
           retryOfRunId: run.id,
           wakeReason: NATIVE_SAFE_REPLACEMENT_REASON,
@@ -715,8 +809,8 @@ export async function reconcileSafeNativeReplacements(
             idempotencyKey: `native-safe-replacement:${run.id}`,
           })
           .returning();
-        await notifyExecutionRunWork(tx, { companyId: run.companyId });
-        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId, runId: run.id });
         await tx.insert(heartbeatRuns).values({
           id: successorRunId,
           companyId: run.companyId,
@@ -815,7 +909,7 @@ export async function reconcileSafeNativeReplacements(
       if (created) {
         options.failpoint?.("lineage_committed");
         scheduled += 1;
-      }
+      } else if (await ownershipOverdue()) await releaseOwnershipProofWake(db, run);
     } catch (error) {
       if (options.failpoint) throw error;
       pendingFailures++;

@@ -59,6 +59,9 @@ vi.mock("./components/Layout.production", async () => {
 });
 
 // Rendered by <App> outside <Routes> and needs DialogProvider; irrelevant here.
+// These routing tests render App without a QueryClientProvider.
+vi.mock("./components/PageLoadTracker", () => ({ PageLoadTracker: () => null }));
+
 vi.mock("./components/OnboardingWizardVariant", () => ({
   OnboardingWizardVariant: () => null,
 }));

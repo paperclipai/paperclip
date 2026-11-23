@@ -1,5 +1,8 @@
 import { ROLLING_WEB_DEPLOYMENT_SUITE, ROLLING_WEB_DEPLOYMENT_WARM_SUITE } from "./controller-rolling-deployment.js";
 import { supportsManagedNativeWarmSession } from "../../server/src/services/native-runtime/native-warm-capability.js";
+import { CHAT_NATIVE_TIMEOUT_POLICY } from "./chat-native-timeout-policy.js";
+import { CHAT_SETUP_HEALTH_SUITE, chatSetupHealthTask, chatSetupHealthDigest } from "./chat-setup-health.js";
+import { CHAT_OPENCODE_MODEL, CHAT_OPENCODE_PROFILE } from "./chat-runtime-profile.js";
 import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
 import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
 import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
@@ -9,7 +12,8 @@ import { caseReceiptTask, caseReceiptDefinitionDigest, CASE_RECEIPT_BUDGET_CENTS
 import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWorkspaceDefinitionDigest } from "./task-workspaces-cases.js";
 import { repositoryProofTasks, repositoryProofProfile, repositoryProofDigest } from "./repository-verification.js";
 import { automaticRepositoryTask, automaticRepositoryDigest } from "./automatic-repository.js";
-import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
+import { nativeActiveStopTasks, nativeProviderLossTasks } from "./native-active-stop-tasks.js";
+import { ANTIGRAVITY_API_KEY_LINEUP, ANTIGRAVITY_GEMINI4_LINEUP, ANTIGRAVITY_GEMINI4_LINEUP_SUITE, ANTIGRAVITY_MODEL_LINEUP_SUITE, buildAntigravityModelLineupSuite, buildAntigravityProfile, buildAntigravityQualificationSuite, type AntigravitySuiteDependencies } from "./antigravity-qualification-cases.js";
 import { CURSOR_CLOUD_SUITE, cursorCloudArtifactTask, cursorCloudStopTask, CURSOR_CLOUD_QUIET_WINDOW_MS, cursorCloudDefinitionDigest } from "./cursor-cloud-cases.js";
 import { kimiLifecycleTasks } from "./kimi-lifecycle-tasks.js";
 import { piControlTasks } from "./pi-controls-cases.js";
@@ -29,9 +33,11 @@ import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDig
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
+import { CODEX_PLANNING_READ_ONLY_SUITE, codexPlanningReadOnlyTask } from "./codex-planning-read-only.js";
 import { apiArtifactTransferTask } from "./api-artifact-transfer.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
-import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
+import { chatCatalogInventoryDigest, chatCatalogScenarios } from "./chat-catalog-inventory.js";
+import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatCatalogTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks, questionResumeTask } from "./continuation-cases.js";
@@ -206,7 +212,7 @@ function nativeProfile(input: {
   provider: "codex" | "opencode" | "acpx";
   model: string;
   credential: RunnerProfileFixture["credential"];
-  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi" | "kimi";
+  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi" | "kimi" | "antigravity";
   qualificationCandidate?: RunnerProfileFixture["qualificationCandidate"];
   supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
   modelQualification?: RunnerProfileFixture["modelQualification"];
@@ -1257,6 +1263,24 @@ export const kimiRunnerProfile = nativeProfile({
   modelQualification: { source: "qualified_runner_profile", qualificationId: "kimi:2.3.3:native-qualified-profile17" },
 });
 
+const antigravitySuiteDependencies: AntigravitySuiteDependencies = {
+  nativeProfile, localEnvironment, daytonaWarmEnvironment,
+  daytonaEnvironment: runnerEnvironments.find(environment => environment.id === "daytona")!,
+  runnerTasks, localIntegrityTasks, extendedHarnessFileTask, chatHardeningTasks, nativeActiveStopTasks, nativeProviderLossTasks,
+  // Workspace-file continuity: ACP collects changed agent files only after
+  // provider retirement, so the managed-home variant is not used here.
+  warmFollowupTask: { ...daytonaWarmContinuityTask,
+    buildPrompt: nonce => warmTurnInstructions(1, nonce),
+    buildFollowupMessages: nonce => [warmTurnInstructions(2, nonce), warmTurnInstructions(3, nonce)],
+    turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000, daytona: 420_000 } },
+};
+/** Google Antigravity through a Gemini API key; pending until the qualification flip. */
+export const antigravityRunnerProfile = buildAntigravityProfile(antigravitySuiteDependencies);
+/** Chat evals under Antigravity are opt-in: name the profile explicitly. */
+const antigravityChatProfile: RunnerProfileFixture = { ...chatFeatureProfile(antigravityRunnerProfile), explicitOnly: true };
+/** Instructions and assigned skills under the production default; opt-in by profile. */
+const antigravityNativeCompletionProfile: RunnerProfileFixture = { ...nativeCompletionProfile(antigravityRunnerProfile), explicitOnly: true };
+
 /**
  * ACPX facades admitted only for the reliability long-silent-command case. Like the
  * rolling-deployment matrix, they run as ordinary released profiles: a pending
@@ -1294,7 +1318,7 @@ function everydayReliabilityExcludedIds(suiteId: string): string[] {
 }
 
 
-const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
+const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile, antigravityRunnerProfile]
   .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
     && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
   .map(original => {
@@ -1323,6 +1347,12 @@ const rollingDeploymentSuites: RunnerSuiteFixture[] = [
     replacement: "ready-before-traffic-switch-sigterm-delete-entire-home",
     upgradeReadiness: "active-remote-workspace-recoverable-before-handoff",
     grading: "same-active-execution-ordinary-reads-saves-and-second-empty-home-continuation" },
+}));
+
+const chatFeatureExecutionProfile = chatFeatureProfile(nativeProfile({
+  id: CHAT_OPENCODE_PROFILE, label: "Native OpenCode OpenRouter DeepSeek V4.1 Flash 1017",
+  provider: "opencode", model: CHAT_OPENCODE_MODEL, credential: "OPENROUTER_API_KEY", supportedEnvironments: ["local"],
+  modelQualification: { source: "candidate_runner_profile", qualificationId: "chat-catalog:opencode-1.18.34:deepseek-v4.1-flash-1017:remote-initial" },
 }));
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
@@ -1574,15 +1604,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     description: "Lose the owned Cursor runtime while a native mutation remains unanswered; require a visible failed run, closed unanswerable input, stale-answer refusal and independent retirement with no effects or replay.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor"),
     environments: runnerEnvironments,
-    tasks: [{
-      id: "pending-permission-provider-loss", label: "Owned runtime loss with pending permission", groups: [], workMode: "standard", flow: "native_provider_loss",
-      expectedRunCount: 1, attemptTimeoutMs: { local: 300_000, daytona: 300_000 }, turnTimeoutMs: 120_000,
-      expectedTerminalState: { issue: "blocked", run: "failed" },
-      buildTitle: nonce => `Native provider loss ${nonce}`,
-      buildVisibleMarker: nonce => `NATIVE-PROVIDER-LOSS-${nonce}`,
-      buildPrompt: () => "Attempt the supplied exact native shell operation once and leave its permission callback unanswered. Do not retry, use another tool or path, answer your own permission, call paperclip_finish, or claim completion. The qualification fixture will deliberately lose the isolated runtime before any approval.",
-      buildMatchers: () => [],
-    }], expectedMatrixSize: 2,
+    tasks: nativeProviderLossTasks, expectedMatrixSize: 2,
     definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", fault: "observed-per-turn-run-root-loss", remoteFaultAuthority: "pidfd-start-ticks-boot-id", replayAllowed: false },
   },
 
@@ -1661,6 +1683,11 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       remoteLifecycleBootstrap: "observer-bound-scoped-get-task-context-dual-turn-workspace-binding-full-semantic-command-ack-and-bounded-native-receipt",
       nativeWriteLifecycle: "pending-permission-stop-and-exact-native-worker-loss", nativeWriteCleanup: "continuous-no-effects-through-owned-tree-retirement" },
   },
+  buildAntigravityQualificationSuite(antigravitySuiteDependencies),
+  buildAntigravityModelLineupSuite(antigravitySuiteDependencies, { id: ANTIGRAVITY_MODEL_LINEUP_SUITE, label: "Google Antigravity API-key model lineup",
+    models: ANTIGRAVITY_API_KEY_LINEUP, route: "gemini-api-key" }),
+  buildAntigravityModelLineupSuite(antigravitySuiteDependencies, { id: ANTIGRAVITY_GEMINI4_LINEUP_SUITE, label: "Google Antigravity Gemini 4 model lineup",
+    models: ANTIGRAVITY_GEMINI4_LINEUP, route: "gemini-4 (billed key, subscription or Agent Platform)" }),
   {
     id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,
     description: "Retrieve evidence beyond a saved API preview through authorized bounded text windows.",
@@ -1668,6 +1695,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
     tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
     definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
+  {
+    id: CODEX_PLANNING_READ_ONLY_SUITE, label: "Codex planning read-only enforcement", manualOnly: true,
+    description: "Start a native Codex planning turn, attempt one workspace write, and require the sandbox to refuse it before the Plan is approved.",
+    groups: [], environments: runnerEnvironments,
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [codexPlanningReadOnlyTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, grading: "plan-marker-and-refused-shell-write-event", scheduling: "explicit-only", maximumAttemptsPerCell: 1 },
   },
   {
     id: "api-artifact-transfer", label: "Verified API artifact transfer", manualOnly: true,
@@ -1789,8 +1824,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     id: "native-completion", label: "Native completion guidance", manualOnly: true,
     description: "Production-default assigned-skill document completion and concrete whole-task blocking, with independent native result/final ordering.",
     groups: ["native", "local"],
-    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude", "runner-opencode"].includes(profile.id)).map(nativeCompletionProfile),
-    environments: [localEnvironment], tasks: nativeCompletionTasks, expectedMatrixSize: 6,
+    profiles: [...runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude", "runner-opencode"].includes(profile.id)).map(nativeCompletionProfile), antigravityNativeCompletionProfile],
+    environments: [localEnvironment], tasks: nativeCompletionTasks, expectedMatrixSize: 8,
     definitionMetadata: { version: 1, fixtureDigest: nativeCompletionDefinitionDigest(), instructions: "unchanged-master-production-default",
       providerTurns: 6, maximumAttemptsPerCell: 1, automaticRetryPolicy: "single_attempt", budgetMonthlyCents: NATIVE_COMPLETION_BUDGET_CENTS,
       grading: "original-assigned-skill-durable-document-plus-native-disposition-and-observable-final-order", scheduling: "explicit-only" },
@@ -1859,20 +1894,31 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 9, runGrading: "accepted-execution-or-explicit-plan-only", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "qualified-platform-wizard-saved-default", claudeDefaultTargets: ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"], legacySetup: "explicit-advanced-runner-choice", productionInstructions: true, qualityGrading: "informational" },
   },
   {
+    id: CHAT_SETUP_HEALTH_SUITE, label: "Chat provider setup health", manualOnly: true,
+    description: "Diagnostic only: one normal lifecycle hello, zero chat/task work; excluded from the 244 catalog scenarios.",
+    groups: [], profiles: [chatFeatureExecutionProfile], environments: [localEnvironment], tasks: [chatSetupHealthTask], expectedMatrixSize: 1,
+    definitionMetadata: { version: 1, sourceDigest: chatSetupHealthDigest, scheduling: "explicit-only", catalogScenario: false,
+      maximumAttemptsPerCell: 1, maximumAutomaticSetupHellos: 1, expectedHeartbeatRuns: 0, canonicalQueries: 0,
+      setupProbeUsage: "unavailable-outside-heartbeat-accounting" },
+  },
+  {
     id: CHAT_FEATURE_SUITE, label: "Chat feature journeys", manualOnly: true,
-    description: "Natural catalog requests create backlog work or delegate an announcement and return its saved result.",
+    description: "Executable catalog requests through Agent Chat, with independently graded persisted state.",
     groups: ["chat", "native"],
-    profiles: [chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
-      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
-      chatFeatureProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
-      chatFeatureProfile(runnerOpenCodeDeepSeek1017Profile)],
-    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 5,
-    excludedExecutionIds: ["chat-features.runner-opencode-deepseek-1017.local.delegate-announcement"],
-    definitionMetadata: { version: 2, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
+    profiles: [chatFeatureExecutionProfile,
+      chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
+        provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
+      chatFeatureProfile(runnerOpenCodeDeepSeek1017Profile), antigravityChatProfile],
+    environments: [localEnvironment], tasks: [...chatFeatureTasks, ...chatCatalogTasks], expectedMatrixSize: 5 + chatCatalogTasks.length + chatFeatureTasks.length + chatCatalogTasks.length,
+    excludedExecutionIds: [
+      ...chatCatalogTasks.map(task => `chat-features.runner-codex-subscription.local.${task.id}`),
+      ...[...chatFeatureTasks, ...chatCatalogTasks].filter(task => task.id !== "create-backlog").map(task => `chat-features.runner-opencode-deepseek-1017.local.${task.id}`),
+    ],
+    definitionMetadata: { version: 3, nativeTimeoutPolicy: CHAT_NATIVE_TIMEOUT_POLICY, authoredTurnTimeouts: "legacy-declarations-retained-separately-not-effective-native-caps", definitionDigest: chatFeatureDefinitionDigest, inventoryDigest: chatCatalogInventoryDigest, frozenScenarioCount: 244, scheduling: "explicit-only",
       instructions: "production-role-defaults", companyAndAgentBudgetCents: CHAT_FEATURE_BUDGET_CENTS,
-      unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: { ceo: 3, worker: 1 },
+      unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: "per-case-declared; agent daily admission ceiling 3",
       maximumAttemptsPerCell: 1, setupProbeUsage: "unavailable-outside-heartbeat-accounting",
-      scenarios: chatFeatureScenarios.map(({ id, capabilities }) => ({ id, capabilities })) },
+      scenarios: [...chatFeatureScenarios, ...chatCatalogScenarios.filter(row => chatCatalogTasks.some(task => task.id === row.id))].map(({ id, capabilities }) => ({ id, capabilities })) },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",
@@ -2140,6 +2186,7 @@ export function buildRunnerMatrix(
 ): MatrixExecution[] {
   return suites.flatMap((suite) => {
     const excludedExecutionIds = new Set(suite.excludedExecutionIds ?? []);
+    const definitionHash = suiteDefinitionHash(suite);
     return suite.profiles.flatMap((profile) =>
       suite.environments
         .filter((environment) =>
@@ -2153,7 +2200,7 @@ export function buildRunnerMatrix(
               return {
                 id: `${suite.id}.${profile.id}.${environment.id}.${task.id}`,
                 suite,
-                suiteDefinitionHash: suiteDefinitionHash(suite),
+                suiteDefinitionHash: definitionHash,
                 profile,
                 environment: selectedEnvironment,
                 task: suite.id === "confirmation-replies" && profile.id === "runner-codex" && environment.id === "daytona" && task.id === "task-card-accept"

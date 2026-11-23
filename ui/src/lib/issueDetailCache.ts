@@ -2,7 +2,14 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { InstanceExperimentalSettings, Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { getIssueRecentCommentsQueryOptions } from "./issue-comment-window-query";
-import { prefetchIssueChatHistory, prefetchIssueCommentInputFacts } from "./issue-chat-history-queries";
+import {
+  prefetchIssueChatHistory,
+  prefetchIssueCommentInputFacts,
+  recentIssueActivityQueryKey,
+  recentIssueRunWindowQueryKey,
+} from "./issue-chat-history-queries";
+import { readFromIssueChatBootstrap, startIssueChatBootstrap } from "./issue-chat-bootstrap";
+import { isRestoredSavedRead } from "./persisted-query-cache";
 import { queryKeys } from "@/lib/queryKeys";
 import { getNextIssueCommentPageParam, ISSUE_COMMENT_PAGE_SIZE } from "@/lib/optimistic-issue-comments";
 
@@ -129,7 +136,7 @@ export function seedIssueDetailProjections(
   // Only the response's own refs are aliases; an arbitrary requested ref is not.
   for (const ref of getIssueDetailCacheRefs(issue)) {
     const key = [...queryKeys.issues.detail(ref), "core"];
-    if (queryClient.getQueryData(key) === undefined) {
+    if (queryClient.getQueryData(key) === undefined || isRestoredSavedRead(queryClient, key)) {
       queryClient.setQueryData(key, issue);
     }
   }
@@ -153,7 +160,14 @@ export function getIssueCoreQueryOptions(queryClient: QueryClient, issueRef: str
   return {
     queryKey: [...queryKeys.issues.detail(issueRef), "core"] as const,
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
-      const issue = await issuesApi.getCore(issueRef, { signal });
+      const key = [...queryKeys.issues.detail(issueRef), "core"];
+      const read = () => issuesApi.getCore(issueRef, { signal });
+      // The header shows a restored task at once, so its revalidation can
+      // wait for the page's chat bootstrap. Otherwise this small read keeps
+      // the header from waiting on the larger bootstrap.
+      const issue = isRestoredSavedRead(queryClient, key)
+        ? await readFromIssueChatBootstrap(queryClient, key, issueRef, (item) => item.issue, read)
+        : await read();
       seedIssueDetailProjections(queryClient, issue, issueRef);
       return issue;
     },
@@ -230,7 +244,8 @@ export function prefetchIssueComments(queryClient: QueryClient, issueRef: string
  *
  * `history: true` also warms every other read that gates the compact chat's
  * first reveal (activity, runs, comment input facts, interactions,
- * attachments, live runs). Callers
+ * attachments, live runs), in one chat-bootstrap request when none of them
+ * is cached yet. Callers
  * pass it when an open is likely: a mouse or pen press, a click, keyboard
  * selection, or a hover or focus that rests on the link. A pointer, touch or
  * focus passing over rows warms only the issue and its recent comments.
@@ -251,6 +266,18 @@ export function prefetchIssueDetailForNavigation(
   if (isCompleteIssueSnapshot(options?.issue)) {
     seedIssueDetailCache(queryClient, options.issue, { issueRef });
   }
+  // A task with none of its chat history cached warms it in one bootstrap
+  // request; the recent-comments read below shares it. A task seen before
+  // refreshes and reconciles its cached reads one by one.
+  const coldChat = !!options?.history && [
+    recentIssueActivityQueryKey(issueRef),
+    recentIssueRunWindowQueryKey(issueRef),
+    queryKeys.issues.interactions(issueRef),
+    queryKeys.issues.attachments(issueRef),
+    queryKeys.issues.liveRuns(issueRef),
+  ].every((key) => queryClient.getQueryData(key) === undefined);
+  const bootstrap = coldChat ? startIssueChatBootstrap(queryClient, options?.issue?.companyId, issueRef) : null;
+  const history = !!options?.history && !coldChat;
   return Promise.all([
     queryClient.prefetchQuery({
       ...getIssueCoreQueryOptions(queryClient, issueRef),
@@ -259,11 +286,12 @@ export function prefetchIssueDetailForNavigation(
     queryClient.prefetchQuery({
       ...getIssueRecentCommentsQueryOptions(queryClient, issueRef),
       staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
-    }).then(() => options?.history
+    }).then(() => history
       // The chat also waits for the input facts of the comments it shows.
       ? prefetchIssueCommentInputFacts(queryClient, issueRef, ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS)
       : undefined),
-    ...(options?.history
+    ...(bootstrap ? [bootstrap] : []),
+    ...(history
       ? [prefetchIssueChatHistory(queryClient, issueRef, {
           issue: options.issue ?? getCachedIssueDetail(queryClient, issueRef),
           staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,

@@ -278,7 +278,7 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
     const get = vi.spyOn(storage, "getObject");
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
     expect(await stored(f.aliases[1].workspace.id)).toEqual(f.aliases[1].workspace);
@@ -546,13 +546,16 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     const apply = () => cohort ? migrateRemoteWorkspaceCohort({ db, storage, companyId: f.companyId,
       workspaceIds: [f.workspaceId], apply: true, signal: AbortSignal.timeout(30_000) })
       : migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.workspaceId, apply: true });
-    const restore = workspaceArchive.restoreRemoteWorkspaceArchive;
-    const interrupt = vi.spyOn(workspaceArchive, "restoreRemoteWorkspaceArchive").mockImplementationOnce(async input => {
-      await restore(input);
-      expect(await db.select().from(executionWorkspaceSnapshots)).toEqual([expect.objectContaining({ status: "uploaded" })]);
-      throw new Error("interrupted after verified upload");
+    const transaction = db.transaction.bind(db);
+    const interrupt = vi.spyOn(db, "transaction").mockImplementation(async (action, config) => {
+      const result = await transaction(action, config);
+      if (result && typeof result === "object" && "status" in result && result.status === "uploaded") {
+        expect(await db.select().from(executionWorkspaceSnapshots)).toEqual([expect.objectContaining({ status: "uploaded" })]);
+        throw new Error("interrupted after uploaded snapshot");
+      }
+      return result;
     });
-    try { await expect(apply()).rejects.toThrow("interrupted after verified upload"); }
+    try { await expect(apply()).rejects.toThrow("interrupted after uploaded snapshot"); }
     finally { interrupt.mockRestore(); }
     const [operation] = await db.select().from(workspaceOperations), [snapshot] = await db.select().from(executionWorkspaceSnapshots);
     const sources = operation.metadata!.legacyRecoverySources as Array<{ runId: string; issueId: string;
@@ -1051,24 +1054,25 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.workspaceId))).toEqual([]);
     expect(await fs.readFile(path.join(f.child.cwd!, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
   });
-  it.each([false, true])("requires exact imported-child coverage for an online shared Git parent (%s)", async changed => {
+  it.each([false, true])("retains committed child references for an online shared Git parent (local bytes changed=%s)", async changed => {
     const f = await gitFixture();
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
       reasons: expect.arrayContaining(["nested_workspace_import_required"]) });
     await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.child.id, apply: true });
+    const child = await stored(f.child.id), childAuthority = readRemoteWorkspaceAuthority(child.metadata)!;
+    const [childSnapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, childAuthority.snapshotId!));
     if (changed) await fs.writeFile(path.join(f.child.cwd!, "new-work.txt"), "changed after child import\n");
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
-    const migration = migrateRemoteWorkspace({ db, storage, ...f, apply: true });
-    if (changed) {
-      await expect(migration).rejects.toThrow("nested_workspace_source_changed");
-      expect(readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)).toBeNull();
-      expect(await fs.readFile(path.join(f.child.cwd!, "new-work.txt"), "utf8")).toBe("changed after child import\n");
-    } else {
-      await expect(migration).resolves.toMatchObject({ applied: true });
-      const authority = readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)!;
-      const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
-      expect(snapshot.metadata?.importedWorkspaceChildren).toEqual([expect.objectContaining({ workspaceId: f.child.id })]);
-    }
+    const get = vi.spyOn(storage, "getObject"), capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+    const authority = readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)!;
+    const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+    expect(snapshot.metadata?.importedWorkspaceChildren).toEqual([expect.objectContaining({ workspaceId: f.child.id,
+      snapshotId: childSnapshot.id, manifestDigest: childSnapshot.manifestDigest })]);
+    expect(await stored(f.child.id)).toEqual(child);
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, childSnapshot.id)))[0]).toEqual(childSnapshot);
+    expect(get).not.toHaveBeenCalled(); expect(capture).toHaveBeenCalledTimes(1);
+    if (changed) expect(await fs.readFile(path.join(f.child.cwd!, "new-work.txt"), "utf8")).toBe("changed after child import\n");
   });
   it("imports a terminal prepared source while retaining its original provider and finalization obligations", async () => {
     const f = await recoveryFixture(), put = storage.putFile.bind(storage);

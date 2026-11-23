@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { gradeTask } from "./grader.js";
 import type { OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
-import { bareCauseMessage, DEFAULT_UNIVERSAL_BOUNDS as BOUNDS, gradeU1, gradeU2, gradeU3, gradeU4, gradeUniversal, universalBounds } from "./universal.js";
+import { bareCauseMessage, declaredQueueBoundMs, DEFAULT_UNIVERSAL_BOUNDS as BOUNDS, diagnosableFailureCause, gradeU1, gradeU2, gradeU3, gradeU4, gradeU5, gradeUniversal,
+  universalBounds } from "./universal.js";
+import { slotFreeFrom } from "./agent-slots.js";
 import { workloadDefinitions } from "./workloads.js";
 
 const T0 = Date.parse("2026-11-09T12:00:00Z");
@@ -48,6 +50,33 @@ describe("U1 liveness", () => {
     expect(result.detail).toMatch(/^no_owner_no_action .* in todo with r1 queued/);
   });
 
+  it("lets a run wait in a declared queue while its agent's slots are full, and still fails one queued with a free slot (w-20261113T052703-s7301 t030)", () => {
+    const queuedThenStarted = [...polls(0, 486 * SEC, at => sample(at, "todo", [run("r1", "queued", 0)])),
+      ...polls(489 * SEC, 600 * SEC, at => sample(at, "in_progress", [run("r1", "running", 486 * SEC, null, { lastEvidenceAt: iso(at) })]))];
+    const declared = { ...BOUNDS, declaredQueuedMs: declaredQueueBoundMs({ runs: 20, queue: 20, turnMinutes: [12, 22] }) };
+    expect(declared.declaredQueuedMs).toBe(27 * 60 * SEC);
+    expect(gradeU1(record(queuedThenStarted), BOUNDS)).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/^no_owner_no_action .* in todo with r1 queued/) });
+    expect(gradeU1(record(queuedThenStarted), declared, () => false).verdict).toBe("pass");
+    expect(gradeU1(record(queuedThenStarted), declared, () => null).verdict).toBe("pass");
+    const free = gradeU1(record(queuedThenStarted), declared, () => true);
+    expect(free).toMatchObject({ verdict: "fail", detail: expect.stringMatching(/r1 queued \d+s \(\d+s with a free slot, declared queue bound 1620s\)/) });
+    const pastDeclared = polls(0, 31 * 60 * SEC, at => sample(at, "todo", [run("r1", "queued", 0)]));
+    expect(gradeU1(record(pastDeclared, { restAt: null, finalStatus: null, timedOut: true }), declared, () => false).verdict).toBe("fail");
+    expect(declaredQueueBoundMs({ runs: 20, queue: 0, turnMinutes: [12, 22] })).toBeUndefined();
+    expect(declaredQueueBoundMs(undefined)).toBeUndefined();
+  });
+
+  it("reads free slots from the agent's own runs and its run cap", () => {
+    const slotFree = slotFreeFrom({ agents: [{ agentId: "a1", maxConcurrentRuns: 2 }, { agentId: "a2", maxConcurrentRuns: null }],
+      runs: [{ runId: "q", agentId: "a1", startedAt: 500, finishedAt: null }, { runId: "x", agentId: "a1", startedAt: 0, finishedAt: 300 },
+        { runId: "y", agentId: "a1", startedAt: 100, finishedAt: null }, { runId: "z", agentId: "a2", startedAt: 0, finishedAt: null }] });
+    expect(slotFree("q", 200)).toBe(false);
+    expect(slotFree("q", 400)).toBe(true);
+    expect(slotFree("z", 10)).toBeNull();
+    expect(slotFree("unknown", 10)).toBeNull();
+    expect(slotFreeFrom(null)("q", 1)).toBeNull();
+  });
+
   it("treats a visible Retry or a waiting question as actionable", () => {
     const failedRun = run("r1", "failed", 0, 5 * SEC, { errorCode: "process_lost" });
     const withRetry = polls(0, 10 * 60 * SEC, at => sample(at, "in_progress", [failedRun], { interruption: retryable }));
@@ -90,6 +119,17 @@ describe("U1 liveness", () => {
     const samples = polls(0, 7 * 60 * SEC, at => sample(at, "in_progress", [run("r1", "running", 0)]));
     expect(gradeU1(record(samples, { restAt: null }), BOUNDS).verdict).toBe("fail");
   });
+
+  it("keeps a quiet run that waits on an active model request as its owner, within the provider-turn bound (rerun 11 t001)", () => {
+    const quiet = (untilMs: number) => [...polls(0, 60 * SEC, at => sample(at, "in_progress", [run("r1", "running", 0, null,
+      { lastEvidenceAt: iso(at), providerTurnActive: true })])),
+      ...polls(63 * SEC, untilMs, at => sample(at, "in_progress", [run("r1", "running", 0, null,
+        { lastEvidenceAt: iso(60 * SEC), providerTurnActive: true })], { interruption: { ...retryable, state: "working", canRetry: false } }))];
+    const waited = [...quiet(510 * SEC), sample(513 * SEC, "done", [run("r1", "succeeded", 0, 512 * SEC)])];
+    expect(gradeU1(record(waited), BOUNDS)).toMatchObject({ verdict: "pass", metrics: { ownerlessMs: 0 } });
+    expect(gradeU1(record(quiet(15 * 60 * SEC), { restAt: null }), BOUNDS)).toMatchObject({ verdict: "fail",
+      detail: expect.stringMatching(/^no_owner_no_action .* in in_progress \(interruption working\)/) });
+  });
 });
 
 describe("U2 retry loops", () => {
@@ -128,6 +168,29 @@ describe("U3 diagnosable failures", () => {
     const coded = stalled.replace("last cause: Error", "last cause: 40001");
     expect(gradeU3(record(replay), { runMessages: new Map([["r2", coded]]), recoveryActions: [] }).verdict).toBe("pass");
   });
+  it("treats a generic code with a recorded failure cause as diagnosable, and stays a warning", () => {
+    const failed = (failureCause?: string) => [sample(10 * SEC, "done", [run("r1", "failed", 0, 5 * SEC,
+      { errorCode: "adapter_failed", ...(failureCause === undefined ? {} : { failureCause }) })])];
+    for (const cause of ["40001", "ECONNRESET", "provider_http_429", "exit_code_137", "TypeError"]) {
+      expect(gradeU3(record(failed(cause))).verdict).toBe("pass");
+    }
+    // An old row without the field, or a cause that is itself bare, still names nothing.
+    for (const cause of [undefined, "", "Error", "unknown_error", "adapter_reported_error"]) {
+      const result = gradeU3(record(failed(cause)));
+      expect(result.verdict).toBe("fail");
+      expect(result.detail).toContain("r1:code=adapter_failed");
+    }
+    expect(gradeUniversal(record(failed("Error"))).U3).toMatchObject({ verdict: "fail", enforced: false });
+    // The cause also excuses a bare stored message: "Adapter failed (40001)" names what went wrong.
+    expect(gradeU3(record(failed("40001")), { runMessages: new Map([["r1", "Error"]]), recoveryActions: [] }).verdict).toBe("pass");
+  });
+  it("recognizes diagnosable failure causes", () => {
+    expect(diagnosableFailureCause("40001")).toBe(true);
+    expect(diagnosableFailureCause("signal_SIGKILL")).toBe(true);
+    for (const cause of [null, undefined, "", " ", "Error", "unknown", "adapter_failed", "adapter_reported_error", "object"]) {
+      expect(diagnosableFailureCause(cause)).toBe(false);
+    }
+  });
   it("flags a recovery action with an empty or bare cause", () => {
     const db = { runMessages: new Map(), recoveryActions: [{ id: "a1", kind: "stalled_issue", cause: "Error", nextAction: "Retry the task" }] };
     expect(gradeU3(record([sample(0, "done", [])]), db).verdict).toBe("fail");
@@ -151,6 +214,21 @@ describe("U4 stale notices", () => {
     const runs = [run("r1", "failed", 0, 5 * SEC, { errorCode: "process_lost" }), run("r2", "succeeded", 10 * SEC, 30 * SEC)];
     const samples = [sample(31 * SEC, "done", runs, { interruption: retryable }), sample(34 * SEC, "done", runs)];
     expect(gradeU4(record(samples), BOUNDS).verdict).toBe("pass");
+  });
+});
+
+describe("U5 run budget", () => {
+  it("fails a task that keeps starting runs (the response_wake loop shape)", () => {
+    const runs = Array.from({ length: 65 }, (_, index) => run(`r${index}`, "succeeded", index * 12 * SEC, index * 12 * SEC + 10 * SEC));
+    const samples = [sample(800 * SEC, "in_progress", runs)];
+    expect(gradeU5(record(samples, { restAt: null, finalStatus: null, timedOut: true }), BOUNDS))
+      .toMatchObject({ verdict: "fail", detail: "run_budget_exceeded 65 runs > 10", metrics: { runs: 65 } });
+  });
+  it("passes a task within the budget and reads the bound from the environment", () => {
+    const runs = Array.from({ length: 5 }, (_, index) => run(`r${index}`, "succeeded", index * 20 * SEC, index * 20 * SEC + 10 * SEC));
+    expect(gradeU5(record([sample(120 * SEC, "done", runs)]), BOUNDS).verdict).toBe("pass");
+    expect(universalBounds({ RESTART_CHAOS_U5_MAX_RUNS: "4" }).maxRuns).toBe(4);
+    expect(gradeU5(record([sample(120 * SEC, "done", runs)]), { ...BOUNDS, maxRuns: 4 }).verdict).toBe("fail");
   });
 });
 

@@ -200,6 +200,53 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     await flushReact();
   }
 
+  it("checks an unreachable Cloud again until it answers", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      getCloudConnectorEnrollmentMock.mockResolvedValue({
+        configured: false,
+        status: "unreachable",
+        brokerBaseUrl: "https://my.paperclip.app",
+        instanceId: "instance-test",
+        environment: "production",
+        origins: [],
+      });
+      await renderApps();
+      expect(container.textContent).toContain("Paperclip couldn’t reach Paperclip Cloud.");
+      getCloudConnectorEnrollmentMock.mockResolvedValue({
+        configured: true,
+        status: "active",
+        brokerBaseUrl: "https://my.paperclip.app",
+        instanceId: "instance-test",
+        environment: "production",
+        origins: [],
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_100); });
+      await flushReact();
+      expect(container.textContent).toContain("Paperclip-managed sign-in is ready");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["unreachable", "Paperclip couldn’t reach Paperclip Cloud."],
+    ["misconfigured", "Paperclip Cloud settings on this instance are incomplete."],
+  ])("does not offer enrollment when the Cloud status is %s", async (status, message) => {
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: false,
+      status,
+      brokerBaseUrl: "https://my.paperclip.app",
+      instanceId: status === "unreachable" ? "instance-test" : null,
+      environment: "production",
+      origins: [],
+    });
+    await renderApps();
+    expect(container.textContent).toContain(message);
+    expect(container.textContent).not.toContain("Enable Paperclip-managed sign-in");
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Enable")).toBe(false);
+  });
+
   it("renders applications without connections as not connected with a Connect action", async () => {
     listApplicationsMock.mockResolvedValue({
       applications: [application({ id: "app-github", name: "GitHub" })],
@@ -424,6 +471,31 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     );
   });
 
+
+  it("adds the Google outcome to the deletion message", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "app-github", name: "GitHub" })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ id: "c-github-primary", applicationId: "app-github", name: "GitHub" })] });
+    archiveConnectionMock.mockResolvedValueOnce({
+      ...connection({ id: "c-github-primary", status: "archived" }),
+      removal: { providerAccess: { provider: "google", result: "ended_unconfirmed", outcomes: ["other_connections_remain", "revoked"] } },
+    });
+    await renderApps();
+    const deleteButton = container.querySelector<HTMLButtonElement>('button[aria-label="Delete GitHub for the organization connection"]');
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Delete connection");
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Connection deleted",
+      tone: "info",
+      body: expect.stringContaining("If more than one Google account was connected here"),
+      action: expect.objectContaining({ label: "Open Google account connections" }),
+    }));
+  });
 
   it("reports the remaining active connections after deleting one", async () => {
     listApplicationsMock.mockResolvedValue({

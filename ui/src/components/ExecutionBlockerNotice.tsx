@@ -60,6 +60,11 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
     && ["working", "retry_scheduled"].includes(presentation.state) ? recoveryStepText[presentation.recoveryStep] : null;
   const seconds = Math.max(0, Math.ceil((Date.parse(presentation?.nextRetryAt ?? "") - Date.now()) / 1000));
   const retryIn = `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`;
+  if (!optimistic && presentation?.state === "waiting_for_user" && presentation.userAction === "question")
+    return <div role="status" data-testid="task-execution-waiting" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}>
+      <span>Respond to the pending question to continue.</span>
+      {canRetry && presentation.canRetry && <Button variant="outline" size="sm" onClick={onRetry} data-testid="task-execution-retry">Retry</Button>}
+    </div>;
   if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
     // Saved-work recovery is what the task waits for, so name it over the
     // generic automatic-retry line while keeping the provider explanation.
@@ -71,6 +76,11 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   }
   if (step && presentation?.state === "working") return <div role="status" aria-label="Task status"
     className={cn("text-sm text-muted-foreground", className)}>{`${step}…`}</div>;
+  if (!optimistic && presentation?.state === "working" && presentation.retryAction === "move_forward" && presentation.canRetry)
+    return <div role="status" aria-label="Task status" className={cn("flex items-center justify-between gap-3 text-sm text-muted-foreground", className)}>
+      <span className="min-w-0 flex-1">Waiting for the agent to finish other work. Paperclip continues this task by itself.</span>
+      {canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry} data-testid="task-execution-move-forward">Move it forward now</Button>}
+    </div>;
   // A task that has not started yet names the admission hold it waits for.
   if (!optimistic && presentation?.state === "working" && presentation.retryWait) {
     const dependencies = presentation.retryWait.reason === "dependency_blocked" ? blockers ?? [] : [];
@@ -123,10 +133,13 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
       )}>
         {presentation.state === "failed" && <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />}
         <span className="min-w-0 flex-1">{presentation.state === "retry_scheduled"
-          ? step ? `${step}. ${retryIn}` : retryIn
+          ? step ? `${step}. ${retryIn}`
+            : presentation.setupFailure ? `${presentation.setupFailure.message}. ${retryIn}` : retryIn
           : presentation.retryWait ? presentation.retryWait.message
           : presentation.workspaceFailure
             ? <>Couldn’t prepare the task folders. {presentation.workspaceFailure.message}</>
+          : presentation.setupFailure
+            ? <>Couldn’t set up the task workspace. {presentation.setupFailure.message}. Fix the command in the project’s workspace settings, then retry.</>
             : "Couldn’t finish this attempt. Your message is saved."}</span>
         {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry} data-testid="task-execution-retry">Retry</Button>}
       </div>

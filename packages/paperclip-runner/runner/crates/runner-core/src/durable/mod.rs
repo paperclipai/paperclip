@@ -29,6 +29,7 @@ pub const PROTOCOL: &str = "paperclip.runner";
 pub const PROTOCOL_MIN_VERSION: u64 = 1;
 pub const PROTOCOL_VERSION: u64 = 3;
 pub const BOOTSTRAP_TICKET_ENV: &str = "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET";
+pub const DEFAULT_CONTROLLER_SILENCE: Duration = Duration::from_secs(90);
 const MAX_OUTBOX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
@@ -50,6 +51,12 @@ pub const PROVIDER_ATTACH_REFUSED: &str = "provider_attach_refused";
 /// The saved provider session still owns a side-effecting tool call without a
 /// recorded result. Replacing the session could repeat or lose that action.
 pub const PROVIDER_SIDE_EFFECT_PENDING: &str = "provider_side_effect_pending";
+
+/// The runner closed this run's provider session after a turn start whose
+/// prompt may have reached the provider. No later `turn.start` of the same run
+/// can reopen it; only a new run's attachment can. Resending could duplicate
+/// the prompt, so the controller stops same-run retries and offers Retry.
+pub const PROVIDER_SESSION_CLOSED: &str = "provider_session_closed";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
@@ -253,6 +260,7 @@ pub struct DurableRunnerConfig {
     /// per_turn`): the process exits with its run, so nothing reuses a provider
     /// generation prepared after its turn settles.
     pub turn_scoped: bool,
+    pub controller_silence: Duration,
 }
 
 impl DurableRunnerConfig {
@@ -306,6 +314,13 @@ impl DurableRunnerConfig {
         if self.reconnect_delay.is_zero() || self.reconnect_delay > Duration::from_secs(60) {
             return Err(DurableRunnerError::invalid(
                 "reconnect delay must be between one millisecond and 60 seconds",
+            ));
+        }
+        if self.controller_silence < Duration::from_millis(100)
+            || self.controller_silence > Duration::from_secs(3600)
+        {
+            return Err(DurableRunnerError::invalid(
+                "controller silence must be between 100 milliseconds and one hour",
             ));
         }
         if self.reconnect_grace.is_some_and(|grace| grace.is_zero()) {
@@ -434,11 +449,18 @@ mod tests {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
             turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_launch_digest_binds_authority_and_config_binds_actual_identity() {
         let mut profile = AcpxLaunchProfile {
             authority_digest: format!("sha256:{}", "a".repeat(64)),

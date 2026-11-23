@@ -133,6 +133,65 @@ describe("object byte journal", () => {
     expect(isStorageUnavailableError(failure)).toBe(true);
   }, 40_000);
 
+  it("sends a read again with a fresh deadline when one GET hangs until its deadline", async () => {
+    const s = storage();
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/hung/log" });
+    const claimed = await journal.claim({ assertAuthority: authority });
+    const get = s.provider.getObject;
+    let headReads = 0;
+    s.provider.getObject = async (input) => {
+      if (!input.objectKey.endsWith("/head.json") || ++headReads > 1) return get(input);
+      return withS3FailureDiagnostics("get_object", () => new Promise<never>((_resolve, reject) => {
+        input.signal!.addEventListener("abort", () => {
+          const aborted = new Error("Request aborted");
+          aborted.name = "AbortError";
+          reject(aborted);
+        }, { once: true });
+      }), input.signal);
+    };
+    const current = await journal.head();
+    expect(headReads).toBe(2);
+    expect(current?.etag).toBe(claimed.etag);
+  }, 40_000);
+
+  it("does not send a hung read again after its caller aborts", async () => {
+    const s = storage();
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/hung-stop/log" });
+    await journal.claim({ assertAuthority: authority });
+    let headReads = 0;
+    s.provider.getObject = (input) => {
+      headReads++;
+      return new Promise<never>((_resolve, reject) => {
+        input.signal!.addEventListener("abort", () => reject(input.signal!.reason), { once: true });
+      });
+    };
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error("caller stopped")), 100);
+    await expect(journal.head(controller.signal)).rejects.toThrow("caller stopped");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(headReads).toBe(1);
+  });
+
+  it("stops sending a read that hangs on every attempt and reports it as a storage outage", async () => {
+    const s = storage();
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/hung-always/log" });
+    await journal.claim({ assertAuthority: authority });
+    let headReads = 0;
+    s.provider.getObject = (input) => {
+      headReads++;
+      return withS3FailureDiagnostics("get_object", () => new Promise<never>((_resolve, reject) => {
+        input.signal!.addEventListener("abort", () => {
+          const aborted = new Error("Request aborted");
+          aborted.name = "AbortError";
+          reject(aborted);
+        }, { once: true });
+      }), input.signal);
+    };
+    const failure = await journal.head().catch((error: unknown) => error);
+    expect(headReads).toBe(3);
+    expect(isStorageUnavailableError(failure)).toBe(true);
+  }, 70_000);
+
   it("keeps a shared capability probe alive for another writer when one claim cancels", async () => {
     const s = storage();
     const put = s.provider.putObjectConditional!;
@@ -256,6 +315,64 @@ describe("object byte journal", () => {
     writer = await journal.append(writer, Buffer.from("once"));
     expect(await journal.readRange(writer.head, 0, 100)).toEqual(Buffer.from("once"));
     expect(conflicts).toBe(2);
+  });
+  it("waits for a just-written head to become readable instead of failing the claim as another writer's", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    let writer = await journal.claim({ assertAuthority: authority });
+    writer = await journal.append(writer, Buffer.from("kept"));
+    const original = s.provider.getObject;
+    let hidden = 3;
+    s.provider.getObject = async (input) => {
+      if (input.objectKey.endsWith("/head.json") && hidden > 0) {
+        hidden--;
+        throw Object.assign(new Error("not yet visible"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      }
+      return original(input);
+    };
+    const next = await journal.claim({ assertAuthority: authority });
+    expect(next.head).toMatchObject({ generation: writer.head.generation + 1, end: 4 });
+    expect(next.head.owner).not.toBe(writer.head.owner);
+    expect(hidden).toBe(0);
+    expect(await journal.readRange(next.head, 0, 100)).toEqual(Buffer.from("kept"));
+  });
+  function hideHead(s: ReturnType<typeof storage>, onRead: () => void = () => undefined) {
+    const original = s.provider.getObject;
+    let reads = 0;
+    s.provider.getObject = async (input) => {
+      if (input.objectKey.endsWith("/head.json")) {
+        reads++;
+        onRead();
+        throw Object.assign(new Error("not yet visible"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      }
+      return original(input);
+    };
+    return { reads: () => reads };
+  }
+  it("stops waiting for an unreadable head at the deadline and makes no further storage calls", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    await journal.claim({ assertAuthority: authority });
+    const hidden = hideHead(s, () => vi.setSystemTime(Date.now() + 15_000));
+    await expect(journal.claim({ assertAuthority: authority })).rejects.toBeInstanceOf(ObjectJournalConflictError);
+    const reads = hidden.reads(), puts = s.calls.put;
+    expect(reads).toBeGreaterThan(1);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect([hidden.reads(), s.calls.put]).toEqual([reads, puts]);
+  });
+  it("stops a claim that waits for an unreadable head when its caller aborts", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    await journal.claim({ assertAuthority: authority });
+    const hidden = hideHead(s);
+    const controller = new AbortController();
+    const claiming = journal.claim({ assertAuthority: authority, signal: controller.signal });
+    setTimeout(() => controller.abort(new Error("caller stopped")), 100);
+    await expect(claiming).rejects.toMatchObject({ name: "AbortError" });
+    const reads = hidden.reads(), puts = s.calls.put;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect([hidden.reads(), s.calls.put]).toEqual([reads, puts]);
   });
   it("does not accept a provider's 409 response as proof of conditional enforcement", async () => {
     const s = storage(),

@@ -216,6 +216,13 @@ export function installProjectSkillFixtures(scenario: Scenario, client: QueryCli
     const issue = executionIssues.find(candidate => candidate.id === id || candidate.identifier === id);
     return issue ? structuredClone(issue) : originalIssues.get(id, options);
   };
+  issuesApi.getCore = async (id, options) => {
+    const issue = executionIssues.find(candidate => candidate.id === id || candidate.identifier === id);
+    return issue ? structuredClone(issue) : originalIssues.getCore(id, options);
+  };
+  issuesApi.recentComments = async (id, options) => isExecution(id)
+    ? { latestCommentId: null, oldestCommentId: null, comments: [], hasMore: false }
+    : originalIssues.recentComments(id, options);
   issuesApi.list = async (companyId, filters) => filters?.originId === ROUTINE_ID ? structuredClone(executionIssues) : originalList(companyId, filters);
   issuesApi.listCompact = async (companyId, filters, options) => filters?.originId === ROUTINE_ID ? structuredClone(executionIssues.map(issue => ({ ...issue, activeRecoveryAction: null, successfulRunHandoff: null }))) : originalCompact(companyId, filters, options);
   if (scenario === 'automatic') timers.push(setTimeout(() => { if (live) void refresh().then(invalidate); }, 1800));

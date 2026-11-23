@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, approvals, issueApprovals, statusDecisions, authUsers, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues,
-  nativeRunFinalizations, nativeRunResults, issueThreadInteractions, chatTaskHandoffs, chatCompletionDeliveries, agentWakeupRequests, type Db } from "@paperclipai/db";
+import { agents, authUsers, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults, issueThreadInteractions, chatTaskHandoffs, chatCompletionDeliveries, agentWakeupRequests, statusDecisions, type Db, approvals, issueApprovals } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
@@ -36,7 +35,7 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  async function fixture(conversation = true, options: { succeed?: boolean; disposition?: "done" | "needs_review" | "yielded";
+  async function fixture(conversation = true, options: { succeed?: boolean; disposition?: "done" | "needs_review" | "yielded"; channel?: "final" | "unknown";
     beforeFinalize?: (ids: { companyId: string; issueId: string; runId: string; agentId: string }) => Promise<void>;
     reply?: string; logRef?: string } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -65,12 +64,13 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     const reply = options.reply ?? "The teammate is hired and ready for your next instruction.";
     const prpEvent = { runId, normalizedSessionId: sessionId, turnId: "hire-turn", sourceEventId: "fixture-final-answer",
       payload: { kind: "agentMessage", channel: "final", providerPhase: "final", text: reply } };
+    if (options.channel) prpEvent.payload.channel = options.channel;
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 170, eventType: "item.completed", payload: { prpEvent } });
     const disposition = options.disposition ?? "done";
     await options.beforeFinalize?.({ companyId, issueId, runId, agentId });
     await port.completeRun({ result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: disposition,
       summary: "A completed hire, with its final message preserved separately.",
-      ...(disposition === "yielded" ? { continuation: { kind: "response_wake", summary: "Wait for the hire decision.", idempotencyKey: "hire-wait" } } : {}),
+      ...(disposition === "yielded" ? { continuation: { kind: "response_wake" as const, summary: "Wait for the next human message", idempotencyKey: "conversation-next-message" } } : {}),
       completionClaim: { contractRevision: "test",
         objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [],
       attentionRequests: disposition === "needs_review" ? [{ kind: "review", ownerClass: "human", summary: "Review the completed work." }] : [], artifacts: [] },
@@ -617,6 +617,17 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
     expect(await comments(f.runId)).toHaveLength(1);
   });
+  it("recovers a server-finished yielded conversation from its completed unknown-channel reply", async () => {
+    const f = await fixture(true, { disposition: "yielded", channel: "unknown" });
+    expect((await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId)))[0])
+      .toMatchObject({ reasonCode: "conversation_turn_finished" });
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(true);
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply, createdByRunId: f.runId })]);
+    expect(await issue(f.issueId)).toMatchObject({ status: "in_review", conversationState: "waiting" });
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toHaveLength(1);
+  });
+
   it("presents an invite join link from database run events, never from the redacted run log", async () => {
     // The run log redacts invitation tokens; the person must still receive the
     // working join link, so the reply must come from the stored run events.

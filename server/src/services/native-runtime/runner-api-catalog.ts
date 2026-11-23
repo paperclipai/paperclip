@@ -55,9 +55,23 @@ function dedicatedTools(method: string, path: string): string[] {
   if (/\/agents\/\{[^}]+\}\/instructions-bundle\/restore$/.test(path) && method === "POST") return ["restore_agent_instructions"];
   if (/\/companies\/\{[^}]+\}\/skills$/.test(path) && method === "POST") return ["create_skill"];
   if (/\/companies\/\{[^}]+\}\/skills\/\{[^}]+\}\/files$/.test(path) && method === "PATCH") return ["update_skill"];
+  if (/\/companies\/\{[^}]+\}\/skills\/\{[^}]+\}$/.test(path) && method === "PATCH") return ["update_skill_details"];
   if (/\/companies\/\{[^}]+\}\/agent-hires$/.test(path) && method === "POST") return ["hire_agent"];
   if (/\/projects$/.test(path)) return method === "GET" ? ["list_projects"] : method === "POST" ? ["create_project"] : [];
   if (/\/project-repositories$/.test(path) && method === "GET") return ["list_project_repositories"];
+  if (/\/companies\/\{[^}]+\}\/routines$/.test(path) && method === "GET") return ["list_routines"];
+  if (/\/routines\/\{[^}]+\}$/.test(path) && method === "PATCH") return ["update_routine"];
+  if (/\/routines\/\{[^}]+\}\/triggers$/.test(path) && method === "POST") return ["update_routine"];
+  if (/\/routine-triggers\/\{[^}]+\}$/.test(path) && method === "PATCH") return ["update_routine"];
+  if (/\/companies\/\{[^}]+\}\/responsibilities$/.test(path)) return method === "GET" ? ["list_responsibilities"] : method === "POST" ? ["create_responsibility"] : [];
+  if (/\/companies\/\{[^}]+\}\/responsibility-areas$/.test(path)) return method === "GET" ? ["list_responsibilities"] : method === "POST" ? ["create_area"] : [];
+  if (/\/responsibility-areas\/\{[^}]+\}$/.test(path)) return method === "PATCH" ? ["update_area"] : method === "DELETE" ? ["delete_area"] : [];
+  if (/\/responsibilities\/\{[^}]+\}$/.test(path)) {
+    return method === "GET" ? ["get_responsibility"] : method === "PATCH" ? ["update_responsibility"] : method === "DELETE" ? ["delete_responsibility"] : [];
+  }
+  if (/\/responsibilities\/\{[^}]+\}\/(file|links)$/.test(path) && method === "POST") return ["file_under_responsibility"];
+  if (/\/responsibilities\/\{[^}]+\}\/(unfile|links\/\{[^}]+\})$/.test(path)) return method === "POST" || method === "DELETE" ? ["remove_from_responsibility"] : [];
+  if (/\/responsibility-links\/lookup$/.test(path) && method === "GET") return ["find_responsibilities_for"];
   if (/\/issues\/\{[^}]+\}\/comments$/.test(path)) return method === "GET" ? ["get_task_history"] : ["report_progress"];
   if (/\/issues\/\{[^}]+\}\/documents/.test(path)) return method === "DELETE" ? [] : method === "GET" ? ["list_documents", "read_document", "list_document_revisions"] : ["write_document"];
   if (/\/case-handoffs$/.test(path) && method === "POST") return ["handoff_case", "create_case"];
@@ -151,6 +165,16 @@ export function runnerApiOperation(id: string): RunnerApiOperation {
   const operation = runnerApiCatalog().find((entry) => entry.operationId === id);
   if (!operation) throw notFound("Unknown API operation; use search_api to discover its exact operationId");
   return operation;
+}
+
+/**
+ * Catalog text names company pages as /<prefix>/...; a model can copy that
+ * placeholder verbatim into a link. When the caller's company prefix is known,
+ * hand back real paths. Returns a copy; the shared catalog is never mutated.
+ */
+export function withCompanyPagePaths<T>(value: T, prefix: string | null | undefined): T {
+  if (!prefix || !/^[A-Za-z0-9]+$/.test(prefix)) return value;
+  return JSON.parse(JSON.stringify(value).replaceAll("/<prefix>/", `/${prefix}/`)) as T;
 }
 
 export const runnerApiSearchSchema = z.object({ query: z.string().trim().min(1).max(500), limit: z.number().int().min(1).max(10).default(5), cursor: z.string().max(200).optional() }).strict();

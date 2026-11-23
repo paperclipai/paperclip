@@ -35,7 +35,7 @@ import {
   type CompanyImportTransferStatus,
 } from "@paperclipai/shared/company-import-transfer";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
@@ -427,6 +427,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const query = companyArtifactsQuerySchema.parse(req.query);
     res.json(await artifacts.list(companyId, query, {
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+      readCondition: await issueReadSqlCondition(db, req.actor),
     }));
   });
 
@@ -1269,6 +1270,23 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (!existingCompany) {
       res.status(404).json({ error: "Company not found" });
       return;
+    }
+
+    // PAP-749 task 1d-lite: ownerless cards route to the default decision owner,
+    // so it must be a person who is an active member of this company.
+    if (typeof body.defaultDecisionOwnerUserId === "string") {
+      const membership = await access.getMembership(companyId, "user", body.defaultDecisionOwnerUserId);
+      if (membership?.status !== "active") {
+        throw unprocessable("Default decision owner must be an active member of this company");
+      }
+    }
+    // PAP-749 task 1d: budget hard stops also go to the budget owner, so the
+    // same rule applies.
+    if (typeof body.budgetOwnerUserId === "string") {
+      const membership = await access.getMembership(companyId, "user", body.budgetOwnerUserId);
+      if (membership?.status !== "active") {
+        throw unprocessable("Budget owner must be an active member of this company");
+      }
     }
 
     if (req.actor.type !== "agent") {

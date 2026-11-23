@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sampleHarnesses } from "@/test-support/harness-availability";
 
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -13,10 +14,12 @@ import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, ModelDropdown, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { AgentLifecycleStatus, useAgentLifecycleStatus } from "./AgentLifecycleStatus";
 import { queryKeys } from "../lib/queryKeys";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
 import { aiConnectionsApi } from "../api/ai-connections";
+import * as ConnectionField from "./ai-connections/AiConnectionField";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { buildClaudeLocalConfig } from "@paperclipai/adapter-claude-local/ui";
@@ -330,6 +333,7 @@ async function renderForm(
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
+    cloud?: boolean;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -339,6 +343,7 @@ async function renderForm(
   const root = createRoot(container);
   const onSave = vi.fn();
   const queryClient = createFormQueryClient();
+  if (options.cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
 
   await act(async () => {
     renderFormView(root, queryClient,
@@ -1220,6 +1225,54 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
   });
 
+  it("clears dirty state when a runtime toggle is restored", async () => {
+    const dirty = vi.fn();
+    const result = await renderForm([], {}, { content: "configuration", onDirtyChange: dirty });
+    roots.push(result.root);
+    const toggle = result.container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle).toBeTruthy();
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
+  it.each([{}, { enabled: false, maxAttempts: 4, delayMs: 3000 }])("clears dirty state when continuation settings are restored (%j)", async saved => {
+    const dirty = vi.fn();
+    const result = await renderForm([], { runtimeConfig: { heartbeat: { maxTurnContinuation: saved } } }, { onDirtyChange: dirty });
+    roots.push(result.root);
+    await clickByText(result.container, "Advanced Run Policy");
+    const toggle = result.container.querySelector<HTMLButtonElement>('[aria-label="Continue after max-turn stop"]')!;
+    expect(toggle).toBeTruthy();
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    await act(async () => toggle.click());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
+  it("clears dirty state when the saved account binding is restored", async () => {
+    const binding = { mode: "responsible_user" as const, provider: "openai" as const, method: "api_key" as const };
+    const field = vi.spyOn(ConnectionField, "AiConnectionField").mockImplementation(({ onChange }) => <>
+      <button onClick={() => onChange({ ...binding, method: "subscription" })}>Other account</button>
+      <button onClick={() => onChange({ ...binding })}>Original account</button>
+    </>);
+    try {
+      const dirty = vi.fn();
+      const result = await renderForm([], { runtimeConfig: { aiConnection: binding } }, { onDirtyChange: dirty });
+      roots.push(result.root);
+      await act(async () => findButton(result.container, "Other account")!.click());
+      await flushReact();
+      expect(dirty).toHaveBeenLastCalledWith(true);
+      await act(async () => findButton(result.container, "Original account")!.click());
+      await flushReact();
+      expect(dirty).toHaveBeenLastCalledWith(false);
+    } finally { field.mockRestore(); }
+  });
+
   it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
     const dirty = vi.fn();
     let save: (() => void) | null = null;
@@ -1409,6 +1462,20 @@ describe("AgentConfigForm environment selector", () => {
         provider: "acpx", acpxAgent: "antigravity", model: "manual-exact-google-model",
       }) }));
     } finally { accounts.mockRestore(); }
+  });
+
+  it.each(["antigravity", "copilot"])("honors Cloud availability during saved %s model discovery", async acpxAgent => {
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent, model: "source-model" },
+    }, { cloud: true });
+    roots.push(result.root);
+    await flushReact();
+    if (acpxAgent === "copilot") {
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent })));
+    } else {
+      expect(result.container.querySelector('[aria-label="Model"]')).toBeNull();
+      expect(mockAgentsApi.adapterModels).not.toHaveBeenCalled();
+    }
   });
 
   it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {
@@ -2390,6 +2457,17 @@ describe("AgentConfigForm environment selector", () => {
     expect(urlIndex).toBeGreaterThan(codeIndex);
   });
 
+  it("blocks the displayed login code from session replay", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(isBlockedFromReplay("WXYZ-1234", document.body)).toBe(true);
+  });
+
   it("keeps the code and URL visible after a later poll returns no prompt", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     // The server delivers the one-time prompt on the first owner read only. The
@@ -2500,6 +2578,28 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
     expect(mockAgentsApi.getAdapterAuthLoginStatus).not.toHaveBeenCalled();
     expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).not.toHaveBeenCalled();
+  });
+
+  it.each(["codex_local", "claude_local"] as const)("resumes %s using the computer Core selected", async (adapterType) => {
+    const aiConnection = {
+      provider: adapterType === "codex_local" ? "openai" : "anthropic",
+      method: "subscription", name: "My subscription", ownership: "personal", allAgents: false,
+      agentIds: [] as string[],
+    } as const;
+    const active = { sessionId: "computer-login", agentId: "computer-a", environmentId: "plugin-env",
+      status: "waiting_for_user", prompt: null, aiConnection };
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue(active);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue(active);
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container); roots.push(root);
+    await act(async () => renderFormView(root, createFormQueryClient(),
+      <AdapterLoginPanel requiresAgent companyId="company-1" adapterType={adapterType} environmentId="plugin-env"
+        aiConnection={aiConnection} chrome="onboarding" autoStart />));
+
+    const statusApi = adapterType === "codex_local" ? mockAgentsApi.getAdapterAuthLoginStatus : mockAgentsApi.getClaudeSetupTokenLoginStatus;
+    await flushUntil(() => statusApi.mock.calls.some(call => call.includes(active.sessionId)));
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
   });
 
   it("recovers a previous-environment sign-in only after explicit successful cancellation", async () => {

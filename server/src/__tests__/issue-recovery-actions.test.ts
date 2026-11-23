@@ -48,6 +48,8 @@ import { caseHandoffService } from "../services/case-handoffs.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { CONVERSATION_CONTINUATION_POLICY } from "../services/conversation-continuation.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_ACTION_TEST_DATABASE_URL");
 const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -95,7 +97,7 @@ describe("issueRecoveryActionService", () => {
     const error: Error & { cause?: unknown } = new Error("Wrapped database failure");
     error.cause = kind === "unrelated unique constraint" ? { code: "23505", constraint_name: "other_unique_constraint" }
       : kind === "other SQLSTATE" ? { code: "23503", constraint_name: constraint } : error;
-    const query = { from() { return this; }, where() { return this; }, orderBy() { return this; },
+    const query = { from() { return this; }, innerJoin() { return this; }, where() { return this; }, orderBy() { return this; },
       limit() { return Promise.resolve([]); } };
     const fakeDb = {
       async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> { return fn(fakeDb); },
@@ -106,7 +108,7 @@ describe("issueRecoveryActionService", () => {
     await expect(issueRecoveryActionService(fakeDb as never).upsertSourceScoped({ companyId: "company", sourceIssueId: "issue",
       kind: "missing_disposition", cause: "saved-debt", fingerprint: "same-source", nextAction: "Restore existing work." }))
       .rejects.toBe(error);
-    expect(fakeDb.select).toHaveBeenCalledOnce();
+    expect(fakeDb.select).toHaveBeenCalledTimes(2);
     expect(fakeDb.insert).toHaveBeenCalledOnce();
   });
   it("does not reactivate an action resolved between the active read and update", async () => {
@@ -116,6 +118,9 @@ describe("issueRecoveryActionService", () => {
 
     const makeSelectQuery = (rows: unknown[]) => ({
       from() {
+        return this;
+      },
+      innerJoin() {
         return this;
       },
       where() {
@@ -184,6 +189,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   }, 30_000);
 
   afterEach(async () => {
+    await heartbeatService(db).drainActiveRunExecutions();
     await db.delete(caseHandoffs);
     await db.delete(cases);
     await db.delete(documentRevisions);
@@ -1856,7 +1862,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           cleanliness: "dirty",
         }),
       }),
-      nextAction: expect.stringContaining("git worktree branch incoherence"),
+      nextAction: expect.stringContaining("workspace no longer matches its branch"),
       wakePolicy: expect.objectContaining({
         type: "board_escalation",
         reason: "workspace_validation_failed",
@@ -2143,6 +2149,77 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(recorded!.evidence).toMatchObject({ executionReconciliation: { runId }, continuationDelivery: "pending" });
     await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(recorded);
+  });
+
+  async function seedHeldBlockedTask() {
+    const fixture = await seedCompany();
+    const failedRunId = randomUUID(), agentRunId = randomUUID();
+    await seedHeartbeatRun({ companyId: fixture.companyId, agentId: fixture.coderId, runId: failedRunId,
+      issueId: fixture.sourceIssueId, status: "failed" });
+    await seedHeartbeatRun({ companyId: fixture.companyId, agentId: fixture.coderId, runId: agentRunId });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, fixture.sourceIssueId));
+    const [hold] = await db.insert(issueRecoveryActions).values({
+      companyId: fixture.companyId, sourceIssueId: fixture.sourceIssueId, kind: "active_run_watchdog",
+      status: "resolved", outcome: "blocked", ownerType: "board", returnOwnerAgentId: fixture.coderId,
+      cause: "provider_failure_meaning_unverified", fingerprint: failedRunId,
+      nextAction: "Preserve recorded work without replay.",
+      evidence: { runId: failedRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    }).returning();
+    const agent = createApp({ type: "agent", source: "agent_jwt", companyId: fixture.companyId,
+      agentId: fixture.coderId, runId: agentRunId });
+    return { ...fixture, hold: hold!, agent };
+  }
+
+  async function seedLiveOwnerRun(f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) {
+    await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: f.companyId, agentId: f.coderId,
+      invocationSource: "manual", status: "failed", processPid: process.pid, contextSnapshot: { issueId: f.sourceIssueId },
+      resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } });
+    expect(await getExecutionBlocker(db, f.companyId, f.sourceIssueId))
+      .toMatchObject({ cause: "execution_owner_active", recoveryActionId: null });
+  }
+
+  it.each([
+    ["status change", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
+      request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "in_progress" })],
+    ["reopen", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
+      request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ reopen: true, comment: "Reopening the case." })],
+    ["resume comment", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
+      request(f.agent).post(`/api/issues/${f.sourceIssueId}/comments`).send({ body: "Continuing the case.", resume: true })],
+    ["checkout", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
+      request(f.agent).post(`/api/issues/${f.sourceIssueId}/checkout`).send({ agentId: f.coderId, expectedStatuses: ["blocked"] })],
+    ["completion that its review stage hands to a reviewer", async (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) => {
+      await db.update(issues).set({ executionPolicy: { mode: "normal", commentRequired: false,
+        stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: f.managerId }] }] } })
+        .where(eq(issues.id, f.sourceIssueId));
+      return request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "done" });
+    }],
+    ["status change while a live previous run also owns the task", async (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) => {
+      await seedLiveOwnerRun(f);
+      return request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "todo" });
+    }],
+  ])("keeps a task blocked behind a no-replay hold when its agent tries a %s", async (_entry, send) => {
+    const f = await seedHeldBlockedTask();
+    const response = await send(f);
+    expect(response.status).toBe(409);
+    expect(response.body.details).toMatchObject({ recoveryActionId: f.hold.id, nextAction: expect.stringContaining(f.hold.nextAction) });
+    expect((await db.select().from(issues).where(eq(issues.id, f.sourceIssueId)))[0]!.status).toBe("blocked");
+  });
+
+  it("lets the agent close a held task, or move it on once the hold no longer blocks replay", async () => {
+    const closed = await seedHeldBlockedTask();
+    await request(closed.agent).patch(`/api/issues/${closed.sourceIssueId}`).send({ status: "cancelled" }).expect(200);
+    const released = await seedHeldBlockedTask();
+    await db.update(issueRecoveryActions).set({ evidence: { runId: released.hold.evidence.runId } })
+      .where(eq(issueRecoveryActions.id, released.hold.id));
+    await request(released.agent).patch(`/api/issues/${released.sourceIssueId}`).send({ status: "todo" }).expect(200);
+    expect((await db.select().from(issues).where(eq(issues.id, released.sourceIssueId)))[0]!.status).toBe("todo");
+  });
+
+  it("does not hold a blocked task while only a live previous run still owns it", async () => {
+    const f = await seedHeldBlockedTask();
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.hold.id));
+    await seedLiveOwnerRun(f);
+    await request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "todo" }).expect(200);
   });
 
   async function seedReconciledDelivery() {

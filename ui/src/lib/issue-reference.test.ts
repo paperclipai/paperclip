@@ -25,12 +25,26 @@ describe("issue-reference", () => {
     for (const suffix of ["#document-output", "#comment-123", "?view=chat#document-output"]) {
       expect(parseIssuePathIdFromPath(`/PAP/issues/pap-1271${suffix}`)).toBe("PAP-1271");
       expect(parseIssueReferenceFromHref(`/PAP/issues/pap-1271${suffix}`)).toEqual({
-        issuePathId: "PAP-1271", href: `/issues/PAP-1271${suffix}`,
+        issuePathId: "PAP-1271", href: `/PAP/issues/PAP-1271${suffix}`,
       });
       expect(parseIssueReferenceFromHref(`issue://PAP-1271${suffix}`)).toEqual({
         issuePathId: "PAP-1271", href: `/issues/PAP-1271${suffix}`,
       });
     }
+  });
+
+  it("keeps another company's prefix instead of resolving the link into the viewer's company", () => {
+    expect(parseIssueReferenceFromHref("/BIR/issues/BIR-1")).toEqual({
+      issuePathId: "BIR-1", href: "/BIR/issues/BIR-1",
+    });
+    expect(parseIssueReferenceFromHref("/BIR/issues/bir-1#document-plan")).toEqual({
+      issuePathId: "BIR-1", href: "/BIR/issues/BIR-1#document-plan",
+    });
+    const known = new Set(["COM", "BIR"]);
+    expect(parseIssueReferenceFromHref("/issues/BIR-1", known)?.href).toBe("/BIR/issues/BIR-1");
+    expect(parseIssueReferenceFromHref("BIR-1", known)?.href).toBe("/BIR/issues/BIR-1");
+    expect(parseIssueReferenceFromHref("issue://BIR-1", known)?.href).toBe("/BIR/issues/BIR-1");
+    expect(parseIssueReferenceFromHref("/issues/BIR-1")?.href).toBe("/issues/BIR-1");
   });
 
   it("does not treat full issue URLs as internal issue paths", () => {
@@ -60,7 +74,7 @@ describe("issue-reference", () => {
     });
     expect(parseIssueReferenceFromHref("/PAP/issues/pap-1180")).toEqual({
       issuePathId: "PAP-1180",
-      href: "/issues/PAP-1180",
+      href: "/PAP/issues/PAP-1180",
     });
     expect(parseIssueReferenceFromHref("issue://PAP-1310")).toEqual({
       issuePathId: "PAP-1310",
@@ -93,14 +107,14 @@ describe("issue-reference", () => {
     it("links a bare identifier whose prefix is known", () => {
       expect(parseIssueReferenceFromHref("PAP-1271", new Set(["PAP"]))).toEqual({
         issuePathId: "PAP-1271",
-        href: "/issues/PAP-1271",
+        href: "/PAP/issues/PAP-1271",
       });
     });
 
     it("matches the prefix case-insensitively", () => {
       expect(parseIssueReferenceFromHref("pap-12", new Set(["PAP"]))).toEqual({
         issuePathId: "PAP-12",
-        href: "/issues/PAP-12",
+        href: "/PAP/issues/PAP-12",
       });
     });
 
@@ -132,7 +146,7 @@ describe("issue-reference", () => {
     it("never gates explicit /issues/ path references", () => {
       expect(parseIssueReferenceFromHref("/ACME/issues/ACME-9", new Set(["PAP"]))).toEqual({
         issuePathId: "ACME-9",
-        href: "/issues/ACME-9",
+        href: "/ACME/issues/ACME-9",
       });
     });
   });
@@ -145,7 +159,7 @@ describe("issue-reference", () => {
       const children = paragraphChildren(tree);
       expect(children).toEqual([
         { type: "text", value: "See " },
-        { type: "link", url: "/issues/PAP-1", children: [{ type: "text", value: "PAP-1" }] },
+        { type: "link", url: "/PAP/issues/PAP-1", children: [{ type: "text", value: "PAP-1" }] },
         { type: "text", value: " and JIRA-2 today." },
       ]);
     });

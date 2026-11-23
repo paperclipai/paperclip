@@ -9,6 +9,8 @@ import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
 import { RETAINED_SOURCE_FALLBACK_CHECK_KEY } from "../workspace-recovery-fallback-discovery.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, isOwnerStampedWorkspaceOperationLive } from "../workspace-operations.js";
 import type { InProgressRecord, SettleOutcome } from "./ownership-registry.js";
+import type { StorageService } from "../../storage/types.js";
+import { abortRetiredSnapshotUploads, retireAbandonedSaveLedgerRows } from "./remote-snapshot-ledger-settlement.js";
 
 export const ABANDONED_WORKSPACE_FINALIZE_REASON = "abandoned_workspace_finalization";
 export const ABANDONED_WORKSPACE_COMMAND_REASON = "abandoned_workspace_command";
@@ -111,8 +113,9 @@ function abandonedWorkspaceOperationSettle(spec: { phases: readonly string[]; st
 export const ABANDONED_REMOTE_SNAPSHOT_SAVE_REASON = "abandoned_remote_snapshot_save";
 
 export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgressRecord,
-  context: { now: Date; proof: OwnerProof }): Promise<SettleOutcome> {
+  context: { now: Date; proof: OwnerProof }, options: { storage?: StorageService } = {}): Promise<SettleOutcome> {
   let publication: ActivityPublication | undefined;
+  let retired: Awaited<ReturnType<typeof retireAbandonedSaveLedgerRows>> = [];
   const outcome = await db.transaction(async (transaction): Promise<SettleOutcome> => {
     const tx = transaction as unknown as Db;
     const [operation] = await tx.select().from(workspaceOperations)
@@ -164,6 +167,7 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
     }).where(and(eq(workspaceOperations.id, operation.id), eq(workspaceOperations.status, operation.status)))
       .returning({ id: workspaceOperations.id });
     if (!row) return { settled: false, reason: "attempt_no_longer_in_progress" };
+    retired = await retireAbandonedSaveLedgerRows(tx, { companyId: operation.companyId, operationId: operation.id, now, proof: context.proof.reason });
     if (operation.executionWorkspaceId) {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
       await tx.update(issueRecoveryActions).set({
@@ -183,5 +187,6 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
     return { settled: true, reason: context.proof.reason };
   });
   if (outcome.settled && publication) publishActivity(publication);
+  if (outcome.settled) await abortRetiredSnapshotUploads(retired, options.storage);
   return outcome;
 }

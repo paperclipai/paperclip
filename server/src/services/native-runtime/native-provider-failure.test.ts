@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
-import { createNativeProviderFailureObservation, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
+import { antigravityModelRefusalMessage } from "@paperclipai/shared";
+import { createNativeProviderFailureObservation, nativeProviderUsageLimitFromEvent, NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
 
 const model = "test-model";
 const response = {
@@ -51,6 +52,32 @@ describe("native provider failure observation", () => {
     const observed = createNativeProviderFailureObservation({ kind: "opencode" });
     observed.observe({ ...event, payload: { status: "failed", error: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn", category: "model_unavailable", message: "busy", retryability } } } });
     expect(observed.forTerminal("turn", terminal)).toBeNull();
+  });
+  it("classifies the API-key 404 for the configured model as a model rejection (codex 0.160.0 shape)", () => {
+    const apiKeyFailure = (message: string, info: unknown = { httpConnectionFailed: { httpStatusCode: 404 } }) => ({ ...event, payload: { status: "failed", error: {
+      message, codexErrorInfo: info, additionalDetails: null, misalignment: null } } });
+    const real = `unexpected status 404 Not Found: The model \`${model}\` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a5833f01da2716ce-IAH, request id: req_584e320775c34b2c9c6d98af40e0ea3d`;
+    const observed = observation();
+    observed.observe(apiKeyFailure(real));
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toEqual({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE, diagnostic: NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC });
+    expect(JSON.stringify(result)).not.toContain(model);
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+    expect(observed.forTerminal("other-turn", terminal)).toBeNull();
+    // Another model's 404, another status, or a retryable turn is not this rejection.
+    for (const [message, info, recoverable] of [
+      [real.replace(model, "other-model"), undefined, false],
+      [real, { httpConnectionFailed: { httpStatusCode: 500 } }, false],
+      [real, "other", false],
+      // Codex reports its retried 404s with this kind and willRetry; they never end the turn.
+      [real, { responseStreamDisconnected: { httpStatusCode: 404 } }, false],
+      [real, undefined, true],
+    ] as const) {
+      const other = observation();
+      const failed = apiKeyFailure(message, info);
+      other.observe(recoverable ? { ...failed, payload: { ...failed.payload, recoverable: true } } : failed);
+      expect(other.forTerminal("turn", terminal)).toBeNull();
+    }
   });
   it("surfaces a structured capacity failure without copying arbitrary provider text", () => {
     const observed = createNativeProviderFailureObservation({ kind: "codex" });
@@ -263,4 +290,67 @@ describe("native provider failure observation", () => {
       expect(observed.forTerminal("turn", terminal)).toBeNull();
     },
   );
+});
+
+describe("Google Antigravity provider failures", () => {
+  const antigravity = (route?: "api_key" | "subscription", modelId = "gemini-4-neon-high") =>
+    createNativeProviderFailureObservation({ kind: "acpx", agent: "antigravity", model: modelId }, route ? { antigravityRoute: route } : {});
+  const failed = (providerFailure: Record<string, unknown>): PrpEvent => ({ ...event, payload: { status: "failed", error: { providerFailure: {
+    schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn", ...providerFailure } } } });
+  const refused = failed({ category: "model_unavailable", message: "The selected model is not available for this connection.",
+    providerCode: "antigravity_model_unavailable", httpStatus: 429, retryability: "requires_action" });
+
+  it("names the refused model and the fix for an API key", () => {
+    const observed = antigravity("api_key");
+    observed.observe(refused);
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toMatchObject({ errorCode: "native_provider_model_rejected",
+      errorMessage: antigravityModelRefusalMessage("gemini-4-neon-high", "api_key") });
+    expect(result?.errorMessage).toContain("Gemini 4 Neon (High) is not available with this Gemini API key.");
+    expect(result?.errorMessage).not.toMatch(/antigravity_model_unavailable|RESOURCE_EXHAUSTED|429/);
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+  });
+
+  it("names the refused model and the fix for a Google sign-in", () => {
+    const observed = antigravity("subscription", "gemini-3.8-flash-high");
+    observed.observe(refused);
+    expect(observed.forTerminal("turn", terminal)?.errorMessage)
+      .toBe(antigravityModelRefusalMessage("gemini-3.8-flash-high", "subscription"));
+  });
+
+  it("keeps the shared message when the connection route is unknown (recovered after restart)", () => {
+    const observed = antigravity();
+    observed.observe(refused);
+    expect(observed.forTerminal("turn", terminal)).toMatchObject({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE });
+  });
+
+  it("takes the bounded capacity retry for a transient overload (503)", () => {
+    const observed = antigravity("api_key");
+    observed.observe(failed({ category: "overloaded", message: "This model is currently experiencing high demand.",
+      providerCode: "UNAVAILABLE", httpStatus: 503, retryability: "transient" }));
+    expect(observed.forTerminal("turn", terminal)).toEqual({ errorCode: "native_provider_overloaded",
+      errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE, diagnostic: { provider: "antigravity", category: "server_overloaded" } });
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+  });
+
+  it("leaves rate limits, quotas and rejected keys to their own plain-language paths", () => {
+    for (const failure of [
+      { category: "rate_limit", message: "Slow down", httpStatus: 429, retryAt: "2026-01-01T00:01:00.000Z", retryability: "transient" },
+      { category: "quota_exhausted", message: "Quota exhausted", httpStatus: 429, retryability: "requires_action" },
+      { category: "authentication", message: "API key not valid. Please pass a valid API key.", httpStatus: 400, retryability: "requires_action" },
+    ]) {
+      const observed = antigravity("api_key");
+      const input = failed(failure);
+      observed.observe(input);
+      expect(observed.forTerminal("turn", terminal)).toBeNull();
+      expect(observed.providerFailureForTerminal("turn", terminal)).toMatchObject({ category: failure.category, message: failure.message });
+      expect(nativeProviderUsageLimitFromEvent(input)).toBe(failure.category !== "authentication");
+    }
+  });
+
+  it("does not turn another ACPX harness's overload into an Antigravity capacity retry", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "acpx", agent: "claude", model: "m" });
+    observed.observe(failed({ provider: "claude", category: "overloaded", message: "Overloaded", httpStatus: 529, retryability: "transient" }));
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+  });
 });

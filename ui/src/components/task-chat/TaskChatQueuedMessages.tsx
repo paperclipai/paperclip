@@ -37,6 +37,7 @@ import {
   queuedMessageAutoSteerEligible,
   queuedMessageAutoSteerKey,
 } from "./queued-message-auto-steer";
+import { isQueuedInterruptHandoff } from "@/lib/issue-queued-comment-queue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -250,11 +251,7 @@ function SortableQueuedMessage({
       <button
         type="button"
         onClick={onDiscard}
-        disabled={
-          busy ||
-          (!queue.queueId && !entry.comment.id.startsWith("optimistic-")) ||
-          !entry.canDiscard
-        }
+        disabled={busy || !entry.canDiscard}
         title="Discard queued message"
         aria-label={`Discard queued message: ${label}`}
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
@@ -449,12 +446,10 @@ export function TaskChatQueuedMessages({
     commentId: string,
     action: Exclude<QueueAction, null>,
   ) {
-    const locallyDiscardable =
-      action === "discard" && commentId.startsWith("optimistic-");
     if (
       pending ||
       reordering ||
-      (!queue.queueId && action !== "interrupt" && !locallyDiscardable)
+      (!queue.queueId && action !== "interrupt" && action !== "discard")
     ) {
       return;
     }
@@ -480,7 +475,8 @@ export function TaskChatQueuedMessages({
       if (action === "steer") await onSteer(commentId, queue.revision);
       else if (action === "interrupt") {
         const updatedQueue = await onInterrupt?.();
-        if (updatedQueue?.state === "deferred") {
+        // The stopped turn is handing off to these messages: they are sent.
+        if (updatedQueue?.state === "deferred" && !isQueuedInterruptHandoff(updatedQueue)) {
           for (const entry of updatedQueue.entries) optimisticDeliveryIds.current.delete(entry.comment.id);
           setEntries(updatedQueue.entries.filter(entry => !optimisticDeliveryIds.current.has(entry.comment.id)));
           setDeferredStatus({ queueId: updatedQueue.queueId, message: updatedQueue.executionWait?.message ?? "Messages are still queued. They will send when the task is ready." });

@@ -11,6 +11,13 @@ export const STORAGE_UNAVAILABLE_MESSAGE = "File storage was unavailable, so thi
 
 export const STORAGE_CREDENTIALS_REJECTED_MESSAGE = "File storage rejected Paperclip's storage credentials (they may have expired or been rotated), so this attempt stopped before it could save its work. Paperclip will retry automatically when valid credentials are available.";
 
+/** For a storage failure that no storage wait owns, such as a run whose native
+ * recovery keeps its files without replaying an unfinished turn. Nothing
+ * retries it automatically, so the text offers Retry instead of promising one. */
+export const STORAGE_UNAVAILABLE_HELD_MESSAGE = "File storage was unavailable, so this attempt stopped before it could save its work. Paperclip is not retrying it automatically. Retry or send a message to continue.";
+
+export const STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE = "File storage rejected Paperclip's storage credentials (they may have expired or been rotated), so this attempt stopped before it could save its work. Paperclip is not retrying it automatically. Retry or send a message to continue.";
+
 export const STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE = "File storage stayed unavailable or kept rejecting Paperclip's storage credentials through every automatic retry, so Paperclip stopped retrying this task. Check the storage service and its credentials, then Retry.";
 
 export const STORAGE_UNAVAILABLE_RETRY = {
@@ -66,6 +73,24 @@ export function storageUnavailableMessage(error: unknown): string {
   return isStorageCredentialRejection(error) ? STORAGE_CREDENTIALS_REJECTED_MESSAGE : STORAGE_UNAVAILABLE_MESSAGE;
 }
 
+/** The text for a storage failure that no storage wait owns. */
+export function storageUnavailableHeldMessage(error: unknown): string {
+  return isStorageCredentialRejection(error) ? STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE : STORAGE_UNAVAILABLE_HELD_MESSAGE;
+}
+
+/**
+ * Only a run recorded as `storage_unavailable` has a storage wait. Releases
+ * before this check could save the retry promise under another code (a
+ * native recovery hold), where nothing retries. Reads present those rows with
+ * the held text, so they are truthful after deploy without a migration.
+ */
+export function presentStorageFailureMessage(run: { error?: string | null; errorCode?: string | null }): string | null | undefined {
+  if (run.errorCode === STORAGE_UNAVAILABLE_CODE) return run.error;
+  if (run.error === STORAGE_UNAVAILABLE_MESSAGE) return STORAGE_UNAVAILABLE_HELD_MESSAGE;
+  if (run.error === STORAGE_CREDENTIALS_REJECTED_MESSAGE) return STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE;
+  return run.error;
+}
+
 export function isStorageUnavailableError(error: unknown): boolean {
   const recorded = recordedStorageFailure(error);
   if (!recorded) return false;
@@ -78,8 +103,16 @@ export function isStorageUnavailableError(error: unknown): boolean {
 
 export const STORAGE_OUTAGE_WAIT = { budgetMs: 5 * 60_000, firstDelayMs: 2_000, maxDelayMs: 30_000 } as const;
 
-type OutageWaitScope = { stop?: AbortSignal };
+export type StorageOutageWaitObserver = {
+  waiting(wait: { purpose: string; waitedMs: number }): void;
+  ended(wait: { purpose: string; waitedMs: number; recovered: boolean }): void;
+};
+
+const DEFAULT_WAIT_PURPOSE = "continuing";
+
+type OutageWaitScope = { stop?: AbortSignal; observer?: StorageOutageWaitObserver };
 const outageWaitScope = new AsyncLocalStorage<OutageWaitScope>();
+const outageWaitPurpose = new AsyncLocalStorage<string>();
 type OutageWaitOperation = { firstFailureAt: number | null };
 const outageWaitOperation = new AsyncLocalStorage<OutageWaitOperation | null>();
 
@@ -97,14 +130,41 @@ export function runSharedStorageWork<T>(work: () => Promise<T>): Promise<T> {
 
 export function endStorageOutageWaitOn(stop: AbortSignal): void {
   const current = outageWaitScope.getStore();
-  if (current) outageWaitScope.enterWith({ stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
+  if (current) outageWaitScope.enterWith({ ...current, stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
+}
+
+export function reportStorageOutageWaitsTo(observer: StorageOutageWaitObserver): void {
+  const current = outageWaitScope.getStore();
+  if (current) outageWaitScope.enterWith({ ...current, observer });
+}
+
+export function storageOutageWaitFor<T>(purpose: string, work: () => Promise<T>): Promise<T> {
+  return outageWaitPurpose.run(purpose, work);
+}
+
+function notify(report: () => void) {
+  try { report(); } catch { return; }
 }
 
 export function retryThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal,
   policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT): Promise<T> {
   const operation = outageWaitOperation.getStore();
-  return operation ? retryWithin(operation, send, signal, policy)
-    : outageWaitOperation.run({ firstFailureAt: null }, () => retryWithin(outageWaitOperation.getStore()!, send, signal, policy));
+  if (operation) return retryWithin(operation, send, signal, policy);
+  const owned: OutageWaitOperation = { firstFailureAt: null };
+  return outageWaitOperation.run(owned, async () => {
+    let recovered = false;
+    try {
+      const result = await retryWithin(owned, send, signal, policy);
+      recovered = true;
+      return result;
+    } finally {
+      const observer = outageWaitScope.getStore()?.observer;
+      if (observer && owned.firstFailureAt !== null) {
+        const ended = { purpose: outageWaitPurpose.getStore() ?? DEFAULT_WAIT_PURPOSE, waitedMs: Date.now() - owned.firstFailureAt, recovered };
+        notify(() => observer.ended(ended));
+      }
+    }
+  });
 }
 
 async function retryWithin<T>(operation: OutageWaitOperation, send: () => Promise<T>, signal: AbortSignal | undefined,
@@ -120,6 +180,11 @@ async function retryWithin<T>(operation: OutageWaitOperation, send: () => Promis
       operation.firstFailureAt ??= now;
       if (stop?.aborted || now - operation.firstFailureAt + wait > policy.budgetMs) throw error;
       recordStorageBackoff(wait);
+      const observer = outageWaitScope.getStore()?.observer;
+      if (observer) {
+        const waiting = { purpose: outageWaitPurpose.getStore() ?? DEFAULT_WAIT_PURPOSE, waitedMs: now - operation.firstFailureAt };
+        notify(() => observer.waiting(waiting));
+      }
       await delay(wait, undefined, { signal: stop }).catch((interrupted: unknown) => {
         throw signal?.aborted && signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? error : interrupted;
       });

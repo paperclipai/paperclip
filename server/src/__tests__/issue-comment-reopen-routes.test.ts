@@ -40,6 +40,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async () => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async () => null),
   cancelRun: vi.fn(async (): Promise<unknown> => null),
 }));
 
@@ -1062,7 +1063,7 @@ describe("issue comment reopen routes", () => {
       // Plan §6: name the boundary, who can act, and the sanctioned path.
       expect(res.body.error).toContain("Issue visibility");
       expect(res.body.error).toContain("Who can act:");
-      expect(res.body.details.sanctionedPath).toContain("child issue");
+      expect(res.body.details.sanctionedPath).toContain("Ask the board to widen visibility");
       expect(mockAccessService.decide).toHaveBeenCalledWith(
         expect.objectContaining({ action: "issue:comment" }),
       );
