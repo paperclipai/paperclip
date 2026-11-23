@@ -12,6 +12,7 @@ import {
   clearPersistedQueryCache,
   isRestoredSavedRead,
   QUERY_CACHE_MAX_AGE,
+  recordTaskOpen,
   QUERY_CACHE_PREFIX,
   SAVED_TASK_CHAT_MAX_BYTES,
   SAVED_TASK_CHAT_MAX_COMMENTS,
@@ -152,10 +153,13 @@ describe("saved first chat frame of a recently opened task", () => {
       const first = page(storage);
       signIn(first.client);
       openTask(first.client, 1, { updatedAt: Date.now() - 30_000 });
-      const stop = new QueryObserver(first.client, { queryKey: coreKey("ABC-1"), enabled: false }).subscribe(() => {});
-      for (let n = 100; n < 125; n += 1) openTask(first.client, n);
+      recordTaskOpen(first.client, task(1));
+      const stops = Array.from({ length: 25 }, (_, index) => {
+        const preloaded = openTask(first.client, 100 + index);
+        return new QueryObserver(first.client, { queryKey: coreKey(preloaded.identifier), enabled: false }).subscribe(() => {});
+      });
       first.handle.flush();
-      stop();
+      for (const stop of stops) stop();
       expect(storage.text()).toContain("comment-1-0");
 
       const second = page(storage);

@@ -13,7 +13,7 @@ export const QUERY_CACHE_MAX_ISSUES = 20;
 const MAX_LINK_PREVIEWS = 100;
 const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 const REVISION_PREFIX = "paperclip:query-cache-revision:";
-const controllers = new WeakMap<QueryClient, { clear: () => void }>();
+const controllers = new WeakMap<QueryClient, { clear: () => void; open?: (refs: readonly string[]) => void }>();
 /** Per client: each restored query's hash and the read time it was restored with. */
 const restoredReads = new WeakMap<QueryClient, Map<string, number>>();
 type CacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
@@ -143,6 +143,11 @@ export function isRestoredSavedRead(client: QueryClient, key: readonly unknown[]
   const state = client.getQueryState(key);
   if (state?.data === undefined) return false;
   return restoredReads.get(client)?.get(hashKey(key)) === state.dataUpdatedAt;
+}
+
+/** Records that the task page opened this task, which ranks it for the saved recent tasks. */
+export function recordTaskOpen(client: QueryClient, issue: { id: string; identifier?: string | null }) {
+  controllers.get(client)?.open?.([issue.id, issue.identifier].filter((ref): ref is string => !!ref));
 }
 
 export function clearPersistedQueryCache(client: QueryClient) {
@@ -571,7 +576,6 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         ? completedRead.revisions.get(revisionKey(next)) ?? null : revisionFor(next);
       owner = next;
     }
-    if (event.type === "observerAdded" && event.query.queryKey[0] === "issues" && event.query.queryKey[1] === "detail") visits.set(event.query.queryHash, now());
     const issueDetail = event.query.queryKey[0] === "issues" && event.query.queryKey[1] === "detail";
     const chatRef = taskChatFirstFrameRef(event.query.queryKey);
     if (event.type === "updated" && event.action.type === "success" && !event.action.manual) {
@@ -634,6 +638,10 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     target?.removeEventListener("pagehide", onPageHide);
     controllers.delete(client);
   };
-  controllers.set(client, { clear });
+  const open = (refs: readonly string[]) => {
+    const at = now();
+    for (const ref of refs) for (const key of [queryKeys.issues.detail(ref), [...queryKeys.issues.detail(ref), "core"]]) visits.set(hashKey(key), at);
+  };
+  controllers.set(client, { clear, open });
   return { flush, clear, dispose };
 }

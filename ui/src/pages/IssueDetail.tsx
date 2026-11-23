@@ -92,7 +92,7 @@ import {
   type RecentIssueRunWindow,
 } from "../lib/issue-chat-history-queries";
 import { readFromIssueChatBootstrap, sameIds, startIssueChatBootstrap } from "../lib/issue-chat-bootstrap";
-import { isRestoredSavedRead } from "../lib/persisted-query-cache";
+import { isRestoredSavedRead, recordTaskOpen } from "../lib/persisted-query-cache";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -3490,6 +3490,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       issue.identifier?.toLowerCase() === issueId.toLowerCase())
       ? issue
       : null;
+  const openedIssueId = loadedIssue ? loadedIssue.id : null;
+  const openedIssueIdentifier = loadedIssue ? loadedIssue.identifier : null;
+  useEffect(() => {
+    if (openedIssueId) recordTaskOpen(queryClient, { id: openedIssueId, identifier: openedIssueIdentifier });
+  }, [queryClient, openedIssueId, openedIssueIdentifier]);
   const loadedIssueCompany = loadedIssue
     ? companies.find((company) => company.id === loadedIssue.companyId)
     : undefined;
