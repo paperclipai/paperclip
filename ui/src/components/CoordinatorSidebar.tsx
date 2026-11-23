@@ -6,6 +6,7 @@ import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCou
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
+import { QueryErrorState } from "./QueryView";
 import { useRecentItemsLimit } from "@/hooks/useRecentItemsLimit";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
@@ -162,7 +163,8 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(true);
   const moreContentRef = useRef<HTMLDivElement>(null);
-  const { limit: recentLimit } = useRecentItemsLimit(userId);
+  const recentPreference = useRecentItemsLimit(userId);
+  const recentLimit = recentPreference.limit;
   const { entries: recentTasks, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds, limit: recentLimit });
   const { isMobile, setSidebarOpen } = useSidebar();
   // Warm opens only while the Recents list is on screen.
@@ -237,6 +239,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         </Flyout>
       </div>
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
+      {session.isSuccess && recentPreference.error && !recentPreference.loaded && <QueryErrorState size="inline" className="px-4 py-2" error={recentPreference.error} action="load Recents" onRetry={() => void recentPreference.retry()} retrying={recentPreference.isFetching} />}
       {session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents" collapsible={{ open: recentsOpen, onOpenChange: setRecentsOpen }}>
         <RecentNavigationList>
         {recents.map(item => item.kind === "task"

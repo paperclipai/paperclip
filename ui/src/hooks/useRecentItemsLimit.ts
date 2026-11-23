@@ -25,6 +25,7 @@ export function useRecentItemsLimit(userId: string | null | undefined) {
   return {
     limit: saved ? saved.recentItemsLimit ?? DEFAULT_RECENT_ITEMS_LIMIT : 0,
     loaded,
+    isFetching: preference.isFetching,
     error: preference.error ?? (mutation.variables?.owner === userId ? mutation.error : null),
     isSaving: mutation.isPending && mutation.variables?.owner === userId,
     retry: () => preference.refetch(),

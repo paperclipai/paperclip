@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { Boxes, CircleCheck, CirclePlus, FolderOpen, History, LayoutDashboard, MessageCircle, Package, Repeat, Search, Unplug, Users } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
@@ -15,7 +16,7 @@ import { useScrollbarWhileScrolling } from "./side-panel/use-scrollbar-while-scr
 export type DesignSidebarRecentTask = Pick<Issue, "id" | "companyId" | "identifier" | "title">;
 
 /** Shared staged sidebar. The caller supplies company-scoped recent tasks and actions. */
-export function DesignSidebar({ onNewTask, recentTasks = [] }: { onNewTask: () => void; recentTasks?: readonly DesignSidebarRecentTask[] }) {
+export function DesignSidebar({ onNewTask, recentTasks = [], recentError }: { onNewTask: () => void; recentTasks?: readonly DesignSidebarRecentTask[]; recentError?: ReactNode }) {
   const { selectedCompany } = useCompany();
   const root = `/${selectedCompany?.issuePrefix ?? "PAP"}`;
   const companyRecentTasks = recentTasks.filter(task => task.companyId === selectedCompany?.id);
@@ -45,6 +46,7 @@ export function DesignSidebar({ onNewTask, recentTasks = [] }: { onNewTask: () =
             <SidebarNavItem className="design-sidebar-item" to={`${root}/apps`} label="Connectors" icon={Unplug} />
             <SidebarNavItem className="design-sidebar-item" to={`${root}/activity`} label="Audit" icon={History} />
           </SidebarSection>
+          {recentError}
           {companyRecentTasks.length > 0 ? <div className="design-sidebar-recents">
             <SidebarSection label="Recent Tasks">
               <div onScroll={handleRecentScroll} className="design-sidebar-recent-list scrollbar-while-scrolling" role="region" aria-label="Recent tasks" tabIndex={0}>

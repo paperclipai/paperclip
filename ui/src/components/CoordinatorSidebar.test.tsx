@@ -11,8 +11,8 @@ import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", search: "", userId: "reviewer" as string | null, chats: [] as Array<{ id?: string; conversationAgentId?: string; updatedAt?: string; isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, taskSummaries: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), recentLimit: 10000, warmup: vi.fn(), enableCases: false, enableResponsibilities: false, agents: [] as Agent[] }));
-vi.mock("@/hooks/useRecentItemsLimit", () => ({ useRecentItemsLimit: () => ({ limit: fixture.recentLimit }) }));
+  recentTasks: [] as Array<Record<string, unknown>>, taskSummaries: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), preferenceError: null as Error | null, preferenceRetry: vi.fn(), recentLimit: 10000, warmup: vi.fn(), enableCases: false, enableResponsibilities: false, agents: [] as Agent[] }));
+vi.mock("@/hooks/useRecentItemsLimit", () => ({ useRecentItemsLimit: () => ({ limit: fixture.recentLimit, loaded: !fixture.preferenceError, error: fixture.preferenceError, retry: fixture.preferenceRetry }) }));
 vi.mock("@/hooks/useRecentTaskOpenWarmup", () => ({ useRecentTaskOpenWarmup: fixture.warmup }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: fixture.userId }) }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
@@ -50,7 +50,7 @@ function summary(items: AttentionItem[], mineCount = items.length) {
 
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
-  vi.clearAllMocks(); fixture.recentLimit = 10000; localStorage.clear(); fixture.userId = "reviewer"; fixture.pathname = "/COO/issues"; fixture.search = "";
+  vi.clearAllMocks(); fixture.preferenceError = null; fixture.recentLimit = 10000; localStorage.clear(); fixture.userId = "reviewer"; fixture.pathname = "/COO/issues"; fixture.search = "";
   fixture.chats = []; fixture.recentTasks = []; fixture.taskSummaries = []; fixture.projects = []; fixture.enableCases = false; fixture.enableResponsibilities = false; fixture.agents = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
@@ -58,6 +58,18 @@ beforeEach(() => {
 });
 
 describe("Coordinator task creation", () => {
+  it("explains a failed first preference read and lets the person retry", async () => {
+    fixture.recentLimit = 0;
+    fixture.preferenceError = new Error("Preferences unavailable");
+    await renderSidebar();
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    const retry = alert?.querySelector("button");
+    expect(retry?.textContent).toContain("Retry");
+    await act(async () => retry?.click());
+    expect(fixture.preferenceRetry).toHaveBeenCalledTimes(1);
+  });
+
   it("bounds the combined Recents list and warms only displayed tasks", async () => {
     fixture.recentLimit = 5;
     fixture.agents = [{ id: "agent", companyId: "company", name: "Alex", urlKey: "alex", status: "idle" } as Agent];
