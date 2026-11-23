@@ -1026,6 +1026,11 @@ function gatewaySessionFromRow(
   };
 }
 
+function sessionOpenerFromInvocation(invocation: { policyExplanation?: Record<string, unknown> | null }) {
+  const opener = invocation.policyExplanation?.sessionOpenedByUserId;
+  return typeof opener === "string" && opener ? opener : null;
+}
+
 function timeoutMs(value: number | undefined, tool?: ToolGatewayDescriptor) {
   if (!Number.isFinite(value)) return tool?.providerType === "paperclip_github_chat"
     ? GITHUB_BOT_TOOL_TIMEOUT_MS
@@ -5245,24 +5250,6 @@ export function createToolGatewayService(
     return grant;
   }
 
-  async function assertSessionOpenerMayUseTool(
-    session: ToolGatewaySession,
-    tool: ToolGatewayDescriptor,
-  ) {
-    if (!session.createdByUserId || !tool.connectionId) return;
-    const [connection] = await db
-      .select()
-      .from(toolConnections)
-      .where(and(eq(toolConnections.id, tool.connectionId), eq(toolConnections.companyId, session.companyId)))
-      .limit(1);
-    if (!connection) return;
-    try {
-      await resolveConnectionGrant(session, connection, false);
-    } catch (error) {
-      if (error instanceof ToolGatewayHttpError && error.reasonCode === "personal_grant_owner_required") throw error;
-    }
-  }
-
   async function resolveConnectionGrantForSession(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
@@ -5291,9 +5278,9 @@ export function createToolGatewayService(
             )
             .limit(1)
         : [];
-    const actingUserId = session.identityContextId
+    const actingUserId = session.createdByUserId ?? (session.identityContextId
       ? (session.responsibleUserId ?? null)
-      : (run?.responsibleUserId ?? session.responsibleUserId ?? null);
+      : (run?.responsibleUserId ?? session.responsibleUserId ?? null));
     if (
       session.identityContextId &&
       session.agentId &&
@@ -5305,7 +5292,7 @@ export function createToolGatewayService(
         ? { grant: captured.grant, error: undefined }
         : await resolveManagedGitHubIdentitySelection(db, session.companyId, {
             agentId: session.agentId,
-            responsibleUserId: session.responsibleUserId,
+            responsibleUserId: session.createdByUserId ?? session.responsibleUserId,
             allowStandingDelegation: false,
           });
       if (!selected.grant || selected.grant.connectionId !== connection.id) {
@@ -10823,6 +10810,7 @@ export function createToolGatewayService(
         actorType: invocation.actorType as ToolGatewaySession["actorType"],
         actorId: invocation.actorId,
         originatingAgentId: typeof invocation.policyExplanation?.delegatedGatewayIssuer === "string" ? invocation.policyExplanation.delegatedGatewayIssuer : invocation.actorType === "agent" && invocation.gatewayId && !invocation.runId && !invocation.gatewayTokenId ? invocation.actorId : null,
+        createdByUserId: sessionOpenerFromInvocation(invocation),
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
       };
@@ -12987,6 +12975,7 @@ export function createToolGatewayService(
             actorType: "agent",
             actorId: invocation.actorId,
             originatingAgentId: typeof invocation.policyExplanation?.delegatedGatewayIssuer === "string" ? invocation.policyExplanation.delegatedGatewayIssuer : invocation.actorType === "agent" && invocation.gatewayId && !invocation.runId && !invocation.gatewayTokenId ? invocation.actorId : null,
+            createdByUserId: sessionOpenerFromInvocation(invocation),
             gatewayId: invocation.gatewayId,
             gatewayPublicId: invocation.gatewayPublicId,
             gatewayTokenId: invocation.gatewayTokenId,
@@ -13752,7 +13741,6 @@ export function createToolGatewayService(
           })
           .where(eq(toolInvocations.id, invocationId));
       } else {
-        await assertSessionOpenerMayUseTool(session, tool);
         const decisionInput = policyInputForTool({
           session,
           tool,
@@ -13761,6 +13749,9 @@ export function createToolGatewayService(
           consumeRateLimit: true,
         });
         let accessDecision = await policyService.decide(decisionInput);
+        if (session.createdByUserId) {
+          accessDecision = { ...accessDecision, policyExplanation: { ...accessDecision.policyExplanation, sessionOpenedByUserId: session.createdByUserId } };
+        }
         if (accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && SLACK_TOOLS.some(t => t.name === tool.upstreamToolName && t.risk === "approval")) {
           accessDecision = { ...accessDecision, allowed: false, decision: "require_approval", reasonCode: "requires_approval_policy", explanation: "Slack destructive actions, channel creation and invitations require approval." };
         }

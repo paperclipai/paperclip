@@ -2229,12 +2229,11 @@ rl.on("line", (line) => {
     },
   );
 
-  it("uses a personal grant in a person-created session only for the person who owns the run", async () => {
+  it("acts as the person who opened a session and never uses another member's personal grant", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
-    const { run } = await createIssueAndRun(db, company.id, agent.id);
-    await createActiveMember(db, company.id, "alice");
-    await createActiveMember(db, company.id, "bob");
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    for (const userId of ["alice", "bob", "carol"]) await createActiveMember(db, company.id, userId);
     await db.update(heartbeatRuns).set({ responsibleUserId: "alice" }).where(eq(heartbeatRuns.id, run.id));
     const secrets = secretService(db);
     const definition = await secrets.createUserSecretDefinition(company.id, {
@@ -2242,23 +2241,25 @@ rl.on("line", (line) => {
       key: `personal_mail_${randomUUID().replace(/-/g, "")}`,
       provider: "local_encrypted",
     });
-    const secret = await secrets.createCurrentUserSecretValue(company.id, "alice", {
-      definitionId: definition.id, value: "alice-personal-token",
-    });
     const personal = await createRemoteMcpTool(db, company.id, { toolName: "read_mail" });
     await db.update(toolConnections).set({
       credentialPolicy: "per_user",
-      credentialRefs: [{ name: "credentials.authorization", secretId: secret.id, placement: "header", key: "Authorization", prefix: "Bearer " }],
+      credentialRefs: [{ name: "credentials.authorization", placement: "header", key: "Authorization", prefix: "Bearer " }],
     }).where(eq(toolConnections.id, personal.connection.id));
     await secrets.syncUserSecretDeclarationsForTarget(company.id,
       { targetType: "tool_connection", targetId: personal.connection.id },
       [{ definitionKey: definition.key, configPath: "credentials.authorization", envKey: "Authorization", versionSelector: "latest", required: true }],
       { replaceAll: true });
-    await db.insert(connectionGrants).values({
-      companyId: company.id, connectionId: personal.connection.id, kind: "user", subjectUserId: "alice",
-      credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.authorization", versionSelector: "latest" }],
-      status: "active", isDefault: false,
-    });
+    for (const userId of ["alice", "bob"]) {
+      const secret = await secrets.createCurrentUserSecretValue(company.id, userId, {
+        definitionId: definition.id, value: `${userId}-personal-token`,
+      });
+      await db.insert(connectionGrants).values({
+        companyId: company.id, connectionId: personal.connection.id, kind: "user", subjectUserId: userId,
+        credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.authorization", versionSelector: "latest" }],
+        status: "active", isDefault: false,
+      });
+    }
     const shared = await createRemoteMcpTool(db, company.id, { toolName: "shared_lookup" });
     await allowAllToolsForAgent(db, company.id, agent.id);
     const authorizations: string[] = [];
@@ -2291,26 +2292,29 @@ rl.on("line", (line) => {
         .set("x-paperclip-tool-gateway-token", token)
         .send({ tool: tool.name, parameters: { key: "test", value: randomUUID() } });
     };
+    const lastAuthorization = () => authorizations.at(-1);
 
     const bobToken = await openSession("bob");
-    const bobPersonal = await callTool(bobToken, personal.connection.id);
-    expect(bobPersonal.status).toBe(403);
-    expect(bobPersonal.body.reasonCode).toBe("personal_grant_owner_required");
-    expect(authorizations).toEqual([]);
-    const bobShared = await callTool(bobToken, shared.connection.id);
-    expect(bobShared.status).toBe(200);
-    expect(bobShared.body.status).toBe("completed");
+    expect((await callTool(bobToken, personal.connection.id)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer bob-personal-token");
+    expect((await callTool(bobToken, shared.connection.id)).body.status).toBe("completed");
 
     const aliceToken = await openSession("alice");
-    const alicePersonal = await callTool(aliceToken, personal.connection.id);
-    expect(alicePersonal.status).toBe(200);
-    expect(alicePersonal.body.status).toBe("completed");
-    expect(authorizations.at(-1)).toBe("Bearer alice-personal-token");
+    expect((await callTool(aliceToken, personal.connection.id)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer alice-personal-token");
 
     const agentSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, actorType: "agent", actorId: agent.id });
-    const agentPersonal = await callTool(agentSession.token, personal.connection.id);
-    expect(agentPersonal.status).toBe(200);
-    expect(agentPersonal.body.status).toBe("completed");
+    expect((await callTool(agentSession.token, personal.connection.id)).body.status).toBe("completed");
+    expect(lastAuthorization()).toBe("Bearer alice-personal-token");
+
+    const callsBeforeCarol = authorizations.length;
+    const carol = await callTool(await openSession("carol"), personal.connection.id);
+    expect(carol.status).toBe(409);
+    expect(carol.body.reasonCode).toBe("user_authorization_required");
+    expect(authorizations).toHaveLength(callsBeforeCarol);
+    const prompts = await db.select({ addresseeUserId: issueThreadInteractions.addresseeUserId })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+    expect(prompts.map((prompt) => prompt.addresseeUserId)).toEqual(["carol"]);
 
     await db.insert(toolPolicies).values({
       companyId: company.id,
@@ -2319,14 +2323,13 @@ rl.on("line", (line) => {
       selectors: { connectionId: personal.connection.id },
       priority: 10,
     });
-    const requestsBefore = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
-    const bobReviewed = await callTool(bobToken, personal.connection.id);
-    expect(bobReviewed.status).toBe(403);
-    expect(bobReviewed.body.reasonCode).toBe("personal_grant_owner_required");
-    await expect(db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id)))
-      .resolves.toHaveLength(requestsBefore.length);
-    const aliceReviewed = await callTool(aliceToken, personal.connection.id);
-    expect(aliceReviewed.status).toBe(409);
+    const reviewed = await callTool(bobToken, personal.connection.id);
+    expect(reviewed.status).toBe(409);
+    expect(reviewed.body.reasonCode).toBe("approval_required");
+    const [pending] = await db.select().from(toolActionRequests)
+      .where(and(eq(toolActionRequests.companyId, company.id), eq(toolActionRequests.status, "pending")));
+    await gateway.approveActionRequest({ companyId: company.id, actionRequestId: pending!.id, actor: { userId: "bob" } });
+    expect(lastAuthorization()).toBe("Bearer bob-personal-token");
   });
 
   it("refuses a person-created session when the person may not act on the agent", async () => {
