@@ -3892,8 +3892,12 @@ export function runnerCodexDynamicToolsFit(
   // Keep these bounds aligned with runner-core/provider_bridge.rs. Project
   // large optional catalogs before run.prepare; never raise the protocol caps.
   if (supplied.length > 256) return false;
-  const catalog = authorizedToolSet(supplied);
-  return Buffer.byteLength(JSON.stringify(catalog), "utf8") <= 768 * 1024 && runAttachToolCatalogFits(catalog, reservedRunAttachBytes);
+  try {
+    const catalog = authorizedToolSet(supplied);
+    return Buffer.byteLength(JSON.stringify(catalog), "utf8") <= 768 * 1024 && runAttachToolCatalogFits(catalog, reservedRunAttachBytes);
+  } catch {
+    return false;
+  }
 }
 
 /**

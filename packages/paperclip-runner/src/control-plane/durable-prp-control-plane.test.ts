@@ -449,6 +449,12 @@ it("stages and restores a run attachment for every tool catalog the provider pro
   }
 });
 
+it("refuses rather than throws for a tool schema nested past the canonical depth", () => {
+  let schema: Record<string, unknown> = { type: "string" };
+  for (let depth = 0; depth < 70; depth += 1) schema = { type: "object", properties: { child: schema } };
+  expect(runnerCodexDynamicToolsFit([{ name: "deep_tool", description: "Deep", inputSchema: schema }])).toBe(false);
+});
+
 it("admits a tool catalog exactly up to the run attachment command budget", () => {
   const catalog = authorizedToolSetForProvider("acpx", denseToolCatalog(40, 100));
   const catalogBytes = Buffer.byteLength(durableRecoveryInternals.controllerJson(catalog));

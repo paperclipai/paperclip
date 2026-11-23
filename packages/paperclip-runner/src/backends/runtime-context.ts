@@ -10,7 +10,9 @@ import {
 } from "../contracts/runtime-context.js";
 
 export function nativeRunAttachReservedBytes(input: NativeExecutionInput): number {
-  const runtimeContextBytes = Buffer.byteLength(JSON.stringify("runtimeContext" in input ? input.runtimeContext : null), "utf8");
+  const criterionIds = input.completionContract.contract.criteria.map((criterion) => criterion.id);
+  const runtimeContextBytes = Buffer.byteLength(JSON.stringify("runtimeContext" in input ? input.runtimeContext : null), "utf8")
+    + Buffer.byteLength(JSON.stringify(criterionIds), "utf8");
   try {
     return runtimeContextBytes + Buffer.byteLength(JSON.stringify(nativeSystemInstructions(input)), "utf8");
   } catch {
