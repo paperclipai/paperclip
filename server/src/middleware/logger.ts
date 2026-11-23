@@ -229,6 +229,7 @@ export function createHttpLogger(baseLogger: Logger) {
               : redactSensitive(ctx.error),
             reqBody: toolCall ? "[REDACTED]" : redactSensitive(ctx.reqBody),
             reqParams: redactSensitive(ctx.reqParams),
+            ...(toolCall && (req as any).route?.path ? { routePath: (req as any).route.path } : {}),
           };
         }
         const props: Record<string, unknown> = {};
