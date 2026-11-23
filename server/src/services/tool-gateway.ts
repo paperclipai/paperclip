@@ -8789,9 +8789,9 @@ export function createToolGatewayService(
         provider: connection.config.sourceTemplateKey,
         toolName: entry.toolName,
         parameters,
+        response: payloadRecord,
         origin: session.agentId ? "agent" : session.actorType === "user" ? "user" : null,
         pendingAuthorization: upstreamPending?.kind === "authorization",
-        failed: payloadRecord.error !== undefined || asRecord(payloadRecord.result)?.isError === true,
       });
       if (upstreamPending) {
         await retainUpstreamHandoff(invocationId, upstreamPending);

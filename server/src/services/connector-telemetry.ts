@@ -12,6 +12,7 @@ import {
   trackConnectionAppRequested,
 } from "@paperclipai/shared/telemetry";
 import { remoteEndpointValue } from "./tool-access/connection-methods.js";
+import { composioAppSetupResult } from "./composio-app-setup.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { withTelemetryCompany } from "../telemetry-company-scope.js";
@@ -413,39 +414,52 @@ function addedComposioToolkits(parameters: unknown): string[] {
   });
 }
 
+/** Outcome of one toolkit in a `COMPOSIO_MANAGE_CONNECTIONS` add response, read from that toolkit's own result. */
+function composioAddOutcome(response: unknown, toolkit: string): AggregatorAppRequestOutcome {
+  try {
+    const result = composioAppSetupResult(response, toolkit);
+    return result.status === "connected" ? "succeeded" : result.status === "authorization_required" ? "needs_auth" : "failed";
+  } catch {
+    // A provider or protocol error in the response.
+    return "failed";
+  }
+}
+
 /**
  * Agent-side app requests seen by the tool gateway: a Composio
  * `COMPOSIO_MANAGE_CONNECTIONS` call whose arguments add one or more
- * toolkits, or an Arcade tool call that answered with an authorization step
- * (the agent tried to use an app its person has not connected yet; the
- * toolkit is the tool name's prefix, e.g. `Gmail` from `Gmail_SendEmail`).
- * Other tools and providers return without emitting. Never throws.
+ * toolkits, each with the outcome read from its own result in the response,
+ * or an Arcade tool call that answered with an authorization step (the agent
+ * tried to use an app its person has not connected yet; the toolkit is the
+ * tool name's prefix, e.g. `Gmail` from `Gmail_SendEmail`). Other tools and
+ * providers return without emitting. Never throws.
  */
 export function emitAggregatorAppRequestsFromToolCall(input: {
   companyId: string;
   provider: unknown;
   toolName: string;
   parameters: unknown;
+  response: unknown;
   origin: AggregatorAppRequestOrigin | null;
   pendingAuthorization: boolean;
-  failed: boolean;
 }): void {
   try {
     if (!input.origin) return;
-    const outcome: AggregatorAppRequestOutcome = input.pendingAuthorization
-      ? "needs_auth"
-      : input.failed ? "failed" : "succeeded";
     if (input.provider === "composio" && input.toolName === "COMPOSIO_MANAGE_CONNECTIONS") {
-      const toolkits = addedComposioToolkits(input.parameters);
-      if (toolkits.length) {
-        emitAggregatorAppsRequested(input.companyId, { provider: "composio", toolkits, origin: input.origin, outcome });
+      for (const toolkit of new Set(addedComposioToolkits(input.parameters))) {
+        emitAggregatorAppsRequested(input.companyId, {
+          provider: "composio",
+          toolkits: [toolkit],
+          origin: input.origin,
+          outcome: composioAddOutcome(input.response, toolkit),
+        });
       }
       return;
     }
     if (input.provider === "arcade" && input.pendingAuthorization) {
       const toolkit = input.toolName.split(/[._]/)[0];
       if (toolkit) {
-        emitAggregatorAppsRequested(input.companyId, { provider: "arcade", toolkits: [toolkit], origin: input.origin, outcome });
+        emitAggregatorAppsRequested(input.companyId, { provider: "arcade", toolkits: [toolkit], origin: input.origin, outcome: "needs_auth" });
       }
     }
   } catch (err) {

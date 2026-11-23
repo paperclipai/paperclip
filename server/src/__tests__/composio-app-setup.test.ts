@@ -352,6 +352,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(appEvents()).toEqual([]);
     expect(JSON.stringify(track.mock.calls)).not.toContain("never-store-this-token");
   });
+  it("keeps app_linked for apps saved before a later app in the same check fails", async () => {
+    const f = await fixture();
+    f.activate();
+    f.failToolkit("notion");
+    track.mockClear();
+    await expect(f.access.refreshComposioApps(f.connection.id, ["circleback_mcp", "notion"], f.actor)).rejects.toThrow();
+    expect(appEvents()).toEqual([["connection.app_linked", { provider: "composio", app: aggregatorAppTelemetrySlug("composio", "circleback_mcp") }]]);
+  });
   it("reports a failed app request when Composio does not confirm the new account", async () => {
     const f = await fixture();
     f.setMutationStatus(500);

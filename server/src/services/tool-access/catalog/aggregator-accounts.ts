@@ -156,7 +156,6 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
       const failedToolkits: string[] = [];
       const listed = toolkits.filter(tool => tool.action === "list").map(tool => tool.name);
       const previous = await snapshotStatuses(connection.companyId, connectionId, aggregatorUserId(actor), listed);
-      const committed: { toolkit: string; status: string }[] = [];
       for (const tool of toolkits.filter(tool => tool.action === "list")) {
         let accounts: ComposioAppAccount[];
         try {
@@ -180,10 +179,10 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
         }).onConflictDoUpdate({ target: [toolConnectionAppSnapshots.companyId, toolConnectionAppSnapshots.connectionId, toolConnectionAppSnapshots.userId, toolConnectionAppSnapshots.toolkit],
           set: { accounts, status, checkedAt, credentialKey, errorAt: null }, setWhere: lte(toolConnectionAppSnapshots.checkedAt, checkedAt) })
           .returning({ toolkit: toolConnectionAppSnapshots.toolkit });
-        // A newer observation already won the row; this write changed nothing.
-        if (written.length) committed.push({ toolkit: tool.name, status });
+        // Emit per committed row: a later toolkit in this batch may still throw.
+        // A write that lost to a newer observation changed nothing and emits nothing.
+        if (written.length) emitAggregatorAppsLinked(connection.companyId, "composio", newlyLinkedToolkits(previous, [{ toolkit: tool.name, status }]));
       }
-      emitAggregatorAppsLinked(connection.companyId, "composio", newlyLinkedToolkits(previous, committed));
       return { payload, failedToolkits };
       } catch (error) { await markFailed(); throw error; }
     }

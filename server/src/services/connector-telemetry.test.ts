@@ -425,22 +425,38 @@ describe("aggregator app events", () => {
     expect(() => emitAggregatorAppsLinked("company-1", "composio", ["github"])).not.toThrow();
   });
 
-  it("reports agent Composio add requests and ignores list-only calls and other tools", () => {
-    const call = { companyId: "company-1", provider: "composio", toolName: "COMPOSIO_MANAGE_CONNECTIONS", origin: "agent" as const, pendingAuthorization: true, failed: false };
-    emitAggregatorAppRequestsFromToolCall({ ...call, parameters: { toolkits: [{ name: "github", action: "add" }, { name: "gmail", action: "list" }, { name: "acme-crm", action: "add" }] } });
+  it("reports agent Composio add requests with each app's own outcome and ignores other calls", () => {
+    const response = { jsonrpc: "2.0", id: "1", result: { structuredContent: { data: { results: {
+      github: { toolkit: "github", status: "ACTIVE" },
+      gmail: { redirect_url: "https://connect.composio.dev/link/abc" },
+      slack: { toolkit: "slack", status: "INITIATED" },
+    } } } } };
+    const call = { companyId: "company-1", provider: "composio", toolName: "COMPOSIO_MANAGE_CONNECTIONS", origin: "agent" as const, pendingAuthorization: true, response };
+    emitAggregatorAppRequestsFromToolCall({ ...call, parameters: { toolkits: [
+      { name: "github", action: "add" }, { name: "gmail", action: "add" }, { name: "notion", action: "list" }, { name: "acme-crm", action: "add" },
+    ] } });
+    expect(track.mock.calls).toEqual([
+      ["connection.app_requested", { provider: "composio", app: "github", origin: "agent", outcome: "succeeded" }],
+      ["connection.app_requested", { provider: "composio", app: "gmail", origin: "agent", outcome: "needs_auth" }],
+      ["connection.app_requested", { provider: "composio", app: "other", origin: "agent", outcome: "needs_auth" }],
+    ]);
+    track.mockClear();
     emitAggregatorAppRequestsFromToolCall({ ...call, parameters: { toolkits: [{ name: "github", action: "list" }] } });
     emitAggregatorAppRequestsFromToolCall({ ...call, toolName: "COMPOSIO_MULTI_EXECUTE_TOOL", parameters: { toolkits: [{ name: "github", action: "add" }] } });
     emitAggregatorAppRequestsFromToolCall({ ...call, origin: null, parameters: { toolkits: [{ name: "github", action: "add" }] } });
-    emitAggregatorAppRequestsFromToolCall({ ...call, pendingAuthorization: false, failed: true, parameters: { toolkits: [{ name: "slack", action: "add" }] } });
-    expect(track.mock.calls).toEqual([
-      ["connection.app_requested", { provider: "composio", app: "github", origin: "agent", outcome: "needs_auth" }],
-      ["connection.app_requested", { provider: "composio", app: "other", origin: "agent", outcome: "needs_auth" }],
-      ["connection.app_requested", { provider: "composio", app: "slack", origin: "agent", outcome: "failed" }],
-    ]);
+    expect(track).not.toHaveBeenCalled();
+  });
+
+  it("reports failed when the Composio response is an error or has no result for the app", () => {
+    const call = { companyId: "company-1", provider: "composio", toolName: "COMPOSIO_MANAGE_CONNECTIONS", origin: "agent" as const, pendingAuthorization: false, parameters: { toolkits: [{ name: "slack", action: "add" }] } };
+    emitAggregatorAppRequestsFromToolCall({ ...call, response: { jsonrpc: "2.0", id: "1", error: { code: -32000, message: "upstream failed" } } });
+    emitAggregatorAppRequestsFromToolCall({ ...call, response: { jsonrpc: "2.0", id: "1", result: { isError: true, content: [] } } });
+    emitAggregatorAppRequestsFromToolCall({ ...call, response: { jsonrpc: "2.0", id: "1", result: { structuredContent: { data: { results: {} } } } } });
+    expect(track.mock.calls.map(([, dims]) => dims.outcome)).toEqual(["failed", "failed", "failed"]);
   });
 
   it("reports an Arcade tool call that asks for authorization as a request for its toolkit", () => {
-    const call = { companyId: "company-1", provider: "arcade", parameters: {}, origin: "agent" as const, failed: true };
+    const call = { companyId: "company-1", provider: "arcade", parameters: {}, response: {}, origin: "agent" as const };
     emitAggregatorAppRequestsFromToolCall({ ...call, toolName: "Gmail_SendEmail", pendingAuthorization: true });
     emitAggregatorAppRequestsFromToolCall({ ...call, toolName: "Gmail_SendEmail", pendingAuthorization: false });
     expect(track.mock.calls).toEqual([
