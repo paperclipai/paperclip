@@ -3,6 +3,27 @@ import { HttpError } from "../errors.js";
 import { normalizeEnvironmentConfig, parseEnvironmentDriverConfig } from "../services/environment-config.ts";
 
 describe("environment config helpers", () => {
+  it("uses a connected tailnet within the SSH driver and requires a complete machine selection", () => {
+    const config = { host: "100.64.0.1", username: "developer", remoteWorkspacePath: "/Users/developer/Paperclip", network: "tailscale",
+      tailscaleConnectionId: "11111111-1111-4111-8111-111111111111", tailscaleDeviceId: "stable-device-id" };
+    const normalized = normalizeEnvironmentConfig({ driver: "ssh", config });
+    expect(normalized).toMatchObject(config);
+    expect(parseEnvironmentDriverConfig({ driver: "ssh", config: normalized })).toMatchObject({ driver: "ssh", config });
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleDeviceId: "" } })).toThrow(HttpError);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleConnectionId: undefined } })).toThrow(HttpError);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, network: "direct" } })).toThrow(HttpError);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleAuthKey: "raw-token" } })).toThrow(HttpError);
+  });
+  it.each([undefined, true, false])("preserves SSH authentication compatibility when useHostAuth is %s", useHostAuth => {
+    const config = normalizeEnvironmentConfig({ driver: "ssh", config: {
+      host: "ssh.example.test", username: "fixture", remoteWorkspacePath: "/workspace",
+      ...(useHostAuth !== undefined ? { useHostAuth } : {}),
+    } });
+    expect(config.useHostAuth).toBe(useHostAuth);
+    expect(Object.hasOwn(config, "useHostAuth")).toBe(useHostAuth !== undefined);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, useHostAuth: "false" } })).toThrow(HttpError);
+  });
+
   it("normalizes SSH config into its canonical stored shape", () => {
     const config = normalizeEnvironmentConfig({
       driver: "ssh",
@@ -34,6 +55,17 @@ describe("environment config helpers", () => {
       knownHosts: null,
       strictHostKeyChecking: true,
     });
+  });
+
+  it("accepts a secret-backed Tailscale machine and rejects runtime socket injection", () => {
+    const config = { host: "workstation", username: "developer", remoteWorkspacePath: "/workspace", network: "tailscale",
+      tailscaleConnectionId: "22222222-2222-4222-8222-222222222222", tailscaleDeviceId: "fixture-device",
+      tailscaleAuthKeySecretRef: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111", version: "latest" } };
+    expect(normalizeEnvironmentConfig({ driver: "ssh", config })).toMatchObject(config);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleConnectionId: undefined, tailscaleDeviceId: undefined } })).toThrow(HttpError);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleAuthKey: "tskey-auth-fixture" } })).toThrow(HttpError);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleSocket: "/tmp/other-company" } })).toThrow(HttpError);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleAuthKeySecretRef: { ...config.tailscaleAuthKeySecretRef, version: 1 } } })).toThrow(HttpError);
   });
 
   it("rejects raw SSH private keys in the stored config shape", () => {

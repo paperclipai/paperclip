@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../../errors.js";
-import { isExpectedMcpConnectionFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "../mcp-connection-failure.js";
+import { isExpectedMcpConnectionFailure, mcpConnectionFailureReason, mcpDiscoveryHttpFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "../mcp-connection-failure.js";
 import { assertPublicRemoteHttpEndpoint } from "../remote-http-endpoint-guard.js";
 import { classifyRemoteConnectionError, markRemoteConnectionFailure, readRemoteConnectionFailure, recordRemoteConnectionAttempts } from "../remote-connection-failure.js";
 
@@ -47,6 +47,22 @@ describe("MCP outbound failure provenance", () => {
     await expect(withMcpConnectionFailure(async () => { throw original; })).rejects.toBe(original);
     expect(isExpectedMcpConnectionFailure(retainMcpConnectionFailure(original, new HttpError(502, original.message))))
       .toBe(false);
+  });
+
+  it.each([
+    [401, "authentication_failed"], [403, "authentication_failed"], [404, "endpoint_not_found"],
+    [405, "endpoint_not_found"], [429, "rate_limited"], [503, "remote_unavailable"],
+  ])("classifies a remote HTTP %i response as %s across health-check wrapping", (status, reason) => {
+    const original = mcpDiscoveryHttpFailure(new Response(null, { status }), `Remote app returned HTTP ${status}`);
+    expect(mcpConnectionFailureReason(original)).toBe(reason);
+    const wrapped = retainMcpConnectionFailure(original, new HttpError(502, original.message));
+    expect(isExpectedMcpConnectionFailure(wrapped)).toBe(true);
+  });
+
+  it.each([400, 406, 409, 415, 422])("keeps an unexplained remote HTTP %i response reportable", (status) => {
+    const original = mcpDiscoveryHttpFailure(new Response(null, { status }), `Remote app returned HTTP ${status}`);
+    expect(mcpConnectionFailureReason(original)).toBeNull();
+    expect(isExpectedMcpConnectionFailure(retainMcpConnectionFailure(original, new HttpError(502, original.message)))).toBe(false);
   });
 
   it("does not carry provenance onto a subsequent independent error", async () => {

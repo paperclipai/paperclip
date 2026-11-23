@@ -202,6 +202,9 @@ export async function stageReceiptReactionRemovals(
           credentialFingerprint: input.runtimeContext.credentialFingerprint,
         } satisfies ReceiptReactionPayload,
         status: "received",
+        result: typeof receipt.result?.redactedError === "string"
+          ? { redactedError: receipt.result.redactedError }
+          : {},
       },
     ];
   });

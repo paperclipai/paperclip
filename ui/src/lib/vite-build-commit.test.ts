@@ -34,7 +34,7 @@ describe("browser build attribution", () => {
 
   it("makes the Docker build commit available before building the browser", () => {
     const dockerfile = readFileSync(fileURLToPath(new URL("../../../Dockerfile", import.meta.url)), "utf8");
-    const stage = dockerfile.split("FROM runner-build AS build")[1]?.split("FROM base AS production")[0];
+    const stage = dockerfile.split("FROM base AS build")[1]?.split("FROM base AS production")[0];
     expect(stage).toBeDefined();
     const arg = stage!.indexOf('ARG PAPERCLIP_BUILD_COMMIT=""');
     const browserBuild = stage!.indexOf("RUN pnpm --filter @paperclipai/ui build");

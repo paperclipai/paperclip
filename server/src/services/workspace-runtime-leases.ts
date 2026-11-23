@@ -31,10 +31,12 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
 export const LEASED_WORKSPACE_RUNTIME_ACTIONS: readonly string[] = ["start", "stop", "restart", "repair"];
 
 /**
- * Upper bound on how long a lease survives without the owner touching it. Recovery
- * from a stale owner is otherwise driven by owner eligibility, which is cheaper and
- * more precise; the TTL only bounds the cases eligibility cannot see (for example an
- * agent-scoped owner with no run or issue identity).
+ * Idle-reclaim policy window. A lease untouched this long may be taken over by the
+ * next claimant at claim time. This is a fairness policy, not an ownership proof:
+ * dead owners (terminal, hidden or missing issue; terminal or missing run) are
+ * released by identity, with no age, both at claim time and by the shared
+ * ownership reconciler. For agent-scoped owners, which no identity can prove gone,
+ * expiry plus the locked takeover is the fenced handoff.
  */
 export const WORKSPACE_RUNTIME_LEASE_TTL_MS = 30 * 60 * 1000;
 
@@ -72,7 +74,7 @@ export function buildWorkspaceRuntimeLeaseOwnerKey(owner: WorkspaceRuntimeLeaseO
   return null;
 }
 
-function parseOwnerKey(ownerKey: string): { kind: "issue" | "run" | "agent"; id: string } | null {
+export function parseWorkspaceRuntimeLeaseOwnerKey(ownerKey: string): { kind: "issue" | "run" | "agent"; id: string } | null {
   const separator = ownerKey.indexOf(":");
   if (separator <= 0) return null;
   const kind = ownerKey.slice(0, separator);
@@ -82,14 +84,18 @@ function parseOwnerKey(ownerKey: string): { kind: "issue" | "run" | "agent"; id:
   return { kind, id };
 }
 
-async function evaluateStaleOwner(
-  tx: LeaseTx,
-  lease: ExecutionWorkspaceRuntimeLeaseRow,
-  now: Date,
-): Promise<WorkspaceRuntimeLeaseStaleReason | null> {
-  if (lease.expiresAt.getTime() <= now.getTime()) return "lease_expired";
-
-  const owner = parseOwnerKey(lease.ownerKey);
+/**
+ * Proves by identity that an issue- or run-owned lease's owner is gone: the issue
+ * is missing, hidden or terminal, or the run is missing or terminal. Returns null
+ * while the owner lives, and for agent-scoped or unparseable owners, which have no
+ * identity to prove. The shared ownership reconciler's settle and the claim path
+ * both use it, so the lane is released on the same proof wherever it is checked.
+ */
+export async function proveWorkspaceRuntimeLeaseOwnerGone(
+  tx: Pick<Db, "select">,
+  lease: Pick<ExecutionWorkspaceRuntimeLeaseRow, "ownerKey" | "companyId">,
+): Promise<Exclude<WorkspaceRuntimeLeaseStaleReason, "lease_expired"> | null> {
+  const owner = parseWorkspaceRuntimeLeaseOwnerKey(lease.ownerKey);
   if (owner?.kind === "issue") {
     const ownerIssue = await tx
       .select({ status: issues.status, hiddenAt: issues.hiddenAt })
@@ -113,9 +119,24 @@ async function evaluateStaleOwner(
     return null;
   }
 
-  // Agent-scoped and unparseable owners have no lifecycle to inspect, so the TTL
-  // checked above is their only recovery path.
   return null;
+}
+
+async function evaluateStaleOwner(
+  tx: LeaseTx,
+  lease: ExecutionWorkspaceRuntimeLeaseRow,
+  now: Date,
+): Promise<WorkspaceRuntimeLeaseStaleReason | null> {
+  // Ownership proof first: a gone issue or run releases the lane with no age
+  // involved (the same proof the shared reconciler settles on).
+  const gone = await proveWorkspaceRuntimeLeaseOwnerGone(tx, lease);
+  if (gone) return gone;
+  // Idle reclaim: a POLICY, not an ownership proof. A lease untouched for the
+  // TTL is handed to the next claimant even when its issue or run still lives
+  // (fairness between issues sharing a workspace). For agent-scoped owners,
+  // which no identity can prove gone, expiry plus this locked takeover is the
+  // fenced handoff. The reconciler never releases a lease on this rule.
+  return lease.expiresAt.getTime() <= now.getTime() ? "lease_expired" : null;
 }
 
 function throwLeaseConflict(input: {

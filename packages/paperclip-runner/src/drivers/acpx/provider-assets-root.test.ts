@@ -19,6 +19,17 @@ it("uses one fixed provider directory for source, compiled and bundled runner la
   expect(() => resolveRunnerProviderAssetsRoot(pathToFileURL(join(path, "workspace/arbitrary.ts")).href, "cursor")).toThrow("verified package layout");
 });
 
+it("resolves Copilot assets from the bundled metadata probe without widening other providers", async () => {
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", undefined);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+  const path = await root();
+  for (const relative of ["dist/cli/copilot-metadata-probe.js", "dist/cli/copilot-metadata-probe.cjs"]) {
+    const moduleUrl = pathToFileURL(join(path, relative)).href;
+    expect(resolveRunnerProviderAssetsRoot(moduleUrl, "copilot")).toBe(join(path, "provider-assets/copilot"));
+    expect(() => resolveRunnerProviderAssetsRoot(moduleUrl, "cursor")).toThrow("verified package layout");
+  }
+});
+
 it("resolves descriptor sidecars only through the runner-bound canonical package manifest", async () => {
   const path = await root();
   await writeFile(join(path, "package.json"), JSON.stringify({ name: "@paperclipai/paperclip-runner" }));
@@ -29,6 +40,18 @@ it("resolves descriptor sidecars only through the runner-bound canonical package
   expect(() => resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "pi")).toThrow("runner or server package");
   vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", "relative");
   expect(() => resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "pi")).toThrow("normalized absolute");
+});
+
+it("uses the public server owner for its vendored Copilot probe and selected sidecar", async () => {
+  const path = await serverFixture();
+  await writeFile(join(path, "package.json"), JSON.stringify({ name: "@paperclipai/server" }));
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", undefined);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+  const moduleUrl = pathToFileURL(join(path, "dist/vendor/paperclip-runner/drivers/acpx/copilot-installation.js")).href;
+  expect(resolveRunnerProviderAssetsRoot(moduleUrl, "copilot")).toBe(join(path, "provider-assets/copilot"));
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", path);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", join(path, "package.json"));
+  expect(resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "copilot")).toBe(join(path, "provider-assets/copilot"));
 });
 
 it("resolves the public server bundle without repository paths or candidate overrides", async () => {
