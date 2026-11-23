@@ -52,6 +52,15 @@ describeEmbeddedPostgres("onboarding chat", () => {
     expect(tasks.map(task => task.identifier).sort()).toEqual([1, 2, 3].map(number => `${company.issuePrefix}-${number}`));
   });
 
+  it("opens the onboarding chat with a provisional title, so the first message and the agent can name it", async () => {
+    const { agent, app, path } = await setup();
+    const opened = await request(app).post(path);
+    expect(opened.status).toBe(200);
+    const [chat] = await ctx.db.select({ title: issues.title, titleNeedsGeneration: issues.titleNeedsGeneration })
+      .from(issues).where(eq(issues.id, opened.body.id));
+    expect(chat).toEqual({ title: `Chat with ${agent.name}`, titleNeedsGeneration: true });
+  });
+
   it("opens one owner-bound chat with signup context, zero execution tasks, zero projects, and no early wake", async () => {
     const { companyId, userId, agent, app, path, wakeup } = await setup();
     await ctx.db.insert(goals).values({ companyId, title: "Launch a robotics newsletter", level: "company", status: "active" });
