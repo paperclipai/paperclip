@@ -267,22 +267,31 @@ export async function waitForSandboxReady(
 
     const metadata = (cr.metadata as Record<string, unknown>) ?? {};
     const status = (cr.status as Record<string, unknown>) ?? {};
+    const generation = typeof metadata.generation === "number" ? metadata.generation : undefined;
 
-    // Guard against acting on stale controller status when both generation and
-    // observedGeneration are reported.
+    // Guard against stale top-level observedGeneration when reported.
     if (
-      typeof metadata.generation === "number" &&
+      generation !== undefined &&
       typeof status.observedGeneration === "number" &&
-      status.observedGeneration < metadata.generation
+      status.observedGeneration < generation
     ) {
       await sleep(pollMs);
       continue;
     }
 
-    // agent-sandbox v1alpha1 uses status.conditions[type=Ready,status=True],
-    // not status.phase. Fall back to phase for forward-compat.
+    // agent-sandbox v1alpha1/v1beta1 uses status.conditions[type=Ready,status=True],
+    // with per-condition observedGeneration; fall back to status.phase.
     const conditions = Array.isArray(status.conditions) ? status.conditions as Array<Record<string, unknown>> : [];
     const readyCondition = conditions.find((c) => c.type === "Ready");
+    const readyObsGen =
+      typeof readyCondition?.observedGeneration === "number"
+        ? readyCondition.observedGeneration
+        : undefined;
+    if (generation !== undefined && readyObsGen !== undefined && readyObsGen < generation) {
+      await sleep(pollMs);
+      continue;
+    }
+
     const failedCondition = conditions.find((c) => c.type === "Failed" || (c.type === "Ready" && c.status === "False" && typeof c.reason === "string" && /failed/i.test(c.reason)));
     const phase = (status.phase as string) ?? "";
 
