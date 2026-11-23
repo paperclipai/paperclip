@@ -144,12 +144,21 @@ describe("Antigravity agent picker candidate", () => {
   });
 
   it("offers this host only a grant that names this host", () => {
-    // A grant for the other target: the cloud one on a Mac, a Mac one on Linux.
-    const other = process.platform === "linux" && process.arch === "x64" ? "darwin-arm64" : "linux-x64";
-    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant(other));
-    let offered: unknown;
-    try { offered = antigravityCandidateForRunnerTarget(companyId, { driver: "local" }); } catch { offered = undefined; }
-    expect(offered).toBeUndefined();
+    // Pin the host to darwin-arm64 so the result does not depend on the machine
+    // running the test. A cloud (linux-x64) grant is valid for an untargeted
+    // lookup on every host, so only a host-bound lookup refuses it.
+    const host = { platform: Object.getOwnPropertyDescriptor(process, "platform")!, arch: Object.getOwnPropertyDescriptor(process, "arch")! };
+    Object.defineProperty(process, "platform", { ...host.platform, value: "darwin" });
+    Object.defineProperty(process, "arch", { ...host.arch, value: "arm64" });
+    try {
+      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
+      expect(() => antigravityCandidateForRunnerTarget(companyId, { driver: "local" })).toThrow(/does not match the execution target/);
+      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("darwin-arm64"));
+      expect(antigravityCandidateForRunnerTarget(companyId, { driver: "local" })).toMatchObject({ model, platform: "darwin", architecture: "arm64" });
+    } finally {
+      Object.defineProperty(process, "platform", host.platform);
+      Object.defineProperty(process, "arch", host.arch);
+    }
   });
 
   it("offers no candidate once the profile is released", () => {
