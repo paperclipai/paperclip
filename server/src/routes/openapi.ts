@@ -1364,6 +1364,7 @@ type OpenApiAuthLevel =
   | "agent_run"
   | "agent_heartbeat"
   | "runtime_tools"
+  | "agent_setup_token"
   | "authenticated"
   | "board"
   | "instance_admin";
@@ -1373,6 +1374,7 @@ const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
 const AGENT_BEARER_AUTH_SCHEME = "AgentBearerAuth";
 const AGENT_RUN_AUTH_SCHEME = "AgentRunAuth";
 const RUNTIME_TOOLS_BEARER_AUTH_SCHEME = "RuntimeToolsBearerAuth";
+const AGENT_SETUP_TOKEN_AUTH_SCHEME = "AgentSetupTokenAuth";
 
 function securityRequirement(name: string): Record<string, string[]> {
   return { [name]: [] };
@@ -1398,6 +1400,13 @@ const RUNTIME_TOOLS_OPERATIONS = new Set([
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
   "POST /runtime-tools/connections/request",
+]);
+
+/** A person's own agent reports setup progress with the checklist's bearer token, not a Paperclip sign-in (routes/agent-setup-progress.ts). */
+const AGENT_SETUP_TOKEN_OPERATIONS = new Set([
+  "PUT /api/agent-setup-progress/{id}/checklist",
+  "POST /api/agent-setup-progress/{id}/items/{key}",
+  "POST /api/agent-setup-progress/{id}/finish",
 ]);
 
 const PUBLIC_OPERATIONS = new Set([
@@ -1428,10 +1437,6 @@ const PUBLIC_OPERATIONS = new Set([
   // Outside clouds fetch a company's workload identity issuer anonymously (routes/workload-identity.ts).
   "GET /oidc/companies/{companyId}/.well-known/openid-configuration",
   "GET /oidc/companies/{companyId}/jwks.json",
-  // A person's own agent reports setup progress with the checklist's bearer token (routes/agent-setup-progress.ts).
-  "PUT /api/agent-setup-progress/{id}/checklist",
-  "POST /api/agent-setup-progress/{id}/items/{key}",
-  "POST /api/agent-setup-progress/{id}/finish",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -1767,6 +1772,7 @@ function resolveOperationAuthLevel(
   if (path === "/api/companies/{companyId}/grok-invitations"
       || /^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/grok-binding(?:\/(?:routine|verify|retry|stop|recover))?$/.test(path)) return "board";
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (AGENT_SETUP_TOKEN_OPERATIONS.has(key)) return "agent_setup_token";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
   if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
   // An approved connected-app skill's file: an agent in an active run only.
@@ -1826,6 +1832,12 @@ function applyDocumentFixups(document: any): any {
       description:
         "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
+    [AGENT_SETUP_TOKEN_AUTH_SCHEME]: {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "Setup checklist token (pcsp_…)",
+      description: "The token from a setup prompt, presented in the Authorization bearer header. It updates only its own setup checklist, until the checklist finishes or expires.",
+    },
     [AGENT_RUN_AUTH_SCHEME]: {
       type: "http",
       scheme: "bearer",
@@ -1848,6 +1860,8 @@ function applyDocumentFixups(document: any): any {
         operation.security = [securityRequirement(AGENT_BEARER_AUTH_SCHEME)];
       } else if (authLevel === "runtime_tools") {
         operation.security = RUNTIME_TOOLS_SECURITY;
+      } else if (authLevel === "agent_setup_token") {
+        operation.security = [securityRequirement(AGENT_SETUP_TOKEN_AUTH_SCHEME)];
       } else if (authLevel === "authenticated") {
         operation.security = AUTHENTICATED_SECURITY;
       } else {
@@ -1865,6 +1879,8 @@ function applyDocumentFixups(document: any): any {
               ? { actor: "agent", heartbeatBound: true }
             : authLevel === "runtime_tools"
               ? { actor: "runtime_tools", heartbeatBound: true }
+            : authLevel === "agent_setup_token"
+              ? { actor: "setup_token" }
               : authLevel === "authenticated"
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
@@ -1875,7 +1891,8 @@ function applyDocumentFixups(document: any): any {
       }
 
       const key = operationKey(method, path);
-      if (authLevel !== "public") {
+      // The setup token is only ever valid or not (401); it has no permissions to be refused.
+      if (authLevel !== "public" && authLevel !== "agent_setup_token") {
         const responses = (operation.responses ??= {}) as Record<
           string,
           unknown
