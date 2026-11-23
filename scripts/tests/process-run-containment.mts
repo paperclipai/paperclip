@@ -32,9 +32,9 @@ await check("Runtime native tuple denied",()=>assert.equal(jwt.isRevokedIncident
 await check("foreign company unaffected",()=>assert.equal(jwt.isRestrictedIncidentRunOutput("other",runs[0]),false));
 await check("wrong agent unaffected",()=>assert.equal(jwt.isRevokedIncidentRunAuthority(company,"other",runs[0]),false));
 await check("ordinary company read preserved",async()=>assert.equal(await privacy.canActorReadHeartbeatRun(db,access,actor,{companyId:company,id:"other",scopeKind:"company"}),true));
-await check("native verifier invokes denial",()=>assert.match(source("server/src/agent-auth-jwt.ts"),/if \(isRevokedIncidentRunAuthority\(companyId, sub, runId\)\) return null/));
+await check("native verifier invokes denial",()=>assert.match(source("server/src/agent-auth-jwt.ts"),/if \(isRevokedRunAuthority\(companyId, sub, runId\) \|\| isRevokedIncidentRunAuthority\(companyId, sub, runId\)\) return null/));
 await check("creation source retains run identity",()=>assert.match(source("server/src/routes/issues.ts"),/const runVisible[\s\S]{0,180}id: run.id/));
-await check("live event retains run identity",()=>assert.match(source("server/src/realtime/live-events-ws.ts"),/const \[run\] = await db.select\(\{\s+id: heartbeatRuns.id/));
+await check("live event retains run identity",()=>assert.match(source("server/src/realtime/live-events-ws.ts"),/const run = await sharedDeliveryRead\(reads, `run:\$\{runId\}`, async \(\) => \(await db.select\(\{\s+id: heartbeatRuns.id/));
 for(const operation of ["inspect","revealFrame","download"]){await check("provider trace "+operation+" gated",()=>{const s=source("server/src/routes/agents.ts");const offset=s.indexOf("await providerTraces."+operation+"(");assert.match(s.slice(offset-130,offset),/assertRunReadAllowed\(req, res, run\)/)})}
 
 // Model Drizzle's selected projection: omitted columns must not appear in rows.
@@ -59,4 +59,9 @@ for(const scopeKind of ["company","issue"]){
 await check("missing workspace source denied",async()=>assert.equal(await privacy.canActorReadWorkspaceOperation(workspaceDb(ordinaryRun,"company",false),access,actor,{companyId:company,heartbeatRunId:ordinaryRun}),false));
 await check("invalid historical source denied",async()=>assert.equal(await privacy.canActorReadWorkspaceOperation(workspaceDb(ordinaryRun,"company"),access,actor,{companyId:company,metadata:{_runPrivacySources:{invalid:true}}}),false));
 
+await check("upstream ownership module retained",()=>{assert.match(source("server/src/routes/issues.ts"),/import \{ assertHandedOffRunTaskOwnership \} from "..\/run-task-ownership.js"/);assert.doesNotMatch(source("server/src/routes/issues.ts"),/legacy-run-task-ownership/)});
+await check("upstream withdrawal export retained",()=>assert.match(source("server/src/routes/issues.ts"),/export async function withdrawIssueThreadInteractionAndNotify/));
+await check("upstream login target resolver import retained",()=>assert.match(source("server/src/routes/agents.ts"),/import \{ resolveLoginEnvironmentTarget \} from/));
+await check("upstream login spine target callbacks retained",()=>assert.equal((source("server/src/routes/agents.ts").match(/resolveTargetAgentId:/g)||[]).length,2));
+await check("upstream websocket shared delivery retained",()=>{const s=source("server/src/realtime/live-events-ws.ts");assert.match(s,/readBindings.push\(run\)/);assert.match(s,/getHeartbeatRunReadDecisions\(db, access, context!\.actor, readBindings\)/)});
 console.log(JSON.stringify({checks,failures,sourceOnly:true,liveIncidentClassification:false}));if(failures)process.exitCode=1;
