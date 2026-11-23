@@ -116,10 +116,19 @@ export function agentSetupProgressService(db: Db, options: { now?: () => Date } 
       userId: string | null;
       origin: string;
     }): Promise<AgentSetupProgressHandoff> {
-      // Expired checklists are only history: drop those a day past expiry, a few at a time, as new ones are made.
+      // Expired checklists are only history: as a company makes a new one, drop its own that are a day
+      // past expiry, a few at a time. Another company's rows are never touched.
       const stale = await db.select({ id: agentSetupProgress.id }).from(agentSetupProgress)
-        .where(lt(agentSetupProgress.expiresAt, new Date(now().getTime() - 24 * 60 * 60 * 1000))).limit(100);
-      if (stale.length > 0) await db.delete(agentSetupProgress).where(inArray(agentSetupProgress.id, stale.map((row) => row.id)));
+        .where(and(
+          eq(agentSetupProgress.companyId, input.companyId),
+          lt(agentSetupProgress.expiresAt, new Date(now().getTime() - 24 * 60 * 60 * 1000)),
+        )).limit(100);
+      if (stale.length > 0) {
+        await db.delete(agentSetupProgress).where(and(
+          eq(agentSetupProgress.companyId, input.companyId),
+          inArray(agentSetupProgress.id, stale.map((row) => row.id)),
+        ));
+      }
       const token = `pcsp_${randomBytes(32).toString("base64url")}`;
       const [row] = await db.insert(agentSetupProgress).values({
         companyId: input.companyId,

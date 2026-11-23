@@ -176,7 +176,12 @@ describe("agent setup progress", () => {
     // Checklists a day past expiry are removed as new ones are created; recent ones stay.
     await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 25 * 3600_000) }).where(eq(agentSetupProgress.id, handoff.progress.id));
     await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 3600_000) }).where(eq(agentSetupProgress.id, second.progress.id));
+    // Another company's long-expired checklist is never touched by this company's cleanup.
+    const other = await company();
+    const foreign = (await request(app([other.id])).post(`/api/companies/${other.id}/agent-setup-progress`).send({ purpose: "aws_connection", subjectId: other.connectionId }).expect(201)).body as AgentSetupProgressHandoff;
+    await db.update(agentSetupProgress).set({ expiresAt: new Date(Date.now() - 48 * 3600_000) }).where(eq(agentSetupProgress.id, foreign.progress.id));
     await create();
+    expect(await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, foreign.progress.id))).toHaveLength(1);
     expect(await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, handoff.progress.id))).toHaveLength(0);
     expect(await db.select().from(agentSetupProgress).where(eq(agentSetupProgress.id, second.progress.id))).toHaveLength(1);
   });
