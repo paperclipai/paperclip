@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { inflateRawSync } from "node:zlib";
 
 export const ANTIGRAVITY_PATCH_SCHEMA = "paperclip.antigravity.native_patch.v1";
-export const ANTIGRAVITY_PATCH_VERSION = "1.5.2-paperclip.1";
+export const ANTIGRAVITY_PATCH_VERSION = "1.5.2-paperclip.2";
 const ACP_ROOT = "google3/cloud/developer_experience/antigravity_extensions/acp_server/";
 const SDK_ROOT = "google3/third_party/py/google/antigravity/connections/local/";
 const SERVER_SOURCE = ACP_ROOT + "server.py";
@@ -235,6 +235,8 @@ export function antigravityPatchedSources(server, sdk, eventProcessor) {
       logging.warning(
           "Step error encountered for %s. Error: %s", step.id, step.error
       )
+      from google3.cloud.developer_experience.antigravity_extensions.acp_server import paperclip_admission as paperclip_turn
+      paperclip_turn.observe_step(step)
 
 `,
   );

@@ -8,7 +8,7 @@ import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { CLAUDE_ASYNC_TASKS_CAPABILITY } from "./claude-background-tasks.js";
 import { ClaudeProviderCycles } from "./claude-provider-turns.js";
-import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
+import { ANTIGRAVITY_MODEL_UNAVAILABLE, acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -51,7 +51,7 @@ import { createAcpxEffectiveModelGate, type AcpxEffectiveModelGate, type AcpxMod
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 import { createCursorInstructionAdmission } from "./cursor-instructions.js";
-import { createAntigravityAdmission } from "./antigravity-admission.js";
+import { antigravitySavedStateIncompatible, createAntigravityAdmission } from "./antigravity-admission.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
 import { isAcpPromptRequest, type AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertCopilotPromptPolicy, createCopilotPolicyEnforcement, type CopilotPolicyEnforcement } from "./copilot-policy.js";
@@ -757,6 +757,10 @@ export async function openQualifiedAcpxRuntime(
         return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
+      // A refused Antigravity reload is saved state this build cannot reopen,
+      // not ACPX's retryable "resume required"; the Runner names its class.
+      const savedState = options.profile.agent === "antigravity" ? antigravitySavedStateIncompatible(error) : null;
+      if (savedState) throw savedState;
       // The closed code below cannot say why the provider session did not
       // start, so every ensure rejection keeps its redacted explanation. An
       // abort reason is Runner cancellation, not a provider explanation.
@@ -2579,7 +2583,7 @@ function definedEnvironment(
 }
 
 /** A typed AIR session failure fails the turn even though ACP reported a normal stop. */
-function typedTerminalTurnResult(
+export function typedTerminalTurnResult(
   result: AcpRuntimeTurnResult,
   onFailure?: (failure: AcpxTerminalSessionFailure) => void,
 ): AcpRuntimeTurnResult {
@@ -2590,6 +2594,15 @@ function typedTerminalTurnResult(
     onFailure?.(failure);
   } catch {
     // Diagnostics cannot change the failed terminal outcome.
+  }
+  const provider = failure.provider;
+  if (provider?.kind === "model_unavailable") {
+    // Permanent: never an accepted result and never retried as capacity. The
+    // server words it from these fields, without provider text.
+    const error = { message: "The selected model is not available for this connection.",
+      code: ANTIGRAVITY_MODEL_UNAVAILABLE, retryable: false,
+      ...(provider.model ? { model: provider.model } : {}), ...(provider.route ? { route: provider.route } : {}) };
+    return { status: "failed", error };
   }
   return { status: "failed", error: { message: `ACP agent reported a terminal ${failure.category} failure.`, code: "RUNTIME" } };
 }

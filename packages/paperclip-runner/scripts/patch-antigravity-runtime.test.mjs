@@ -73,6 +73,7 @@ def _paperclip_native_boundary_regressions():
     bad = {"antigravity": {"paperclipAdmission": {**request, "byteLength": len(raw) + 1}, "systemPrompt": {"append": content}}}
     rejected(lambda: _read_request(bad))
     config = pb.HarnessConfig(cascade_id="native-session", models=[pb.ModelConfig(name="literal-model", types=[1])])
+    config.rules_config.filenames.extend(MANAGED_RULE_FILENAMES)
     if content:
       config.system_instructions.appended.appended_sections.add(content=content)
     token = _CONTEXT.set(expected)
@@ -110,6 +111,16 @@ def _paperclip_native_boundary_regressions():
       config.harness_side_tools.schedule.enabled = True
       rejected(lambda: prepare_native_config(config, strategy))
       config.harness_side_tools.schedule.enabled = False
+      # Workspace rules are deliberate: exactly GEMINI.md and AGENTS.md.
+      del config.rules_config.filenames[:]
+      rejected(lambda: prepare_native_config(config, strategy))
+      config.rules_config.filenames.extend((*MANAGED_RULE_FILENAMES, "CUSTOM.md"))
+      rejected(lambda: prepare_native_config(config, strategy))
+      del config.rules_config.filenames[:]
+      config.rules_config.filenames.extend(MANAGED_RULE_FILENAMES)
+      # A managed native config retries model API errors only briefly.
+      assert config.retry_config.api_retry.max_retries == MANAGED_API_RETRY["max_retries"]
+      assert config.retry_config.api_retry.initial_sleep_duration_ms == MANAGED_API_RETRY["initial_sleep_duration_ms"]
       config.custom_subagents.add(name="unpromised-browser-agent")
       rejected(lambda: prepare_native_config(config, strategy))
     finally:
@@ -126,7 +137,9 @@ def _paperclip_native_boundary_regressions():
     endpoint.SetInParent()
     if level is not None:
       endpoint.options.thinking_level = level
-    return pb.HarnessConfig(cascade_id="mapped-session", models=[model])
+    config = pb.HarnessConfig(cascade_id="mapped-session", models=[model])
+    config.rules_config.filenames.extend(MANAGED_RULE_FILENAMES)
+    return config
   strategy = SimpleNamespace(_binary_path="/untrusted", _env=None)
   token = _CONTEXT.set(mapped)
   try:
@@ -179,7 +192,7 @@ def _paperclip_native_helper_isolation_regression():
   import sys
   from google.antigravity import types as sdk_types
   from google.antigravity.tools.tool_runner import ToolRunner
-  from google.antigravity.connections.local.local_connection_config import LocalAgentConfig
+  from google3.cloud.developer_experience.antigravity_extensions.acp_server.proxy_agent_config import ProxyAgentConfig as LocalAgentConfig  # the managed server strategy
   async def run():
     home = os.environ["HOME"]
     os.makedirs(home, exist_ok=True)
@@ -498,7 +511,7 @@ def _paperclip_managed_state_regressions():
   from types import SimpleNamespace
   from acp import schema
   from google.antigravity import types as sdk_types
-  from google.antigravity.connections.local.local_connection_config import LocalAgentConfig
+  from google3.cloud.developer_experience.antigravity_extensions.acp_server.proxy_agent_config import ProxyAgentConfig as LocalAgentConfig  # the managed server strategy
   from google3.learning.genai.api.localharness import localharness_pb2 as pb
   from google3.cloud.developer_experience.antigravity_extensions.acp_server.server import SessionInfo
   sid = "native-managed-session-12345678901234567890"
@@ -852,4 +865,22 @@ test("native client file callbacks settle exact tool identity without broadcasti
   const tested = await runNative(join(root, "runtime/agy_acp_server.par"), join(root, "home"), [initialize()]);
   assert.match(tested.stderr, /paperclip-tool-lifecycle-regressions: passed/);
   assert.equal(tested.events[0].result.agentCapabilities._meta.antigravity.paperclipAdmission, 1);
+});
+
+test("native managed turns report classified provider failures instead of a completed turn", {
+  skip: skipNative,
+  timeout: 90_000,
+}, async t => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-antigravity-turn-failure-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixtureScripts = join(root, "scripts");
+  await mkdir(fixtureScripts);
+  await copyFile(new URL("./patch-antigravity-runtime.mjs", import.meta.url), join(fixtureScripts, "patch-antigravity-runtime.mjs"));
+  const module = await readFile(new URL("./patch-antigravity-runtime.admission.py", import.meta.url), "utf8");
+  const regression = await readFile(new URL("./patch-antigravity-runtime.turn-failure.test.py", import.meta.url), "utf8");
+  await writeFile(join(fixtureScripts, "patch-antigravity-runtime.admission.py"), module + "\n" + regression);
+  const fixture = await import(pathToFileURL(join(fixtureScripts, "patch-antigravity-runtime.mjs")));
+  await patchNative(fixture, join(root, "runtime"));
+  const tested = await runNative(join(root, "runtime/agy_acp_server.par"), join(root, "home"), [initialize()]);
+  assert.match(tested.stderr, /paperclip-turn-failure-regressions: passed/);
 });

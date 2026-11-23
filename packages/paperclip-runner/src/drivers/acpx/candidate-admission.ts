@@ -48,7 +48,9 @@ export function parseAcpxCandidateAdmission(
     || entry.schema !== "paperclip.acpx-candidate-admission.v1"
     || !stableId(entry.companyId) || entry.companyId !== expected.companyId
     || !profile || entry.agent !== expected.agent
-    || entry.agent === "kimi" && profile.qualificationStatus !== "pending"
+    // A released profile never takes operator candidate authority, so the
+    // qualification flip is only a declaration change.
+    || profile.qualificationStatus !== "pending"
     || typeof entry.model !== "string" || entry.model !== expected.model || !entry.model.trim()
     || entry.model !== entry.model.trim() || Buffer.byteLength(entry.model) > 512 || /[\u0000-\u001f\u007f]/.test(entry.model)
     || ["auto", "default"].includes(entry.model.toLowerCase())
