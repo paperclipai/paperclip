@@ -337,7 +337,7 @@ describe("online durable-data migration pass", () => {
 
     it("names every durable-data blocker that readiness can report", async () => {
       const source = await fs.readFile(new URL("./ephemeral-server-contract.ts", import.meta.url), "utf8");
-      const blockers = [...new Set([...source.matchAll(/blockers\.push\("([a-z_]+)"\)/g)].map(match => match[1]!)), RUNTIME_SKILL_ASSETS_BLOCKER];
+      const blockers = [...new Set([...source.matchAll(/(?:blockers\.push\(|check\(\s*"[a-z_]+",)\s*"([a-z_]+)"/g)].map(match => match[1]!)), RUNTIME_SKILL_ASSETS_BLOCKER];
       expect(blockers).toEqual(expect.arrayContaining(["workspaces_require_migration", "local_instruction_copies_require_settlement", "external_agent_instructions"]));
       for (const blocker of blockers) {
         resetOnlineDurableDataMigrationProgressForTests();
