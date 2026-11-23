@@ -284,7 +284,7 @@ describe("checkNewMigrationCompatibility", () => {
     expect(error).toContain("CREATE INDEX CONCURRENTLY");
     expect(error).toContain("expand migration now and a contract migration in a later release");
     expect(error).toContain("-- paperclip:migration-compat online_compatible: <why");
-    expect(error).toContain("-- paperclip:migration-compat requires_staging: <what");
+    expect(error).toContain("-- paperclip:migration-compat requires_staging: <why this cannot be split and who accepts the maintenance deploy>");
     expect(error).toContain("doc/DATABASE.md");
   });
 
