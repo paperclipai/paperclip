@@ -1,4 +1,5 @@
 import { notifyNativeFinalizationWork } from "./native-finalization-notifications.js";
+import { nativeEffectiveRunTerminalStateSql } from "./native-runtime/native-accepted-outcome.js";
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -83,7 +84,7 @@ async function readApplicableResult(db: Db, companyId: string, runId: string, lo
     eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issue.id),
     eq(nativeRunResults.runId, runId), eq(nativeRunResults.id, coordinator.resultId),
     eq(nativeRunResults.schemaStatus, "accepted"),
-    sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+    sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
   ));
   return result ? { coordinator, issue, run, result } : null;
 }

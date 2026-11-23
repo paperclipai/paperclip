@@ -385,6 +385,19 @@ describe("online durable-data migration pass", () => {
       expect(JSON.stringify(result)).not.toContain("private");
     });
 
+    it("names the recovery kind and finalizer state that keep a workspace local", async () => {
+      const fixture = owners({
+        localWorkspaces: async () => [workspace(1), workspace(2)],
+        inventoryWorkspace: async (_db: Db, input: { workspaceId: string }) => input.workspaceId === "w1"
+          ? { reasons: ["workspace_recovery_unresolved"], details: ["workspace_recovery_unresolved:active_run_watchdog"] }
+          : { reasons: ["execution_finalization_unresolved"], details: ["execution_finalization_unresolved:finalizer_leased", "bad:/private"] },
+      });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).toMatchObject({ "workspaces:workspace_recovery_unresolved": 1, "workspaces:workspace_recovery_unresolved:active_run_watchdog": 1,
+        "workspaces:execution_finalization_unresolved": 1, "workspaces:execution_finalization_unresolved:finalizer_leased": 1 });
+      expect(JSON.stringify(result)).not.toContain("private");
+    });
+
     it("migrates an idle workspace through the online owner with a bounded source-lock wait, never the offline mode", async () => {
       const migrateWorkspace = vi.fn(async () => ({ alreadyMigrated: true, reasons: [] }));
       const fixture = owners({ localWorkspaces: async () => [workspace(1)], migrateWorkspace });

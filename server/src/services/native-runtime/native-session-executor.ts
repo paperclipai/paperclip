@@ -1,4 +1,5 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
+import { applyNativeAcceptedOutcome, nativeRetainsWarmSession, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { settleReattachRun } from "../heartbeat/run-admission.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
@@ -9268,6 +9269,15 @@ function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
   return runnerClosedTurnStartSession(value.cause, depth + 1);
 }
 
+async function readSavedNativeAcceptedOutcome(db: Db, binding: { runId: string; companyId: string; issueId: string }, turnId: string | null) {
+  const [row] = await db.select({ resultJson: nativeRunResults.resultJson }).from(nativeRunResults).where(and(
+    eq(nativeRunResults.runId, binding.runId), eq(nativeRunResults.companyId, binding.companyId),
+    eq(nativeRunResults.issueId, binding.issueId), eq(nativeRunResults.schemaStatus, "accepted"),
+    turnId ? eq(nativeRunResults.turnId, turnId) : isNull(nativeRunResults.turnId),
+  )).limit(1);
+  return readNativeAcceptedOutcome(row?.resultJson);
+}
+
 export function nativeSessionFailureSourceCode(error: unknown, runnerSandboxDiskFull = false) {
   return nativeSandboxDiskFullSourceCode(classifyNativeSessionFailure(error), error, runnerSandboxDiskFull);
 }
@@ -12229,6 +12239,7 @@ async function executePaperclipNativeSessionAttempt(
     },
   );
   let native: Awaited<ReturnType<typeof executeNativeSession>>;
+  let acceptedOutcome: NativeAcceptedOutcome | null = null;
   let releaseGoalController: (() => void) | null = null;
   const releaseRegisteredGoalController = () => {
     // The controller is assigned from the asynchronous onSession callback.
@@ -13193,7 +13204,8 @@ async function executePaperclipNativeSessionAttempt(
       }
       await input.onLog?.("stderr", "[paperclip-runner] managed credential refresh failed; provider session retired.\n");
     }
-    if (native.terminal.runTerminalState === "succeeded") {
+    acceptedOutcome = await readSavedNativeAcceptedOutcome(input.db, input.execution.binding, native.turnId);
+    if (native.terminal.runTerminalState === "succeeded" || acceptedOutcome) {
       // A truncated, verified external-chat wake cannot settle from the
       // provider's partial inline prompt. The run-scoped reader records a
       // durable complete-page receipt; this fence revalidates that exact
@@ -14027,7 +14039,7 @@ async function executePaperclipNativeSessionAttempt(
   let postExecutionCleanupFailed = false;
   try {
     if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
-      const retainSession = native.terminal.runTerminalState === "succeeded" && native.result.continuation?.kind !== "case_handoff";
+      const retainSession = nativeRetainsWarmSession({ terminal: native.terminal, acceptedOutcome, continuationKind: native.result.continuation?.kind });
       const instructionCopy = input.instructionWorkingCopy;
       const ownedSession = warmNativeSessions.get(warmSessionId);
       let collectInstructions: boolean;
@@ -14227,6 +14239,7 @@ async function executePaperclipNativeSessionAttempt(
       logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
     }
   }
+  const terminal = applyNativeAcceptedOutcome(acceptedOutcome, native.terminal);
   const finalization: NativeFinalizationResult = {
     schema: "paperclip.native-finalization.v1",
     runtimeMode: "native",
@@ -14234,7 +14247,7 @@ async function executePaperclipNativeSessionAttempt(
     issueId: input.execution.binding.issueId,
     companyId: input.execution.binding.companyId,
     result: native.result as unknown as Record<string, unknown>,
-    terminal: native.terminal,
+    terminal,
     turnId: native.turnId,
     sourceInstanceId: effectiveRunnerInstanceId,
     normalizedSessionId: native.normalizedSessionId,
@@ -14245,28 +14258,30 @@ async function executePaperclipNativeSessionAttempt(
     highestContiguousSourceSeq: native.highestContiguousSourceSeq,
     workspaceFinalizeStatus: "pending",
   };
-  const providerFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
-  const providerExplanation = providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
+  const providerFailure = acceptedOutcome ? null : providerFailureObservation.forTerminal(native.turnId, native.terminal);
+  const providerExplanation = acceptedOutcome ? null : providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
   // Keep the generic failure behavior, but record why the turn failed.
-  const unclassifiedTurnFailure = providerFailureObservation.unclassifiedTurnFailure(native.turnId, native.terminal);
+  const unclassifiedTurnFailure = providerFailureObservation.unclassifiedTurnFailure(native.turnId, terminal);
   const adapterResult: AdapterExecutionResult = {
-    exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
+    exitCode: terminal.runTerminalState === "succeeded" ? 0 : 1,
     signal: null,
     timedOut: false,
     errorMessage:
-      native.terminal.runTerminalState === "succeeded"
+      terminal.runTerminalState === "succeeded"
         ? null
         : providerFailure?.errorMessage ?? explainNativeTurnFailure(unclassifiedTurnFailure)?.error
-          ?? `Native session ${native.terminal.runTerminalState}`,
+          ?? `Native session ${terminal.runTerminalState}`,
     ...(providerFailure ? { errorCode: providerFailure.errorCode } : {}),
     resultJson: {
       nativeResult: native.result as unknown as Record<string, unknown>,
-      nativeTerminal: native.terminal as unknown as Record<string, unknown>,
+      nativeTerminal: terminal as unknown as Record<string, unknown>,
       ...((input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8") ? { providerAccounting: { usage: null, cost: null, externallyBilled: true }, externalStopConfirmed: false } : {}),
       ...(input.execution.provider.kind === "cursor_cloud" ? { providerAccounting: { usage: null, cost: null, externallyBilled: true } } : {}),
       ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
       ...(unclassifiedTurnFailure ? { nativeTurnFailure: unclassifiedTurnFailure } : {}),
       ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
+      ...(acceptedOutcome ? { providerFailureAfterAcceptedResult: {
+        provider: acceptedOutcome.providerFailure.provider, category: acceptedOutcome.providerFailure.category } } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },
@@ -14291,11 +14306,11 @@ async function executePaperclipNativeSessionAttempt(
   if (taskSettleScope) {
     await trace.end(taskSettleScope, {
       outcome:
-        native.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
+        terminal.runTerminalState === "succeeded" ? "ok" : "failed",
     });
   }
   await trace.finish(
-    native.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
+    terminal.runTerminalState === "succeeded" ? "ok" : "failed",
   );
   return adapterResult;
 }

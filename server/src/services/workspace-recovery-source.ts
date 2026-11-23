@@ -1,4 +1,5 @@
 import { hasMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
+import { nativeEffectiveRunTerminalStateSql } from "./native-runtime/native-accepted-outcome.js";
 import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
@@ -151,7 +152,7 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
       eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
       eq(nativeRunResults.completionContractId, run.completionContractId),
       eq(nativeRunResults.schemaStatus, "accepted"),
-      sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+      sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
     )).limit(1))[0] : null;
   const sources = [];
   for (const leaseId of leaseIds as string[]) {

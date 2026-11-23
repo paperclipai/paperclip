@@ -1,4 +1,5 @@
 import { instanceSettingsService } from "./instance-settings.js";
+import { nativeEffectiveRunTerminalStateSqlText } from "./native-runtime/native-accepted-outcome.js";
 import { idleMcpWorkQuery } from "./public-mcp/idle-work-query.js";
 import type { McpWakeAdmission } from "./public-mcp/wake-admission.js";
 import { pendingBudgetEvaluationWorkQuery } from "./budget-evaluation-work.js";
@@ -76,6 +77,42 @@ export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) 
 // have a durable wake path. In particular, an empty in-memory run set is not
 // evidence that a restarted process has no persisted work to recover.
 const workCheck = (reason: string, query: string | SQLWrapper) => ({ reason, query: typeof query === "string" ? sql.raw(query) : query });
+
+export const NATIVE_RUN_FINALIZATION_WORK_QUERY = `SELECT 1 FROM native_run_finalizations f WHERE (
+    f.phase = 'committed' AND f.lease_owner IS NULL AND f.lease_expires_at IS NULL
+    AND f.next_attempt_at IS NULL AND f.control_deadline_at IS NULL
+    AND f.recovery_state IS NULL AND f.recovery_request_id IS NULL
+    AND f.failure_code IS NULL AND f.failure_detail IS NULL
+    AND EXISTS (
+      SELECT 1 FROM heartbeat_runs r
+      JOIN native_run_results result_row ON result_row.id = f.result_id
+        AND result_row.company_id = r.company_id AND result_row.issue_id = r.native_issue_id
+        AND result_row.run_id = r.id AND result_row.completion_contract_id = r.completion_contract_id
+      JOIN work_assessments assessment ON assessment.id = f.assessment_id
+        AND assessment.company_id = r.company_id AND assessment.issue_id = r.native_issue_id
+        AND assessment.run_id = r.id AND assessment.result_id = result_row.id
+      JOIN status_decisions decision ON decision.id = f.decision_id
+        AND decision.company_id = r.company_id AND decision.issue_id = r.native_issue_id
+        AND decision.run_id = r.id AND decision.assessment_id = assessment.id
+      WHERE r.id = f.run_id AND r.company_id = f.company_id AND r.native_issue_id = f.issue_id
+        AND r.runtime_mode = 'native' AND r.native_phase = 'committed'
+        AND ${finishedRun("r")}
+        AND r.result_json->>'finalizationPhase' = 'committed'
+        AND r.result_json->>'nextAttemptAt' IS NULL AND r.result_json->>'failureCode' IS NULL
+        AND r.result_json->>'originalFailureCode' IS NULL
+        AND result_row.schema_status = 'accepted'
+        AND ${nativeEffectiveRunTerminalStateSqlText("result_row.result_json")} = r.status
+        AND decision.application_state = 'applied' AND decision.applied_at IS NOT NULL)
+    AND EXISTS (SELECT 1 FROM workspace_operations operation
+      WHERE operation.company_id = f.company_id AND operation.issue_id = f.issue_id
+        AND operation.heartbeat_run_id = f.run_id
+        AND operation.phase = 'workspace_finalize' AND operation.status = 'succeeded')
+    AND NOT EXISTS (
+      SELECT 1 FROM status_decision_effects effect WHERE effect.decision_id = f.decision_id
+        AND (effect.company_id <> f.company_id OR effect.issue_id <> f.issue_id
+          OR effect.delivery_state <> 'delivered' OR effect.delivered_at IS NULL
+          OR effect.next_attempt_at IS NOT NULL))
+    ) IS NOT TRUE`;
 
 const WORK_CHECKS = [
   workCheck("agents.execution_or_timer", `SELECT 1 FROM agents WHERE status = 'running' OR
@@ -247,41 +284,7 @@ const WORK_CHECKS = [
     WHERE c.status = 'active' AND s.enabled AND s.automatic_updates
       AND (s.access_scope = 'company' OR EXISTS (
         SELECT 1 FROM project_skill_sources b WHERE b.source_id = s.id AND b.company_id = s.company_id AND b.active))`),
-  workCheck("native_run_finalizations", `SELECT 1 FROM native_run_finalizations f WHERE (
-    f.phase = 'committed' AND f.lease_owner IS NULL AND f.lease_expires_at IS NULL
-    AND f.next_attempt_at IS NULL AND f.control_deadline_at IS NULL
-    AND f.recovery_state IS NULL AND f.recovery_request_id IS NULL
-    AND f.failure_code IS NULL AND f.failure_detail IS NULL
-    AND EXISTS (
-      SELECT 1 FROM heartbeat_runs r
-      JOIN native_run_results result_row ON result_row.id = f.result_id
-        AND result_row.company_id = r.company_id AND result_row.issue_id = r.native_issue_id
-        AND result_row.run_id = r.id AND result_row.completion_contract_id = r.completion_contract_id
-      JOIN work_assessments assessment ON assessment.id = f.assessment_id
-        AND assessment.company_id = r.company_id AND assessment.issue_id = r.native_issue_id
-        AND assessment.run_id = r.id AND assessment.result_id = result_row.id
-      JOIN status_decisions decision ON decision.id = f.decision_id
-        AND decision.company_id = r.company_id AND decision.issue_id = r.native_issue_id
-        AND decision.run_id = r.id AND decision.assessment_id = assessment.id
-      WHERE r.id = f.run_id AND r.company_id = f.company_id AND r.native_issue_id = f.issue_id
-        AND r.runtime_mode = 'native' AND r.native_phase = 'committed'
-        AND ${finishedRun("r")}
-        AND r.result_json->>'finalizationPhase' = 'committed'
-        AND r.result_json->>'nextAttemptAt' IS NULL AND r.result_json->>'failureCode' IS NULL
-        AND r.result_json->>'originalFailureCode' IS NULL
-        AND result_row.schema_status = 'accepted'
-        AND result_row.result_json->'terminal'->>'runTerminalState' = r.status
-        AND decision.application_state = 'applied' AND decision.applied_at IS NOT NULL)
-    AND EXISTS (SELECT 1 FROM workspace_operations operation
-      WHERE operation.company_id = f.company_id AND operation.issue_id = f.issue_id
-        AND operation.heartbeat_run_id = f.run_id
-        AND operation.phase = 'workspace_finalize' AND operation.status = 'succeeded')
-    AND NOT EXISTS (
-      SELECT 1 FROM status_decision_effects effect WHERE effect.decision_id = f.decision_id
-        AND (effect.company_id <> f.company_id OR effect.issue_id <> f.issue_id
-          OR effect.delivery_state <> 'delivered' OR effect.delivered_at IS NULL
-          OR effect.next_attempt_at IS NOT NULL))
-    ) IS NOT TRUE`),
+  workCheck("native_run_finalizations", NATIVE_RUN_FINALIZATION_WORK_QUERY),
   ...completedHistoryChecks.map(check => workCheck(check.reason, check.query)),
 ] as const;
 
