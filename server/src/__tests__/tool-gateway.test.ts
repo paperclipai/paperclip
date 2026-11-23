@@ -5865,6 +5865,15 @@ rl.on("line", (line) => {
     expect(stillPending!.status).toBe("pending");
     await db.update(toolActionRequests).set({ status: "expired" }).where(eq(toolActionRequests.id, anonymous.id));
 
+    const legacyApproved = await requestReview();
+    await db.update(toolActionRequests).set({ status: "approved", decidedAt: new Date(), decidedByUserId: null, resolvedByUserId: null })
+      .where(eq(toolActionRequests.id, legacyApproved.id));
+    await expect(gateway.recoverApprovedActionReviews(company.id)).resolves.toMatchObject({ retry: false });
+    const [recovered] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
+      .where(eq(toolActionRequests.id, legacyApproved.id));
+    expect(recovered!.status).not.toBe("approved");
+    await expect(gateway.recoverApprovedActionReviews(company.id)).resolves.toMatchObject({ retry: false });
+
     const detached = await requestReview();
     expect((await direct("alice", detached.id, "approve")).status).toBe(200);
     await db.update(toolActionRequests).set({ issueId: null, interactionId: null, requestedByUserId: "alice", decidedByUserId: null, resolvedByUserId: null })
