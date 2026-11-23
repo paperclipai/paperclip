@@ -1,13 +1,13 @@
 import { DISPOSITION_REPAIR_MAX_ATTEMPTS } from '../services/recovery/disposition-repair.js';
 import {randomUUID} from 'node:crypto';
 import {beforeAll,afterAll,describe,it,expect,vi} from 'vitest';
-import {createDb,companies,agents,issues,heartbeatRuns,agentWakeupRequests} from '@paperclipai/db';
+import {createDb,companies,agents,issues,heartbeatRuns,agentWakeupRequests,issueRecoveryActions} from '@paperclipai/db';
 import {eq} from 'drizzle-orm';
 import {startEmbeddedPostgresTestDatabase} from './helpers/embedded-postgres.js';
 import {recoveryService} from '../services/recovery/service.js';
 let temp: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
-beforeAll(async()=>{temp=await startEmbeddedPostgresTestDatabase('hom3857-terminal-');db=createDb(temp.connectionString)},90000);
+beforeAll(async()=>{temp=await startEmbeddedPostgresTestDatabase('terminal-refusal-');db=createDb(temp.connectionString)},90000);
 afterAll(async()=>{await temp?.cleanup()},90000);
 const cases=[
  {errorCode:'adapter_failed',error:'This content was flagged for possible cybersecurity risk.'},
@@ -123,4 +123,79 @@ describe('terminal refusal preserves current recovery authority', () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
     expect(scheduleRecoveryRetry).not.toHaveBeenCalled();
   });
+});
+
+
+describe('assigned sweep after refusal escalation', () => {
+ it.each(cases)('keeps a failed recovery refusal stopped across repeated sweeps: %j', async row => {
+  const ids = await seed(row);
+  const parentId = randomUUID();
+  await db.insert(heartbeatRuns).values({id:parentId,companyId:ids.companyId,agentId:ids.agentId,
+    status:'failed',invocationSource:'assignment',errorCode:'codex_transient_upstream',
+    createdAt:new Date(Date.now()-25*60_000),finishedAt:new Date(Date.now()-24*60_000),
+    contextSnapshot:{issueId:ids.issueId}});
+  await db.update(heartbeatRuns).set({retryOfRunId:parentId}).where(eq(heartbeatRuns.id,ids.runId));
+  const enqueueWakeup = vi.fn(async () => null), scheduleRecoveryRetry = vi.fn(async () => null);
+  const recovery = recoveryService(db,{enqueueWakeup,scheduleRecoveryRetry});
+  await recovery.reconcileStrandedAssignedIssues(ids);
+  const before = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId,ids.issueId)));
+  expect(before).toHaveLength(1);
+  expect(before[0]).toMatchObject({kind:'stranded_assigned_issue',ownerType:'board'});
+  expect(['active','escalated']).toContain(before[0].status);
+  const sweepStatuses:string[]=[];
+  for (let i=0;i<2;i++) {
+    await recovery.assignedWork.checkIssue(ids);
+    sweepStatuses.push((await db.select().from(issues).where(eq(issues.id,ids.issueId)))[0].status);
+    await recovery.reconcileStrandedAssignedIssues(ids);
+  }
+  const after = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId,ids.issueId));
+  const originalHold=after.find(action=>action.id===before[0].id);
+  const issue=(await db.select().from(issues).where(eq(issues.id,ids.issueId)))[0];
+  expect({
+    sweepStatuses,
+    actionCount:after.length,
+    holdStatus:originalHold?.status,
+    holdOwner:originalHold?.ownerType,
+    continuationCount:after.filter(action=>Boolean((action.evidence as Record<string,unknown>)?.freshContinuation)).length,
+    issueStatus:issue.status,
+    issueOwner:issue.assigneeAgentId,
+    runCount:(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,ids.companyId))).length,
+    wakeCount:(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId,ids.companyId))).length,
+    enqueueCalls:enqueueWakeup.mock.calls.length,
+    retryCalls:scheduleRecoveryRetry.mock.calls.length,
+  }).toEqual({sweepStatuses:['blocked','blocked'],actionCount:1,holdStatus:before[0].status,holdOwner:'board',continuationCount:0,
+    issueStatus:'blocked',issueOwner:ids.agentId,runCount:2,wakeCount:0,enqueueCalls:0,retryCalls:0});
+ });
+});
+
+
+describe('assigned sweep transport controls', () => {
+ it.each([
+  {errorCode:'codex_transient_upstream',error:'upstream unavailable'},
+  {errorCode:'codex_transient_upstream',resultJson:{output:'This content was flagged for possible cybersecurity risk.'}},
+ ])('still continues a genuine failed recovery transport hold: %j', async row => {
+  const ids=await seed(row);
+  const parentId=randomUUID();
+  await db.insert(heartbeatRuns).values({id:parentId,companyId:ids.companyId,agentId:ids.agentId,
+    status:'failed',invocationSource:'assignment',errorCode:'codex_transient_upstream',
+    createdAt:new Date(Date.now()-25*60_000),finishedAt:new Date(Date.now()-24*60_000),
+    contextSnapshot:{issueId:ids.issueId}});
+  await db.update(heartbeatRuns).set({retryOfRunId:parentId}).where(eq(heartbeatRuns.id,ids.runId));
+  const [hold]=await db.insert(issueRecoveryActions).values({companyId:ids.companyId,sourceIssueId:ids.issueId,
+    kind:'stranded_assigned_issue',status:'active',ownerType:'board',cause:'stranded_assigned_issue',
+    fingerprint:`synthetic-transport:${ids.issueId}`,evidence:{previousStatus:'in_progress',latestRunId:ids.runId},
+    nextAction:'Inspect transport failure'}).returning();
+  await db.update(issues).set({status:'blocked',blockedTransitionAt:new Date(Date.now()-16*60_000)})
+    .where(eq(issues.id,ids.issueId));
+  const enqueueWakeup=vi.fn(async()=>null);
+  const recovery=recoveryService(db,{enqueueWakeup});
+  expect(await recovery.assignedWork.checkIssue(ids)).toMatchObject({outcome:'repaired'});
+  expect((await db.select().from(issues).where(eq(issues.id,ids.issueId)))[0].status).not.toBe('blocked');
+  expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id,hold.id)))[0])
+    .toMatchObject({status:'resolved',ownerType:'system'});
+  const actions=await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId,ids.issueId));
+  expect(actions.filter(action=>Boolean((action.evidence as Record<string,unknown>)?.freshContinuation))).toHaveLength(1);
+  await recovery.assignedWork.checkIssue(ids);
+  expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId,ids.issueId))).toHaveLength(actions.length);
+ });
 });

@@ -4428,6 +4428,7 @@ export function recoveryService(
           scheduledRetryReason: input.latestRun?.scheduledRetryReason ?? null,
           contextSnapshot: (input.latestRun?.contextSnapshot ?? null) as Record<string, unknown> | null,
           runnerProfileJson: input.latestRun?.runnerProfileJson,
+          resultJson: input.latestRun?.resultJson,
           executionRecovery: (parseObject(input.latestRun?.resultJson).executionRecovery ?? null) as StrandedHoldRun["executionRecovery"],
         }),
       recoveryOwner:
