@@ -19,6 +19,8 @@ describe("cancelling an unfinished first sign-in", () => {
   let keyDir: string;
   let provider: Server;
   let origin: string;
+  let holdToken: Promise<void> | null = null;
+  let tokenRequested: (() => void) | null = null;
 
   beforeAll(async () => {
     keyDir = await mkdtemp(join(tmpdir(), "tool-cancelled-sign-in-"));
@@ -47,6 +49,7 @@ describe("cancelling an unfinished first sign-in", () => {
       }
       if (path === "/register") return json({ ...JSON.parse(body), client_id: "fixture-client" });
       if (path === "/token") {
+        if (holdToken) { tokenRequested?.(); await holdToken; }
         return json({ access_token: "fixture-access", refresh_token: "fixture-refresh", expires_in: 3600, token_type: "Bearer", scope: "tools.write offline_access" });
       }
       if (path === "/mcp") {
@@ -152,6 +155,39 @@ describe("cancelling an unfinished first sign-in", () => {
     expect((await listed()).find((connection) => connection.id === connectionId)).toMatchObject({ status: "draft", firstSignInPending: true });
     expect(await visible()).toEqual([]);
     await request(app).post(`/api/tool-connections/${connectionId}/sign-in/cancel`).expect(200).expect(({ body }) => expect(body.abandoned).toBe(true));
+  });
+
+  it("refuses a sign-in that finishes after the user cancelled it", async () => {
+    const { app, connect, visible } = await setup();
+    const { connectionId, state } = await connect();
+    let release!: () => void;
+    holdToken = new Promise<void>((resolve) => { release = resolve; });
+    const requested = new Promise<void>((resolve) => { tokenRequested = resolve; });
+    try {
+      const callback = request(app).get("/api/tools/oauth/callback").query({ state, code: "fixture-code", iss: origin }).then((response) => response);
+      await requested;
+      await request(app).post(`/api/tool-connections/${connectionId}/sign-in/cancel`).expect(200).expect(({ body }) => expect(body.abandoned).toBe(true));
+      release();
+      expect((await callback).status).toBe(409);
+    } finally {
+      holdToken = null;
+      tokenRequested = null;
+    }
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    expect(row.status).toBe("archived");
+    expect(await visible()).toEqual([]);
+  });
+
+  it("treats a legacy draft with an inline token as a real connection", async () => {
+    const { app, connect } = await setup();
+    const { connectionId } = await connect();
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    const config = { ...row.config, oauth: { ...(row.config.oauth as Record<string, unknown>), access_token: "legacy-inline" } };
+    await db.update(toolConnections).set({ config, transportConfig: config }).where(eq(toolConnections.id, connectionId));
+    const response = await request(app).post(`/api/tool-connections/${connectionId}/sign-in/cancel`).expect(200);
+    expect(response.body.abandoned).toBe(false);
+    const [after] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    expect(after.status).toBe("draft");
   });
 
   it("does not let another company cancel the draft", async () => {
