@@ -1,6 +1,8 @@
+import fs from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/index.js";
+import { RUNTIME_SKILL_ASSETS_BLOCKER } from "./ephemeral-server-contract.js";
 import { resetOnlineDurableDataMigrationProgressForTests, runOnlineDurableDataMigration } from "./online-durable-data-migration.js";
 
 const db = {} as Db;
@@ -281,6 +283,66 @@ describe("online durable-data migration pass", () => {
       expect(workspaceOperations).toHaveBeenCalledWith(db, { companyId: "c1", signal: expect.any(AbortSignal) });
       expect(result.counts).toMatchObject({ workspaceOperations: 2, workspaces: 1 });
       expect(result.deferred).toMatchObject({ "workspace_operations:finalization_owner_busy": 2 });
+    });
+
+    it("names the workspace codes from an earlier pass when the pass that finishes the round does not reach workspaces", async () => {
+      let clock = 0;
+      const fixture = owners({
+        localWorkspaces: async () => { clock = 60_000; return [workspace(1), workspace(2)]; },
+        inventoryWorkspace: async (_db: Db, input: { workspaceId: string }) => ({ reasons: [input.workspaceId === "w1" ? "active_execution" : "task_binding_required"] }),
+        eligibility: async () => ({ eligible: false, blockers: ["workspaces_require_migration"] }),
+      });
+      const run = () => runOnlineDurableDataMigration(db, { budgetMs: 60_000, now: () => clock }, fixture.owners);
+      expect(await run()).toMatchObject({ state: "budget_exhausted", resumePhase: "native_harness_backups",
+        deferred: { "workspaces:active_execution": 1, "workspaces:task_binding_required": 1 } });
+      clock = 0;
+      const result = await run();
+      expect(result).toMatchObject({ state: "completed", blockers: ["workspaces_require_migration"] });
+      expect(result.deferred).toMatchObject({ "workspaces:active_execution": 1, "workspaces:task_binding_required": 1 });
+    });
+
+    it("names a workspace blocker that no inspected workspace explains", async () => {
+      const fixture = owners({ eligibility: async () => ({ eligible: false, blockers: ["workspaces_require_migration"] }) });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).toMatchObject({ "workspaces:pending_inspection": 1 });
+    });
+
+    it("names every durable-data blocker that readiness can report", async () => {
+      const source = await fs.readFile(new URL("./ephemeral-server-contract.ts", import.meta.url), "utf8");
+      const blockers = [...new Set([...source.matchAll(/blockers\.push\("([a-z_]+)"\)/g)].map(match => match[1]!)), RUNTIME_SKILL_ASSETS_BLOCKER];
+      expect(blockers).toEqual(expect.arrayContaining(["workspaces_require_migration", "local_instruction_copies_require_settlement", "external_agent_instructions"]));
+      for (const blocker of blockers) {
+        resetOnlineDurableDataMigrationProgressForTests();
+        const fixture = owners({ eligibility: async () => ({ eligible: false, blockers: [blocker] }),
+          agentFiles: async () => ({ results: [], next: null }),
+          skillObjects: async () => ({ inspected: 0, migrated: 0, busy: 0, after: null }),
+          skillInstallations: () => ({ installations: async () => ({ inspected: 0, after: null, results: [] }) }),
+          nativeHarnessBackups: async () => ({ inspected: 0, published: 0, current: 0, deferred: {} }) });
+        const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+        expect(Object.keys(result.deferred), blocker).toHaveLength(1);
+      }
+    });
+
+    it("names a local instruction copy that still needs settlement after the agent files are durable", async () => {
+      const fixture = owners({ agentFiles: async () => ({ results: [{ agentId: "a1", state: "durable" }], next: null }),
+        eligibility: async () => ({ eligible: false, blockers: ["local_instruction_copies_require_settlement"] }) });
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).toEqual({ "skill_objects:owner_busy": 1, "skills:linked_local": 1, "native_harness:source_active": 2,
+        "agent_files:instruction_copy_unsettled": 1 });
+    });
+
+    it("drops codes from an earlier round once the workspaces are inspected again", async () => {
+      let blocked = true;
+      const fixture = owners({
+        localWorkspaces: async () => [workspace(1)],
+        inventoryWorkspace: async () => ({ reasons: blocked ? ["active_execution"] : [] }),
+        eligibility: async () => ({ eligible: false, blockers: ["workspaces_require_migration"] }),
+      });
+      await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      blocked = false;
+      const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(result.deferred).not.toHaveProperty("workspaces:active_execution");
+      expect(result.deferred).toMatchObject({ "workspaces:pending_inspection": 1 });
     });
 
     it("migrates an idle workspace through the online owner with a bounded source-lock wait, never the offline mode", async () => {

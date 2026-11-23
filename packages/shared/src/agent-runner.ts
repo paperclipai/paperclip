@@ -31,7 +31,8 @@ export function paperclipRunnerCreationLifecycle(
 
 export const PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION = "2.39";
 
-function supportsLinuxLibc(libc?: "glibc" | "musl" | "unknown", version?: string): boolean {
+/** The Runner's Linux libc floor: glibc at or above the minimum version. */
+export function supportsLinuxLibc(libc?: "glibc" | "musl" | "unknown", version?: string): boolean {
   if (libc !== undefined && libc !== "glibc") return false;
   if (version === undefined) return true;
   const match = typeof version === "string" ? version.trim().match(/^(?:glibc\s+)?(\d+)\.(\d+)(?:\.\d+)?$/) : null;
