@@ -89,7 +89,16 @@ describe("Muse native visibility intersection", () => {
     else expect(ids).toContain(f.outside.id);
     if(shape==="search_tasks"){
       const outsideOnly=await f.authority.execute({tool:"search_tasks",callId:"outside-only",arguments:{query:"MUSE_READ_SCOPE_OUTSIDE",limit:1}});
-      expect(outsideOnly).toMatchObject({tasks:restricted?[]:[{id:f.outside.id}]});
+      expect(outsideOnly).toMatchObject({tasks:restricted?[]:[{id:f.outside.id}],returnedCount:restricted?0:1,hasMore:false,nextCursor:null});
+      const page=await f.authority.execute({tool:"search_tasks",callId:"authorized-page",arguments:{query:"MUSE_READ_SCOPE",limit:1}}) as {tasks:Array<{id:string}>;hasMore:boolean;nextCursor:string|null};
+      expect(page.tasks).toHaveLength(1);
+      expect(page.hasMore).toBe(!restricted);
+      if(restricted)expect(page.nextCursor).toBeNull();
+      else {
+        const next=await f.authority.execute({tool:"search_tasks",callId:"authorized-next-page",arguments:{query:"MUSE_READ_SCOPE",limit:1,cursor:page.nextCursor}}) as {tasks:Array<{id:string}>;hasMore:boolean;nextCursor:string|null};
+        expect([...page.tasks,...next.tasks].map(task=>task.id).sort()).toEqual([f.allowed.id,f.outside.id].sort());
+        expect(next).toMatchObject({hasMore:false,nextCursor:null});
+      }
     }
   });
   it("retains the child search fallback when the authorized child follows a capped denied prefix",async()=>{
@@ -393,20 +402,20 @@ describe("Muse native visibility intersection", () => {
         .toEqual([{ owner: null, version: target.statusVersion }]);
       expect(enqueueWakeup).not.toHaveBeenCalled();
     };
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.authorizer,
       permissionKey: "tasks:assign_scope", scope: { agentIds: [protectedAgent.id], projectIds: [randomUUID()] } }).returning();
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     await db.update(principalPermissionGrants).set({ scope: { agentIds: [randomUUID()], projectIds: [project.id] } }).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     await assertUnchanged();
     await db.update(principalPermissionGrants).set({ scope: { agentIds: [protectedAgent.id], projectIds: [project.id] } }).where(eq(principalPermissionGrants.id, grant.id));
     await expect(authority.execute(call)).resolves.toMatchObject({ disposition: "applied" });
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for tasks:assign");
+    await expect(authority.execute(call)).rejects.toThrow(/the person who authorized this agent.* assign this task\.$/i);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
@@ -421,7 +430,7 @@ describe("Muse native visibility intersection", () => {
     const authority = new PaperclipRunnerToolAuthority(db, { companyId: f.companyId, agentId: f.agentId, issueId: f.issue.id, runId,
       museRuntime: true, externalAuthorizingUserId: f.authorizer, assertBridgeAuthority: async () => {} });
     const call = { tool: "write_document", callId: "viewer-write", arguments: { key: "report", title: "Report", body: "Must not be written", baseRevisionId: null, idempotencyKey: "viewer-write" } };
-    await expect(authority.execute(call)).rejects.toThrow("Authorizing user is not authorized for issue:mutate");
+    await expect(authority.execute(call)).rejects.toThrow("The person who authorized this agent does not have permission to change this task.");
     expect(await db.select({ id: issueDocuments.id }).from(issueDocuments).where(eq(issueDocuments.issueId, f.issue.id))).toEqual([]);
     await db.update(companyMemberships).set({ membershipRole: "operator" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.authorizer)));
     await expect(authority.execute(call)).resolves.toMatchObject({ disposition: "applied" });

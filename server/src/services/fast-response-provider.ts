@@ -1,3 +1,5 @@
+import { providerUsageReceipt as fastResponseReceipt } from "./provider-usage.js";
+export { providerUsageReceipt as fastResponseReceipt } from "./provider-usage.js";
 import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/shared/openrouter-attribution";
 import { generateText, type LanguageModel } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -9,7 +11,6 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import {
   FAST_RESPONSE_MAX_BYTES,
   FAST_RESPONSE_MAX_CHARACTERS,
-  centsToUnits,
   unitsToCents,
   usdToUnits,
   type AiConnectionMetadata,
@@ -84,48 +85,8 @@ export function fastResponsePrompt(input: FastResponsePromptInput) {
   return prompt();
 }
 const object = (v: unknown): Record<string, unknown> =>
-  v && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : {};
-const count = (v: unknown) =>
-  typeof v === "number" &&
-  Number.isSafeInteger(v) &&
-  v >= 0 &&
-  v <= 2_147_483_647
-    ? v
-    : null;
-export function fastResponseReceipt(result?: unknown): DecisionProviderReceipt {
-  const value = object(result),
-    usage = object(value.usage),
-    response = object(value.response);
-  const providerUsage = object(
-    object(object(value.providerMetadata).openrouter).usage,
-  );
-  const raw = object(object(response.body).usage);
-  const cost = providerUsage.cost ?? raw.cost ?? object(usage.raw).cost;
-  return {
-    inputTokens:
-      count(usage.inputTokens) ?? count(object(usage.inputTokens).total),
-    outputTokens:
-      count(usage.outputTokens) ?? count(object(usage.outputTokens).total),
-    providerRequestId:
-      typeof response.id === "string" ? response.id.slice(0, 250) : null,
-    costCents:
-      typeof cost === "number" && Number.isFinite(cost) && cost >= 0
-        ? unitsToCents(centsToUnits(cost * 100))
-        : null,
-    costStatus:
-      typeof cost === "number" && Number.isFinite(cost) && cost >= 0
-        ? "reported"
-        : "unpriced",
-    pricingProvenance: {
-      source:
-        typeof cost === "number" && Number.isFinite(cost) && cost >= 0
-          ? "provider_reported"
-          : "unknown",
-    },
-  };
-}
+  v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+
 export interface FastResponseOutcome {
   text?: string;
   errorCode?: string;
@@ -207,6 +168,46 @@ export async function runFastResponseProvider(
   },
   options: { fetch?: typeof fetch } = {},
 ): Promise<FastResponseOutcome> {
+  return runTextGenerationProvider({
+    ...input,
+    system: SYSTEM,
+    prompt: input.prompt.startsWith(SYSTEM + "\n\n")
+      ? input.prompt.slice(SYSTEM.length + 2)
+      : input.prompt,
+    maxOutputTokens: 256,
+    accept: (text, finishReason) => !(
+      /^(?:\{|\[)/.test(text) ||
+      /[?？]/.test(text) ||
+      text.length > FAST_RESPONSE_MAX_CHARACTERS ||
+      finishReason === "length" ||
+      /<\/?(?:thinking|analysis|reasoning)\b|```|https?:\/\/|@(everyone|here|channel)\b/i.test(
+        text,
+      )
+    ),
+  }, options);
+}
+
+/**
+ * One short text generation with a saved API connection: the connection's
+ * routing, minimal reasoning, no tools or retries, SDK telemetry off, and a
+ * receipt captured before output validation (so discarded output is still
+ * billed). Fast responses and responsibility summaries use it with their own
+ * system prompt and output check; provider errors become closed codes.
+ */
+export async function runTextGenerationProvider(
+  input: {
+    metadata: AiConnectionMetadata;
+    credential: string;
+    model: string;
+    system: string;
+    prompt: string;
+    maxOutputTokens: number;
+    signal: AbortSignal;
+    /** False discards the text as `invalid_output`; usage is still returned. */
+    accept: (text: string, finishReason: string) => boolean;
+  },
+  options: { fetch?: typeof fetch } = {},
+): Promise<FastResponseOutcome> {
   let receipt = fastResponseReceipt();
   try {
     const native = fastResponseModel(input, options.fetch);
@@ -253,11 +254,9 @@ export async function runFastResponseProvider(
     const result = await generateText({
       model,
       providerOptions,
-      system: SYSTEM,
-      prompt: input.prompt.startsWith(SYSTEM + "\n\n")
-        ? input.prompt.slice(SYSTEM.length + 2)
-        : input.prompt,
-      maxOutputTokens: 256,
+      system: input.system,
+      prompt: input.prompt,
+      maxOutputTokens: input.maxOutputTokens,
       maxRetries: 0,
       abortSignal: input.signal,
       telemetry: {
@@ -315,16 +314,7 @@ export async function runFastResponseProvider(
         };
     }
     const text = result.text.trim();
-    if (
-      !text ||
-      /^(?:\{|\[)/.test(text) ||
-      /[?？]/.test(text) ||
-      text.length > FAST_RESPONSE_MAX_CHARACTERS ||
-      result.finishReason === "length" ||
-      /<\/?(?:thinking|analysis|reasoning)\b|```|https?:\/\/|@(everyone|here|channel)\b/i.test(
-        text,
-      )
-    )
+    if (!text || !input.accept(text, result.finishReason))
       return { errorCode: "invalid_output", receipt };
     return { text, receipt };
   } catch (error) {

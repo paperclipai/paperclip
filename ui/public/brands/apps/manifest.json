@@ -2,6 +2,13 @@
   "schemaVersion": 1,
   "providers": [
     {
+      "slug": "1password",
+      "provider": "1Password",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/1password.svg",
+      "darkAsset": "/brands/apps/1password-dark.svg"
+    },
+    {
       "slug": "agentmail",
       "provider": "AgentMail",
       "catalogVisible": true,
@@ -33,6 +40,13 @@
       "localAsset": "/brands/apps/asana.svg"
     },
     {
+      "slug": "aws",
+      "provider": "Amazon Web Services",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/aws.svg",
+      "darkAsset": "/brands/apps/aws-dark.svg"
+    },
+    {
       "slug": "bedrock",
       "provider": "Amazon Bedrock",
       "catalogVisible": true,
@@ -57,6 +71,13 @@
       "localAsset": "/brands/apps/box.svg"
     },
     {
+      "slug": "braintrust",
+      "provider": "Braintrust",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/braintrust.png",
+      "darkAsset": "/brands/apps/braintrust-dark.png"
+    },
+    {
       "slug": "brex",
       "provider": "Brex",
       "catalogVisible": false,
@@ -68,6 +89,12 @@
       "provider": "Candid",
       "catalogVisible": false,
       "localAsset": "/brands/apps/candid.png"
+    },
+    {
+      "slug": "circleback",
+      "provider": "Circleback",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/circleback.png"
     },
     {
       "slug": "clickhouse",
@@ -117,6 +144,12 @@
       "darkAsset": "/brands/apps/discord-dark.svg"
     },
     {
+      "slug": "ditto",
+      "provider": "Ditto",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/ditto.png"
+    },
+    {
       "slug": "egnyte",
       "provider": "Egnyte",
       "catalogVisible": false,
@@ -159,6 +192,13 @@
       "catalogVisible": true,
       "localAsset": "/brands/apps/github.svg",
       "darkAsset": "/brands/apps/github-dark.svg"
+    },
+    {
+      "slug": "github-copilot",
+      "provider": "GitHub Copilot",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/github-copilot.svg",
+      "darkAsset": "/brands/apps/github-copilot-dark.svg"
     },
     {
       "slug": "gmail",
@@ -234,7 +274,10 @@
       "provider": "Google Workspace",
       "catalogVisible": true,
       "localAsset": "/brands/apps/google-people.svg",
-      "aliases": ["google suite", "g suite"]
+      "aliases": [
+        "google suite",
+        "g suite"
+      ]
     },
     {
       "slug": "hugging-face",
@@ -463,7 +506,7 @@
     {
       "slug": "vercel",
       "provider": "Vercel",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/vercel.svg",
       "darkAsset": "/brands/apps/vercel-dark.svg"
     },
@@ -679,6 +722,25 @@
       "catalogVisible": true,
       "localAsset": "/brands/apps/daytona.svg",
       "darkAsset": "/brands/apps/daytona-dark.svg"
+    },
+    {
+      "slug": "paperclip-notebook",
+      "provider": "Paperclip Notebook",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/paperclip-notebook.svg",
+      "darkAsset": "/brands/apps/paperclip-notebook-dark.svg"
+    },
+    {
+      "slug": "unikraft",
+      "provider": "Unikraft",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/unikraft.svg"
+    },
+    {
+      "slug": "tailscale",
+      "provider": "Tailscale",
+      "catalogVisible": false,
+      "localAsset": "/brands/apps/tailscale.png"
     }
   ]
 }

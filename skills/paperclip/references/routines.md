@@ -9,7 +9,9 @@ A routine has:
 - A catch-up policy (what to do with missed scheduled runs)
 - An activity gate policy (whether quiet scheduled ticks should be skipped)
 
-**Authorization:** Agents can read all routines in their company but can only create or manage routines assigned to themselves. Board operators have full access, including reassignment.
+**Authorization:** Agents can read all routines in their company. They can create routines assigned to themselves, and manage routines assigned to themselves or routines the person their run works for is responsible for. Handing a routine to another agent needs that person to be allowed to assign work. Board operators have full access, including reassignment.
+
+**Dedicated tools:** prefer `list_routines` (filter by words, status, agent, project, responsible person, a responsibility, or `unfiled`) and `update_routine` (title, instructions, agent, project, status, priority, a plain `schedule` such as `{ frequency: "weekly", dayOfWeek: "monday", time: "09:00", timezone }` or `null` to turn it off, and `fileUnder` a responsibility). The routine and its schedule change together as one routine revision the person can restore from the routine's history; filing is saved separately in their Dashboard history (`filedUnder.undo`). Say which when you report it. Without a `timezone`, a schedule keeps the routine's current zone, else uses the person's own. On a routine you do not run, changing its agent, turning it on or changing its schedule needs the person you act for to be allowed to assign work. The routes below remain for everything else; `PATCH /api/routines/{id}` also takes `schedule: { cronExpression, timezone? }` or `null`.
 
 ---
 
@@ -157,7 +159,7 @@ POST /api/routines/{routineId}/triggers
 }
 ```
 
-- `signingMode`: `bearer` (default) or `hmac_sha256`
+- `signingMode`: `bearer` (default) or `hmac_sha256`. Agents can only create authenticated webhook triggers; if a sender cannot authenticate, ask a person to set that trigger up on the board.
 - `replayWindowSec`: 30-86400 (default 300)
 - Response includes the webhook URL (`publicId`-based) and the signing secret
 - Fire externally: `POST /api/routine-triggers/public/{publicId}/fire`
@@ -229,3 +231,19 @@ GET /api/routines/{routineId}/runs?limit=50
 ```
 
 Use the generic API endpoint tables in `skills/paperclip/references/api-reference.md` when you need a full cross-domain reference. Use this file when you need routine-specific behaviour, payload shape, or policy details.
+
+**Delivering results to the human's chat**
+
+A routine execution task can call `send_chat_message({ body, idempotencyKey })`
+or `POST /api/agents/me/chat/messages` using its run credentials. The server sends
+to that agent's chat with the run's responsible human, including before the human
+has opened the chat. No recipient lookup or destination ID is needed. Retain a
+stable key across retries of the source task; changed content with that key conflicts.
+
+For a morning PR review, gather the PRs, send a concise Markdown digest with
+links, then finish the task separately. Delivery commits immediately, marks the
+chat unread and includes a source-task link. It neither wakes the chat agent nor
+suppresses ordinary handoff completion notifications. Agent Chat must be enabled,
+the run must be active in standard mode, and the source task must be suitable
+for the company-visible chat. Missing or revoked recipients and restricted tasks
+fail explicitly; never select a replacement recipient.

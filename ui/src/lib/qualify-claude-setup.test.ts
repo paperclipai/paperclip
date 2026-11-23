@@ -19,6 +19,12 @@ function setup() {
 }
 
 describe("Claude explicit setup qualification", () => {
+  it("qualifies a named Daytona snapshot through the normal Connect action", async () => {
+    const s = setup();
+    const input: Parameters<typeof qualifyClaudeSetup>[0] = { ...s, environment: { driver: "sandbox", config: { provider: "daytona", snapshot: "managed-snapshot" } } };
+    expect((await qualifyClaudeSetup(input))?.runner).toBe("paperclip");
+    expect(s.probeEnvironment).toHaveBeenCalledTimes(1);
+  });
   it.each(["paperclip", "legacy"] as const)("uses fresh discovery and honors measured %s selection", async runner => {
     const s = setup();
     s.readAdapters.mockResolvedValueOnce(discovery(runner));

@@ -7,6 +7,7 @@ import {
   asString,
   parseObject,
   ensurePathInEnv,
+  sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   asStringArray,
@@ -15,6 +16,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   maybeRunSandboxInstallCommand,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -114,6 +116,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "pi_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -125,7 +128,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env }));
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env }));
 
   const cwdInvalid = checks.some((check) => check.code === "pi_cwd_invalid");
   if (cwdInvalid) {
@@ -155,6 +158,7 @@ export async function testEnvironment(
     } catch (err) {
       checks.push({
         code: "pi_command_unresolvable",
+        ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
         level: "error",
         message: err instanceof Error ? err.message : "Command is not executable",
         detail: command,

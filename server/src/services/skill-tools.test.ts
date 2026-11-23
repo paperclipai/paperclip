@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { callCreateSkillTool, createSkillToolInput, callUpdateSkillTool, updateSkillToolInput } from "./skill-tools.js";
+import { callCreateSkillTool, createSkillToolInput, callUpdateSkillDetailsTool, callUpdateSkillTool, updateSkillToolInput } from "./skill-tools.js";
 
 const input = {
   name: "release-review", description: "Review release notes.", idempotencyKey: "release-review-1",
@@ -60,5 +60,31 @@ describe("update skill tool", () => {
       expectedVersionId: args.expectedVersionId, idempotencyKey: args.idempotencyKey });
     fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ error: "Skill version changed" }), { status: 409 }));
     await expect(callUpdateSkillTool({ arguments: args, apiUrl: "http://localhost", token: "token", companyId: "company" }, fetcher)).rejects.toThrow("Skill version changed");
+  });
+});
+
+describe("update skill details tool", () => {
+  const skillId = "00000000-0000-4000-8000-000000000001";
+
+  it("changes only the tagline and categories through the skill update API", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      id: skillId, name: "review", slug: "review", tagline: "Reviews pull requests", categories: ["engineering"],
+    }), { status: 200 }));
+    const result = await callUpdateSkillDetailsTool({ arguments: { skillId, tagline: "Reviews pull requests", categories: ["engineering"] },
+      apiUrl: "http://localhost/api", token: "token", companyId: "company" }, fetcher);
+    const [url, init] = fetcher.mock.calls[0]!;
+    expect(url).toBe(`http://localhost/api/companies/company/skills/${skillId}`);
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(String(init?.body))).toEqual({ tagline: "Reviews pull requests", categories: ["engineering"] });
+    expect(result).toEqual({ id: skillId, name: "review", slug: "review", tagline: "Reviews pull requests", categories: ["engineering"], studioPath: `/skills/studio/${skillId}` });
+  });
+
+  it("changes nothing without a detail, and refuses fields that live in SKILL.md", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    // The advertised schema requires only skillId, so that call is a no-op, not an error.
+    await expect(callUpdateSkillDetailsTool({ arguments: { skillId }, apiUrl: "http://localhost", token: "token", companyId: "company" }, fetcher))
+      .resolves.toEqual({ id: skillId, changed: false, note: expect.stringContaining("send tagline, categories or both") });
+    await expect(callUpdateSkillDetailsTool({ arguments: { skillId, name: "renamed" }, apiUrl: "http://localhost", token: "token", companyId: "company" }, fetcher)).rejects.toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });

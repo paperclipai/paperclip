@@ -143,7 +143,24 @@ export function historicalCleanupVerificationService(db: Db, inspectors: Inspect
       }
     }
   }
-  return { sweep(): Promise<Result> {
+  async function hasPending(): Promise<boolean> {
+    const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.status, "failed"), eq(environmentLeases.leasePolicy, "ephemeral"),
+      eq(environmentLeases.cleanupStatus, "success"),
+      sql`${environmentLeases.releasedAt} IS NOT NULL AND ${environmentLeases.environmentId} IS NOT NULL
+        AND ${environmentLeases.provider} IS NOT NULL AND ${environmentLeases.provider} <> 'local'
+        AND ${environmentLeases.providerLeaseId} IS NOT NULL`,
+      sql`(${sql.raw(verifiedResourceCleanup('environment_leases', 'lease'))}) IS NOT TRUE`,
+    )).limit(1);
+    if (lease) return true;
+    const [setup] = await db.select({ id: environmentCustomImageSetupSessions.id }).from(environmentCustomImageSetupSessions).where(and(
+      inArray(environmentCustomImageSetupSessions.status, ["promoted", "cancelled", "timed_out", "failed"]),
+      sql`${environmentCustomImageSetupSessions.finishedAt} IS NOT NULL AND ${environmentCustomImageSetupSessions.providerLeaseId} IS NOT NULL`,
+      sql`(${sql.raw(verifiedResourceCleanup('environment_custom_image_setup_sessions', 'image_setup'))}) IS NOT TRUE`,
+    )).limit(1);
+    return Boolean(setup);
+  }
+  return { hasPending, sweep(): Promise<Result> {
     if (!inFlight) inFlight = run().finally(() => { inFlight = undefined; });
     return inFlight;
   } };

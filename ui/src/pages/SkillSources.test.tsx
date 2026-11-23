@@ -3,12 +3,13 @@ import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SkillSource } from '@paperclipai/shared';
 import { SkillSources } from './SkillSources';
-import { skillSourcesApi } from '@/api/skillSources';
 import { ApiError } from '@/api/client';
+import { skillSourcesApi } from '@/api/skillSources';
 import { sourceFixture } from '../../storybook/fixtures/githubSkillSources';
 
-const context = vi.hoisted(() => ({ navigate: vi.fn(), breadcrumbs: vi.fn(), sourceId: 'new' }));
+const context = vi.hoisted(() => ({ navigate: vi.fn(), breadcrumbs: vi.fn(), sourceId: 'new', streamlinedEnabled: true }));
 vi.mock('@/context/CompanyContext', () => ({ useCompany: () => ({ selectedCompanyId: 'company-1', selectedCompany: { name: 'Acme' } }) }));
 vi.mock('@/context/BreadcrumbContext', () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: context.breadcrumbs }) }));
 vi.mock('@/lib/router', () => ({
@@ -17,6 +18,7 @@ vi.mock('@/lib/router', () => ({
   useParams: () => ({ sourceId: context.sourceId }),
 }));
 vi.mock('@/api/skillSources', () => ({ skillSourcesApi: { list: vi.fn(), projectRepositories: vi.fn(), adoptProject: vi.fn(), settings: vi.fn(), branches: vi.fn(), repositories: vi.fn(), discoverStream: vi.fn(), create: vi.fn(), select: vi.fn(), refresh: vi.fn(), disconnect: vi.fn() } }));
+vi.mock('@/hooks/useStreamlinedUiEnabled', () => ({ useStreamlinedUiEnabled: () => ({ enabled: context.streamlinedEnabled, loaded: true }) }));
 
 const repos = {
   connections: [{ id: 'personal', name: 'Personal' }, { id: 'shared', name: 'Engineering' }],
@@ -27,6 +29,11 @@ const repos = {
   ],
 };
 const discovery = { repositoryId: '1', repositoryUrl: 'https://github.com/acme/team-skills', fullName: 'acme/team-skills', trackingRef: 'feature/new-skills', commitSha: 'a'.repeat(40), candidates: [], warnings: [] };
+const connectedSource: SkillSource = {
+  id: 'source-1', companyId: 'company-1', repositoryId: '1', repositoryUrl: 'https://github.com/acme/team-skills', fullName: 'acme/team-skills',
+  trackingRef: 'HEAD', connectionId: 'shared', excludedFolders: [], enabled: true, revision: 1,
+  lastAttemptAt: null, lastSuccessAt: null, lastScanCommit: null, lastError: null, entries: [],
+};
 let root: Root;
 let host: HTMLDivElement;
 let client: QueryClient;
@@ -55,6 +62,7 @@ beforeEach(() => {
   vi.mocked(skillSourcesApi.branches).mockResolvedValue({ defaultBranch: 'master', branches: [{ name: 'master', isDefault: true }], truncated: false });
   vi.mocked(skillSourcesApi.discoverStream).mockResolvedValue(discovery);
   context.sourceId = 'new';
+  context.streamlinedEnabled = true;
   sessionStorage.clear();
 });
 afterEach(async () => {
@@ -63,6 +71,18 @@ afterEach(async () => {
 });
 
 describe('GitHub skill source import', () => {
+  it('keeps the Skills views available while managing Sources', async () => {
+    context.sourceId = '';
+    await mount();
+    const navigation = document.querySelector('nav[aria-label="Skills views"]');
+    expect([...navigation!.querySelectorAll('a')].map(link => [link.textContent, link.getAttribute('href')])).toEqual([
+      ['Installed', '/skills'],
+      ['Discover', '/skills?tab=discover'],
+      ['My Skills', '/skills/studio'],
+    ]);
+    expect(navigation!.querySelector('[aria-current="page"]')).toBeNull();
+  });
+
   it('groups the same repository and ref across projects and shows import progress until it is installed', async () => {
     context.sourceId = '';
     const repository = { projectId: 'one', projectName: 'Paperclip', projectVisibility: 'open' as const,
@@ -131,7 +151,7 @@ describe('GitHub skill source import', () => {
     expect(document.body.textContent).not.toContain('Other projects with this repo');
     expect(document.body.textContent).not.toContain('Sentry');
     expect(document.body.textContent).not.toContain('Paperclip');
-    expect(document.querySelector('a[href="/skills"]')).toBeNull();
+    expect(document.querySelector('section a[href="/skills"]')).toBeNull();
     expect(document.querySelector('[role="status"]')?.textContent).toContain('Importing skills');
   });
 
@@ -419,4 +439,40 @@ describe('GitHub skill source import', () => {
     expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull();
   });
 
+});
+
+describe('Skill sources list read resilience', () => {
+  it('keeps loaded sources visible when a refetch fails during an outage', async () => {
+    context.sourceId = '';
+    vi.mocked(skillSourcesApi.list).mockResolvedValue([connectedSource]);
+    await mount();
+    expect(document.body.textContent).toContain('acme/team-skills');
+
+    vi.mocked(skillSourcesApi.list).mockRejectedValue(new ApiError('Paperclip is restarting.', 503, { error: 'tenant_app_unavailable' }));
+    await act(async () => { await client.invalidateQueries(); });
+    await flush(); await flush();
+
+    expect(skillSourcesApi.list).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain('acme/team-skills');
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('Paperclip is restarting.');
+  });
+  it('shows readable copy and a Retry button when the sources list fails to load', async () => {
+    context.sourceId = '';
+    vi.mocked(skillSourcesApi.list).mockRejectedValueOnce(new ApiError('Boom', 500, { error: 'Boom' })).mockResolvedValue([connectedSource]);
+    await mount();
+
+    const errorState = document.querySelector('[data-query-view="error"]');
+    expect(errorState?.textContent).toContain("Couldn't load skill sources");
+    expect(errorState?.textContent).toContain('Boom');
+    expect(document.body.textContent).not.toContain('No repositories added yet');
+    expect(button('Retry')).toBeTruthy();
+
+    await act(async () => button('Retry').click());
+    await flush(); await flush();
+
+    expect(skillSourcesApi.list).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain('acme/team-skills');
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+  });
 });

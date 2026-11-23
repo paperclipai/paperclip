@@ -1,4 +1,26 @@
-import type { NativeRunTrace } from "./native-run-trace.js";
+import { redactSensitiveText } from "../../redaction.js";
+import { nativeRunFailureCheck, type NativeRunTrace } from "./native-run-trace.js";
+import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+
+/** Qualified ACPX releases carry their Linux image manifest and daemon. */
+export function shouldUseBundledAcpxImageAssets(input: {
+  requiresRemoteProviderPack: boolean;
+  configuredProviderPackRoot: string | null;
+  provider: NativeExecutionInput["provider"];
+}): boolean {
+  return input.requiresRemoteProviderPack && !input.configuredProviderPackRoot &&
+    input.provider.kind === "acpx" &&
+    ["cursor", "copilot", "kimi"].includes(input.provider.agent);
+}
+
+/** A run may adopt a same-content pack from another build only when no saved or operator-selected identity binds it. */
+export function providerPackProvenanceReuseAllowed(input: {
+  retainProviderPack: boolean;
+  explicitProviderPackSelection: boolean;
+  authoritySelectable: boolean;
+}): boolean {
+  return !input.retainProviderPack && !input.explicitProviderPackSelection && input.authoritySelectable;
+}
 
 type VerificationCommandResult = {
   exitCode: number | null;
@@ -20,15 +42,16 @@ export async function runRemoteProviderVerification(
 ): Promise<VerificationCommandResult> {
   let diagnostic = "command unavailable";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    if (attempt > 1) await new Promise<void>(resolve => setTimeout(resolve, 1_000));
     let result: VerificationCommandResult;
     try {
       result = await execute();
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") throw error;
-      diagnostic = error instanceof Error ? error.message : String(error);
+      diagnostic = redactSensitiveText(error instanceof Error ? error.message : String(error)).slice(-1_024);
       continue;
     }
-    diagnostic = `exitCode=${result.exitCode}; timedOut=${result.timedOut}; signal=${result.signal ?? "none"}; ${result.stderr.trim().slice(-1_024)}`;
+    diagnostic = `exitCode=${result.exitCode}; timedOut=${result.timedOut}; signal=${result.signal ?? "none"}; ${redactSensitiveText([result.stderr, result.stdout].filter(Boolean).join("\n")).trim().slice(-1_024)}`;
     if (result.timedOut || result.exitCode === null || result.signal) continue;
     if (result.exitCode !== 0) {
       throw new Error(`runner_remote_provider_artifact_incompatible: ${label} failed (${diagnostic})`);
@@ -42,24 +65,27 @@ export async function runRemoteProviderVerification(
 export async function prepareVerifiedRemoteProviderPack(input: {
   trace?: NativeRunTrace;
   verifyStaged: () => Promise<void>;
-  usePreinstalled: () => Promise<boolean>;
+  usePreinstalled: (onRejected: (check: string) => void) => Promise<boolean>;
   stageAndVerify: () => Promise<void>;
 }): Promise<"staged" | "preinstalled" | "uploaded"> {
   const scope = input.trace?.start("provider_pack.select");
   let failed = false;
+  let preinstalledCheck = "no_preinstalled_pack";
   const select = async () => {
     try {
       await input.verifyStaged();
       return "staged" as const;
     } catch {}
-    if (await input.usePreinstalled()) return "preinstalled" as const;
+    let rejected = false;
+    if (await input.usePreinstalled(check => { if (!rejected) preinstalledCheck = check; rejected = true; })) return "preinstalled" as const;
     await input.stageAndVerify();
     return "uploaded" as const;
   };
   try {
     const source = scope ? await input.trace!.run(scope, select) : await select();
     if (scope) input.trace!.annotate(scope, { stateSource: source,
-      reason: source === "uploaded" ? "cached_packs_unverified" : "verified_pack_reused" });
+      reason: source === "uploaded" ? "cached_packs_unverified" : "verified_pack_reused",
+      ...(source === "uploaded" ? { check: preinstalledCheck } : {}) });
     return source;
   } catch (error) {
     failed = true;
@@ -67,4 +93,20 @@ export async function prepareVerifiedRemoteProviderPack(input: {
   } finally {
     if (scope) await input.trace!.end(scope, { outcome: failed ? "failed" : "ok" });
   }
+}
+
+export async function useVerifiedPreinstalledRemoteProviderPack(input: {
+  candidates: readonly string[];
+  verifyAndLink: (root: string) => Promise<void>;
+  onRejected?: (check: string) => void;
+}): Promise<boolean> {
+  for (const candidate of input.candidates) {
+    try {
+      await input.verifyAndLink(candidate);
+      return true;
+    } catch (error) {
+      input.onRejected?.(nativeRunFailureCheck(error) ?? "verification_failed");
+    }
+  }
+  return false;
 }

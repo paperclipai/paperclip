@@ -12,8 +12,10 @@ import { syncRemoteTextFilesWithHashSkip } from "./sandbox-callback-bridge.js";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   prepareGitHubOperationLaunchers,
+  cleanupGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
   runAdapterExecutionTargetProcess,
+  EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE,
 } from "./execution-target.js";
 
 const exec = promisify(execFile);
@@ -313,6 +315,37 @@ describe("managed GitHub launcher environment", () => {
     }
   });
 
+  it("saves local commits through staged sandbox shells without author setup", async () => {
+    const fixture = await sandbox("usr/bin");
+    await rm(path.join(fixture.bin, "git"));
+    await writeFile(path.join(fixture.root, ".gitconfig"), "[user]\nname = Image User\nemail = image@example.test\n");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "default-local-author", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({}, { url: "", token: "" }),
+    });
+    const command = async (script: string) => {
+      const result = await fixture.runner.execute({ command: "bash", args: ["--noprofile", "--norc", "-c", script], env });
+      expect(result.exitCode, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    await command("git init -q && printf 'first\\n' > work.txt && git add work.txt && git commit -qm first");
+    await command("printf 'second\\n' >> work.txt && git add work.txt && git commit -qm second");
+    expect(await command("git log --format='%an <%ae>|%cn <%ce>'"))
+      .toBe(Array(2).fill("Paperclip <noreply@paperclip.ing>|Paperclip <noreply@paperclip.ing>").join("\n"));
+    expect(await command("git show HEAD:work.txt")).toBe("first\nsecond");
+    expect(await readFile(path.join(fixture.root, ".git", "config"), "utf8")).not.toContain("[user]");
+    expect(await readFile(path.join(fixture.root, ".gitconfig"), "utf8")).toContain("Image User");
+    expect(await readdir(env.GH_CONFIG_DIR!)).toEqual([]);
+  });
+
+  it("keeps task-only startup free of command probes and host credentials", async () => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "plugin", remoteCwd: "/project", runnerTask: async () => ({}) };
+    await expect(prepareGitHubExecutionEnvironment({ target, cwd: "/absent-controller-path", env: {}, hostCredentials: false, networkAccess: true }))
+      .resolves.toMatchObject({ PAPERCLIP_GITHUB_AUTH_MODE: "managed", PAPERCLIP_GIT_METADATA_ROOTS: "[]", PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" });
+    await expect(prepareGitHubExecutionEnvironment({ target, cwd: "/absent-controller-path", env: {}, hostCredentials: true, networkAccess: true }))
+      .rejects.toThrow("cannot import host GitHub credentials");
+  });
+
   it.each([false, true])("probes the remote workspace when the controller cwd is absent (host credentials: %s)", async (hostCredentials) => {
     const fixture = await sandbox("usr/bin");
     const env = await prepareGitHubExecutionEnvironment({
@@ -327,6 +360,37 @@ describe("managed GitHub launcher environment", () => {
     expect(env.PAPERCLIP_GIT_METADATA_ROOTS).toBe("[]");
     expect(JSON.parse(env.PAPERCLIP_RUNNER_NETWORK_ROOTS!)).not.toHaveLength(0);
     expect(fixture.runner.execute).toHaveBeenCalledWith(expect.objectContaining({ cwd: fixture.root }));
+  });
+
+  it.each([
+    [{ exitCode: 2, signal: null, timedOut: false, stdout: "" }, "the probe exited with code 2"],
+    [{ exitCode: null, signal: null, timedOut: true, stdout: "" }, "the probe timed out"],
+    [{ exitCode: null, signal: "SIGKILL", timedOut: false, stdout: "" }, "the probe was stopped by SIGKILL"],
+    [{ exitCode: null, signal: null, timedOut: false, stdout: "" }, "the probe reported no exit status"],
+    [{ exitCode: 0, signal: null, timedOut: false, stdout: "login banner only" }, "the probe output was incomplete"],
+  ])("reports an incomplete remote Git context probe with a stable code: %o", async (outcome, reason) => {
+    const fixture = await sandbox("usr/bin");
+    fixture.runner.execute.mockResolvedValue({ ...outcome, stderr: "fatal: GH_TOKEN=probe-secret /private/path",
+      pid: null, startedAt: new Date().toISOString() });
+
+    const failure = await prepareGitHubExecutionEnvironment({
+      target: fixture.target, cwd: fixture.root, env: {}, hostCredentials: false, networkAccess: true,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toMatchObject({ code: EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE,
+      message: `Could not read execution-target Git context: ${reason}` });
+    expect((failure as Error).message).not.toMatch(/probe-secret|private|banner/);
+  });
+
+  it("leaves a runner that cannot execute the probe with its own error", async () => {
+    const fixture = await sandbox("usr/bin");
+    const unavailable = Object.assign(new Error("Daytona exec failed"), { status: 503 });
+    fixture.runner.execute.mockRejectedValue(unavailable);
+
+    await expect(prepareGitHubExecutionEnvironment({
+      target: fixture.target, cwd: fixture.root, env: {}, hostCredentials: false, networkAccess: true,
+    })).rejects.toBe(unavailable);
   });
 
   it("reads Git metadata from the SSH workspace instead of an existing controller directory", async () => {

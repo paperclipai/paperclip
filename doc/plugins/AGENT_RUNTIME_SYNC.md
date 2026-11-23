@@ -45,6 +45,15 @@ The instruction root identifies host files that the trusted worker can package
 through its existing filesystem access. This API grants no arbitrary path reads.
 Never expose instance secrets through UI data, logs, plugin state, or agent files.
 
+Use `ctx.agents.getRuntimeIdentity(agentId, companyId)` for freshness checks.
+It returns only the revision, agent ID, company ID, status, lifecycle state and
+version, and this plugin's current instance secrets. It uses the same ownership,
+capability, and company checks as `getRuntime`. Each call reads current state;
+it does not cache grants or secrets. It does not resolve instruction files,
+company reporting relationships, skills, or connection assignments. Read the full
+runtime once to obtain synchronization inputs, then use the identity reader to
+fence effects against changes.
+
 Re-read current state before external effects. A queued event can be older than
 the returned revision. Fence stale revisions at the destination and use its
 conditional writes. Current configuration is desired state, not a frozen run
@@ -161,6 +170,56 @@ the same transaction.
 The bounded assignment snapshot remains the API described above. An invalidation
 can advance its revision without changing its assignment fields. Consumers must
 use their existing authorized readers for tool definitions and configuration.
-Credential-only changes, grants, secrets, and endpoint configuration still need
-the access hooks supplied by a later migration before consumers can rely on
-their immediate synchronization.
+
+## Access, credentials, and endpoints
+
+Migration 0356 adds connection grants, grant audiences and delegations, company
+membership and permissions, secret bindings, chat/email endpoint configuration,
+and referenced credential rotation or revocation. Vault configuration and status
+changes invalidate companies whose connector credentials reference that vault.
+Vault health checks, OAuth grant refresh leases, Vercel verification timestamps,
+GitHub webhook health, and endpoint publication timestamps do not request work.
+Credential identifiers, expiry, and repository access changes remain covered.
+Events contain no credential values, phone numbers, or provider payloads.
+
+Access changes conservatively invalidate eligible company agents because
+responsible-user and task-time access can vary across runs. Agent secret bindings
+instead invalidate their owning agent. Personal delegation creation, reassignment, and revocation invalidate only
+their old and new target agents. Whole-grant revocation and membership cleanup
+retain company invalidation. Unchanged grant audiences preserve their rows after
+membership validation.
+
+OAuth persistence and membership cleanup lock affected grants before connection
+inputs and credential mutations. Each affected set is locked in ID order. Task
+completion locks existing grants before assignment inputs. Permission-only saves
+lock membership before replacing permissions, as role and status saves do.
+Slack search refresh, callbacks, and disconnect lock only the subject's grants
+before their connection. After locking the connection, they recheck the grants
+without waiting. A newly discovered busy grant rolls back and retries before
+provider work or credential persistence. Three failed attempts return a retryable
+conflict. Each operation adds two grant queries, bounded to the subject and
+connection. The existing connection lock still serializes provider refresh work.
+
+Membership cleanup locks credential deletion candidates without waiting before
+company agent locks. A busy credential rolls back the complete membership
+transaction, including its membership and grant locks. All four cleanup entry
+points re-read their state on retry, with at most three attempts. Company-access
+changes process companies in ID order.
+
+Personal delegation creation locks its grant, connection reference, and target
+agent before insertion. Delegation revocation locks its grant and target before
+deletion. Whole-grant and membership cleanup lock eligible company agents in ID
+order before deleting scoped delegations. Static-key reconnect locks grants and connection inputs
+before credential writes. Secret removal locks company agents in ID order before
+cascading into bindings. Plugin instance secrets cannot use ordinary bindings,
+so their removal retains its owner lock without a company sweep. It tries the secret lock without waiting, releases its
+transaction locks if that lock is busy, and retries up to three times. Continued
+contention returns a retryable conflict. Provider deletion stays outside that
+transaction; retrying resumes removal of the already disabled secret. These
+guards accompany the hooks that require them.
+
+The runtime snapshot still excludes credentials and arbitrary configuration.
+Task-scoped profile bindings, responsible-user consent, gateway sessions,
+automatic connector skill overlays, and connection instructions remain in the
+existing run preparation path. Invalidation does not create a run identity or
+activate a provider session. Transport consumers must preserve those boundaries.
