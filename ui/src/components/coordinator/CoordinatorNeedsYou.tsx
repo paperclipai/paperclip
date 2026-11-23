@@ -58,7 +58,7 @@ function InboxFilter<T extends string>({ label, heading, value, options, onChang
   const selected = options.find(option => option.value === value);
   return <DropdownMenu>
     <DropdownMenuTrigger asChild>
-      <Button variant="outline" size="sm" value={value} aria-label={label}>
+      <Button variant="outline" size="sm" value={value} aria-label={selected ? `${label}, ${selected.label}` : label}>
         <span className="max-w-(--sz-160px) truncate font-medium">{defaultLabel ?? selected?.label}</span>
         <ChevronDown aria-hidden className="size-3.5 text-muted-foreground" />
       </Button>
