@@ -120,8 +120,14 @@ let processPrivateStoreRoot: Promise<string> | undefined;
  * even though launches execute the verified store.
  *
  * Each launch gets only a small private directory for its trusted bootstrap,
- * Node module guard, Copilot shim and cache; the bootstrap rechecks the
- * executable's descriptor identity before spawning it.
+ * Node module guard, Copilot shim and cache.
+ *
+ * The recorded identities are not a trust anchor against a process running as
+ * the runner's user: such a process can unseal the store and rewrite both a
+ * file and its record. Code that runs is therefore still checked against the
+ * pinned manifest at use: the bootstrap streams the executable descriptor it
+ * spawns through SHA-256, and the module guard hashes every Node module it
+ * loads. The store removes the per-launch copy, not those checks.
  */
 export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDistributionInput, entries: NativeAcpxDistributionEntry[], signal?: AbortSignal): Promise<NativeAcpxDistributionSnapshot> {
   signal?.throwIfAborted();
@@ -152,7 +158,7 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
   }
   signal?.throwIfAborted();
   if (input.storeFamily !== undefined) await holdVerifiedStore(storeRoot, input.expectedClosureSha256, input.storeFamily);
-  const launch = await createNativeLaunch(input, entries, join(storeDirectory, "distribution"), identities);
+  const launch = await createNativeLaunch(input, entries, join(storeDirectory, "distribution"));
   // Retiring superseded closures never delays this launch.
   if (input.storeFamily !== undefined) scheduleNativeAcpxStorePrune(storeRoot, input.storeFamily, input.expectedClosureSha256);
   return launch;
@@ -294,10 +300,27 @@ async function readVerifiedStore(storeDirectory: string, entries: NativeAcpxDist
       if (!info.isFile() || info.nlink !== 1n || info.uid !== runnerUid() || (info.mode & 0o7777n) !== (entry.executable ? 0o500n : 0o400n)
         || !identityMatches(info, identities[index])) intact = false;
     });
-    return intact ? identities : "invalid";
+    // The store's guard is small and fully derivable, so it is compared byte
+    // for byte on every launch rather than trusted from the record.
+    return intact && await storeGuardIntact(join(distribution, GUARD), storeModuleGuard(distribution, entries)) ? identities : "invalid";
   } catch {
     return "invalid";
   }
+}
+
+function storeModuleGuard(distribution: string, entries: NativeAcpxDistributionEntry[]): Buffer {
+  const digests: Record<string, string> = {};
+  for (const entry of entries) digests[entryPath(distribution, entry)] = entry.sha256;
+  return Buffer.from(nativeModuleGuard(digests));
+}
+
+async function storeGuardIntact(path: string, expected: Buffer): Promise<boolean> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await file.stat({ bigint: true });
+    if (!info.isFile() || info.nlink !== 1n || info.uid !== runnerUid() || (info.mode & 0o7777n) !== 0o400n || info.size !== BigInt(expected.length)) return false;
+    return (await file.readFile()).equals(expected);
+  } finally { await file.close(); }
 }
 
 async function retireVerifiedStore(storeRoot: string, storeDirectory: string): Promise<void> {
@@ -460,6 +483,10 @@ async function materializeVerifiedStore(source: string, storeRoot: string, store
       return await streamNativeEntries(entries, entry => streamNativeEntry(entryPath(source, entry), entry, entryPath(packageRoot, entry), signal), signal);
     });
     signal?.throwIfAborted();
+    // Pinned entrypoints that start their own Node child (Pi's pi-entry.cjs)
+    // pass it `__dirname/<guard>`. The guard is a pure function of the closure
+    // and its final store path, so it is sealed into the store beside them.
+    await writeFile(join(packageRoot, GUARD), storeModuleGuard(join(storeDirectory, "distribution"), entries), { mode: 0o400, flag: "wx" });
     await boundedEach(directories, NATIVE_DIRECTORY_CONCURRENCY, path => chmod(path, 0o500));
     const record = Buffer.from(JSON.stringify({ schema: STORE_SCHEMA, entries: entries.map((entry, index) => ({ ...entry, identity: identityRecord(observed[index]!.target!) })) }));
     await writeFile(join(staging, STORE_RECORD), record, { mode: 0o400, flag: "wx" });
@@ -510,7 +537,7 @@ async function sourceUnchanged(storeRoot: string, closure: string, source: strin
 }
 
 /** Small private per-launch directory: bootstrap, module guard, Copilot shim, cache and handoff manifest. */
-async function createNativeLaunch(input: NativeAcpxDistributionInput, entries: NativeAcpxDistributionEntry[], distributionRoot: string, identities: IdentityRecord[]): Promise<NativeAcpxDistributionSnapshot> {
+async function createNativeLaunch(input: NativeAcpxDistributionInput, entries: NativeAcpxDistributionEntry[], distributionRoot: string): Promise<NativeAcpxDistributionSnapshot> {
   const privateRoot = await realpath(await mkdtemp(join(tmpdir(), "paperclip-acpx-native-")));
   const launchRoot = join(privateRoot, "launch");
   const cacheRoot = join(privateRoot, "state");
@@ -546,7 +573,7 @@ async function createNativeLaunch(input: NativeAcpxDistributionInput, entries: N
       await writeFile(join(launchRoot, GUARD), guard, { mode: 0o400, flag: "wx" });
       digests[join(launchRoot, GUARD)] = sha256(guard);
     }
-    const bootstrap = Buffer.from(nativeBootstrap(executable, identities[executableIndex]!, args, input.isolatedCacheEnvironmentName ? { name: input.isolatedCacheEnvironmentName, value: cacheRoot } : undefined, copilotEntryDirectory));
+    const bootstrap = Buffer.from(nativeBootstrap(executable, entries[executableIndex]!.sha256, args, input.isolatedCacheEnvironmentName ? { name: input.isolatedCacheEnvironmentName, value: cacheRoot } : undefined, copilotEntryDirectory));
     await writeFile(join(launchRoot, BOOTSTRAP), bootstrap, { mode: 0o400, flag: "wx" });
     digests[join(launchRoot, BOOTSTRAP)] = sha256(bootstrap);
     // executable is null: commandLease's separately-qualified provider runtime
@@ -562,7 +589,7 @@ async function createNativeLaunch(input: NativeAcpxDistributionInput, entries: N
   }
 }
 
-function nativeBootstrap(executable: string, executableIdentity: IdentityRecord, args: string[], cache?: { name: string; value: string }, copilotEntryDirectory?: string): string {
+function nativeBootstrap(executable: string, executableDigest: string, args: string[], cache?: { name: string; value: string }, copilotEntryDirectory?: string): string {
   return [
     'const {spawn}=require("node:child_process");',
     'const fs=require("node:fs");',
@@ -580,10 +607,13 @@ function nativeBootstrap(executable: string, executableIdentity: IdentityRecord,
     ] : []),
     'if(guarded)for(const fd of [5,6,7,8])fs.fstatSync(fd);',
     `const executable=${JSON.stringify(executable)};const fd=fs.openSync(executable,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);`,
-    // Bind the descriptor that will be executed to the identity recorded when
-    // its bytes were hashed; no second full read is needed before spawn.
-    'const opened=fs.fstatSync(fd,{bigint:true});',
-    `if(!opened.isFile()||opened.nlink!==1n||[opened.dev,opened.ino,opened.size,opened.mtimeNs,opened.ctimeNs].map(String).join(":")!==${JSON.stringify(executableIdentity.join(":"))})throw new Error("Native ACPX executable changed before spawn");`,
+    // Hash the exact descriptor that is spawned against the pinned digest. The
+    // store's recorded identity is not trusted for this: a same-user process
+    // can rewrite it. Fixed 4 MiB chunks keep a large executable out of memory.
+    'const opened=fs.fstatSync(fd,{bigint:true});if(!opened.isFile()||opened.nlink!==1n)throw new Error("Native ACPX executable changed before spawn");',
+    'const executableHash=require("node:crypto").createHash("sha256");const chunk=Buffer.allocUnsafe(4194304);let offset=0;for(let read;(read=fs.readSync(fd,chunk,0,chunk.length,offset))>0;offset+=read)executableHash.update(chunk.subarray(0,read));',
+    'const hashed=fs.fstatSync(fd,{bigint:true});',
+    `if(BigInt(offset)!==opened.size||["dev","ino","size","mtimeNs","ctimeNs","nlink"].some(key=>hashed[key]!==opened[key])||executableHash.digest("hex")!==${JSON.stringify(executableDigest)})throw new Error("Native ACPX executable changed before spawn");`,
     'const stdio=guarded?[0,1,2,5,6,7,8]:[0,1,2]; const childExecutable=process.platform==="linux"?"/proc/self/fd/"+stdio.length:executable;stdio.push(fd);',
     `const child=spawn(childExecutable,${JSON.stringify(args)},{env,cwd:process.cwd(),shell:false,detached:false,stdio});fs.closeSync(fd);`,
     // A guarded Node launcher has a pending filesystem read on its guardian

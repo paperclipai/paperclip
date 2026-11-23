@@ -908,9 +908,14 @@ verified store (`$PAPERCLIP_ACPX_NATIVE_STORE_ROOT`, default
 `$TMPDIR/paperclip-verified-native-<uid>`). Later launches bind the store by the
 kernel identity (device, inode, size, mtime, ctime) recorded when its bytes were
 hashed, re-hash only a changed installed source, and get a small private launch
-directory; the launcher rechecks the executable descriptor's identity before
-spawn. A failed store check retires the store and rebuilds it from a fresh full
-verification. The existing process guardian is retained. A manifest cannot
+directory. The store also holds the closure's module guard beside its
+entrypoints (Pi's pinned entry hands it to its child) and compares it byte for
+byte on each launch. A failed store check retires the store and rebuilds it from
+a fresh full verification. The recorded identities are not trusted for code
+that runs, because a process with the runner's uid can rewrite a file and its
+record together: the launcher streams the exact executable descriptor it spawns
+through SHA-256 against the pinned digest, and the module guard hashes every
+Node module at load. The existing process guardian is retained. A manifest cannot
 supply its own trusted pin.
 
 Candidate credentials are only read from explicitly bound run environments:

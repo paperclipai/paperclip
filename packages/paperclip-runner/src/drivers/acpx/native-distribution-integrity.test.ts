@@ -425,6 +425,39 @@ describe("native ACPX execution closure", () => {
     const denied = await output((await (await verifyNativeAcpxInstallation(evil)).openCommand()).spawn());
     expect(denied.code).not.toBe(0); expect(denied.error).toContain("escaped its closed distribution");
   }, 30_000);
+  it("keeps the module guard beside a pinned entrypoint that launches its own guarded Node child", async () => {
+    // Pi's pinned pi-entry.cjs hands its child `__dirname/.paperclip-native-module-guard.cjs`.
+    const script = 'const cp=require("node:child_process"),path=require("node:path");'
+      + 'const child=cp.spawnSync(process.execPath,["--require",path.join(__dirname,".paperclip-native-module-guard.cjs"),"-e","process.stdout.write(\\"sibling-guard-loaded\\")"],{encoding:"utf8"});'
+      + 'process.stdout.write(child.stdout+":"+child.status);';
+    const declaration = await fixture({ node: true, script });
+    for (let launch = 0; launch < 2; launch++) {
+      const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
+      const result = await output(lease.spawn());
+      await lease.close();
+      expect(result.code, result.error).toBe(0);
+      expect(result.text).toBe("sibling-guard-loaded:0");
+    }
+  }, 30_000);
+  it("rebuilds a store whose sibling module guard was removed or rewritten", async () => {
+    const script = 'const cp=require("node:child_process"),path=require("node:path");'
+      + 'const child=cp.spawnSync(process.execPath,["--require",path.join(__dirname,".paperclip-native-module-guard.cjs"),"-e","process.stdout.write(\\"guarded\\")"],{encoding:"utf8"});'
+      + 'process.stdout.write(child.stdout+":"+child.status);';
+    const declaration = await fixture({ node: true, script });
+    const installation = await verifyNativeAcpxInstallation(declaration);
+    await (await installation.openCommand()).close();
+    const distribution = join(storeRoot, declaration.expectedClosureSha256, "distribution");
+    const guard = join(distribution, ".paperclip-native-module-guard.cjs");
+    const original = await readFile(guard);
+    await chmod(distribution, 0o700); await chmod(guard, 0o600);
+    await writeFile(guard, "process.stdout.write('forged-guard-loaded');");
+    await chmod(guard, 0o400); await chmod(distribution, 0o500);
+    const lease = await installation.openCommand();
+    const result = await output(lease.spawn());
+    await lease.close();
+    expect(result.text).toBe("guarded:0");
+    expect(await readFile(guard)).toEqual(original);
+  }, 30_000);
   it.each([false, true])("runs real Node module hooks with interleaved formats and tamper=%s", async tamper => {
     const script = tamper ? `
       const fs = require("node:fs");
@@ -824,6 +857,37 @@ describe("native ACPX verified store reuse", () => {
     expect(result.code).not.toBe(0);
     expect(result.error).toContain("Native ACPX executable changed before spawn");
     expect(result.text).not.toContain("tampered-code-executed");
+    await lease.close();
+  });
+
+  it("refuses an executable swapped into the store together with a rewritten verification record", async () => {
+    const declaration = await fixture();
+    const installation = await verifyNativeAcpxInstallation(declaration);
+    await (await installation.openCommand()).close();
+    const store = join(storeRoot, declaration.expectedClosureSha256);
+    const distribution = join(store, "distribution");
+    const stored = join(distribution, "runtime");
+    const original = await readFile(stored);
+    // A process running as the runner's user can unseal the store, replace the
+    // executable and rewrite the record with the replacement's identity. The
+    // record is not a trust anchor: the executable must still match its pin.
+    await chmod(store, 0o700); await chmod(distribution, 0o700);
+    await rm(stored);
+    await writeFile(stored, "#!/bin/sh\nprintf forged-code-executed\n".padEnd(original.length, "#"), { mode: 0o500 });
+    await chmod(stored, 0o500);
+    const recordPath = join(store, "verified.json");
+    const record = JSON.parse(await readFile(recordPath, "utf8")) as { entries: Array<{ path: string; identity: string[] }> };
+    const replaced = await stat(stored, { bigint: true });
+    for (const entry of record.entries) {
+      if (entry.path === "runtime") entry.identity = [replaced.dev, replaced.ino, replaced.size, replaced.mtimeNs, replaced.ctimeNs].map(String);
+    }
+    await chmod(recordPath, 0o600); await writeFile(recordPath, JSON.stringify(record)); await chmod(recordPath, 0o400);
+    await chmod(distribution, 0o500); await chmod(store, 0o500);
+    const lease = await installation.openCommand();
+    const result = await output(lease.spawn());
+    expect(result.text).not.toContain("forged-code-executed");
+    expect(result.code).not.toBe(0);
+    expect(result.error).toContain("Native ACPX executable changed before spawn");
     await lease.close();
   });
 
