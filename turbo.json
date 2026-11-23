@@ -105,6 +105,8 @@
     "//#ci:workspaces-a": {
       "inputs": [
         "ui/**",
+        "cli/**",
+        "packages/db/**",
         "packages/shared/**",
         "packages/adapter-utils/**",
         "packages/adapters/**",

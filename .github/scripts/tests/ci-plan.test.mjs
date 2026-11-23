@@ -82,6 +82,8 @@ test("canary dry run, runner support, chat, docker and test-only edits select th
   assert.deepEqual([...selectedTasks(plan(["tests/e2e/smoke.spec.ts"]))].sort(), ["ci:e2e", "ci:typecheck"]);
   assert.deepEqual([...selectedTasks(plan(["tests/runner-e2e/catalog.test.ts"]))].sort(), ["ci:runner-e2e-support", "ci:typecheck"]);
   assert.equal(selectedTasks(plan(["packages/paperclip-runner/src/index.ts"])).has("ci:runner-package"), true);
+  assert.equal(selectedTasks(plan(["cli/src/commands/onboard.ts"])).has("ci:workspaces-a"), true);
+  assert.equal(selectedTasks(plan(["packages/db/src/schema/issues.ts"])).has("ci:workspaces-a"), true);
 });
 
 test("PR workflow keeps Build fast and passes PR-mode context to typecheck and Vitest lanes", () => {
@@ -97,7 +99,9 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   assert.match(typecheck, /PAPERCLIP_CI_BASE_SHA:/);
   for (const job of ["typecheck_release_registry", "general_tests", "verify_paperclip_runner", "build", "verify_serialized_server"]) {
     const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z0-9_]+:\n/)[0];
-    assert.match(block, /PAPERCLIP_CI_FULL:/, `${job} must forward PAPERCLIP_CI_FULL`);
+    const line = block.match(/PAPERCLIP_CI_FULL:.*/)?.[0];
+    assert.ok(line, `${job} must forward PAPERCLIP_CI_FULL`);
+    assert.doesNotMatch(line, /profile_ci/, `${job} must keep profile-ci in PR mode rather than forcing PAPERCLIP_CI_FULL`);
   }
   const e2e = workflow.split("\n  e2e_shards:\n")[1].split("\n  e2e:\n")[0];
   const releaseVerify = readFileSync(new URL(".github/workflows/release-verify.yml", root), "utf8");
