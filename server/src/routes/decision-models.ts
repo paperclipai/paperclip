@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { DECISION_TEST_REQUEST, updateDecisionModelSchema } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { canManageAiConnections } from "./ai-connections.js";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { decisionModelService, settingsDecisionTest } from "../services/decision-models.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -24,6 +24,15 @@ export function decisionModelRoutes(db: Db) {
     assertCompanyAccess(req, companyId); assertBoard(req);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden("Manage connections permission is required");
     res.json(await service.configure(companyId, getActorInfo(req).actorId, req.body));
+  });
+  router.get("/companies/:companyId/decision-model/models", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId); assertBoard(req);
+    if (!(await canManageAiConnections(db, req, companyId))) throw forbidden("Manage connections permission is required");
+    const connectionId = typeof req.query.connectionId === "string" ? req.query.connectionId : "";
+    if (!connectionId) throw badRequest("connectionId is required");
+    const userId = getActorInfo(req).actorId;
+    res.json(await service.models(companyId, connectionId, { responsibleUserId: userId, actorType: "user", actorId: userId }));
   });
   router.get("/companies/:companyId/decision-model/availability", async (req, res) => {
     const companyId = req.params.companyId as string;

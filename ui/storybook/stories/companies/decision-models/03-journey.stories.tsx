@@ -7,7 +7,7 @@ import { Layout } from "@/components/Layout";
 import { CompanySettings } from "@/pages/CompanySettings";
 import { Costs } from "@/pages/Costs";
 import { PluginLauncherProvider } from "@/plugins/launchers";
-import { choices, companyId, configured, entry, result, unconfigured } from "../../../support/decision-models/fixtures";
+import { choices, companyId, configured, entry, models, result, unconfigured } from "../../../support/decision-models/fixtures";
 import type { DecisionHistoryEntry } from "@paperclipai/shared";
 
 /** Production pages and shell; only API responses and paid provider execution are simulated. */
@@ -25,11 +25,12 @@ function Journey({ alreadyConfigured = false }: { alreadyConfigured?: boolean })
         if (init?.method === "PUT") {
           const data = JSON.parse(String(init.body));
           const selected = choices.find(row => row.grantId === data.grantId)!;
-          settings = { ...settings, ...data, provider: selected.provider, model: selected.decisionModel };
+          settings = { ...settings, ...data, provider: selected.provider, model: data.model ?? selected.decisionModel };
           return Response.json(settings);
         }
         return Response.json({ settings, choices, canManage: true });
       }
+      if (url.pathname === `${base}/models`) return Response.json({ models });
       if (url.pathname === `${base}/history`) return Response.json(history);
       if (url.pathname === `${base}/test`) {
         history.unshift({ ...entry, id: `decision-${history.length}`, model: settings.model!, provider: settings.provider! });

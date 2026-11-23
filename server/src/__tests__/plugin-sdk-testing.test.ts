@@ -63,6 +63,24 @@ describe("plugin SDK test harness", () => {
     await expect(denied.ctx.projects.readSnapshots([], "company", "settings")).rejects.toThrow("missing required capability");
   });
 
+  it("exposes a stubbable decisions fake gated by decisions.invoke", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-decisions", apiVersion: 1, version: "0.1.0", displayName: "Decisions", description: "Test plugin",
+      author: "Paperclip", categories: ["automation"], capabilities: ["decisions.invoke"], entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    const request = { companyId: "company-1", state: "Charged twice", questions: { billing: { type: "boolean" as const, instructions: "Billing?" } } };
+    expect(await harness.ctx.decisions.connections({ companyId: "company-1" })).toEqual({ companyDefault: null, connections: [] });
+    expect(await harness.ctx.decisions.models({ companyId: "company-1", connectionId: "c" })).toEqual({ models: [] });
+    expect(await harness.ctx.decisions.decide(request)).toEqual({ status: "unavailable", reason: "not_configured" });
+    harness.setDecisions({ decide: async () => ({ status: "succeeded", invocationId: "i-1", answers: { billing: { type: "boolean", probability: 0.9 } },
+      usage: { inputTokens: 1, outputTokens: 1, costCents: null, costStatus: "unpriced" } }) });
+    expect(await harness.ctx.decisions.decide({ ...request, model: "m" })).toMatchObject({ status: "succeeded", invocationId: "i-1" });
+    expect(harness.decisionCalls.map(call => call.model)).toEqual([undefined, "m"]);
+    const denied = createTestHarness({ manifest: { ...manifest, capabilities: [] } });
+    await expect(denied.ctx.decisions.decide(request)).rejects.toThrow("missing required capability");
+  });
+
   it("returns scoped execution workspace metadata with the read capability", async () => {
     const manifest: PaperclipPluginManifestV1 = {
       id: "paperclip.test-execution-workspace-metadata",

@@ -44,6 +44,7 @@ import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
+import { decisionModelService, pluginDecisionFeature } from "./decision-models.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
@@ -822,6 +823,8 @@ export function buildHostServices(
   const issues = issueService(db);
   const documents = documentService(db);
   const goals = goalService(db);
+  const decisionModels = decisionModelService(db, { budgetHooks: { cancelWorkForScope: heartbeat.cancelBudgetScopeWork } });
+  const decisionFeature = pluginDecisionFeature(pluginKey);
   const access = accessService(db);
   const authorization = authorizationService(db);
   const budgets = budgetService(db);
@@ -3147,6 +3150,33 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return managedAgents.reset(params.agentKey, companyId);
+      },
+    },
+
+    decisions: {
+      async connections(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return decisionModels.connectionOptions(companyId);
+      },
+      async models(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (typeof params.connectionId !== "string" || !params.connectionId) throw new Error("connectionId is required");
+        return decisionModels.models(companyId, params.connectionId, { responsibleUserId: null, actorType: "system", actorId: `plugin:${pluginKey}` });
+      },
+      async decide(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const optional = (value: unknown, name: string) => {
+          if (value === undefined || value === null) return undefined;
+          if (typeof value !== "string" || !value) throw new Error(`${name} must be a non-empty string`);
+          return value;
+        };
+        return decisionModels.decide({
+          companyId, feature: decisionFeature, actor: { type: "system" },
+          issueId: optional(params.issueId, "issueId"), connectionId: optional(params.connectionId, "connectionId"), model: optional(params.model, "model"),
+        }, { state: params.state, questions: params.questions });
       },
     },
 
