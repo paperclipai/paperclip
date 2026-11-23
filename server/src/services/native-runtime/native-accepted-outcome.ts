@@ -3,16 +3,7 @@ import type { PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
 import type { ProviderFailure } from "@paperclipai/shared";
 import { nativeAcceptedResultOutlivesProviderFailure } from "./native-provider-failure.js";
 
-/**
- * The run outcome Paperclip decided when it accepted a result, saved beside the
- * provider's raw terminal in `native_run_results.result_json`. The raw terminal
- * stays unchanged: it is part of the accepted result's integrity digest.
- *
- * Only one outcome exists: the agent's done report was accepted and the only
- * later failure in that turn was a transient provider refusal. A row without
- * this field (every other result, and every row saved by an older release)
- * keeps the raw terminal as its outcome.
- */
+/** Saved beside the raw terminal, which stays unchanged because the result's integrity digest covers it. */
 export const NATIVE_ACCEPTED_OUTCOME_KEY = "acceptedOutcome";
 const SCHEMA = "paperclip.native-accepted-outcome.v1";
 const CAUSE = "transient_provider_refusal_after_finish";
@@ -22,7 +13,6 @@ export interface NativeAcceptedOutcome {
   cause: typeof CAUSE;
   runTerminalState: "succeeded";
   turnTerminalState: "completed";
-  /** Closed fields only: which provider refused, and how. Never provider text. */
   providerFailure: { provider: string; category: string };
 }
 
@@ -32,7 +22,6 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-/** Decide the accepted outcome from the committed terminal and its typed failure. */
 export function deriveNativeAcceptedOutcome(input: {
   terminal: PrpTerminalState;
   providerFailure: { errorCode: string; diagnostic?: unknown } | null;
@@ -48,11 +37,6 @@ export function deriveNativeAcceptedOutcome(input: {
     providerFailure: { provider, category } };
 }
 
-/**
- * Read a saved accepted outcome. The schema, cause and states decide whether
- * it applies (as `nativeEffectiveRunTerminalStateSql` does); unexpected
- * provider or category values are reduced to "unknown".
- */
 export function readNativeAcceptedOutcome(resultJson: unknown): NativeAcceptedOutcome | null {
   const value = record(record(resultJson)[NATIVE_ACCEPTED_OUTCOME_KEY]);
   if (value.schema !== SCHEMA || value.cause !== CAUSE || value.runTerminalState !== "succeeded" ||
@@ -63,22 +47,39 @@ export function readNativeAcceptedOutcome(resultJson: unknown): NativeAcceptedOu
     providerFailure: { provider: closed(failure.provider), category: closed(failure.category) } };
 }
 
-/** The terminal a run settles with under an accepted outcome (or the raw one without). */
 export function applyNativeAcceptedOutcome<T extends Record<string, unknown> | PrpTerminalState>(
   outcome: NativeAcceptedOutcome | null, terminal: T,
 ): T {
   return outcome ? { ...terminal, runTerminalState: outcome.runTerminalState, turnTerminalState: outcome.turnTerminalState } : terminal;
 }
 
-/** The terminal a saved result settles the run with. */
 export function nativeEffectiveTerminal<T extends Record<string, unknown> | PrpTerminalState>(resultJson: unknown, terminal: T): T {
   return applyNativeAcceptedOutcome(readNativeAcceptedOutcome(resultJson), terminal);
 }
 
-/** SQL twin of `nativeEffectiveTerminal(...).runTerminalState` for a `native_run_results.result_json` column. */
+const ALIAS = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$/;
+
+export function nativeEffectiveRunTerminalStateSqlText(resultJson: string): string {
+  if (!ALIAS.test(resultJson)) throw new Error("native_accepted_outcome_column_invalid");
+  const outcome = `${resultJson}->'${NATIVE_ACCEPTED_OUTCOME_KEY}'`;
+  return `(case when ${outcome}->>'schema' = '${SCHEMA}' and ${outcome}->>'cause' = '${CAUSE}'
+    and ${outcome}->>'runTerminalState' = 'succeeded' and ${outcome}->>'turnTerminalState' = 'completed'
+    then 'succeeded' else ${resultJson}->'terminal'->>'runTerminalState' end)`;
+}
+
 export function nativeEffectiveRunTerminalStateSql(resultJson: AnyColumn | SQL): SQL<string> {
   const outcome = sql`${resultJson}->${NATIVE_ACCEPTED_OUTCOME_KEY}`;
   return sql<string>`case when ${outcome}->>'schema' = ${SCHEMA} and ${outcome}->>'cause' = ${CAUSE}
     and ${outcome}->>'runTerminalState' = 'succeeded' and ${outcome}->>'turnTerminalState' = 'completed'
     then 'succeeded' else ${resultJson}->'terminal'->>'runTerminalState' end`;
+}
+
+/** A transient refusal came from the remote model service and the turn ended cleanly, so the warm process stays usable. */
+export function nativeRetainsWarmSession(input: {
+  terminal: { runTerminalState: string };
+  acceptedOutcome: NativeAcceptedOutcome | null;
+  continuationKind?: string;
+}) {
+  return (input.terminal.runTerminalState === "succeeded" || input.acceptedOutcome !== null)
+    && input.continuationKind !== "case_handoff";
 }

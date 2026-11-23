@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, completionContracts, nativeRunResults, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, completionContracts, nativeRunResults, workspaceOperations, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpEvent, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -19,6 +19,7 @@ import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { projectCommittedRun } from "./native-run-projection.js";
+import { NATIVE_RUN_FINALIZATION_WORK_QUERY } from "../idle-sleep-safety.js";
 import { readPersistedNativeProviderFailure } from "./native-provider-failure-evidence.js";
 import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { heartbeatService } from "../heartbeat.js";
@@ -279,6 +280,11 @@ describe("durable native provider capacity retry", () => {
     await projectCommittedRun({ db, run: restarted, coordinator });
     await waitForPendingRunFailureReports();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "succeeded", errorCode: null });
+    // Idle sleep treats this settled finalization as history, not pending work.
+    await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded" });
+    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, runId));
+    const pending = await db.execute(sql.raw(NATIVE_RUN_FINALIZATION_WORK_QUERY.replace("WHERE (", `WHERE f.run_id = '${runId}' AND (`)));
+    expect(Array.from(pending)).toHaveLength(0);
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "done" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
     expect(sentry.captureRunFailure).not.toHaveBeenCalled();

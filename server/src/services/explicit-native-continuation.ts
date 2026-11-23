@@ -1,4 +1,5 @@
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { nativeEffectiveRunTerminalStateSql } from "./native-runtime/native-accepted-outcome.js";
 import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
@@ -535,7 +536,7 @@ export async function admitExplicitNativeContinuation(input: {
           eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
           eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
           eq(nativeRunResults.schemaStatus, "accepted"),
-          sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = 'failed'`,
+          sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'failed'`,
         )).limit(1)
       : [];
     // A terminal failure may retain a result accepted before checkpoint or

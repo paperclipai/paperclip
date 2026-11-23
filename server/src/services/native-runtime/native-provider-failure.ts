@@ -236,24 +236,12 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
   } catch { return null; }
 }
 
-/** Provider refusals of one request that a later request can clear unchanged. */
 const TRANSIENT_PROVIDER_REFUSALS: ReadonlySet<string> = new Set<ProviderFailure["category"]>(["overloaded", "rate_limit"]);
 
-/**
- * True when a failed turn already has an accepted done report (the agent's
- * finish) and its only failure is a transient provider refusal of a later
- * request in that turn. The finished work is then the run's outcome: retrying
- * would repeat it and post its reply again. Other accepted dispositions keep
- * the bounded capacity retry. Anything else, including a
- * model rejection, an exhausted allowance, a rejected sign-in or an untyped
- * failure, stays a failure. Reads only the committed terminal's typed failure.
- * Callers pass a terminal that belongs to an accepted run result.
- */
+/** An accepted done report outlives a later transient provider refusal in the same turn. */
 export function nativeAcceptedResultOutlivesProviderFailure(input: {
   terminal: Pick<PrpTerminalState, "turnTerminalState" | "runTerminalState" | "reportedWorkDisposition">;
-  /** `forTerminal`: the classified failure, if any. */
   providerFailure: { errorCode: string } | null;
-  /** `providerFailureForTerminal`: the typed provider explanation, if any. */
   providerExplanation: ProviderFailure | null;
 }): boolean {
   if (input.terminal.runTerminalState !== "failed" || input.terminal.turnTerminalState !== "failed" ||

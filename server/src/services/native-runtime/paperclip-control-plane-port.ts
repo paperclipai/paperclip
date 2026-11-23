@@ -1,5 +1,5 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
-import { deriveNativeAcceptedOutcome, NATIVE_ACCEPTED_OUTCOME_KEY } from "./native-accepted-outcome.js";
+import { applyNativeAcceptedOutcome, deriveNativeAcceptedOutcome, NATIVE_ACCEPTED_OUTCOME_KEY } from "./native-accepted-outcome.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
@@ -744,16 +744,11 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         return false;
       }
       if (owner?.resultId) throw new Error("structured_result_replay_conflict");
-      // Decide once, from this run's committed turn failure, whether the
-      // accepted finish outlives a later transient provider refusal. Every
-      // reader settles the run from this saved outcome; the raw terminal stays.
       const acceptedOutcome = value.terminal.runTerminalState === "failed" && value.terminal.reportedWorkDisposition === "done"
         ? deriveNativeAcceptedOutcome({ terminal: value.terminal,
           ...await readPersistedNativeFailureEvidence(tx as unknown as Db, run, value.turnId ?? null, value.terminal) })
         : null;
-      const effectiveTerminal = acceptedOutcome
-        ? { ...value.terminal, runTerminalState: acceptedOutcome.runTerminalState, turnTerminalState: acceptedOutcome.turnTerminalState }
-        : value.terminal;
+      const effectiveTerminal = applyNativeAcceptedOutcome(acceptedOutcome, value.terminal);
       const resultJson = {
         result: validated.result,
         terminal: value.terminal,

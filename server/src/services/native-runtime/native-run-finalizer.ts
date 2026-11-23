@@ -32,7 +32,7 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
-import { applyNativeAcceptedOutcome, readNativeAcceptedOutcome } from "./native-accepted-outcome.js";
+import { applyNativeAcceptedOutcome, nativeEffectiveTerminal, readNativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
 import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
@@ -1160,7 +1160,7 @@ async function recoverCommittedNativeChatResponseInScope(
         .for("share");
       const envelope = record(accepted?.resultJson);
       const result = record(envelope.result);
-      const terminal = record(envelope.terminal);
+      const terminal = nativeEffectiveTerminal(envelope, record(envelope.terminal));
       if (
         !accepted ||
         !decision ||
@@ -1575,8 +1575,6 @@ export async function finalizeNativeRun(input: {
   if (!["succeeded", "failed", "cancelled"].includes(String(terminal.runTerminalState))) {
     throw new Error("native_finalization_invalid");
   }
-  // The outcome saved at acceptance settles the run: an accepted finish
-  // followed only by a transient provider refusal succeeded.
   const acceptedOutcome = readNativeAcceptedOutcome(envelope);
   const terminalState = applyNativeAcceptedOutcome(acceptedOutcome, terminal).runTerminalState;
 

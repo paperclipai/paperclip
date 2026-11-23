@@ -1,5 +1,5 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
-import { applyNativeAcceptedOutcome, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
+import { applyNativeAcceptedOutcome, nativeRetainsWarmSession, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { settleReattachRun } from "../heartbeat/run-admission.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
@@ -9269,24 +9269,6 @@ function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
   return runnerClosedTurnStartSession(value.cause, depth + 1);
 }
 
-/**
- * Whether a warm provider session stays open for the next message on the task.
- * A run that succeeded keeps it, including one whose accepted finish outlived a
- * transient provider refusal: that refusal came from the remote model service
- * and ended the turn with a clean protocol terminal, so the local provider
- * process is healthy and closing it would only cold-start the next message.
- * Process and protocol faults throw before this decision and close the session.
- */
-export function nativeRetainsWarmSession(input: {
-  terminal: { runTerminalState: string };
-  acceptedOutcome: NativeAcceptedOutcome | null;
-  continuationKind?: string;
-}) {
-  return (input.terminal.runTerminalState === "succeeded" || input.acceptedOutcome !== null)
-    && input.continuationKind !== "case_handoff";
-}
-
-/** The accepted outcome saved with this run's result (see native-accepted-outcome). */
 async function readSavedNativeAcceptedOutcome(db: Db, binding: { runId: string; companyId: string; issueId: string }, turnId: string | null) {
   const [row] = await db.select({ resultJson: nativeRunResults.resultJson }).from(nativeRunResults).where(and(
     eq(nativeRunResults.runId, binding.runId), eq(nativeRunResults.companyId, binding.companyId),
@@ -12257,7 +12239,6 @@ async function executePaperclipNativeSessionAttempt(
     },
   );
   let native: Awaited<ReturnType<typeof executeNativeSession>>;
-  /** The outcome Paperclip saved when it accepted this run's result, if any. */
   let acceptedOutcome: NativeAcceptedOutcome | null = null;
   let releaseGoalController: (() => void) | null = null;
   const releaseRegisteredGoalController = () => {
@@ -14258,8 +14239,6 @@ async function executePaperclipNativeSessionAttempt(
       logger.warn({ runId: input.execution.binding.runId }, "Native finalization claim release failed after an earlier error");
     }
   }
-  // When the agent's finish was accepted before the provider refused a later
-  // request in the same turn, the saved outcome settles the run as succeeded.
   const terminal = applyNativeAcceptedOutcome(acceptedOutcome, native.terminal);
   const finalization: NativeFinalizationResult = {
     schema: "paperclip.native-finalization.v1",
@@ -14301,7 +14280,6 @@ async function executePaperclipNativeSessionAttempt(
       ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
       ...(unclassifiedTurnFailure ? { nativeTurnFailure: unclassifiedTurnFailure } : {}),
       ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
-      // Closed fields only: why a failed provider turn still ended the run as succeeded.
       ...(acceptedOutcome ? { providerFailureAfterAcceptedResult: {
         provider: acceptedOutcome.providerFailure.provider, category: acceptedOutcome.providerFailure.category } } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
