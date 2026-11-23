@@ -132,6 +132,14 @@ describe("Antigravity exact native admission", () => {
     expect(sendText(text)).toEqual([sent]);
   });
 
+  it("keeps other text block fields when it rewrites a command", () => {
+    const f = fixture(); const sent = request(f); f.guard("inbound", response(sent));
+    const block = { type: "text", text: "see /plan", annotations: { priority: 1 } };
+    const message = { ...prompt(), params: { ...prompt().params, prompt: [block] } };
+    f.guard("outbound", message);
+    expect(message.params.prompt).toEqual([{ type: "text", text: "see ⁠/plan", annotations: { priority: 1 } }]);
+  });
+
   it("keeps a native command split across text blocks as prose", () => {
     expect(sendText(" ", "/log", "out")).toEqual([" ", "⁠/log", "out"]);
   });

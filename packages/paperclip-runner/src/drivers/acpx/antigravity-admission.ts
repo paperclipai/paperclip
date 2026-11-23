@@ -90,11 +90,10 @@ export function createAntigravityAdmission(content: string, model: string) {
               assertReady();
               if (params.sessionId !== state.sessionId || !Array.isArray(params.prompt)
                 || params.prompt.some(value => record(value).type !== "text" || typeof record(value).text !== "string")) fail("prompt is outside the admitted text session");
-              // Native slash commands can switch modes or sign the account out
-              // before inference, so task text always reaches the model as prose.
-              const texts = neutralizeAntigravityNativeCommands((params.prompt as unknown[]).map(value => record(value).text as string));
+              const blocks = (params.prompt as unknown[]).map(record);
+              const texts = neutralizeAntigravityNativeCommands(blocks.map(block => block.text as string));
               if (antigravityNativeCommands(texts).length > 0) fail("the task text could not be sent as plain text");
-              params.prompt = texts.map(text => ({ type: "text", text }));
+              params.prompt = blocks.map((block, index) => ({ ...block, text: texts[index] }));
               message.params = params;
             } else if (!["initialize", "session/cancel", "session/close"].includes(method)) {
               fail("native control is unavailable in a managed task");

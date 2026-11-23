@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { antigravityNativeCommands, neutralizeAntigravityNativeCommands } from "./antigravity-native-commands.js";
 
-// Outcomes recorded by running the pinned 1.5.2 server's own matchers
-// (`_CMD_PATTERN.split`, `is_logout_prompt`, `is_usage_prompt`) on each input.
 const serverOutcomes: Array<[string[], string[]]> = [
   [["Please read the doc; see /plan for details."], ["plan"]],
   [["{\"task\":\"Fix bug. Then /plan the rollout\"}"], ["plan"]],
