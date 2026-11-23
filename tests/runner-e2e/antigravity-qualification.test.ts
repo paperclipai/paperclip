@@ -142,10 +142,22 @@ describe("Antigravity model lineups", () => {
       expect(() => buildRunnerE2EProcessEnvironment({}, lineup)).not.toThrow();
       expect(buildMatrixJobs(lineup).every(job => job.credentialName === "GEMINI_API_KEY" && !job.needsDaytona)).toBe(true);
     }
-    expect(ANTIGRAVITY_API_KEY_LINEUP).toHaveLength(25);
-    expect(ANTIGRAVITY_API_KEY_LINEUP).toContain("gemini-3.8-flash-low");
-    expect(ANTIGRAVITY_API_KEY_LINEUP).toContain("gemini-3.1-pro-extra_high");
-    expect(ANTIGRAVITY_GEMINI4_LINEUP).toEqual(expect.arrayContaining(["gemini-4-neon-low", "gemini-4-neon-medium", "gemini-4-neon-high", "gemini-4-neon-extra_high"]));
+    // Exactly what a 1.5.2 `gemini-api-key` session lists (live, prompt-free).
+    expect(ANTIGRAVITY_API_KEY_LINEUP).toEqual([
+      "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+      "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+      "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+      "gemini-3.5-flash-high", "gemini-3.5-flash-medium", "gemini-3.5-flash-low",
+      "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+    ]);
+    expect(ANTIGRAVITY_API_KEY_LINEUP).not.toContain("gemini-3.1-pro-extra_high");
+    // Each Gemini 4 family keeps its own levels; none offers minimal.
+    expect(ANTIGRAVITY_GEMINI4_LINEUP).toEqual([
+      "gemini-4-carbon-medium", "gemini-4-carbon-high", "gemini-4-carbon-low",
+      "gemini-4-neon-high", "gemini-4-neon-extra_high", "gemini-4-neon-medium", "gemini-4-neon-low",
+      "gemini-4-hydrogen-high", "gemini-4-hydrogen-extra_high", "gemini-4-hydrogen-medium", "gemini-4-hydrogen-low",
+      "gemini-4-argon-high", "gemini-4-argon-medium", "gemini-4-argon-low",
+    ]);
     expect(() => antigravityLineupProfileId("auto")).toThrow("Invalid Antigravity model ID");
   });
 

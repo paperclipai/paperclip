@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { ANTIGRAVITY_THINKING_LEVELS, antigravityFamilyModelIds } from "../../packages/shared/src/antigravity-models.js";
+import { ANTIGRAVITY_GENERATED_MODEL_CATALOG } from "../../packages/shared/src/antigravity-models.generated.js";
 import type { EnvironmentFixture, RunnerProfileFixture, RunnerSuiteFixture, RunnerTaskFixture } from "./types.js";
 
 /** Unattended Google API-key route. The acceptance model is repeatable on a free-tier key. */
@@ -12,17 +14,23 @@ export const ANTIGRAVITY_GEMINI4_LINEUP_SUITE = "antigravity-model-lineup-gemini
 export const ANTIGRAVITY_MODEL_RECEIPT_CASE = "model-receipt";
 
 /** Thinking level is part of the model ID: `<family>-<level>`. */
-export const ANTIGRAVITY_THINKING_LEVELS = ["minimal", "low", "medium", "high", "extra_high"] as const;
-/** The 1.5.2 server lists these families to `gemini-api-key` sessions. */
-export const ANTIGRAVITY_API_KEY_FAMILIES = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.1-pro"] as const;
-/** Marked `agent_platform_only` in 1.5.2: reachable through subscription sign-in or Agent Platform, not an API key. */
-export const ANTIGRAVITY_GEMINI4_FAMILIES = ["gemini-4-neon", "gemini-4-carbon", "gemini-4-argon", "gemini-4-hydrogen"] as const;
+export { ANTIGRAVITY_THINKING_LEVELS };
+/**
+ * Lineups come from the catalog generated from the pinned runtime, never a
+ * hand-kept list: the API-key lineup is exactly what a `gemini-api-key`
+ * session lists, and each Gemini 4 family keeps its own levels. The server
+ * marks the Gemini 4 families `agent_platform_only`; with an API key they are
+ * selected through exact-model admission and need a billed Gemini API plan.
+ */
+const FAMILIES = ANTIGRAVITY_GENERATED_MODEL_CATALOG.families;
+export const ANTIGRAVITY_API_KEY_FAMILIES = FAMILIES.filter(family => !family.agentPlatformOnly).map(family => family.id);
+export const ANTIGRAVITY_GEMINI4_FAMILIES = FAMILIES.filter(family => family.agentPlatformOnly).map(family => family.id);
 
-export function antigravityModelIds(families: readonly string[], levels: readonly string[]): string[] {
-  return families.flatMap(family => levels.map(level => `${family}-${level}`));
+export function antigravityModelIds(families: readonly string[], levels?: readonly string[]): string[] {
+  return families.flatMap(family => levels ? levels.map(level => `${family}-${level}`) : antigravityFamilyModelIds(family));
 }
-export const ANTIGRAVITY_API_KEY_LINEUP = antigravityModelIds(ANTIGRAVITY_API_KEY_FAMILIES, ANTIGRAVITY_THINKING_LEVELS);
-export const ANTIGRAVITY_GEMINI4_LINEUP = antigravityModelIds(ANTIGRAVITY_GEMINI4_FAMILIES, ["low", "medium", "high", "extra_high"]);
+export const ANTIGRAVITY_API_KEY_LINEUP: readonly string[] = ANTIGRAVITY_GENERATED_MODEL_CATALOG.apiKey.models.map(model => model.id);
+export const ANTIGRAVITY_GEMINI4_LINEUP: readonly string[] = antigravityModelIds(ANTIGRAVITY_GEMINI4_FAMILIES);
 
 const MODEL_ID = /^gemini-[0-9][a-z0-9.-]*-(?:minimal|low|medium|high|extra_high)$/u;
 /** Cell IDs split on dots, so the profile suffix replaces them. */
