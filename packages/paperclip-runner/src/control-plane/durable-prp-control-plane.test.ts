@@ -467,7 +467,9 @@ it("admits a tool catalog exactly up to the run attachment command budget", () =
 it("leaves room in the run attachment for the instructions it reserves", async () => {
   const instructions = "Large agent instructions. ".repeat(6_000);
   const runtimeContext = { skills: Array.from({ length: 200 }, (_, index) => ({ runtimeName: `skill-${index}`, description: "Skill summary ".repeat(6) })) };
-  const reserved = Buffer.byteLength(JSON.stringify(instructions)) + Buffer.byteLength(JSON.stringify(runtimeContext));
+  const criterionIds = Array.from({ length: 400 }, (_, index) => `criterion-${index}-with-a-longer-identifier`);
+  const reserved = Buffer.byteLength(JSON.stringify(instructions)) + Buffer.byteLength(JSON.stringify(runtimeContext))
+    + Buffer.byteLength(JSON.stringify(criterionIds));
   let valuesPerTool = 10;
   while (runnerCodexDynamicToolsFit(denseToolCatalog(100, valuesPerTool + 10))) valuesPerTool += 10;
   const unreserved = denseToolCatalog(100, valuesPerTool);
@@ -478,14 +480,23 @@ it("leaves room in the run attachment for the instructions it reserves", async (
   const root = mkdtempSync(resolve(tmpdir(), "runner-reserved-catalog-"));
   const target = { ...identity, runId: "00000000-0000-4000-8000-000000000004", turnId: "reserved-turn", itemId: "reserved-item" };
   const template = { observeCredentials: true, authorizedTools: authorizedToolSetForProvider("acpx", tools),
-    completionContract: { revision: 1, criterionIds: ["criterion-1", "criterion-2"] },
+    completionContract: { revision: 1, criterionIds },
     provider: { provider: "acpx", command: "fixture", instructions, runtimeContext } };
   const core = new DurablePrpControlPlane({ stateDirectory: resolve(root, "first"), identity, expectedRunnerVersion, expectedRunnerDigest });
-  core.setCheckpointPersistence(async () => undefined);
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async value => { checkpoint = value; });
+  let client: AuthenticatedClient | null = null;
   try {
     expect(() => core.stageRunAttachment(target, template)).not.toThrow();
     await core.flushCheckpoint();
+    await core.start(); client = await authenticate(core, core.issueBootstrapTicket());
+    expect(client).not.toBeNull();
+    expect(() => core.queueCommand("run.attach", { ...template, paperclipNextAuthority: { identity: target,
+      connection: { mode: "connect", connectUrl: core.connectUrl } } }, "reserved-next-attach")).not.toThrow();
+    await core.flushCheckpoint();
+    expect(() => decodeDurablePrpCheckpoint(checkpoint.records)).not.toThrow();
   } finally {
+    client?.socket.destroy();
     await core.stop(); rmSync(root, { recursive: true, force: true });
   }
 });
