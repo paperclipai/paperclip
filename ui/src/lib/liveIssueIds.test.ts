@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiveRunForIssue } from "../api/heartbeats";
-import { collectLiveIssueIds, collectSubtreeLiveCounts } from "./liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts, issueWaitingOf } from "./liveIssueIds";
 
 function liveRun(overrides: Partial<LiveRunForIssue>): LiveRunForIssue {
   return {
@@ -202,5 +202,32 @@ describe("collectSubtreeLiveCounts", () => {
     // a -> b counted once; the cycle back to a is guarded by the seen set.
     expect(counts.get("b")).toBe(1);
     expect(counts.has("a")).toBe(false);
+  });
+});
+
+describe("issueWaitingOf", () => {
+  const queue = { agentId: "agent", agentName: "Codie", maxConcurrentRuns: 20, runningCount: 20, position: 41, queuedCount: 295 };
+  const waiting = (overrides: Partial<LiveRunForIssue>) => liveRun({ status: "queued", startedAt: null, ...overrides });
+
+  it("marks a task whose live runs have not started as waiting, with the agent's line", () => {
+    const ids = collectLiveIssueIds([
+      waiting({ id: "plain", issueId: "a" }),
+      waiting({ id: "line", issueId: "a", execution: { cause: "agent_at_capacity", agentQueue: queue } as LiveRunForIssue["execution"] }),
+    ]);
+    expect(ids.has("a")).toBe(true);
+    expect(issueWaitingOf(ids, "a")).toEqual({ queue });
+  });
+
+  it("keeps a task with a started run live", () => {
+    const ids = collectLiveIssueIds([waiting({ id: "queued", issueId: "a" }), liveRun({ id: "running", issueId: "a" })]);
+    expect(issueWaitingOf(ids, "a")).toBeNull();
+    expect(issueWaitingOf(new Set(["a"]), "a")).toBeNull();
+  });
+
+  it("counts a waiting sub-task as live work, but not as running below", () => {
+    const ids = collectLiveIssueIds([waiting({ id: "queued", issueId: "child" })]);
+    const tree = [{ id: "parent", parentId: null }, { id: "child", parentId: "parent" }];
+    expect(collectSubtreeLiveCounts(tree, ids).get("parent")).toBe(1);
+    expect(collectSubtreeLiveCounts(tree, ids, { startedOnly: true }).size).toBe(0);
   });
 });

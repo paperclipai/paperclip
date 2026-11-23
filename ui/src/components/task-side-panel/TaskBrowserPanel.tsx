@@ -2,10 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type BrowserUseControl, type TaskBrowser } from "@paperclipai/shared";
 import { browserUseApi } from "@/api/browser-use";
+import { QueryErrorState, QueryStaleHint } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Globe, LoaderCircle } from "lucide-react";
 import { useBrowserViewport } from "@/hooks/useBrowserViewport";
+import { useResilientFetch } from "@/hooks/useResilientFetch";
 import { TaskBrowserFooter } from "./TaskBrowserFooter";
+
+/** Revalidate the viewer credential this often, even while the panel is hidden. */
+const VIEWER_REVALIDATION_MS = 15_000;
 
 export function TaskBrowserPanel({
   issueId,
@@ -21,8 +26,7 @@ export function TaskBrowserPanel({
   onOpenActiveBrowser?: () => void;
 }) {
   const cache = useQueryClient();
-  const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const automaticReconnects = useRef(0);
   const reconnect = () => {
@@ -34,60 +38,59 @@ export function TaskBrowserPanel({
   >("loading");
   const [now, setNow] = useState(Date.now());
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const viewable =
-    browser && ["running", "idle"].includes(browser.status) && !accessError;
+  const viewable = Boolean(
+    browser && ["running", "idle"].includes(browser.status) && !accessError,
+  );
+  const browserId = browser?.id;
+  // The viewport hook needs the viewer URL and the viewer read needs the
+  // viewport's version and viewer id; the ref breaks the cycle.
+  const viewportRef = useRef<ReturnType<typeof useBrowserViewport> | null>(null);
+  // The bearer viewer URL lives in this component's memory only, never in a
+  // shared or persisted cache. It is revalidated even while hidden, so a
+  // revoked credential (a real 403/404) promptly unmounts its iframe, while a
+  // transient failure keeps the loaded view on screen.
+  const viewer = useResilientFetch({
+    key: ["task-browser-viewer", issueId, browserId ?? null, refresh],
+    enabled: viewable && Boolean(browserId),
+    refetchInterval: VIEWER_REVALIDATION_MS,
+    keepDataOnError: false,
+    fetcher: async (signal) => {
+      const version = viewportRef.current?.version.current ?? 0;
+      const result = await browserUseApi.viewer(
+        issueId,
+        browserId!,
+        signal,
+        viewportRef.current?.viewerId,
+      );
+      return { ...result, version };
+    },
+    onSuccess: (result) => {
+      viewportRef.current?.receive(
+        result.viewportState ?? { preset: result.viewport ?? "fit" },
+        result.version,
+      );
+    },
+  });
+  const url =
+    viewer.view.kind === "ready" || viewer.view.kind === "stale"
+      ? viewer.data?.url ?? null
+      : null;
+  const viewerError = viewer.view.kind === "error" ? viewer.error : null;
   const viewport = useBrowserViewport({
     issueId,
-    browserId: browser?.id,
+    browserId,
     enabled: Boolean(viewable && url && viewerLoad === "loaded"),
     active,
     frameRef,
   });
+  viewportRef.current = viewport;
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
-    setUrl(null);
-    setError(null);
-    if (!viewable || !browser) return;
-    let disposed = false;
-    const controller = new AbortController();
-    // Keep the bearer viewer URL in component memory only. Revalidate even
-    // when hidden so a revoked credential promptly unmounts its iframe.
-    const load = () => {
-      const version = viewport.version.current;
-      return browserUseApi
-        .viewer(issueId, browser.id, controller.signal, viewport.viewerId)
-        .then((result) => {
-          if (!disposed) {
-            setUrl(result.url);
-            setError(null);
-            viewport.receive(
-              result.viewportState ?? { preset: result.viewport ?? "fit" },
-              version,
-            );
-          }
-        })
-        .catch(() => {
-          if (!disposed) {
-            setUrl(null);
-            setError(
-              "The live view disconnected. Use Reconnect view in Browser options to try again.",
-            );
-          }
-        });
-    };
-    void load();
-    const timer = setInterval(() => {
-      void load();
-    }, 15000);
-    return () => {
-      disposed = true;
-      controller.abort();
-      clearInterval(timer);
-    };
-  }, [issueId, browser?.id, viewable, refresh]);
+    setActionError(null);
+  }, [issueId, browserId, viewable, refresh]);
   useEffect(() => {
     setViewerLoad("loading");
   }, [url, refresh]);
@@ -153,11 +156,11 @@ export function TaskBrowserPanel({
     onSuccess: () => {
       void cache.invalidateQueries({ queryKey: ["task-browsers", issueId] });
     },
-    onError: () => setError("The browser action failed. Try again."),
+    onError: () => setActionError("The browser action failed. Try again."),
   });
   const message = accessError
     ? "You no longer have access to this browser."
-    : (browser?.error ?? error);
+    : (browser?.error ?? actionError);
   const heading = accessError
     ? "Browser access unavailable"
     : browser?.status === "starting"
@@ -168,11 +171,9 @@ export function TaskBrowserPanel({
           ? "Browser closed"
           : browser?.status === "failed"
             ? "Browser could not start"
-            : error
-              ? "Live view disconnected"
-              : viewable
-                ? "Connecting to browser…"
-                : "No browser open";
+            : viewable
+              ? "Connecting to browser…"
+              : "No browser open";
   const waiting =
     !message &&
     (browser?.status === "starting" ||
@@ -180,7 +181,19 @@ export function TaskBrowserPanel({
       viewable);
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {viewable && url ? (
+      {viewable && viewerError ? (
+        // A real failure (the credential was revoked, the browser is gone):
+        // the iframe is already unmounted, so say so and offer a retry.
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-auto p-6">
+          <QueryErrorState
+            error={viewerError}
+            action="connect to the live browser view"
+            onRetry={viewer.view.retry}
+            retrying={viewer.view.isFetching}
+            className="max-w-sm"
+          />
+        </div>
+      ) : viewable && url ? (
         <div className="relative min-h-0 flex-1">
           <iframe
             ref={frameRef}
@@ -265,6 +278,9 @@ export function TaskBrowserPanel({
             </Button>
           )}
         </div>
+      )}
+      {viewable && url && viewer.view.kind === "stale" && (
+        <QueryStaleHint className="px-3 py-2" />
       )}
       {viewable && url && message && (
         <p role="alert" className="px-3 py-2 text-xs text-destructive">

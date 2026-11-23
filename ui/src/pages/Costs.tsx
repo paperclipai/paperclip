@@ -23,6 +23,7 @@ import type {
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { agentsApi } from "../api/agents";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -180,6 +181,13 @@ export function Costs({
   const queryClient = useQueryClient();
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const scopedAgentId = searchParams.get("agentId");
+  const { data: scopedAgent, error: scopedAgentError } = useQuery({
+    queryKey: [...queryKeys.agents.detail(scopedAgentId ?? NO_COMPANY), selectedCompanyId],
+    queryFn: () => agentsApi.get(scopedAgentId!, selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && scopedAgentId),
+  });
+  const museUsageUnavailable = scopedAgent?.adapterType === "paperclip_runner" && scopedAgent.adapterConfig.provider === "muse";
   const [mainTab, setMainTab] = useState<CostsMainTab>(initialTab);
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
@@ -598,6 +606,14 @@ export function Costs({
   const overviewError = !spendData && spendError;
   return (
     <div className="space-y-6">
+      {scopedAgentError && (
+        <p role="alert" className="text-sm text-destructive">Could not load agent details. Totals below show recorded organization costs.</p>
+      )}
+      {museUsageUnavailable && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {scopedAgent.name}'s Muse activity has no reported usage or cost. Totals below show recorded organization charges only. Paperclip cannot enforce a Muse spend ceiling.
+        </p>
+      )}
       {showSummaryChrome ? (
         <div className="space-y-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -609,7 +625,7 @@ export function Costs({
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div data-canonical-toolbar="cost-range" role="toolbar" aria-label="Cost date range" className="flex flex-wrap items-center gap-2">
               {PRESET_KEYS.map((key) => (
                 <Button
                   key={key}
@@ -625,7 +641,7 @@ export function Costs({
           </div>
 
           {preset === "custom" ? (
-            <div className="flex flex-wrap items-center gap-2 border border-border p-3">
+            <div data-canonical-toolbar="cost-dates" className="flex flex-wrap items-center gap-2 border border-border p-3">
               <input
                 type="date"
                 value={customFrom}

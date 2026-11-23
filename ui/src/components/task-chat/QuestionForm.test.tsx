@@ -6,8 +6,8 @@ import type { PaperclipQuestionResponse, PaperclipQuestionSet } from "@paperclip
 import { QuestionForm } from "./QuestionForm";
 
 vi.mock("./TaskChatRichInput", () => ({
-  TaskChatRichInput: ({ value, onChange }: { value: string; onChange(value: string): void }) =>
-    <textarea aria-label="Answer" value={value} onChange={event => onChange(event.target.value)} />,
+  TaskChatRichInput: ({ value, onChange, onSubmit }: { value: string; onChange(value: string): void; onSubmit(): void }) =>
+    <textarea aria-label="Answer" value={value} onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && event.metaKey) onSubmit(); }} />,
 }));
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: string }) => <div>{children}</div> }));
 
@@ -22,8 +22,8 @@ describe("QuestionForm initial text", () => {
   beforeEach(() => { localStorage.clear(); submit.mockReset(); container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); localStorage.clear(); });
   const input = () => container.querySelector("textarea")!;
-  async function render(set = questionSet, initialResponse?: PaperclipQuestionResponse) {
-    await act(async () => root.render(<QuestionForm id="edit" questionSet={set} initialResponse={initialResponse} draftKey="question-initial-text" onSubmit={submit} />));
+  async function render(set = questionSet, initialResponse?: PaperclipQuestionResponse, presentation: "default" | "decision" = "default") {
+    await act(async () => root.render(<QuestionForm id="edit" presentation={presentation} questionSet={set} initialResponse={initialResponse} draftKey="question-initial-text" onSubmit={submit} />));
   }
   async function edit(text: string) {
     await act(async () => {
@@ -32,6 +32,40 @@ describe("QuestionForm initial text", () => {
     });
   }
   async function remount(set = questionSet) { await act(async () => root.unmount()); root = createRoot(container); await render(set); }
+  it.each([
+    ["default", "single_select", "radio"],
+    ["decision", "single_select", "radio"],
+    ["default", "multi_select", "checkbox"],
+  ] as const)("keeps Other in the choice group with matching selection behavior (%s, %s)", async (presentation, answerMode, role) => {
+    await render({ schema: "paperclip.question_set.v1", questions: [{
+      id: "choice", prompt: "Pick an option", required: true, answerMode,
+      options: [{ id: "a", label: "Option A" }, { id: "b", label: "Option B" }],
+      customAnswer: { enabled: true },
+    }] }, undefined, presentation);
+    const choices = [...container.querySelectorAll<HTMLButtonElement>(`[role="${role}"]`)];
+    const other = choices.find(button => button.textContent === "Other")!;
+    expect(choices).toHaveLength(3);
+    expect(other.closest('[role="radiogroup"], [role="group"]')).toBe(choices[0]!.closest('[role="radiogroup"], [role="group"]'));
+    expect(input()).toBeNull();
+    await act(async () => choices[0]!.click());
+    await act(async () => other.click());
+    expect(other.getAttribute("aria-checked")).toBe("true");
+    expect(choices[0]!.getAttribute("aria-checked")).toBe(answerMode === "single_select" ? "false" : "true");
+    await edit("My alternative");
+    await act(async () => other.click());
+    if (answerMode === "single_select") {
+      expect(other.getAttribute("aria-checked")).toBe("true");
+      expect(input().value).toBe("My alternative");
+      await act(async () => choices[0]!.click());
+    }
+    expect(other.getAttribute("aria-checked")).toBe("false");
+    expect(input()).toBeNull();
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Submit answers")!.click());
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0]![0].answers.choice.selectedOptionIds).toEqual(["a"]);
+    expect(submit.mock.calls[0]![0].answers.choice.customText).toBeUndefined();
+  });
+
   it("shows exact editable text without sending until the operator submits", async () => {
     await render();
     expect(input().value).toBe("  Draft\n漢字\n");
@@ -46,10 +80,25 @@ describe("QuestionForm initial text", () => {
     await remount(refreshed); expect(input().value).toBe("Operator edit\n");
     expect(submit).not.toHaveBeenCalled();
   });
+  it("shows required validation without advancing or submitting after enabled Next", async () => {
+    await render({ schema: "paperclip.question_set.v1", questions: [
+      { id: "audience", prompt: "Who is the audience?", required: true, answerMode: "text" },
+      { id: "tone", prompt: "What tone should we use?", required: true, answerMode: "text" },
+    ] });
+    const next = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Next")!;
+    expect(next.disabled).toBe(false);
+    await act(async () => next.click());
+    expect(container.textContent).toContain("This question is required.");
+    expect(container.textContent).toContain("Who is the audience?");
+    expect(container.textContent).not.toContain("What tone should we use?");
+    expect(submit).not.toHaveBeenCalled();
+  });
   it("retains an explicitly cleared draft and required validation across reload", async () => {
     await render(); await edit(""); await remount();
     expect(input().value).toBe("");
-    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.disabled).toBe(true);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.click());
+    expect(container.textContent).toContain("This question is required.");
     expect(submit).not.toHaveBeenCalled();
   });
   it("isolates pending requests with the same field ids and restores each edited draft when switching back", async () => {
@@ -86,7 +135,34 @@ describe("QuestionForm initial text", () => {
     await act(async () => root.unmount()); localStorage.clear(); root = createRoot(container);
     await render({ ...questionSet, questions: [{ ...questionSet.questions[0]!, initialText: "bad", textValidation: { minLength: 5 } }] });
     expect(input().value).toBe("bad");
-    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.disabled).toBe(true);
+    expect(container.textContent).not.toContain("Enter at least 5 characters.");
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.click());
+    expect(container.textContent).toContain("Enter at least 5 characters.");
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("only validates a short answer after Next or keyboard submit, and clears it when corrected", async () => {
+    await render({ schema: "paperclip.question_set.v1", questions: [
+      { id: "audience", prompt: "Who is it for?", required: true, answerMode: "text", textValidation: { minLength: 2 } },
+      { id: "outcome", prompt: "What outcome?", required: true, answerMode: "text", textValidation: { minLength: 2 } },
+    ] });
+    await edit("m");
+    expect(container.textContent).not.toContain("Enter at least 2 characters.");
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Next")!.click());
+    expect(container.textContent).toContain("Enter at least 2 characters.");
+    expect(container.textContent).toContain("Who is it for?");
+    await edit("millennials");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Next")!.click());
+    await edit("x");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
+    expect(container.textContent).toContain("Enter at least 2 characters.");
+    expect(submit).not.toHaveBeenCalled();
+    await edit("10 concepts");
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.click());
+    expect(submit).toHaveBeenCalledExactlyOnceWith({ schema: "paperclip.question_response.v1", answers: {
+      audience: { text: "millennials" }, outcome: { text: "10 concepts" },
+    } });
   });
 });

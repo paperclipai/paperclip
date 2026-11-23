@@ -50,7 +50,7 @@ test("public server tar layout carries a self-contained host provisioner and exa
   assert.deepEqual(await readdir(join(installedRunner, "provider-assets/pi")), [`${process.platform}-${process.arch}`]);
 });
 
-test("explicit CLI setup passes only network settings to its real child and enables Node proxy handling", async t => {
+for (const provider of ["pi", "antigravity"]) test(`${provider} CLI setup passes only network settings to its real child and enables Node proxy handling`, async t => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-pi-setup-environment-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const server = join(root, "node_modules/@paperclipai/server");
@@ -59,7 +59,7 @@ test("explicit CLI setup passes only network settings to its real child and enab
   await writeFile(join(server, "package.json"), JSON.stringify({ name: "@paperclipai/server", type: "module", exports: "./dist/index.js" }));
   await writeFile(join(server, "dist/index.js"), "throw Error('server must not start')");
   // A capture child models the public layout only. It cannot download or launch Pi.
-  await writeFile(join(cli, "provision-pi.cjs"), `const assert=require('node:assert/strict');
+  await writeFile(join(cli, `provision-${provider}.cjs`), `const assert=require('node:assert/strict');
     assert.deepEqual(process.execArgv,['--use-env-proxy']);
     assert.equal(process.env.HTTP_PROXY,'http://127.0.0.1:9');
     assert.equal(process.env.HTTPS_PROXY,'http://127.0.0.1:9');
@@ -71,7 +71,8 @@ test("explicit CLI setup passes only network settings to its real child and enab
     console.log('SETUP_NETWORK_BOUNDARY_PASS');`);
   const modulePath = join(root, "runtime.mjs");
   await build({ entryPoints: [resolve(dirname(new URL(import.meta.url).pathname), "../../../cli/src/commands/runtime.ts")], outfile: modulePath, bundle: true, platform: "node", format: "esm", target: "node24", logLevel: "silent" });
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", "const runtime=await import(process.argv[1]);await runtime.setupPiRuntime();", modulePath], {
+  const setupFunction = provider === "pi" ? "setupPiRuntime" : "setupAntigravityRuntime";
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `const runtime=await import(process.argv[1]);await runtime.${setupFunction}();`, modulePath], {
     encoding: "utf8", timeout: 10_000, env: { PATH: "/usr/bin:/bin", HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", NO_PROXY: "localhost", http_proxy: "http://127.0.0.1:9", https_proxy: "http://127.0.0.1:9", no_proxy: "localhost", SSL_CERT_FILE: "/public/ca.pem", SSL_CERT_DIR: "/public/certs", NODE_EXTRA_CA_CERTS: "/dev/null", OPENROUTER_API_KEY: "sensitive-canary", NPM_TOKEN: "sensitive-canary", HOME: "/private/home", NODE_PATH: "/foreign", NODE_TLS_REJECT_UNAUTHORIZED: "0" },
   });
   assert.ifError(result.error); assert.equal(result.status, 0, result.stderr);

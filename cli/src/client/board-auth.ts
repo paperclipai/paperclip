@@ -148,6 +148,10 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+class BoardAuthRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly retryAfterMs: number | null) { super(message); }
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? undefined);
   if (init?.body !== undefined && !headers.has("content-type")) {
@@ -168,7 +172,10 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
       body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string"
         ? (body as { error: string }).error
         : `Request failed: ${response.status}`;
-    throw new Error(message);
+    const retryAfter = response.headers.get("retry-after")?.trim();
+    const seconds = retryAfter && /^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) : null;
+    const delay = seconds === null ? Date.parse(retryAfter ?? "") - Date.now() : seconds * 1000;
+    throw new BoardAuthRequestError(message, response.status, Number.isFinite(delay) && delay > 0 ? delay : null);
   }
 
   return response.json() as Promise<T>;
@@ -246,11 +253,21 @@ export async function loginBoardCli(params: {
 
   const expiresAtMs = Date.parse(challenge.expiresAt);
   const pollMs = Math.max(500, challenge.suggestedPollIntervalMs || 1000);
+  if (!Number.isFinite(expiresAtMs)) throw new Error("CLI auth challenge returned an invalid expiry.");
 
-  while (Number.isFinite(expiresAtMs) ? Date.now() < expiresAtMs : true) {
-    const status = await requestJson<ChallengeStatusResponse>(
-      `${apiBase}/api${challenge.pollPath}?token=${encodeURIComponent(challenge.token)}`,
-    );
+  while (Date.now() < expiresAtMs) {
+    let status: ChallengeStatusResponse;
+    try {
+      status = await requestJson<ChallengeStatusResponse>(
+        `${apiBase}/api${challenge.pollPath}?token=${encodeURIComponent(challenge.token)}`,
+      );
+    } catch (error) {
+      if (!(error instanceof BoardAuthRequestError) || error.status !== 429) throw error;
+      const remainingMs = expiresAtMs - Date.now();
+      if (remainingMs <= 0) break;
+      await sleep(Math.min(Math.max(pollMs, error.retryAfterMs ?? pollMs), remainingMs));
+      continue;
+    }
 
     if (status.status === "approved") {
       const me = await requestJson<{ userId: string; user?: { id: string } | null }>(
