@@ -328,18 +328,18 @@ export function localAiLoginService(db: Db) {
       return presentAttempt(id, expiresAt, intent.provider);
     });
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
-    ensureBrowserLogin(attempt.sessionId, intent.provider);
-    // A cancel or a replacement may have retired this attempt between the
-    // transaction above and the launch. Read the row under its lock: a
-    // retirement that still holds the lock stops the process itself, and one
-    // that has committed is visible here.
-    const waiting = await db.transaction(async tx => (await tx.select().from(adapterAuthSessions)
-      .where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update"))[0]?.status === "waiting_for_user");
-    if (!waiting) {
-      await stopBrowserLogin(attempt.sessionId);
-      await removeLoginHome(attempt.sessionId, intent.provider);
-      throw unprocessable("This sign-in was cancelled. Start sign-in again.");
-    }
+    // A cancel or a replacement may have retired this attempt since the
+    // transaction above. Launch the process while holding the row lock of the
+    // attempt: a retirement that committed first is visible here and nothing
+    // is launched, and one that comes later waits for this lock and then
+    // stops the process it finds. If this read fails, nothing was launched.
+    const launched = await db.transaction(async tx => {
+      const [current] = await tx.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, attempt.sessionId)).for("update");
+      if (current?.status !== "waiting_for_user") return false;
+      ensureBrowserLogin(attempt.sessionId, intent.provider);
+      return true;
+    });
+    if (!launched) throw unprocessable("This sign-in was cancelled. Start sign-in again.");
     return attempt;
   }
 
