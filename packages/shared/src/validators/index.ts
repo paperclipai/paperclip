@@ -770,6 +770,12 @@ export {
   type UpdateRoutineTrigger,
   type RunRoutine,
   type RotateRoutineTriggerSecret,
+  externalRoutineUpsertItemSchema,
+  upsertExternalRoutinesSchema,
+  createRoutineObservationSchema,
+  type ExternalRoutineUpsertItem,
+  type UpsertExternalRoutines,
+  type CreateRoutineObservation,
 } from "./routine.js";
 
 export {

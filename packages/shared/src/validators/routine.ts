@@ -5,6 +5,7 @@ import {
   ROUTINE_ACTIVITY_GATE_SCOPES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
+  ROUTINE_EXTERNAL_SOURCES,
   ROUTINE_STATUSES,
   ROUTINE_TRIGGER_KINDS,
   ROUTINE_TRIGGER_SIGNING_MODES,
@@ -203,3 +204,55 @@ export type RunRoutine = z.infer<typeof runRoutineSchema>;
 
 export const rotateRoutineTriggerSecretSchema = z.object({});
 export type RotateRoutineTriggerSecret = z.infer<typeof rotateRoutineTriggerSecretSchema>;
+
+// ---------- External (observed) routines ----------
+// Routine rows that mirror schedulers living outside Paperclip (systemd timers,
+// Hermes crons, k8s CronJobs, Camel routes, Grok Bot routines). They are
+// upserted from the Greybeard OS manifest and updated with observations; they
+// carry no Paperclip triggers and never dispatch agent work here.
+
+export const externalRoutineUpsertItemSchema = z.object({
+  /** Stable external id (the GBOS manifest component id), kept in routines.origin_id. */
+  id: z.string().trim().min(1).max(200),
+  source: z.enum(ROUTINE_EXTERNAL_SOURCES),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().max(8_000).optional().nullable(),
+  /** Owning domain label from the manifest (e.g. "cos", "gbit"). Informational only. */
+  owner: z.string().trim().max(120).optional().nullable(),
+  /** Scheduler unit/job name (systemd unit, Hermes job, CronJob name...). */
+  unit: z.string().trim().max(200).optional().nullable(),
+  host: z.string().trim().max(200).optional().nullable(),
+  /** Raw schedule expression as displayed by the external scheduler. */
+  schedule: z.string().trim().max(200).optional().nullable(),
+  /** Expected seconds between runs, when the manifest knows the cadence. */
+  cadenceSec: z.number().int().min(0).max(10 * 366 * 24 * 60 * 60).optional().nullable(),
+  /** Cost class from the manifest (none|llm|llm-jev|gpu|external-api). */
+  cost: z.string().trim().max(60).optional().nullable(),
+  revenue: z.string().trim().max(60).optional().nullable(),
+  status: z.enum(ROUTINE_STATUSES).optional().default("active"),
+}).strict();
+
+export type ExternalRoutineUpsertItem = z.infer<typeof externalRoutineUpsertItemSchema>;
+
+export const upsertExternalRoutinesSchema = z.object({
+  items: z.array(externalRoutineUpsertItemSchema).min(1).max(500),
+});
+export type UpsertExternalRoutines = z.infer<typeof upsertExternalRoutinesSchema>;
+
+export const createRoutineObservationSchema = z.object({
+  status: z.enum(["success", "failure", "skipped"]),
+  /** When the external scheduler fired. Defaults to now. */
+  observedAt: z.coerce.date().optional().nullable(),
+  /** When the observed run finished. Defaults to received time. */
+  completedAt: z.coerce.date().optional().nullable(),
+  durationMs: z.number().int().min(0).optional().nullable(),
+  host: z.string().trim().max(200).optional().nullable(),
+  unit: z.string().trim().max(200).optional().nullable(),
+  cadenceSec: z.number().int().min(0).max(10 * 366 * 24 * 60 * 60).optional().nullable(),
+  costUsd: z.number().min(0).max(1_000_000).optional().nullable(),
+  failureReason: z.string().max(1_000).optional().nullable(),
+  /** Stable id for the observation (e.g. gbos run id); replays return the first row. */
+  idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
+}).strict();
+
+export type CreateRoutineObservation = z.infer<typeof createRoutineObservationSchema>;

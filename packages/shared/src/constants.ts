@@ -839,8 +839,36 @@ export const ROUTINE_RUN_STATUSES = [
 export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 
 /** `heartbeat`: a standing check's reported outcome (no task is created per check). */
-export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook", "heartbeat"] as const;
+export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook", "heartbeat", "external"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
+
+// External (observed) routines — Option A "single-pane view of all schedulers".
+// An external routine is a registry row that mirrors a scheduler component that
+// lives outside Paperclip (a systemd timer, Hermes cron, k8s CronJob, Camel
+// route or Grok Bot routine). It carries no triggers of its own: Paperclip
+// neither fires nor dispatches it. It only records observations (see
+// ROUTINE_EXTERNAL_SOURCES and the external upsert/observation endpoints).
+export const ROUTINE_EXTERNAL_ORIGIN_KIND_PREFIX = "external:";
+export const ROUTINE_EXTERNAL_SOURCES = ["systemd", "hermes", "k8s", "camel", "grokbot"] as const;
+export type RoutineExternalSource = (typeof ROUTINE_EXTERNAL_SOURCES)[number];
+
+export function externalRoutineOriginKind(source: RoutineExternalSource): string {
+  return `${ROUTINE_EXTERNAL_ORIGIN_KIND_PREFIX}${source}`;
+}
+
+export function isExternalRoutineOriginKind(originKind: string | null | undefined): boolean {
+  return typeof originKind === "string" && originKind.startsWith(ROUTINE_EXTERNAL_ORIGIN_KIND_PREFIX);
+}
+
+export function parseExternalRoutineOriginKind(
+  originKind: string | null | undefined,
+): RoutineExternalSource | null {
+  if (!isExternalRoutineOriginKind(originKind)) return null;
+  const source = originKind!.slice(ROUTINE_EXTERNAL_ORIGIN_KIND_PREFIX.length);
+  return (ROUTINE_EXTERNAL_SOURCES as readonly string[]).includes(source)
+    ? (source as RoutineExternalSource)
+    : null;
+}
 
 // "import" marks agents parked by a company import (safety default) so the UI
 // can explain the pause and offer a scoped bulk-resume; "system" remains the
