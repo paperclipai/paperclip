@@ -49,13 +49,13 @@ async function mount(accounts: AiManagedConnectionSummary[] = [account], harness
   await render(value);
 }
 
-it.each(["opencode_local", "codex_local", "claude_local", "hermes_local"])("automatically discovers an empty OpenRouter connection's models for %s", async harness => {
+it.each(["opencode_local", "pi_local", "codex_local", "claude_local", "hermes_local"])("automatically discovers an empty OpenRouter connection's models for %s", async harness => {
   await mount([account], harness);
   await vi.waitFor(() => expect(result?.models).toHaveLength(3));
   expect(agentsApi.adapterModels).toHaveBeenCalledWith("company", "opencode_local", { provider: "openrouter" });
-  expect(result?.models.map(m => m.id)).toEqual(catalog.map(m => harness === "opencode_local" ? m.id : m.id.slice("openrouter/".length)));
+  expect(result?.models.map(m => m.id)).toEqual(catalog.map(m => ["opencode_local", "pi_local"].includes(harness) ? m.id : m.id.slice("openrouter/".length)));
   expect(result?.models.map(m => m.label)).toEqual(catalog.map(m => m.label));
-  expect(result?.resolveModel("anthropic/custom-model")).toBe(harness === "opencode_local" ? "openrouter/anthropic/custom-model" : "anthropic/custom-model");
+  expect(result?.resolveModel("anthropic/custom-model")).toBe(["opencode_local", "pi_local"].includes(harness) ? "openrouter/anthropic/custom-model" : "anthropic/custom-model");
 });
 
 it("also discovers models for legacy OpenRouter connections without routing metadata", async () => {

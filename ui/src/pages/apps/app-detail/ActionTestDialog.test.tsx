@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolCatalogEntry } from "@paperclipai/shared";
 import { ActionTestDialog, errorHints } from "./ActionTestDialog";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const listTestAgentsMock = vi.hoisted(() => vi.fn());
 const getTestAgentAccessMock = vi.hoisted(() => vi.fn());
@@ -332,8 +333,11 @@ describe("Permissions action Test dialog", () => {
     expect(document.body.querySelector("table")?.textContent).toContain("Q4 launch");
     expect(document.body.textContent).not.toContain("structuredContent");
     const raw = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Show raw response");
+    expect(replayLeaks("Customer onboarding", document.body)).toEqual({ rendered: true, recorded: false });
     await act(() => raw!.click());
     expect(document.body.textContent).toContain("structuredContent");
+    expect(replayLeaks("structuredContent", document.body)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Customer onboarding", document.body).recorded).toBe(false);
   });
 
   it("parses JSON text when structured content is absent", async () => {

@@ -3,6 +3,8 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 
+export const PERSONAL_ARCHIVE_QUERY_KEY = "personal-archive";
+
 export type InboxIssueCacheSnapshot = Array<readonly [QueryKey, Issue[] | undefined]>;
 
 export const INBOX_ARCHIVE_CONFIRMATION_GRACE_MS = 5_000;
@@ -11,6 +13,7 @@ const EMPTY_ARCHIVED_ISSUE_IDS: ReadonlySet<string> = new Set();
 
 type InboxArchiveGuardState = {
   issueIds: ReadonlySet<string>;
+  tokens: Map<string, symbol>;
   listeners: Set<() => void>;
   confirmationTimers: Map<string, ReturnType<typeof setTimeout>>;
   maximumTimers: Map<string, ReturnType<typeof setTimeout>>;
@@ -36,6 +39,7 @@ function getInboxArchiveGuard(companyId: string): InboxArchiveGuardState {
 
   const created: InboxArchiveGuardState = {
     issueIds: EMPTY_ARCHIVED_ISSUE_IDS,
+    tokens: new Map(),
     listeners: new Set(),
     confirmationTimers: new Map(),
     maximumTimers: new Map(),
@@ -60,12 +64,17 @@ function clearArchiveGuardTimer(
 
 export function beginLocalInboxArchive(companyId: string, issueId: string) {
   const state = getInboxArchiveGuard(companyId);
+  const token = Symbol();
+  state.tokens.set(issueId, token);
   clearArchiveGuardTimer(state.confirmationTimers, issueId);
   clearArchiveGuardTimer(state.maximumTimers, issueId);
 
   const issueIds = new Set(state.issueIds);
   issueIds.add(issueId);
   publishInboxArchiveGuard(state, issueIds);
+  return () => {
+    if (state.tokens.get(issueId) === token) clearLocalInboxArchive(companyId, issueId);
+  };
 }
 
 export function boundLocalInboxArchive(companyId: string, issueId: string) {
@@ -91,6 +100,7 @@ export function confirmLocalInboxArchive(companyId: string, issueId: string) {
 export function clearLocalInboxArchive(companyId: string, issueId: string) {
   const state = inboxArchiveGuards.get(companyId);
   if (!state) return;
+  state.tokens.delete(issueId);
   clearArchiveGuardTimer(state.confirmationTimers, issueId);
   clearArchiveGuardTimer(state.maximumTimers, issueId);
   if (!state.issueIds.has(issueId)) {
@@ -233,6 +243,17 @@ export function invalidateInboxIssueQueries(queryClient: QueryClient, companyId:
       queryClient.invalidateQueries({ queryKey }),
     ),
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(companyId) }),
+  ]);
+}
+
+export function invalidateTaskArchiveQueries(queryClient: QueryClient, companyId: string) {
+  return Promise.all([
+    invalidateInboxIssueQueries(queryClient, companyId),
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.list(companyId),
+      predicate: ({ queryKey }) => queryKey.includes(PERSONAL_ARCHIVE_QUERY_KEY),
+    }),
   ]);
 }
 

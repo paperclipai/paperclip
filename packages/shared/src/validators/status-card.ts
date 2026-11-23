@@ -102,6 +102,8 @@ export const statusCardSchema = z.object({
   watchedIssueCount: z.number().int().nonnegative().optional(),
   todayTokens: z.number().int().nonnegative().optional(),
   todayCostCents: z.number().nonnegative().optional(),
+  /** Company-scoped board route where people view, restore and refresh the card. */
+  href: z.string().optional(),
 });
 
 export const statusCardUpdateChangeSchema = z.object({
