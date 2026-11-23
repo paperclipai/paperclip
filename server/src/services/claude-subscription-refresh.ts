@@ -1,4 +1,4 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, ne, or, sql } from "drizzle-orm";
 import { companySecrets, connectionGrants, heartbeatRuns, toolConnections, type Db } from "@paperclipai/db";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -48,6 +48,20 @@ export async function refreshClaudeSubscription(
             pendingExchanges.delete(key);
             throw aiConnectionConfigurationFailure("ai_connection_unavailable", "Reconnect this AI account", { connectionId: row.connection.id });
           }
+          // Record the run that receives the token as its holder before this
+          // transaction releases the credential. The run's own `aiConnection`
+          // is saved only after its preparation finishes; without this mark,
+          // another renewal in that interval would not see it and would revoke
+          // its token. The mark is written last, so the run's row is not
+          // locked during a provider request.
+          const asHolder = async (result: { value: string; recovered?: boolean }): Promise<{ value?: string; recovered?: boolean; reauth?: boolean }> => {
+            if (options.currentRunId) {
+              await tx.update(heartbeatRuns)
+                .set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiCredentialHolder: grant.id })}::jsonb` })
+                .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, options.currentRunId)));
+            }
+            return result;
+          };
           const ref = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
           if (!ref) throw unprocessable("Reconnect this AI account");
           const [secret] = await tx.select().from(companySecrets).where(and(
@@ -55,7 +69,7 @@ export async function refreshClaudeSubscription(
           )).for("update", { noWait: true });
           if (!secret) throw unprocessable("Reconnect this AI account");
           const current = await readRaw(tx as unknown as Db, { connection: row.connection, grant });
-          if (replacement && current === replacement.value) return { value: current, recovered: true };
+          if (replacement && current === replacement.value) return asHolder({ value: current, recovered: true });
           // A reconnect or an explicit rotation wins over an uncommitted exchange.
           if (replacement && (secret.id !== replacement.secretId || secret.aiSessionEpoch !== replacement.epoch
             || secret.latestVersion !== replacement.version || current !== replacement.base)) {
@@ -63,7 +77,7 @@ export async function refreshClaudeSubscription(
             replacement = undefined;
           }
           const stored = parseStoredClaudeOauth(current);
-          if (!stored || (!replacement && !claudeRefreshDue(stored))) return { value: current };
+          if (!stored || (!replacement && !claudeRefreshDue(stored))) return asHolder({ value: current });
           // The provider revokes the previous access token the moment it issues a
           // new one, and a run cannot replace the token it started with. Renew
           // early only while no other run holds this token; once it is about to
@@ -71,10 +85,11 @@ export async function refreshClaudeSubscription(
           if (!replacement && claudeScopesAllowRun(stored) && stored.expiresAt - CLAUDE_REFRESH_FORCE_MS > Date.now()) {
             const [held] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
               eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running"),
-              sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'grantId' = ${grant.id}`,
+              or(sql`${heartbeatRuns.contextSnapshot}->'aiConnection'->>'grantId' = ${grant.id}`,
+                sql`${heartbeatRuns.contextSnapshot}->>'aiCredentialHolder' = ${grant.id}`),
               ...(options.currentRunId ? [ne(heartbeatRuns.id, options.currentRunId)] : []),
             )).limit(1);
-            if (held) return { value: current };
+            if (held) return asHolder({ value: current });
           }
           const recovering = Boolean(replacement);
           let refreshed = replacement?.value;
@@ -82,7 +97,7 @@ export async function refreshClaudeSubscription(
             try { refreshed = await refreshClaudeOauth(stored); }
             catch (error) {
               if (stored.expiresAt > Date.now()) {
-                if (claudeScopesAllowRun(stored)) return { value: current };
+                if (claudeScopesAllowRun(stored)) return asHolder({ value: current });
                 throw unprocessable("Claude sign-in could not supply an inference-only token. Retry or reconnect.", { code: "ai_connection_busy" });
               }
               if (!(error instanceof ClaudeOauthRefreshError) || !error.rejected) {
@@ -102,7 +117,7 @@ export async function refreshClaudeSubscription(
           await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "claude_refresh",
             action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
             details: { provider: "anthropic", grantId: grant.id } });
-          return { value: refreshed, recovered: recovering };
+          return asHolder({ value: refreshed, recovered: recovering });
         }));
         committed = true;
         // Only a confirmed commit or an explicit generation discard settles this obligation.

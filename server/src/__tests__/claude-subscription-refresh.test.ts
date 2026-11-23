@@ -336,6 +336,26 @@ describe("Claude subscription idle renewal", () => {
     expect(exchange).toHaveBeenCalledOnce();
   });
 
+  it("counts a run as a holder from the moment it receives the token, before its preparation is saved", async () => {
+    const { account, owner, service, row, state } = await connect(document(Date.now() + 3600_000));
+    const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
+    const other = await holdingRun(account.grantId);
+    // A run that starts: it has a row, but no saved connection yet.
+    const starting = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: starting, companyId, agentId, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: "kept" } });
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "claude_local", binding: binding(account), config: { env: {} }, currentRunId: starting });
+    expect(run.config.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("old-access");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, starting)))[0]!.contextSnapshot).toEqual({ issueId: "kept", aiCredentialHolder: account.grantId });
+    // The other holder ends. Its cleanup renewal must not revoke the token the starting run was given.
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other));
+    expect(await service.credential(row)).toBe("old-access");
+    expect(exchange).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, starting));
+    await run.cleanup();
+    await vi.waitFor(async () => expect((await state()).latestVersion).toBe(2), { timeout: 10_000 });
+    expect(exchange).toHaveBeenCalledOnce();
+  });
+
   it("does not renew at cleanup while the run is still running, as when its controller detaches for a restart", async () => {
     const { account, owner, state } = await connect(document(Date.now() + 3600_000));
     const exchange = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ access_token: "renewed", refresh_token: "rotated", expires_in: 28800 })));
