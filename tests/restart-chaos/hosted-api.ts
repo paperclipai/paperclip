@@ -60,6 +60,7 @@ export class HostedApi {
   private readonly controlUrl: string;
   private control: { at: number; outcome: Promise<FollowUp> } | null = null;
   private controlReached = false;
+  private readonly expired = new WeakSet<FailureRecord>();
   private readonly diagnosing = new WeakMap<FailureRecord, Promise<void>>();
 
   constructor(readonly target: HostedTarget, private readonly token: string, private readonly timeoutMs = 20_000,
@@ -143,7 +144,7 @@ export class HostedApi {
     const retry = this.controlFetcher !== null && input.method === "GET" && !aborted ? followUp(fetcher, input.url, this.headers(undefined), RETRY_TIMEOUT_MS) : null;
     const task = Promise.all([this.controlProbe(), retry]).then(([control, retried]) => {
       Object.assign(failure, { control, retry: retried, controlReachedThisRun: this.controlReached });
-      Object.assign(failure, classifyFailure(failure), { state: "settled" });
+      if (!this.expired.has(failure)) Object.assign(failure, classifyFailure(failure), { state: "settled" });
     });
     this.diagnosing.set(failure, task);
     return failure;
@@ -156,7 +157,9 @@ export class HostedApi {
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([Promise.all(waits), new Promise<void>(resolve => { timer = setTimeout(resolve, deadlineMs); })]);
     clearTimeout(timer);
-    return targets.filter(failure => failure.state === "pending").length;
+    const unfinished = targets.filter(failure => failure.state === "pending");
+    for (const failure of unfinished) this.expired.add(failure);
+    return unfinished.length;
   }
 
   diagnosed(failure: FailureRecord | undefined): Promise<void> {

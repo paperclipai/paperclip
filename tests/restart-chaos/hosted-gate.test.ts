@@ -215,7 +215,7 @@ describe("hosted grade with the run's task records", () => {
         class: "client", reason: "control failed too", state: "settled" });
       return 0;
     });
-    expect(order).toEqual(["stop", "settle"]);
+    expect(order.slice(0, 2)).toEqual(["stop", "settle"]);
     expect(stale.markdown).toContain("- pass health probes: 1 of 4 failed (0 server-side, 0 unclassified, 1 client-side, informational)");
     expect(stale.markdown).toContain("- pass swap shape: no stop-then-start release");
     Object.assign(failure, { class: "unclassified", reason: "diagnosis pending", state: "pending" });

@@ -10,6 +10,7 @@ export const CONTROL_URL = "https://www.cloudflare.com/cdn-cgi/trace";
 export const CONTROL_TIMEOUT_MS = 5_000;
 export const STALL_MS = 1_000;
 export const BODY_EXCERPT_BYTES = 512;
+export const ERROR_BODY_READ_BYTES = 64 * 1024;
 export const RETRY_TIMEOUT_MS = 2_000;
 export const EVIDENCE_HEADERS = ["x-paperclip-status", "retry-after", "server", "via", "x-railway-request-id", "x-railway-edge", "cf-ray", "date", "content-type",
   "cache-control", "connection"] as const;
@@ -88,7 +89,8 @@ export function answerEvidence(status: number, headers: Headers, text: string): 
     else if (body.error && typeof body.error === "object") error = JSON.stringify(body.error).slice(0, 200);
     if (body.statusPage?.code !== undefined && body.statusPage.code !== null) statusPageCode = String(body.statusPage.code);
   } catch {
-    return { status, headers: kept, bodyExcerpt, error, statusPageCode };
+    error = /"error"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text)?.[1] ?? null;
+    statusPageCode = /"statusPage"\s*:\s*\{[^{}]*?"code"\s*:\s*"?([^",}\s]+)/.exec(text)?.[1] ?? null;
   }
   return { status, headers: kept, bodyExcerpt, error, statusPageCode };
 }
@@ -238,7 +240,7 @@ function freshHop(url: URL, init: RequestInit, headers: Record<string, string>, 
       info.ttfbMs = since();
       answered = { response, chunks: [] };
       const status = response.statusCode ?? 0;
-      const limit = status >= 200 && status < 300 ? Number.POSITIVE_INFINITY : BODY_EXCERPT_BYTES;
+      const limit = status >= 200 && status < 300 ? Number.POSITIVE_INFINITY : ERROR_BODY_READ_BYTES;
       let kept = 0;
       const complete = () => finish(() => resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(answered!.chunks),
         { status, statusText: response.statusMessage, headers: answerHeaders(response.headers) })));

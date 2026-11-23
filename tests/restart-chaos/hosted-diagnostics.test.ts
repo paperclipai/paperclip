@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HealthProbe, HostedApi } from "./hosted-api.js";
 import {
-  classifyFailure, connections, failureLines, followUp, freshConnectionFetch, newRequestId, REQUEST_ID_HEADER, summarizeFailures, type ClientClock, type FailureDiagnosis,
+  answerEvidence, classifyFailure, connections, failureLines, followUp, freshConnectionFetch, newRequestId, REQUEST_ID_HEADER, summarizeFailures, type ClientClock, type FailureDiagnosis,
 } from "./hosted-diagnostics.js";
 import { hostedGate } from "./hosted-gate.js";
 import { hostedTarget } from "./hosted-guard.js";
@@ -218,6 +218,23 @@ describe("hosted request failure recording", () => {
     expect(gate.pass).toBe(false);
   });
 
+  it("keeps a diagnosis that missed the grade's deadline pending when its evidence arrives later", async () => {
+    let release: (response: Response) => void = () => {};
+    const api = new HostedApi(target, "t", 1_000, (async () => { throw resetError(); }) as unknown as typeof fetch,
+      { control: (() => new Promise<Response>(resolve => { release = resolve; })) as unknown as typeof fetch });
+    const health = await api.health();
+    expect(await api.settleDiagnostics([health.failure], 10)).toBe(1);
+    release(new Response("ok", { status: 200 }));
+    await api.diagnosed(health.failure);
+    expect(health.failure).toMatchObject({ state: "pending", control: { ok: true } });
+    expect(summarizeFailures([health]).unclassified).toBe(1);
+  });
+
+  it("reads the error and statusPage code from a truncated JSON body", () => {
+    const truncated = `{"error":"Workspace is waking up","statusPage":{"code":"idle_sweep","title":"x"},"padding":"${"x".repeat(100)}`;
+    expect(answerEvidence(503, new Headers(), truncated)).toMatchObject({ error: "Workspace is waking up", statusPageCode: "idle_sweep" });
+  });
+
   it("skips the same-URL retry after a timeout", async () => {
     let calls = 0;
     const api = new HostedApi(target, "t", 1_000, (async () => { calls += 1; throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); }) as unknown as typeof fetch,
@@ -328,11 +345,18 @@ describe("connection evidence", () => {
       answer: { status: 503, headers: { "x-paperclip-status": "draining" }, bodyExcerpt: "{\"error\":\"draining\"" } });
   });
 
-  it("keeps at most 512 bytes of a non-2xx body on a fresh connection", async () => {
-    const { url } = await listen((_request, response) => { response.writeHead(503); response.end("x".repeat(100_000)); });
+  it("stops reading a large non-2xx body and still keeps its parsed error and statusPage code", async () => {
+    const { url } = await listen((_request, response) => {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "Workspace is waking up", statusPage: { code: "idle_sweep" }, padding: "x".repeat(500_000) }));
+    });
     const answer = await freshConnectionFetch(url);
     expect(answer.status).toBe(503);
-    expect((await answer.text()).length).toBe(512);
+    const text = await answer.text();
+    expect(text.length).toBe(64 * 1024);
+    const evidence = answerEvidence(503, answer.headers, text);
+    expect(evidence).toMatchObject({ error: "Workspace is waking up", statusPageCode: "idle_sweep" });
+    expect(Buffer.byteLength(evidence.bodyExcerpt)).toBe(512);
   });
 
   it("reports a reset on a fresh connection with the socket's addresses and byte counts", async () => {

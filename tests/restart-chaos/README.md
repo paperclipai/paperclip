@@ -317,7 +317,7 @@ new or reused socket (API requests, from undici's diagnostics channels), remote 
 connect, TLS and first-byte times where they are cheap to read. Every failed request in `health.jsonl` and
 `requests.jsonl` carries a `failure` object: for an answer, its status, the headers `x-paperclip-status`, `retry-after`,
 `server`, `via`, `x-railway-request-id`, `x-railway-edge`, `cf-ray`, `date`, `content-type`, `cache-control` and
-`connection`, the first 512 bytes of the body (the health client keeps no more than that of a non-2xx body), and the parsed `error` and `statusPage.code`; for an exception, undici's
+`connection`, the first 512 bytes of the body (the health client stops reading a non-2xx body after 64 KiB), and the parsed `error` and `statusPage.code`; for an exception, undici's
 `error.cause` (`code`, `errno`, `syscall`, `hostname`, `address`, `port`, message, and the socket's addresses and byte
 counts for `UND_ERR_SOCKET`). It also records the client clock: how late an abort fired (`timerLagMs`), how far the
 wall clock moved past the monotonic clock, the event loop's longest delay (`monitorEventLoopDelay`), and the pause

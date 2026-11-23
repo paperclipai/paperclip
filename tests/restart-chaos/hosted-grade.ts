@@ -190,7 +190,9 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     result: hostedR1({ record: task, view: views.get(task.issueId!), runs: runsByIssue.get(task.issueId!) ?? [], queueWait: slotProof.queueWait, outages }) }));
   const gate = hostedGate({ handsOffPass, wantedReleases: input.wantedReleases, slotEvidenceMissing: slotProof.missing, createErrors: planned.filter(task => task.createError).length, r1, bannersShown: handsOff.bannerShown, health, healthClasses, duplicates, releases, metrics });
   const releaseSpans = releases.map(release => ({ from: release.lastOldOnlyAt, to: Math.max(release.firstNewAt, release.lastOldAt) + 60_000 }));
-  const records = input.requests?.() ?? [];
+  const records = [...input.requests?.() ?? []];
+  const unfinishedRequests = input.settleDiagnostics ? await input.settleDiagnostics(records.map(entry => entry.failure)) : 0;
+  if (unfinishedRequests) input.record("hosted_request_diagnoses_unfinished", { count: unfinishedRequests });
   const breakdown = { api: requestBreakdown(records.filter(record => record.kind === "api"), releaseSpans),
     health: requestBreakdown(records.filter(record => record.kind === "health"), releaseSpans) };
   const breakdownLine = (name: string, value: typeof breakdown.api) => `${name} failures by status: ${Object.entries(value.byStatus).map(([status, count]) => `${status} ${count}`).join(", ") || "none"}; `
