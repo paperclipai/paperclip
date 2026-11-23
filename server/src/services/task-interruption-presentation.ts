@@ -1,4 +1,4 @@
-import { localAcpxRunnerCompatibility, RUNNER_ACPX_PROFILE_INCOMPATIBLE,
+import { currentRunnerCompatibilityAgent, localAcpxRunnerCompatibility, RUNNER_ACPX_PROFILE_INCOMPATIBLE,
   savedRunnerCompatibilityAgent } from "./native-runtime/native-runner-profile-compatibility.js";
 import { ENVIRONMENT_PROVIDER_WAIT_KEY, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON, environmentProviderWaitMessage } from "./environment-provider-wait.js";
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
@@ -699,8 +699,19 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     ? await (await import("./fresh-continuation-fallback.js")).runsAwaitingSystemContinuation(db, companyId,
       unfinished.map(run => run.issueId), unfinished.map(run => run.id))
     : new Set<string>();
+  // Judge the provider a fresh run would use, as the continuation fallback does.
+  const compatibilityAgentIds = [...new Set(runs.filter(run => run.errorCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE && run.agentId)
+    .map(run => run.agentId!))];
+  const compatibilityConfigs = new Map(compatibilityAgentIds.length
+    ? (await db.select({ id: agents.id, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents)
+      .where(and(eq(agents.companyId, companyId), inArray(agents.id, compatibilityAgentIds)))).map(row => [row.id, row] as const)
+    : []);
   const compatibleRunners = new Map(await Promise.all(runs.flatMap(run => {
-    const agent = run.errorCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE ? savedRunnerCompatibilityAgent(run.resultJson) : null;
+    if (run.errorCode !== RUNNER_ACPX_PROFILE_INCOMPATIBLE) return [];
+    const requirement = currentRunnerCompatibilityAgent(run.agentId ? compatibilityConfigs.get(run.agentId) : undefined,
+      savedRunnerCompatibilityAgent(run.resultJson));
+    if (!requirement.required) return [Promise.resolve([run.id, true] as const)];
+    const agent = requirement.agent;
     return agent ? [localAcpxRunnerCompatibility(agent).then(status => [run.id, status === "compatible"] as const)] : [];
   })));
   const freshContinuationFor = (issueId: string, runId: string | undefined): ProjectionState["freshContinuation"] => {

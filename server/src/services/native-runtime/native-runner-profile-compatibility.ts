@@ -52,6 +52,25 @@ export function savedRunnerCompatibilityAgent(result: unknown): NativeAcpxAgent 
     ? agent as NativeAcpxAgent : null;
 }
 
+/**
+ * The local ACPX profile a fresh run of this agent would need, from the agent's
+ * current configuration. An operator who moved the agent to another provider or
+ * off the Paperclip Runner no longer waits for the failed run's profile. The
+ * saved profile applies only when the configuration does not name a provider.
+ */
+export function currentRunnerCompatibilityAgent(
+  agent: { adapterType: string; adapterConfig: unknown } | undefined,
+  saved: NativeAcpxAgent | null,
+): { required: false } | { required: true; agent: NativeAcpxAgent | null } {
+  if (!agent) return { required: true, agent: saved };
+  if (agent.adapterType !== "paperclip_runner") return { required: false };
+  const config = object(agent.adapterConfig);
+  if (config.provider === undefined) return { required: true, agent: saved };
+  if (config.provider !== "acpx") return { required: false };
+  return typeof config.acpxAgent === "string" && Object.hasOwn(ACPX_RELEASE_PROFILE_DIGESTS, config.acpxAgent)
+    ? { required: true, agent: config.acpxAgent as NativeAcpxAgent } : { required: true, agent: null };
+}
+
 export function isLegacyRunnerAcpxProfileRefusal(error: unknown): boolean {
   if (!(error instanceof Error) || !error.message.startsWith("PRP command run.prepare failed:")) return false;
   const command = object(object(error).runnerCommandResult);

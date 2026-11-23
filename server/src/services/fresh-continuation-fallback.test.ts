@@ -270,6 +270,38 @@ suite("fresh-continuation fallback", () => {
       }
     }, 60_000);
 
+  it.skipIf(process.platform === "win32")(
+    "continues under the agent's corrected provider instead of the failed run's incompatible one", async () => {
+      const code = RUNNER_ACPX_PROFILE_INCOMPATIBLE;
+      const f = await unfinishedRun({ runtime: "native", errorCode: code });
+      await db.update(heartbeatRuns).set({ resultJson: { runnerCompatibility: { acpxAgent: "codex" } } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      await db.update(issueRecoveryActions).set({ cause: code }).where(eq(issueRecoveryActions.id, f.actionId!));
+      const root = await mkdtemp(join(tmpdir(), "paperclip-runner-profile-"));
+      const binary = join(root, "runnerd");
+      const savedBinary = process.env.PAPERCLIP_RUNNER_BINARY;
+      // This Runner qualifies Claude but not the failed run's Codex profile.
+      const metadata = JSON.stringify({ schema: "paperclip-runner/runnerd-build-metadata/v1",
+        acpxReleaseProfileDigests: { claude: ACPX_RELEASE_PROFILE_DIGESTS.claude } });
+      await writeFile(binary, `#!/bin/sh\n[ "$1" = --build-metadata ] || exit 17\nprintf '%s\\n' '${metadata}'\n`, { mode: 0o700 });
+      try {
+        process.env.PAPERCLIP_RUNNER_BINARY = binary;
+        await settleUnrecoverableExecutions(db);
+        expect((await evidenceOf(f.actionId!)).evidence.freshContinuationCheck)
+          .toMatchObject({ kind: "backoff", reason: code });
+        expect(await successors(f.runId)).toHaveLength(0);
+        await db.update(agents).set({ adapterConfig: { provider: "acpx", acpxAgent: "claude" } }).where(eq(agents.id, agentId));
+        expect(await taskInterruptionPresentation(db, await issue(f.issueId))).toMatchObject({ canRetry: true });
+        await makeDue(f.actionId!);
+        await settleUnrecoverableExecutions(db);
+        await expectOneFreshSuccessor(f);
+      } finally {
+        if (savedBinary === undefined) delete process.env.PAPERCLIP_RUNNER_BINARY;
+        else process.env.PAPERCLIP_RUNNER_BINARY = savedBinary;
+        await rm(root, { recursive: true, force: true });
+      }
+    }, 60_000);
+
   it("falls back for a failure code nobody has classified yet", async () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "runner_new_failure_added_next_week" });
     await settleUnrecoverableExecutions(db);

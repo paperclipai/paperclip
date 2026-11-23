@@ -31,8 +31,8 @@ import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isPersonOwnedFailureCode } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
-import { localAcpxRunnerCompatibility, RUNNER_ACPX_PROFILE_INCOMPATIBLE, RUNNER_COMPATIBILITY_RECHECK_MS,
-  savedRunnerCompatibilityAgent } from "./native-runtime/native-runner-profile-compatibility.js";
+import { currentRunnerCompatibilityAgent, localAcpxRunnerCompatibility, RUNNER_ACPX_PROFILE_INCOMPATIBLE,
+  RUNNER_COMPATIBILITY_RECHECK_MS, savedRunnerCompatibilityAgent } from "./native-runtime/native-runner-profile-compatibility.js";
 import { BACKLOG_CONTINUATION_MAX_AGE_MS, failureOwnsBlock, heldExecutionWhere, heldRunIdSql, interruptionEligibility,
   liveDispositionHoldSql, recentInterruptionSourceSql, sourceRunKey } from "./fresh-continuation-eligibility.js";
 
@@ -590,8 +590,14 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const aliveWait = writer === "alive" ? pending("previous_process_running", new Date(now.getTime() + step)) : null;
   if (aliveWait) return aliveWait;
   const runnerCompatibility = run.errorCode === RUNNER_ACPX_PROFILE_INCOMPATIBLE;
-  const compatibilityAgent = runnerCompatibility ? savedRunnerCompatibilityAgent(run.resultJson) : null;
-  if (runnerCompatibility && (!compatibilityAgent || await localAcpxRunnerCompatibility(compatibilityAgent) !== "compatible")) {
+  // Check the provider the fresh run would use, not the failed run's saved one.
+  const compatibilityRequirement = runnerCompatibility
+    ? currentRunnerCompatibilityAgent((await tx.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+      .from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId))))[0],
+    savedRunnerCompatibilityAgent(run.resultJson))
+    : { required: false as const };
+  if (compatibilityRequirement.required && (!compatibilityRequirement.agent
+    || await localAcpxRunnerCompatibility(compatibilityRequirement.agent) !== "compatible")) {
     return { kind: "backoff", reason: RUNNER_ACPX_PROFILE_INCOMPATIBLE,
       retryAt: new Date(now.getTime() + RUNNER_COMPATIBILITY_RECHECK_MS) };
   }
