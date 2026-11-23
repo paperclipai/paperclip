@@ -10,7 +10,46 @@ export function shouldUseBundledAcpxImageAssets(input: {
 }): boolean {
   return input.requiresRemoteProviderPack && !input.configuredProviderPackRoot &&
     input.provider.kind === "acpx" &&
-    ["cursor", "copilot", "kimi"].includes(input.provider.agent);
+    ["cursor", "copilot", "kimi", "antigravity"].includes(input.provider.agent);
+}
+
+/**
+ * The patched Antigravity closure (never the vendor closure) this server
+ * release admits per platform: exactly the `verified-closure` platforms'
+ * `closureSha256` in packages/paperclip-runner/antigravity-distributions.json,
+ * which a test keeps equal. Linux appears here when the Linux runtime is
+ * pinned; until then no Antigravity image pack verifies.
+ */
+export const ANTIGRAVITY_PATCHED_CLOSURE_SHA256: Readonly<Record<string, string>> = Object.freeze({
+  "darwin-arm64": "044792d793e203bc8b4524a418f1816c4d34db67bb41fa4bae5947a050c49b4a",
+});
+
+export type ProviderPackEntry = { version: string; profileDigest: string; closureDigest: string };
+
+/**
+ * The image pack contract for Antigravity. While the profile is pending the
+ * entry lives only under `candidateProviders`; after the flip only under
+ * `providers`. It targets Linux x64 and pins this release's profile and the
+ * patched closure. Returns null when admitted, else a refusal reason.
+ */
+export function antigravityProviderPackEntryRefusal(input: {
+  inventory: "providers" | "candidateProviders";
+  target: { platform: string; architecture: string };
+  inBoth: boolean;
+  entry: ProviderPackEntry;
+  releasePending: boolean;
+  profile: { agentServerVersion: string; commandDigest: string };
+  patchedClosures?: Readonly<Record<string, string>>;
+}): string | null {
+  const expectedInventory = input.releasePending ? "candidateProviders" : "providers";
+  if (input.inventory !== expectedInventory || input.inBoth) return "Antigravity is listed under the wrong pack inventory";
+  if (input.target.platform !== "linux" || input.target.architecture !== "x64") return "Antigravity pack target must be linux-x64";
+  const closure = (input.patchedClosures ?? ANTIGRAVITY_PATCHED_CLOSURE_SHA256)["linux-x64"];
+  if (!closure || input.entry.closureDigest !== `sha256:${closure}`) return "Antigravity closure is not this release's patched closure";
+  if (input.entry.version !== input.profile.agentServerVersion || input.entry.profileDigest !== input.profile.commandDigest) {
+    return "Antigravity profile does not match this release";
+  }
+  return null;
 }
 
 /** A run may adopt a same-content pack from another build only when no saved or operator-selected identity binds it. */

@@ -142,7 +142,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -14398,8 +14398,10 @@ const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
   opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs",
   acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
 } as const;
-const REMOTE_PROVIDER_PACK_PROVIDERS = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending" ? ["kimi"] as const : [])] as const;
-const REMOTE_PROVIDER_PACK_CANDIDATES = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? ["kimi"] as const : [])] as const;
+// Antigravity may appear in either inventory; its release state, read at
+// verification time, admits exactly one (antigravityProviderPackEntryRefusal).
+const REMOTE_PROVIDER_PACK_PROVIDERS = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending" ? ["kimi"] as const : []), "antigravity"] as const;
+const REMOTE_PROVIDER_PACK_CANDIDATES = ["pi", "cursor", "copilot", ...(QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending" ? ["kimi"] as const : []), "antigravity"] as const;
 
 type RemoteProviderPackManifest = {
   schema: typeof REMOTE_PROVIDER_PACK_SCHEMA;
@@ -14642,7 +14644,8 @@ function* providerPackIdentityChecks(
       const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
       if (!allowedProviders.includes(provider) || !candidate
         || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
-        || candidate.qualification !== (["pi", "cursor"].includes(provider) || inventory === "providers" && (provider === "copilot" || provider === "kimi" && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending") ? "qualified" : "pending") || candidate.path !== expectedPath
+        || candidate.qualification !== (["pi", "cursor"].includes(provider) || inventory === "providers" && (provider === "copilot" || provider === "kimi" && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending"
+          || provider === "antigravity" && !antigravityReleasePending()) ? "qualified" : "pending") || candidate.path !== expectedPath
         || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
         || !/^sha256:[a-f0-9]{64}$/.test(candidate.profileDigest)
         || !/^sha256:[a-f0-9]{64}$/.test(candidate.closureDigest)
@@ -14684,6 +14687,13 @@ function* providerPackIdentityChecks(
           || candidate.closureDigest !== `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`) {
           throw new Error("runner_remote_provider_artifact_incompatible: Kimi profile or closure does not match this release");
         }
+      }
+      if (provider === "antigravity") {
+        const refusal = antigravityProviderPackEntryRefusal({ inventory, target: payload.target, entry: candidate,
+          inBoth: Boolean(payload.providers?.antigravity && payload.candidateProviders?.antigravity),
+          releasePending: antigravityReleasePending(), profile: QUALIFIED_ACPX_PROFILES.antigravity,
+          patchedClosures: ANTIGRAVITY_PATCHED_CLOSURE_SHA256 });
+        if (refusal) throw new Error(`runner_remote_provider_artifact_incompatible: ${refusal}`);
       }
       if (verifyControllerFiles && (yield { kind: "tree", path: resolve(packRoot, candidatePath) }) !== candidate.sha256) {
         throw new Error("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
