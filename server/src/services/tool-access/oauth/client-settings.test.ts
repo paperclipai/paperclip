@@ -72,20 +72,28 @@ describe("instance OAuth clients", () => {
     expect(client.clientSecret).toBeNull();
   });
 
-  it("uses a host-named instance client only at that same host for a custom server", () => {
+  it("never gives a custom server a host-named instance client, even at that host", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MCP_EXAMPLE_TEST_CLIENT_ID", "instance-host-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_MCP_EXAMPLE_TEST_CLIENT_SECRET", "instance-host-secret");
 
-    expect(configuredOAuthClientForConnection(generic(), "mcp_example_test", "https://mcp.example.test/oauth/token")).toMatchObject({
-      clientId: "instance-host-id",
-      clientSecret: "instance-host-secret",
-    });
-    expect(configuredOAuthClientForConnection(generic(), "mcp_example_test", "https://attacker.example/token").clientId).toBeNull();
-    expect(configuredOAuthClientForConnection(
-      generic({ provider: "mcp_example_test" }),
-      "mcp_example_test",
-      "https://auth.example.test/token",
-    ).clientId).toBeNull();
+    expect(configuredOAuthClientForConnection(generic(), "mcp_example_test", "https://mcp.example.test/oauth/token").clientId).toBeNull();
+    const lookalike = connection({ url: "https://mcp-example.test/mcp", oauth: {} });
+    expect(configuredOAuthClientForConnection(lookalike, "mcp_example_test", "https://mcp-example.test/oauth/token").clientId).toBeNull();
+  });
+
+  it.each(["", " ", " slack"])("never treats the gallery marker %j as an app definition", (marker) => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "instance-generic-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "instance-generic-secret");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "instance-slack-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "instance-slack-secret");
+    const marked = connection({ sourceTemplateKey: marker, url: "https://attacker.example/mcp", oauth: {} });
+
+    for (const provider of [marker, "slack", "attacker_example"]) {
+      const client = configuredOAuthClientForConnection(marked, provider, "https://attacker.example/token");
+      expect(client.clientId).toBeNull();
+      expect(client.clientSecret).toBeNull();
+    }
+    expect(configuredOAuthClientForConnection(marked, "slack", "https://slack.com/api/oauth.v2.access").clientId).toBeNull();
   });
 
   it("never uses one app's instance client for a connection that claims another provider", () => {

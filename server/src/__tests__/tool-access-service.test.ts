@@ -12017,14 +12017,6 @@ describeEmbeddedPostgres("tool access service", () => {
   // records discovery's universe as its scope set, a later refresh compares the provider's
   // response against the wider list and an asserted extra scope stops looking unrequested.
   it("keeps the narrowed request as the refresh baseline for a generic MCP connection", async () => {
-    vi.stubEnv(
-      "PAPERCLIP_TOOL_OAUTH_NARROW_EXAMPLE_TEST_CLIENT_ID",
-      "narrow-client-id",
-    );
-    vi.stubEnv(
-      "PAPERCLIP_TOOL_OAUTH_NARROW_EXAMPLE_TEST_CLIENT_SECRET",
-      "narrow-client-secret",
-    );
     const company = await createCompany(db);
     const userId = `narrow-scope-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -12084,13 +12076,13 @@ describeEmbeddedPostgres("tool access service", () => {
       throw new Error(`unexpected fetch ${href}`);
     });
 
-    const connection = await service.createConnection(company.id, connectionInput({
+    const connected = await service.connectGalleryApp(company.id, {
+      link: "https://narrow.example.test/mcp",
       name: `Narrow generic ${randomUUID()}`,
-      transport: "mcp_remote",
-      config: { url: "https://narrow.example.test/mcp" },
-      enabled: true,
-      status: "active",
-    }));
+      authMode: "oauth",
+      oauthClient: { clientId: "narrow-client-id", clientSecret: "narrow-client-secret" },
+    });
+    const connection = { id: connected.connectionId };
     const started = await service.startOAuth(company.id, connection.id, {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: userId },
@@ -15247,9 +15239,11 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("uses OAuth client credentials for shared machine-to-machine MCP connections", async () => {
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_EXAMPLE_TEST_CLIENT_ID", "m2m-client-id");
-    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_EXAMPLE_TEST_CLIENT_SECRET", "m2m-client-secret");
+  it("never sends a deployment OAuth client to a machine-to-machine token endpoint of a custom server", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_ID", "m2m-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_M2M_CLIENT_SECRET", "m2m-client-secret");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "generic-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "generic-client-secret");
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const connection = await service.createConnection(company.id, connectionInput({
@@ -15258,7 +15252,7 @@ describeEmbeddedPostgres("tool access service", () => {
       config: {
         url: "https://m2m.example.test/mcp",
         oauth: {
-          provider: "m2m_example_test",
+          provider: "m2m",
           tokenUrl: "https://m2m.example.test/oauth/token",
           grantType: "client_credentials",
           scopes: ["tools.read"],
@@ -15267,63 +15261,22 @@ describeEmbeddedPostgres("tool access service", () => {
       enabled: true,
       status: "active",
     }));
+    const sentSecrets: string[] = [];
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url, init) => {
-        const href = String(url);
-        if (href === "https://m2m.example.test/oauth/token") {
-          const body = init?.body as URLSearchParams;
-          expect(body.get("grant_type")).toBe("client_credentials");
-          expect(body.get("client_id")).toBe("m2m-client-id");
-          expect(body.get("client_secret")).toBe("m2m-client-secret");
-          expect(body.get("scope")).toBe("tools.read");
-          return {
-            ok: true,
-            json: async () => ({
-              access_token: "m2m-access-token",
-              expires_in: 3600,
-              token_type: "Bearer",
-            }),
-          } as Response;
-        }
-        if (href === "https://m2m.example.test/mcp") {
-          expect(init?.headers).toEqual(
-            expect.objectContaining({
-              Authorization: "Bearer m2m-access-token",
-            }),
-          );
-          return mcpHttpResponse(catalogResponse([
-                { name: "machine_read", annotations: { readOnlyHint: true } },
-              ]));
-        }
-        throw new Error(`unexpected fetch ${href}`);
+        const body = init?.body instanceof URLSearchParams ? init.body : null;
+        if (body?.get("client_secret")) sentSecrets.push(body.get("client_secret")!);
+        throw new Error(`unexpected fetch ${String(url)}`);
       });
 
-    const health = await service.checkHealth(connection.id, {
+    await service.checkHealth(connection.id, {
       actorType: "system",
       actorId: "health-check",
-    });
-    expect(health.connection.healthStatus).toBe("ok");
-    // Token request, the one-time MCP version probe, and the catalog listing.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const [updated] = await db
-      .select()
-      .from(toolConnections)
-      .where(eq(toolConnections.id, connection.id));
-    expect(updated.credentialSecretRefs).toEqual([
-      expect.objectContaining({
-        configPath: "oauth.access_token",
-        label: "OAuth access token",
-      }),
-    ]);
-    expect(updated.credentialRefs).toEqual([
-      expect.objectContaining({
-        name: "oauth.access_token",
-        key: "Authorization",
-        prefix: "Bearer ",
-      }),
-    ]);
-    expect(JSON.stringify(updated.config)).not.toContain("m2m-access-token");
+    }).catch(() => null);
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain("https://m2m.example.test/oauth/token");
+    expect(sentSecrets).toEqual([]);
   });
 
   it.each(["catalog", "catalog/refresh", "health-check"])("returns reconnect instructions on %s for expired OAuth without a refresh token", async (path) => {
@@ -17248,14 +17201,6 @@ describeEmbeddedPostgres("tool access service", () => {
   );
 
   it("discovers OAuth for pasted MCP links and completes sign-in without a gallery entry", async () => {
-    vi.stubEnv(
-      "PAPERCLIP_TOOL_OAUTH_GENERIC_EXAMPLE_TEST_CLIENT_ID",
-      "generic-client-id",
-    );
-    vi.stubEnv(
-      "PAPERCLIP_TOOL_OAUTH_GENERIC_EXAMPLE_TEST_CLIENT_SECRET",
-      "generic-client-secret",
-    );
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
     await grantBoardUser(db, company.id, "board-user", [
@@ -17318,6 +17263,8 @@ describeEmbeddedPostgres("tool access service", () => {
       .send({
         link: "https://generic.example.test/mcp",
         name: "Generic OAuth MCP",
+        authMode: "oauth",
+        oauthClient: { clientId: "generic-client-id", clientSecret: "generic-client-secret" },
       });
 
     expect(connectRes.status).toBe(201);

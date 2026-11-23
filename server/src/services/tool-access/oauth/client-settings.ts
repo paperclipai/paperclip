@@ -1,6 +1,6 @@
 import type { ActorInfo } from "../types.js";
-import { oauthConfig, oauthProviderForConnection, isSmokeLabOAuthFixture } from "./metadata.js";
-import { connectionMethodForConnection, remoteEndpoint } from "../connection-methods.js";
+import { oauthConfig, isSmokeLabOAuthFixture } from "./metadata.js";
+import { connectionMethodForConnection } from "../connection-methods.js";
 import { stableHash } from "../../tool-catalog-hash.js";
 import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import { connectionGrants, toolConnections } from "@paperclipai/db";
@@ -56,24 +56,10 @@ function instanceClientTokenUrlAllowed(
   provider: string,
   tokenUrl: string | null | undefined,
 ): boolean {
-  const sourceTemplateKey =
-    typeof connection.config.sourceTemplateKey === "string"
-      ? connection.config.sourceTemplateKey.trim()
-      : "";
   const target = httpsUrl(tokenUrl);
   if (!target) return false;
-  if (!sourceTemplateKey) {
-    let server: URL | null;
-    try {
-      server = httpsUrl(remoteEndpoint(connection.config));
-    } catch {
-      server = null;
-    }
-    return Boolean(server)
-      && provider === oauthProviderForConnection({ config: { url: server!.href } })
-      && target.hostname.toLowerCase() === server!.hostname.toLowerCase();
-  }
-  if (provider !== sourceTemplateKey) return false;
+  const sourceTemplateKey = connection.config.sourceTemplateKey;
+  if (typeof sourceTemplateKey !== "string" || !sourceTemplateKey || provider !== sourceTemplateKey) return false;
   const app = getConnectableAppDefinition(sourceTemplateKey);
   if (!app) return false;
   let method: ReturnType<typeof connectionMethodForConnection>;
@@ -108,15 +94,9 @@ export function configuredOAuthClientForConnection(
     };
   }
   const configured = oauthClientConfig(provider);
-  if (!instanceClientTokenUrlAllowed(connection, provider, tokenUrl)) {
-    return { ...configured, clientId: null, clientSecret: null };
-  }
-  if (typeof connection.config.sourceTemplateKey === "string") return configured;
-  return {
-    ...configured,
-    clientId: process.env[configured.clientIdEnv] ?? null,
-    clientSecret: process.env[configured.clientSecretEnv] ?? null,
-  };
+  return instanceClientTokenUrlAllowed(connection, provider, tokenUrl)
+    ? configured
+    : { ...configured, clientId: null, clientSecret: null };
 }
 
 export function credentialScope(
