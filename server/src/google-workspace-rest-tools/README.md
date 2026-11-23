@@ -109,9 +109,10 @@ deployment is ever needed; the gateway does not use it.
 One setting per service, `GOOGLE_WORKSPACE_TOOL_TRANSPORT` in
 `packages/shared/src/google-workspace-connectors.ts`:
 
-- `google_mcp` (every service today): calls go to Google's hosted MCP server
-  for that service, exactly as before this folder existed.
-- `paperclip_rest`: calls go to this folder.
+- `paperclip_rest`: calls go to this folder. Gmail, Drive, Docs, Sheets,
+  Slides and Calendar use it since 2026-11-23.
+- `google_mcp`: calls go to Google's hosted MCP server for that service.
+  Chat, People and Search use it; they are not offered for new setup.
 
 `googleWorkspaceToolTarget(name)` returns the setting as `transport`. It is a
 plain constant: no environment variable, instance setting or database row.
@@ -237,6 +238,12 @@ result and 0.24 ms for a 700 KB one.
 `googleWorkspaceRestTransportGaps()` in the adapter, run by
 `google-workspace-rest-dispatch.test.ts`, fails while any service set to
 `paperclip_rest` is missing an allowlisted tool, so a partial flip cannot ship.
+
+The tool definitions of a `paperclip_rest` service come from this folder, not
+from a remote server, so a catalog refresh does not hold them for review when
+they differ from what Google's MCP server listed before. An existing connection
+keeps its actions active through a switch and gains the actions the MCP server
+did not offer (Gmail `list_threads` and `search_messages`).
 
 ## Known differences from Google's MCP tools
 

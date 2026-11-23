@@ -136,8 +136,8 @@ export type GoogleWorkspaceService = keyof typeof GOOGLE_WORKSPACE_SERVICES;
 export type GoogleWorkspaceToolTransport = "google_mcp" | "paperclip_rest";
 
 export const GOOGLE_WORKSPACE_TOOL_TRANSPORT: Record<GoogleWorkspaceService, GoogleWorkspaceToolTransport> = {
-  gmail: "google_mcp", drive: "google_mcp", docs: "google_mcp", sheets: "google_mcp",
-  slides: "google_mcp", calendar: "google_mcp", chat: "google_mcp",
+  gmail: "paperclip_rest", drive: "paperclip_rest", docs: "paperclip_rest", sheets: "paperclip_rest",
+  slides: "paperclip_rest", calendar: "paperclip_rest", chat: "google_mcp",
   people: "google_mcp", search: "google_mcp",
 };
 

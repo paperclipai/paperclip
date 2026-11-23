@@ -232,8 +232,11 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       const changed =
         existing &&
         (existing.versionHash !== hash || existing.schemaHash !== schemaHash);
+      const paperclipDefined = sourceTemplateKey === "google-workspace"
+        && googleWorkspaceToolTarget(descriptor.name)?.transport === "paperclip_rest";
       const shouldQuarantine =
         quarantineOnRefresh &&
+        !paperclipDefined &&
         (!existing || changed) &&
         existing?.status !== "disabled" &&
         (!safeDefault || riskLevel !== "read" || nativeProvider);
