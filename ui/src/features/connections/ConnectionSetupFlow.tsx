@@ -2498,6 +2498,7 @@ function StandardConnectionSetupFlow({
         defaults={curatedOAuthDefaults}
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
+        cancelling={cancellingSignIn}
         onRetry={async () => {
           if (pendingOAuthLookupRef.current) return;
           directOAuthAccessConfirmedRef.current = true;
@@ -2614,6 +2615,7 @@ function StandardConnectionSetupFlow({
         authorizationUrl={authorizationFallbackUrl}
         defaults={connectionDefaults}
         onOpenAuthorization={openAuthorizationTab}
+        cancelling={cancellingSignIn}
         onRetry={() => {
           setOAuthError(null);
           const connection = connectResult?.connection;
@@ -3059,6 +3061,7 @@ export function OAuthConnectStateScreen({
   defaults,
   onRetry,
   settingsValid = true,
+  cancelling = false,
   onOpenAuthorization,
   onBack,
   onCancel,
@@ -3091,6 +3094,7 @@ export function OAuthConnectStateScreen({
   /** The stated default and its Advanced disclosure (PAP-659 C0). */
   defaults?: ReactNode;
   settingsValid?: boolean;
+  cancelling?: boolean;
   onOpenAuthorization?: () => void;
   onRetry: () => void;
   onBack: () => void;
@@ -3178,7 +3182,7 @@ export function OAuthConnectStateScreen({
 
         <div className="mt-6 flex items-center gap-2">
           {phase === "error" || phase === "entry" ? (
-            <Button type="button" onClick={onRetry} disabled={!settingsValid}>
+            <Button type="button" onClick={onRetry} disabled={!settingsValid || cancelling}>
               {phase === "entry"
                 ? resuming ? `Finish with ${serverName}` : `Continue to ${serverName}`
                 : "Try again"}
@@ -3190,7 +3194,7 @@ export function OAuthConnectStateScreen({
             </Button>
           )}
           {authorizationUrl ? <Button variant="outline" asChild><a href={authorizationUrl} target="_blank" rel="noopener noreferrer" onClick={onOpenAuthorization}>Open sign-in in a new tab</a></Button> : null}
-          <Button type="button" variant="ghost" onClick={onBack}>Back</Button>
+          <Button type="button" variant="ghost" onClick={onBack} disabled={cancelling}>Back</Button>
         </div>
       </div>
     </div>

@@ -2385,7 +2385,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       enabled: false, config: { sourceTemplateKey: "google-workspace", connectionMethodKey: "paperclip-workspace" }, transportConfig: {} };
     connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [],
       auth: { kind: "oauth", startUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=fixture" } });
-    cancelFirstSignInMock.mockRejectedValueOnce(new Error("Network unavailable"))
+    let failCancel!: (error: Error) => void;
+    cancelFirstSignInMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { failCancel = reject; }))
       .mockResolvedValueOnce({ abandoned: true, connection: { ...draft, status: "archived" } });
     await render();
     await act(async () => buttonByText("Continue to sign in")!.click());
@@ -2397,6 +2398,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await act(async () => buttonByText("Cancel")!.click());
     await flushReact();
+    expect(buttonByText("Back")?.disabled).toBe(true);
+    await act(async () => failCancel(new Error("Network unavailable")));
+    await flushReact();
+    expect(buttonByText("Back")?.disabled).toBe(false);
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps");
     expect(container.textContent).toContain("Opening Google Workspace");
     await act(async () => buttonByText("Cancel")!.click());
