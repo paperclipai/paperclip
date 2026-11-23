@@ -29,10 +29,11 @@ describe("task-chat composer styles", () => {
     expect(block).not.toContain("border-radius");
   });
 
-  it("wraps long placeholders within the composer instead of clipping them", () => {
-    const block = cssBlock(
-      '.paperclip-task-chat-composer .paperclip-mdxeditor [class*="_placeholder_"]',
-    );
+  it.each([
+    ["the task-chat composer", ".paperclip-task-chat-composer"],
+    ["the routine instructions editor", ".paperclip-routine-instructions"],
+  ])("wraps long placeholders within %s instead of clipping them", (_label, scope) => {
+    const block = cssBlock(`${scope} .paperclip-mdxeditor [class*="_placeholder_"]`);
 
     expect(block).toContain("display: block");
     expect(block).toContain("width: 100%");

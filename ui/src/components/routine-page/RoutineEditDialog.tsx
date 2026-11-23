@@ -80,9 +80,12 @@ export type RoutineEditDialogProps = {
   /** Webhooks removed while this form is open, offered back with Undo. */
   removedWebhooks?: readonly RoutineTrigger[];
   onRestoreWebhook?: (trigger: RoutineTrigger) => void;
+  initialFocus?: RoutineEditFocus;
   /** The webhook dialog, rendered inside this one so both stay open together. */
   children?: ReactNode;
 };
+
+export type RoutineEditFocus = "instructions";
 
 const SCHEDULE_TIMEZONES = ["America/Los_Angeles", "America/Chicago", "America/New_York", "Europe/London", "UTC"];
 
@@ -117,6 +120,7 @@ export function RoutineEditDialog({
   onRemoveWebhook,
   removedWebhooks = [],
   onRestoreWebhook,
+  initialFocus,
   children,
 }: RoutineEditDialogProps) {
   const [draft, setDraft] = useState(initial);
@@ -127,6 +131,7 @@ export function RoutineEditDialog({
   const secretsRef = useRef<EnvironmentVariablesEditorHandle>(null);
   /** Secrets rows being typed that the secrets editor has not promoted into the draft yet. */
   const [secretsDirty, setSecretsDirty] = useState(false);
+  const [webhookIdsAtOpen, setWebhookIdsAtOpen] = useState(() => webhooks.map((trigger) => trigger.id).join(","));
   const titleId = useId();
 
   useEffect(() => {
@@ -135,6 +140,7 @@ export function RoutineEditDialog({
     setSecretsOpen(Object.keys(initial.env ?? {}).length > 0);
     setConfirmingDiscard(false);
     setSecretsDirty(false);
+    setWebhookIdsAtOpen(webhooks.map((trigger) => trigger.id).join(","));
   }, [initial, open]);
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(initial), [draft, initial]) || secretsDirty;
@@ -151,6 +157,8 @@ export function RoutineEditDialog({
         (responsibility) => responsibility.id !== draft.responsibilityId && responsibility.projectIds?.includes(draft.projectId),
       ) ?? null
     : null;
+  const webhooksChanged = webhooks.map((trigger) => trigger.id).join(",") !== webhookIdsAtOpen || removedWebhooks.length > 0;
+  const savedAlready = mode === "edit" && !dirty && webhooksChanged && !saving;
   const canSave = draft.title.trim().length > 0 && scheduleValid && !saving && !saveConflict && (mode === "create" || dirty);
 
   /** Saves the draft, including secrets rows still being typed. */
@@ -183,7 +191,14 @@ export function RoutineEditDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : requestClose())}>
-      <DialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+      <DialogContent
+        className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl"
+        onOpenAutoFocus={(event) => {
+          if (initialFocus !== "instructions") return;
+          event.preventDefault();
+          editorRef.current?.focus();
+        }}
+      >
         <DialogHeader className="px-6 pb-4 pt-6">
           <DialogTitle>{mode === "create" ? "New routine" : "Edit routine"}</DialogTitle>
           <DialogDescription className="sr-only">
@@ -214,7 +229,7 @@ export function RoutineEditDialog({
             <Label>Instructions</Label>
             {/* The frame owns the border and the drag handle; the editor scrolls inside it. */}
             <div
-              className="h-48 min-h-32 resize-y overflow-y-auto rounded-md border border-border px-3 py-2 focus-within:border-ring"
+              className="paperclip-routine-instructions h-48 min-h-32 resize-y overflow-y-auto rounded-md border border-border px-3 py-2 focus-within:border-ring"
               onClick={(event) => {
                 if (event.target === event.currentTarget) editorRef.current?.focus();
               }}
@@ -498,6 +513,7 @@ export function RoutineEditDialog({
                 hideDraftActions
                 startWithEmptyRow
                 addLabel="Add secret"
+                addButtonVariant="outline"
               />
             ) : (
               <Button type="button" variant="outline" size="sm" className="w-fit" onClick={() => setSecretsOpen(true)}>
@@ -523,6 +539,15 @@ export function RoutineEditDialog({
                 This routine changed while you were editing. Reload to see the latest version.
               </p>
               <Button variant="outline" onClick={onReloadLatest}>Reload latest</Button>
+            </>
+          ) : savedAlready ? (
+            <>
+              {error ? (
+                <p className="min-w-0 flex-1 text-sm text-destructive" role="alert">{error}</p>
+              ) : (
+                <p className="text-sm text-muted-foreground">Webhooks save right away.</p>
+              )}
+              <Button onClick={() => onOpenChange(false)}>Done</Button>
             </>
           ) : (
             <>
