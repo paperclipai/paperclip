@@ -1218,6 +1218,13 @@ jobs:
         if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-acpx-grok' || matrix.profileId == 'runner-acpx-grok-subscription')
         run: sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok
 
+      # Antigravity is not an npm package: provision its checksum-verified,
+      # admission-patched native closure into the runner-owned cache. Daytona
+      # cells use the closure carried by the remote provider pack instead.
+      - name: Provision verified Antigravity runtime
+        if: matrix.environmentId == 'local' && startsWith(matrix.profileId, 'runner-acpx-antigravity')
+        run: node --use-env-proxy packages/paperclip-runner/scripts/provision-antigravity.mjs
+
       - name: Download immutable campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1445,6 +1452,7 @@ jobs:
           XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
           GROK_AUTH_JSON: ${{ matrix.credentialName == 'GROK_AUTH_JSON' && secrets.GROK_AUTH_JSON || '' }}
           COPILOT_GITHUB_TOKEN: ${{ matrix.credentialName == 'COPILOT_GITHUB_TOKEN' && secrets.COPILOT_GITHUB_TOKEN || '' }}
+          GEMINI_API_KEY: ${{ matrix.credentialName == 'GEMINI_API_KEY' && secrets.GEMINI_API_KEY || '' }}
           DAYTONA_API_KEY: ${{ matrix.environmentId == 'daytona' && secrets.DAYTONA_API_KEY || '' }}
           PAPERCLIP_E2E_DAYTONA_IMAGE: ${{ needs.daytona_image.outputs.image }}
           PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack

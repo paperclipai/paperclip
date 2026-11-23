@@ -51,7 +51,7 @@ export async function runNativeActiveStopFlow(input: {
   evidence(name: string, value: unknown): Promise<void>;
 }) {
   const { api, page, fixtures, execution, nonce } = input, provider = execution.profile.qualificationCandidate;
-  if ((provider !== "cursor" && provider !== "copilot") || execution.task.id !== "pending-permission-stop") throw new Error("Unknown native active Stop case");
+  if ((provider !== "cursor" && provider !== "copilot" && provider !== "antigravity") || execution.task.id !== "pending-permission-stop") throw new Error("Unknown native active Stop case");
   const remote = execution.environment.id === "daytona";
   if ((!remote && execution.environment.id !== "local") || (remote && !input.remoteBootstrap)) throw new Error("Active Stop requires an isolated admitted environment");
   const checks: Check[] = []; let issue: Row = {}, runs: Row[] = [], events: Row[] = [];

@@ -75,3 +75,20 @@ describe("default lifecycle for an agent that never chose one", () => {
     expect(resolveHeartbeatNativeLifecyclePolicy({ ...unset, ...change })).toEqual(expected);
   });
 });
+
+describe("Google Antigravity lifecycle", () => {
+  // Like Kimi, Antigravity runs turn by turn: a warm Antigravity owner needs its
+  // own credential-rotation proof first. The policy resolves it instead of the
+  // executor refusing a warm run, in both release states.
+  const antigravity: Input = { ...base, backend: "acpx_runtime", acpxAgent: "antigravity" };
+  it.each<{ name: string; change: Partial<Input> }>([
+    { name: "an explicit warm choice with a plain environment key", change: {} },
+    { name: "an explicit warm choice with a managed API key", change: { managedAiSelected: true, managedAiAttribution: { provider: "google", method: "api_key" } } },
+    { name: "a managed Google sign-in", change: { managedAiSelected: true, managedAiAttribution: { provider: "google", method: "subscription" } } },
+    { name: "an environment that chose warm", change: { agentMode: "per_turn", environmentPolicy: warm } },
+    { name: "a remote sandbox on a reusable lease", change: { agentMode: undefined, localTarget: false, remoteSandboxTarget: { reusableLease: true } } },
+    { name: "a task-owned sandbox", change: { taskOwned: true, environmentPolicy: warm } },
+  ])("runs per-turn for $name", ({ change }) => {
+    expect(resolveHeartbeatNativeLifecyclePolicy({ ...antigravity, ...change })).toEqual(perTurn);
+  });
+});

@@ -210,6 +210,8 @@ export function selectRunnerExecutions(
     if (execution.suite.manualOnly && !options.suites.includes(execution.suite.id) && !options.list) return false;
     const unfilteredList = options.list && options.groups.length + options.suites.length + options.profiles.length
       + options.environments.length + options.cases.length === 0;
+    // An opt-in profile requires its own name; a suite selector alone never adds it.
+    if (execution.profile.explicitOnly && !unfilteredList && !options.profiles.includes(execution.profile.id)) return false;
     const explicitGroup = execution.task.explicitGroup;
     // Naming any of the task's own groups (for example `slow`) also opts in.
     if (explicitGroup && !unfilteredList && !options.groups.some(group => group === explicitGroup || execution.task.groups.includes(group))
