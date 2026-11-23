@@ -122,9 +122,11 @@ export function hostedGate(input: { handsOffPass: boolean; wantedReleases: numbe
   const unloaded = input.metrics.filter(metric => metric.survivors.length === 0).map(metric => metric.index);
   const classes = input.healthClasses;
   const clientSide = classes?.client ?? 0;
-  const healthFailures = classes ? classes.server + classes.unclassified : input.health.failures;
+  const unmatched = classes ? Math.max(0, input.health.failures - classes.failures.length) : 0;
+  const unclassified = classes ? classes.unclassified + unmatched : input.health.failures;
+  const healthFailures = (classes?.server ?? 0) + unclassified;
   const healthDetail = `${input.health.failures} of ${input.health.requests} failed`
-    + (classes ? ` (${classes.server} server-side, ${classes.unclassified} unclassified, ${clientSide} client-side, informational)` : "");
+    + (classes ? ` (${classes.server} server-side, ${unclassified} unclassified, ${clientSide} client-side, informational)` : "");
   const checks: Array<[string, boolean, string]> = [
     ["hands-off", input.handsOffPass, input.handsOffPass ? "every started task done without a person" : "a task did not finish hands-off"],
     ["R1", r1Failed.length === 0, r1Failed.length ? `${r1Failed.length} failed (${r1Failed.slice(0, 3).map(entry => `${entry.identifier ?? "?"}: ${entry.detail}`).join("; ")})`

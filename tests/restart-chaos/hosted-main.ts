@@ -165,12 +165,13 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
     }
     for (const entry of workload.records) if (entry.issueId) state.issueIds.push(entry.issueId);
     timeline.add("hosted_arrivals_ended", { launched: workload.launched, releases: detectReleases(probe.samples).length, interrupted: input.interrupted(), timedOut: Date.now() - started > options.maxWaitMs });
-    await api.settleDiagnostics();
-    const releases = detectReleases(probe.samples, { now: Date.now() });
+    const arrivalSamples = [...probe.samples];
+    await api.settleDiagnostics(arrivalSamples.map(sample => sample.failure));
+    const releases = detectReleases(arrivalSamples, { now: Date.now() });
     if (options.releases > 0 && !releasesReached(releases, options.releases)) timeline.add("hosted_releases_short", { wanted: options.releases, seen: releases.length });
     polling = keepPolling(workload);
     const graded = await gradeHosted({ api, companyId, agentIds: Object.values(state.agents).map(agent => agent!.id), releases,
-      health: () => continuity(probe.samples), healthSamples: () => probe.samples, settleDiagnostics: () => api.settleDiagnostics(), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
+      health: () => continuity(probe.samples), healthSamples: () => probe.samples, settleDiagnostics: failures => api.settleDiagnostics(failures), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
       quietMs: options.quietMs,
       stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records), banners: () => new Map(workload.banners),
       tasks: () => workload.records, wantedReleases: options.releases,

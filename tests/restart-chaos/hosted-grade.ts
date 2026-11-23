@@ -6,8 +6,8 @@ import { requestBreakdown, type HostedApi, type RequestRecord } from "./hosted-a
 import { hostedGate, hostedQueueWait, hostedR1, queuedBehindSlotCap, releaseOutages, slotQueuedRuns, subtaskRecord, type HostedAgentRow } from "./hosted-gate.js";
 import { trackBanner, type HostedTaskRecord, type RetryBanner } from "./hosted-workload.js";
 import { handsOffSummary, invariantLine, readAssignedWorkInvariant } from "./hosted-handsoff.js";
-import { failureLines, summarizeFailures } from "./hosted-diagnostics.js";
-import { releaseMarkdown, type ContinuityReport, type DetectedRelease, type HealthSample } from "./hosted-release.js";
+import { failureLines, summarizeFailures, type FailureRecord } from "./hosted-diagnostics.js";
+import { continuity, releaseMarkdown, type ContinuityReport, type DetectedRelease, type HealthSample } from "./hosted-release.js";
 import {
   duplicateAgentComments, duplicateChildren, failureChain, firstEventAfter, gradeRuns, hostedCompanyRuns, hostedIssues, issueViewFields,
   pendingPersonItems, startedIssues, UNAVAILABLE_OVER_API, type HostedRunRow,
@@ -27,7 +27,7 @@ export interface HostedGradeInput {
   releases: DetectedRelease[];
   health: () => ContinuityReport;
   healthSamples?: () => readonly HealthSample[];
-  settleDiagnostics?: () => Promise<void>;
+  settleDiagnostics?: (failures: ReadonlyArray<FailureRecord | undefined>) => Promise<number>;
   apiContinuity: () => ContinuityReport;
   stopObserver: () => Promise<void>;
   agentNames?: string[];
@@ -170,7 +170,11 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
   const failedRuns = [];
   for (const run of failed) failedRuns.push({ ...run, release: swapForFailedRun(windows, facts.find(fact => fact.runId === run.runId)!),
     chain: await failureChain(api, run.runId) });
-  const health = input.health();
+  const frozen = input.healthSamples ? [...input.healthSamples()] : null;
+  const unfinished = frozen ? await input.settleDiagnostics?.(frozen.map(sample => sample.failure)) ?? 0 : 0;
+  if (unfinished) input.record("hosted_diagnoses_unfinished", { count: unfinished });
+  const health = frozen ? continuity(frozen) : input.health();
+  const healthClasses = frozen ? summarizeFailures(frozen) : undefined;
   const apiContinuity = input.apiContinuity();
   const handsOffPass = result.uncollected === 0 && result.stillRunning === 0 && result.started > 0 && result.completedWithoutHuman === result.started;
   const outages = releaseOutages(input.releases);
@@ -181,8 +185,6 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     identifier: issue.identifier }, clicks.get(issue.id) ?? []));
   const r1 = [...planned.filter(task => task.issueId && started.has(task.issueId)), ...subtasks].map(task => ({ identifier: task.identifier,
     result: hostedR1({ record: task, view: views.get(task.issueId!), runs: runsByIssue.get(task.issueId!) ?? [], queueWait: slotProof.queueWait, outages }) }));
-  await input.settleDiagnostics?.();
-  const healthClasses = summarizeFailures(input.healthSamples?.() ?? []);
   const gate = hostedGate({ handsOffPass, wantedReleases: input.wantedReleases, slotEvidenceMissing: slotProof.missing, createErrors: planned.filter(task => task.createError).length, r1, bannersShown: handsOff.bannerShown, health, healthClasses, duplicates, releases: input.releases, metrics });
   const releaseSpans = input.releases.map(release => ({ from: release.lastOldOnlyAt, to: Math.max(release.firstNewAt, release.lastOldAt) + 60_000 }));
   const records = input.requests?.() ?? [];
@@ -196,7 +198,7 @@ export async function gradeHosted(input: HostedGradeInput): Promise<{ headline: 
     invariantLine(invariant),
     "",
     ...gate.lines,
-    ...failureLines("Health probe failures", healthClasses),
+    ...(healthClasses ? failureLines("Health probe failures", healthClasses) : []),
     ...(notGraded.length ? [`Not graded: ${notGraded.length} task(s) still queued behind a full agent slot cap when the grade read the runs, proven by the agent's slot evidence `
       + `(${notGraded.map(entry => entry.identifier ?? entry.issueId).join(", ")}).`] : []),
     "",

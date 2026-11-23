@@ -14,6 +14,7 @@ import {
 
 export const HOSTED_TOKEN_ENV = "PAPERCLIP_HOSTED_TOKEN";
 export const HEALTH_TIMEOUT_MS = 10_000;
+export const SETTLE_DEADLINE_MS = 30_000;
 const TRANSIENT_STATUSES = new Set([502, 503, 504]);
 export const ANSWERED_REFUSALS: ReadonlySet<number> = new Set([400, 404, 409, 422]);
 
@@ -58,7 +59,6 @@ export class HostedApi {
   private readonly controlFetcher: typeof fetch | null;
   private readonly controlUrl: string;
   private control: { at: number; outcome: Promise<FollowUp> } | null = null;
-  private readonly pending = new Set<Promise<void>>();
   private readonly diagnosing = new WeakMap<FailureRecord, Promise<void>>();
 
   constructor(readonly target: HostedTarget, private readonly token: string, private readonly timeoutMs = 20_000,
@@ -135,14 +135,21 @@ export class HostedApi {
     const task = Promise.all([this.controlProbe(), retry]).then(([control, retried]) => {
       Object.assign(failure, { control, retry: retried });
       Object.assign(failure, classifyFailure(failure));
-    }).finally(() => this.pending.delete(task));
-    this.pending.add(task);
+    });
     this.diagnosing.set(failure, task);
     return failure;
   }
 
-  async settleDiagnostics(): Promise<void> {
-    for (let round = 0; round < 3 && this.pending.size; round += 1) await Promise.all([...this.pending]);
+  async settleDiagnostics(failures?: ReadonlyArray<FailureRecord | undefined>, deadlineMs = SETTLE_DEADLINE_MS): Promise<number> {
+    const targets = failures ? failures.filter((failure): failure is FailureRecord => failure !== undefined && this.diagnosing.has(failure))
+      : [...this.requests.flatMap(record => record.failure && this.diagnosing.has(record.failure) ? [record.failure] : [])];
+    const waits = targets.map(failure => this.diagnosing.get(failure)!);
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([Promise.all(waits), new Promise<void>(resolve => { timer = setTimeout(resolve, deadlineMs); })]);
+    clearTimeout(timer);
+    const unfinished = targets.filter(failure => failure.reason === "diagnosis pending");
+    for (const failure of unfinished) failure.reason = `diagnosis did not finish within ${Math.round(deadlineMs / 1000)} s of the grade`;
+    return unfinished.length;
   }
 
   diagnosed(failure: FailureRecord | undefined): Promise<void> {

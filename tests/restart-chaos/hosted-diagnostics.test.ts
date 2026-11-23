@@ -78,6 +78,15 @@ describe("gate D failure classifier", () => {
     expect(gate.lines).toContain("- FAIL health probes: 1 of 2 failed (0 server-side, 1 unclassified, 0 client-side, informational)");
   });
 
+  it("fails gate D on a failed health report whose samples are missing from the class summary", () => {
+    const failedReport = { ...gateInput([]), health: { requests: 10, failures: 1, slow: 0, longestGapMs: 2_000, longestGap: null } };
+    const withEmptySummary = hostedGate(failedReport);
+    expect(withEmptySummary).toMatchObject({ pass: false, healthFailures: 1 });
+    expect(withEmptySummary.lines).toContain("- FAIL health probes: 1 of 10 failed (0 server-side, 1 unclassified, 0 client-side, informational)");
+    const { healthClasses: _ignored, ...withoutSummary } = failedReport;
+    expect(hostedGate(withoutSummary)).toMatchObject({ pass: false, healthFailures: 1 });
+  });
+
   it("does not call a release stop-then-start for a client-side failure in the swap gap", () => {
     const answer = (at: number, processStartedAt: string): HealthSample => ({ at, ok: true, status: 200, ms: 40, processStartedAt, commit: "c" });
     const withGapFailure = (failure: FailureDiagnosis) => [answer(0, "old"), answer(2_000, "old"), sample(4_000, failure), answer(6_000, "new"), answer(8_000, "new")];
@@ -168,6 +177,17 @@ describe("hosted request failure recording", () => {
     await done;
     expect(health.failure).toMatchObject({ class: "server", control: { ok: true } });
     expect(api.requests[1]!.failure).toMatchObject({ class: "server", control: { ok: true } });
+  });
+
+  it("waits only for the frozen failures, up to a deadline, and leaves an unfinished one unclassified with the reason", async () => {
+    const api = new HostedApi(target, "t", 1_000, (async () => { throw resetError(); }) as unknown as typeof fetch,
+      { control: (() => new Promise<Response>(() => undefined)) as unknown as typeof fetch });
+    const health = await api.health();
+    expect(await api.settleDiagnostics([])).toBe(0);
+    expect(await api.settleDiagnostics([health.failure], 20)).toBe(1);
+    expect(health.failure).toMatchObject({ class: "unclassified", reason: "diagnosis did not finish within 0 s of the grade" });
+    const gate = hostedGate(gateInput([health]));
+    expect(gate.pass).toBe(false);
   });
 
   it("skips the same-URL retry after a timeout", async () => {

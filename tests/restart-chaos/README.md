@@ -324,8 +324,9 @@ wall clock moved past the monotonic clock, the event loop's longest delay (`moni
 before the probe. Right after any failure the harness requests `https://www.cloudflare.com/cdn-cgi/trace` (the control
 probe) and, for a GET that did not time out, retries the same URL once with a 2 s limit, and records both outcomes and
 timings. Neither counts as a request. The failure is recorded at once and this evidence is attached in the background,
-so neither the health probe loop nor the API client's own retries wait for it; the grade waits for it before it
-classifies. A failed probe's line goes into `health.jsonl` when its evidence is complete. The health client follows up to
+so neither the health probe loop nor the API client's own retries wait for it. The grade freezes the health samples it
+grades, waits up to 30 s for their evidence, and keeps any diagnosis that did not finish unclassified with that reason.
+A failed probe that has no class in the summary counts as unclassified. A failed probe's line goes into `health.jsonl` when its evidence is complete. The health client follows up to
 three same-origin redirects. If an answer is cut short, its status, headers and partial body are kept with the error.
 Only the live entry point (`hosted-main.ts`) turns the control probe on; unit tests never reach the network for it.
 
