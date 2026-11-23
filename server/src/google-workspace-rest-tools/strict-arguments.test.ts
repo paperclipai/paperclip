@@ -54,6 +54,40 @@ describe("unknown arguments", () => {
     }
   });
 
+  it("advertises the same types, enums and required fields that each tool validates", () => {
+    const contract = (schema: unknown) => Object.fromEntries(objectNodes(schema)
+      .filter(({ node }) => isRecord(node.properties))
+      .flatMap(({ path, node }) => Object.entries(node.properties as Record<string, Schema>)
+        .map(([name, item]) => [path ? `${path}.${name}` : name, { type: item.type ?? null, enum: Array.isArray(item.enum) ? [...item.enum].sort() : null }])));
+    const required = (schema: unknown) => objectNodes(schema).filter(({ node }) => isRecord(node.properties))
+      .flatMap(({ path, node }) => ((node.required as string[] | undefined) ?? []).map((name) => (path ? `${path}.${name}` : name)));
+    const requiredOnlyInAdvertisedSchema: string[] = [];
+    for (const tool of REST_TOOLS) {
+      const parsed = z.toJSONSchema(tool.args, { io: "input", unrepresentable: "any" });
+      expect(contract(tool.definition.inputSchema), tool.definition.name).toEqual(contract(parsed));
+      const advertised = required(tool.definition.inputSchema);
+      expect(advertised, tool.definition.name).toEqual(expect.arrayContaining(required(parsed)));
+      requiredOnlyInAdvertisedSchema.push(...advertised.filter((name) => !required(parsed).includes(name)).map((name) => `${tool.definition.name} ${name}`));
+    }
+    expect(requiredOnlyInAdvertisedSchema.sort()).toEqual([
+      "update_doc writeControl", "update_doc writeControl.requiredRevisionId",
+      "update_presentation writeControl", "update_presentation writeControl.requiredRevisionId",
+    ]);
+  });
+
+  it.each([
+    ["docs", "update_doc", { documentId: "doc1", requests: [{ insertText: { text: "Hi", location: { index: 1 } } }] }],
+    ["slides", "update_presentation", { presentationId: "deck1", requests: [{ createSlide: {} }] }],
+  ] as const)("%s %s refuses a call without writeControl.requiredRevisionId before sending", async (service, name, args) => {
+    const { fetch, calls } = fakeGoogle(() => json({}));
+    for (const call of [args, { ...args, writeControl: {} }]) {
+      const result = await callGoogleWorkspaceRestTool({ service, name, arguments: call, accessToken: "t", fetch });
+      expect(result.isError, JSON.stringify(call)).toBe(true);
+      expect((result.content as Array<{ text: string }>)[0]!.text).toMatch(/requiredRevisionId/);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
   it("refuses at definition time a schema whose parts the check cannot follow", () => {
     const base = { name: "probe", annotations: { readOnlyHint: false } };
     const run = async () => ({ content: [] });
@@ -62,7 +96,9 @@ describe("unknown arguments", () => {
     expect(() => defineTool({ definition: { ...base, inputSchema: { type: "object", properties: { a: { type: "array", items: [{ type: "object" }] } } } }, args: z.object({}), run }))
       .toThrow("inputSchema.properties.a.items (tuple)");
     expect(() => defineTool({ definition: { ...base, inputSchema: { type: "object", properties: { a: { type: "string" } }, additionalProperties: { type: "string" } } }, args: z.object({}), run }))
-      .toThrow("inputSchema.additionalProperties (schema beside properties)");
+      .toThrow("inputSchema.additionalProperties (open beside properties)");
+    expect(() => defineTool({ definition: { ...base, inputSchema: { type: "object", properties: { a: { type: "string" } }, additionalProperties: true } }, args: z.object({}), run }))
+      .toThrow("inputSchema.additionalProperties (open beside properties)");
     for (const { tool } of ALL_TOOLS) expect(unmodeledSchemaParts(tool.inputSchema, tool.name)).toEqual([]);
   });
 

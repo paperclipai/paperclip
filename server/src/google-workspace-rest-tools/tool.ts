@@ -74,7 +74,9 @@ export function unmodeledSchemaParts(schema: unknown, path: string): string[] {
   if (!isRecord(schema)) return [];
   const found = UNMODELED_KEYWORDS.filter((keyword) => keyword in schema).map((keyword) => `${path}.${keyword}`);
   if (Array.isArray(schema.items)) found.push(`${path}.items (tuple)`);
-  if (isRecord(schema.properties) && isRecord(schema.additionalProperties)) found.push(`${path}.additionalProperties (schema beside properties)`);
+  if (isRecord(schema.properties) && schema.additionalProperties !== undefined && schema.additionalProperties !== false) {
+    found.push(`${path}.additionalProperties (open beside properties)`);
+  }
   const properties = isRecord(schema.properties) ? Object.entries(schema.properties) : [];
   return [
     ...found,
