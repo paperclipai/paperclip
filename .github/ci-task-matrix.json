@@ -160,17 +160,17 @@
     {
       "lane_label": "vitest package (1/3)",
       "command": "test:typescript:vitest --package-lane=1/3",
-      "task": "ci:runner-vitest"
+      "task": "ci:runner-package"
     },
     {
       "lane_label": "vitest package (2/3)",
       "command": "test:typescript:vitest --package-lane=2/3",
-      "task": "ci:runner-vitest"
+      "task": "ci:runner-package"
     },
     {
       "lane_label": "vitest package (3/3)",
       "command": "test:typescript:vitest --package-lane=3/3",
-      "task": "ci:runner-vitest"
+      "task": "ci:runner-package"
     },
     {
       "lane_label": "vitest native server",

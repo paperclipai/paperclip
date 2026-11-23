@@ -15,7 +15,11 @@
     "scripts/**",
     ".github/**",
     "patches/**",
-    "tests/**",
+    "tests/fixtures/**",
+    "tests/helpers/**",
+    "tests/runner-e2e/fixtures/**",
+    "tests/tsconfig.playwright.json",
+    "tests/acpx-qualification-models.ts",
     "doc/**",
     "docs/**",
     "skills/**",
@@ -75,27 +79,38 @@
     },
     "//#ci:chat": {
       "inputs": [
-        "server/**",
-        "cli/**",
-        "packages/**",
-        "ui/src/lib/**",
-        "ui/src/api/**",
-        "ui/src/types/**",
-        "ui/src/index.css",
-        "ui/src/bootstrapSetup.ts",
-        "ui/src/pages/CompanyExport.tsx",
-        "ui/*",
-        "ui/src/components/MarkdownBody.tsx"
+        "server/src/__tests__/chat-channels.integration.test.ts",
+        "server/src/__tests__/helpers/slack-cloud/**",
+        "server/src/__tests__/helpers/*chat*",
+        "server/src/services/chat-channels/**",
+        "server/src/services/*chat*",
+        "server/src/routes/*chat*",
+        "server/src/middleware/*chat*",
+        "server/src/modules/wake-queue/**",
+        "server/src/chat-webhook-public-url.ts",
+        "server/src/services/delivery-work-*",
+        "server/src/services/heartbeat/**",
+        "server/src/services/heartbeat.ts",
+        "server/src/services/native-runtime/**",
+        "server/src/services/task-retry.ts",
+        "server/src/services/fast-responses.ts",
+        "server/src/services/fast-response-provider.ts",
+        "packages/db/src/schema/chat_*",
+        "packages/shared/src/types/chat-*",
+        "packages/shared/src/validators/chat-*"
       ],
       "outputs": [],
       "cache": true
     },
     "//#ci:workspaces-a": {
       "inputs": [
-        "server/**",
+        "ui/**",
         "cli/**",
-        "packages/**",
-        "ui/**"
+        "packages/db/**",
+        "packages/shared/**",
+        "packages/adapter-utils/**",
+        "packages/adapters/**",
+        "packages/plugins/sdk/**"
       ],
       "outputs": [],
       "cache": true
@@ -113,7 +128,8 @@
     },
     "//#ci:db": {
       "inputs": [
-        "packages/**"
+        "packages/db/**",
+        "packages/shared/**"
       ],
       "outputs": [],
       "cache": true
@@ -159,6 +175,15 @@
       "outputs": [],
       "cache": true
     },
+    "//#ci:runner-package": {
+      "inputs": [
+        "packages/paperclip-runner/**",
+        "packages/paperclip-eval-kernel/**",
+        "packages/adapters/codex-local/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
     "//#ci:runner-vitest": {
       "inputs": [
         "server/**",
@@ -181,7 +206,9 @@
         "server/**",
         "cli/**",
         "packages/**",
-        "ui/**"
+        "ui/**",
+        "tests/e2e/**",
+        "tests/runner-e2e/**"
       ],
       "outputs": [],
       "cache": false
@@ -207,20 +234,18 @@
     },
     "//#ci:docker": {
       "inputs": [
-        "server/**",
-        "cli/**",
-        "packages/**",
-        "ui/**"
+        "packages/paperclip-runner/**"
       ],
       "outputs": [],
       "cache": false
     },
     "//#ci:canary": {
       "inputs": [
-        "server/**",
-        "cli/**",
-        "packages/**",
-        "ui/**"
+        "scripts/**",
+        "cli/esbuild.config.mjs",
+        "server/scripts/**",
+        "packages/paperclip-runner/scripts/**",
+        "packages/paperclip-runner/release-runner-targets.json"
       ],
       "outputs": [],
       "cache": false
@@ -230,17 +255,26 @@
         "server/**",
         "cli/**",
         "packages/**",
-        "ui/**"
+        "ui/**",
+        "tests/e2e/**"
       ],
       "outputs": [],
       "cache": false
     },
     "//#ci:runner-e2e-support": {
       "inputs": [
-        "server/**",
-        "cli/**",
-        "packages/**",
-        "ui/**"
+        "tests/runner-e2e/**",
+        "packages/paperclip-runner/**",
+        "packages/plugins/sdk/**",
+        "packages/adapter-utils/**",
+        "packages/adapters/**",
+        "server/src/services/native-runtime/**",
+        "server/src/vendor/paperclip-runner/**",
+        "server/src/routes/native-run-mcp.ts",
+        "server/src/adapters/**",
+        "ui/src/lib/company-routes.ts",
+        "ui/src/lib/issue-reference.ts",
+        "ui/src/lib/markdown-reply-content.ts"
       ],
       "outputs": [],
       "cache": false
