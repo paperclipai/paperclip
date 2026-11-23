@@ -160,7 +160,9 @@ Local Claude browser sign-in uses `claude auth login` in a connection-specific
 home. Paperclip stores the access token, refresh token, expiry and subscription
 metadata in the encrypted credential secret. On macOS, it reads only that home's
 namespaced Keychain item, with the credential file as fallback when the item is
-absent. It never imports the operator's ambient login.
+absent. It never imports the operator's ambient login. When the sign-in attempt
+completes, is cancelled, is replaced or expires, Paperclip deletes that Keychain
+item together with the home.
 
 When a run or account probe uses a credential with less than two hours left,
 the server renews it under the existing company credential mutation lock. The

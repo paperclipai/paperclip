@@ -12,6 +12,8 @@ import { notFound, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { environmentService } from "./environments.js";
 import { readVerifiedLocalAiCredentialDetails } from "./local-ai-credentials.js";
+import { deleteIsolatedClaudeKeychainCredential } from "@paperclipai/adapter-claude-local/server";
+import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { startLocalBrowserLogin, type LocalBrowserLoginState } from "./local-ai-browser-login.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
@@ -31,6 +33,18 @@ function loginHome(id: string) {
   try { canonicalRoot = realpathSync(root); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   return path.join(canonicalRoot, "ai-local-logins", id);
+}
+/**
+ * Remove an attempt's private home. On macOS a Claude sign-in keeps its login
+ * in a Keychain item bound to that home, not in the home, so delete that too.
+ */
+async function removeLoginHome(id: string, provider: string | undefined) {
+  const directory = loginHome(id);
+  if (provider === "anthropic" && !(await deleteIsolatedClaudeKeychainCredential(directory))) {
+    // The error can carry Keychain output. Log only the attempt.
+    logger.warn({ sessionId: id }, "Local Claude sign-in Keychain item could not be deleted");
+  }
+  await rm(directory, { recursive: true, force: true });
 }
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiLoginAttempt {
@@ -178,7 +192,7 @@ export function localAiLoginService(db: Db) {
           return;
         }
         if (session.expiresAt.getTime() > Date.now()) return;
-        await rm(loginHome(id), { recursive: true, force: true });
+        await removeLoginHome(id, session.aiConnection?.provider);
         await tx.update(adapterAuthSessions).set({
           status: session.connectionId ? "authenticated" : session.failureReason === RETIREMENT_PENDING ? "cancelled" : "timed_out",
           failureReason: null,
@@ -233,7 +247,7 @@ export function localAiLoginService(db: Db) {
         if (!restart || existing.connectionMethod !== LOCAL_LOGIN_METHOD)
           throw unprocessable("Another sign-in is still open. Finish it, or choose Start sign-in again to replace a local attempt.");
         if (existing.id !== retiredAttemptId) throw unprocessable("The sign-in attempt changed. Retry Start sign-in again.");
-        await rm(loginHome(existing.id), { recursive: true, force: true });
+        await removeLoginHome(existing.id, intent.provider);
         await tx.update(adapterAuthSessions).set({ status: "cancelled", expiresAt: null, failureReason: null, finishedAt: new Date(), updatedAt: new Date() })
           .where(eq(adapterAuthSessions.id, existing.id));
         await logActivity(tx as unknown as Db, {
@@ -430,7 +444,7 @@ export function localAiLoginService(db: Db) {
     });
     // Failed cleanup can be retried by the same completed attempt or reaper.
     await stopBrowserLogin(id);
-    await rm(loginHome(id), { recursive: true, force: true });
+    await removeLoginHome(id, intent.provider);
     deferredRetirements.delete(id);
     return result;
   }
@@ -450,7 +464,7 @@ export function localAiLoginService(db: Db) {
         eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
       )).for("update");
       if (!session) throw notFound("Local sign-in attempt not found.");
-      await rm(loginHome(id), { recursive: true, force: true });
+      await removeLoginHome(id, session.aiConnection?.provider);
       if (!session.connectionId && session.status !== "cancelled") {
         await tx.update(adapterAuthSessions).set({
           status: "cancelled", expiresAt: null, failureReason: null, finishedAt: new Date(), updatedAt: new Date(),

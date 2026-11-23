@@ -195,6 +195,24 @@ export async function readIsolatedClaudeKeychainCredential(loginHome: string): P
   }
 }
 
+/**
+ * Delete the Keychain item that a `claude` login inside an isolated auth home
+ * created. The item holds the full login, so it must not outlive the home.
+ * Returns false when an item may remain. A no-op off macOS.
+ */
+export async function deleteIsolatedClaudeKeychainCredential(loginHome: string): Promise<boolean> {
+  if (process.platform !== "darwin") return true;
+  // One call deletes one item. Repeat until the Keychain reports none is left.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await execFileAsync("/usr/bin/security", ["delete-generic-password", "-s", isolatedKeychainService(loginHome)], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    } catch (error) {
+      return (error as { code?: unknown }).code === 44;
+    }
+  }
+  return false;
+}
+
 export async function readIsolatedClaudeKeychainToken(loginHome: string): Promise<string | null> {
   const raw = await readIsolatedClaudeKeychainCredential(loginHome).catch(() => null);
   return raw ? parseClaudeCredentialToken(raw) : null;

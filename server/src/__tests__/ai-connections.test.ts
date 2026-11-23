@@ -3,6 +3,7 @@ import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
+import * as claudeServer from "@paperclipai/adapter-claude-local/server";
 // Background plan observations have their own provider-fixture coverage. Runtime
 // auth tests must not send the selected fixture credentials to a real provider.
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
@@ -2599,6 +2600,20 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       reader.mockResolvedValue({ credential: "completed-before-restart", accountLabel: undefined });
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "ready" });
     } finally { reader.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it.each([["anthropic", 1], ["openai", 0]] as const)("deletes the Keychain item of a cancelled %s sign-in with its home", async (provider, deletions) => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const id = randomUUID();
+    const owner = `keychain-${provider}`;
+    const intent = { provider, method: "subscription", ownership: "personal", name: "Cancelled sign-in", allAgents: false, agentIds: [] } as const;
+    await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: provider === "anthropic" ? "claude_local" : "codex_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(true);
+    try {
+      await localAiLoginService(db).cancel(companyId, owner, id);
+      expect(remove).toHaveBeenCalledTimes(deletions);
+      if (deletions) expect(remove.mock.calls[0]![0].endsWith(path.join("ai-local-logins", id))).toBe(true);
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]?.status).toBe("cancelled");
+    } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });
