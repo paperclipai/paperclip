@@ -445,6 +445,31 @@ const plugin = definePlugin({
       adapterEnv,
     });
 
+    // A Sandbox lease is usable once its pod can take an exec. Wait for that
+    // here, on a start-up budget of its own, so a cold image pull or slow
+    // scheduling never eats the first command's timeout (a 15 s setup probe
+    // lost that race on every node without the image cached). A Sandbox that
+    // fails or never becomes Ready is released rather than handed out.
+    if (isSandboxCrBackend) {
+      try {
+        await sandboxCrOrchestrator.waitForCompletion(clients, namespace, jobName, {
+          timeoutMs: config.podStartTimeoutSec * 1000,
+          pollMs: 1000,
+        });
+      } catch (readyError) {
+        try {
+          await orchestrator.release(clients, namespace, jobName);
+        } catch (releaseError) {
+          throw new AggregateError(
+            [readyError, releaseError],
+            "Sandbox did not become Ready and could not be released",
+          );
+        }
+        throw readyError;
+      }
+      readySandboxesByLease.add(jobName);
+    }
+
     const podName = await orchestrator.findPod(clients, namespace, jobName);
 
     const leaseMetadata: KubernetesLeaseMetadata = {

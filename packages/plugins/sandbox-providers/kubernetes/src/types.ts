@@ -32,6 +32,12 @@ export const kubernetesProviderConfigSchema = z
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),
+    /**
+     * How long acquiring a Sandbox lease waits for its pod to become Ready
+     * (scheduling, image pull, container start). Kept apart from command
+     * timeouts so a cold start never fails the first command.
+     */
+    podStartTimeoutSec: z.number().int().positive().default(300),
 
     /**
      * The adapter type that Jobs in this environment will run.

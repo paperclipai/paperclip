@@ -97,6 +97,12 @@ const manifest: PaperclipPluginManifestV1 = {
             minimum: 1,
             description: "Hard ceiling on a single run's wall-clock time (default: 3600).",
           },
+          podStartTimeoutSec: {
+            type: "integer",
+            minimum: 1,
+            description:
+              "How long acquiring a Sandbox lease waits for its pod to become Ready, including scheduling and image pull (default: 300). Separate from command timeouts.",
+          },
           adapterType: {
             type: "string",
             description:
