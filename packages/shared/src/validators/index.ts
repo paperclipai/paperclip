@@ -344,6 +344,7 @@ export {
 } from "./trust-policy.js";
 
 export {
+  agentAdapterRuntimePolicySchema,
   createAgentSchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,

@@ -85,6 +85,7 @@ import {
   materializePaperclipSkillCopy,
   parseObject,
   isPaperclipSkillSourceMissing,
+  managedAiHomeEnvironment,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderTemplate,
@@ -115,6 +116,7 @@ import {
   type AcpRuntimeTurnResult,
   type AcpRuntimeUsageBreakdown,
   type AcpRuntimeUsageCost,
+  type AcpSessionStore,
 } from "acpx/runtime";
 import {
   ACP_TOOL_KINDS,
@@ -397,6 +399,11 @@ export type AcpxTerminalFailureClassification = Pick<
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
+  /** Project generated launch values onto stable session identity; never changes the launch environment. */
+  sessionEnvironmentIdentity?: (
+    env: Readonly<Record<string, string>>,
+    config: Record<string, unknown>,
+  ) => Record<string, string>;
   /** Inspect terminal provider text in memory; return only recovery labels and a timestamp. */
   classifyTerminalSessionFailure?: (
     failure: AcpxTerminalSessionFailure,
@@ -1615,6 +1622,12 @@ function isCompatibleSession(
   return stableJson(savedRemote) === stableJson(runtime.remoteExecutionIdentity ?? {});
 }
 
+export async function evictStaleSessionRecord(store: AcpSessionStore, sessionKey: string): Promise<void> {
+  const stale = await store.load(sessionKey);
+  if (!stale || stale.acpx?.reset_on_next_ensure === true) return;
+  await store.save({ ...stale, acpx: { ...stale.acpx, reset_on_next_ensure: true } });
+}
+
 function buildSessionParams(input: {
   prepared: AcpxPreparedRuntime;
   handle: AcpRuntimeHandle;
@@ -2096,6 +2109,8 @@ async function buildRuntime(input: {
       ...(Array.isArray(scratch.tempKeysApplied) ? scratch.tempKeysApplied.filter((key): key is string =>
         typeof key === "string" && ["TMPDIR", "TEMP", "TMP"].includes(key)) : [])])
     : new Set<string>();
+  const managedAiRetainedHome = typeof context.managedAiRetainedHome === "string" ? context.managedAiRetainedHome : undefined;
+  const managedAiHomeEnv = managedAiRetainedHome ? managedAiHomeEnvironment(managedAiRetainedHome) : undefined;
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value !== "string") continue;
     // Runtime PAPERCLIP_* always wins over config: skip a PAPERCLIP_* key that
@@ -2106,6 +2121,7 @@ async function buildRuntime(input: {
     if (isForbiddenConfigEnvKey(key)) continue;
     if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
     env[key] = value;
+    if (managedAiHomeEnv?.[key] === value) continue;
     // The server rotates run-owned scratch paths on every wake. Still forward
     // them, but only hash actual adapter settings. User-supplied temp overrides
     // are absent from tempKeysApplied and keep their compatibility protection.
@@ -2305,6 +2321,7 @@ async function buildRuntime(input: {
   // The 17 fields the session fingerprint hashes. Company, agent, and task
   // identifiers are NOT here; they scope the outer session key only (see
   // `keyIdentity`). The fingerprint builder accepts only this identity.
+  const sessionIdentityEnv = input.deps.sessionEnvironmentIdentity?.(resolvedAdapterEnv, config) ?? resolvedAdapterEnv;
   let fingerprintIdentity: SessionFingerprintIdentity = {
     ...(input.ctx.agentIdentity ? { agentIdentityKeyId: input.ctx.agentIdentity.keyId } : {}),
     acpxAgent,
@@ -2344,14 +2361,14 @@ async function buildRuntime(input: {
     // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
     // Managed SSH identity uses the selected account's stable session identity;
     // temporary credential homes and token refreshes affect only the launch env.
-    adapterEnvHash: shortHash(
-      useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
-        ? managedAiSessionFingerprintConfig(
-          { env: resolvedAdapterEnv, managedAiConnection: config.managedAiConnection },
-          asString(resolvedAdapterEnv.HOME, "") || undefined,
-        )
-        : resolvedAdapterEnv,
-    ),
+    // An adapter projection is applied first, so it adds to that normalization
+    // instead of replacing it.
+    adapterEnvHash: shortHash(useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+      ? managedAiSessionFingerprintConfig(
+        { env: sessionIdentityEnv, managedAiConnection: config.managedAiConnection },
+        asString(resolvedAdapterEnv.HOME, "") || undefined,
+      )
+      : sessionIdentityEnv),
   };
   if (useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && config.managedAiConnection && env.HOME) {
     const managedHome = path.resolve(env.HOME);
@@ -4738,6 +4755,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         try {
           if (!handle) {
+            if (!resumeSessionId) await evictStaleSessionRecord(runtimeStore, prepared.sessionKey);
             try {
               // Step 7 — acp.handshake: ACP session establishment (session/new or
               // resume). A throwing handshake still reports its duration before the
@@ -4779,6 +4797,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 "stdout",
                 `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
               );
+              await evictStaleSessionRecord(runtimeStore, prepared.sessionKey);
               // Fresh-session retry: the runtime was already constructed on the
               // first attempt (never re-created), so this event reports only its
               // own `ensureSessionMs` — no `createRuntimeMs`.
