@@ -535,12 +535,10 @@ mod tests {
             panic!("expected a rewritten frame");
         };
         let value: Value = serde_json::from_str(&line).unwrap();
-        assert!(
-            value["params"]["text"]
-                .as_str()
-                .unwrap()
-                .contains("[paperclip-runner truncated ")
-        );
+        assert!(value["params"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("[paperclip-runner truncated "));
     }
 
     #[test]
