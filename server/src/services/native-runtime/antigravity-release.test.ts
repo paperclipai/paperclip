@@ -19,6 +19,7 @@ vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
 import { NativeProviderStateIncompatibleError, QUALIFIED_ACPX_PROFILES, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { ANTIGRAVITY_CANDIDATE_ADMISSION_ENV } from "./acpx-qualification.js";
 import {
+  antigravityCandidateForRunnerTarget,
   antigravityForcesSameSessionRecovery,
   antigravityReleasePending,
   antigravityUsesRunScopedState,
@@ -108,6 +109,63 @@ describe("Antigravity executor admission", () => {
     expect(admissible(execution, { remoteTarget: true, restartRecovery: { kind: "reattach_remote_runner" } })).not.toThrow();
     const preconfigured = { ...execution, homeMode: "preconfigured" } as NativeExecutionInput;
     expect(admissible(preconfigured)).not.toThrow();
+  });
+});
+
+describe("Antigravity agent picker candidate", () => {
+  const cloud = { driver: "sandbox", platform: "linux", architecture: "x64", libc: "glibc" as const, glibcVersion: "2.39" };
+
+  it("offers a cloud environment only the company's own unexpired linux-x64 grant", () => {
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
+    expect(antigravityCandidateForRunnerTarget(companyId, cloud)).toMatchObject({ model, platform: "linux", architecture: "x64" });
+    expect(antigravityCandidateForRunnerTarget(companyId, { driver: "sandbox", managedCloudImage: true })).toMatchObject({ model });
+    expect(antigravityCandidateForRunnerTarget("10000000-0000-4000-8000-00000000000f", cloud)).toBeUndefined();
+    expect(antigravityCandidateForRunnerTarget(companyId, { ...cloud, architecture: "arm64" })).toBeUndefined();
+    expect(antigravityCandidateForRunnerTarget(companyId, { driver: "plugin", runnerTasks: true })).toBeUndefined();
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64", { expiresAt: Date.now() - 1 }));
+    expect(() => antigravityCandidateForRunnerTarget(companyId, cloud)).toThrow();
+  });
+
+  it("does not open a cloud environment with a grant for this host", () => {
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("darwin-arm64"));
+    expect(() => antigravityCandidateForRunnerTarget(companyId, cloud)).toThrow(/does not match the execution target/);
+  });
+
+  it("offers a cloud environment nothing when its Linux libc cannot run the Runner", () => {
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
+    for (const target of [
+      { ...cloud, libc: "musl" as const, glibcVersion: undefined },
+      { ...cloud, libc: "unknown" as const, glibcVersion: undefined },
+      { ...cloud, glibcVersion: "2.35" },
+      { driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc" as const, glibcVersion: "2.31" },
+    ]) expect(antigravityCandidateForRunnerTarget(companyId, target)).toBeUndefined();
+    expect(antigravityCandidateForRunnerTarget(companyId, { driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.41" }))
+      .toMatchObject({ model });
+  });
+
+  it("offers this host only a grant that names this host", () => {
+    // Pin the host to darwin-arm64 so the result does not depend on the machine
+    // running the test. A cloud (linux-x64) grant is valid for an untargeted
+    // lookup on every host, so only a host-bound lookup refuses it.
+    const host = { platform: Object.getOwnPropertyDescriptor(process, "platform")!, arch: Object.getOwnPropertyDescriptor(process, "arch")! };
+    Object.defineProperty(process, "platform", { ...host.platform, value: "darwin" });
+    Object.defineProperty(process, "arch", { ...host.arch, value: "arm64" });
+    try {
+      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
+      expect(() => antigravityCandidateForRunnerTarget(companyId, { driver: "local" })).toThrow(/does not match the execution target/);
+      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("darwin-arm64"));
+      expect(antigravityCandidateForRunnerTarget(companyId, { driver: "local" })).toMatchObject({ model, platform: "darwin", architecture: "arm64" });
+    } finally {
+      Object.defineProperty(process, "platform", host.platform);
+      Object.defineProperty(process, "arch", host.arch);
+    }
+  });
+
+  it("offers no candidate once the profile is released", () => {
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
+    release.pending = false;
+    expect(antigravityCandidateForRunnerTarget(companyId, cloud)).toBeUndefined();
+    expect(antigravityCandidateForRunnerTarget(companyId, { driver: "local" })).toBeUndefined();
   });
 });
 
