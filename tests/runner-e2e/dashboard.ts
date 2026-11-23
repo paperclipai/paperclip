@@ -1,3 +1,5 @@
+import { renderCatalogOverview, catalogOverviewStyles, catalogOverviewScript, type CatalogOverview, type CatalogScenarioDescription } from "./catalog-overview.js";
+import { screenshotWithholdingNotice } from "./screenshot-privacy.js";
 import { campaignAttemptTimeLabel, campaignTimingScope, renderWorkerPhaseTiming, summarizeCampaignTiming, summarizeWorkerPhaseTiming } from "./campaign-timing.js";
 import { html, durationLabel, tokenLabel, llmCostLabel, usdLabel } from "./report-format.js";
 import { renderReportShell, reportNavigationStyles, reportShellScript } from "./report-navigation.js";
@@ -46,7 +48,13 @@ export interface RunnerDashboardInput {
   catalog: readonly ReportExecution[];
   entries: readonly RunnerDashboardEntry[];
   campaign?: RunnerE2ECampaign;
+  /** The bundle contains its existing relative summary.md document. */
+  summaryAvailable?: boolean;
+  /** Existing public summary.md content, rendered only as escaped readable text. */
+  summaryText?: string;
   history?: RunnerE2EHistoryIndex;
+  catalogOverview?: CatalogOverview;
+  catalogOverviewDescriptions?: ReadonlyMap<string, CatalogScenarioDescription>;
   presentation?: {
     title?: string;
     description?: string;
@@ -87,6 +95,7 @@ function compactJson(value: unknown) {
 function resolveScreenshots(
   entry: RunnerDashboardEntry | undefined,
 ): ResolvedScreenshot[] {
+  if (entry && screenshotWithholdingNotice(entry.result)) return [];
   const declaredScreenshots = entry?.result.screenshots?.length
     ? entry.result.screenshots
     : entry
@@ -251,7 +260,8 @@ function renderCase(
     ${STARTUP_REUSE_LAYERS.map(layer => `<td>${html(reuse.layers[layer].state)} (${html(reuse.layers[layer].reason)})</td>`).join("")}
     <td>${html(reuse.providerLaunchCount === null ? "unknown" : reuse.providerLaunchCount)}</td>
   </tr>`).join("");
-  const gallery = screenshots.length
+  const withholdingNotice = entry ? screenshotWithholdingNotice(entry.result) : null;
+  const gallery = withholdingNotice ? `<p class="muted">${html(withholdingNotice)}</p>` : screenshots.length
     ? `<div class="gallery" aria-label="Screenshots for ${html(execution.id)}">${screenshots
         .map(
           (item) => `<button
@@ -402,6 +412,8 @@ function renderSuiteResults(input: {
 }
 
 export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
+  if (input.catalogOverview && (input.entries.length || input.expected.length || input.catalog.length || input.campaign)) throw new Error("Catalog metadata cannot be mixed with campaign results");
+  const catalogOverview = input.catalogOverview ? renderCatalogOverview(input.catalogOverview, input.catalogOverviewDescriptions) : null;
   const presentationLinks = (input.presentation?.links ?? []).flatMap(link => {
     const href = reportEvidenceHref(link.href);
     return href ? [{ ...link, href }] : [];
@@ -557,6 +569,9 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     h1 { max-width: 760px; margin: 0; font-size: clamp(32px, 4vw, 56px); font-weight: 650; line-height: 1.03; letter-spacing: -.04em; }
     .lede { max-width: 720px; margin: 16px 0 0; color: var(--muted-foreground); font-size: 16px; }
     .report-actions { display: flex; align-items: stretch; gap: 8px; }
+    .campaign-notes { margin: 0 0 24px; }
+    .campaign-notes > summary { cursor: pointer; font-weight: 600; }
+    .campaign-notes pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; }
     .summary { display: flex; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
     .metric { min-width: 108px; padding: 13px 16px; border-right: 1px solid var(--border); }
     .metric:last-child { border-right: 0; }
@@ -863,11 +878,13 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       .matrix thead th, .profile-cell, .profile-sticky { position: static; }
     }
     ${reportNavigationStyles}
+    ${catalogOverviewStyles}
   </style>
 </head>
-<body id="top">
-  ${renderReportShell({ campaignId: input.campaign?.campaignId, catalog, history: input.history })}
+<body id="top"${catalogOverview ? " data-catalog-metadata" : ""}>
+  ${renderReportShell(catalogOverview ? { history: input.history } : { campaignId: input.campaign?.campaignId, catalog, history: input.history })}
   <main id="overview">
+    ${catalogOverview ?? `
     <section class="case-page-heading" data-case-page-heading hidden><p class="eyebrow">Test case</p><h1 data-case-page-title tabindex="-1"></h1><a href="?view=all" data-nav-return>← Back to campaign results</a></section>
     <section data-campaign-overview>
     <header class="report-header">
@@ -875,7 +892,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         <p class="eyebrow">E2E campaign</p>
         <h1 tabindex="-1">${html(input.presentation?.title ?? input.title)}</h1>
         <p class="lede">${html(input.presentation?.description ?? "App and agent journeys across deployment targets, profiles, and execution environments. Declared PNG screenshots and normalized results are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.")}</p>
-        ${input.campaign ? `<p class="report-source"><span>${html(input.generatedAt)}</span>${input.campaign.source.sha ? `<code>${html(input.campaign.source.sha.slice(0,8))}</code>` : ""}${input.campaign.source.workflowRunUrl ? `<a href="${html(input.campaign.source.workflowRunUrl)}">Source run ↗</a>` : ""}</p>` : ""}
+        ${input.campaign ? `<p class="report-source"><span>${html(input.generatedAt)}</span>${input.campaign.source.sha ? `<code>${html(input.campaign.source.sha.slice(0,8))}</code>` : ""}${input.campaign.source.workflowRunUrl ? `<a href="${html(input.campaign.source.workflowRunUrl)}">Source run ↗</a>` : ""}${input.summaryAvailable ? '<a href="summary.md">Campaign summary ↗</a>' : ""}</p>` : ""}
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">
@@ -887,6 +904,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>${screenshotCount === 0 ? "Visual evidence · workflow artifact only" : `View gallery · ${screenshotCount}`}</button>
       </div>
     </header>
+    ${input.campaign && input.summaryText?.trim() ? `<details class="campaign-notes" open><summary>Campaign notes and coverage</summary><pre>${html(input.summaryText)}</pre></details>` : ""}
     ${input.presentation?.notes?.length || presentationLinks.length ? `<details class="campaign-billing-details campaign-notes"><summary>About this run</summary>${input.presentation?.notes?.map(note => `<p class="detail">${html(note)}</p>`).join("") ?? ""}${presentationLinks.length ? `<nav class="evidence-links" aria-label="Campaign evidence">${presentationLinks.map(link => `<a href="${html(link.href)}">${html(link.label)}</a>`).join("")}</nav>` : ""}</details>` : ""}
     ${renderCampaignSuiteSummary(input.campaign?.suites ?? [], catalog, "", false)}
     <details class="campaign-billing-details"><summary>Campaign usage and spend</summary>
@@ -923,6 +941,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </section>
     ${suiteSections}
     <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} selected executions · Declared screenshots and normalized results published</span></footer>
+    `}
   </main>
   </div></div>
   <a class="back-to-top" href="#top" data-back-to-top hidden><span aria-hidden="true">↑</span>Back to top</a>
@@ -1078,7 +1097,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       stage.addEventListener("pointercancel", () => { pointerStartX = null; });
     })();
   </script>
-  <script>${reportShellScript}${reportBrowserScript}</script>
+  <script>${reportShellScript}${catalogOverview ? catalogOverviewScript : reportBrowserScript}</script>
 
 </body>
 </html>

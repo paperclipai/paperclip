@@ -1,3 +1,4 @@
+import { notifyGitHubReviewProjection, repairSupersededGitHubReviews } from "./chat-channels/github/review-projection-work.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { notifyGitHubReviewChecks, registerGitHubReviewCheckWork } from "./chat-channels/github/review-check-work.js";
 import { githubReviewCheckState } from "./chat-channels/github/review-check-state.js";
@@ -5,10 +6,9 @@ import {
   GitHubPublicationLeaseLost,
   withGitHubPublicationLease,
 } from "./chat-github-publication-lease.js";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
   chatActions,
-  chatDeliveries,
   chatEndpoints,
   chatGitHubConfigurations,
   chatGitHubReviews,
@@ -17,9 +17,13 @@ import {
 import type { GitHubReviewEventContext } from "@paperclipai/shared";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import {
-  githubBotRepositoryToken,
+  githubBotRepositoryClient,
   githubBotRequest,
 } from "./chat-github-client.js";
+
+export const GITHUB_REVIEW_CHECK_HEAD_POLL_MS = 5_000;
+export const GITHUB_REVIEW_CHECK_MAX_HEAD_POLL_MS = 300_000;
+const UNCHANGED_HEAD_POLL_LIMIT = Math.ceil(Math.log2(GITHUB_REVIEW_CHECK_MAX_HEAD_POLL_MS / GITHUB_REVIEW_CHECK_HEAD_POLL_MS));
 
 /** Check status follows the ordinary chat delivery/task/run. This outbox never
  * schedules an agent. Assessments are published by the governed review tool. */
@@ -128,7 +132,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
                   : state === "running"
                     ? "Agent is reviewing this commit"
                     : "Waiting for the assigned agent";
-          const token = await githubBotRepositoryToken(
+          const github = await githubBotRepositoryClient(
             db,
             action.companyId,
             action.endpointId,
@@ -139,13 +143,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
           const request = <T>(
             path: string,
             options?: Parameters<typeof githubBotRequest>[3],
-          ) =>
-            githubBotRequest<T>(
-              lease.fetch,
-              token,
-              `${prefix}${path}`,
-              options,
-            );
+          ) => github<T>(`${prefix}${path}`, options);
           const current = await request<{ head: { sha: string } }>(
             `/pulls/${event.pullNumber}`,
           );
@@ -163,6 +161,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
                   );
               });
             await lease.commit(async (tx) => {
+              await notifyGitHubReviewProjection(tx, { companyId: action.companyId, endpointId: action.endpointId });
               await tx
                 .update(chatActions)
                 .set({
@@ -226,6 +225,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
             );
             if (review)
               await lease.commit(async (tx) => {
+                await notifyGitHubReviewProjection(tx, { companyId: action.companyId, endpointId: action.endpointId });
                 await tx
                   .update(chatGitHubReviews)
                   .set({
@@ -246,6 +246,10 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
                   );
               });
           }
+          const savedPolls = Number(fresh.result?.unchangedPolls);
+          const unchangedPolls = fresh.status === "received" && fresh.result?.state === state
+            ? Math.min(UNCHANGED_HEAD_POLL_LIMIT, (Number.isSafeInteger(savedPolls) && savedPolls > 0 ? savedPolls : 0) + 1)
+            : 0;
           await lease.commit(async (tx) => {
             await tx
               .update(chatActions)
@@ -255,7 +259,8 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
                   state,
                   attempts: 0,
                   retryable: true,
-                  retryAt: new Date(Date.now() + 5000).toISOString(),
+                  unchangedPolls,
+                  retryAt: new Date(Date.now() + Math.min(GITHUB_REVIEW_CHECK_MAX_HEAD_POLL_MS, GITHUB_REVIEW_CHECK_HEAD_POLL_MS * 2 ** unchangedPolls)).toISOString(),
                 },
                 updatedAt: new Date(),
               })
@@ -285,42 +290,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
       },
     );
   }
-  async function repairSupersededReviews() {
-    // Check delivery and task admission run independently. A rapid push can
-    // cancel an obsolete check before admission inserts its review projection.
-    // Reconcile that late row from the durable cancellation receipt, without
-    // starting work or borrowing another delivery's authority.
-    await db
-      .update(chatGitHubReviews)
-      .set({
-        state: "superseded",
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          inArray(chatGitHubReviews.state, ["queued", "running"]),
-          isNull(chatGitHubReviews.assessment),
-          sql`${chatGitHubReviews.deliveryId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`,
-          sql`(
-        select action.id from ${chatActions} action
-        where action.company_id = ${chatGitHubReviews.companyId}
-          and action.endpoint_id = ${chatGitHubReviews.endpointId}
-          and action.kind = 'github_review_check'
-          and action.status = 'cancelled'
-          and action.result->>'code' = 'stale_head'
-          and action.payload->'event'->>'deliveryId' = (
-            select delivery.normalized_event->'githubAutomatic'->'context'->>'deliveryId'
-            from ${chatDeliveries} delivery
-            where delivery.id = case
-              when ${chatGitHubReviews.deliveryId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-              then ${chatGitHubReviews.deliveryId}::uuid end
-              and delivery.endpoint_id = ${chatGitHubReviews.endpointId}
-          )
-        limit 1
-      ) is not null`,
-        ),
-      );
-  }
+  const repairSupersededReviews = () => repairSupersededGitHubReviews(db);
   async function processPending(limit = 10) {
     await repairSupersededReviews();
     const rows = await db

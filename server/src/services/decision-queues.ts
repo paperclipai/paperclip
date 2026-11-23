@@ -456,34 +456,36 @@ export function decisionQueueService(db: Db) {
           });
         }
         let insertedAnyItem = false;
-        for (const item of matchingItems) {
-          const inserted = await txDb.insert(decisionQueueItems).values({
+        for (let offset = 0; offset < matchingItems.length; offset += 500) {
+          const inserted = await txDb.insert(decisionQueueItems).values(matchingItems.slice(offset, offset + 500).map(item => ({
             companyId,
             queueId: queue.id,
             sourceKind: item.sourceKind,
             sourceId: item.sourceId,
             addedByType: "system",
-          }).onConflictDoNothing({
+          }))).onConflictDoNothing({
             target: [decisionQueueItems.queueId, decisionQueueItems.sourceKind, decisionQueueItems.sourceId],
           }).returning();
-          if (!inserted[0]) continue;
+          if (inserted.length === 0) continue;
           insertedAnyItem = true;
-          await txDb.insert(decisionTriageEvents).values({
-            companyId,
-            queueId: queue.id,
-            sourceKind: item.sourceKind,
-            sourceId: item.sourceId,
-            action: "queue_item.seeded",
-            ...eventActorColumns(SYSTEM_ACTOR),
-            details: { seedKey: seed.key },
-          });
-          await recordActivity(txDb, SYSTEM_ACTOR, {
-            companyId,
-            action: "decision_queue_item.seeded",
-            entityType: "decision_queue",
-            entityId: queue.id,
-            details: { sourceKind: item.sourceKind, sourceId: item.sourceId, seedKey: seed.key },
-          });
+          for (const item of inserted) {
+            await txDb.insert(decisionTriageEvents).values({
+              companyId,
+              queueId: queue.id,
+              sourceKind: item.sourceKind,
+              sourceId: item.sourceId,
+              action: "queue_item.seeded",
+              ...eventActorColumns(SYSTEM_ACTOR),
+              details: { seedKey: seed.key },
+            });
+            await recordActivity(txDb, SYSTEM_ACTOR, {
+              companyId,
+              action: "decision_queue_item.seeded",
+              entityType: "decision_queue",
+              entityId: queue.id,
+              details: { sourceKind: item.sourceKind, sourceId: item.sourceId, seedKey: seed.key },
+            });
+          }
         }
         if (insertedAnyItem) {
           await txDb.update(decisionQueues).set({ updatedAt: new Date() })

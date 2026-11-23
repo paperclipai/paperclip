@@ -16,7 +16,7 @@
  * before errors. Intentional exceptions go in ALLOWLIST below as
  * "<path>:<rule>" with a reason.
  *
- * Report-only by default: prints findings and exits 0, except for findings in
+ * Enforcing by default: prints findings and exits 0, except for findings in
  * ENFORCED_FILES (surfaces already migrated), which always exit 1. `--enforce`
  * exits 1 on any finding outside the allowlist (CI turns this on once the
  * long tail migrates).
@@ -59,7 +59,16 @@ export const RULES = [
  * a reason. The list shrinks as surfaces migrate to the shared error handling.
  */
 export const ALLOWLIST = new Set([
-  // Empty for now: report-only mode lists every finding as the baseline.
+  "ui/src/artifact-directions/main.tsx:retry-false",
+  "ui/src/wizard-preview-main.tsx:retry-false",
+  "ui/src/fixtures/TaskChatPerfHarness.tsx:retry-false",
+  "ui/src/pages/NewAgent.test-support.tsx:retry-false",
+  "ui/src/components/TaskChatThread.tsx:is-error-render",
+  "ui/src/components/transcript/RunTranscriptView.tsx:is-error-render",
+  "ui/src/components/task-chat/transcript-adapter.ts:is-error-render",
+  "ui/src/lib/issue-chat-messages.ts:is-error-render",
+  "ui/src/lib/account-scope.ts:retry-false",
+  "ui/src/lib/copilot-task-model-catalog.ts:retry-false",
 ]);
 
 /**
@@ -133,15 +142,20 @@ function walk(dir, out) {
 export function scanSource(sourceText, path) {
   const findings = [];
   const lines = sourceText.split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (/\/\/\s*query-error-ok\b/.test(line)) continue;
+  const checkable = lines.map((line) => {
     const trimmed = line.trim();
-    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
-    for (const rule of RULES) {
-      if (rule.pattern.test(line)) findings.push({ path, line: index + 1, rule: rule.id, text: trimmed });
+    return /\/\/\s*query-error-ok\b/.test(line)
+      || trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")
+      ? " ".repeat(line.length) : line;
+  }).join("\n");
+  for (const rule of RULES) {
+    const pattern = new RegExp(rule.pattern.source, "g");
+    for (const match of checkable.matchAll(pattern)) {
+      const line = checkable.slice(0, match.index).split("\n").length;
+      findings.push({ path, line, rule: rule.id, text: lines[line - 1].trim() });
     }
   }
+  findings.sort((a, b) => a.line - b.line || RULES.findIndex((rule) => rule.id === a.rule) - RULES.findIndex((rule) => rule.id === b.rule));
   return findings;
 }
 
@@ -163,7 +177,7 @@ export function scanQueryErrorRendering({
 
 function main() {
   const args = new Set(process.argv.slice(2));
-  const enforce = args.has("--enforce");
+  const enforce = !args.has("--report-only");
   const summaryOnly = args.has("--summary");
   const findings = scanQueryErrorRendering();
   const enforcedFindings = findings.filter((finding) => finding.enforced);
@@ -191,7 +205,7 @@ function main() {
     process.exitCode = 1;
   }
   if (!enforce) {
-    console.log("Report-only mode: findings outside migrated files do not fail. Pass --enforce to fail on all findings.");
+    console.log("Explicit report-only mode: findings outside migrated files do not fail.");
     return;
   }
   if (findings.length > 0) process.exitCode = 1;

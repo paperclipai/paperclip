@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_DEFINITIONS } from "./app-definitions.generated.js";
+import { connectionMethodDefSchema } from "./validators/app-definition.js";
 import {
   APP_STORE_DEFINITIONS,
   APP_STORE_HIDDEN_SLUGS,
@@ -28,6 +29,7 @@ import {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 import { aiConnectionRouterAppDefinition } from "./ai-connection-router.js";
+import { aiConnectionCatalogSlug } from "./ai-provider-routing.js";
 import { appDefinitionSchema, appDefinitionsSchema } from "./validators/app-definition.js";
 
 const googleScope = (scope: string) =>
@@ -256,7 +258,7 @@ describe("AppDefinition catalog", () => {
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
   it("lists model providers as regular tagged catalog entries", () => {
-    const slugs = ["openai", "anthropic", "openrouter", "xai", "google", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
+    const slugs = ["openai", "anthropic", "openrouter", "xai", "google", "github-copilot", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
     expect(APP_STORE_DEFINITIONS.filter(app => app.tags?.includes("model-provider")).map(app => app.slug).sort()).toEqual(slugs.sort());
     for (const slug of slugs) {
       const app = APP_STORE_DEFINITIONS.find(app => app.slug === slug)!;
@@ -294,7 +296,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(65);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(66);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -321,14 +323,31 @@ describe("AppDefinition catalog", () => {
   it("separates GitHub tools from the review bot without changing the provider identity", () => {
     const github = getConnectableAppDefinition("github")!;
     const bot = getConnectableAppDefinition("github-code-review-bot")!;
-    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key", "copilot-token"]);
-    expect(github.methods.filter((method) => method.purpose === "tool").map((method) => method.key)).toEqual(["managed", "mcp-key"]);
-    expect(github.methods.find((method) => method.key === "copilot-token")).toMatchObject({ purpose: "ai", transport: "runtime_auth" });
+    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key"]);
+    expect(github.methods.every((method) => method.purpose === "tool")).toBe(true);
     expect(bot.name).toBe("GitHub Code Review Bot");
     expect(bot.methods).toHaveLength(1);
     expect(bot.methods[0]).toMatchObject({ provider: "github", purpose: "channel", transport: "chat_sdk" });
     expect(bot.branding).toEqual(github.branding);
     expect(bot.urlPatterns).toEqual([]);
+  });
+  it("offers GitHub Copilot authentication as its own connector, separate from GitHub tools", () => {
+    const github = getAppStoreDefinition("github")!;
+    const copilot = getAppStoreDefinition("github-copilot")!;
+    expect(copilot.name).toBe("GitHub Copilot");
+    expect(copilot.categories).toEqual(["ai"]);
+    expect(copilot.methods.map((method) => method.key)).toEqual(["copilot-token"]);
+    expect(copilot.methods[0]).toMatchObject({
+      purpose: "ai",
+      transport: "runtime_auth",
+      ai: { provider: "github", method: "api_key" },
+      keyPlacement: { location: "env", name: "COPILOT_GITHUB_TOKEN" },
+    });
+    expect(copilot.branding.logoUrl).not.toBe(github.branding.logoUrl);
+    expect(copilot.urlPatterns).toEqual([]);
+    expect(github.categories).not.toContain("ai");
+    expect(github.description).not.toContain("Copilot");
+    expect(aiConnectionCatalogSlug("github")).toBe("github-copilot");
   });
   it("registers the five native chat providers with only required setup credentials", () => {
     const expected = {
@@ -460,15 +479,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 69 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 70 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(69);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(70);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 69);
+    ).toHaveProperty("size", 70);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -717,6 +736,15 @@ describe("AppDefinition catalog", () => {
         discoveryUrl: "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
       },
     });
+    // A user auth token does not expire with the 30-day browser grant. The
+    // hosted server reserves `Bearer` for its own OAuth tokens.
+    expect(APP_DEFINITIONS.find((app) => app.slug === "sentry")?.methods[1]).toMatchObject({
+      key: "mcp-user-token",
+      transport: "mcp_remote",
+      auth: "api_key",
+      defaults: { serverUrl: "https://mcp.sentry.dev/mcp" },
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Sentry-Bearer " },
+    });
     expect(method("zapier")).toMatchObject({
       key: "generated-url",
       auth: "none",
@@ -896,7 +924,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(88);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(91);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1331,6 +1359,37 @@ describe("AppDefinition catalog", () => {
     ]);
     expect(method!.tenantFields?.[0]?.options?.map((option) => option.value)).toEqual(["dal", "fra", "sfo", "sin", "was"]);
   });
+  it("connects Circleback's hosted server with browser sign-in and its documented read/write scopes", () => {
+    const circleback = APP_DEFINITIONS.find((app) => app.slug === "circleback")!;
+    expect(circleback).toMatchObject({
+      name: "Circleback",
+      categories: ["productivity"],
+      urlPatterns: ["https://circleback.ai/*", "https://app.circleback.ai/*"],
+      docsUrl: "https://circleback.ai/docs/support/platform/circleback-mcp",
+      branding: { logoUrl: "/brands/apps/circleback.png" },
+      redirectConstraints: "https-or-loopback-http",
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "circleback")).toBe(true);
+    expect(CONNECTABLE_APP_DEFINITIONS.some((app) => app.slug === "circleback")).toBe(true);
+    // Circleback documents no API key for its MCP server.
+    expect(circleback.methods).toHaveLength(1);
+    expect(circleback.methods[0]).toMatchObject({
+      key: "mcp-oauth",
+      label: "Sign in with Circleback",
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S3",
+      // `user` alone is read-only; write tools then ask the user to reconnect.
+      defaults: { serverUrl: "https://circleback.ai/api/mcp", scopesHint: ["user", "user:write"] },
+      capabilityProfile: { key: "write", description: expect.stringContaining("Set share and delete actions to Ask first") },
+    });
+    expect(circleback.methods[0]!.tenantFields ?? []).toEqual([]);
+    expect(circleback.methods[0]!.warnings).toEqual([
+      expect.stringContaining("A Circleback account"),
+      expect.stringContaining("anyone with the link"),
+    ]);
+  });
   it("connects Gauge's hosted server with browser sign-in or an organization API key", () => {
     const gauge = APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
     expect(gauge).toMatchObject({
@@ -1431,6 +1490,21 @@ describe("AppDefinition catalog", () => {
       expect.stringContaining("consume organization credits"),
     ]);
   });
+  it("mints AWS credentials instead of placing stored keys in headers", () => {
+    const aws = APP_DEFINITIONS.find((app) => app.slug === "aws")!;
+    expect(aws.experimentalFeatureKey).toBe("enableAwsConnector");
+    for (const method of aws.methods) {
+      expect(method).toMatchObject({ transport: "mcp_remote", auth: "api_key", credentialMinter: "aws_mcp" });
+      expect(method.keyPlacement).toBeUndefined();
+    }
+    const base = aws.methods[1]!;
+    expect(connectionMethodDefSchema.safeParse(base).success).toBe(true);
+    expect(connectionMethodDefSchema.safeParse({ ...base, keyPlacement: { location: "header", name: "Authorization" } }).success).toBe(false);
+    expect(connectionMethodDefSchema.safeParse({ ...base, auth: "oauth" }).success).toBe(false);
+    expect(connectionMethodDefSchema.safeParse({ ...base, transport: "local_stdio" }).success).toBe(false);
+    const { credentialMinter: _minter, ...withoutMinter } = base;
+    expect(connectionMethodDefSchema.safeParse(withoutMinter).success).toBe(false);
+  });
   it("requires only reviewed provider or safety-boundary configuration on the default path", () => {
     const required = APP_DEFINITIONS.flatMap((app) =>
       app.methods.flatMap((method) =>
@@ -1443,6 +1517,10 @@ describe("AppDefinition catalog", () => {
       ),
     ).sort();
     expect(required).toEqual([
+      "aws:aws-access-key:accessLevel",
+      "aws:aws-access-key:endpointRegion",
+      "aws:aws-role:accessLevel",
+      "aws:aws-role:endpointRegion",
       "clickhouse:mcp-oauth:serviceId",
       "honcho:mcp-api-key:workspaceId",
       "make:mcp-api-token:zone",

@@ -12,6 +12,9 @@ describe("connection result guidance", () => {
     expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("never ask for credentials in comments");
     expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("arbitrary MCP URLs");
   });
+  it("binds a request card to the person it is addressed to", () => {
+    expect(CONNECTION_INTENT_AGENT_GUIDANCE).toContain("Only that person can complete or decline it");
+  });
   it("describes exact questions and saved selection proof", () => {
     expect(CONNECTIONS_SEARCH_TOOL_DESCRIPTION).toContain("exact providerQuestion");
     expect(CONNECTION_REQUEST_TOOL_DESCRIPTION).toContain("saved provider-selection interaction ID");

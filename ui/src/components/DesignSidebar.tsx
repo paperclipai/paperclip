@@ -3,8 +3,9 @@ import { Boxes, CircleCheck, CirclePlus, FolderOpen, History, LayoutDashboard, M
 import { useCompany } from "@/context/CompanyContext";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
-import { SidebarNavExpandedProvider, SidebarNavItem } from "./SidebarNavItem";
+import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarSection } from "./SidebarSection";
+import { RecentTaskNavItem, recentTaskPathRef } from "./RecentTaskNavItem";
 import { TruncatedTextMarqueeProvider } from "./TruncatedText";
 import { Button } from "./ui/button";
 import { FlyoutAppearanceProvider } from "./ui/flyout";
@@ -20,7 +21,7 @@ export function DesignSidebar({ onNewTask, recentTasks = [] }: { onNewTask: () =
   const companyRecentTasks = recentTasks.filter(task => task.companyId === selectedCompany?.id);
   const handleRecentScroll = useScrollbarWhileScrolling();
   return (
-    <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><SidebarNavExpandedProvider>
+    <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider>
       <div className="design-sidebar">
         <div className="design-sidebar-brand">
           <SidebarCompanyMenu showChevron={false} />
@@ -47,13 +48,13 @@ export function DesignSidebar({ onNewTask, recentTasks = [] }: { onNewTask: () =
           {companyRecentTasks.length > 0 ? <div className="design-sidebar-recents">
             <SidebarSection label="Recent Tasks">
               <div onScroll={handleRecentScroll} className="design-sidebar-recent-list scrollbar-while-scrolling" role="region" aria-label="Recent tasks" tabIndex={0}>
-              {companyRecentTasks.map(issue => <SidebarNavItem key={issue.id} className="design-sidebar-item" to={`${root}/issues/${issue.identifier}`} label={issue.title} />)}
+              {companyRecentTasks.map(issue => <RecentTaskNavItem key={issue.id} task={issue} className="design-sidebar-item" to={`${root}/issues/${recentTaskPathRef(issue)}`} label={issue.title} />)}
               </div>
             </SidebarSection>
           </div> : null}
         </nav>
-        <div className="design-sidebar-account"><SidebarAccountMenu forceExpanded /></div>
+        <div className="design-sidebar-account"><SidebarAccountMenu /></div>
       </div>
-    </SidebarNavExpandedProvider></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>
+    </TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>
   );
 }

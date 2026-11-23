@@ -18,6 +18,36 @@ test("retirement preserves exact-source verification without issuing legacy depl
   assert.equal(existsSync(new URL("../../workflows/docker-cloud.yml", import.meta.url)), false);
 });
 
+// Owner decision (2026-11-12): the Runner chaos evals run on every admitted
+// master commit and report, but are not a prerequisite of the source proof
+// that image publication and Cloud discovery wait for.
+test("Runner chaos evals still run but stay out of the publication gate", async () => {
+  const { runnerChaosEvalsJob } = await import("../../../scripts/cloud-source-verification.mjs");
+  const jobs = Object.fromEntries([...workflow.split(/^jobs:\n/m)[1].matchAll(/^  ([a-z_]+):\n([\s\S]*?)(?=^  [a-z_]+:\n|(?![\s\S]))/gm)]
+    .map(([, name, body]) => [name, body]));
+  assert.deepEqual(Object.keys(jobs), ["admission", "verify", "runner_chaos_evals", "source_verified"]);
+
+  const chaos = jobs.runner_chaos_evals;
+  assert.match(chaos, new RegExp(`^    name: ${runnerChaosEvalsJob.replace(/[()]/g, "\\$&")}$`, "m"));
+  assert.match(chaos, /^    needs: admission$/m);
+  assert.match(chaos, /needs\.admission\.outputs\.admitted == 'true'/);
+  assert.match(chaos, /uses: \.\/\.github\/workflows\/runner-chaos-evals.yml\s+with:\s+ref: \$\{\{ github.sha \}\}/);
+  assert.doesNotMatch(chaos, /continue-on-error/);
+
+  // The proof needs exactly the source checks; re-adding chaos must fail here.
+  assert.deepEqual(jobs.source_verified.match(/^    needs: (.+)$/m)?.[1], "[verify]");
+  assert.match(jobs.verify, /runner_chaos_evals: false/);
+
+  // Release callers keep the evals as a gate through the default.
+  const releaseVerify = readFileSync(new URL("../../workflows/release-verify.yml", import.meta.url), "utf8");
+  assert.match(releaseVerify, /runner_chaos_evals:\n\s+description: [^\n]+\n\s+required: false\n\s+default: true\n\s+type: boolean/);
+  assert.match(releaseVerify, /^  runner_chaos_evals:\n(?:    #[^\n]*\n)*    if: \$\{\{ !inputs.runner_binaries_only && inputs.runner_chaos_evals \}\}$/m);
+  for (const file of ["release.yml", "release-smoke.yml"]) {
+    const caller = readFileSync(new URL(`../../workflows/${file}`, import.meta.url), "utf8");
+    assert.doesNotMatch(caller, /runner_chaos_evals:\s*false/, file);
+  }
+});
+
 test("standard image provenance and independent exact-source migrators remain available", () => {
   const docker = readFileSync(new URL("../../workflows/docker.yml", import.meta.url), "utf8");
   assert.match(docker, /target: production/);

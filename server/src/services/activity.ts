@@ -1,28 +1,34 @@
+import { dashboardActivityCondition, dashboardAuditConversationCondition } from "./responsibility-privacy.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
+import { acceptedFirstTurnCommentIdsSql } from "./queued-comment-delivery.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
+  authUsers,
   documentRevisions,
   documents,
   environmentLeases,
   environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issueComments,
   issueDocuments,
   issues,
   issueWorkProducts,
   workspaceOperations,
 } from "@paperclipai/db";
-import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, normalizeRunFailureCause, RUN_FAILURE_CAUSE_MAX_LENGTH } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
+import { missingRunLivenessCandidatesQuery } from "./run-liveness-backfill-query.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -32,6 +38,7 @@ export interface ActivityFilters {
   limit?: number;
   readCondition?: SQL<boolean>;
   caseReadCondition?: SQL<boolean>;
+  dashboardUserId?: string | null;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -42,8 +49,68 @@ export function normalizeActivityLimit(limit: number | undefined) {
   return Math.max(1, Math.min(MAX_ACTIVITY_LIMIT, Math.floor(limit ?? DEFAULT_ACTIVITY_LIMIT)));
 }
 
+const RUN_LIVENESS_BACKFILL_BATCH = 20;
+// Runs finalize with a liveness classification. The backfill only repairs rows
+// that missed it (older rows or a failed finalization), so a delay is safe.
+const RUN_LIVENESS_CLEAN_TTL_MS = 10 * 60_000;
+const RUN_LIVENESS_CLEAN_MAX_ENTRIES = 10_000;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A person-facing name for an activity actor, so readers never see a raw id such as local-board. */
+export function activityActorFallbackName(actorType: string, actorId: string) {
+  if (actorType === "user") return actorId === "local-board" ? "Board" : "A board member";
+  if (actorType === "agent") return "An agent";
+  if (actorType === "plugin") return "A plugin";
+  return "Paperclip";
+}
+
+/** Wake reasons recorded when a person presses Retry on a failed run or task. */
+const PERSON_RETRY_WAKE_REASONS = new Set(["retry_failed_run", "task_retry"]);
+
+export type RunRetriedBy = { kind: "person"; personName: string; summary: string } | { kind: "automatic"; summary: string };
+
+/**
+ * Who started a retry run, in plain words. A run's own invocation fields do
+ * not say this: a person's Retry is an on-demand run whose responsible user
+ * may also own automatic retries. The run's wake request records whether a
+ * person pressed Retry; automatic recovery creates an automation run. Returns
+ * null for a run that is not a retry or whose starter is not recorded, rather
+ * than guessing.
+ */
+export function describeRunRetry(
+  run: { retryOfRunId: string | null; taskRetryRequestId?: string | null; invocationSource: string | null },
+  wake: { reason: string | null; requestedByActorType: string | null } | null,
+  personName: string | null,
+): RunRetriedBy | null {
+  if (!run.retryOfRunId && !run.taskRetryRequestId) return null;
+  // The run's own start decides first: automatic recovery after a person's
+  // Task Retry inherits that Retry's request, but the person did not start it.
+  if (run.invocationSource === "automation") {
+    return { kind: "automatic", summary: "Paperclip retried the failed run automatically; no person pressed Retry." };
+  }
+  if (wake?.requestedByActorType === "user" && wake.reason && PERSON_RETRY_WAKE_REASONS.has(wake.reason)) {
+    const name = personName?.trim() || "A board member";
+    return { kind: "person", personName: name, summary: `${name} pressed Retry on the failed run. Paperclip did not retry it automatically.` };
+  }
+  return null;
+}
+
 export function activityService(db: Db) {
   const scheduledLivenessBackfills = new Set<string>();
+  // Issues whose last backfill pass left no missing liveness, keyed like
+  // `scheduledLivenessBackfills`. Values are the time the skip window ends.
+  // The map keeps insertion order, so the first entry is the oldest.
+  const livenessCleanUntil = new Map<string, number>();
+  function rememberLivenessClean(key: string) {
+    livenessCleanUntil.delete(key);
+    livenessCleanUntil.set(key, Date.now() + RUN_LIVENESS_CLEAN_TTL_MS);
+    while (livenessCleanUntil.size > RUN_LIVENESS_CLEAN_MAX_ENTRIES) {
+      const oldest = livenessCleanUntil.keys().next().value;
+      if (oldest === undefined) break;
+      livenessCleanUntil.delete(oldest);
+    }
+  }
   const issueIdAsText = sql<string>`${issues.id}::text`;
   const summarizedUsageJson = sql<Record<string, unknown> | null>`
     case
@@ -90,11 +157,26 @@ export function activityService(db: Db) {
   `.as("usageJson");
   // A denied user needs the selected connection's name to repair their task.
   // Other readers need the connection's existing human sharing permission.
+  // A malformed present Stop receipt must stay unconfirmed, not disappear.
   const summarizedResultJson = (viewerUserId: string | null) => sql<Record<string, unknown> | null>`
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
         'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
+        'executionCancellation', case when ${heartbeatRuns.resultJson} ? 'executionCancellation'
+          then jsonb_build_object('state', case
+            when jsonb_typeof(${heartbeatRuns.resultJson} -> 'executionCancellation') = 'object'
+              and ${heartbeatRuns.resultJson} #>> '{executionCancellation,state}' in ('requested', 'acknowledged')
+            then ${heartbeatRuns.resultJson} #>> '{executionCancellation,state}' else 'unknown' end) end,
+        'nativeCancellation', case
+          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'nativeCancellation') = 'object'
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,schema}' = 'paperclip.native-cancellation.v1'
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,runId}' = ${heartbeatRuns.id}::text
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,companyId}' = ${heartbeatRuns.companyId}::text
+            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,dispatchState}' in ('pending', 'acknowledged')
+          then jsonb_build_object('schema', 'paperclip.native-cancellation.v1',
+            'runId', ${heartbeatRuns.id}, 'companyId', ${heartbeatRuns.companyId},
+            'dispatchState', ${heartbeatRuns.resultJson} #>> '{nativeCancellation,dispatchState}') end,
         'configurationIncomplete', case
           when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
           then jsonb_build_object('reason', 'workspace_base_ref_unresolved')
@@ -109,7 +191,7 @@ export function activityService(db: Db) {
             )
           ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
-          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          in (${workspaceRestoreFailureCodesSql})
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
           then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
@@ -176,41 +258,9 @@ export function activityService(db: Db) {
   }
 
   async function backfillMissingRunLivenessForIssue(companyId: string, issueId: string) {
-    const runs = await db
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        status: heartbeatRuns.status,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-        resultJson: heartbeatRuns.resultJson,
-        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
-        stderrExcerpt: heartbeatRuns.stderrExcerpt,
-        error: heartbeatRuns.error,
-        errorCode: heartbeatRuns.errorCode,
-        continuationAttempt: heartbeatRuns.continuationAttempt,
-      })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          isNull(heartbeatRuns.livenessState),
-          sql`${heartbeatRuns.status} not in ('queued', 'running')`,
-          or(
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            sql`exists (
-              select 1
-              from ${activityLog}
-              where ${activityLog.companyId} = ${companyId}
-                and ${activityLog.entityType} = 'issue'
-                and ${activityLog.entityId} = ${issueId}
-                and ${activityLog.runId} = ${heartbeatRuns.id}
-            )`,
-          ),
-        ),
-      )
-      .limit(20);
+    const runs = await missingRunLivenessCandidatesQuery(db, companyId, issueId, RUN_LIVENESS_BACKFILL_BATCH);
 
-    if (runs.length === 0) return;
+    if (runs.length === 0) return 0;
 
     const issue = await db
       .select({
@@ -341,13 +391,24 @@ export function activityService(db: Db) {
         })
         .where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.livenessState)));
     }
+    return runs.length;
   }
 
   function scheduleRunLivenessBackfill(companyId: string, issueId: string) {
     const key = `${companyId}:${issueId}`;
     if (scheduledLivenessBackfills.has(key)) return;
+    const cleanUntil = livenessCleanUntil.get(key);
+    if (cleanUntil !== undefined) {
+      if (cleanUntil > Date.now()) return;
+      livenessCleanUntil.delete(key);
+    }
     scheduledLivenessBackfills.add(key);
     void backfillMissingRunLivenessForIssue(companyId, issueId)
+      .then((found) => {
+        // A partial batch means this pass classified every remaining candidate.
+        // Skip this issue for a while, so page reads do not repeat the lookup.
+        if (found < RUN_LIVENESS_BACKFILL_BATCH) rememberLivenessClean(key);
+      })
       .catch((err: unknown) => {
         logger.warn({ err, companyId, issueId }, "run liveness backfill failed");
       })
@@ -359,6 +420,7 @@ export function activityService(db: Db) {
   return {
     list: async (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
+        dashboardActivityCondition(filters.dashboardUserId), dashboardAuditConversationCondition(filters.dashboardUserId),
         filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       const limit = normalizeActivityLimit(filters.limit);
 
@@ -412,6 +474,21 @@ export function activityService(db: Db) {
         .orderBy(commentId, activityLog.action, asc(activityLog.createdAt), asc(activityLog.id));
     },
 
+    /** Adds actorName to each row; agents and API readers name the actor without its raw id. */
+    withActorNames: async <T extends { actorType: string; actorId: string; companyId: string }>(rows: T[]): Promise<Array<T & { actorName: string }>> => {
+      // actorId is free text; only a UUID can name a row in agents.
+      const agentIds = [...new Set(rows.filter(row => row.actorType === "agent" && UUID_PATTERN.test(row.actorId)).map(row => row.actorId))];
+      const userIds = [...new Set(rows.filter(row => row.actorType === "user" && row.actorId !== "local-board").map(row => row.actorId))];
+      const [agentRows, userRows] = await Promise.all([
+        agentIds.length ? db.select({ id: agents.id, companyId: agents.companyId, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)) : [],
+        userIds.length ? db.select({ id: authUsers.id, name: authUsers.name }).from(authUsers).where(inArray(authUsers.id, userIds)) : [],
+      ]);
+      const agentNames = new Map(agentRows.map(row => [`${row.companyId}:${row.id}`, row.name]));
+      const userNames = new Map(userRows.filter(row => row.name?.trim()).map(row => [row.id, row.name!.trim()]));
+      return rows.map(row => ({ ...row, actorName: (row.actorType === "agent" ? agentNames.get(`${row.companyId}:${row.actorId}`)
+        : row.actorType === "user" ? userNames.get(row.actorId) : undefined) ?? activityActorFallbackName(row.actorType, row.actorId) }));
+    },
+
     forIssue: (issueId: string, limit?: number) => {
       const query = db
         .select()
@@ -427,8 +504,19 @@ export function activityService(db: Db) {
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number) => {
-      scheduleRunLivenessBackfill(companyId, issueId);
+    runsForIssue: async (
+      companyId: string,
+      issueId: string,
+      viewerUserId: string | null = null,
+      limit?: number,
+      selectedRunIds?: string[],
+      // Read-only callers (the chat bootstrap) skip the background liveness
+      // backfill: it writes to runs and outlives the request's own limits.
+      // The task page's own `/runs` read still schedules it.
+      options: { skipLivenessBackfill?: boolean } = {},
+    ) => {
+      if (selectedRunIds && !selectedRunIds.length) return [];
+      if (!options.skipLivenessBackfill) scheduleRunLivenessBackfill(companyId, issueId);
       const runsQuery = db
         .select({
           runId: heartbeatRuns.id,
@@ -451,6 +539,9 @@ export function activityService(db: Db) {
             then 'This credential is not shared with the responsible user' else null end`,
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson(viewerUserId),
+          // Bounded cause of a generic failure code; validated below, legacy rows have none.
+          failureCause: sql<string | null>`case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'failureCause') = 'string'
+            then left(${heartbeatRuns.resultJson} ->> 'failureCause', ${RUN_FAILURE_CAUSE_MAX_LENGTH + 1}) end`,
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
@@ -462,10 +553,14 @@ export function activityService(db: Db) {
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
           wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
+          // Queued messages this run's own accepted first turn took.
+          firstTurnCommentIds: acceptedFirstTurnCommentIdsSql(heartbeatRuns),
           queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`,
           wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
           contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
           contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+          // A person's Task Retry links its saved request here instead of retryOfRunId.
+          taskRetryRequestId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskRetryRequestId'`,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -478,25 +573,32 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            or(
-              eq(heartbeatRuns.issueId, issueId),
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
+            sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
+              and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
+              or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
+            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
+            // The task's runs: linked directly, or through the task's activity.
+            // Collect the candidate ids first, each half by its own index. An
+            // OR with a per-run EXISTS walks every run of the company instead.
+            sql`${heartbeatRuns.id} in (
+              select hr.id from ${heartbeatRuns} hr
+              where hr.company_id = ${companyId} and hr.issue_id = ${issueId}
+              union
+              select al.run_id from ${activityLog} al
+              where al.company_id = ${companyId}
+                and al.entity_type = 'issue'
+                and al.entity_id = ${issueId}
+                and al.run_id is not null
+            )`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
       const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
 
-      if (runs.length === 0) return runs;
+      if (runs.length === 0) return [];
       const runIds = runs.map((run) => run.runId);
-      if (runIds.length === 0) return runs;
+      if (runIds.length === 0) return [];
 
       const exhaustionRowsQuery = db
         .select({
@@ -542,12 +644,39 @@ export function activityService(db: Db) {
           .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, "plan")))
           .limit(1)
         : Promise.resolve([]);
-      const [exhaustionRows, leaseRows, executionByRunId, [savedPlan]] = await Promise.all([
+      const retryWakeId = (run: (typeof runs)[number]) => run.taskRetryRequestId && UUID_PATTERN.test(run.taskRetryRequestId)
+        ? run.taskRetryRequestId : run.retryOfRunId ? run.wakeupRequestId : null;
+      const retryWakeIds = [...new Set(runs.flatMap(run => { const id = retryWakeId(run); return id ? [id] : []; }))];
+      const retryWakesQuery = retryWakeIds.length
+        ? db.select({
+          id: agentWakeupRequests.id,
+          reason: agentWakeupRequests.reason,
+          requestedByActorType: agentWakeupRequests.requestedByActorType,
+          requestedByActorId: agentWakeupRequests.requestedByActorId,
+        }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.id, retryWakeIds)))
+        : Promise.resolve([]);
+      const [exhaustionRows, leaseRows, executionByRunId, [savedPlan], retryWakes] = await Promise.all([
         exhaustionRowsQuery,
         leaseRowsQuery,
         executionProjectionsForRuns(db, companyId, runIds, new Date(), { retryDatabaseReads: true }),
         savedPlanQuery,
+        retryWakesQuery,
       ]);
+      const retryWakeById = new Map(retryWakes.map(wake => [wake.id, wake]));
+      const retryPersonIds = [...new Set(retryWakes.flatMap(wake =>
+        wake.requestedByActorType === "user" && wake.requestedByActorId && wake.requestedByActorId !== "local-board" ? [wake.requestedByActorId] : []))];
+      const retryPersonNames = new Map((retryPersonIds.length
+        ? await db.select({ id: authUsers.id, name: authUsers.name }).from(authUsers).where(inArray(authUsers.id, retryPersonIds))
+        : []).filter(row => row.name?.trim()).map(row => [row.id, row.name!.trim()]));
+      const retriedBy = (run: (typeof runs)[number]) => {
+        const wakeId = retryWakeId(run);
+        const wake = wakeId ? retryWakeById.get(wakeId) ?? null : null;
+        const actorId = wake?.requestedByActorId ?? null;
+        const personName = wake?.requestedByActorType === "user" && actorId
+          ? retryPersonNames.get(actorId) ?? activityActorFallbackName("user", actorId) : null;
+        return describeRunRetry(run, wake, personName);
+      };
       const retryExhaustedReasonByRunId = new Map<string, string>();
       for (const row of exhaustionRows) {
         if (!row.message || retryExhaustedReasonByRunId.has(row.runId)) continue;
@@ -572,6 +701,7 @@ export function activityService(db: Db) {
               : null;
         return {
           ...run,
+          failureCause: normalizeRunFailureCause(run.failureCause),
           resultJson: run.resultJson ? {
             ...run.resultJson,
             ...(Object.hasOwn(run.resultJson, "workspaceRestorePath") ? {
@@ -605,6 +735,7 @@ export function activityService(db: Db) {
               }
             : null,
           retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+          retriedBy: retriedBy(run),
         };
       });
     },
