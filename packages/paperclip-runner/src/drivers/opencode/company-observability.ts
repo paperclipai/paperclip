@@ -210,7 +210,6 @@ export function createOpenCodeCompanyObservability(input: {
           for (const [name, value] of Object.entries({ "gen_ai.usage.input_tokens": usage.input, "gen_ai.usage.output_tokens": usage.output,
             "gen_ai.usage.cache_read.input_tokens": cache.read, "gen_ai.usage.cache_creation.input_tokens": cache.write,
             "paperclip.cost.usd": usage.costUsd,
-            // Braintrust maps this OTLP attribute to the explicit USD cost metric.
             "braintrust.metrics.estimated_cost": usage.costUsd })) if (finite(value)) values[name] = value;
           const previous = turn.usage.get(key);
           turn.usage.set(key, { ...makeSpan("opencode.model.usage", previous?.start ?? time, values), id: previous?.id ?? id(), end: time });
