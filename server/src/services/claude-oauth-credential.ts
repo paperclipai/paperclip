@@ -140,8 +140,8 @@ export async function refreshClaudeOauth(
   const restated = typeof payload.refresh_token_expires_in === "number" && Number.isFinite(payload.refresh_token_expires_in) && payload.refresh_token_expires_in > 0
     && representableTime(now() + payload.refresh_token_expires_in * 1000)
     ? now() + payload.refresh_token_expires_in * 1000 : undefined;
-  const signInEndsAt = stored.refreshTokenExpiresAt !== undefined && restated !== undefined
-    ? Math.min(stored.refreshTokenExpiresAt, restated) : stored.refreshTokenExpiresAt ?? restated;
+  const saved = stored.refreshTokenExpiresAt !== undefined && representableTime(stored.refreshTokenExpiresAt) ? stored.refreshTokenExpiresAt : undefined;
+  const signInEndsAt = saved !== undefined && restated !== undefined ? Math.min(saved, restated) : saved ?? restated;
   const next: StoredClaudeOauth = {
     ...stored,
     accessToken: payload.access_token,

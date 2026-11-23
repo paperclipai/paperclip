@@ -44,6 +44,10 @@ describe("Claude OAuth credential", () => {
     const next = await refreshClaudeOauth(stored, { fetchImpl, now: () => now });
     expect(parseStoredClaudeOauth(next)).toMatchObject({ accessToken: "new-access", refreshToken: "new-refresh" });
     expect(claudeSignInEndsAt(next)).toBeNull();
+    // A stored end that is not a date does not hide a valid end that the provider states.
+    const restated = await refreshClaudeOauth({ ...stored, refreshTokenExpiresAt: 0 }, { now: () => now,
+      fetchImpl: vi.fn().mockImplementation(async () => new Response(JSON.stringify({ access_token: "new-access", refresh_token: "new-refresh", expires_in: 28800, refresh_token_expires_in: 2 * 86400 }))) });
+    expect(claudeSignInEndsAt(restated)).toBe(now + 2 * 86400_000);
     // A stored document that already carries such a number yields no date either.
     expect(claudeSignInEndsAt(JSON.stringify({ claudeAiOauth: { ...parseStoredClaudeOauth(next), refreshTokenExpiresAt: 1e300 } }))).toBeNull();
   });
