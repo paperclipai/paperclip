@@ -757,7 +757,7 @@ describe("Dashboard views", () => {
       expect(bar("area-fundraising").getAttribute("aria-expanded")).toBe("false");
 
       // Nothing to search or count on an empty dashboard.
-      api.overview.mockResolvedValue(responsibilityOverviewFixture([], []));
+      api.overview.mockResolvedValue(responsibilityOverviewFixture([], [], { areas: [] }));
       await remount();
       await flush();
       expect(host.querySelector("header [data-toolbar-search]")).toBeNull();
@@ -794,7 +794,7 @@ describe("Dashboard views", () => {
     });
 
     it("on an empty dashboard shows only the create module, naming the agent, with adding an area by hand kept quiet", async () => {
-      api.overview.mockResolvedValue(responsibilityOverviewFixture([], []));
+      api.overview.mockResolvedValue(responsibilityOverviewFixture([], [], { areas: [] }));
       await openOutlineV2();
       const root = outlineV2();
       expect(root.querySelector("[data-outline-v2-area]")).toBeNull();
@@ -847,7 +847,9 @@ describe("Dashboard views", () => {
       await act(async () => toggle.click());
       expect(toggle.getAttribute("aria-expanded")).toBe("false");
       expect(list.hidden).toBe(true);
-      expect(JSON.parse(localStorage.getItem(OUTLINE_V2_COLLAPSED_STORAGE_KEY)!)).toEqual(["area-fundraising"]);
+      const scope = JSON.stringify(["company-storybook", homeOverviewFixture.ownerUserId]);
+      const storageKey = `${OUTLINE_V2_COLLAPSED_STORAGE_KEY}:${scope}`;
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual(["area-fundraising"]);
 
       // A native button: Enter and Space press it, and it takes focus in tab order.
       toggle.focus();
@@ -860,7 +862,7 @@ describe("Dashboard views", () => {
       expect(bar("area-portfolio").getAttribute("aria-expanded")).toBe("true");
       await act(async () => bar("area-fundraising").click());
       expect(bar("area-fundraising").getAttribute("aria-expanded")).toBe("true");
-      expect(JSON.parse(localStorage.getItem(OUTLINE_V2_COLLAPSED_STORAGE_KEY)!)).toEqual([]);
+      expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual([]);
     });
 
     it("folds without storage", async () => {
