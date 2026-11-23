@@ -96,6 +96,22 @@ describe("native status authority", () => {
     });
   });
 
+  it("hands a responsible-user denial to recovery without a continuation or retry", () => {
+    const decision = arbitrate({
+      responsibleUserDenied: true,
+      assessment: assessment({
+        reportedDisposition: "yielded",
+        continuation: { summary: "Continue", nextAction: "Keep going" } as never,
+      }),
+    });
+    expect(decision).toMatchObject({
+      statusAction: "preserve",
+      toStatus: "in_progress",
+      reasonCode: "responsible_user_denied",
+      effects: [{ kind: "release_checkout" }],
+    });
+  });
+
   it("preserves the task status after a context compaction run", () => {
     for (const priorIssueStatus of ["in_progress", "in_review", "blocked", "todo"] as const) {
       expect(arbitrate({

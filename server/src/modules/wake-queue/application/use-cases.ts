@@ -1,3 +1,4 @@
+import { isResponsibleUserDenialCode } from "@paperclipai/shared";
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
 import { DEFERRED_WAKE_CONTEXT_KEY } from "../../../lib/queued-comment-context.js";
 import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun, withMergedWakeReasons } from "../domain/context.js";
@@ -679,6 +680,7 @@ async function runReleaseRecoveryTail(
       isWorkspaceValidationFailedRun: isWorkspaceValidationFailedRun(run),
       isConfigurationIncompleteFailedRun:
         isConfigurationIncompleteFailedRun(run),
+      isResponsibleUserDenialRun: isResponsibleUserDenialCode(run.errorCode),
       automaticRecoveryAlreadyFailed: didAutomaticRecoveryFail(
         run,
         expectedRetryReason,
