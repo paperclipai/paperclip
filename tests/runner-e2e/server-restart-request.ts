@@ -5,6 +5,7 @@ import { parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "../../
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "../../packages/paperclip-runner/src/drivers/acpx/kimi-closure-pins.js";
 import type { MatrixExecution } from "./types.js";
+import { antigravityCandidateAdmissionForExecution, isAntigravityAdmittedExecution } from "./antigravity-admission.js";
 import { controllerOutageForExecution, parseControllerOutage, type ControllerOutage } from "./controller-outage.js";
 import { parseRecoveryBinding, type RecoveryBinding } from "./controller-recovery-observer.js";
 import { parseFinalizationCrashBinding, type FinalizationCrashBinding } from "./finalization-crash-boundary.js";
@@ -22,6 +23,13 @@ export interface RestartRequest {
   recoveryBinding?: RecoveryBinding;
 }
 
+/** Company-bound startup authority for a pending candidate cell, if it needs one. */
+export function candidateAdmissionForExecution(execution: MatrixExecution, companyId: string, now = Date.now()): AcpxCandidateAdmission | undefined {
+  return execution.profile.qualificationCandidate === "antigravity"
+    ? antigravityCandidateAdmissionForExecution(execution, companyId, now)
+    : kimiCandidateAdmissionForExecution(execution, companyId, now);
+}
+
 export function kimiCandidateAdmissionForExecution(execution: MatrixExecution, companyId: string, now = Date.now()): AcpxCandidateAdmission | undefined {
   if (execution.suite.id !== "kimi-qualification" || execution.profile.qualificationCandidate !== "kimi"
     || QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending") return undefined;
@@ -37,18 +45,23 @@ export function kimiCandidateAdmissionForExecution(execution: MatrixExecution, c
     expiresAt: now + 60 * 60 * 1000 }, { companyId, agent: "kimi", model: execution.profile.model }, now);
 }
 
+/** The staged grant must belong to a selected explicit candidate cell and its target. */
 function selectedKimiCandidateAdmission(value: unknown, executionIds: readonly string[]): AcpxCandidateAdmission {
   const executions = executionIds.map(id => runnerMatrix.find(row => row.id === id));
-  if (!executions.length || executions.some(row => !row || row.suite.id !== "kimi-qualification"
-    || !row.suite.manualOnly || row.profile.id !== "runner-acpx-kimi" || row.profile.qualificationCandidate !== "kimi")) {
-    throw new Error("Kimi authority staging requires an explicit Kimi qualification selection");
-  }
   const record = value as Partial<AcpxCandidateAdmission> | null;
-  if (!record || typeof record.companyId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(record.companyId)) throw new Error("Invalid Kimi fixture company");
-  const admission = parseAcpxCandidateAdmission(value, { companyId: record.companyId, agent: "kimi", model: executions[0]!.profile.model });
-  if (!executions.some(row => row!.environment.expectedExecutionTarget.kind === "remote"
+  const agent = record?.agent;
+  if (!executions.length || (agent !== "kimi" && agent !== "antigravity") || executions.some(row => !row || (agent === "kimi"
+    ? row.suite.id !== "kimi-qualification" || !row.suite.manualOnly || row.profile.id !== "runner-acpx-kimi" || row.profile.qualificationCandidate !== "kimi"
+    : !isAntigravityAdmittedExecution(row)))) {
+    throw new Error("Candidate authority staging requires an explicit Kimi or Antigravity qualification selection");
+  }
+  if (!record || typeof record.companyId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(record.companyId)) throw new Error("Invalid candidate fixture company");
+  const matching = executions.filter(row => row!.profile.model === record.model);
+  if (!matching.length) throw new Error("Candidate fixture model does not match the selected execution");
+  const admission = parseAcpxCandidateAdmission(value, { companyId: record.companyId, agent, model: matching[0]!.profile.model });
+  if (!matching.some(row => row!.environment.expectedExecutionTarget.kind === "remote"
     ? admission.platform === "linux" && admission.architecture === "x64"
-    : admission.platform === process.platform && admission.architecture === process.arch)) throw new Error("Kimi fixture target does not match the selected execution");
+    : admission.platform === process.platform && admission.architecture === process.arch)) throw new Error("Candidate fixture target does not match the selected execution");
   return admission;
 }
 
@@ -78,10 +91,10 @@ export async function readRestartRequest(restartRequestPath: string, executionId
   const kimiAuthority = (value as { kimiCandidateAdmission?: unknown }).kimiCandidateAdmission;
   const kimiCandidateAdmission = kimiAuthority === undefined ? undefined : selectedKimiCandidateAdmission(kimiAuthority, executionIds);
   if (kimiCandidateAdmission && Object.keys(value).some(key => !["requestId", "kimiCandidateAdmission", "discardControllerCache"].includes(key))) {
-    throw new Error("Kimi startup authority staging cannot combine another restart operation");
+    throw new Error("Candidate startup authority staging cannot combine another restart operation");
   }
   if (kimiCandidateAdmission && (value as { discardControllerCache?: unknown }).discardControllerCache === true) {
-    throw new Error("Kimi startup authority staging cannot replace controller state");
+    throw new Error("Candidate startup authority staging cannot replace controller state");
   }
   const preserveRunner = (value as { preserveRunner?: unknown }).preserveRunner;
   const controllerDowntimeMs = (value as { controllerDowntimeMs?: unknown }).controllerDowntimeMs;

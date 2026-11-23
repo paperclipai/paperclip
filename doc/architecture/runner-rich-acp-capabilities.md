@@ -902,9 +902,16 @@ configuration defaults to full auto; it never overrides read-only task policy.
 Cursor pins `2026.09.26-dd393fe`; Copilot pins `1.0.88`; Pi pins wrapper `0.0.33`,
 runtime `1.0.0` (Pi profile v13), portable Node and its full npm lock. Native distribution hashes
 cover macOS ARM64, macOS x64 and Linux x64. Source-owned closure pins remain
-separate from profile declaration digests. Native admission reads held files,
-verifies every admitted byte, creates a private immutable snapshot and retains
-the existing process guardian. A manifest cannot supply its own trusted pin.
+separate from profile declaration digests. Native admission reads held files and
+verifies every admitted byte once per closure into a sealed, runner-owned
+verified store (`$PAPERCLIP_ACPX_NATIVE_STORE_ROOT`, default
+`$TMPDIR/paperclip-verified-native-<uid>`). Later launches bind the store by the
+kernel identity (device, inode, size, mtime, ctime) recorded when its bytes were
+hashed, re-hash only a changed installed source, and get a small private launch
+directory; the launcher rechecks the executable descriptor's identity before
+spawn. A failed store check retires the store and rebuilds it from a fresh full
+verification. The existing process guardian is retained. A manifest cannot
+supply its own trusted pin.
 
 Candidate credentials are only read from explicitly bound run environments:
 Cursor `CURSOR_API_KEY`/`CURSOR_AUTH_TOKEN`, Copilot `COPILOT_GITHUB_TOKEN`, Pi

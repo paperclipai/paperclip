@@ -11,6 +11,7 @@ import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-lo
 import { openRunnerWorkspaceFile } from "./runner-api-files.js";
 import type { NativeSession, createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
 import { bindManagedNativeCredentialTurn } from "./managed-native-credentials.js";
+import { AntigravityConnectionConfigurationError, antigravityConnectionRefusal } from "./antigravity-connection-policy.js";
 
 const AUTH_SECRET = "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET";
 const TOKEN_FILE = "acp_token.json";
@@ -45,8 +46,9 @@ export async function prepareAntigravityRunnerCredentials(input: {
   for (const key of [AUTH_SECRET, "GEMINI_HOME", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_ACCESS_TOKEN"]) delete environment[key];
   if (environment.GEMINI_API_KEY?.trim()) return { environment, home: null };
   delete environment.GEMINI_API_KEY;
-  if (input.remote) throw new Error("Google Antigravity subscription authentication is not qualified for remote environments. Select a Google API key or use the Paperclip host.");
-  if (input.lifecycleMode === "warm") throw new Error("Google Antigravity subscription authentication requires turn-by-turn sessions; warm sessions are not qualified.");
+  // Save and Test refuse these choices first; this is the run-time defense.
+  const refusal = antigravityConnectionRefusal({ apiKey: false, remote: input.remote, lifecycleMode: input.lifecycleMode, releasePending: false });
+  if (refusal) throw new AntigravityConnectionConfigurationError(refusal);
   const home = input.managedHome?.trim();
   if (!home) throw new Error("Google Antigravity requires a selected managed Google account or Google API key.");
   await reconcileRetainedGoogleCleanupForHome(home);

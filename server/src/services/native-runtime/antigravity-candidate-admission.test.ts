@@ -8,12 +8,18 @@ import { resolveNativeRuntimeMode } from "./runtime-mode.js";
 const companyId = "candidate-company";
 const model = "gemini-3.8-flash-low";
 const config = { provider: "acpx", acpxAgent: "antigravity", model };
-const localHost = process.platform === "darwin" && process.arch === "arm64";
 const distributions = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
-const admission = () => ({ schema: "paperclip.acpx-candidate-admission.v1", companyId,
-  agent: "antigravity", model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
-  nativeClosureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`,
-  platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 });
+const verifiedTargets = Object.keys(distributions.platforms).filter(target => distributions.platforms[target].provisioning === "verified-closure");
+const hostTarget = `${process.platform}-${process.arch}`;
+const localHost = verifiedTargets.includes(hostTarget);
+const targetAdmission = (target: string) => {
+  const [platform, architecture] = target.split("-");
+  return { schema: "paperclip.acpx-candidate-admission.v1", companyId,
+    agent: "antigravity", model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+    nativeClosureDigest: `sha256:${distributions.platforms[target].closureSha256}`,
+    platform, architecture, expiresAt: Date.now() + 60_000 };
+};
+const admission = () => targetAdmission(localHost ? hostTarget : "darwin-arm64");
 
 describe("Antigravity operator candidate admission", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -54,10 +60,21 @@ describe("Antigravity operator candidate admission", () => {
       .toMatchObject({ kind: "native", profile: { backend: "acpx_runtime" } });
   });
 
+  it("declares verified closures for macOS ARM and both Linux architectures", () => {
+    expect(verifiedTargets.sort()).toEqual(["darwin-arm64", "linux-arm64", "linux-x64"]);
+  });
+
+  it.runIf(localHost)("rejects another verified platform's exact record on this host", () => {
+    for (const target of verifiedTargets.filter(target => target !== hostTarget)) {
+      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, JSON.stringify(targetAdmission(target)));
+      expect(() => resolveAntigravityCandidateAdmission({ companyId, model })).toThrow(/does not match this host/);
+    }
+  });
+
   it.runIf(localHost).each([
     { expiresAt: 0 }, { profileDigest: `sha256:${"0".repeat(64)}` },
-    { nativeClosureDigest: `sha256:${"0".repeat(64)}` }, { platform: "linux" },
-    { architecture: "x64" }, { allowAll: true },
+    { nativeClosureDigest: `sha256:${"0".repeat(64)}` }, { platform: process.platform === "linux" ? "darwin" : "linux" },
+    { architecture: process.arch === "x64" ? "arm64" : "x64" }, { allowAll: true },
   ])("rejects expired, changed or broad operator authorization %j", changes => {
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, JSON.stringify({ ...admission(), ...changes }));
     expect(() => resolveAntigravityCandidateAdmission({ companyId, model })).toThrow();

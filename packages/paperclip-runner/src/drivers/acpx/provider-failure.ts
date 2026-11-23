@@ -31,7 +31,42 @@ const CATEGORIES = new Map<string, ProviderFailure["category"]>([
 const ACP_AUTH_REQUIRED = -32000;
 
 /** The typed AIR session failure ACPX reports beside its generic terminal error. */
-export type AcpxTerminalSessionFailure = { category: string; title?: string; details?: string };
+export type AcpxTerminalSessionFailure = {
+  category: string; title?: string; details?: string;
+  /** Structured provider fields an owned runtime patch reported beside the AIR failure. */
+  provider?: AcpxStructuredTurnFailure;
+};
+
+/** Google Antigravity's managed-turn failure, classified by Paperclip's native patch. */
+export type AcpxStructuredTurnFailure = {
+  kind: ProviderFailure["category"] | "connection";
+  httpStatus?: number; status?: string; retryAfterSeconds?: number;
+  model?: string; route?: "api_key" | "subscription";
+};
+
+export const ANTIGRAVITY_TURN_FAILURE_SCHEMA = "paperclip.antigravity.turn_failure.v1";
+/** A permanent model refusal: the server names the model; no provider text travels. */
+export const ANTIGRAVITY_MODEL_UNAVAILABLE = "antigravity_model_unavailable";
+const STRUCTURED_KINDS = new Set(["rate_limit", "quota_exhausted", "authentication", "permission", "model_unavailable",
+  "invalid_request", "overloaded", "timeout", "unknown", "connection"]);
+
+function structuredTurnFailure(meta: Record<string, unknown> | null): AcpxStructuredTurnFailure | undefined {
+  const value = meta?.paperclipAntigravityFailure;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entry = value as Record<string, unknown>;
+  if (entry.schema !== ANTIGRAVITY_TURN_FAILURE_SCHEMA || typeof entry.kind !== "string" || !STRUCTURED_KINDS.has(entry.kind)) return undefined;
+  const integer = (field: unknown, min: number, max: number) => Number.isInteger(field) && Number(field) >= min && Number(field) <= max ? Number(field) : undefined;
+  const httpStatus = integer(entry.httpStatus, 400, 599);
+  const retryAfterSeconds = integer(entry.retryAfterSeconds, 0, 7 * 24 * 60 * 60);
+  return {
+    kind: entry.kind as AcpxStructuredTurnFailure["kind"],
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(typeof entry.status === "string" && /^[A-Z_]{1,64}$/.test(entry.status) ? { status: entry.status } : {}),
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+    ...(typeof entry.model === "string" && entry.model.length > 0 && entry.model.length <= 512 && !/[\u0000-\u001f\u007f]/.test(entry.model) ? { model: entry.model } : {}),
+    ...(entry.route === "api_key" || entry.route === "subscription" ? { route: entry.route } : {}),
+  };
+}
 
 const TYPED_SESSION_FAILURE_CATEGORIES = new Set(["connection", "access", "limit", "service", "request", "unknown"]);
 
@@ -61,11 +96,13 @@ export function acpxTypedTerminalSessionFailure(meta: unknown): AcpxTerminalSess
   if (!air || !Number.isInteger(air.version) || Number(air.version) < 1) return null;
   const failure = object(air.sessionFailure);
   if (!failure || failure.severity !== "error") return null;
+  const provider = structuredTurnFailure(object(meta));
   // Keep complete provider text; consumers redact before bounding it.
   return {
     category: typeof failure.category === "string" && TYPED_SESSION_FAILURE_CATEGORIES.has(failure.category) ? failure.category : "unknown",
     ...(typeof failure.title === "string" ? { title: failure.title } : {}),
     ...(typeof failure.details === "string" ? { details: failure.details } : {}),
+    ...(provider ? { provider } : {}),
   };
 }
 
@@ -117,6 +154,19 @@ export function acpxProviderFailure(error: unknown, agent: string, phase: Provid
   if (typeof message !== "string" || !message) return null;
   const status = data.status ?? data.statusCode ?? detail.status
     ?? (agent === "claude" ? Number(/^API error: (\d{3})\b/.exec(message)?.[1]) : undefined);
+  const structured = sessionFailure?.provider;
+  if (structured) {
+    // The owned patch classified the native failure from its HTTP status and
+    // Google status; a model refusal carries no provider wording at all.
+    const modelRefused = structured.kind === "model_unavailable";
+    return createProviderFailure({ provider: agent, phase,
+      message: modelRefused ? "The selected model is not available for this connection." : title || message,
+      httpStatus: structured.httpStatus,
+      providerCode: modelRefused ? ANTIGRAVITY_MODEL_UNAVAILABLE : structured.status,
+      category: structured.kind === "connection" ? "unknown" : structured.kind,
+      retryAt: structured.retryAfterSeconds === undefined ? undefined : new Date(Date.now() + structured.retryAfterSeconds * 1000).toISOString(),
+      environment });
+  }
   const code = detail.type ?? detail.code ?? data.errorType ?? data.errorKind;
   const category = (typeof code === "string" ? CATEGORIES.get(code) : undefined)
     ?? (acp?.code === ACP_AUTH_REQUIRED ? "authentication" : undefined)

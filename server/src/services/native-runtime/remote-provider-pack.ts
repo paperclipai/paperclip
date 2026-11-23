@@ -1,6 +1,6 @@
 import { redactSensitiveText } from "../../redaction.js";
 import { nativeRunFailureCheck, type NativeRunTrace } from "./native-run-trace.js";
-import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { ANTIGRAVITY_DISTRIBUTION_PINS, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 /** Qualified ACPX releases carry their Linux image manifest and daemon. */
 export function shouldUseBundledAcpxImageAssets(input: {
@@ -10,7 +10,45 @@ export function shouldUseBundledAcpxImageAssets(input: {
 }): boolean {
   return input.requiresRemoteProviderPack && !input.configuredProviderPackRoot &&
     input.provider.kind === "acpx" &&
-    ["cursor", "copilot", "kimi"].includes(input.provider.agent);
+    ["cursor", "copilot", "kimi", "antigravity"].includes(input.provider.agent);
+}
+
+/**
+ * The patched Antigravity closure (never the vendor closure) this server
+ * release admits per platform. It is read from the Runner's generated pins, so
+ * re-pinning the closure in antigravity-distributions.json can never leave a
+ * stale server copy; a test keeps it equal to the `verified-closure` platforms.
+ */
+export const ANTIGRAVITY_PATCHED_CLOSURE_SHA256: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(Object.entries(ANTIGRAVITY_DISTRIBUTION_PINS).map(([target, pin]) => [target, pin.closureSha256])),
+);
+
+export type ProviderPackEntry = { version: string; profileDigest: string; closureDigest: string };
+
+/**
+ * The image pack contract for Antigravity. While the profile is pending the
+ * entry lives only under `candidateProviders`; after the flip only under
+ * `providers`. It targets Linux x64 and pins this release's profile and the
+ * patched closure. Returns null when admitted, else a refusal reason.
+ */
+export function antigravityProviderPackEntryRefusal(input: {
+  inventory: "providers" | "candidateProviders";
+  target: { platform: string; architecture: string };
+  inBoth: boolean;
+  entry: ProviderPackEntry;
+  releasePending: boolean;
+  profile: { agentServerVersion: string; commandDigest: string };
+  patchedClosures?: Readonly<Record<string, string>>;
+}): string | null {
+  const expectedInventory = input.releasePending ? "candidateProviders" : "providers";
+  if (input.inventory !== expectedInventory || input.inBoth) return "Antigravity is listed under the wrong pack inventory";
+  if (input.target.platform !== "linux" || input.target.architecture !== "x64") return "Antigravity pack target must be linux-x64";
+  const closure = (input.patchedClosures ?? ANTIGRAVITY_PATCHED_CLOSURE_SHA256)["linux-x64"];
+  if (!closure || input.entry.closureDigest !== `sha256:${closure}`) return "Antigravity closure is not this release's patched closure";
+  if (input.entry.version !== input.profile.agentServerVersion || input.entry.profileDigest !== input.profile.commandDigest) {
+    return "Antigravity profile does not match this release";
+  }
+  return null;
 }
 
 /** A run may adopt a same-content pack from another build only when no saved or operator-selected identity binds it. */

@@ -612,3 +612,100 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         cleanup.and(self.credentials.poll(true))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::durable::{AcpxLaunchProfile, DurableRunnerConfig, QualifiedLaunchArtifact};
+    use std::time::Duration;
+
+    fn config(state_dir: &std::path::Path, profile: AcpxLaunchProfile) -> DurableRunnerConfig {
+        DurableRunnerConfig {
+            connect_url: "ws://127.0.0.1/runner".to_owned(),
+            ca_bundle_path: None,
+            state_dir: state_dir.to_owned(),
+            runner_instance_id: "runner-1".to_owned(),
+            environment_lease_id: "lease-1".to_owned(),
+            run_id: "run-1".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            item_id: "item-1".to_owned(),
+            runner_version: "0.0.0".to_owned(),
+            runner_digest: "sha256:test".to_owned(),
+            acpx_launch_profile: Some(profile),
+            opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
+            max_outbox_bytes: 1024 * 1024,
+            p0_reserve_bytes: 64 * 1024,
+            max_frame_bytes: 1024 * 1024,
+            reconnect_delay: Duration::from_millis(1),
+            reconnect_grace: None,
+            max_runtime: Duration::from_secs(60),
+            turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
+        }
+    }
+
+    // The candidate refusal to adopt a prior activation keys on an Antigravity
+    // grant. Once the profile is released no grant is admitted, and an
+    // ordinary runner recovers the prior activation.
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    fn released_antigravity_without_grant_recovers_a_prior_activation() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-native-released-antigravity-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(CODEX_PROVIDER_STATE_FILE), b"{}").unwrap();
+        let ordinary = AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/fixture/node"),
+            args: vec!["/fixture/sidecar.cjs".to_owned()],
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: PathBuf::from("/fixture/node"),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            }],
+        };
+        let candidate = config(
+            &directory,
+            AcpxLaunchProfile {
+                candidate_admission: Some(crate::acpx_candidate_admission::test_admission(
+                    "run-1",
+                    "session-1",
+                )),
+                ..ordinary.clone()
+            },
+        );
+        candidate.validate().unwrap();
+        let refused = NativeProviderCommandExecutor::with_runner_config(&directory, &candidate)
+            .select_recovery()
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("cannot adopt a prior durable runner activation"),
+            "{refused}"
+        );
+
+        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
+        assert!(candidate.validate().is_err());
+        let ordinary = config(&directory, ordinary);
+        ordinary.validate().unwrap();
+        let mut recovered =
+            NativeProviderCommandExecutor::with_runner_config(&directory, &ordinary);
+        recovered.select_recovery().unwrap();
+        assert!(matches!(
+            recovered.selected,
+            Some(SelectedExecutor::LocalFacade(_))
+        ));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}

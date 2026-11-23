@@ -1,0 +1,144 @@
+import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Both release states are exercised against the same build: the pending
+// candidate declaration that ships today, and the qualified declaration the
+// flip produces (no qualificationStatus, profile version bumped), as the Kimi
+// probe tests stub it.
+const release = vi.hoisted(() => ({ pending: true }));
+vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
+  const { qualificationStatus: _pending, ...qualified } = original.QUALIFIED_ACPX_PROFILES.antigravity;
+  const released = { ...qualified, agentProfileVersion: qualified.agentProfileVersion + 1 };
+  const profiles = { ...original.QUALIFIED_ACPX_PROFILES };
+  Object.defineProperty(profiles, "antigravity", { enumerable: true,
+    get: () => release.pending ? original.QUALIFIED_ACPX_PROFILES.antigravity : released });
+  return { ...original, QUALIFIED_ACPX_PROFILES: profiles };
+});
+
+import { NativeProviderStateIncompatibleError, QUALIFIED_ACPX_PROFILES, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { ANTIGRAVITY_CANDIDATE_ADMISSION_ENV } from "./acpx-qualification.js";
+import {
+  antigravityForcesSameSessionRecovery,
+  antigravityReleasePending,
+  antigravityUsesRunScopedState,
+  assertAntigravityExecutionAdmissible,
+} from "./antigravity-release.js";
+import { buildNativeExecutionInput } from "./native-execution-input.js";
+import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode, scopedRunnerdStateRoot } from "./native-session-executor.js";
+import { NATIVE_PROVIDER_STATE_INCOMPATIBLE } from "./native-session-resume.js";
+import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+
+const companyId = "10000000-0000-4000-8000-000000000001";
+const model = "gemini-3.8-flash-low";
+const localHost = process.platform === "darwin" && process.arch === "arm64";
+const distributions = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
+
+function antigravityExecution(input: { runId?: string; issueId?: string; workspaceId?: string; sessionId?: string } = {}) {
+  const runId = input.runId ?? "40000000-0000-4000-8000-000000000004";
+  const execution = buildNativeExecutionInput({
+    companyId, runId, agentId: "30000000-0000-4000-8000-000000000003",
+    issue: { id: input.issueId ?? "20000000-0000-4000-8000-000000000002", identifier: "AG-1", title: "Test", description: null, workMode: "standard" },
+    taskPrompt: "Only the current turn",
+    workspace: { id: input.workspaceId ?? "90000000-0000-4000-8000-000000000009", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId: input.sessionId ?? "60000000-0000-4000-8000-000000000006",
+    provider: "acpx", acpxAgent: "antigravity", model, acpxPermissionMode: "approve-all",
+    completionContract: { id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+      contract: { revision: "1", objective: "Test", criteria: [{ id: "objective", requirement: "Answer" }] } },
+    runtimeContext: nativeRuntimeContextFixture(),
+  }) as NativeExecutionInput;
+  // The execution input binds the profile version the running release declares.
+  (execution.provider as { profile: { agentProfileVersion: number } }).profile.agentProfileVersion =
+    QUALIFIED_ACPX_PROFILES.antigravity.agentProfileVersion;
+  return execution;
+}
+
+const candidateGrant = () => JSON.stringify({ schema: "paperclip.acpx-candidate-admission.v1", companyId,
+  agent: "antigravity", model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+  nativeClosureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`,
+  platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 });
+
+afterEach(() => { release.pending = true; vi.unstubAllEnvs(); });
+
+describe("Antigravity executor admission", () => {
+  const admissible = (execution: NativeExecutionInput, changes: Partial<Parameters<typeof assertAntigravityExecutionAdmissible>[0]> = {}) =>
+    () => assertAntigravityExecutionAdmissible({ execution, useRunnerd: true, remoteTarget: false, ...changes });
+
+  it("requires the exact local per-turn candidate grant while the profile is pending", () => {
+    expect(antigravityReleasePending()).toBe(true);
+    const execution = antigravityExecution();
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, undefined);
+    expect(admissible(execution)).toThrow(/paperclip_runner_antigravity_candidate_ineligible/);
+    if (!localHost) return;
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant());
+    expect(admissible(execution)).not.toThrow();
+    for (const change of [{ remoteTarget: true }, { restartRecovery: { kind: "same_run" } }, { useRunnerd: false }, { backend: {} }]) {
+      expect(admissible(execution, change)).toThrow(/candidate_ineligible/);
+    }
+    const warm = { ...execution, session: { ...execution.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 1 } } } as NativeExecutionInput;
+    expect(admissible(warm)).toThrow(/candidate_ineligible/);
+  });
+
+  it("takes the general qualified path after the flip: no grant, restart recovery, remote and warm targets", () => {
+    release.pending = false;
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, undefined);
+    const execution = antigravityExecution();
+    expect(admissible(execution)).not.toThrow();
+    expect(admissible(execution, { remoteTarget: true, restartRecovery: { kind: "reattach_remote_runner" } })).not.toThrow();
+    const preconfigured = { ...execution, homeMode: "preconfigured" } as NativeExecutionInput;
+    expect(admissible(preconfigured)).not.toThrow();
+  });
+});
+
+describe("Antigravity recovery policy and state root", () => {
+  it("forces the candidate's same-session recovery and per-run root only while pending", () => {
+    const execution = antigravityExecution();
+    const nextRun = antigravityExecution({ runId: "50000000-0000-4000-8000-000000000005" });
+    expect(antigravityForcesSameSessionRecovery(execution.provider)).toBe(true);
+    expect(antigravityUsesRunScopedState(execution)).toBe(true);
+    expect(scopedRunnerdStateRoot(execution)).not.toBe(scopedRunnerdStateRoot(nextRun));
+
+    release.pending = false;
+    expect(antigravityForcesSameSessionRecovery(execution.provider)).toBe(false);
+    expect(antigravityUsesRunScopedState(execution)).toBe(false);
+    // Qualified: one root per session scope, kept across the session's runs.
+    expect(scopedRunnerdStateRoot(execution)).toBe(scopedRunnerdStateRoot(nextRun));
+  });
+
+  it.each([false, true])("never shares a state root across subtasks or workspaces (pending=%s)", pending => {
+    release.pending = pending;
+    const parent = antigravityExecution();
+    const subtask = antigravityExecution({ issueId: "21000000-0000-4000-8000-000000000002",
+      workspaceId: "91000000-0000-4000-8000-000000000009", sessionId: "61000000-0000-4000-8000-000000000006" });
+    const otherWorkspace = antigravityExecution({ workspaceId: "92000000-0000-4000-8000-000000000009" });
+    const roots = new Set([parent, subtask, otherWorkspace].map(scopedRunnerdStateRoot));
+    expect(roots.size).toBe(3);
+  });
+});
+
+describe("Antigravity state saved by the pending candidate, resumed by the qualified release", () => {
+  it("refuses the candidate's in-flight state permanently and by name, never as a retryable interruption", () => {
+    // Saved before the deploy under the candidate's profile version.
+    const saved = antigravityExecution();
+    release.pending = false;
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, undefined);
+    let refusal: unknown;
+    try {
+      assertAntigravityExecutionAdmissible({ execution: saved, useRunnerd: true, remoteTarget: false,
+        restartRecovery: { kind: "same_run_resume" } });
+    } catch (error) { refusal = error; }
+    expect(refusal).toBeInstanceOf(NativeProviderStateIncompatibleError);
+    const code = nativeSessionFailureSourceCode(refusal);
+    expect(code).toBe(NATIVE_PROVIDER_STATE_INCOMPATIBLE);
+    expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({
+      phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STATE_INCOMPATIBLE, nextAttemptAt: null });
+  });
+
+  it("refuses an older qualified profile version by the same name", () => {
+    release.pending = false;
+    const saved = antigravityExecution();
+    (saved.provider as { profile: { agentProfileVersion: number } }).profile.agentProfileVersion -= 1;
+    expect(() => assertAntigravityExecutionAdmissible({ execution: saved, useRunnerd: true, remoteTarget: false }))
+      .toThrow(NativeProviderStateIncompatibleError);
+  });
+});

@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createNativeRunTrace } from "./native-run-trace.js";
-import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { readFileSync } from "node:fs";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, antigravityProviderPackEntryRefusal, prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
@@ -172,7 +173,7 @@ describe("same-content pack reuse across builds", () => {
 
 describe("ordinary ACPX image artifacts", () => {
   const provider = (agent: string) => ({ kind: "acpx", agent, model: "selected-model" } as Parameters<typeof shouldUseBundledAcpxImageAssets>[0]["provider"]);
-  it.each(["cursor", "copilot"])("selects bundled artifacts for remote %s without an operator override", agent => {
+  it.each(["cursor", "copilot", "kimi", "antigravity"])("selects bundled artifacts for remote %s without an operator override", agent => {
     expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(true);
     expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: false, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(false);
     expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: "/explicit/pack", provider: provider(agent) })).toBe(false);
@@ -182,6 +183,52 @@ describe("ordinary ACPX image artifacts", () => {
   });
   it("does not admit a non-ACPX provider through bundled image selection", () => {
     expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: { kind: "codex", model: null } })).toBe(false);
+  });
+});
+
+describe("Google Antigravity image pack identity", () => {
+  const distributions = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
+  const profile = { agentServerVersion: "1.4.3", commandDigest: `sha256:${"c".repeat(64)}` };
+  const patchedClosures = { "linux-x64": "d".repeat(64) };
+  const entry = { version: profile.agentServerVersion, profileDigest: profile.commandDigest, closureDigest: `sha256:${"d".repeat(64)}` };
+  const base = { inventory: "providers" as const, target: { platform: "linux", architecture: "x64" }, inBoth: false,
+    entry, releasePending: false, profile, patchedClosures };
+
+  it("admits exactly the patched closures pinned in antigravity-distributions.json, never a vendor closure", () => {
+    const verified = Object.fromEntries(Object.entries(distributions.platforms as Record<string, { provisioning: string; closureSha256?: string }>)
+      .filter(([, platform]) => platform.provisioning === "verified-closure").map(([key, platform]) => [key, platform.closureSha256]));
+    expect(ANTIGRAVITY_PATCHED_CLOSURE_SHA256).toEqual(verified);
+    for (const [key, closure] of Object.entries(ANTIGRAVITY_PATCHED_CLOSURE_SHA256)) {
+      expect(closure).not.toBe(distributions.platforms[key].vendorClosureSha256);
+    }
+  });
+
+  it("admits the real linux-x64 image pack closure and refuses its vendor closure", () => {
+    const linux = distributions.platforms["linux-x64"];
+    const real = { ...base, patchedClosures: undefined, entry: { ...entry, closureDigest: `sha256:${linux.closureSha256}` } };
+    expect(antigravityProviderPackEntryRefusal(real)).toBeNull();
+    expect(antigravityProviderPackEntryRefusal({ ...real, entry: { ...real.entry, closureDigest: `sha256:${linux.vendorClosureSha256}` } }))
+      .toMatch(/patched closure/);
+    expect(antigravityProviderPackEntryRefusal({ ...real, entry: { ...real.entry, closureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}` } }))
+      .toMatch(/patched closure/);
+  });
+
+  it("lists the qualified entry under providers and the pending one under candidateProviders, never both", () => {
+    expect(antigravityProviderPackEntryRefusal(base)).toBeNull();
+    expect(antigravityProviderPackEntryRefusal({ ...base, releasePending: true, inventory: "candidateProviders" })).toBeNull();
+    expect(antigravityProviderPackEntryRefusal({ ...base, inventory: "candidateProviders" })).toMatch(/wrong pack inventory/);
+    expect(antigravityProviderPackEntryRefusal({ ...base, releasePending: true })).toMatch(/wrong pack inventory/);
+    expect(antigravityProviderPackEntryRefusal({ ...base, inBoth: true })).toMatch(/wrong pack inventory/);
+  });
+
+  it.each([
+    ["the vendor closure", { entry: { ...entry, closureDigest: `sha256:${"e".repeat(64)}` } }],
+    ["an unpinned Linux closure", { patchedClosures: {} }],
+    ["another target", { target: { platform: "linux", architecture: "arm64" } }],
+    ["an older profile", { entry: { ...entry, profileDigest: `sha256:${"f".repeat(64)}` } }],
+    ["an older runtime version", { entry: { ...entry, version: "1.4.2" } }],
+  ])("refuses %s", (_name, change) => {
+    expect(antigravityProviderPackEntryRefusal({ ...base, ...change })).not.toBeNull();
   });
 });
 
