@@ -89,6 +89,8 @@ type ExecutionReconciliationInput = {
   decision: ExecutionReconciliation | undefined;
   /** Board-only source repair: never authorize a continuation of this run. */
   workspaceRepairOnly?: boolean;
+  evidenceOnly?: boolean;
+  nativeOwnerTransition?: { sourceAgentId: string; currentOwnerAgentId: string };
   controllerContainment?: { actionId: string; actorId: string };
 };
 
@@ -141,6 +143,15 @@ async function validateExecutionReconciliationInScope(input: ExecutionReconcilia
     review?.status === "pending" &&
     review.currentParticipant?.type === "agent" &&
     review.currentParticipant.agentId === run?.agentId;
+  const transition = input.nativeOwnerTransition;
+  const nativeOwnerSettlement = input.evidenceOnly === true && !!transition
+    && run?.runtimeMode === "native" && run.agentId === transition.sourceAgentId
+    && task?.assigneeAgentId === transition.currentOwnerAgentId
+    && agentId === transition.currentOwnerAgentId && run.agentId !== agentId
+    && run.status === "failed" && run.finishedAt !== null;
+  if (transition && !nativeOwnerSettlement) {
+    throw conflict("The exact native source and current owner no longer match the evidence settlement.");
+  }
   const retainedWorkspace = hasRequiredWorkspaceRecovery(run?.resultJson);
   const repairOnly = input.workspaceRepairOnly === true && retainedWorkspace;
   const terminalRepairSource = ["failed", "interrupted", "timed_out", "cancelled"].includes(run?.status ?? "") ||
@@ -149,7 +160,7 @@ async function validateExecutionReconciliationInScope(input: ExecutionReconcilia
     (input.workspaceRepairOnly && !retainedWorkspace) ||
     !run ||
     !task ||
-    (!repairOnly && (task.assigneeAgentId !== agentId || (run.agentId !== agentId && !isCurrentReviewer))) ||
+    (!repairOnly && (task.assigneeAgentId !== agentId || (run.agentId !== agentId && !isCurrentReviewer && !nativeOwnerSettlement))) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
     !terminalRepairSource
   ) {
@@ -228,6 +239,16 @@ async function validateExecutionReconciliationInScope(input: ExecutionReconcilia
     throw conflict(
       "The previous execution environment has not finished releasing its authority.",
     );
+  if (input.evidenceOnly) {
+    const sourceLeases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    ));
+    if (sourceLeases.some(lease => lease.provider === "local"
+      ? !lease.releasedAt || lease.cleanupStatus !== "success" || !["released", "expired", "failed"].includes(lease.status)
+      : !hasRemoteTerminationReceipt(lease))) {
+      throw conflict("The exact source lease cleanup and provider stop are not verified.");
+    }
+  }
   if (!repairOnly) await buildExecutionContinuation({
     db,
     companyId,
@@ -250,10 +271,13 @@ export async function markExecutionReconciliation(
   decision: ExecutionReconciliation,
   actorId: string,
   deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
-  options?: { workspaceRepairOnly?: boolean; controllerContainmentOnly?: boolean },
+  options?: { workspaceRepairOnly?: boolean; controllerContainmentOnly?: boolean; evidenceOnly?: boolean },
 ) {
   if (options?.controllerContainmentOnly && (!decision.controllerStopped || !decision.controllerAuthorityDigest || deliveryOwner))
     throw conflict("Controller containment records no automatic continuation.");
+  if (options?.evidenceOnly && (deliveryOwner || options.workspaceRepairOnly || options.controllerContainmentOnly)) {
+    throw conflict("Evidence settlement cannot authorize a delivery owner or workspace repair.");
+  }
   if (options?.workspaceRepairOnly && (deliveryOwner || !hasRequiredWorkspaceRecovery(action.evidence))) {
     throw conflict("Workspace repair must target the retained source without a continuation owner.");
   }
@@ -280,9 +304,11 @@ export async function markExecutionReconciliation(
     }
   }
   await db.transaction(async tx => {
-    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
-    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
-    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
+    if (!options?.evidenceOnly) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
+    }
     await tx
       .update(nativeRunFinalizations)
       .set({
@@ -305,7 +331,7 @@ export async function markExecutionReconciliation(
             actorId,
             recordedAt: new Date().toISOString(),
           },
-          continuationDelivery: options?.workspaceRepairOnly || options?.controllerContainmentOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
+          continuationDelivery: options?.workspaceRepairOnly || options?.controllerContainmentOnly || options?.evidenceOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
           ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
         },
       })

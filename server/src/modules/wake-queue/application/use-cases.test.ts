@@ -125,6 +125,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     hasExplicitBlockerPath: vi.fn(async () => false),
     isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
     isImmediateRecoverySourceBlocked: vi.fn(async () => false),
+    isRunInCurrentExecutionReviewAttempt: vi.fn(async () => true),
     queueReviewParticipantRecoveryRun: vi.fn(async () => runSummary("review-recovery")),
     queueImmediateRecoveryRun: vi.fn(async () => runSummary("immediate-recovery")),
     ...overrides,
@@ -167,6 +168,51 @@ describe("releaseIssueExecution", () => {
       expect(result.outcome.kind).toBe("promoted");
     }
   });
+  it.each([
+    { currentAttempt: false, expectedOutcome: "released" },
+    { currentAttempt: true, expectedOutcome: "blocked" },
+  ])("uses the current review decision boundary before recovery classification (%s)", async ({ currentAttempt, expectedOutcome }) => {
+    const decisionId = "decision-1";
+    const issue = {
+      ...ISSUE,
+      status: "in_review",
+      assigneeAgentId: null,
+      executionState: {
+        status: "pending",
+        currentParticipant: { type: "agent", agentId: RUN.agentId },
+        lastDecisionId: decisionId,
+      },
+    };
+    const run = {
+      ...RUN,
+      status: "cancelled",
+      contextSnapshot: {
+        wakeReason: "execution_review_requested",
+        retryReason: "execution_review_participant_recovery",
+      },
+    };
+    const transaction = createFakeTransaction({
+      isRunInCurrentExecutionReviewAttempt: vi.fn(async () => currentAttempt),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, issue, run),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(result.outcome.kind).toBe(expectedOutcome);
+    expect(transaction.isRunInCurrentExecutionReviewAttempt).toHaveBeenCalledWith({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      runId: run.id,
+      decisionId,
+    });
+    expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
+  });
+
+
+
   it.each([false, true])("preserves a paused head without blocking an eligible follower (%s)", async withFollower => {
     const paused = wakeCandidate({ id: "paused-wake", wakeReason: "issue_comment_mentioned", queuedCommentIds: ["paused-comment"] });
     const ready = wakeCandidate({ id: "ready-wake", agentId: "ready-agent", queuedCommentIds: ["ready-comment"] });
@@ -819,6 +865,61 @@ describe("releaseIssueExecution", () => {
     const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
     expect(result.outcome.kind).toBe("queued_recovery");
     expect(transaction.queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["todo", "assignment_recovery"],
+    ["in_progress", "issue_continuation_needed"],
+  ] as const)("does not count a recovery run's confirmed hand-over stop as a failed recovery (%s)", async (status, retryReason) => {
+    const stopped = { ...RUN, status: "cancelled", errorCode: "issue_reassigned", contextSnapshot: { retryReason } };
+    const confirmed = createFakeTransaction();
+    const confirmedRecovery = createFakeRecovery();
+    const result = await createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), confirmed, { ...ISSUE, status }, { ...stopped, reassignmentStopConfirmed: true }),
+      recovery: confirmedRecovery,
+    })({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(confirmed.queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
+    expect(confirmedRecovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+
+    const unconfirmedRecovery = createFakeRecovery();
+    const unconfirmed = await createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), createFakeTransaction(), { ...ISSUE, status }, stopped),
+      recovery: unconfirmedRecovery,
+    })({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(unconfirmed.outcome.kind).toBe("blocked");
+    expect(unconfirmedRecovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not count a review participant recovery run's confirmed hand-over stop as a failed review recovery", async () => {
+    const reviewIssue = {
+      ...ISSUE,
+      status: "in_review",
+      executionState: { status: "pending", currentParticipant: { type: "agent", agentId: RUN.agentId } },
+    } as IssueSnapshot;
+    const stopped = {
+      ...RUN,
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+      contextSnapshot: { retryReason: "execution_review_participant_recovery" },
+    };
+    const confirmed = createFakeTransaction();
+    const confirmedRecovery = createFakeRecovery();
+    const result = await createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), confirmed, reviewIssue, { ...stopped, reassignmentStopConfirmed: true }),
+      recovery: confirmedRecovery,
+    })({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).not.toBe("blocked");
+    expect(confirmed.queueReviewParticipantRecoveryRun).toHaveBeenCalledTimes(1);
+    expect(confirmedRecovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+
+    const unconfirmedRecovery = createFakeRecovery();
+    const unconfirmed = await createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), createFakeTransaction(), reviewIssue, stopped),
+      recovery: unconfirmedRecovery,
+    })({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(unconfirmed.outcome.kind).toBe("blocked");
+    expect(unconfirmedRecovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(1);
   });
 
   it("throws WakeQueueApplicationError with code responsible_user_unresolved for a recovery run, without queuing it", async () => {

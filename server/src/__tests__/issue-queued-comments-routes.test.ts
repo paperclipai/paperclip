@@ -2531,4 +2531,54 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(successor.status).toBe("queued");
     expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
   });
+  it.each(["incoming-in-progress", "incoming-blocked", "existing-blocked", "clear-return", "foreign-reviewer"])("preserves dependency-aware review return %s", async (mode) => {
+    const seeded = await seedQueue();
+    const implementerId = randomUUID(), blockerId = randomUUID(), stageId = randomUUID();
+    await db.delete(agentWakeupRequests);
+    await db.insert(agents).values({id: implementerId, companyId: seeded.companyId, name: "Implementer", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {command: "/bin/true"}, runtimeConfig: {heartbeat: {wakeOnDemand: false}}, permissions: {}});
+    await db.insert(issues).values({id: blockerId, companyId: seeded.companyId, title: "Required verifier transport unavailable", status: "in_progress", assigneeAgentId: implementerId});
+    await db.update(agents).set({adapterType: "codex_local"}).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({runtimeMode: "legacy", wakeupRequestId: null}).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({status: "in_review", checkoutRunId: seeded.runId,
+      executionPolicy: {mode: "normal", commentRequired: true, stages: [{id: stageId, type: "review", approvalsNeeded: 1, participants: [{id: randomUUID(), type: "agent", agentId: seeded.agentId}]}]},
+      executionState: {status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review", currentParticipant: {type: "agent", agentId: seeded.agentId}, returnAssignee: {type: "agent", agentId: implementerId}, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null}
+    }).where(eq(issues.id, seeded.issueId));
+    if (mode === "existing-blocked") await db.execute(sql`insert into issue_relations(company_id, issue_id, related_issue_id, type) values (${seeded.companyId}, ${blockerId}, ${seeded.issueId}, 'blocks')`);
+    const client = app(seeded.companyId, "queue-owner", {agentId: mode === "foreign-reviewer" ? implementerId : seeded.agentId, runId: seeded.runId});
+    const result = await request(client).patch(`/api/issues/${seeded.issueId}`).send({status: mode.endsWith("blocked") ? "blocked" : "in_progress", ...(mode.startsWith("incoming") ? {blockedByIssueIds: [blockerId]} : {}), comment: "Changes requested: required verification is blocked by an unavailable transport."});
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    const [saved] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    const decisions = await db.execute(sql`select * from issue_execution_decisions where issue_id = ${seeded.issueId}`);
+    if (mode === "incoming-in-progress") {
+      expect(result.status).toBe(422);
+      expect(result.body.error).toBe("Issue is blocked by unresolved blockers");
+      expect(run.status).toBe("cancelled");
+      expect(run.errorCode).toBe("issue_reassigned");
+      expect(saved.executionState?.status).toBe("pending");
+      expect(decisions).toHaveLength(0);
+      return;
+    }
+    if (mode === "foreign-reviewer") {
+      expect(result.status).toBe(403);
+      expect(run.status).toBe("running");
+      expect(decisions).toHaveLength(0);
+      return;
+    }
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.body).toMatchObject({status: mode === "clear-return" ? "in_progress" : "blocked", assigneeAgentId: implementerId, executionState: {status: "changes_requested", lastDecisionOutcome: "changes_requested"}});
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({actor_agent_id: seeded.agentId, outcome: "changes_requested"});
+    const replay = await request(client).patch(`/api/issues/${seeded.issueId}`).send({status: "blocked", comment: "Duplicate reviewer return"});
+    expect(replay.status).toBeGreaterThanOrEqual(400);
+    expect(await db.execute(sql`select * from issue_execution_decisions where issue_id = ${seeded.issueId}`)).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0].executionState?.lastDecisionId).toBe(saved.executionState?.lastDecisionId);
+
+    if (mode !== "clear-return") {
+      const relations = await db.execute(sql`select * from issue_relations where related_issue_id = ${seeded.issueId} and type = 'blocks'`);
+      expect(relations).toHaveLength(1);
+      expect(relations[0].issue_id).toBe(blockerId);
+    }
+
+  });
+
 });

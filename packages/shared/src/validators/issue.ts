@@ -669,6 +669,13 @@ export const reconstructWorkspaceSchema = z.object({
 
 export const resolveIssueRecoveryActionSchema = z
   .object({
+    evidenceOnly: z.object({
+      expectedIssueUpdatedAt: z.string().datetime(),
+      nativeOwnerTransition: z.object({
+        sourceAgentId: z.string().guid(),
+        currentOwnerAgentId: z.string().guid(),
+      }).strict().optional(),
+    }).strict().optional(),
     workspaceBaseRef: z.object({
       requestedRef: z.string().trim().min(1).max(1024),
       branch: z.string().trim().refine(isValidExistingBranchName, { message: "Choose a valid Git branch name" }),
@@ -692,6 +699,16 @@ export const resolveIssueRecoveryActionSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (value.evidenceOnly) {
+      if (!value.actionId || value.outcome !== "restored" || !value.executionReconciliation
+        || value.workspaceBaseRef || value.executionReconciliation.workspaceRepairEvidence
+        || value.executionReconciliation.controllerStopped !== undefined
+        || value.executionReconciliation.controllerAuthorityDigest !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["evidenceOnly"],
+          message: "Evidence-only reconciliation requires an exact action and ordinary verified outcomes without repair or containment" });
+      }
+      return; 
+    }
     if (value.workspaceBaseRef && (!value.actionId || value.outcome !== "restored" || value.sourceIssueStatus !== "todo" || value.executionReconciliation)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceBaseRef"], message: "Branch repair must retry the exact recovery action" });
     }

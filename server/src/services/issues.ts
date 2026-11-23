@@ -215,6 +215,8 @@ import {
 } from "./native-runtime/native-chat-review-presentation.js";
 import {
   applyIssueExecutionPolicyTransition,
+  issueDeliveryOwnerChanged,
+  deliveryAssigneePrincipal,
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
@@ -12388,9 +12390,14 @@ export function issueService(db: Db) {
               eq(chatConversations.state, "waiting"), sql`exists (select 1 from chat_endpoints e
                 where e.id = ${chatConversations.endpointId} and e.company_id = ${chatConversations.companyId} and e.provider = 'slack')`));
         }
-        if (updated.assigneeAgentId !== existing.assigneeAgentId || updated.assigneeUserId !== existing.assigneeUserId) {
+        const deliveryOwnerChanged = issueDeliveryOwnerChanged(receiptExisting, updated);
+        if (deliveryOwnerChanged || updated.assigneeAgentId !== receiptExisting.assigneeAgentId
+          || updated.assigneeUserId !== receiptExisting.assigneeUserId) {
           const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
-          await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);
+          const owner = deliveryOwnerChanged ? null : deliveryAssigneePrincipal(updated);
+          await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated, {
+            retainedRequesterAgentId: owner?.type === "agent" ? owner.agentId : null,
+          });
         }
         if (existing.status !== updated.status) {
           if (
@@ -13502,10 +13509,11 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!anchor) return [];
-        const anchorCreatedAt =
-          anchor.createdAt instanceof Date
-            ? anchor.createdAt
-            : new Date(String(anchor.createdAt));
+        const anchorCreatedAt = sql`(
+          select ${issueComments.createdAt} from ${issueComments}
+          where ${issueComments.issueId} = ${issueId}
+            and ${issueComments.id} = ${anchor.id}
+        )`;
         conditions.push(
           order === "asc"
             ? or(

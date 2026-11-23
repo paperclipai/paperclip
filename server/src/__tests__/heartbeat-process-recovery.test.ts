@@ -100,6 +100,7 @@ import {
   issueQuestionResponseDeliveries,
   issueApprovals,
   issueDocuments,
+  issueExecutionDecisions,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -11757,6 +11758,61 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await selectRecoveryIssueById(issueId);
     expect(issue?.status).toBe("in_review");
     expect(issue?.assigneeAgentId).toBe(agentId);
+  });
+
+  it.each(["previous", "precision", "current", "missing"] as const)("scopes cancelled reviewer recovery to the current decision (%s)", async (round) => {
+    const previousRound = round === "previous" || round === "precision";
+    const { companyId, agentId, issueId, runId, wakeupRequestId, stageId } =
+      await seedInReviewParticipantRunFixture({
+        wakeReason: "execution_review_participant_recovery",
+        retryReason: "execution_review_participant_recovery",
+      });
+    const decisionId = randomUUID();
+    const decisionAt = new Date("2026-03-19T00:10:00.000Z");
+    const runAt = new Date(previousRound ? "2026-03-19T00:05:00.000Z" : "2026-03-19T00:11:00.000Z");
+    if (round !== "missing") {
+      await db.insert(issueExecutionDecisions).values({
+        id: decisionId, companyId, issueId, stageId, stageType: "review",
+        actorAgentId: agentId, outcome: "changes_requested", body: "Correct the evidence.",
+        createdAt: decisionAt,
+      });
+    }
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.update(issues).set({
+      executionRunId: null, executionAgentNameKey: null, executionLockedAt: null,
+      executionState: { ...issue!.executionState as Record<string, unknown>,
+        lastDecisionId: decisionId, lastDecisionOutcome: "changes_requested" },
+    }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({
+      status: "cancelled", errorCode: "issue_reassigned", error: "Cancelled before issue reassignment",
+      createdAt: runAt, startedAt: runAt, finishedAt: runAt, updatedAt: runAt,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, runId));
+    if (round === "precision") {
+      
+      
+      await db.execute(sql`update issue_execution_decisions
+        set created_at = '2026-03-19T00:10:00.000200Z'::timestamptz where id = ${decisionId}`);
+      await db.execute(sql`update heartbeat_runs
+        set created_at = '2026-03-19T00:10:00.000100Z'::timestamptz where id = ${runId}`);
+    }
+    await db.update(agentWakeupRequests).set({ status: "completed", finishedAt: runAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.reviewParticipantRequeued).toBe(previousRound ? 1 : 0);
+    expect(result.escalated).toBe(round === "current" ? 1 : 0);
+    if (round === "missing") expect(result.skipped).toBe(1);
+    if (previousRound) {
+      const runs = await selectRecoveryRunsByAgent(agentId);
+      const next = runs.find(row => row.id !== runId);
+      expect(next).toBeTruthy();
+      expect(next?.retryOfRunId).toBeNull();
+      expect(next?.contextSnapshot).toMatchObject({
+        issueId, currentStageId: stageId, currentReviewDecisionId: decisionId,
+        retryReason: "execution_review_participant_recovery",
+      });
+    }
   });
 
   it("retries a pending execution-review participant once before blocking with a recovery action", async () => {

@@ -88,6 +88,7 @@ import {
   budgetPolicies,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  issueExecutionDecisions,
   issueAttachments,
   issueComments,
   issueApprovals,
@@ -135,6 +136,7 @@ import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
 import {
   legacyExecutionNeedsReconciliationWithEvidence,
+  legacyExecutionNeedsWorkspaceRepair,
   legacyReconciliationRunFields,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
@@ -564,6 +566,22 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   return null;
 }
 
+function isConfirmedReassignmentStop(run: {
+  status: string;
+  errorCode?: string | null;
+  resultJson?: unknown;
+}) {
+  return (
+    run.status === "cancelled" &&
+    run.errorCode === "issue_reassigned" &&
+    parseObject(run.resultJson).reassignmentStopConfirmed === true
+  );
+}
+
+function isAssigneeChangeDispatchRefusal(run: { status: string; errorCode?: string | null }) {
+  return run.status === "cancelled" && run.errorCode === "issue_assignee_changed";
+}
+
 function didAutomaticRecoveryFail(
   latestRun: LatestIssueRun,
   expectedRetryReason:
@@ -572,6 +590,7 @@ function didAutomaticRecoveryFail(
     | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
 ) {
   if (!latestRun) return false;
+  if (isConfirmedReassignmentStop(latestRun) || isAssigneeChangeDispatchRefusal(latestRun)) return false;
 
   const latestContext = parseObject(latestRun.contextSnapshot);
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
@@ -998,6 +1017,26 @@ export type StrandedRecoveryOutcome = {
   continuationRefused?: boolean;
 };
 
+
+
+
+
+
+export function executionReviewAttemptBoundaryCondition(
+  companyId: string,
+  issueId: string,
+  decisionId: string,
+) {
+  return sql`${heartbeatRuns.createdAt} > (
+    select created_at
+    from issue_execution_decisions
+    where company_id = ${companyId}
+      and issue_id = ${issueId}
+      and id = ${decisionId}
+  )`;
+}
+
+
 export function recoveryService(
   db: Db,
   deps: {
@@ -1124,6 +1163,7 @@ export function recoveryService(
     companyId: string,
     issueId: string,
     agentId: string,
+    reviewAttempt?: { decisionId: string },
   ): Promise<LatestIssueRun> {
     return db
       .select({
@@ -1145,11 +1185,44 @@ export function recoveryService(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ...(reviewAttempt
+            ? [
+                executionReviewAttemptBoundaryCondition(companyId, issueId, reviewAttempt.decisionId),
+              ]
+            : []),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getLatestExecutionReviewParticipantRun(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    decisionId: string | null,
+  ): Promise<LatestIssueRun | undefined> {
+    if (!decisionId) {
+      return getLatestIssueRunForAgent(companyId, issueId, agentId);
+    }
+    const [decision] = await db
+      .select({ createdAt: issueExecutionDecisions.createdAt })
+      .from(issueExecutionDecisions)
+      .where(
+        and(
+          eq(issueExecutionDecisions.companyId, companyId),
+          eq(issueExecutionDecisions.issueId, issueId),
+          eq(issueExecutionDecisions.id, decisionId),
+        ),
+      )
+      .limit(1);
+    
+    
+    if (!decision) return undefined;
+    return getLatestIssueRunForAgent(companyId, issueId, agentId, {
+      decisionId,
+    });
   }
 
   async function summarizeRecentContinuationRetries(
@@ -1165,6 +1238,7 @@ export function recoveryService(
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        resultJson: recoveryRunResultColumn,
         finishedAt: heartbeatRuns.finishedAt,
       })
       .from(heartbeatRuns)
@@ -1192,6 +1266,7 @@ export function recoveryService(
       const ctx = parseObject(row.contextSnapshot);
       const retryReason = readNonEmptyString(ctx.retryReason);
       if (retryReason !== "issue_continuation_needed" && retryReason !== INTERRUPTED_PREPARATION_RETRY_REASON) break;
+      if (isConfirmedReassignmentStop(row)) break;
       if (
         !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
           row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
@@ -2175,7 +2250,17 @@ export function recoveryService(
             eq(heartbeatRuns.agentId, input.agentId),
           ),
         );
-      if (
+      if (predecessor && isConfirmedReassignmentStop(predecessor)) {
+        if (predecessor.runtimeMode === "native") return null;
+        if (await legacyExecutionNeedsWorkspaceRepair(db, predecessor)) {
+          await terminalizeLegacyExecution({
+            db,
+            run: predecessor,
+            status: predecessor.status,
+          });
+          return null;
+        }
+      } else if (
         predecessor &&
         ["failed", "timed_out", "interrupted", "cancelled"].includes(
           predecessor.status,
@@ -5140,12 +5225,20 @@ export function recoveryService(
 
       const participantLatestRunForRecovery =
         issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(
+          ? await getLatestExecutionReviewParticipantRun(
               issue.companyId,
               issue.id,
               participantAgentId,
+              pendingExecutionState?.lastDecisionId ?? null,
             )
           : null;
+      if (participantLatestRunForRecovery === undefined) {
+        
+        
+        
+        result.skipped += 1;
+        continue;
+      }
       const executionRecoverySource =
         issue.status === "in_review"
           ? participantLatestRunForRecovery
@@ -5188,7 +5281,12 @@ export function recoveryService(
               eq(heartbeatRuns.id, executionRecoverySource.id),
             ),
           );
-        if (source && await legacyExecutionNeedsReconciliationWithEvidence(db, source)) {
+        if (
+          source &&
+          (isConfirmedReassignmentStop(source)
+            ? await legacyExecutionNeedsWorkspaceRepair(db, source)
+            : await legacyExecutionNeedsReconciliationWithEvidence(db, source))
+        ) {
           await terminalizeLegacyExecution({
             db,
             run: source,
@@ -5526,7 +5624,7 @@ export function recoveryService(
         const participantLatestRun = participantLatestRunForRecovery;
 
         if (
-          !participantLatestRun ||
+          participantLatestRun &&
           !isTerminalIssueRun(participantLatestRun)
         ) {
           if (!agentInvokable) {
@@ -5550,6 +5648,7 @@ export function recoveryService(
         }
 
         const participantAdapterFailureClassification =
+          participantLatestRun &&
           isUnsuccessfulTerminalIssueRun(participantLatestRun)
             ? classifyAdapterFailureForRecovery(
                 participantLatestRun,
@@ -5557,6 +5656,7 @@ export function recoveryService(
               )
             : null;
         if (
+          participantLatestRun &&
           participantAdapterFailureClassification?.kind === "provider_quota"
         ) {
           const monitored = await scheduleProviderQuotaRecoveryMonitor({
@@ -5578,6 +5678,7 @@ export function recoveryService(
           continue;
         }
         if (
+          participantLatestRun &&
           participantAdapterFailureClassification?.kind ===
           "configuration_incomplete"
         ) {
@@ -5667,10 +5768,12 @@ export function recoveryService(
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           source: "issue.execution_review_recovery",
-          retryOfRunId: participantLatestRun.id,
+          retryOfRunId: participantLatestRun?.id,
           extraContext: {
             currentStageId: pendingExecutionState.currentStageId ?? null,
             currentStageType: pendingExecutionState.currentStageType ?? null,
+            currentReviewDecisionId:
+              pendingExecutionState.lastDecisionId ?? null,
             reviewRecoveryInstruction:
               "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
           },

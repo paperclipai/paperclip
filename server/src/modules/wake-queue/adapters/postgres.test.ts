@@ -17,6 +17,7 @@ import {
   environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueExecutionDecisions,
   issueComments,
   issueRecoveryActions,
   issues,
@@ -963,6 +964,99 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
     });
   }
+
+  it.each(["previous_round", "current_round", "missing_decision", "foreign_issue", "foreign_company"] as const)(
+    "classifies review recovery against the referenced decision boundary (%s)",
+    async (scenario) => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_review" });
+      const decisionId = randomUUID();
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        status: "cancelled",
+        errorCode: "issue_reassigned",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "execution_review_requested",
+          retryReason: "execution_review_participant_recovery",
+        },
+      });
+      
+      
+      
+      
+      await db.update(heartbeatRuns).set({ resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      } }).where(eq(heartbeatRuns.id, runId));
+      let decisionCompanyId = companyId;
+      let decisionIssueId = issueId;
+      let decisionAgentId = agentId;
+      if (scenario === "foreign_company") {
+        decisionCompanyId = await seedCompany();
+        decisionAgentId = await seedAgent({ companyId: decisionCompanyId });
+      }
+      if (scenario === "foreign_issue" || scenario === "foreign_company") {
+        decisionIssueId = await seedIssue({ companyId: decisionCompanyId, assigneeAgentId: decisionAgentId });
+      }
+      if (scenario !== "missing_decision") {
+        await db.insert(issueExecutionDecisions).values({
+          id: decisionId,
+          companyId: decisionCompanyId,
+          issueId: decisionIssueId,
+          stageId: randomUUID(),
+          stageType: "review",
+          actorAgentId: decisionAgentId,
+          actorUserId: null,
+          outcome: "changes_requested",
+          body: "Please address the requested changes.",
+        });
+      }
+      
+      
+      
+      if (scenario !== "missing_decision") {
+        await db.execute(sql`update issue_execution_decisions
+          set created_at = '2026-01-01T00:00:00.000200Z'::timestamptz
+          where id = ${decisionId}`);
+      }
+      await db.execute(sql`update heartbeat_runs
+        set created_at = ${scenario === "current_round"
+          ? "2026-01-01T00:00:00.000300Z"
+          : "2026-01-01T00:00:00.000100Z"}::timestamptz
+        where id = ${runId}`);
+      await db.update(issues).set({ executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId },
+        returnAssignee: { type: "agent", agentId },
+        reviewRequest: { instructions: "Review the completed work." },
+        completedStageIds: [],
+        lastDecisionId: decisionId,
+        lastDecisionOutcome: "changes_requested",
+      }, executionRunId: runId }).where(eq(issues.id, issueId));
+
+      const release = createReleaseIssueExecution({
+        issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+        recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+      });
+      const result = await release({ companyId, runId, now: new Date() });
+
+      if (scenario === "current_round") {
+        
+        
+        expect(result.outcome.kind).toBe("blocked");
+      } else {
+        
+        
+        expect(result.outcome.kind).toBe("released");
+      }
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    },
+  );
 
   it("releases an acknowledged native handoff without blocking or restarting the old owner", async () => {
     const companyId = await seedCompany();
