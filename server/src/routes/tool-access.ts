@@ -1239,11 +1239,10 @@ function connectorEnrollmentPrincipal(req: Request): string {
   router.get("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
     assertBoard(req);
     res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus(process.env, fetch, async () => {
-      try {
-        await revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secretService(db).remove(secretId, { expectedVersion }));
-      } catch (error) {
-        logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, "Could not queue ending Google access after Paperclip Cloud removed this instance");
-      }
+      void revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secretService(db).remove(secretId, { expectedVersion }))
+        .catch((error) => {
+          logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, "Could not queue ending Google access after Paperclip Cloud removed this instance");
+        });
     }));
   });
 

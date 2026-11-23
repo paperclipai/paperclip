@@ -800,16 +800,24 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(await retryActivity(fixture.company.id)).toEqual(["tool_connection.google_access_not_ended"]);
   });
 
-  it("stops without revoking when a live credential in the company still holds the same token", async () => {
+  it("keeps retrying past an unused copy of the token, and stops without revoking once a live connection uses it", async () => {
     const fixture = await connectManagedGmail();
     fixture.connector.revoke.mockResolvedValueOnce({ outcome: "broker_error" });
     await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
     const [pending] = await db.select().from(googlePendingRevocations);
-    await secretService(db).create(fixture.company.id, { name: "Copied token", key: "copied_token", provider: "local_encrypted", value: REFRESH_TOKEN });
+    const copy = await secretService(db).create(fixture.company.id, { name: "Copied token", key: "copied_token", provider: "local_encrypted", value: REFRESH_TOKEN });
 
+    fixture.connector.revoke.mockResolvedValueOnce({ outcome: "broker_error" });
     await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(2);
+    const [unreferenced] = await db.select().from(googlePendingRevocations);
+    expect(unreferenced).toMatchObject({ attempts: 2 });
 
-    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    await db.update(toolConnections).set({ status: "active", credentialSecretRefs: [{ secretId: copy.id, versionSelector: "latest", configPath: "oauth.refresh_token", required: false, label: "Refresh" }] as never })
+      .where(eq(toolConnections.id, fixture.connectionId));
+    await drain(fixture.connector, unreferenced!.nextAttemptAt.getTime());
+
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(2);
     expect(await db.select().from(googlePendingRevocations)).toEqual([]);
     expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "other_connections_remain" }]);
   });
@@ -831,6 +839,20 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
     expect(await db.select().from(googlePendingRevocations)).toEqual([]);
     expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "ended" }]);
+  });
+
+  it("keeps one company's pending revocation apart from another company's with the same token", async () => {
+    const first = await connectManagedGmail();
+    const second = await connectManagedGmail();
+    first.connector.revoke.mockResolvedValueOnce({ outcome: "broker_error" });
+    second.connector.revoke.mockResolvedValueOnce({ outcome: "revoked" });
+
+    await request(first.app).delete(`/api/tool-connections/${first.connectionId}`);
+    await request(second.app).delete(`/api/tool-connections/${second.connectionId}`);
+
+    const rows = await db.select().from(googlePendingRevocations);
+    expect(rows.map((row) => row.companyId)).toEqual([first.company.id]);
+    expect(rows[0]).toMatchObject({ attempts: 1, lastOutcome: "broker_error" });
   });
 
   it("treats an older broker refusing a removed instance as retryable", async () => {

@@ -22,7 +22,6 @@ export const googlePendingRevocations = pgTable(
   },
   (table) => [
     index("google_pending_revocations_due_idx").on(table.nextAttemptAt, table.id),
-    uniqueIndex("google_pending_revocations_token_idx").on(table.tokenSha256),
-    index("google_pending_revocations_company_idx").on(table.companyId),
+    uniqueIndex("google_pending_revocations_token_idx").on(table.companyId, table.tokenSha256),
   ],
 );

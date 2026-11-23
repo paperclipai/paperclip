@@ -18,5 +18,4 @@ CREATE TABLE "google_pending_revocations" (
 );
 --> statement-breakpoint
 CREATE INDEX "google_pending_revocations_due_idx" ON "google_pending_revocations" USING btree ("next_attempt_at","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "google_pending_revocations_token_idx" ON "google_pending_revocations" USING btree ("token_sha256");--> statement-breakpoint
-CREATE INDEX "google_pending_revocations_company_idx" ON "google_pending_revocations" USING btree ("company_id");
+CREATE UNIQUE INDEX "google_pending_revocations_token_idx" ON "google_pending_revocations" USING btree ("company_id","token_sha256");

@@ -315,7 +315,8 @@ Cloud still stores no provider token.
 
 - Before the broker call, the app copies the sent token version's encrypted
   material (the same `local_encrypted` ciphertext as the connection secret) into
-  `google_pending_revocations`, keyed by the token's SHA-256 (one row per token).
+  `google_pending_revocations`, keyed by company and the token's SHA-256 (one
+  row per token in a company).
   The row is not a company secret: it is not listed, cannot be bound to an agent
   or environment, and no route reads it. `company_id` has no foreign key, so the
   row outlives a deleted company. The first `next_attempt_at` is 2 minutes out,
@@ -323,14 +324,16 @@ Cloud still stores no provider token.
 - After the call: a final outcome (`revoked`, `other_connections_remain`,
   `binding_not_known`, `provider_revocation_disabled`,
   `revocation_not_available`) deletes the row. A retryable outcome keeps it and
-  the result is `retrying`. If the connection secret is still live after the
-  conditional delete (for example, the user signed in again during the call),
-  the row is deleted, because a live sign-in now uses the grant.
+  the result is `retrying`. If a live grant or connection still uses the
+  connection secret after the conditional delete (for example, the user signed
+  in again during the call), the row is deleted, because a live sign-in now
+  uses the grant.
 - The `google-pending-revocation` delivery queue drains due rows. Each attempt
   takes a 2-minute lease on the row, then calls the broker with a 15-second
   timeout. Backoff is 1, 2, 4 ... minutes, capped at 6 hours. A row stops
-  without a call when another live company secret (not the row's own source
-  secret, which a restart can leave behind) holds the same token. After 30 days
+  without a call when another company secret holds the same token and a live
+  grant or connection uses it. The row's own source secret, which a restart can
+  leave behind, never counts. After 30 days
   the row is deleted without a call (`gave_up`). Google already expires a
   refresh token unused for six months, and only the broker can refresh this one,
   so the 30-day hard stop limits how long Paperclip holds a token nobody uses.

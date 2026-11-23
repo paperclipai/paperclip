@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne, sql, type SQL } from "drizzle-orm";
 import {
   companies,
   companySecrets,
@@ -75,7 +75,7 @@ async function insertFromSecret(tx: Db, input: {
     join ${companySecretVersions} version on version.secret_id = secret.id and version.version = ${input.version}::integer
     where secret.id = ${input.secretId}::uuid and secret.company_id = ${input.companyId}::uuid
       and secret.provider = 'local_encrypted' and secret.deleted_at is null
-    on conflict (token_sha256) do update set updated_at = excluded.updated_at
+    on conflict (company_id, token_sha256) do update set updated_at = excluded.updated_at
     returning id`);
   return row?.id ?? null;
 }
@@ -100,9 +100,32 @@ export async function queueGoogleRevocationFromSecret(db: Db, input: {
   });
 }
 
-export async function settleQueuedGoogleRevocation(db: Db, id: string, outcome: ManagedGoogleRevocationOutcome, now = new Date()) {
+function liveSecretReference(secretId: SQL, companyId: SQL) {
+  const ref = sql`jsonb_build_array(jsonb_build_object('secretId', ${secretId}::text))`;
+  return sql`(exists (select 1 from ${connectionGrants} live_grant
+      where live_grant.company_id = ${companyId} and live_grant.status <> 'revoked'
+        and live_grant.credential_secret_refs @> ${ref})
+    or exists (select 1 from ${toolConnections} live_connection
+      where live_connection.company_id = ${companyId} and live_connection.status <> 'archived'
+        and (live_connection.credential_secret_refs @> ${ref} or live_connection.credential_refs @> ${ref})))`;
+}
+
+export async function secretsInLiveUse(db: Db, companyId: string, secretIds: string[]): Promise<Set<string>> {
+  if (secretIds.length === 0) return new Set();
+  const rows = await db.select({ id: companySecrets.id }).from(companySecrets)
+    .where(and(
+      eq(companySecrets.companyId, companyId),
+      inArray(companySecrets.id, secretIds),
+      isNull(companySecrets.deletedAt),
+      liveSecretReference(sql`${companySecrets.id}`, sql`${companySecrets.companyId}`),
+    ));
+  return new Set(rows.map((row) => row.id));
+}
+
+export async function settleQueuedGoogleRevocation(db: Db, companyId: string, id: string, outcome: ManagedGoogleRevocationOutcome, now = new Date()) {
+  const own = and(eq(googlePendingRevocations.id, id), eq(googlePendingRevocations.companyId, companyId));
   if (!isRetryableGoogleRevocationOutcome(outcome)) {
-    await db.delete(googlePendingRevocations).where(eq(googlePendingRevocations.id, id));
+    await db.delete(googlePendingRevocations).where(own);
     return false;
   }
   await db.transaction(async (tx) => {
@@ -112,13 +135,14 @@ export async function settleQueuedGoogleRevocation(db: Db, id: string, outcome: 
       lastOutcome: outcome,
       nextAttemptAt: new Date(now.getTime() + GOOGLE_REVOCATION_FIRST_RETRY_MS),
       updatedAt: now,
-    }).where(eq(googlePendingRevocations.id, id));
+    }).where(own);
   });
   return true;
 }
 
-export async function dropQueuedGoogleRevocation(db: Db, id: string) {
-  await db.delete(googlePendingRevocations).where(eq(googlePendingRevocations.id, id));
+export async function dropQueuedGoogleRevocation(db: Db, companyId: string, id: string) {
+  await db.delete(googlePendingRevocations)
+    .where(and(eq(googlePendingRevocations.id, id), eq(googlePendingRevocations.companyId, companyId)));
 }
 
 export async function queueCompanyGoogleRevocations(tx: Db, companyId: string, reason: GoogleRevocationReason, now = new Date()) {
@@ -173,6 +197,7 @@ export function createGooglePendingRevocation(db: Db, deps: {
         ne(companySecrets.status, "deleted"),
         eq(companySecretVersions.valueSha256, row.tokenSha256),
         ...(row.sourceSecretId ? [ne(companySecrets.id, row.sourceSecretId)] : []),
+        liveSecretReference(sql`${companySecrets.id}`, sql`${companySecrets.companyId}`),
       ))
       .limit(1);
     return rows.length > 0;

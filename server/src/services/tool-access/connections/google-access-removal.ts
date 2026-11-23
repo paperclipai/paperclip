@@ -12,6 +12,7 @@ import {
   googleRevocationOutcomeForError,
   isRetryableGoogleRevocationOutcome,
   queueGoogleRevocationFromSecret,
+  secretsInLiveUse,
   settleQueuedGoogleRevocation,
 } from "./google-pending-revocation.js";
 import type { ActorInfo } from "../types.js";
@@ -117,7 +118,7 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
       outcomes.push(outcome);
       if (!pendingId) continue;
       try {
-        if (await settleQueuedGoogleRevocation(db, pendingId, outcome)) retrying.push({ id: pendingId, secretId: revocation.secretId });
+        if (await settleQueuedGoogleRevocation(db, connection.companyId, pendingId, outcome)) retrying.push({ id: pendingId, secretId: revocation.secretId });
       } catch (error) {
         if (isRetryableGoogleRevocationOutcome(outcome)) retrying.push({ id: pendingId, secretId: revocation.secretId });
         logger.warn(
@@ -134,16 +135,14 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     retrying: Array<{ id: string; secretId: string }>,
   ): Promise<number> {
     if (retrying.length === 0) return 0;
-    const live = new Set((await db.select({ id: companySecrets.id }).from(companySecrets)
-      .where(and(eq(companySecrets.companyId, connection.companyId), inArray(companySecrets.id, retrying.map((entry) => entry.secretId)), isNull(companySecrets.deletedAt))))
-      .map((row) => row.id));
+    const live = await secretsInLiveUse(db, connection.companyId, retrying.map((entry) => entry.secretId));
     let kept = 0;
     for (const entry of retrying) {
       if (!live.has(entry.secretId)) {
         kept += 1;
         continue;
       }
-      await dropQueuedGoogleRevocation(db, entry.id);
+      await dropQueuedGoogleRevocation(db, connection.companyId, entry.id);
     }
     return kept;
   }
