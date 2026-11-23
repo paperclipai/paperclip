@@ -1,3 +1,4 @@
+import { createAgentSetupProgressSchema, setAgentSetupChecklistSchema, updateAgentSetupItemSchema, finishAgentSetupSchema } from "@paperclipai/shared";
 import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema, issueDocumentBatchQuerySchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
@@ -1427,6 +1428,10 @@ const PUBLIC_OPERATIONS = new Set([
   // Outside clouds fetch a company's workload identity issuer anonymously (routes/workload-identity.ts).
   "GET /oidc/companies/{companyId}/.well-known/openid-configuration",
   "GET /oidc/companies/{companyId}/jwks.json",
+  // A person's own agent reports setup progress with the checklist's bearer token (routes/agent-setup-progress.ts).
+  "PUT /api/agent-setup-progress/{id}/checklist",
+  "POST /api/agent-setup-progress/{id}/items/{key}",
+  "POST /api/agent-setup-progress/{id}/finish",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -1473,6 +1478,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   // Workload identity status and key rotation are board-only (assertBoard in routes/workload-identity.ts).
   "GET /api/companies/{companyId}/workload-identity",
   "POST /api/companies/{companyId}/workload-identity/rotation",
+  // Setup progress checklists are created and read by board members (assertBoard in routes/agent-setup-progress.ts).
+  "POST /api/companies/{companyId}/agent-setup-progress",
+  "GET /api/agent-setup-progress/{id}",
   "POST /api/companies/{companyId}/chats/{agentRef}/onboarding",
   "POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
   "PATCH /api/agents/{id}/permission-grants",
@@ -1657,6 +1665,7 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
 ]);
 
 const CREATED_OPERATIONS = new Set([
+  "POST /api/companies/{companyId}/agent-setup-progress",
   "POST /api/adapters/install",
   "POST /api/companies/{companyId}/agent-hires",
   "POST /api/companies/{companyId}/agents",
@@ -9768,6 +9777,64 @@ registry.registerPath({
   responses: { 200: r.ok(z.object({ keys: z.array(z.object({
     kty: z.literal("EC"), crv: z.string(), x: z.string(), y: z.string(), kid: z.string(), alg: z.literal("ES256"), use: z.literal("sig"),
   }).strict()) }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+const agentSetupItem = z.object({
+  key: z.string(), title: z.string(), status: z.enum(["pending", "in_progress", "done", "failed"]), detail: z.string().nullable(),
+}).strict();
+const agentSetupProgressDoc = z.object({
+  id: z.string().uuid(), companyId: z.string().uuid(), purpose: z.string(), subjectId: z.string().nullable(),
+  status: z.enum(["waiting", "in_progress", "done", "failed"]), items: z.array(agentSetupItem), summary: z.string().nullable(),
+  expiresAt: z.string().datetime(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
+}).strict();
+const agentSetupProgressId = z.object({ id: z.string().uuid() });
+const agentSetupAgentErrors = {
+  400: r.badRequest, 401: { description: "The bearer token is missing or does not open this checklist" },
+  404: r.notFound, 409: { description: "Another update changed the checklist at the same time; send it again" },
+  410: { description: "The checklist's token expired" }, 429: { description: "The checklist reached its update limit" },
+};
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/agent-setup-progress", tags: ["agent-setup-progress"],
+  summary: "Create a setup checklist for a person's own agent",
+  description: "Board only. Creates an empty checklist and returns it with a bearer token (shown once; only its hash is kept) and the URLs the agent uses to set the checklist, update items and finish. The token works for six hours and can only write to this checklist.",
+  request: { params: z.object({ companyId: z.string().uuid() }), body: { content: { "application/json": { schema: createAgentSetupProgressSchema } } } },
+  responses: {
+    201: r.ok(z.object({ progress: agentSetupProgressDoc, token: z.string(), urls: z.object({ checklist: z.string().url(), item: z.string(), finish: z.string().url() }).strict() }).strict()),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/agent-setup-progress/{id}", tags: ["agent-setup-progress"],
+  summary: "Read a setup checklist",
+  description: "Board only, for members of the checklist's company. Updates also arrive as agent_setup_progress.updated live events.",
+  request: { params: agentSetupProgressId },
+  responses: { 200: r.ok(agentSetupProgressDoc), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put", path: "/api/agent-setup-progress/{id}/checklist", tags: ["agent-setup-progress"],
+  summary: "Set the agent's setup checklist",
+  description: "Called by the person's own agent with Authorization: Bearer <token>; no Paperclip sign-in. Replaces the checklist (1 to 20 items, keys of lowercase letters, numbers, - and _).",
+  request: { params: agentSetupProgressId, body: { content: { "application/json": { schema: setAgentSetupChecklistSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/agent-setup-progress/{id}/items/{key}", tags: ["agent-setup-progress"],
+  summary: "Update one step of the agent's setup checklist",
+  description: "Called by the person's own agent with Authorization: Bearer <token>. Sets the item's status (pending, in_progress, done or failed) and an optional one-line detail.",
+  request: { params: agentSetupProgressId.extend({ key: z.string() }), body: { content: { "application/json": { schema: updateAgentSetupItemSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/agent-setup-progress/{id}/finish", tags: ["agent-setup-progress"],
+  summary: "Finish the agent's setup",
+  description: "Called by the person's own agent with Authorization: Bearer <token>. done ticks off any open items; failed keeps them. An optional summary is shown on the setup page.",
+  request: { params: agentSetupProgressId, body: { content: { "application/json": { schema: finishAgentSetupSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
 });
 
 registry.registerPath({

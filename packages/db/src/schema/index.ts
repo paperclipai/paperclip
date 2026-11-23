@@ -302,3 +302,9 @@ export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./nat
 export { linkPreviews } from "./link_previews.js";
 export { toolConnectionContentDeletions } from "./tool_connection_content_deletions.js";
 export * from "./plugin_connector_legacy_access.js";
+export {
+  agentSetupProgress,
+  type AgentSetupProgressStatus,
+  type AgentSetupProgressItemStatus,
+  type AgentSetupProgressItemRecord,
+} from "./agent_setup_progress.js";

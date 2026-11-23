@@ -119,6 +119,7 @@ const apiPrefixes: Record<string, string> = {
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
   "workload-identity.ts": "/api",
+  "agent-setup-progress.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -216,6 +217,7 @@ function normalizeExpressPath(routePath: string) {
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "connection-event-wake.ts") return routePath;
   if (file === "workload-identity.ts" && routePath.startsWith("/oidc/")) return routePath;
+  if (file === "agent-setup-progress.ts" && routePath.startsWith("/api/")) return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
