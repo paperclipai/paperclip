@@ -1,3 +1,5 @@
+import type { ConnectionInfo, FailureRecord } from "./hosted-diagnostics.js";
+
 export interface HealthSample {
   at: number;
   ok: boolean;
@@ -6,6 +8,8 @@ export interface HealthSample {
   processStartedAt: string | null;
   commit: string | null;
   error?: string | null;
+  connection?: ConnectionInfo | null;
+  failure?: FailureRecord;
 }
 
 export type ReleaseShape = "overlap" | "stop_then_start" | "clean_switch";

@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ChaosApi } from "./api.js";
 import { apiRequests, HealthProbe, HostedApi, hostedToken, requestSamples, type RequestRecord } from "./hosted-api.js";
 import { parseHostedCommand, type HostedOptions } from "./hosted-config.js";
+import { failureLines, summarizeFailures } from "./hosted-diagnostics.js";
 import { gradeHosted } from "./hosted-grade.js";
 import { continuity, detectReleases, identityOf, releaseMarkdown, type DetectedRelease, type HealthSample } from "./hosted-release.js";
 import { cleanupHosted, inventory, loadState, resolveCompany, setupHosted, type HostedState } from "./hosted-setup.js";
@@ -57,7 +58,8 @@ function watchIdentity(timeline: Timeline, samplesPath: string) {
   return (sample: HealthSample) => {
     appendFileSync(samplesPath, `${JSON.stringify(sample)}\n`, { mode: 0o600 });
     if (!sample.ok) {
-      if (!failing) timeline.add("hosted_health_failed", { status: sample.status, ms: sample.ms, error: sample.error ?? null });
+      if (!failing) timeline.add("hosted_health_failed", { status: sample.status, ms: sample.ms, error: sample.error ?? null, class: sample.failure?.class ?? null,
+        reason: sample.failure?.reason ?? null });
       failing = true;
       return;
     }
@@ -73,7 +75,8 @@ async function observe(options: HostedOptions, probe: HealthProbe, api: HostedAp
   while (!cancelled() && Date.now() - started < options.maxWaitMs && !releasesReached(detectReleases(probe.samples, { now: Date.now() }), options.releases)) await delay(LOOP_MS);
   await probe.stop();
   const releases = detectReleases(probe.samples, { now: Date.now() });
-  const lines = releaseMarkdown(releases, continuity(probe.samples), continuity(requestSamples(apiRequests(api.requests))));
+  const lines = [...releaseMarkdown(releases, continuity(probe.samples), continuity(requestSamples(apiRequests(api.requests)))),
+    ...failureLines("Health probe failures", summarizeFailures(probe.samples))];
   await writeFile(path.join(dir, "SUMMARY.md"), `${lines.join("\n")}\n`, { mode: 0o600 });
   timeline.add("hosted_observed", { releases: releases.map(release => ({ shape: release.shape, firstNewAt: new Date(release.firstNewAt).toISOString(),
     lastOldAt: new Date(release.lastOldAt).toISOString(), failed: release.failedRequests, commitChanged: release.commitChanged })) });
@@ -161,7 +164,7 @@ async function hostedSession(input: { options: HostedOptions; dir: string; timel
     if (options.releases > 0 && !releasesReached(releases, options.releases)) timeline.add("hosted_releases_short", { wanted: options.releases, seen: releases.length });
     polling = keepPolling(workload);
     const graded = await gradeHosted({ api, companyId, agentIds: Object.values(state.agents).map(agent => agent!.id), releases,
-      health: () => continuity(probe.samples), apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
+      health: () => continuity(probe.samples), healthSamples: () => probe.samples, apiContinuity: () => continuity(requestSamples(apiRequests(api.requests))), requests: () => api.requests,
       quietMs: options.quietMs,
       stopObserver: () => polling!.stop(), observedClicks: () => observedClicks(workload.records), banners: () => new Map(workload.banners),
       tasks: () => workload.records, wantedReleases: options.releases,
