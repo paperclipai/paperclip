@@ -82,7 +82,7 @@
     "packages/shared/src/app-definitions/1password.json": "c11a4777de2c78805b2d391da5eb075a9511e0f8",
     "packages/shared/src/app-definitions/agentmail.json": "edd0799b1980d0f5f43b89c8f7a1173dc623f7fa",
     "packages/shared/src/app-definitions/airtable.json": "c9b216a2bbe693bc6167413255d41c33512d418d",
-    "packages/shared/src/app-definitions/anthropic.json": "52eb85f36005f031cf83e2f92e4e53cec9966d50",
+    "packages/shared/src/app-definitions/anthropic.json": "6c7cd96eefb4db6dca244fcddeb1c4a585a2af14",
     "packages/shared/src/app-definitions/api-key-generic.json": "09e6d4295513ac9f1002eaf37c34e7c2d00a3c05",
     "packages/shared/src/app-definitions/arcade.json": "c8379450055d4ea226d229b1cbf99c7ed2e52beb",
     "packages/shared/src/app-definitions/asana.json": "4cc2859043a30037fd5cdc3ebd0909938b9344a8",
