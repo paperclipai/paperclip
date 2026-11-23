@@ -32,6 +32,7 @@ export function createActionsReader({
   attempts = 4, backoffMs = 1_000, log = console.log,
   now = Date.now, deadlineAt = () => Infinity, maxRetryAfterMs = 60_000,
 } = {}) {
+  const cached = new Map();
   return async (path) => {
     for (let attempt = 1; ; attempt += 1) {
       // Retry only while both the attempt budget and the caller's deadline
@@ -41,8 +42,12 @@ export function createActionsReader({
       const pause = (response) => sleep(retryAfterMs(response, maxRetryAfterMs) ?? waitMs);
       let response;
       try {
+        const etag = cached.get(path)?.etag;
         response = await fetchImpl(`https://api.github.com${path}`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
+          headers: {
+            Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+            ...(etag ? { "If-None-Match": etag } : {}),
+          },
           signal: AbortSignal.timeout(30_000), redirect: "error",
         });
       } catch (cause) {
@@ -51,11 +56,16 @@ export function createActionsReader({
         await pause();
         continue;
       }
+      if (response.status === 304 && cached.has(path)) return structuredClone(cached.get(path).body);
       if (response.ok) {
         try {
           // A 200 whose body is truncated or undecodable is a transport
           // failure like any other, so it belongs inside the retry.
-          return await response.json();
+          const body = await response.json();
+          const etag = response.headers?.get?.("etag");
+          if (etag) cached.set(path, { etag, body: structuredClone(body) });
+          else cached.delete(path);
+          return body;
         } catch (cause) {
           if (!retryable) throw new Error(`GitHub Actions read failed: ${cause.message}`);
           log(`GitHub Actions read body failed (${cause.message}); retrying (${attempt}/${attempts - 1}).`);
