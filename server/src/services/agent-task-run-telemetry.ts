@@ -144,7 +144,9 @@ export function agentRunFailureCause(input: {
 }
 
 export function telemetryAdapterType(agent: { adapterType: string; adapterConfig: unknown }): string {
-  return agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig));
+  const harness = agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig));
+  // The telemetry contract names the Copilot harness `copilot_runtime`, as agentRuntimeSettingsHarness() does.
+  return harness === "acpx:copilot" ? "copilot_runtime" : harness;
 }
 
 function providerFailureCategory(resultJson: unknown): string | null {
