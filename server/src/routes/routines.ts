@@ -7,6 +7,7 @@ import {
   createRoutineSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
+  createRoutineObservationSchema,
   createRoutineTriggerSchema,
   ROUTINE_STATUSES,
   rotateRoutineTriggerSecretSchema,
@@ -14,6 +15,8 @@ import {
   updateDocumentAnnotationThreadSchema,
   updateRoutineSchema,
   updateRoutineTriggerSchema,
+  upsertExternalRoutinesSchema,
+  isExternalRoutineOriginKind,
 } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
@@ -251,6 +254,49 @@ export function routineRoutes(
     const configurationWarnings = req.body.env !== undefined
       ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), req.body.env, "env") : [];
     res.status(201).json({ ...created, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
+  });
+
+  router.put(
+    "/companies/:companyId/routines/external",
+    validate(upsertExternalRoutinesSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await svc.upsertExternal(companyId, req.body, {
+        agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+        userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
+        actorResponsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null,
+        runId: req.actor.runId ?? null,
+      });
+    const updatedRoutines = await svc.list(companyId, {});
+    res.json({
+      upserted: true,
+      count: req.body.items.length,
+      // Reporters only know external ids; return the uuid per external id so
+      // observation posts can address the routine without a second lookup.
+      routines: updatedRoutines
+        .filter((routine) => isExternalRoutineOriginKind(routine.originKind))
+        .map((routine) => ({
+          id: routine.id,
+          originKind: routine.originKind,
+          originId: routine.originId,
+        })),
+    });
+    },
+  );
+
+  router.post("/routines/:id/observations", validate(createRoutineObservationSchema), async (req, res) => {
+    // 404-gate first so observation posts do not leak routine existence to
+    // actors outside the company; company access is asserted before the write.
+    const routine = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Routine not found");
+    if (!routine) return;
+    assertCompanyAccess(req, routine.companyId);
+    const result = await svc.createObservation(routine.id, req.body, {
+      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      userId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+      runId: req.actor.runId ?? null,
+    });
+    res.status(result.replayed ? 200 : 201).json(result);
   });
 
   router.get("/routines/:id", async (req, res) => {

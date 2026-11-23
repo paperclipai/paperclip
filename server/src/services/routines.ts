@@ -57,8 +57,14 @@ import type {
   UpdateRoutine,
   UpdateRoutineTrigger,
 } from "@paperclipai/shared";
+import type {
+  CreateRoutineObservation,
+  UpsertExternalRoutines,
+} from "@paperclipai/shared";
 import {
   WORKSPACE_BRANCH_ROUTINE_VARIABLE,
+  externalRoutineOriginKind,
+  isExternalRoutineOriginKind,
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
@@ -682,6 +688,66 @@ function mapRoutineDescriptionDocument(row: {
 
 // Match PostgreSQL UUID input, including compact/braced forms and any version.
 // Do not trim or resolve prefixes: the exact input must be safe for a UUID query.
+// External (observed) routines: registry rows that mirror schedulers living
+// outside Paperclip (systemd timers, Hermes cron jobs, k8s CronJobs, Camel
+// routes, Grok Bot routines). Paperclip neither fires nor dispatches them; a
+// reporter pushes observations instead. They model as trigger-less routines so
+// no schema migration is needed, and every dispatch path must refuse them.
+export function isExternalRoutine(routine: { originKind?: string | null }): boolean {
+  return isExternalRoutineOriginKind(routine.originKind ?? null);
+}
+
+function assertRoutineNotExternal(routine: { originKind?: string | null }, action: string) {
+  if (isExternalRoutine(routine)) {
+    throw conflict(
+      `External routines are observed, not dispatched: ${action} is not available. Record an observation instead.`,
+    );
+  }
+}
+
+function externalRoutineDescription(item: {
+  description?: string | null;
+  owner?: string | null;
+  unit?: string | null;
+  host?: string | null;
+  schedule?: string | null;
+  cadenceSec?: number | null;
+  cost?: string | null;
+  revenue?: string | null;
+}): string | null {
+  const parts: string[] = [];
+  if (item.description && item.description.trim().length > 0) parts.push(item.description.trim());
+  const facts: string[] = [];
+  if (item.owner) facts.push(`owner: ${item.owner}`);
+  if (item.unit) facts.push(`unit: ${item.unit}`);
+  if (item.host) facts.push(`host: ${item.host}`);
+  if (item.schedule) facts.push(`schedule: ${item.schedule}`);
+  if (item.cadenceSec != null) facts.push(`cadence: ${item.cadenceSec}s`);
+  if (item.cost) facts.push(`cost: ${item.cost}`);
+  if (item.revenue) facts.push(`revenue: ${item.revenue}`);
+  if (facts.length > 0) parts.push(facts.join("; "));
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+// Observations return plain routine_runs rows (no trigger/issue joins).
+function mapExternalObservationRun(row: typeof routineRuns.$inferSelect) {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    routineId: row.routineId,
+    triggerId: row.triggerId,
+    source: row.source,
+    status: row.status,
+    triggeredAt: row.triggeredAt,
+    idempotencyKey: row.idempotencyKey,
+    triggerPayload: row.triggerPayload,
+    failureReason: row.failureReason,
+    completedAt: row.completedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function isRoutineUuidInput(id: string): boolean {
   if (/\s/.test(id)) return false;
   const value = id.startsWith("{") && id.endsWith("}") ? id.slice(1, -1) : id;
@@ -2465,6 +2531,165 @@ export function routineService(
       return new Set(rows.map((row) => row.originId).filter((id): id is string => !!id));
     },
 
+    // Idempotent manifest sync for external (observed) routines. Keyed by
+    // (company, external:<source>, origin id) so a reporter can push the same
+    // manifest every few minutes without creating duplicates or revisions.
+    // Metadata that has no routine column is folded into the description so
+    // the detail page shows it; observation runs carry the numeric detail.
+    upsertExternal: async (companyId: string, input: UpsertExternalRoutines, actor: Actor): Promise<Routine[]> => {
+      const responsibleUserId = await resolveCompanyDefaultResponsibleUserId(db, companyId);
+      if (!responsibleUserId) {
+        throw unprocessable(
+          "Company needs a default responsible user before external routines can be recorded",
+        );
+      }
+      const results: Routine[] = [];
+      for (const item of input.items) {
+        const originKind = externalRoutineOriginKind(item.source);
+        const description = externalRoutineDescription(item);
+        const status = item.status ?? "active";
+        const existing = await db
+          .select()
+          .from(routines)
+          .where(
+            and(
+              eq(routines.companyId, companyId),
+              eq(routines.originKind, originKind),
+              eq(routines.originId, item.id),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          if (
+            existing.title === item.title &&
+            existing.description === description &&
+            existing.status === status
+          ) {
+            results.push(existing);
+            continue;
+          }
+          const [updated] = await db
+            .update(routines)
+            .set({
+              title: item.title,
+              description,
+              status,
+              updatedByAgentId: actor.agentId ?? null,
+              updatedByUserId: actor.userId ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(routines.id, existing.id))
+            .returning();
+          await appendRoutineRevision(db, updated, actor, {
+            changeSummary: `Synced external ${item.source} scheduler from manifest`,
+          });
+          results.push(updated);
+        } else {
+          const [created] = await db
+            .insert(routines)
+            .values({
+              companyId,
+              title: item.title,
+              description,
+              assigneeAgentId: null,
+              status,
+              originKind,
+              originId: item.id,
+              responsibleUserId,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              updatedByAgentId: actor.agentId ?? null,
+              updatedByUserId: actor.userId ?? null,
+            })
+            .returning();
+          await appendRoutineRevision(db, created, actor, {
+            changeSummary: `Created external ${item.source} scheduler from manifest`,
+          });
+          results.push(created);
+        }
+      }
+      return results;
+    },
+
+    // Record one externally observed run of an external routine. Writes a
+    // terminal routine_runs row directly (source 'external'); it never
+    // dispatches work, links issues, or participates in status settlement.
+    createObservation: async (routineId: string, input: CreateRoutineObservation, actor?: Actor) => {
+      const routine = await getRoutineById(routineId);
+      if (!routine) throw notFound("Routine not found");
+      if (!isExternalRoutine(routine)) {
+        throw conflict("Observations can only be recorded for external routines");
+      }
+      const idempotencyKey = input.idempotencyKey?.trim() || null;
+      const status = input.status === "success" ? "completed" : input.status === "failure" ? "failed" : "skipped";
+      const observedAt = input.observedAt ?? new Date();
+      const completedAt = input.completedAt ?? new Date();
+      const triggerPayload: Record<string, unknown> = {};
+      if (input.durationMs != null) triggerPayload.durationMs = input.durationMs;
+      if (input.host != null) triggerPayload.host = input.host;
+      if (input.unit != null) triggerPayload.unit = input.unit;
+      if (input.cadenceSec != null) triggerPayload.cadenceSec = input.cadenceSec;
+      if (input.costUsd != null) triggerPayload.costUsd = input.costUsd;
+      return db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        // Serialize against concurrent reporters so replays of the same
+        // observation are deduplicated exactly once.
+        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+        if (idempotencyKey) {
+          const existing = await txDb
+            .select()
+            .from(routineRuns)
+            .where(
+              and(
+                eq(routineRuns.companyId, routine.companyId),
+                eq(routineRuns.routineId, routine.id),
+                eq(routineRuns.source, "external"),
+                isNull(routineRuns.triggerId),
+                eq(routineRuns.idempotencyKey, idempotencyKey),
+              ),
+            )
+            .orderBy(desc(routineRuns.createdAt), desc(routineRuns.id))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existing) {
+            return { run: mapExternalObservationRun(existing), replayed: true };
+          }
+        }
+        const [created] = await txDb
+          .insert(routineRuns)
+          .values({
+            companyId: routine.companyId,
+            routineId: routine.id,
+            triggerId: null,
+            source: "external",
+            status,
+            triggeredAt: observedAt,
+            completedAt,
+            idempotencyKey,
+            triggerPayload: Object.keys(triggerPayload).length > 0 ? triggerPayload : null,
+            failureReason: input.failureReason ?? null,
+          })
+          .returning();
+        await logActivity(txDb, {
+          companyId: routine.companyId,
+          actorType: actor?.agentId ? "agent" : "system",
+          actorId: actor?.agentId ?? "routine-observer",
+          agentId: actor?.agentId ?? null,
+          runId: actor?.runId ?? null,
+          action: "routine.external_observation",
+          entityType: "routine",
+          entityId: routine.id,
+          details: {
+            source: routine.originKind ?? "external",
+            status,
+            host: input.host ?? null,
+            unit: input.unit ?? null,
+            failureReason: input.failureReason ?? null,
+          },
+        });
+        return { run: mapExternalObservationRun(created), replayed: false };
+      });
+    },
     /**
      * `options.origin` records where the routine came from (`origin_kind` /
      * `origin_id`). With an origin, at most one routine that is not archived
@@ -2793,6 +3018,7 @@ export function routineService(
     ): Promise<{ trigger: RoutineTrigger; secretMaterial: RoutineTriggerSecretMaterial | null; revision: RoutineRevision }> => {
       const routine = await getRoutineById(routineId);
       if (!routine) throw notFound("Routine not found");
+      assertRoutineNotExternal(routine, "adding a trigger");
 
       let secretMaterial: RoutineTriggerSecretMaterial | null = null;
       let secretId: string | null = null;
@@ -3239,6 +3465,7 @@ export function routineService(
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
+      assertRoutineNotExternal(routine, "run now");
       await assertProject(routine.companyId, input.projectId ?? null);
       const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
       await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });

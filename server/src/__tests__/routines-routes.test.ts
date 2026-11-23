@@ -114,6 +114,8 @@ const mockRoutineService = vi.hoisted(() => ({
   rotateTriggerSecret: vi.fn(),
   runRoutine: vi.fn(),
   firePublicTrigger: vi.fn(),
+  upsertExternal: vi.fn(),
+  createObservation: vi.fn(),
 }));
 
 const mockAnnotationService = vi.hoisted(() => ({
@@ -234,6 +236,11 @@ describe("routine routes", () => {
       id: "run-1",
       source: "manual",
       status: "issue_created",
+    });
+    mockRoutineService.upsertExternal.mockResolvedValue([]);
+    mockRoutineService.createObservation.mockResolvedValue({
+      run: { id: "run-obs-1", source: "external", status: "completed" },
+      replayed: false,
     });
     mockAccessService.canUser.mockResolvedValue(false);
     mockLogActivity.mockResolvedValue(undefined);
@@ -795,5 +802,104 @@ describe("routine routes", () => {
       });
       throw error;
     }
+  });
+
+  describe("external (observed) routines", () => {
+    it("accepts an idempotent manifest upsert and forwards the payload", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+      mockRoutineService.upsertExternal.mockResolvedValue([
+        { id: routineId, companyId, title: "Nightly backup", originKind: "external:systemd" },
+      ]);
+
+      const res = await request(app)
+        .put(`/api/companies/${companyId}/routines/external`)
+        .send({
+          items: [{
+            id: "gbos.systemd.nightly-backup",
+            source: "systemd",
+            title: "Nightly backup",
+            unit: "gb-backup.service",
+            host: "greybeard-one",
+            cadenceSec: 86400,
+          }],
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ upserted: true, count: 1 });
+      expect(mockRoutineService.upsertExternal).toHaveBeenCalledWith(companyId, expect.objectContaining({
+        items: [expect.objectContaining({ id: "gbos.systemd.nightly-backup", source: "systemd" })],
+      }), expect.objectContaining({
+        agentId: null,
+        userId: "board-user",
+        runId: null,
+      }));
+    });
+
+    it("rejects an invalid external source in the upsert payload", async () => {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app)
+        .put(`/api/companies/${companyId}/routines/external`)
+        .send({ items: [{ id: "x", source: "windows-task-scheduler", title: "Nope" }] });
+
+      expect(res.status).toBe(400);
+      expect(mockRoutineService.upsertExternal).not.toHaveBeenCalled();
+    });
+
+    it("records an observation for an external routine with 201", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+      });
+      mockRoutineService.get.mockResolvedValue(routine);
+      mockRoutineService.createObservation.mockResolvedValue({
+        run: { id: "run-obs-1", source: "external", status: "completed" },
+        replayed: false,
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/observations`)
+        .send({ status: "success", durationMs: 1200, host: "greybeard-one" });
+
+      expect(res.status).toBe(201);
+      expect(mockRoutineService.createObservation).toHaveBeenCalledWith(routineId, expect.objectContaining({
+        status: "success",
+        durationMs: 1200,
+        host: "greybeard-one",
+      }), expect.objectContaining({ agentId }));
+    });
+
+    it("replays a duplicate observation read-only with 200", async () => {
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+      });
+      mockRoutineService.get.mockResolvedValue(routine);
+      mockRoutineService.createObservation.mockResolvedValue({
+        run: { id: "run-obs-1", source: "external", status: "completed" },
+        replayed: true,
+      });
+
+      const res = await request(app)
+        .post(`/api/routines/${routineId}/observations`)
+        .send({ status: "failure", failureReason: "unit failed", idempotencyKey: "gbos-run-42" });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ replayed: true });
+    });
   });
 });
