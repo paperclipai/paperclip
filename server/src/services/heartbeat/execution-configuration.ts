@@ -273,7 +273,15 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     }
     Object.assign(resolvedConfig, managedAiRuntime.config);
     for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
-    context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity };
+    // A live runner that this run reconnects to keeps the token it started
+    // with. If this preparation renewed the credential, the new identity
+    // names a token the runner never received. A rejection that the runner
+    // reports later must be attributed to the token it holds, so the saved
+    // identity of the same grant is kept.
+    const liveRunnerIdentity = (input.task.adoptingLiveRunner || input.task.reattachingLiveRunner)
+      && savedAiAccount.grantId === managedAiRuntime.attribution.grantId && typeof savedAiAccount.identity === "string"
+      ? savedAiAccount.identity : null;
+    context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: liveRunnerIdentity ?? managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity };
     await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection, ...(context.aiRouterTaskKey ? { aiRouterTaskKey: context.aiRouterTaskKey } : {}), ...(context.aiRouterSelection ? { aiRouterSelection: context.aiRouterSelection } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
   }
   if (secretManifest.length > 0) {

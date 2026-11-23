@@ -381,6 +381,21 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(prepare.mock.calls[0]![1].currentRunId).toBe(live === "none" ? opening.run.id : undefined);
   });
 
+  it.each(["none", "remote", "local"] as const)("records the token identity that the process holds, not one renewed under a live runner (live runner=%s)", async live => {
+    const f = await seed(true);
+    const binding = aiConnectionBindingSchema.parse((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.runtimeConfig!.aiConnection);
+    const attribution = { connectionId: binding.connectionId, grantId: binding.grantId, provider: binding.provider, method: binding.method, mode: binding.mode, responsibleUserId: null };
+    // This preparation renewed the credential: the runtime reports a new token identity.
+    vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockResolvedValue({ config: { provider: "codex", env: {} }, attribution, accountName: "Fixture",
+      identity: `${binding.grantId}:shared:renewed`, sessionIdentity: `${binding.grantId}:shared:session`, cleanup: async () => {} } as never);
+    const saved = { aiConnection: { ...attribution, identity: `${binding.grantId}:shared:delivered`, sessionIdentity: `${binding.grantId}:shared:session` } };
+    const opening = await configuration(f, { provider: "codex" }, saved, "paperclip_runner", false, "shared_workspace", null, undefined, live === "remote", binding, live !== "none");
+    await opening.prepare().catch(() => undefined);
+    const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, opening.run.id));
+    expect((row!.contextSnapshot as { aiConnection: { identity: string } }).aiConnection.identity)
+      .toBe(`${binding.grantId}:shared:${live === "none" ? "renewed" : "delivered"}`);
+  });
+
   it.each([undefined, true, false])("defaults existing SSH environments to remote authentication and honors the saved choice (saved=%s)", async useHostAuth => {
     const f = await seed(true);
     const environment = { ...await environmentService(db).ensureLocalEnvironment(), driver: "ssh", config: { ...(useHostAuth !== undefined ? { useHostAuth } : {}), host: "fixture.invalid", username: "fixture", remoteWorkspacePath: "/workspace" } } as Environment;
