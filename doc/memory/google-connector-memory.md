@@ -40,7 +40,7 @@ Last updated: November 23, 2026.
 | Nov 17 | **Deleting a whole recurring series is refused** | Same rule as the `delete_event` decision above. |
 | Nov 17 | **A service is switched to REST only after a live test on the staging tester** | One service at a time. |
 | Nov 17 | **The gateway sets the REST result size limit** | The REST tools enforce the number the gateway passes: the gateway's MCP response limit less framing, 999,885 bytes. A result Google's MCP server could deliver is also delivered over REST. See the folder README's "Result size". |
-| Nov 23 | **Unconfirmed Google revocation is retried by the app, not Cloud** | When access must end and Google cannot be reached or confirm, the app keeps the token in `google_pending_revocations` and retries (1 minute up to 6 hours backoff, 30-day hard stop). Cloud still never stores provider tokens. Company deletion and a Cloud-removed instance queue the same way. The broker lets a removed instance sign a Google revoke (paperclip-cloud #1752). See [connector doc](../connections/GOOGLE-WORKSPACE.md), "Pending revocation". |
+| Nov 23 | **Unconfirmed Google revocation is retried by the app, not Cloud** | When access must end and Google cannot be reached or confirm, the app keeps the token in `google_pending_revocations` and retries (1 minute up to 6 hours backoff, 30-day hard stop). Cloud still never stores provider tokens. Company deletion and a Cloud-removed instance queue the same way. The broker lets a removed instance sign a Google revoke (Cloud broker change, November 23). See [connector doc](../connections/GOOGLE-WORKSPACE.md), "Pending revocation". |
 
 ## What has shipped
 
@@ -280,7 +280,7 @@ Changes made in the broker (staging):
 Pending revocation (November 23): the app retries an unconfirmed Google
 revoke in the background and handles both brokers. With the old broker, a
 removed instance's revoke is refused (`403`) and retried until the 30-day hard
-stop; once paperclip-cloud #1752 is deployed, those revokes succeed. Either
+stop; once that broker change is deployed, those revokes succeed. Either
 deploy order is safe.
 
 Deploy order: **app first, then broker.** If the broker narrows first, refresh

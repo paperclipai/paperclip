@@ -343,8 +343,8 @@ Cloud still stores no provider token.
 - When the Cloud connection status check finds the instance `removed`, the app
   queues every managed Google refresh token (`reason = instance_removed`), then
   deletes each connection secret. Those connections need a reconnect after a new
-  enrollment. The broker accepts a Google revoke from a removed instance from
-  paperclipai/paperclip-cloud#1752; an older broker answers `403
+  enrollment. The broker accepts a Google revoke from a removed instance after
+  the November 23 broker release; an older broker answers `403
   INSTANCE_SUSPENDED`, which the app retries until the hard stop.
 - The worker does no work and holds no deadline when the table is empty, and
   nothing here runs on turn start or on a tool call.
