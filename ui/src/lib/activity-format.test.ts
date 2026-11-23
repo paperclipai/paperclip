@@ -207,6 +207,14 @@ describe("activity formatting", () => {
       expect(verb).not.toMatch(internalName);
     });
 
+    it("drops the length-bound hash from a long gateway tool name", () => {
+      const verb = formatActivityVerb("tool_gateway.call_failed", {
+        tool: "mcp.app-gallery-github-connection:create-repository-0123456789abcdef",
+        connectionId,
+      });
+      expect(verb).toBe("could not use create repository on");
+    });
+
     it("names a Google connection when its removal reports Google access", () => {
       const providerAccess = { provider: "google", result: "ended", outcomes: [] };
       expect(formatActivityVerb("tool_connection.archived", { transport: "remote_http", providerAccess })).toBe("removed");

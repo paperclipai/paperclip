@@ -244,7 +244,7 @@ function googleProviderAccessResult(details: ActivityDetails): string | null {
 
 function formatToolLabel(details: ActivityDetails): string {
   const name = readText(details?.upstreamToolName)
-    ?? readText(details?.tool)?.replace(/^(?:mcp|app)\.[^:]*:|^(?:mcp|app)\.[a-z0-9-]*-[0-9a-f]{8}\./, "");
+    ?? readText(details?.tool)?.replace(/^(?:mcp|app)\.[^:]*:|^(?:mcp|app)\.[a-z0-9-]*-[0-9a-f]{8}\./, "").replace(/-[0-9a-f]{16}$/, "");
   const title = readText(details?.toolTitle);
   if (!name) return title ?? "an app action";
   return googleWorkspaceToolTitle(name, title) ?? name.replace(/[._-]+/g, " ");
