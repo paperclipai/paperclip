@@ -111,6 +111,20 @@ describe("Paperclip Cloud connector saved answers", () => {
     }
   });
 
+  it("stops advertising cached sign-ins as soon as Cloud confirms removal", async () => {
+    const keys = config();
+    const env = managedEnv(keys);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(active());
+    await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual(["github.code"]);
+    const connector = createPaperclipCloudConnector({
+      config: keys,
+      request: vi.fn(async () => new Response("removed", { status: 401 })) as typeof fetch,
+    });
+    await expect(connector.getInstanceStatus()).resolves.toBe("removed");
+    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json({ active: false, status: "removed" }));
+    await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
+  });
+
   it("does not let an answer that started before an invalidation replace a newer one", async () => {
     let answerLate!: (response: Response) => void;
     const responses: Array<Response | Promise<Response>> = [
@@ -159,6 +173,6 @@ describe("Paperclip Cloud connector saved answers", () => {
     )).resolves.toMatchObject({ status: "unverified" });
     const incomplete = { ...env, PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: "" };
     await expect(reconcilePaperclipCloudConnectorEnrollmentStatus(incomplete, vi.fn() as typeof fetch))
-      .resolves.toMatchObject({ status: "unverified" });
+      .resolves.toMatchObject({ status: "misconfigured" });
   });
 });

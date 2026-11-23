@@ -47,12 +47,13 @@ export type PaperclipCloudConnectorIdentity = {
 export type PaperclipCloudConnectorEnrollmentStatus = {
   configured: boolean;
   /**
-   * `unverified`: the local identity cannot be checked (incomplete managed
-   * settings, or a saved identity for another broker). `unreachable`: the
-   * identity is complete, but Cloud did not answer the check (rate limit,
-   * outage, network), so retrying is the right action.
+   * `unverified`: a saved self-hosted identity belongs to another broker;
+   * registering again fixes it. `misconfigured`: managed identity settings are
+   * incomplete; self-hosted registration is unavailable, so an administrator
+   * must finish them. `unreachable`: the identity is complete, but Cloud did
+   * not answer the check (rate limit, outage, network); a retry is the fix.
    */
-  status: PaperclipCloudConnectorIdentity["status"] | "not_configured" | "suspended" | "unverified" | "unreachable";
+  status: PaperclipCloudConnectorIdentity["status"] | "not_configured" | "suspended" | "unverified" | "misconfigured" | "unreachable";
   brokerBaseUrl: string;
   instanceId: string | null;
   environment: LocalConnectorEnvironment;
@@ -90,7 +91,7 @@ export function paperclipCloudConnectorEnrollmentStatus(
     if (!managedInstanceId || !managedSignPrivateKey || !managedSealPrivateKey || !managedEnvironment) {
       return {
         configured: false,
-        status: "unverified",
+        status: "misconfigured",
         brokerBaseUrl,
         instanceId: null,
         environment,

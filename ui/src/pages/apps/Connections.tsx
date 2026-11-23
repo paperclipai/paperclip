@@ -607,11 +607,19 @@ function CloudConnectorEnrollmentBanner({
       </div>
     );
   }
-  if (unavailable) {
+  // Neither state can be fixed by enrolling: Cloud did not answer, or the
+  // managed settings are incomplete and only an administrator can finish them.
+  if (unavailable || status?.status === "unreachable" || status?.status === "misconfigured") {
     return (
       <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
         <Cloud className="h-5 w-5 text-muted-foreground" />
-        <div className="text-sm text-muted-foreground">Paperclip Cloud enrollment status is unavailable.</div>
+        <div className="text-sm text-muted-foreground">
+          {status?.status === "unreachable"
+            ? "Paperclip couldn’t reach Paperclip Cloud. Managed sign-in will be checked again shortly."
+            : status?.status === "misconfigured"
+            ? "Paperclip Cloud settings on this instance are incomplete. Ask your instance administrator to finish them."
+            : "Paperclip Cloud enrollment status is unavailable."}
+        </div>
       </div>
     );
   }

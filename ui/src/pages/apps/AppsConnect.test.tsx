@@ -1770,6 +1770,18 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
   });
 
+  it("asks for an administrator, not registration, when managed Cloud settings are incomplete", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GITHUB)] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ ...unconfiguredConnectorEnrollment(), status: "misconfigured" });
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(container.textContent).toContain("Ask your instance administrator to finish the Paperclip Cloud settings.");
+  });
+
   it("keeps Cloud registration available when the local Cloud identity is unverified", async () => {
     // "unverified" is a local identity problem (for example a saved identity
     // for another broker); registering again fixes it, a retry does not.

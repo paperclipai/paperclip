@@ -563,8 +563,12 @@ export function createPaperclipCloudConnector(input: {
     async getInstanceStatus(): Promise<"active" | "suspended" | "removed"> {
       const generation = savedAnswerGeneration;
       const settle = (status: "active" | "suspended" | "removed") => {
-        // An inactive registration has no usable sign-ins either.
-        if (status !== "active") remember(lastKnownCapabilities, [], generation);
+        // An inactive registration has no usable sign-ins either, including
+        // the list the gallery cached from before.
+        if (status !== "active") {
+          remember(lastKnownCapabilities, [], generation);
+          if (capabilityCache?.key === configKey) capabilityCache = null;
+        }
         return remember(lastKnownInstanceStatus, status, generation);
       };
       let response: ConnectorResponse;

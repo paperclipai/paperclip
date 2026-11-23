@@ -2401,12 +2401,15 @@ function StandardConnectionSetupFlow({
   // is unenrolled. Offering enrollment there sends a Cloud workspace (or an
   // already-enrolled instance) into a flow that cannot succeed; a retry can.
   const cloudConnectorUnreachable = connectorEnrollmentQuery.data?.status === "unreachable";
+  // Incomplete managed identity settings: registration cannot run here, and
+  // only an administrator can finish the settings.
+  const cloudConnectorMisconfigured = connectorEnrollmentQuery.data?.status === "misconfigured";
   const managedConnectorUnavailable = Boolean(
     step === "key"
     && entry
     && requestedDefinitionUsesManagedConnector
     && !entryAdvertisesManagedConnector
-    && (connectorEnrollmentQuery.data?.configured === true || cloudConnectorUnreachable)
+    && (connectorEnrollmentQuery.data?.configured === true || cloudConnectorUnreachable || cloudConnectorMisconfigured)
   );
 
   const showConnectorEnrollmentStep = Boolean(
@@ -2415,6 +2418,7 @@ function StandardConnectionSetupFlow({
     && requestedDefinitionUsesManagedConnector
     && !entryAdvertisesManagedConnector
     && !cloudConnectorUnreachable
+    && !cloudConnectorMisconfigured
     && (
       connectorEnrollmentQuery.isLoading
       || connectorEnrollmentView.kind === "error"
@@ -2721,6 +2725,8 @@ function StandardConnectionSetupFlow({
           <p className="mt-2 text-sm text-muted-foreground">
             {cloudConnectorUnreachable
               ? `Paperclip couldn’t reach Paperclip Cloud to start ${entry.name} sign-in. Try again in a moment.`
+              : cloudConnectorMisconfigured
+              ? `${entry.name} sign-in through Paperclip Cloud isn’t set up on this instance. Ask your instance administrator to finish the Paperclip Cloud settings.`
               : `This instance is connected to Paperclip, but ${entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.`}
           </p>
           {customOAuthMethod ? (
