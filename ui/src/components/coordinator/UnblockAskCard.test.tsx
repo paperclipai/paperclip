@@ -5,8 +5,12 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
+import { ApiError } from "@/api/api-error";
+import { queryKeys } from "@/lib/queryKeys";
 import { BlockedTaskCardBody } from "./NeedsYouCardBodies";
 
+const issues = vi.hoisted(() => ({ get: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ blocks: [] })) }));
+vi.mock("@/api/issues", () => ({ issuesApi: { get: issues.get } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company", companies: [] }) }));
 
 /** The "Unblock a task" card when the assignee asked a person for something. */
@@ -25,7 +29,7 @@ describe("human unblock card", () => {
     copy.querySelectorAll(".sr-only, svg title").forEach((entry) => entry.remove());
     return copy.textContent;
   };
-  async function renderCard(detail: Record<string, unknown>) {
+  async function renderCard(detail: Record<string, unknown>, cachedIssue?: unknown) {
     const item = {
       id: "owner", sourceKind: "blocker_attention", inlineResolvable: false, whyNow: "Merge the prep branch, or say to build on it",
       subject: { id: "task-3", kind: "issue", identifier: "PAP-3", title: "Second stage", href: "/PAP/issues/PAP-3", status: "blocked", metadata: { assigneeAgentId: "agent-eng" } },
@@ -33,6 +37,7 @@ describe("human unblock card", () => {
       detail: { kind: "blocker", blockingIssue: null, unblockAction: "Merge the prep branch, or say to build on it", heldUpTasks: [], heldUpDirectCount: 0, heldUpTotalCount: 0, images: [], ...detail },
     } as unknown as AttentionItem;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    if (cachedIssue) client.setQueryData(queryKeys.issues.detail("task-3"), cachedIssue);
     await act(async () => root.render(
       <QueryClientProvider client={client}><MemoryRouter><BlockedTaskCardBody item={item} companyId="company" agentMap={agentMap} /></MemoryRouter></QueryClientProvider>,
     ));
@@ -68,4 +73,18 @@ describe("human unblock card", () => {
     expect(card.querySelector("[data-unblock-waiting-on] a")?.getAttribute("href")).toBe("/issues/PAP-2");
     expect(footerActions(card)).toEqual(["Open blocking task"]);
   });
+
+  it("keeps the cached held-up list and says so when refreshing it fails", async () => {
+    issues.get.mockRejectedValueOnce(new ApiError("Not found", 404, { error: "not_found" }));
+    const cached = { blocks: [heldUpTask(4), { ...heldUpTask(8), status: "todo", priority: "high" }].map((task) => ({ priority: "medium", ...task })) };
+    const card = await renderCard({ heldUpTasks: [heldUpTask(4), heldUpTask(8), heldUpTask(9)], heldUpDirectCount: 10, heldUpTotalCount: 10 }, cached);
+    await act(async () => card.querySelector<HTMLButtonElement>("[data-unblock-held-up-more]")!.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const list = document.body.querySelector<HTMLElement>("[data-unblock-held-up-list]")!;
+    expect(list, "held-up list").toBeTruthy();
+    // The cached rows stay, and the failed refresh is shown next to them.
+    expect([...list.querySelectorAll("[data-unblock-held-up-row]")].map((row) => visibleText(row))).toEqual(["PAP-8Follow-up 8", "PAP-4Follow-up 4"]);
+    expect(list.querySelector('[role="alert"]')?.textContent).toMatch(/^Couldn't refresh this list, so it may be out of date\. /);
+  });
 });
+

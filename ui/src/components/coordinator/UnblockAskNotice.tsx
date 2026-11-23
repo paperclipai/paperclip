@@ -63,23 +63,24 @@ function HeldUpMore({ issueId, issueLabel, moreCount, behindCount }: { issueId: 
           {moreCount} more
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 p-0">
+      <PopoverContent align="start" className="w-80 p-0" data-unblock-held-up-list>
         <p className="border-b border-border px-3 py-2 text-sm font-medium">{issueLabel} holds up {blocks.length || moreCount} tasks</p>
         <div className="max-h-64 overflow-y-auto py-1">
           {issue.isLoading ? <p className="px-3 py-2 text-xs text-muted-foreground">Loading…</p> : null}
-          {/* Cached rows stay visible when a refetch fails; the error shows only with nothing to list. */}
-          {issue.error && !issue.data ? (
-            <p role="alert" className="px-3 py-2 text-xs text-destructive">
-              {describeError(issue.error, { action: "load the list" }).body} Open {issueLabel} to see it.
-            </p>
-          ) : null}
           {blocks.map((entry) => (
-            <div key={entry.id} className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-sm">
+            <div key={entry.id} data-unblock-held-up-row className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-sm">
               <IssueReferencePill issue={entry} />
               <span className="min-w-0 truncate">{entry.title}</span>
             </div>
           ))}
         </div>
+        {/* A failed refresh is always shown; any rows loaded before stay visible above it. */}
+        {issue.error ? (
+          <p role="alert" className="border-t border-border px-3 py-2 text-xs text-destructive">
+            {issue.data ? "Couldn't refresh this list, so it may be out of date. " : "Couldn't load the list. "}
+            {describeError(issue.error, { action: issue.data ? "refresh the list" : "load the list" }).body} Open {issueLabel} to see it.
+          </p>
+        ) : null}
         {behindCount > 0 ? (
           <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
             {behindCount} more {behindCount === 1 ? "task is" : "tasks are"} waiting behind these (tasks they block, and their subtasks).
