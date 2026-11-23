@@ -1,5 +1,5 @@
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
-import { nativeEffectiveRunTerminalStateSql } from "./native-runtime/native-accepted-outcome.js";
+import { nativeEffectiveRunTerminalStateSql, nativeEffectiveRunTerminalStateSqlText } from "./native-runtime/native-accepted-outcome.js";
 import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
@@ -306,7 +306,7 @@ export async function admitExplicitNativeContinuation(input: {
         where completed.company_id = ${companyId} and result.issue_id = ${issueId}
           and completed.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
           and completed.runtime_mode = 'native' and completed.status = 'succeeded' and finalized.phase = 'committed'
-          and result.schema_status = 'accepted' and result.result_json#>>'{terminal,runTerminalState}' = 'succeeded')`,
+          and result.schema_status = 'accepted' and ${sql.raw(nativeEffectiveRunTerminalStateSqlText("result.result_json"))} = 'succeeded')`,
     )),
   )).for("update");
   const sourceChecks: Array<{ id?: string; cause: string; evidence: Record<string, unknown> }> =
@@ -335,7 +335,7 @@ export async function admitExplicitNativeContinuation(input: {
         eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
         eq(nativeRunResults.runId, latest.id), eq(nativeRunResults.id, coordinator.resultId),
         eq(nativeRunResults.schemaStatus, "accepted"),
-        sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+        sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
       )).limit(1) : [];
       if (!result || await hasPendingRunCleanup(db, companyId, latest.id))
         return blocked("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
@@ -454,7 +454,7 @@ export async function admitExplicitNativeContinuation(input: {
         eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
         eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
         eq(nativeRunResults.schemaStatus, "accepted"),
-        sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+        sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
       )).limit(1);
       const recovery = readSystemRecovery(action.evidence);
       const snapshotSettled = completedResult && freshIntent && action.id && recovery?.state === "complete"

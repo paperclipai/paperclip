@@ -58,20 +58,22 @@ export function nativeEffectiveTerminal<T extends Record<string, unknown> | PrpT
 }
 
 const ALIAS = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$/;
+type TerminalField = "runTerminalState" | "turnTerminalState";
+const SETTLED: Record<TerminalField, string> = { runTerminalState: "succeeded", turnTerminalState: "completed" };
 
-export function nativeEffectiveRunTerminalStateSqlText(resultJson: string): string {
+export function nativeEffectiveRunTerminalStateSqlText(resultJson: string, field: TerminalField = "runTerminalState"): string {
   if (!ALIAS.test(resultJson)) throw new Error("native_accepted_outcome_column_invalid");
   const outcome = `${resultJson}->'${NATIVE_ACCEPTED_OUTCOME_KEY}'`;
   return `(case when ${outcome}->>'schema' = '${SCHEMA}' and ${outcome}->>'cause' = '${CAUSE}'
     and ${outcome}->>'runTerminalState' = 'succeeded' and ${outcome}->>'turnTerminalState' = 'completed'
-    then 'succeeded' else ${resultJson}->'terminal'->>'runTerminalState' end)`;
+    then '${SETTLED[field]}' else ${resultJson}->'terminal'->>'${field}' end)`;
 }
 
-export function nativeEffectiveRunTerminalStateSql(resultJson: AnyColumn | SQL): SQL<string> {
+export function nativeEffectiveRunTerminalStateSql(resultJson: AnyColumn | SQL, field: TerminalField = "runTerminalState"): SQL<string> {
   const outcome = sql`${resultJson}->${NATIVE_ACCEPTED_OUTCOME_KEY}`;
-  return sql<string>`case when ${outcome}->>'schema' = ${SCHEMA} and ${outcome}->>'cause' = ${CAUSE}
+  return sql<string>`(case when ${outcome}->>'schema' = ${SCHEMA} and ${outcome}->>'cause' = ${CAUSE}
     and ${outcome}->>'runTerminalState' = 'succeeded' and ${outcome}->>'turnTerminalState' = 'completed'
-    then 'succeeded' else ${resultJson}->'terminal'->>'runTerminalState' end`;
+    then ${SETTLED[field]} else ${resultJson}->'terminal'->>${field} end)`;
 }
 
 /** A transient refusal came from the remote model service and the turn ended cleanly, so the warm process stays usable. */

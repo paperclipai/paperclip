@@ -20,6 +20,8 @@ import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { projectCommittedRun } from "./native-run-projection.js";
 import { NATIVE_RUN_FINALIZATION_WORK_QUERY } from "../idle-sleep-safety.js";
+import { nativeResponsePresentationCandidates } from "./native-response-presentation-query.js";
+import { admitExplicitNativeContinuation } from "../explicit-native-continuation.js";
 import { readPersistedNativeProviderFailure } from "./native-provider-failure-evidence.js";
 import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { heartbeatService } from "../heartbeat.js";
@@ -280,6 +282,21 @@ describe("durable native provider capacity retry", () => {
     await projectCommittedRun({ db, run: restarted, coordinator });
     await waitForPendingRunFailureReports();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "succeeded", errorCode: null });
+    // A reply not yet published (restart, failed publication) is recovered for this succeeded run.
+    const replies = nativeResponsePresentationCandidates(undefined, undefined, runId).as("pending_native_response");
+    expect((await db.select().from(replies)).map(row => row.id)).toEqual([runId]);
+    // A message the user queued and then sent proceeds once cleanup has finished.
+    const commentId = randomUUID(), queueId = randomUUID(), blocked: string[] = [];
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: "capacity-owner", body: "One more thing." });
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId, source: "on_demand", reason: "issue_commented",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "capacity-owner",
+      payload: { issueId, _paperclipWakeContext: { wakeCommentIds: [commentId] },
+        queuedCommentInterrupt: { actorId: "capacity-owner", requestedAt: new Date().toISOString() } } });
+    await db.transaction(tx => admitExplicitNativeContinuation({ db: tx as unknown as typeof db, companyId, issueId, agentId,
+      actorType: "user", actorId: "capacity-owner", reason: "issue_commented", commentId, successorRunId: randomUUID(),
+      queuedCommentInterruptId: queueId, dryRun: true, onBlocked: reason => blocked.push(reason) }));
+    expect(blocked).not.toContain("cleanup_pending");
+    await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, queueId));
     // Idle sleep treats this settled finalization as history, not pending work.
     await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize", status: "succeeded" });
     await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, runId));
