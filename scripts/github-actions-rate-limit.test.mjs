@@ -80,6 +80,24 @@ test("an ordinary forbidden response is still an immediate permission failure", 
   assert.deepEqual(f.waits, []);
 });
 
+test("transient service failures honor Retry-After seconds and dates", async () => {
+  for (const retryAfter of ["30", "Sat, 01 Jan 2000 00:00:30 GMT"]) {
+    const f = fixture([{ status: 503, headers: { "retry-after": retryAfter } }, { status: 200 }]);
+    await f.api("/repos/x");
+    assert.deepEqual(f.waits, [30_000]);
+    assert.equal(f.calls[1] - f.calls[0], 30_000);
+  }
+});
+
+test("transient Retry-After waits outside either budget fail without an early retry", async () => {
+  for (const options of [{ maxRetryAfterMs: 20_000 }, { deadlineAt: () => Date.UTC(2000, 0, 1) + 20_000 }]) {
+    const f = fixture([{ status: 503, headers: { "retry-after": "30" } }], options);
+    await assert.rejects(f.api("/repos/x"), /GitHub Actions read failed \(HTTP 503\)/);
+    assert.deepEqual(f.waits, []);
+    assert.equal(f.calls.length, 1);
+  }
+});
+
 
 test("the release CLI reports safe quota evidence and cannot publish proof or cancel work", () => {
   const dir = mkdtempSync(join(tmpdir(), "github-quota-cli-"));

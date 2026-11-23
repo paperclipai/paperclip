@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -62,4 +62,31 @@ test("both workflow metadata steps use local inputs and the manifest consumes th
   assert.equal(workflow.match(/run: node scripts\/docker-image-metadata.mjs/g)?.length, 2);
   assert.equal(workflow.match(/LAST_MIGRATION: \$\{\{ steps.schema.outputs.last \}\}/g)?.length, 2);
   assert.match(workflow, /DOCKER_METADATA_OUTPUT_JSON: \$\{\{ steps.meta.outputs.json \}\}/);
+});
+
+test("trusted release checks tolerate older checkouts and run each new test when present", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/pr-trusted.yml", import.meta.url), "utf8");
+  const step = workflow.split("      - name: Test release verify workflow wiring\n")[1].split("\n      - name:")[0];
+  const script = step.split("        run: |\n")[1].replace(/^ {10}/gm, "");
+  const baseline = ["./scripts/__tests__/release-verify-workflow.test.mjs", "./scripts/__tests__/eval-schedule-monitor.test.mjs",
+    "./scripts/__tests__/prepare-runner-release-image.test.mjs", "./scripts/cloud-source-verification.test.mjs",
+    "./scripts/cloud-readiness-runner-loss.test.mjs", "./scripts/standard-image-contract.test.mjs", "./scripts/reuse-canary-image.test.mjs"];
+  const added = ["./scripts/github-actions-rate-limit.test.mjs", "./scripts/docker-image-metadata.test.mjs"];
+  const dir = mkdtempSync(join(tmpdir(), "trusted-release-checks-"));
+  try {
+    mkdirSync(join(dir, "scripts/__tests__"), { recursive: true });
+    for (const file of baseline) writeFileSync(join(dir, file), "");
+    const output = join(dir, "selected.json"), capture = join(dir, "capture.mjs");
+    writeFileSync(capture, `import { existsSync, writeFileSync } from "node:fs";
+      const files = process.argv.slice(2);
+      if (files.some(file => !existsSync(file))) process.exit(1);
+      writeFileSync(process.env.CAPTURE_OUTPUT, JSON.stringify(files));`);
+    for (const present of [[], added.slice(0, 1), added.slice(1), added]) {
+      for (const file of added) rmSync(join(dir, file), { force: true });
+      for (const file of present) writeFileSync(join(dir, file), "");
+      execFileSync("bash", ["-euo", "pipefail", "-c", script], { cwd: dir,
+        env: { ...process.env, CI_NODE_TEST: capture, CAPTURE_OUTPUT: output } });
+      assert.deepEqual(JSON.parse(readFileSync(output, "utf8")), [...baseline, ...present]);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

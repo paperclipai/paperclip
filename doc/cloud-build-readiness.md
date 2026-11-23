@@ -65,7 +65,8 @@ workspace; these checks do not commit it back to the repository.
 
 The Actions reader reuses ETags for unchanged polls. A primary quota response
 waits until `x-ratelimit-reset`, with a one-second margin. `Retry-After` also sets
-a minimum wait. Without either value, a throttled request waits at least one
+a minimum wait, including on transient service errors such as HTTP 503.
+Without either value, a throttled request waits at least one
 minute, then uses exponential backoff. A permission-denied 403 is not retried.
 
 A wait must fit the caller deadline and the per-read budget. The default reader

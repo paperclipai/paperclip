@@ -32,10 +32,14 @@ export class GitHubActionsRateLimitError extends Error {
   }
 }
 
-function quotaWait(response, details, now, attempt) {
+function retryAfterMs(response, now) {
   const raw = response.headers?.get?.("retry-after");
   const parsed = raw == null || raw.trim() === "" ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? now + Number(raw) * 1000 : Date.parse(raw);
-  const retryAfter = Number.isFinite(parsed) && parsed > now ? parsed - now : undefined;
+  return Number.isFinite(parsed) && parsed > now ? parsed - now : undefined;
+}
+
+function quotaWait(response, details, now, attempt) {
+  const retryAfter = retryAfterMs(response, now);
   const resetWait = details.remaining === 0 && details.reset !== undefined && details.reset > now ? details.reset - now + 1000 : undefined;
   return Math.max(retryAfter ?? 0, resetWait ?? 0) || 60_000 * 2 ** (attempt - 1);
 }
@@ -50,7 +54,7 @@ export function createActionsReader({
     const deadline = Math.min(deadlineAt(), now() + maxRetryAfterMs);
     for (let attempt = 1; ; attempt += 1) {
       const waitMs = backoffMs * attempt;
-      const retryable = attempt < attempts && now() + waitMs < Math.min(deadline, deadlineAt());
+      const retryable = delay => attempt < attempts && now() + delay < Math.min(deadline, deadlineAt());
       let response;
       try {
         const etag = cached.get(path)?.etag;
@@ -62,7 +66,7 @@ export function createActionsReader({
           signal: AbortSignal.timeout(30_000), redirect: "error",
         });
       } catch (cause) {
-        if (!retryable) throw new Error(`GitHub Actions read failed: ${cause.message}`);
+        if (!retryable(waitMs)) throw new Error(`GitHub Actions read failed: ${cause.message}`);
         log(`GitHub Actions read failed (${cause.message}); retrying (${attempt}/${attempts - 1}).`);
         await sleep(waitMs);
         continue;
@@ -76,7 +80,7 @@ export function createActionsReader({
           else cached.delete(path);
           return body;
         } catch (cause) {
-          if (!retryable) throw new Error(`GitHub Actions read failed: ${cause.message}`);
+          if (!retryable(waitMs)) throw new Error(`GitHub Actions read failed: ${cause.message}`);
           log(`GitHub Actions read body failed (${cause.message}); retrying (${attempt}/${attempts - 1}).`);
           await sleep(waitMs);
           continue;
@@ -87,16 +91,17 @@ export function createActionsReader({
         const details = quota(response, tokenSource);
         const error = new GitHubActionsRateLimitError(details);
         const delay = quotaWait(response, details, now(), attempt);
-        if (attempt >= attempts || now() + delay >= Math.min(deadline, deadlineAt())) throw error;
+        if (!retryable(delay)) throw error;
         log(`${error.message} Waiting ${Math.ceil(delay / 1000)}s before retry ${attempt}/${attempts - 1}.`);
         await sleep(delay);
         continue;
       }
-      if (!retryable || !TRANSIENT_READ_STATUSES.has(response.status)) {
+      const delay = Math.max(waitMs, retryAfterMs(response, now()) ?? 0);
+      if (!TRANSIENT_READ_STATUSES.has(response.status) || !retryable(delay)) {
         throw new Error(`GitHub Actions read failed (HTTP ${response.status}).`);
       }
       log(`GitHub Actions read failed (HTTP ${response.status}); retrying (${attempt}/${attempts - 1}).`);
-      await sleep(waitMs);
+      await sleep(delay);
     }
   };
 }
