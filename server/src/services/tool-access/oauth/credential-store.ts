@@ -6,11 +6,11 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, toolConnections } from "@paperclipai/db";
 import type { ToolConnection, ToolCredentialSecretRef } from "@paperclipai/shared";
-import { notFound } from "../../../errors.js";
+import { notFound, unprocessable } from "../../../errors.js";
 import { secretService } from "../../secrets.js";
 import { resolveConnectionGrantSecret, writeConnectionCredential } from "../../connection-credentials.js";
 
-import { configuredOAuthClientForConnection, oauthSecretRef } from "./client-settings.js";
+import { configuredOAuthClientForConnection, oauthSecretRef, refusedDeploymentClientError } from "./client-settings.js";
 export function actorForSecret(
   actor?: ActorInfo,
 ): { userId?: string | null; agentId?: string | null } | undefined {
@@ -58,16 +58,21 @@ async function syncCredentialBindings(
   async function oauthClientForConnection(
     connection: typeof toolConnections.$inferSelect,
     provider: string,
+    tokenUrl: string | null | undefined,
     actor?: ActorInfo,
   ) {
-    const configured = configuredOAuthClientForConnection(connection, provider);
+    const configured = configuredOAuthClientForConnection(connection, provider, tokenUrl);
     if (configured.clientId) return configured;
     const oauth = oauthConfig(connection);
     const clientId =
       typeof oauth.clientId === "string" && oauth.clientId.trim()
         ? oauth.clientId.trim()
         : null;
-    if (!clientId) return configured;
+    if (!clientId) {
+      const refused = refusedDeploymentClientError(provider);
+      if (refused) throw refused;
+      return configured;
+    }
     // CIMD clients and public DCR clients have no token-endpoint secret. A DCR
     // authorization server may instead issue a confidential client (for
     // example, `client_secret_basic`); in that case the registration secret is

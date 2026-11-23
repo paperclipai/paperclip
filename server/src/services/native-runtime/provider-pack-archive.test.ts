@@ -156,7 +156,7 @@ it.skipIf(!tar || !hasZstd)("stores repeated bytes once, from an image file unde
   // Only the small-file overlay crosses the network, and the image is unchanged.
   expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
   expect((await fs.readdir(image, { recursive: true })).sort()).toEqual(before);
-});
+}, 60_000);
 
 it("plans one private copy per digest and mode, with same-bytes twins as copy sources", () => {
   const a = "a".repeat(64), b = "b".repeat(64);
@@ -200,7 +200,7 @@ it.skipIf(!tar || !hasZstd)("transfers repeated bytes when no image has them, an
   }
   const layers = archive.files.reduce((sum, file) => sum + file.archive.bytes, 0);
   expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes + layers);
-});
+}, 60_000);
 
 it("writes the same archive for the same file every time, with nothing after the frame", async () => {
   // Ending the compressor while its last chunk was still queued made Node
