@@ -84,9 +84,13 @@ CLI paths that use stdin avoid that separate limit for the wake prompt.
 
 ## Adding a native Runner harness
 
-Google Antigravity's pending integration uses the official ACP server 1.4.3 with
-a pinned native admission patch. `paperclipai runtime setup antigravity` installs
-its verified assets on macOS ARM64 as the OS user running Paperclip. Setup does
+Google Antigravity's pending integration uses the official ACP server 1.5.2 with
+a pinned native admission patch. The patcher rewrites the Python archive in the
+`.par_data` section of the macOS (Mach-O, re-signed ad hoc) and Linux (ELF)
+servers, and writes the helper digest from the verified closure declaration into
+a generated module, so one admission source serves every platform.
+`paperclipai runtime setup antigravity` installs its verified assets on macOS
+ARM64, Linux x64 and Linux ARM64 as the OS user running Paperclip. Setup does
 not enable global execution: qualification remains pending and admission is
 closed by default. An isolated company can use a finite trusted server-startup
 candidate authorization bound to the exact model, local platform, profile and

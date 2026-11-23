@@ -200,6 +200,7 @@ export const resolveGrokEffort = runner.resolveGrokEffort;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;
+export const ANTIGRAVITY_DISTRIBUTION_PINS = runner.ANTIGRAVITY_DISTRIBUTION_PINS;
 export const KIMI_DISTRIBUTION_CLOSURE_SHA256 = runner.KIMI_DISTRIBUTION_CLOSURE_SHA256;
 export const SANDBOX_DISK_FULL_FAILURE_CODE = runner.SANDBOX_DISK_FULL_FAILURE_CODE;
 export const isSandboxDiskFullFailure = runner.isSandboxDiskFullFailure;

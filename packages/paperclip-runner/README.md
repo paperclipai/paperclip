@@ -309,9 +309,10 @@ for runnable acceptance cells and the remaining live qualification gates.
 
 Google Antigravity is an **unqualified, pending** native ACPX integration. The
 explicit `paperclipai runtime setup antigravity` command installs the verified
-Antigravity ACP 1.4.3 distribution and its owned admission patch on macOS ARM64.
-It verifies both the official vendor closure and the separately pinned patched
-closure; npm installation downloads no Antigravity runtime. This setup installs
+Antigravity ACP 1.5.2 distribution and its owned admission patch on macOS ARM64,
+Linux x64 and Linux ARM64 (macOS Intel stays inventory-only). It verifies both
+the official vendor closure and the separately pinned patched closure; npm
+installation downloads no Antigravity runtime. This setup installs
 assets only. Global release qualification remains pending and normal execution
 admission stays closed. An isolated operator can admit one company, exact model,
 local platform and pinned native closure/profile until a fixed expiry through

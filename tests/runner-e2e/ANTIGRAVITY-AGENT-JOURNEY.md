@@ -112,9 +112,9 @@ setup and retains a blocked report.
   "candidate": {
     "platform": "darwin",
     "architecture": "arm64",
-    "nativeVersion": "1.4.3-paperclip.5",
-    "profileDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
-    "nativeClosureDigest": "sha256:044792d793e203bc8b4524a418f1816c4d34db67bb41fa4bae5947a050c49b4a"
+    "nativeVersion": "1.5.2-paperclip.1",
+    "profileDigest": "sha256:643da8767aba46df0802aa87056371bdab9bcc1cfe90edb5f38ec4e39371c7b8",
+    "nativeClosureDigest": "sha256:3c14a2fc1e23cd2ed9d6eefc1f3acdb206613a8c30c6cf4e3187548be84c917a"
   },
   "limits": {
     "durationMs": 1200000,
