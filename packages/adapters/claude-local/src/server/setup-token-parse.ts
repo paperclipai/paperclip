@@ -360,22 +360,26 @@ function validateAuthUrl(candidate: string): string | null {
  * The parser starts at `startLine`, then joins at most {@link MAX_URL_LINES}
  * consecutive URL-character-only physical lines into at most {@link
  * MAX_URL_LENGTH} characters. It validates the joined string after each join and
- * returns the first joined string that passes {@link validateAuthUrl}. A CLI that
- * emits the whole URL on one line passes on the first join. A CLI that wraps the
- * URL passes once the parser joins the last fragment. Returns null when no bounded
- * join validates.
+ * returns the last joined string that passes {@link validateAuthUrl} before a
+ * row shorter than the first row ends the wrap. A CLI that emits the whole URL
+ * on one line passes on the first join. A CLI that wraps the URL passes once the
+ * parser joins the last fragment. Returns null when no bounded join validates.
  */
 function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch | null {
   let joined = "";
+  let firstWidth = 0;
+  let match: SetupTokenUrlMatch | null = null;
   for (let offset = 0; offset < MAX_URL_LINES && startLine + offset < lines.length; offset += 1) {
     const trimmed = lines[startLine + offset].trim();
     if (trimmed.length === 0 || !URL_CHARS_ONLY_RE.test(trimmed)) break;
+    if (offset === 0) firstWidth = trimmed.length;
     joined += trimmed;
     if (joined.length > MAX_URL_LENGTH) break;
     const url = validateAuthUrl(joined);
-    if (url) return { url, endLine: startLine + offset };
+    if (url) match = { url, endLine: startLine + offset };
+    if (offset === 0 ? match !== null : trimmed.length < firstWidth) break;
   }
-  return null;
+  return match;
 }
 
 /**
