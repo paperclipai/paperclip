@@ -1594,6 +1594,17 @@ describe("Connectors landing page", () => {
     expect(notion.textContent).not.toContain("2 connections");
   });
 
+  it("does not list a custom app whose only connection never finished its first sign-in", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "app-custom", name: "Abandoned server",
+      applicationKey: "app-gallery:link:one", status: "draft", metadata: { source: "link" } })] });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ id: "conn-custom", applicationId: "app-custom", name: "Abandoned server", status: "draft",
+        firstSignInPending: true, config: {} })],
+    });
+    await renderBrowse();
+    expect(container.textContent).not.toContain("Abandoned server");
+  });
+
   it.each(["provider_setup", "identity_link", undefined, "complete"])(
     "keeps unfinished verifying chat setup visible for step %s", async (step) => {
       chatListMock.mockResolvedValue([

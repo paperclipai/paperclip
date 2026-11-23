@@ -623,11 +623,19 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         !connection.firstSignInPending &&
         connection.connectionPurpose !== "channel",
     );
+    const pendingOnlyApplicationIds = new Set(
+      (connectionsQuery.data?.connections ?? [])
+        .filter((connection) => connection.firstSignInPending)
+        .map((connection) => connection.applicationId)
+        .filter((applicationId) => !(connectionsQuery.data?.connections ?? []).some((connection) =>
+          connection.applicationId === applicationId && connection.status !== "archived" && !connection.firstSignInPending)),
+    );
     const activeApplications = (
       applicationsQuery.data?.applications ?? []
     ).filter(
       (application) =>
         application.status !== "archived" &&
+        !pendingOnlyApplicationIds.has(application.id) &&
         application.type !== "chat" &&
         application.metadata?.purpose !== "channel",
     );
