@@ -483,7 +483,14 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
     }
   }
 
-  return { ...nextConfig, ...input.adapterConfigOverrides };
+  const { env: overrideEnv, ...overrideWithoutEnv } = input.adapterConfigOverrides ?? {};
+  return {
+    ...nextConfig,
+    ...overrideWithoutEnv,
+    ...(overrideEnv === undefined
+      ? {}
+      : { env: { ...parseObject(nextConfig.env), ...parseObject(overrideEnv) } }),
+  };
 }
 
 export function taskWorkspaceRuntimeSelectionEnabled(input: {

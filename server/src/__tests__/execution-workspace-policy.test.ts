@@ -330,6 +330,65 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("merges issue-level adapter override env per key instead of replacing the agent env", () => {
+    const result = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {
+        env: {
+          ZHIPU_API_KEY: { secret_ref: "zhipu-key" },
+          PAPERCLIP_OPENCODE_SMALL_MODEL: "glm-4.6",
+        },
+      },
+      adapterConfigOverrides: {
+        env: { OPENCODE_CONFIG_CONTENT: "{}" },
+        model: "task-model",
+      },
+      projectPolicy: null,
+      issueSettings: null,
+      mode: "agent_default",
+      legacyUseProjectWorkspace: null,
+    });
+
+    expect(result.env).toEqual({
+      ZHIPU_API_KEY: { secret_ref: "zhipu-key" },
+      PAPERCLIP_OPENCODE_SMALL_MODEL: "glm-4.6",
+      OPENCODE_CONFIG_CONTENT: "{}",
+    });
+    expect(result.model).toBe("task-model");
+  });
+
+  it("lets an issue-level adapter override env key win over the agent env", () => {
+    const result = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {
+        env: { SHARED_KEY: "agent-value", AGENT_ONLY: "kept" },
+      },
+      adapterConfigOverrides: {
+        env: { SHARED_KEY: "override-value" },
+      },
+      projectPolicy: null,
+      issueSettings: null,
+      mode: "agent_default",
+      legacyUseProjectWorkspace: null,
+    });
+
+    expect(result.env).toEqual({ SHARED_KEY: "override-value", AGENT_ONLY: "kept" });
+  });
+
+  it("keeps the agent env when the adapter override has no env", () => {
+    const result = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {
+        env: { ZHIPU_API_KEY: { secret_ref: "zhipu-key" } },
+      },
+      adapterConfigOverrides: { model: "task-model" },
+      projectPolicy: null,
+      issueSettings: null,
+      mode: "agent_default",
+      legacyUseProjectWorkspace: null,
+    });
+
+    expect(result.env).toEqual({ ZHIPU_API_KEY: { secret_ref: "zhipu-key" } });
+    expect(result.model).toBe("task-model");
+  });
+
   describe("partial issue workspace strategies", () => {
     const projectStrategy = {
       type: "git_worktree" as const,
