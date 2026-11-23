@@ -15,6 +15,7 @@ import { persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from ".
 import { settledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import * as backupStamp from "./native-harness-backup-stamp.js";
+import * as independence from "./native-harness-filesystem-independence.js";
 import { nativeHarnessPrestageDatabaseUrl } from "../../maintenance/native-harness-prestage-runtime.js";
 
 describeEmbeddedPostgres("online preservation of settled legacy harness backups", () => {
@@ -155,6 +156,25 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
     expect(absent.deferred.source_run_active).toBeUndefined();
     expect(absent.deferred.selected_source_absent).toBe((present.deferred.selected_source_absent ?? 0) + 1);
     expect(absent.published).toBe(0);
+  });
+  it("stops the selected-source scan once the pass is cancelled", async () => {
+    const f = await fixture(), controller = new AbortController();
+    await rm(join(f.base, f.scopeDigest), { recursive: true });
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson, nativeHarnessFilesystemIndependence: {} } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const check = vi.spyOn(independence, "hasValidNativeHarnessFilesystemIndependence");
+    const execute = f.db.execute.bind(f.db);
+    const scan = vi.spyOn(f.db, "execute").mockImplementation(((query: Parameters<typeof execute>[0]) => {
+      controller.abort(new Error("budget spent"));
+      return execute(query);
+    }) as typeof f.db.execute);
+    const outcomes: string[] = [];
+    await expect(prestageNativeHarnessBackups(f.db, { storage: f.storage, signal: controller.signal,
+      onOutcome: outcome => outcomes.push(outcome) })).rejects.toThrow("budget spent");
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(check).not.toHaveBeenCalled();
+    expect(outcomes).toEqual([]);
   });
   it("respects the physical advisory lock while unrelated work stays active", async () => {
     const f = await fixture(), put = vi.spyOn(f.storage, "putFile");

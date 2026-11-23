@@ -19,9 +19,10 @@ export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean>
   return false;
 }
 
-async function* localNativeHarnessObligationScopes(db: Db, all = false): AsyncGenerator<string> {
+async function* localNativeHarnessObligationScopes(db: Db, all = false, signal?: AbortSignal): AsyncGenerator<string> {
   let afterSession = "", afterScope = "";
   for (;;) {
+    signal?.throwIfAborted();
     const rows = await db.execute<{ company_id: string; selected_session_id: string; scope_digest: string; has_receipt: boolean }>(sql`with selected_sessions as materialized (
       select s.company_id, s.id, s.last_run_id, r.native_issue_id, r.native_session_id
       from agent_task_sessions s
@@ -42,6 +43,7 @@ async function* localNativeHarnessObligationScopes(db: Db, all = false): AsyncGe
     const invalid: string[] = [];
     const checked = await Promise.allSettled(Array.from({ length: Math.min(MAX_PARALLEL_INDEPENDENCE_CHECKS, rows.length) }, async () => {
       while (!failed && (all || !invalid.length) && next < rows.length) {
+        signal?.throwIfAborted();
         const row = rows[next++]!;
         try {
           if (!row.has_receipt || !await hasValidNativeHarnessFilesystemIndependence(db, {
@@ -51,6 +53,7 @@ async function* localNativeHarnessObligationScopes(db: Db, all = false): AsyncGe
       }
     }));
     for (const result of checked) if (result.status === "rejected") throw result.reason;
+    signal?.throwIfAborted();
     yield* invalid;
     if (rows.length < 100) return;
     afterSession = rows.at(-1)!.selected_session_id; afterScope = rows.at(-1)!.scope_digest;
@@ -273,7 +276,7 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
       throw error;
     }
   });
-  for await (const scopeDigest of localNativeHarnessObligationScopes(db, true)) {
+  for await (const scopeDigest of localNativeHarnessObligationScopes(db, true, input.signal)) {
     input.signal.throwIfAborted();
     if (visited.has(scopeDigest)) continue;
     visited.add(scopeDigest);
