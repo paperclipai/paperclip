@@ -198,7 +198,9 @@ describe("adapter routes", () => {
     expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" })).toEqual(offered);
     expect(mockCandidateAdmission).toHaveBeenLastCalledWith({ companyId: "company-1", target: { platform: "linux", architecture: "x64" } });
     expect(await candidates({ driver: "sandbox", managedCloudImage: true })).toEqual(offered);
-    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64" })).toEqual(offered);
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" })).toEqual(offered);
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "musl" })).toBeUndefined();
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.31" })).toBeUndefined();
     // Another company, another platform, or no Computer gets nothing.
     expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "x64" }, "other-company")).toBeUndefined();
     expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "arm64" })).toBeUndefined();

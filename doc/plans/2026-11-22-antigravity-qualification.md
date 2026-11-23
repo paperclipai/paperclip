@@ -138,7 +138,8 @@ for the company and exact model that names linux-x64 and the patched linux-x64
 closure, with an API-key connection, per-turn. The runner E2E harness stages
 that grant for Daytona cells; a local cell's grant names the host instead.
 With that grant, the agent picker offers Google Antigravity for a Core sandbox
-or SSH environment that is linux-x64 (or the managed cloud image). It offers
+or SSH environment that is linux-x64 with a supported glibc (or the managed
+cloud image), and for this host only a grant that names this host. It offers
 nothing for a plugin Runner-task environment (the warm Agent Computer in
 Paperclip Cloud): that path cannot launch Antigravity yet (see Open decisions).
 

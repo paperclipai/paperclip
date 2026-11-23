@@ -131,6 +131,27 @@ describe("Antigravity agent picker candidate", () => {
     expect(() => antigravityCandidateForRunnerTarget(companyId, cloud)).toThrow(/does not match the execution target/);
   });
 
+  it("offers a cloud environment nothing when its Linux libc cannot run the Runner", () => {
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
+    for (const target of [
+      { ...cloud, libc: "musl" as const, glibcVersion: undefined },
+      { ...cloud, libc: "unknown" as const, glibcVersion: undefined },
+      { ...cloud, glibcVersion: "2.35" },
+      { driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc" as const, glibcVersion: "2.31" },
+    ]) expect(antigravityCandidateForRunnerTarget(companyId, target)).toBeUndefined();
+    expect(antigravityCandidateForRunnerTarget(companyId, { driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.41" }))
+      .toMatchObject({ model });
+  });
+
+  it("offers this host only a grant that names this host", () => {
+    // A grant for the other target: the cloud one on a Mac, a Mac one on Linux.
+    const other = process.platform === "linux" && process.arch === "x64" ? "darwin-arm64" : "linux-x64";
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant(other));
+    let offered: unknown;
+    try { offered = antigravityCandidateForRunnerTarget(companyId, { driver: "local" }); } catch { offered = undefined; }
+    expect(offered).toBeUndefined();
+  });
+
   it("offers no candidate once the profile is released", () => {
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
     release.pending = false;

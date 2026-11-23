@@ -3,6 +3,7 @@ import {
   QUALIFIED_ACPX_PROFILES,
   type NativeExecutionInput,
 } from "../../vendor/paperclip-runner/index.js";
+import { supportsLinuxLibc } from "@paperclipai/shared";
 import type { RunnerTarget } from "../agent-runner-selection.js";
 import { ANTIGRAVITY_REMOTE_TARGET, resolveAntigravityCandidateAdmission } from "./acpx-qualification.js";
 
@@ -12,19 +13,22 @@ export function antigravityCandidateTarget(remote: boolean): { platform: string;
 }
 
 /**
- * The candidate grant the agent picker may offer for one environment. A cloud
- * environment needs a grant for the cloud pack's linux-x64 closure and a known
- * linux-x64 Computer (or the managed cloud image). A plugin Runner-task
- * environment offers none: it cannot launch Antigravity yet. A released profile
- * offers no candidate. May throw for a grant that is invalid or names another
- * target.
+ * The candidate grant the agent picker may offer for one environment, bound to
+ * the target the run would use. This host needs a grant that names this host.
+ * A Core sandbox or SSH environment needs a grant for the cloud pack's
+ * linux-x64 closure and a linux-x64 glibc Computer the Runner supports (or the
+ * managed cloud image). A plugin Runner-task environment offers none: it cannot
+ * launch Antigravity yet. A released profile offers no candidate. May throw for
+ * a grant that is invalid or names another target.
  */
 export function antigravityCandidateForRunnerTarget(companyId: string, target: RunnerTarget) {
   if (!antigravityReleasePending()) return undefined;
-  if (target.driver === "local") return resolveAntigravityCandidateAdmission({ companyId });
-  if (target.driver === "unavailable" || target.runnerTasks) return undefined;
-  const linuxX64 = target.platform === ANTIGRAVITY_REMOTE_TARGET.platform && target.architecture === ANTIGRAVITY_REMOTE_TARGET.architecture;
-  if (!linuxX64 && !(target.driver === "sandbox" && target.managedCloudImage && !target.platform && !target.architecture)) return undefined;
+  if (target.driver === "local") return resolveAntigravityCandidateAdmission({ companyId, target: antigravityCandidateTarget(false) });
+  if ((target.driver !== "sandbox" && target.driver !== "ssh") || target.runnerTasks) return undefined;
+  const managedImage = target.driver === "sandbox" && target.managedCloudImage && !target.platform && !target.architecture;
+  const linuxX64 = target.platform === ANTIGRAVITY_REMOTE_TARGET.platform && target.architecture === ANTIGRAVITY_REMOTE_TARGET.architecture
+    && target.libc === "glibc" && supportsLinuxLibc(target.libc, target.glibcVersion);
+  if (!managedImage && !linuxX64) return undefined;
   return resolveAntigravityCandidateAdmission({ companyId, target: ANTIGRAVITY_REMOTE_TARGET });
 }
 
