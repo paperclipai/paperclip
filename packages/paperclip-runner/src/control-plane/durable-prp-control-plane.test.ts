@@ -44,6 +44,7 @@ import {
   type DurablePrpControlPlaneStore,
   type RunnerProcessHandle,
   durableRecoveryInternals,
+  runAttachToolCatalogFits,
   SemanticToolNotDispatchedError,
   inspectWarmRunTransition,
   spawnRunner,
@@ -448,9 +449,19 @@ it("stages and restores a run attachment for every tool catalog the provider pro
   }
 });
 
+it("admits a tool catalog exactly up to the run attachment command budget", () => {
+  const catalog = authorizedToolSetForProvider("acpx", denseToolCatalog(40, 100));
+  const catalogBytes = Buffer.byteLength(durableRecoveryInternals.controllerJson(catalog));
+  const commandBudget = Math.floor((1024 * 1024 - 4 * 1024) / 2);
+  const reserveAtLimit = commandBudget - 32 * 1024 - catalogBytes;
+  expect(runAttachToolCatalogFits(catalog, reserveAtLimit)).toBe(true);
+  expect(runAttachToolCatalogFits(catalog, reserveAtLimit + 1)).toBe(false);
+});
+
 it("leaves room in the run attachment for the instructions it reserves", async () => {
   const instructions = "Large agent instructions. ".repeat(6_000);
-  const reserved = Buffer.byteLength(JSON.stringify(instructions));
+  const runtimeContext = { skills: Array.from({ length: 200 }, (_, index) => ({ runtimeName: `skill-${index}`, description: "Skill summary ".repeat(6) })) };
+  const reserved = Buffer.byteLength(JSON.stringify(instructions)) + Buffer.byteLength(JSON.stringify(runtimeContext));
   let valuesPerTool = 10;
   while (runnerCodexDynamicToolsFit(denseToolCatalog(100, valuesPerTool + 10))) valuesPerTool += 10;
   const unreserved = denseToolCatalog(100, valuesPerTool);
@@ -460,7 +471,9 @@ it("leaves room in the run attachment for the instructions it reserves", async (
   const tools = denseToolCatalog(100, fitting);
   const root = mkdtempSync(resolve(tmpdir(), "runner-reserved-catalog-"));
   const target = { ...identity, runId: "00000000-0000-4000-8000-000000000004", turnId: "reserved-turn", itemId: "reserved-item" };
-  const template = { provider: { provider: "acpx", command: "fixture", instructions }, authorizedTools: authorizedToolSetForProvider("acpx", tools) };
+  const template = { observeCredentials: true, authorizedTools: authorizedToolSetForProvider("acpx", tools),
+    completionContract: { revision: 1, criterionIds: ["criterion-1", "criterion-2"] },
+    provider: { provider: "acpx", command: "fixture", instructions, runtimeContext } };
   const core = new DurablePrpControlPlane({ stateDirectory: resolve(root, "first"), identity, expectedRunnerVersion, expectedRunnerDigest });
   core.setCheckpointPersistence(async () => undefined);
   try {

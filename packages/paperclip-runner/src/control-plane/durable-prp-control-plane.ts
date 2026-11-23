@@ -659,7 +659,7 @@ function isUnclaimedBootstrapState(state: StoredCoreState, expected: DurableReco
       || state.commands.length !== 2 || state.commands[0]?.type !== "run.prepare"
       || state.commands[1]?.type !== "session.open"
       || state.commands.some(command => command.status !== "pending" || command.result !== null)
-      || !state.runAttachTemplate || canonicalJson(state.commands[0].payload) !== canonicalJson(state.runAttachTemplate));
+      || !state.runAttachTemplate || controllerJson(state.commands[0].payload) !== controllerJson(state.runAttachTemplate));
 }
 
 export function inspectUnclaimedBootstrapCheckpoint(
@@ -803,7 +803,7 @@ const MAX_CONTROLLER_JSON_NODES = maxCommandBytes;
 function canonicalJson(
   value: unknown,
   ancestors = new WeakSet<object>(),
-  state = { nodes: 0, maxNodes: MAX_CONTROLLER_JSON_NODES },
+  state = { nodes: 0, maxNodes: MAX_RUNNER_INPUT_JSON_NODES },
   depth = 0,
 ): string {
   state.nodes += 1;
@@ -863,18 +863,27 @@ function canonicalJson(
 
 export const durableRecoveryInternals = Object.freeze({
   canonicalJson,
+  controllerJson: (value: unknown) => controllerJson(value),
   captureCheckpoint: (state: DurablePrpControlPlaneStore["state"], runnerVersion: string, runnerDigest: string,
     cache?: CheckpointRecordCache) => captureCheckpoint(state, runnerVersion, runnerDigest, cache),
   createCheckpointRecordCache: () => new CheckpointRecordCache(),
 });
 
-function canonicalDigest(value: unknown, maxNodes = MAX_CONTROLLER_JSON_NODES): string {
-  return createHash("sha256").update(canonicalJson(value, new WeakSet<object>(), { nodes: 0, maxNodes })).digest("hex");
+function canonicalDigest(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+function controllerJson(value: unknown): string {
+  return canonicalJson(value, new WeakSet<object>(), { nodes: 0, maxNodes: MAX_CONTROLLER_JSON_NODES });
+}
+
+function controllerDigest(value: unknown): string {
+  return createHash("sha256").update(controllerJson(value)).digest("hex");
 }
 
 export function runAttachToolCatalogFits(authorizedTools: Record<string, unknown>, reservedBytes = 0): boolean {
   try {
-    return Buffer.byteLength(canonicalJson(authorizedTools), "utf8") + RUN_ATTACH_ENVELOPE_BYTES + Math.max(0, reservedBytes)
+    return Buffer.byteLength(controllerJson(authorizedTools), "utf8") + RUN_ATTACH_ENVELOPE_BYTES + Math.max(0, reservedBytes)
       <= maxCommandBytes;
   } catch {
     return false;
@@ -885,7 +894,7 @@ function matchesSemanticInputDigest(input: unknown, digest: unknown): boolean {
   try {
     // Wire integrity covers the complete input, including protected fields.
     // Receipt redaction can erase those differences and has a separate hash.
-    return digest === `sha256:${canonicalDigest(input, MAX_RUNNER_INPUT_JSON_NODES)}`;
+    return digest === `sha256:${canonicalDigest(input)}`;
   } catch {
     // Canonicalization bounds must keep the same permanent integrity fence.
     // Never attach an input-derived error or payload to the diagnostic.
@@ -951,7 +960,7 @@ function warmTransitionReceipt(
     commandId: command.commandId,
     controllerSeq: command.controllerSeq,
     // Rust's closed Command representation serializes these optional fields.
-    commandFingerprint: canonicalDigest({
+    commandFingerprint: controllerDigest({
       ...wire,
       deadlineAt: null,
       precondition: null,
@@ -1014,7 +1023,7 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
             state.commands.find(
               (command) => command.commandId === expected.commandId,
             ),
-          ) === canonicalJson(transition.command)))
+          ) === controllerJson(transition.command)))
     );
   } catch {
     return false;
@@ -1084,7 +1093,7 @@ function unsettledSemanticInput(
         canonicalJson(expectedCorrelation) ||
       (command.payload.inputDigest === undefined
         ? canonicalJson(command.payload.input) !== canonicalJson(semantic.input)
-        : command.payload.inputDigest !== canonicalDigest(semantic.input, MAX_RUNNER_INPUT_JSON_NODES)
+        : command.payload.inputDigest !== canonicalDigest(semantic.input)
           || (command.payload.input !== undefined
             && canonicalJson(command.payload.input) !== canonicalJson(semantic.input)))
     );
@@ -1099,8 +1108,8 @@ function stagedCommandMatches(staged: Pick<StagedRunAttachment, "targetIdentity"
   if (command.type !== "run.attach" || command.commandId !== staged.commandId) return false;
   const { paperclipNextAuthority, ...template } = command.payload;
   return isRecord(paperclipNextAuthority)
-    && canonicalJson(paperclipNextAuthority.identity) === canonicalJson(staged.targetIdentity)
-    && `sha256:${canonicalDigest(template)}` === staged.templateDigest;
+    && controllerJson(paperclipNextAuthority.identity) === controllerJson(staged.targetIdentity)
+    && `sha256:${controllerDigest(template)}` === staged.templateDigest;
 }
 
 function stagedAttachmentTemplate(state: StoredCoreState): Record<string, unknown> | null {
@@ -1136,7 +1145,7 @@ function validStagedRunAttachment(state: StoredCoreState, headerOnly = false): b
     && /^sha256:[0-9a-f]{64}$/.test(staged.templateDigest)
     && (headerOnly || staged.commandId !== null || (isRecord(staged.runAttachTemplate) && isRecord(staged.runAttachTemplate.provider)
       && staged.runAttachTemplate.paperclipNextAuthority === undefined
-      && `sha256:${canonicalDigest(staged.runAttachTemplate)}` === staged.templateDigest
+      && `sha256:${controllerDigest(staged.runAttachTemplate)}` === staged.templateDigest
       && Buffer.byteLength(JSON.stringify(staged.runAttachTemplate)) <= maxCommandBytes))
     && (staged.commandId === null || (typeof staged.commandId === "string" && stableIdPattern.test(staged.commandId))))) return false;
   const sourceCurrent = canonicalJson(state.identity) === canonicalJson(staged.sourceIdentity);
@@ -1492,8 +1501,8 @@ function warmTransitionRecoveryProof(input: WarmTransitionInspectionInput): {
       !Object.entries(requested).every(
         ([key, value]) => runner[key] === value,
       ) ||
-      canonicalJson(pending.command) !==
-        canonicalJson({ ...wire, deadlineAt: null, precondition: null }) ||
+      controllerJson(pending.command) !==
+        controllerJson({ ...wire, deadlineAt: null, precondition: null }) ||
       canonicalJson(pending.result) !==
         canonicalJson(transition.expectedResult ?? transition.command.result) ||
       runner.ackedSourceSeq !==
@@ -2710,7 +2719,7 @@ export class DurablePrpControlPlane {
         completed.command.payload;
       if (
         runAttachTemplate !== undefined &&
-        canonicalJson(runAttachTemplate) !== canonicalJson(template)
+        controllerJson(runAttachTemplate) !== controllerJson(template)
       ) {
         throw new Error(
           "Completed warm transition template conflicts with its exact command.",
@@ -2736,7 +2745,7 @@ export class DurablePrpControlPlane {
         const { paperclipNextAuthority: _boundary, ...expectedTemplate } =
           transition.command.payload;
         if (
-          canonicalJson(runAttachTemplate) !== canonicalJson(expectedTemplate)
+          controllerJson(runAttachTemplate) !== controllerJson(expectedTemplate)
         ) {
           throw new Error(
             "Warm run transition template conflicts with its exact command.",
@@ -2833,7 +2842,7 @@ export class DurablePrpControlPlane {
     if (
       existing !== undefined &&
       existing !== null &&
-      canonicalJson(existing) !== canonicalJson(runAttachTemplate)
+      controllerJson(existing) !== controllerJson(runAttachTemplate)
     ) {
       throw new Error("Durable PRP run attachment template conflicts.");
     }
@@ -3027,7 +3036,7 @@ export class DurablePrpControlPlane {
       && targetIdentity.runId !== existing.targetIdentity.runId)) {
       if (!validStagedRunAttachment(this.#store.state)
         || canonicalJson(existing.targetIdentity) !== canonicalJson(targetIdentity)
-        || canonicalJson(stagedAttachmentTemplate(this.#store.state)) !== canonicalJson(runAttachTemplate)) {
+        || controllerJson(stagedAttachmentTemplate(this.#store.state)) !== controllerJson(runAttachTemplate)) {
         throw new Error("Staged run attachment conflicts with its durable intent.");
       }
       return;
@@ -3036,7 +3045,7 @@ export class DurablePrpControlPlane {
     candidate.schema = stagedCoreStateSchema;
     candidate.stagedRunAttachment = { sourceIdentity: structuredClone(candidate.identity),
       targetIdentity: structuredClone(targetIdentity), runAttachTemplate: structuredClone(runAttachTemplate),
-      templateDigest: `sha256:${canonicalDigest(runAttachTemplate)}`, commandId: null };
+      templateDigest: `sha256:${controllerDigest(runAttachTemplate)}`, commandId: null };
     if (!validStagedRunAttachment(candidate)) throw new Error("Staged run attachment binding is invalid.");
     this.#store.commit(candidate);
   }
@@ -3056,7 +3065,7 @@ export class DurablePrpControlPlane {
       && !(type === "run.attach" && isRecord(payload.paperclipNextAuthority)
         && isRecord(payload.paperclipNextAuthority.identity)
         && payload.paperclipNextAuthority.identity.runId === authorityRunId)
-      && !(prior && prior.status !== "pending" && prior.type === type && canonicalJson(prior.payload) === canonicalJson(payload))) {
+      && !(prior && prior.status !== "pending" && prior.type === type && controllerJson(prior.payload) === controllerJson(payload))) {
       throw new Error("native_runner_source_attachment_pending");
     }
     const staged = this.#store.state.stagedRunAttachment;
@@ -3068,7 +3077,7 @@ export class DurablePrpControlPlane {
         const { paperclipNextAuthority, ...template } = payload;
         if (!isRecord(paperclipNextAuthority)
           || canonicalJson(paperclipNextAuthority.identity) !== canonicalJson(staged.targetIdentity)
-          || `sha256:${canonicalDigest(template)}` !== staged.templateDigest
+          || `sha256:${controllerDigest(template)}` !== staged.templateDigest
           || (staged.commandId !== null && staged.commandId !== commandId)) throw new Error("Staged run attachment command conflicts.");
       } else if (!stagedTargetActivated(this.#store.state) && !["runner.drain", "session.open", "session.snapshot", "turn.stop", "runner.suspend", "session.close", "semantic_tool.result"].includes(type)) {
         throw new Error("Staged run attachment permits recovery maintenance only.");
@@ -3079,7 +3088,7 @@ export class DurablePrpControlPlane {
       if (
         commandId === transition.command.commandId &&
         type === "run.attach" &&
-        canonicalJson(payload) === canonicalJson(transition.command.payload)
+        controllerJson(payload) === controllerJson(transition.command.payload)
       )
         return transition.command;
       throw new Error(
@@ -3114,7 +3123,7 @@ export class DurablePrpControlPlane {
       if (existing !== undefined) {
         if (
           existing.type !== type ||
-          canonicalJson(existing.payload) !== canonicalJson(payload)
+          controllerJson(existing.payload) !== controllerJson(payload)
         ) {
           throw new Error(
             "Durable PRP command replay conflicts with persisted state.",

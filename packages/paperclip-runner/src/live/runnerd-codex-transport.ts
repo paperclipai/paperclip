@@ -2611,6 +2611,10 @@ function commandDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(durableRecoveryInternals.canonicalJson(value)).digest("hex")}`;
 }
 
+function controllerCommandDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(durableRecoveryInternals.controllerJson(value)).digest("hex")}`;
+}
+
 function approvedRunnerArtifact(runnerBinaryPath: string): {
   version: string;
   digest: string;
@@ -2824,7 +2828,7 @@ function completedMaintenanceTerminalReceipt(
   };
   if (
     record(state.runner.processedCommandFingerprints)[pending.commandId] !==
-    commandDigest(wire).slice("sha256:".length)
+    controllerCommandDigest(wire).slice("sha256:".length)
   )
     return null;
   if (command.status === "pending") {
@@ -2868,7 +2872,7 @@ function completedMaintenanceTerminalReplayMatches(
       commandDigest(before.runner.processedCommandFingerprints) &&
     after.runner.lastControllerCommandSeq ===
       before.runner.lastControllerCommandSeq &&
-    commandDigest(after.control.commands) === commandDigest(expectedCommands)
+    controllerCommandDigest(after.control.commands) === controllerCommandDigest(expectedCommands)
   );
 }
 
@@ -3488,7 +3492,7 @@ async function settleRetainedRunnerdSessionOwned(
         settled.runner.pendingTerminalDelivery != null ||
         commandDigest(settled.runner.pendingProviderCleanup) !==
           commandDigest(pendingTerminal) ||
-        commandDigest(settled.control.commands) !==
+        controllerCommandDigest(settled.control.commands) !==
           commandDigest(before.control.commands) ||
         epochProviderPids.size !== 0 ||
         ![...pids].every(maintenanceProcessAbsent)
@@ -3863,7 +3867,7 @@ function authorizedToolSet(
   return {
     schema: "paperclip.runner.authorized-tools.v1",
     schemaVersion: 1,
-    catalogDigest: commandDigest(operations),
+    catalogDigest: controllerCommandDigest(operations),
     operations,
   };
 }
@@ -8271,8 +8275,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (existing) {
       if (
         existing.type !== type ||
-        durableRecoveryInternals.canonicalJson(existing.payload) !==
-          durableRecoveryInternals.canonicalJson(payload)
+        durableRecoveryInternals.controllerJson(existing.payload) !==
+          durableRecoveryInternals.controllerJson(payload)
       ) {
         throw new Error(
           `PRP steering correlation ${correlationId} was reused with different content`,
