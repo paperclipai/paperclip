@@ -34,6 +34,12 @@ export function googleAccessRemovalNotice(
       body: "Other Paperclip connections still use this Google account, so Google keeps Paperclip's access until you remove those too.",
     };
   }
+  if (providerAccess.result === "retrying") {
+    return {
+      tone: "info",
+      body: "Google didn't confirm that Paperclip's access has ended yet. Paperclip will keep trying automatically.",
+    };
+  }
   return {
     tone: "warn",
     body: "Paperclip removed the connection but couldn't end its access at Google. You can remove Paperclip from your Google account's third-party connections.",

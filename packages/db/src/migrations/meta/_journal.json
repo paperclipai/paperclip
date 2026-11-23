@@ -3501,6 +3501,13 @@
       "when": 1795444424088,
       "tag": "0501_charming_living_lightning",
       "breakpoints": true
+    },
+    {
+      "idx": 502,
+      "version": "7",
+      "when": 1795451617606,
+      "tag": "0502_real_zaladane",
+      "breakpoints": true
     }
   ]
 }

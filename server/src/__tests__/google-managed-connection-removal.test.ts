@@ -13,6 +13,7 @@ import {
   connectionGrants,
   connectionTokenIssuances,
   createDb,
+  googlePendingRevocations,
   secretAccessEvents,
   toolAccessAuditEvents,
   toolApplications,
@@ -37,6 +38,14 @@ import { errorHandler } from "../middleware/index.js";
 import { logger } from "../middleware/logger.js";
 import { PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import {
+  createGooglePendingRevocation,
+  GOOGLE_REVOCATION_LIFETIME_MS,
+  googleRevocationRetryDelayMs,
+  revokeGoogleAccessForRemovedInstance,
+} from "../services/tool-access/connections/google-pending-revocation.js";
+import { secretService } from "../services/secrets.js";
+import { deleteCompany } from "../services/company-deletion.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -96,6 +105,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await db.delete(toolConnectionContentDeletions);
+    await db.delete(googlePendingRevocations);
     await db.delete(toolOauthStates);
     await db.delete(connectionTokenIssuances);
     await db.delete(connectionGrants);
@@ -185,10 +195,10 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
   it.each([
     ["revoked", "ended"],
     ["other_connections_remain", "other_connections_remain"],
-    ["provider_revocation_failed", "not_ended"],
+    ["provider_revocation_failed", "retrying"],
     ["binding_not_known", "not_ended"],
     ["provider_revocation_disabled", "not_ended"],
-    ["revocation_in_progress", "not_ended"],
+    ["revocation_in_progress", "retrying"],
   ] as const)("asks Cloud to end Google access and reports %s as %s", async (outcome, result) => {
     const fixture = await connectManagedGmail();
     fixture.connector.revoke.mockResolvedValue({ outcome });
@@ -245,10 +255,10 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
   });
 
   it.each([
-    ["an older broker", new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, "REVOCATION_NOT_AVAILABLE"), "revocation_not_available"],
-    ["a broker timeout", new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE"), "broker_unavailable"],
-    ["a network error", new TypeError("fetch failed"), "broker_error"],
-  ] as const)("still removes the connection locally after %s", async (_label, error, outcome) => {
+    ["an older broker", new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, "REVOCATION_NOT_AVAILABLE"), "revocation_not_available", "not_ended"],
+    ["a broker timeout", new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE"), "broker_unavailable", "retrying"],
+    ["a network error", new TypeError("fetch failed"), "broker_error", "retrying"],
+  ] as const)("still removes the connection locally after %s", async (_label, error, outcome, result) => {
     const fixture = await connectManagedGmail();
     fixture.connector.revoke.mockRejectedValue(error);
     const logged: unknown[] = [];
@@ -260,8 +270,9 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
 
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("archived");
-    expect(response.body.removal.providerAccess).toEqual({ provider: "google", result: "not_ended", outcomes: [outcome] });
+    expect(response.body.removal.providerAccess).toEqual({ provider: "google", result, outcomes: [outcome] });
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
+    expect(await db.select().from(googlePendingRevocations)).toHaveLength(result === "retrying" ? 1 : 0);
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
     expect(connection!.credentialSecretRefs).toEqual([]);
     expect(JSON.stringify(logged)).not.toContain(REFRESH_TOKEN);
@@ -418,7 +429,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
 
     expect(response.status).toBe(200);
     const providerAccess = path === "connection" ? response.body.removal.providerAccess : response.body.providerAccess;
-    expect(providerAccess).toEqual({ provider: "google", result: "not_ended", outcomes: ["broker_unavailable"] });
+    expect(providerAccess).toEqual({ provider: "google", result: "retrying", outcomes: ["broker_unavailable"] });
     const [grantRow] = await db.select({ status: connectionGrants.status }).from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
     expect(grantRow!.status).toBe("revoked");
   });
@@ -678,5 +689,176 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(removal.status).toBe(200);
     expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
+  });
+  function worker(connector: ReturnType<typeof fakeConnector>, at: () => number) {
+    return createGooglePendingRevocation(db, { currentCloudConnector: () => connector as unknown as PaperclipCloudConnector, now: at });
+  }
+
+  async function drain(connector: ReturnType<typeof fakeConnector>, at: number) {
+    await worker(connector, () => at).drain(new AbortController().signal);
+  }
+
+  async function retryAudit(companyId: string) {
+    const rows = await db.select().from(toolAccessAuditEvents).where(and(
+      eq(toolAccessAuditEvents.companyId, companyId), eq(toolAccessAuditEvents.action, "connection.google_access_retry")));
+    return rows.map((row) => ({ outcome: row.outcome, reasonCode: row.reasonCode }));
+  }
+
+  async function retryActivity(companyId: string) {
+    const rows = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    return rows.filter((row) => row.action.startsWith("tool_connection.google_access_")).map((row) => row.action);
+  }
+
+  it("keeps an unconfirmed token only in the pending record, encrypted, and retries until Google confirms", async () => {
+    const fixture = await connectManagedGmail();
+    fixture.connector.revoke.mockResolvedValueOnce({ outcome: "provider_revocation_failed" });
+    const startedAt = Date.now();
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.removal.providerAccess).toEqual({ provider: "google", result: "retrying", outcomes: ["provider_revocation_failed"] });
+    expect(await liveSecretCount(fixture.company.id)).toBe(0);
+    const [pending] = await db.select().from(googlePendingRevocations);
+    expect(pending).toMatchObject({ companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id,
+      subject: fixture.userId, profile: "gmail.draft", reason: "connection_removed", attempts: 1, lastOutcome: "provider_revocation_failed" });
+    expect(JSON.stringify(pending)).not.toContain(REFRESH_TOKEN);
+    expect(pending!.nextAttemptAt.getTime() - startedAt).toBeGreaterThanOrEqual(50_000);
+    expect(pending!.giveUpAt.getTime() - pending!.createdAt.getTime()).toBe(GOOGLE_REVOCATION_LIFETIME_MS);
+    const listed = await secretService(db).list(fixture.company.id);
+    expect(JSON.stringify(listed)).not.toContain(REFRESH_TOKEN);
+
+    await drain(fixture.connector, startedAt + 10_000);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+
+    fixture.connector.revoke.mockResolvedValueOnce({ outcome: "revocation_in_progress" });
+    await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(2);
+    const [second] = await db.select().from(googlePendingRevocations);
+    expect(second).toMatchObject({ attempts: 2, lastOutcome: "revocation_in_progress" });
+
+    fixture.connector.revoke.mockResolvedValueOnce({ outcome: "revoked" });
+    await drain(fixture.connector, second!.nextAttemptAt.getTime());
+    expect(fixture.connector.revoke).toHaveBeenLastCalledWith(expect.objectContaining({
+      subject: fixture.userId, companyId: fixture.company.id, profile: "gmail.draft", token: REFRESH_TOKEN }));
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+    expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "ended" }]);
+    expect(await retryActivity(fixture.company.id)).toEqual(["tool_connection.google_access_ended"]);
+  });
+
+  it("keeps the token before calling Cloud, so a restart during the call still revokes it", async () => {
+    const fixture = await connectManagedGmail();
+    let queuedDuringCall = 0;
+    fixture.connector.revoke.mockImplementationOnce(async () => {
+      queuedDuringCall = (await db.select().from(googlePendingRevocations)).length;
+      throw new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE");
+    });
+
+    await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(queuedDuringCall).toBe(1);
+    await db.update(googlePendingRevocations).set({ attempts: 0, nextAttemptAt: new Date(Date.now() + 120_000) });
+    const fresh = fakeConnector(fixture.company.id, fixture.userId);
+    await drain(fresh, Date.now() + 130_000);
+    expect(fresh.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN, subject: fixture.userId }));
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+  });
+
+  it.each(["binding_not_known", "other_connections_remain", "provider_revocation_disabled"] as const)(
+    "stops retrying and deletes the token when Cloud answers %s", async (outcome) => {
+      const fixture = await connectManagedGmail();
+      fixture.connector.revoke.mockResolvedValueOnce({ outcome: "provider_revocation_failed" });
+      await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+      const [pending] = await db.select().from(googlePendingRevocations);
+
+      fixture.connector.revoke.mockResolvedValueOnce({ outcome });
+      await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+
+      expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+      const result = outcome === "other_connections_remain" ? "other_connections_remain" : "not_ended";
+      expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: result === "not_ended" ? "failure" : "success", reasonCode: result }]);
+      expect(await retryActivity(fixture.company.id)).toEqual(["tool_connection.google_access_not_ended"]);
+    });
+
+  it("backs off from one minute to six hours and gives up after 30 days with a final entry", async () => {
+    expect([1, 2, 3, 9, 10, 50].map(googleRevocationRetryDelayMs)).toEqual([60_000, 120_000, 240_000, 15_360_000, 21_600_000, 21_600_000]);
+    const fixture = await connectManagedGmail();
+    fixture.connector.revoke.mockResolvedValue({ outcome: "provider_revocation_failed" });
+    await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    const [pending] = await db.select().from(googlePendingRevocations);
+
+    await drain(fixture.connector, pending!.giveUpAt.getTime() - 1_000);
+    const [last] = await db.select().from(googlePendingRevocations);
+    expect(last!.nextAttemptAt.getTime()).toBe(pending!.giveUpAt.getTime());
+    const calls = fixture.connector.revoke.mock.calls.length;
+
+    await drain(fixture.connector, pending!.giveUpAt.getTime());
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(calls);
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+    expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "failure", reasonCode: "gave_up" }]);
+    expect(await retryActivity(fixture.company.id)).toEqual(["tool_connection.google_access_not_ended"]);
+  });
+
+  it("stops without revoking when a live credential in the company still holds the same token", async () => {
+    const fixture = await connectManagedGmail();
+    fixture.connector.revoke.mockResolvedValueOnce({ outcome: "broker_error" });
+    await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    const [pending] = await db.select().from(googlePendingRevocations);
+    await secretService(db).create(fixture.company.id, { name: "Copied token", key: "copied_token", provider: "local_encrypted", value: REFRESH_TOKEN });
+
+    await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+    expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "other_connections_remain" }]);
+  });
+
+  it("treats an older broker refusing a removed instance as retryable", async () => {
+    const fixture = await connectManagedGmail();
+    fixture.connector.revoke.mockRejectedValue(new PaperclipCloudConnectorError("rejected", "CONNECTOR_REQUEST_FAILED", 403, undefined, "INSTANCE_SUSPENDED"));
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.body.removal.providerAccess).toEqual({ provider: "google", result: "retrying", outcomes: ["broker_error"] });
+    const [pending] = await db.select().from(googlePendingRevocations);
+    await drain(fixture.connector, pending!.nextAttemptAt.getTime());
+    const [after] = await db.select().from(googlePendingRevocations);
+    expect(after).toMatchObject({ attempts: 2, lastOutcome: "broker_error" });
+  });
+
+  it("queues every managed Google token when the company is deleted, and revokes it after the company is gone", async () => {
+    const fixture = await connectManagedGmail();
+
+    await deleteCompany(db, fixture.company.id);
+
+    expect(await db.select().from(companies).where(eq(companies.id, fixture.company.id))).toEqual([]);
+    const [pending] = await db.select().from(googlePendingRevocations);
+    expect(pending).toMatchObject({ companyId: fixture.company.id, subject: fixture.userId, profile: "gmail.draft", reason: "company_deleted", attempts: 0 });
+    expect(JSON.stringify(pending)).not.toContain(REFRESH_TOKEN);
+    expect(fixture.connector.revoke).not.toHaveBeenCalled();
+
+    await drain(fixture.connector, Date.now());
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({
+      subject: fixture.userId, companyId: fixture.company.id, profile: "gmail.draft", token: REFRESH_TOKEN }));
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+  });
+
+  it("revokes every managed Google grant through the broker when Cloud removed the instance, then drops the token", async () => {
+    const fixture = await connectManagedGmail();
+    const secrets = secretService(db);
+
+    expect(await revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secrets.remove(secretId, { expectedVersion }))).toBe(1);
+
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    const [refresh] = await db.select({ id: companySecrets.id }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
+    expect(refresh).toBeUndefined();
+    const [pending] = await db.select().from(googlePendingRevocations);
+    expect(pending).toMatchObject({ reason: "instance_removed", connectionId: fixture.connectionId });
+    expect(await revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secrets.remove(secretId, { expectedVersion }))).toBe(0);
+
+    await drain(fixture.connector, Date.now());
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN, subject: fixture.userId }));
+    expect(await db.select().from(googlePendingRevocations)).toEqual([]);
+    expect(await retryAudit(fixture.company.id)).toEqual([{ outcome: "success", reasonCode: "ended" }]);
   });
 });

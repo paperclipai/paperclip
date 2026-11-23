@@ -34,6 +34,17 @@ describe("googleAccessRemovalNotice", () => {
     expect(open).toHaveBeenCalledWith(GOOGLE_THIRD_PARTY_ACCESS_URL, "_blank", "noopener,noreferrer");
     expect(GOOGLE_THIRD_PARTY_ACCESS_URL).toBe("https://myaccount.google.com/connections");
   });
+  it("says Paperclip keeps trying when Google has not confirmed yet, with no action to take", () => {
+    const notice = googleAccessRemovalNotice({ provider: "google", result: "retrying", outcomes: ["broker_unavailable"] });
+    expect(notice).toEqual({
+      tone: "info",
+      body: "Google didn't confirm that Paperclip's access has ended yet. Paperclip will keep trying automatically.",
+    });
+    expect(notice?.body).not.toMatch(/revocation|broker|_/);
+    expect(connectionRemovalToast({ title: "Connection removed", body: "Removed.", providerAccess: { provider: "google", result: "retrying", outcomes: ["provider_revocation_failed"] } }))
+      .toEqual({ title: "Connection removed", body: "Removed. Google didn't confirm that Paperclip's access has ended yet. Paperclip will keep trying automatically.", tone: "info" });
+  });
+
   it("says access was ended but asks to check when the Google account cannot be confirmed", () => {
     const notice = googleAccessRemovalNotice({ provider: "google", result: "ended_unconfirmed", outcomes: ["other_connections_remain", "revoked"] });
     expect(notice?.tone).toBe("info");

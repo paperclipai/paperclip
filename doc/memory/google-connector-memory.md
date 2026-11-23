@@ -12,7 +12,7 @@ Related: [production checklist](../plans/2026-11-17-google-workspace-production-
 [code-fix plan](../plans/2026-11-17-google-workspace-code-fixes.md),
 [connector doc](../connections/GOOGLE-WORKSPACE.md).
 
-Last updated: November 18, 2026.
+Last updated: November 23, 2026.
 
 ## Decisions
 
@@ -40,6 +40,7 @@ Last updated: November 18, 2026.
 | Nov 17 | **Deleting a whole recurring series is refused** | Same rule as the `delete_event` decision above. |
 | Nov 17 | **A service is switched to REST only after a live test on the staging tester** | One service at a time. |
 | Nov 17 | **The gateway sets the REST result size limit** | The REST tools enforce the number the gateway passes: the gateway's MCP response limit less framing, 999,885 bytes. A result Google's MCP server could deliver is also delivered over REST. See the folder README's "Result size". |
+| Nov 23 | **Unconfirmed Google revocation is retried by the app, not Cloud** | When access must end and Google cannot be reached or confirm, the app keeps the token in `google_pending_revocations` and retries (1 minute up to 6 hours backoff, 30-day hard stop). Cloud still never stores provider tokens. Company deletion and a Cloud-removed instance queue the same way. The broker lets a removed instance sign a Google revoke (paperclip-cloud #1752). See [connector doc](../connections/GOOGLE-WORKSPACE.md), "Pending revocation". |
 
 ## What has shipped
 
@@ -275,6 +276,12 @@ Changes made in the broker (staging):
 | Keep accepting the old 21-scope refresh binding until older app versions are gone | Older apps still sign 21 scopes on refresh. |
 | Stop offering Chat, People and Search for new sessions on the verified client | They are outside the 14. Keep refresh for saved grants. |
 | Do not merge the branch that adds a Gmail archive profile | `gmail.modify` is restricted and not in the submission. |
+
+Pending revocation (November 23): the app retries an unconfirmed Google
+revoke in the background and handles both brokers. With the old broker, a
+removed instance's revoke is refused (`403`) and retried until the 30-day hard
+stop; once paperclip-cloud #1752 is deployed, those revokes succeed. Either
+deploy order is safe.
 
 Deploy order: **app first, then broker.** If the broker narrows first, refresh
 from app versions that still sign 21 scopes fails.

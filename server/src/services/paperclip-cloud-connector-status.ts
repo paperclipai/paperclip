@@ -10,6 +10,7 @@ import {
 export async function reconcilePaperclipCloudConnectorEnrollmentStatus(
   env: NodeJS.ProcessEnv = process.env,
   request: typeof fetch = fetch,
+  onRemoved?: () => Promise<unknown>,
 ): Promise<PaperclipCloudConnectorEnrollmentStatus> {
   const local = paperclipCloudConnectorEnrollmentStatus(env);
   if (!local.configured) return local;
@@ -19,6 +20,7 @@ export async function reconcilePaperclipCloudConnectorEnrollmentStatus(
     const status = await createPaperclipCloudConnector({ config, request }).getInstanceStatus();
     if (status === "active") return { ...local, configured: true, status: "active" };
     if (status === "suspended") return { ...local, configured: false, status: "suspended" };
+    await onRemoved?.().catch(() => undefined);
     return { ...local, configured: false, status: "not_configured" };
   } catch {
     return { ...local, configured: false, status: "unverified" };
