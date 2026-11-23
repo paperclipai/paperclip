@@ -482,6 +482,51 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "banners classified" });
   });
 
+  it("uses one Claude status notice per compaction", async () => {
+    const fixture = driverFixture({ agent: "claude", model: "claude-sonnet-5" }, {
+      runtimeEvents: [
+        "Compacting...",
+        "Compacting...",
+        "Compacting...",
+        "Compacting completed.",
+        "Compacting...",
+        "Compacting failed.",
+      ].map(text => ({ type: "text_delta", stream: "output", tag: "agent_message_chunk", text })),
+    });
+    const session = await fixture.driver.openSession({ runId: "run-claude-compaction", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { role: "user", text: "Work" } });
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    await session.close({ reason: "compactions settled" });
+    for (const event of events) validatePrpEvent(event);
+    const notices = events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "context_compaction");
+    const latestNotices = new Map(notices.map(event => [event.payload.noticeId, event.payload]));
+    expect([...latestNotices.values()]).toMatchObject([
+      { details: [{ name: "Phase", value: "completed" }] },
+      { details: [{ name: "Phase", value: "failed" }] },
+    ]);
+  });
+
+  it.each(["failed result", "broken event stream"])("settles an open Claude compaction notice on a %s", async failure => {
+    const eventStreamFailure = failure === "broken event stream" ? deferred<void>() : undefined;
+    const fixture = driverFixture({ agent: "claude", model: "claude-sonnet-5" }, {
+      runtimeEvents: [{ type: "text_delta", stream: "output", tag: "agent_message_chunk", text: "Compacting..." }],
+      eventStreamFailure: eventStreamFailure?.promise,
+    });
+    const session = await fixture.driver.openSession({ runId: "run-claude-failed-compaction", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { role: "user", text: "Work" } });
+    fixture.finishTurn({ status: "failed", error: { message: "Provider stopped." } });
+    eventStreamFailure?.resolve();
+    const events = await collectUntil(session.events(), "turn.failed");
+    await session.close({ reason: "failed compaction settled" });
+    for (const event of events) validatePrpEvent(event);
+    const notices = events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "context_compaction");
+    expect(notices.map(event => event.payload)).toMatchObject([
+      { details: [{ name: "Phase", value: "running" }] },
+      { noticeId: notices[0]?.payload.noticeId, details: [{ name: "Phase", value: "failed" }] },
+    ]);
+  });
+
   it("opens the qualified Claude profile through the shared driver", async () => {
     const fixture = driverFixture({
       agent: "claude",
